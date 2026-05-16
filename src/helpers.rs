@@ -217,86 +217,88 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
 }
 
 /// Detect whether a CLI has finished startup and is ready to receive input.
-/// Checks for known prompt patterns (from relay-pty parser) and a byte-count fallback.
+///
+/// Delegates per-CLI text matching to [`crate::wait::for_cli`] so the
+/// rules live in one place. Keeps three things inline that don't map to
+/// the AND-composed `WaitSet` primitive: the explicit `->pty:ready`
+/// signal, gemini's "still waiting for auth" *negative* check, and the
+/// byte-count startup fallback for non-claude / non-gemini CLIs.
 pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> bool {
+    use crate::wait::for_cli;
+
     let clean = strip_ansi(output);
     let lower_cli = cli.to_lowercase();
 
-    // Explicit ready signal from relay protocol
+    // Explicit ready signal from relay protocol.
     if clean.contains("->pty:ready") {
         return true;
     }
 
-    // Claude Code: stricter detection to avoid false positives from onboarding
-    // UI elements (theme picker: "❯ 1. Dark mode", bypass permissions: "❯ 1. No, exit").
-    // Require the welcome banner AND a bare prompt on its own line.
+    // detect_cli_ready is called from a polling loop with no real-time
+    // information, so Idle/Change/Exit conditions are vacuously
+    // satisfied via `snapshot_for_text` — only the Text conditions in
+    // the per-CLI `WaitSet` actually run.
+
     if lower_cli.contains("claude") {
-        let check_region = if clean.len() > 2000 {
-            let start = floor_char_boundary(&clean, clean.len() - 2000);
-            &clean[start..]
-        } else {
-            &clean
-        };
-        let has_welcome =
-            check_region.contains("Welcome back") || check_region.contains("Welcome to ");
-        if has_welcome {
-            return check_region.lines().rev().take(10).any(|line| {
-                let trimmed = line.trim();
-                matches!(trimmed, "❯" | ">")
-            });
-        }
-        return false;
+        let window = tail_chars(&clean, 2000);
+        // Claude rule: welcome banner + bare prompt line. Bare-prompt
+        // is what distinguishes "ready" from onboarding menus
+        // (theme picker, bypass permissions, login method) that draw
+        // `❯ 1. ...` rather than a standalone `❯`.
+        return for_cli::claude()
+            .evaluate(&snapshot_for_text(window))
+            .is_some();
     }
 
-    // Gemini CLI frequently emits large startup/auth banners before it can
-    // actually accept pasted input. Do not use the generic byte-count fallback
-    // here; wait for the real compose prompt instead.
     if lower_cli.contains("gemini") {
-        let check_region = if clean.len() > 2000 {
-            let start = floor_char_boundary(&clean, clean.len() - 2000);
-            &clean[start..]
-        } else {
-            &clean
-        };
-        let lower_region = check_region.to_lowercase();
-        if lower_region.contains("waiting for auth") {
+        let window = tail_chars(&clean, 2000);
+        // Negative check: gemini's auth banner can sit on screen for
+        // a long time before the compose prompt appears. Don't fall
+        // through to the byte fallback — wait for the real prompt.
+        if window.to_lowercase().contains("waiting for auth") {
             return false;
         }
-        if lower_region.contains("type your message or @path/to/file") {
-            return true;
-        }
-        return check_region
-            .lines()
-            .rev()
-            .take(20)
-            .any(|line| line.trim().contains("Type your message or @path/to/file"));
+        return for_cli::gemini()
+            .evaluate(&snapshot_for_text(window))
+            .is_some();
     }
 
-    // Prompt patterns (from relay-pty parser.rs)
-    // ›  = U+203A (single right-pointing angle quotation mark)
-    // ❯  = U+276F (heavy right-pointing angle quotation mark, Claude Code v2.1.52+)
-    let prompt_patterns: &[&str] = if lower_cli.contains("codex") {
-        &["> ", "$ ", "codex> ", ">>> ", "›", "❯"]
+    // Codex / generic: any of the common prompt substrings in the last
+    // 500 chars. ›  = U+203A; ❯  = U+276F (Claude Code v2.1.52+).
+    let window = tail_chars(&clean, 500);
+    let set = if lower_cli.contains("codex") {
+        for_cli::codex()
     } else {
-        &["> ", "$ ", ">>> ", "›", "❯"]
+        for_cli::generic()
     };
-
-    // Check last 500 chars of output for prompt patterns
-    let check_region = if clean.len() > 500 {
-        let start = floor_char_boundary(&clean, clean.len() - 500);
-        &clean[start..]
-    } else {
-        &clean
-    };
-
-    for pattern in prompt_patterns {
-        if check_region.contains(pattern) {
-            return true;
-        }
+    if set.evaluate(&snapshot_for_text(window)).is_some() {
+        return true;
     }
 
-    // Fallback: CLI produced substantial output (startup complete)
+    // Fallback: CLI produced substantial output (startup complete).
     total_bytes > 500
+}
+
+/// Return the suffix of `s` containing at most `n` bytes, snapped to a
+/// char boundary so multi-byte sequences aren't sliced.
+fn tail_chars(s: &str, n: usize) -> &str {
+    if s.len() > n {
+        let start = floor_char_boundary(s, s.len() - n);
+        &s[start..]
+    } else {
+        s
+    }
+}
+
+/// Build a `WaitSnapshot` for a polling caller that only cares about
+/// text matching — Idle/Change/Exit are vacuously satisfied.
+fn snapshot_for_text(screen: &str) -> crate::wait::WaitSnapshot<'_> {
+    crate::wait::WaitSnapshot {
+        screen,
+        idle_for: Duration::MAX,
+        change_seen: true,
+        exited: false,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

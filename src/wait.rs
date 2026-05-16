@@ -305,61 +305,57 @@ fn preferred_trigger(conds: &[WaitCondition]) -> Trigger {
     Trigger::Change
 }
 
-/// Pre-built `WaitSet`s expressing each CLI's "ready for input" rule.
+/// Pre-built text-only `WaitSet`s expressing each CLI's "screen looks
+/// ready" rule.
 ///
 /// These are the declarative replacement for the per-CLI string matching
-/// in [`crate::helpers::detect_cli_ready`]. Callers building new code
-/// paths (streaming readiness, SDK-exposed waits, integration tests)
-/// should reach for these instead of inventing fresh substring rules.
-/// `detect_cli_ready` itself is left untouched for now; rolling it onto
-/// these builders is a separate, behavior-preserving step.
+/// in [`crate::helpers::detect_cli_ready`], and the building block for
+/// streaming readiness callers — which typically chain `.idle(...)` or
+/// `.change()` on top to require a settle window.
 pub mod for_cli {
     use std::time::Duration;
 
     use super::{WaitSet, IDLE_SETTLE};
 
     /// Claude Code: welcome banner has rendered AND the bare prompt
-    /// (`❯` or `>`) has landed on its own line, AND output has been
-    /// quiet long enough that we trust the screen is stable. The idle
-    /// component is what stops onboarding menus (theme picker, bypass
-    /// permissions) from being mistaken for the input prompt.
+    /// (`❯` or `>`) has landed on its own line. The bare-prompt check
+    /// is what stops onboarding menus (theme picker, bypass
+    /// permissions) from being mistaken for the input prompt — those
+    /// draw `❯` followed by menu text, not a bare `❯`.
     pub fn claude() -> WaitSet {
         WaitSet::new()
             .text_regex(r"Welcome (back|to )")
             .expect("static claude regex")
             .text_regex(r"(?m)^\s*(❯|>)\s*$")
             .expect("static claude regex")
-            .idle(IDLE_SETTLE)
     }
 
     /// Gemini CLI: the compose prompt is visible. Gemini emits a large
     /// startup/auth banner before it can accept input; this rule keys
-    /// off the literal compose-prompt string.
+    /// off the literal compose-prompt string. The "still waiting for
+    /// auth" exclusion is a negative check that can't be expressed in
+    /// the AND-composed primitive — callers handle it inline.
     pub fn gemini() -> WaitSet {
-        WaitSet::new()
-            .text("Type your message or @path/to/file")
-            .idle(IDLE_SETTLE)
+        WaitSet::new().text("Type your message or @path/to/file")
     }
 
-    /// Codex CLI: a bare prompt has landed on its own line. Matches the
-    /// historical `codex> `, `> `, `$ `, `>>> `, `›`, `❯` set.
+    /// Codex CLI: any of the common prompt substrings (`codex> `,
+    /// `> `, `$ `, `>>> `, `›`, `❯`) appears in the screen.
     pub fn codex() -> WaitSet {
         WaitSet::new()
-            .text_regex(r"(?m)^\s*(>|\$|>>>|›|❯|codex>)\s*$")
+            .text_regex(r"(codex> |> |\$ |>>> |›|❯)")
             .expect("static codex regex")
-            .idle(IDLE_SETTLE)
     }
 
-    /// Generic fallback for unknown CLIs: any of the common bare prompt
-    /// markers on its own line plus an idle settle window.
+    /// Generic fallback for unknown CLIs: any of the common prompt
+    /// substrings (`> `, `$ `, `>>> `, `›`, `❯`) appears in the screen.
     pub fn generic() -> WaitSet {
         WaitSet::new()
-            .text_regex(r"(?m)^\s*(>|\$|>>>|›|❯)\s*$")
+            .text_regex(r"(> |\$ |>>> |›|❯)")
             .expect("static generic regex")
-            .idle(IDLE_SETTLE)
     }
 
-    /// Pick the right pre-built `WaitSet` from a CLI name or path.
+    /// Pick the right text-only `WaitSet` from a CLI name or path.
     pub fn detect(cli: &str) -> WaitSet {
         let lower = cli.to_lowercase();
         if lower.contains("claude") {
@@ -382,6 +378,12 @@ pub mod for_cli {
     /// settle window. Useful as a "burst detector" after an injection.
     pub fn burst_then_idle(idle: Duration) -> WaitSet {
         WaitSet::new().change().idle(idle)
+    }
+
+    /// Convenience: chain a streaming settle window onto any text-only
+    /// per-CLI `WaitSet`. Equivalent to `set.idle(IDLE_SETTLE)`.
+    pub fn with_settle(set: WaitSet) -> WaitSet {
+        set.idle(IDLE_SETTLE)
     }
 }
 
@@ -521,7 +523,6 @@ mod tests {
         let set = for_cli::claude();
         let mut s = set.state();
         s.feed("Welcome back Khaliq!\n❯\n");
-        thread::sleep(IDLE_SETTLE + Duration::from_millis(20));
         assert_eq!(s.check(), Some(Trigger::Text));
     }
 
@@ -531,7 +532,6 @@ mod tests {
         let set = for_cli::claude();
         let mut s = set.state();
         s.feed("Welcome to Claude\n❯ 1. Dark mode\n  2. Light mode\n");
-        thread::sleep(IDLE_SETTLE + Duration::from_millis(20));
         assert!(s.check().is_none());
     }
 
@@ -540,7 +540,6 @@ mod tests {
         let set = for_cli::gemini();
         let mut s = set.state();
         s.feed("banner...\nType your message or @path/to/file\n");
-        thread::sleep(IDLE_SETTLE + Duration::from_millis(20));
         assert_eq!(s.check(), Some(Trigger::Text));
     }
 
@@ -550,6 +549,14 @@ mod tests {
         assert_eq!(for_cli::detect("gemini").len(), for_cli::gemini().len());
         assert_eq!(for_cli::detect("codex").len(), for_cli::codex().len());
         assert_eq!(for_cli::detect("/usr/bin/aider").len(), for_cli::generic().len());
+    }
+
+    #[test]
+    fn for_cli_with_settle_chains_idle() {
+        let set = for_cli::with_settle(for_cli::generic());
+        // Settle adds exactly one Idle condition.
+        assert_eq!(set.len(), for_cli::generic().len() + 1);
+        assert!(matches!(set.conditions().last(), Some(WaitCondition::Idle(_))));
     }
 
     #[test]
