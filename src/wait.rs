@@ -1,11 +1,10 @@
 //! Composable wait conditions for PTY readiness and friends.
 //!
-//! Ports the wait taxonomy from `montanaflynn/headless-terminal`
-//! (`internal/wait/wait.go`) into Rust. Each `WaitCondition` is a single
-//! primitive — Text / Idle / Change / Exit / Cursor — and a `WaitSet`
-//! is the AND-composition of one or more of them. A `WaitState` is the
-//! streaming evaluator: feed it output chunks, then ask whether all the
-//! conditions are simultaneously satisfied.
+//! Each `WaitCondition` is a single primitive — Text / Idle / Change /
+//! Exit / Cursor — and a `WaitSet` is the AND-composition of one or
+//! more of them. A `WaitState` is the streaming evaluator: feed it
+//! output chunks, then ask whether all the conditions are simultaneously
+//! satisfied.
 //!
 //! Today this replaces the per-CLI ad hoc readiness rules in
 //! [`crate::helpers::detect_cli_ready`] for the text-prompt half of
@@ -282,7 +281,7 @@ pub enum Trigger {
 }
 
 fn preferred_trigger(conds: &[WaitCondition]) -> Trigger {
-    // Priority mirrors ht's pickTrigger: Exit > Text > Cursor > Idle > Change.
+    // Priority: Exit > Text > Cursor > Idle > Change.
     for c in conds {
         if matches!(c, WaitCondition::Exit) {
             return Trigger::Exit;
@@ -386,9 +385,9 @@ pub mod for_cli {
     }
 }
 
-/// Default settle window paired with text checks in [`for_cli`]. Mirrors
-/// the value used by ht's example invocations and matches the worst-case
-/// repaint latency we've seen across the supported CLIs.
+/// Default settle window paired with text checks in [`for_cli`]. Sized
+/// to the worst-case repaint latency we've seen across the supported
+/// CLIs.
 pub const IDLE_SETTLE: Duration = Duration::from_millis(200);
 
 #[cfg(test)]
