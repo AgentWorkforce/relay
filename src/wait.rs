@@ -9,7 +9,7 @@
 //! Today this replaces the per-CLI ad hoc readiness rules in
 //! [`crate::helpers::detect_cli_ready`] for the text-prompt half of
 //! detection. The `Cursor` variant is a stub: it requires a real VT100
-//! grid (tracked separately) and is treated as permanently unsatisfied
+//! grid (tracked in #802) and is treated as permanently unsatisfied
 //! by the evaluator so callers can plumb it through the API today
 //! without it accidentally tripping a "ready" decision.
 //!
@@ -39,11 +39,12 @@ pub enum WaitCondition {
     Text(TextMatch),
     /// The cursor must land at an exact 1-indexed (row, col).
     ///
-    /// **Stub.** Evaluating this requires a real VT100 grid, which the
-    /// broker does not yet have. `WaitState::feed` treats this as
-    /// permanently unsatisfied, so a `WaitSet` that includes a `Cursor`
-    /// condition will never report ready until the grid lands. The
-    /// variant is kept on the enum so the public API is stable.
+    /// **Stub.** Evaluating this requires a real VT100 grid (tracked
+    /// in #802); until that lands the broker has no cursor state to
+    /// consult. `WaitState::feed` treats this as permanently
+    /// unsatisfied, so a `WaitSet` that includes a `Cursor` condition
+    /// will never report ready. The variant is kept on the enum so
+    /// the public API is stable.
     Cursor { row: u16, col: u16 },
     /// No output has arrived for at least this duration. The timer
     /// starts when `WaitState` is created and resets on every chunk.
