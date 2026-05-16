@@ -150,6 +150,39 @@ describe('formatRunSummaryTable', () => {
     expect(output).toContain('540/500 [OVER]');
   });
 
+  it('hides Budget column when workflowBudget.limit is null and no step budgets exist', () => {
+    // Reproduces the case where buildWorkflowBudgetSummary emits { limit: null }
+    // because per-agent constraints exist but no workflow-level tokenBudget is set.
+    // Previously `limit !== undefined` evaluated true for null and the table
+    // rendered an empty Budget column.
+    const output = formatRunSummaryTable(
+      [{ name: 'plan', agent: 'lead', status: 'completed', attempts: 1, durationMs: 1_000 }],
+      new Map([
+        [
+          'plan',
+          {
+            cli: 'claude',
+            sessionId: 's1',
+            model: 'claude-sonnet-4',
+            provider: 'anthropic',
+            durationMs: 1_200,
+            cost: 0.75,
+            tokens: { input: 100, output: 50, cacheRead: 10 },
+            turns: 2,
+            toolCalls: [],
+            errors: [],
+            finalStatus: 'completed',
+            summary: 'planned',
+          },
+        ],
+      ]),
+      new Map(),
+      { used: 150, limit: null, over: false }
+    );
+
+    expect(output).not.toContain('Budget');
+  });
+
   it('renders deterministic steps without reports using placeholder columns', () => {
     const output = formatRunSummaryTable(
       [{ name: 'lint', agent: 'shell', status: 'completed', attempts: 1, durationMs: 900 }],

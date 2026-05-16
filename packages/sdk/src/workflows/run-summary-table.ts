@@ -72,7 +72,7 @@ export function formatRunSummaryTable(
   // Only show the Cost column when at least one report has reliable cost data
   // (currently only OpenCode populates cost; Claude and Codex return null)
   const hasCost = Array.from(reports.values()).some((r) => typeof r.cost === 'number' && r.cost > 0);
-  const hasBudget = workflowBudget?.limit !== undefined || stepBudgets.size > 0;
+  const hasBudget = workflowBudget?.limit != null || stepBudgets.size > 0;
 
   const headers = hasCost
     ? hasBudget
