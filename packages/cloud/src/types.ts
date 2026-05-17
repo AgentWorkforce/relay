@@ -47,6 +47,67 @@ export type AuthSessionResponse = {
   expiresAt: string;
 };
 
+export type WorkspaceCreateResponse = {
+  workspaceId: string;
+  name?: string;
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  joinCommand?: string;
+  createdAt?: string;
+};
+
+export type WorkspaceTokenRecord = {
+  workspaceId: string;
+  kind: string;
+  prefix?: string;
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type WorkspaceTokenIssueResponse = {
+  key: string;
+  workspaceToken?: WorkspaceTokenRecord;
+};
+
+export type ProactiveDeploymentResponse = {
+  deploymentId?: string;
+  agentId?: string;
+  workspaceId?: string;
+  status?: string;
+  dashboardUrl?: string;
+  logsUrl?: string;
+  [key: string]: unknown;
+};
+
+export type ProactiveAgentRecord = {
+  id: string;
+  name?: string;
+  displayName?: string;
+  harness?: string;
+  defaultModel?: string;
+  status?: string;
+  credentialStoredAt?: string | null;
+  lastAuthenticatedAt?: string | null;
+  lastUsedAt?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type WorkspaceSecretRecord = {
+  name: string;
+  value?: string;
+  maskedValue?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
 export type WorkflowFileType = 'yaml' | 'ts' | 'py';
 
 export type PathSubmission = {

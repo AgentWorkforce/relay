@@ -1,0 +1,103 @@
+{
+  "version": "1.0.0",
+  "id": "29228032-b8cb-4f12-875f-7015db509054",
+  "timestamp": "2026-05-12T11:21:33.418Z",
+  "trajectory": "traj_fh8oosbijpwc",
+  "files": [
+    {
+      "path": "src/cli/bootstrap.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 37,
+              "end_line": 46,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            },
+            {
+              "start_line": 120,
+              "end_line": 126,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/bootstrap.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 24,
+              "end_line": 30,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            },
+            {
+              "start_line": 278,
+              "end_line": 284,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/commands/dlq.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 192,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/commands/dlq.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 452,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/cli/index.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 76,
+              "end_line": 82,
+              "revision": "dd62e30a92dcde4fe4782aef0f8908de2e128c14"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

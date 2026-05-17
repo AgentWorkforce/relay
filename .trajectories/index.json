@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-10T15:29:41.965Z",
+  "lastUpdated": "2026-05-15T13:00:15.473Z",
   "trajectories": {
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
@@ -352,7 +352,231 @@
       "status": "completed",
       "startedAt": "2026-05-10T15:18:12.326Z",
       "completedAt": "2026-05-10T15:29:41.840Z",
-      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay-pr831-ci-fix/.trajectories/completed/2026-05/traj_iole5zdt9orr.json"
+      "path": ".trajectories/completed/2026-05/traj_iole5zdt9orr.json"
+    },
+    "traj_mz5m5ysjj31e": {
+      "title": "Fix Relay SDK broker stdout drain",
+      "status": "completed",
+      "startedAt": "2026-05-10T20:24:43.831Z",
+      "completedAt": "2026-05-10T20:35:47.359Z",
+      "path": ".trajectories/completed/2026-05/traj_mz5m5ysjj31e.json"
+    },
+    "traj_aw7stgf4qau0": {
+      "title": "Fix publish smoke cloud tarball dependency",
+      "status": "completed",
+      "startedAt": "2026-05-11T07:49:42.778Z",
+      "completedAt": "2026-05-11T07:50:37.848Z",
+      "path": ".trajectories/completed/2026-05/traj_aw7stgf4qau0.json"
+    },
+    "traj_z171lng2fbbi": {
+      "title": "Address PR 840 review feedback",
+      "status": "completed",
+      "startedAt": "2026-05-11T08:06:37.977Z",
+      "completedAt": "2026-05-11T08:07:48.097Z",
+      "path": ".trajectories/completed/2026-05/traj_z171lng2fbbi.json"
+    },
+    "traj_dpgn0am1jq1c": {
+      "title": "Implement M1 relay CLI bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T18:43:20.429Z",
+      "completedAt": "2026-05-11T18:43:20.733Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_dpgn0am1jq1c.json"
+    },
+    "traj_mi9eqd4rjfea": {
+      "title": "Address stdio fresh review findings",
+      "status": "abandoned",
+      "startedAt": "2026-05-11T18:25:24.626Z",
+      "completedAt": "2026-05-11T18:37:05.318Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_mi9eqd4rjfea.json"
+    },
+    "traj_wx00tjvpptvg": {
+      "title": "Investigate agent-relay spawn persistence",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:49:12.464Z",
+      "completedAt": "2026-05-13T10:53:03.748Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wx00tjvpptvg.json"
+    },
+    "traj_whd40oxptlhn": {
+      "title": "Review spawn persistence fix and open PR",
+      "status": "completed",
+      "startedAt": "2026-05-13T10:57:02.796Z",
+      "completedAt": "2026-05-13T11:00:43.100Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
+    },
+    "traj_v1wexlfur5zr": {
+      "title": "Fix broker headless reliability doc",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:04:51.316Z",
+      "completedAt": "2026-05-15T09:13:50.970Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_v1wexlfur5zr.json"
+    },
+    "traj_6sjeohtm3php": {
+      "title": "Address broker headless reliability review findings",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:30:56.316Z",
+      "completedAt": "2026-05-15T09:32:47.870Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_6sjeohtm3php.json"
+    },
+    "traj_4vucir4qvqa2": {
+      "title": "Harden headless broker readiness semantics",
+      "status": "completed",
+      "startedAt": "2026-05-15T09:46:07.617Z",
+      "completedAt": "2026-05-15T09:59:00.460Z",
+      "path": ".trajectories/completed/2026-05/traj_4vucir4qvqa2.json"
+    },
+    "traj_erzd7j9nto9r": {
+      "title": "Strict review and PR prep for headless broker readiness",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:02:10.164Z",
+      "completedAt": "2026-05-15T10:06:38.127Z",
+      "path": ".trajectories/completed/2026-05/traj_erzd7j9nto9r.json"
+    },
+    "traj_7uznwzoxbao6": {
+      "title": "Fix standalone detached headless startup",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:18:46.273Z",
+      "completedAt": "2026-05-15T10:25:00.598Z",
+      "path": ".trajectories/completed/2026-05/traj_7uznwzoxbao6.json"
+    },
+    "traj_9fdv7hxm0b60": {
+      "title": "Strict standalone smoke follow-up",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:37:17.693Z",
+      "completedAt": "2026-05-15T10:43:11.587Z",
+      "path": ".trajectories/completed/2026-05/traj_9fdv7hxm0b60.json"
+    },
+    "traj_0o6gb2wvk59t": {
+      "title": "Fresh end-to-end validation for headless readiness",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:55:49.188Z",
+      "completedAt": "2026-05-15T11:11:52.324Z",
+      "path": ".trajectories/completed/2026-05/traj_0o6gb2wvk59t.json"
+    },
+    "traj_4chzkm724ufo": {
+      "title": "Fix headless orchestrator worktree CLI E2E issues",
+      "status": "completed",
+      "startedAt": "2026-05-15T11:44:28.338Z",
+      "completedAt": "2026-05-15T11:51:05.319Z",
+      "path": ".trajectories/completed/2026-05/traj_4chzkm724ufo.json"
+    },
+    "traj_f3arvbmmlomn": {
+      "title": "Address PR feedback for headless broker reliability",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:09:02.122Z",
+      "completedAt": "2026-05-15T12:15:11.435Z",
+      "path": ".trajectories/completed/2026-05/traj_f3arvbmmlomn.json"
+    },
+    "traj_n8duofq5vq1a": {
+      "title": "Update Codex registry for GPT-5.5",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:27:57.532Z",
+      "completedAt": "2026-05-15T10:33:19.705Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_n8duofq5vq1a.json"
+    },
+    "traj_7zu7et53ph3l": {
+      "title": "Harden Codex GPT-5.5 local CLI compatibility",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:35:25.212Z",
+      "completedAt": "2026-05-15T10:40:53.355Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_7zu7et53ph3l.json"
+    },
+    "traj_2yicjxgajt0a": {
+      "title": "Review GPT-5.5 hardening",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:54:19.300Z",
+      "completedAt": "2026-05-15T10:54:19.476Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_2yicjxgajt0a.json"
+    },
+    "traj_hrsndfzk0qay": {
+      "title": "Tighten Codex 5.5 fallback coverage",
+      "status": "completed",
+      "startedAt": "2026-05-15T10:57:41.681Z",
+      "completedAt": "2026-05-15T10:57:41.827Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hrsndfzk0qay.json"
+    },
+    "traj_4t07itef99ug": {
+      "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
+      "status": "completed",
+      "startedAt": "2026-05-11T21:47:37.805Z",
+      "completedAt": "2026-05-11T21:49:49.859Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4t07itef99ug.json"
+    },
+    "traj_947wzpddsg9j": {
+      "title": "Implement relay CLI bootstrap commands for proactive runtime M1",
+      "status": "completed",
+      "startedAt": "2026-05-11T23:11:57.326Z",
+      "completedAt": "2026-05-11T23:14:23.136Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_947wzpddsg9j.json"
+    },
+    "traj_fh8oosbijpwc": {
+      "title": "Track A: relaycast subscribe + @self DM routing",
+      "status": "completed",
+      "startedAt": "2026-05-12T06:28:56.427Z",
+      "completedAt": "2026-05-12T11:21:33.352Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_fh8oosbijpwc.json"
+    },
+    "traj_gh05rj5gwsap": {
+      "title": "Bump relaycast Rust SDK in relay",
+      "status": "completed",
+      "startedAt": "2026-05-14T16:41:17.430Z",
+      "completedAt": "2026-05-14T16:42:32.485Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_gh05rj5gwsap.json"
+    },
+    "traj_tgism98me5na": {
+      "title": "Implement relay CLI proactive runtime bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T20:04:48.053Z",
+      "completedAt": "2026-05-11T20:05:54.956Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_tgism98me5na.json"
+    },
+    "traj_zfa6skfr32vy": {
+      "title": "Implement relay CLI M1 bootstrap commands",
+      "status": "completed",
+      "startedAt": "2026-05-11T19:31:44.734Z",
+      "completedAt": "2026-05-11T19:34:54.971Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zfa6skfr32vy.json"
+    },
+    "traj_3gjtcykvybt5": {
+      "title": "Fix PR CI failures",
+      "status": "completed",
+      "startedAt": "2026-05-15T11:24:06.054Z",
+      "completedAt": "2026-05-15T11:25:49.087Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_3gjtcykvybt5.json"
+    },
+    "traj_o251whkvy9rl": {
+      "title": "Fix Codex GPT-5.5 E2E rough edges",
+      "status": "completed",
+      "startedAt": "2026-05-15T11:59:26.764Z",
+      "completedAt": "2026-05-15T12:12:25.515Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_o251whkvy9rl.json"
+    },
+    "traj_d89s38ddu7cj": {
+      "title": "Review Codex GPT-5.5 spawn fix",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:25:39.946Z",
+      "completedAt": "2026-05-15T12:25:40.708Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_d89s38ddu7cj.json"
+    },
+    "traj_0e8i20oitwvz": {
+      "title": "Final fresh-eyes review Codex GPT-5.5 fix",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:46:11.342Z",
+      "completedAt": "2026-05-15T12:46:11.500Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_0e8i20oitwvz.json"
+    },
+    "traj_wzzboitm85ee": {
+      "title": "Resolve PR conflicts around platform tradeoff copy",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:47:36.508Z",
+      "completedAt": "2026-05-15T12:50:14.358Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wzzboitm85ee.json"
+    },
+    "traj_hfkww5z7trxn": {
+      "title": "Fresh comprehensive review of PR 856",
+      "status": "completed",
+      "startedAt": "2026-05-15T12:56:14.439Z",
+      "completedAt": "2026-05-15T13:00:15.366Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hfkww5z7trxn.json"
     }
   }
 }

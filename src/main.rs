@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -73,6 +73,7 @@ const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
+static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 fn startup_debug_enabled() -> bool {
     std::env::var("AGENT_RELAY_STARTUP_DEBUG")
@@ -1255,7 +1256,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     continue;
                                 }
                             };
-                            let spec_for_state = spec.clone();
                             let mut preregistration_warning: Option<String> = None;
                             let registration_result = retry_agent_registration(
                                 &relaycast_http, &name, Some(&cli),
@@ -1379,26 +1379,26 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 skip_relay_prompt,
                                 idle_threshold_secs.map(|s| s.to_string()),
                             ).await {
-                                Ok(()) => {
+                                Ok(effective_spec) => {
                                     if let Some(ref task_text) = effective_task {
                                         workers.initial_tasks.insert(name.clone(), task_text.clone());
                                     }
                                     agent_spawn_count += 1;
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
-                                        runtime: runtime_label(&spec_for_state.runtime).to_string(),
+                                        runtime: runtime_label(&effective_spec.runtime).to_string(),
                                         spawn_source: ActionSource::HumanDashboard,
                                         has_task: effective_task.is_some(),
-                                        is_shadow: spec_for_state.shadow_of.is_some()
-                                            || spec_for_state.shadow_mode.is_some(),
+                                        is_shadow: effective_spec.shadow_of.is_some()
+                                            || effective_spec.shadow_mode.is_some(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
                                         name.clone(),
                                         broker::PersistedAgent {
-                                            runtime: spec_for_state.runtime.clone(),
+                                            runtime: effective_spec.runtime.clone(),
                                             parent: Some("Dashboard".to_string()),
-                                            channels: spec_for_state.channels.clone(),
+                                            channels: effective_spec.channels.clone(),
                                             pid: workers.worker_pid(&name),
                                             started_at: Some(
                                                 std::time::SystemTime::now()
@@ -1406,7 +1406,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     .unwrap_or_default()
                                                     .as_secs(),
                                             ),
-                                            spec: Some(spec_for_state.clone()),
+                                            spec: Some(effective_spec.clone()),
                                             restart_policy: None,
                                             initial_task: effective_task,
 
@@ -1426,10 +1426,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         json!({
                                             "kind":"agent_spawned",
                                             "name":&name,
-                                            "runtime":runtime_label(&spec_for_state.runtime),
-                                            "provider": spec_for_state.provider.clone(),
-                                            "cli": spec_for_state.cli.clone(),
-                                            "model": spec_for_state.model.clone(),
+                                            "runtime":runtime_label(&effective_spec.runtime),
+                                            "provider": effective_spec.provider.clone(),
+                                            "cli": effective_spec.cli.clone(),
+                                            "model": effective_spec.model.clone(),
                                             "pid":pid,
                                             "source":"http_api",
                                             "pre_registered": worker_relay_key.is_some(),
@@ -1446,7 +1446,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = reply.send(Ok(json!({
                                         "success": true,
                                         "name": name,
-                                        "runtime": runtime_label(&spec_for_state.runtime),
+                                        "runtime": runtime_label(&effective_spec.runtime),
+                                        "model": effective_spec.model.clone(),
                                         "pid": pid,
                                         "pre_registered": worker_relay_key.is_some(),
                                         "warning": preregistration_warning,
@@ -2248,7 +2249,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     channels: channels.clone(),
                                     restart_policy: None,
                                 };
-                                let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
                                 // Pre-register agent token. Claude doesn't need this — it
@@ -2305,14 +2305,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     false,
                                     Some(workspace_id.clone()),
                                 ).await {
-                                    Ok(()) => {
+                                    Ok(effective_spec) => {
                                         if let Some(ref task_text) = effective_task {
                                             workers.initial_tasks.insert(name.clone(), task_text.clone());
                                         }
                                         agent_spawn_count += 1;
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: cli.clone(),
-                                            runtime: "pty".to_string(),
+                                            runtime: runtime_label(&effective_spec.runtime).to_string(),
                                             spawn_source: ActionSource::Protocol,
                                             has_task: effective_task.is_some(),
                                             is_shadow: false,
@@ -2331,7 +2331,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                         .unwrap_or_default()
                                                         .as_secs(),
                                                 ),
-                                                spec: Some(spec_for_state),
+                                                spec: Some(effective_spec.clone()),
                                                 restart_policy: None,
                                                 initial_task: effective_task,
 
@@ -2345,6 +2345,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "name": name,
                                                 "runtime": "pty",
                                                 "cli": cli,
+                                                "model": effective_spec.model.clone(),
                                                 "pid": pid,
                                                 "source": "relaycast_ws",
                                                 "pre_registered": worker_relay_key.is_some(),
@@ -2444,7 +2445,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         channels: channels.clone(),
                                         restart_policy: None,
                                     };
-                                    let spec_for_state = spec.clone();
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
@@ -2489,14 +2489,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         false,
                                         Some(workspace_id.clone()),
                                     ).await {
-                                        Ok(()) => {
+                                        Ok(effective_spec) => {
                                             if let Some(ref task_text) = effective_task {
                                                 workers.initial_tasks.insert(name.clone(), task_text.clone());
                                             }
                                             agent_spawn_count += 1;
                                             telemetry.track(TelemetryEvent::AgentSpawn {
                                                 cli: cli.clone(),
-                                                runtime: "pty".to_string(),
+                                                runtime: runtime_label(&effective_spec.runtime).to_string(),
                                                 spawn_source: ActionSource::Protocol,
                                                 has_task: effective_task.is_some(),
                                                 is_shadow: false,
@@ -2515,7 +2515,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                             .unwrap_or_default()
                                                             .as_secs(),
                                                     ),
-                                                    spec: Some(spec_for_state),
+                                                    spec: Some(effective_spec.clone()),
                                                     restart_policy: None,
                                                     initial_task: effective_task,
 
@@ -2529,6 +2529,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     "name": name,
                                                     "runtime": "pty",
                                                     "cli": cli,
+                                                    "model": effective_spec.model.clone(),
                                                     "pid": pid,
                                                     "source": "relaycast_ws_fallback",
                                                     "pre_registered": worker_relay_key.is_some(),
@@ -3460,7 +3461,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             )
                             .await
                         {
-                            Ok(()) => {
+                            Ok(_) => {
                                 workers.supervisor.on_restarted(&name);
                                 workers.metrics.on_restart(&name);
                                 if let Some(task) = rst.initial_task {
@@ -3816,14 +3817,18 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     let provider_args = cmd.args.clone();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write, so shutdown
+        // below drops `out_tx` and awaits this task before returning.
+        let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+            if let Ok(mut line) = serde_json::to_string(&frame) {
+                line.push('\n');
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
+                    break;
+                }
             }
         }
     });
@@ -4147,6 +4152,8 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
         json!({"code": final_exit_code, "signal": final_exit_signal}),
     )
     .await;
+    drop(out_tx);
+    let _ = writer_task.await;
 
     Ok(())
 }
@@ -4218,14 +4225,18 @@ async fn send_frame(
 }
 
 fn init_tracing() {
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(true)
+        .with_writer(writer)
         .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    if tracing::subscriber::set_global_default(subscriber).is_ok() {
+        let _ = TRACING_GUARD.set(guard);
+    }
 }
 
 fn channels_from_csv(raw: &str) -> Vec<String> {

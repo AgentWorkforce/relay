@@ -261,6 +261,7 @@ export class AgentRelayClient {
       stdoutLines,
       stderrLines,
     });
+    drainBrokerStdioAfterStartup(child);
 
     const client = new AgentRelayClient({
       baseUrl,
@@ -679,6 +680,24 @@ async function waitForApiUrl(
     });
   });
 }
+
+function drainBrokerStdioAfterStartup(child: ChildProcess): void {
+  // Drain both stdout AND stderr after startup so high-volume broker
+  // diagnostics/events cannot fill either pipe and block the broker process.
+  // Stderr also has a readline consumer above for line buffering/onStderr; this
+  // raw drain is intentionally no-op and exists only to keep the stream flowing
+  // if that consumer is changed or removed later.
+  for (const stream of [child.stdout, child.stderr]) {
+    if (!stream) continue;
+    stream.on('data', () => {});
+    stream.resume();
+  }
+}
+
+/** @internal Test-only hooks; not part of the public SDK API. */
+export const __clientTestInternals = {
+  drainBrokerStdioAfterStartup,
+};
 
 function pushBufferedLine(lines: string[], line: string): void {
   lines.push(line);

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { spawn as spawnProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,6 +37,7 @@ export interface AgentManagementClient {
     shadowOf?: string;
     shadowMode?: ShadowMode;
     continueFrom?: string;
+    skipRelayPrompt?: boolean;
   }): Promise<unknown>;
   listAgents(): Promise<WorkerInfo[]>;
   release(name: string, reason: string): Promise<unknown>;
@@ -85,17 +87,110 @@ async function readTaskFromStdin(): Promise<string | undefined> {
 }
 
 async function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentManagementClient> {
+  let client: AgentRelayClient;
+
   // Connect to an existing broker if one is running
   try {
-    const client = AgentRelayClient.connect({ cwd });
-    return client as unknown as AgentManagementClient;
-  } catch {
+    client = AgentRelayClient.connect({ cwd });
+  } catch (err) {
     if (!autoStart) {
+      if (err instanceof Error && err.message !== '') {
+        throw err;
+      }
       throw new Error('No running broker found. Start one with: agent-relay up');
     }
-    const client = await AgentRelayClient.spawn({ cwd });
-    return client as unknown as AgentManagementClient;
+
+    await startBackgroundBroker(cwd);
+    client = await waitForBrokerClient(cwd);
   }
+
+  await waitForReadyBrokerClient(client);
+  return client as unknown as AgentManagementClient;
+}
+
+function isBrokerWarmupError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const maybeProtocol = err as { code?: string };
+    return (
+      maybeProtocol.code === 'http_503' ||
+      err.message.includes('503') ||
+      err.message.includes('Service Unavailable') ||
+      err.message.includes('Broker is starting')
+    );
+  }
+  const message = String(err);
+  return (
+    message.includes('503') ||
+    message.includes('Service Unavailable') ||
+    message.includes('Broker is starting')
+  );
+}
+
+async function waitForReadyBrokerClient(
+  client: AgentRelayClient,
+  timeoutMs = 15_000,
+  intervalMs = 250
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      await client.getSession();
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!isBrokerWarmupError(err)) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  const detail = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Broker did not become ready: ${detail}`);
+}
+
+function startBackgroundBroker(cwd: string): void {
+  const cliScript = process.argv[1];
+  if (!cliScript) {
+    throw new Error('Unable to locate agent-relay CLI script for broker autostart');
+  }
+
+  const child = spawnProcess(
+    process.execPath,
+    [cliScript, 'up', '--background', '--no-dashboard', '--no-spawn'],
+    {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    }
+  );
+  child.unref();
+}
+
+async function waitForBrokerClient(
+  cwd: string,
+  timeoutMs = 15_000,
+  intervalMs = 250
+): Promise<AgentRelayClient> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    try {
+      const client = AgentRelayClient.connect({ cwd });
+      await waitForReadyBrokerClient(client, Math.max(1, deadline - Date.now()), intervalMs);
+      return client;
+    } catch (err) {
+      lastError = err;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  const detail = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Broker did not become ready after autostart: ${detail}`);
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
@@ -165,6 +260,7 @@ export function registerAgentManagementCommands(
       'When shadow should speak (comma-separated, same values as --shadow-triggers)'
     )
     .option('--model <model>', 'Model override (e.g., opus, sonnet, haiku, o3, gemini-2.5-pro)')
+    .option('--skip-relay-prompt', 'Skip relay MCP prompt injection and agent pre-registration')
     .option('--continue', 'Continue from a previously released agent with the same name')
     .option('--continue-from <name>', 'Continue from a specific previously released agent')
     .action(
@@ -184,6 +280,7 @@ export function registerAgentManagementCommands(
           shadowAgent?: string;
           shadowTriggers?: string;
           shadowSpeakOn?: string;
+          skipRelayPrompt?: boolean;
           continue?: boolean;
           continueFrom?: string;
         }
@@ -209,7 +306,7 @@ export function registerAgentManagementCommands(
 
         let client: AgentManagementClient;
         try {
-          client = await deps.createAutostartClient(options.cwd || deps.getProjectRoot());
+          client = await deps.createAutostartClient(deps.getProjectRoot());
         } catch (err: any) {
           deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
           deps.exit(1);
@@ -234,6 +331,7 @@ export function registerAgentManagementCommands(
             shadowOf: options.shadowOf,
             shadowMode: options.shadowMode as ShadowMode | undefined,
             continueFrom,
+            skipRelayPrompt: options.skipRelayPrompt,
           });
           const agents = await client.listAgents().catch(() => []);
           const spawned = agents.find((agent) => agent.name === name);

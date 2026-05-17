@@ -330,7 +330,17 @@ export type DeterministicWorkflowStep = WorkflowStep;
 
 /** Verification check to validate a step's output. */
 export interface VerificationCheck {
-  type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
+  type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom' | 'pr_url';
+  /**
+   * Type-specific value:
+   *  - output_contains: token that must appear in the step's output
+   *  - exit_code: expected exit code (currently informational)
+   *  - file_exists: path that must exist (relative to cwd or absolute)
+   *  - custom: shell command to execute, or `regex:<pattern>` against output
+   *  - pr_url: optional `<owner>/<repo>` qualifier to require the discovered
+   *    PR URL belongs to a specific repository; leave empty to accept any
+   *    GitHub PR URL in the step output
+   */
   value: string;
   description?: string;
   timeoutMs?: number;

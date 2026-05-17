@@ -38,6 +38,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
 - **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
 
+## [6.0.22] - 2026-05-15
+
+### Product Perspective
+#### User-Impacting Fixes
+- Bump agent-relay-workflow writer timeouts (#857) (#857)
+
+### Technical Perspective
+#### Releases
+- v6.0.22
+
+---
+
+## [6.0.21] - 2026-05-14
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Add pr_url verification check (#852)** (#852)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.21
+
+---
+
+## [6.0.20] - 2026-05-13
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Persist spawned agents across cwd (#846) (#846)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.20
+
+---
+
+## [6.0.19] - 2026-05-13
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Export createContextFactory + its option/return interfaces (#845)** (#845)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.19
+
+---
+
+## [6.0.18] - 2026-05-12
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Proactive-runtime — agent-relay CLI bootstrap + DLQ + cloud SDK (#843)** (#843)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.18
+
+---
+
+## [6.0.17] - 2026-05-12
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Host @agent-relay/events + @agent-relay/agent in relay (#844)** (#844)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.17
+
+---
+
+## [6.0.16] - 2026-05-11
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Drain broker stderr alongside stdout after startup (#842) (#842)
+- Replace blocking stdout writer task with tokio::io (#841) (#841)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.16
+
+---
+
+## [6.0.15] - 2026-05-11
+
+### Technical Perspective
+
+#### Releases
+
+- v6.0.15
+
+---
+
 ## [6.0.14] - 2026-05-10
 
 ### Product Perspective

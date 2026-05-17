@@ -3,12 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": [
-      "ES2022"
-    ],
-    "types": [
-      "node"
-    ],
+    "lib": ["ES2022"],
+    "types": ["node"],
     "outDir": "./dist",
     "rootDir": ".",
     "strict": true,
@@ -21,57 +17,24 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@agent-relay/config": [
-        "packages/config/dist/index.d.ts"
-      ],
-      "@agent-relay/config/*": [
-        "packages/config/dist/*"
-      ],
-      "@agent-relay/trajectory": [
-        "packages/trajectory/dist/index.d.ts"
-      ],
-      "@agent-relay/trajectory/*": [
-        "packages/trajectory/dist/*"
-      ],
-      "@agent-relay/hooks": [
-        "packages/hooks/dist/index.d.ts"
-      ],
-      "@agent-relay/hooks/*": [
-        "packages/hooks/dist/*"
-      ],
-      "@agent-relay/policy": [
-        "packages/policy/dist/index.d.ts"
-      ],
-      "@agent-relay/policy/*": [
-        "packages/policy/dist/*"
-      ],
-      "@agent-relay/memory": [
-        "packages/memory/dist/index.d.ts"
-      ],
-      "@agent-relay/memory/*": [
-        "packages/memory/dist/*"
-      ],
-      "@agent-relay/utils": [
-        "packages/utils/dist/index.d.ts"
-      ],
-      "@agent-relay/utils/*": [
-        "packages/utils/dist/*"
-      ],
-      "@agent-relay/user-directory": [
-        "packages/user-directory/dist/index.d.ts"
-      ],
-      "@agent-relay/user-directory/*": [
-        "packages/user-directory/dist/*"
-      ]
+      "@agent-relay/config": ["packages/config/dist/index.d.ts"],
+      "@agent-relay/config/*": ["packages/config/dist/*"],
+      "@agent-relay/trajectory": ["packages/trajectory/dist/index.d.ts"],
+      "@agent-relay/trajectory/*": ["packages/trajectory/dist/*"],
+      "@agent-relay/hooks": ["packages/hooks/dist/index.d.ts"],
+      "@agent-relay/hooks/*": ["packages/hooks/dist/*"],
+      "@agent-relay/policy": ["packages/policy/dist/index.d.ts"],
+      "@agent-relay/policy/*": ["packages/policy/dist/*"],
+      "@agent-relay/memory": ["packages/memory/dist/index.d.ts"],
+      "@agent-relay/memory/*": ["packages/memory/dist/*"],
+      "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
+      "@agent-relay/utils/*": ["packages/utils/dist/*"],
+      "@agent-relay/cloud": ["packages/cloud/src/index.ts"],
+      "@agent-relay/cloud/*": ["packages/cloud/src/*"],
+      "@agent-relay/user-directory": ["packages/user-directory/dist/index.d.ts"],
+      "@agent-relay/user-directory/*": ["packages/user-directory/dist/*"]
     }
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "src/**/*.test.ts",
-    "packages/**/*"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "packages/**/*"]
 }

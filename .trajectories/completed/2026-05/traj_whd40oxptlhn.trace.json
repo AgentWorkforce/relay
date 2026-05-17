@@ -1,0 +1,664 @@
+{
+  "version": "1.0.0",
+  "id": "f2ca89c3-8e09-46cf-bc74-8527816638a1",
+  "timestamp": "2026-05-13T11:00:43.184Z",
+  "trajectory": "traj_whd40oxptlhn",
+  "files": [
+    {
+      "path": ".trajectories/index.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 374,
+              "end_line": 393,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 38,
+              "end_line": 67,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 131,
+              "end_line": 144,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/acp-bridge/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 46,
+              "end_line": 52,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/agent/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 19,
+              "end_line": 25,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/agent/src/context.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 16,
+              "end_line": 22,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 35,
+              "end_line": 41,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/agent/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 208,
+              "end_line": 216,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/brand/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-darwin-arm64/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-darwin-x64/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-linux-arm64/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-linux-x64/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/broker-win32-x64/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/browser-primitive/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 38,
+              "end_line": 44,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 23,
+              "end_line": 29,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/config/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/credential-proxy/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/events/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/gateway/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 23,
+              "end_line": 29,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/github-primitive/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 32,
+              "end_line": 38,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/hooks/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 37,
+              "end_line": 45,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/memory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/openclaw/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 29,
+              "end_line": 35,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/personas/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/policy/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk-py/pyproject.toml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 10,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 149,
+              "end_line": 159,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 168,
+              "end_line": 181,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/slack-primitive/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 30,
+              "end_line": 40,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/telemetry/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/trajectory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/user-directory/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 22,
+              "end_line": 28,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/utils/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            },
+            {
+              "start_line": 111,
+              "end_line": 117,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/workflow-types/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "fe603c3f5f7ed8bfb1e883b392e21857456d6772"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
