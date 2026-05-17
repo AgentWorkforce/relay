@@ -111,6 +111,9 @@ enum Commands {
     McpArgs(McpArgsCommand),
     /// Run ad-hoc swarm execution via the relay broker
     Swarm(swarm::SwarmArgs),
+    /// Capture the current visible PTY screen of a running worker and print
+    /// it. Talks to the broker over its listen API.
+    DumpPty(DumpPtyCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -122,6 +125,48 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct DumpPtyCommand {
+    /// Worker name to snapshot.
+    pub(crate) name: String,
+
+    /// Snapshot format. `plain` is one-line-per-row UTF-8; `ansi` is the
+    /// reproduction byte stream (control characters + SGR + cursor commands)
+    /// suitable for piping into a terminal.
+    #[arg(long, default_value = "plain")]
+    pub(crate) format: DumpPtyFormat,
+
+    /// Override the broker base URL. Falls back to RELAY_BROKER_URL, then to
+    /// reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) broker_url: Option<String>,
+
+    /// Override the broker API key. Falls back to RELAY_BROKER_API_KEY, then
+    /// to reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) api_key: Option<String>,
+
+    /// Override the directory containing `.agent-relay/connection.json` when
+    /// auto-discovering the broker.
+    #[arg(long)]
+    pub(crate) state_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum DumpPtyFormat {
+    Plain,
+    Ansi,
+}
+
+impl DumpPtyFormat {
+    fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ansi => "ansi",
+        }
+    }
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -760,6 +805,7 @@ async fn main() -> Result<()> {
         Commands::Headless(_) => "headless",
         Commands::McpArgs(_) => "mcp_args",
         Commands::Swarm(_) => "swarm",
+        Commands::DumpPty(_) => "dump_pty",
         Commands::Wrap { .. } => "wrap",
     };
     telemetry.track(TelemetryEvent::CliCommandRun {
@@ -772,8 +818,168 @@ async fn main() -> Result<()> {
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
         Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
+        Commands::DumpPty(cmd) => run_dump_pty(cmd).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
+}
+
+/// Connection metadata discovered from a running broker — typically by
+/// reading `<state-dir>/connection.json` or from explicit CLI flags / env.
+struct BrokerConnection {
+    base_url: String,
+    api_key: Option<String>,
+}
+
+/// Resolve the broker connection by checking, in order:
+///
+/// 1. Explicit CLI args (`--broker-url`, `--api-key`).
+/// 2. Env vars `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+/// 3. `connection.json` in the supplied state dir, then `.agent-relay/`
+///    under the current working directory.
+fn discover_broker_connection(
+    explicit_url: Option<&str>,
+    explicit_api_key: Option<&str>,
+    state_dir: Option<&Path>,
+) -> Result<BrokerConnection> {
+    if let Some(url) = explicit_url {
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key: explicit_api_key
+                .map(ToString::to_string)
+                .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+                .filter(|value| !value.trim().is_empty()),
+        });
+    }
+
+    if let Ok(url) = std::env::var("RELAY_BROKER_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(BrokerConnection {
+                base_url: trimmed.trim_end_matches('/').to_string(),
+                api_key: explicit_api_key
+                    .map(ToString::to_string)
+                    .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+                    .filter(|value| !value.trim().is_empty()),
+            });
+        }
+    }
+
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let search_roots: Vec<PathBuf> = match state_dir {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => vec![cwd.join(".agent-relay"), cwd.clone()],
+    };
+
+    for root in &search_roots {
+        let path = root.join("connection.json");
+        if !path.is_file() {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed reading {}", path.display()))?;
+        let value: Value = serde_json::from_str(&body)
+            .with_context(|| format!("failed parsing {}", path.display()))?;
+        let url = value
+            .get("url")
+            .and_then(Value::as_str)
+            .with_context(|| format!("connection file missing 'url': {}", path.display()))?
+            .to_string();
+        let api_key = explicit_api_key
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(|| {
+                value
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .filter(|value| !value.trim().is_empty());
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key,
+        });
+    }
+
+    anyhow::bail!(
+        "could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, \
+         or run from a directory containing .agent-relay/connection.json"
+    );
+}
+
+/// `agent-relay-broker dump-pty <name>` — capture and print a worker's
+/// current visible screen by hitting the broker's snapshot route.
+async fn run_dump_pty(cmd: DumpPtyCommand) -> Result<()> {
+    use base64::Engine;
+
+    let connection = discover_broker_connection(
+        cmd.broker_url.as_deref(),
+        cmd.api_key.as_deref(),
+        cmd.state_dir.as_deref(),
+    )?;
+
+    let url = format!(
+        "{}/api/spawned/{}/snapshot?format={}",
+        connection.base_url,
+        urlencoding::encode(&cmd.name),
+        cmd.format.as_wire_str(),
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build http client")?;
+
+    let mut request = client.get(&url);
+    if let Some(key) = connection.api_key.as_deref() {
+        request = request.header("X-API-Key", key);
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed reaching broker at {url}"))?;
+    let status = response.status();
+    let body_bytes = response
+        .bytes()
+        .await
+        .context("failed reading broker response body")?;
+
+    if !status.is_success() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        anyhow::bail!("broker returned {status}: {body_str}");
+    }
+
+    let body: Value =
+        serde_json::from_slice(&body_bytes).context("broker response was not valid JSON")?;
+    let screen = body
+        .get("screen")
+        .and_then(Value::as_str)
+        .context("broker response missing 'screen' field")?;
+
+    match cmd.format {
+        DumpPtyFormat::Plain => {
+            // The plain payload already includes the trailing newline per row.
+            // Print as-is so pipelines see a stable terminator.
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(screen.as_bytes())
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+        DumpPtyFormat::Ansi => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(screen)
+                .context("broker returned non-base64 ansi screen")?;
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&bytes)
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
@@ -1152,6 +1358,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
     let mut terminal_failed_deliveries: HashSet<String> = HashSet::new();
+    // Outstanding `Snapshot` HTTP requests waiting on a `snapshot_response`
+    // frame from the PTY worker. Keyed by the `request_id` we put on the
+    // outbound `snapshot_pty` frame; the reply oneshot is consumed when the
+    // worker echoes the same `request_id` back. Stale entries are dropped
+    // when the worker exits (see the worker-exit handler below).
+    let mut pending_snapshots: HashMap<
+        String,
+        tokio::sync::oneshot::Sender<Result<Value, String>>,
+    > = HashMap::new();
+    const SNAPSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+    let mut snapshot_request_deadlines: HashMap<String, Instant> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -1942,6 +2159,36 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     "rows": rows,
                                     "cols": cols,
                                 })));
+                            }
+                        }
+                        ListenApiRequest::Snapshot { name, format, reply } => {
+                            // Stash the reply oneshot under a unique request_id, then
+                            // forward `snapshot_pty` to the worker. The worker echoes
+                            // the request_id back on its `snapshot_response`, which
+                            // the broker uses to fulfill the oneshot (see the
+                            // worker_event_rx arm below).
+                            if !workers.has_worker(&name) {
+                                let _ = reply.send(Err(format!(
+                                    "agent_not_found: no worker named '{name}'"
+                                )));
+                            } else {
+                                let request_id = format!("snap_{}", Uuid::new_v4().simple());
+                                if let Err(err) = workers.send_to_worker(
+                                    &name,
+                                    "snapshot_pty",
+                                    Some(request_id.clone()),
+                                    json!({ "format": format.as_wire_str() }),
+                                ).await {
+                                    let _ = reply.send(Err(format!(
+                                        "agent_not_found: {err}"
+                                    )));
+                                } else {
+                                    pending_snapshots.insert(request_id.clone(), reply);
+                                    snapshot_request_deadlines.insert(
+                                        request_id,
+                                        Instant::now() + SNAPSHOT_REQUEST_TIMEOUT,
+                                    );
+                                }
                             }
                         }
                         ListenApiRequest::GetMetrics { agent, reply } => {
@@ -2896,6 +3143,46 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "error": value.get("payload").cloned().unwrap_or(Value::Null)
                                     })).await;
+                                } else if msg_type == "snapshot_response" {
+                                    // Route the response back to the HTTP /
+                                    // CLI caller using the request_id we put
+                                    // on the outbound snapshot_pty frame.
+                                    let request_id = value
+                                        .get("request_id")
+                                        .and_then(Value::as_str)
+                                        .map(ToOwned::to_owned);
+                                    if let Some(request_id) = request_id {
+                                        snapshot_request_deadlines.remove(&request_id);
+                                        if let Some(reply) = pending_snapshots.remove(&request_id) {
+                                            let payload = value
+                                                .get("payload")
+                                                .cloned()
+                                                .unwrap_or(Value::Null);
+                                            // The worker emits an error payload
+                                            // shaped like `{ "error": { "code":..., "message":... } }`
+                                            // when it can't honour the format.
+                                            if let Some(error) = payload.get("error") {
+                                                let message = error
+                                                    .get("message")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("snapshot failed");
+                                                let code = error
+                                                    .get("code")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("invalid_format");
+                                                let _ = reply.send(Err(format!("{code}: {message}")));
+                                            } else {
+                                                let _ = reply.send(Ok(payload));
+                                            }
+                                        } else {
+                                            tracing::debug!(
+                                                target = "agent_relay::broker",
+                                                worker = %name,
+                                                request_id = %request_id,
+                                                "snapshot_response with no pending caller — dropping"
+                                            );
+                                        }
+                                    }
                                 } else if msg_type == "worker_stream" {
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_stream",
@@ -3197,6 +3484,35 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             _ = reap_tick.tick() => {
                 let now = Instant::now();
+
+                // Time out snapshot requests whose worker never responded.
+                // Common cause: worker crashed between us sending snapshot_pty
+                // and it parsing the frame. Without this sweep the HTTP
+                // handler would hang forever on its oneshot.
+                let timed_out: Vec<String> = snapshot_request_deadlines
+                    .iter()
+                    .filter_map(|(req_id, deadline)| {
+                        if *deadline <= now {
+                            Some(req_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for req_id in timed_out {
+                    snapshot_request_deadlines.remove(&req_id);
+                    if let Some(reply) = pending_snapshots.remove(&req_id) {
+                        tracing::warn!(
+                            target = "agent_relay::broker",
+                            request_id = %req_id,
+                            "snapshot request timed out before worker responded"
+                        );
+                        let _ = reply.send(Err(
+                            "snapshot_timeout: worker did not respond in time".into(),
+                        ));
+                    }
+                }
+
                 let due_ids: Vec<String> = pending_deliveries
                     .iter()
                     .filter_map(|(delivery_id, pending)| {

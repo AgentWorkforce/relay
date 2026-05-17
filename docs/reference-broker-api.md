@@ -1,0 +1,102 @@
+# Broker HTTP API reference
+
+A running `agent-relay-broker` exposes an authenticated HTTP API on the port
+chosen at startup (printed to stdout as `[agent-relay] API listening on …`).
+The same port is also written to `.agent-relay/connection.json` so SDK
+clients and admin CLI subcommands can discover it without flags.
+
+All `/api/*` routes require an API key, supplied as either:
+
+- `X-API-Key: <key>` header, or
+- `Authorization: Bearer <key>` header.
+
+The key is the value of `RELAY_BROKER_API_KEY` (when set at broker startup)
+or the auto-generated value stored in `.agent-relay/connection.json`. The
+unauthenticated `/health` endpoint is the only exception.
+
+## Snapshots
+
+### `GET /api/spawned/{name}/snapshot`
+
+Capture the current visible PTY screen of a running worker. The broker
+proxies the request to the worker subprocess, which walks its
+`alacritty_terminal` VT grid and returns a rendered payload.
+
+Query parameters:
+
+| Param    | Default | Description                                                                                                                                                               |
+| -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format` | `plain` | Either `plain` (UTF-8, one line per row, trailing blanks trimmed) or `ansi` (a base64-encoded byte stream that reproduces the grid on a fresh terminal when written raw). |
+
+Response — `format=plain`:
+
+```json
+{
+  "format": "plain",
+  "rows": 24,
+  "cols": 80,
+  "cursor": [3, 12],
+  "screen": "line one\nline two\n…\n"
+}
+```
+
+Response — `format=ansi`:
+
+```json
+{
+  "format": "ansi",
+  "rows": 24,
+  "cols": 80,
+  "cursor": [3, 12],
+  "screen": "G1swbRtbSBtbMko…"
+}
+```
+
+`cursor` is a `[row, col]` pair, **1-indexed** (matching how the worker's
+internal grid talks about cells). The `ansi` `screen` field is base64
+because the bytes contain control characters; decode it and write the result
+straight to a terminal to redraw the captured screen.
+
+Status codes:
+
+| Status | When                                                                                  |
+| ------ | ------------------------------------------------------------------------------------- |
+| `200`  | Snapshot captured successfully.                                                       |
+| `400`  | `format` is neither `plain` nor `ansi`.                                               |
+| `404`  | No worker is registered under `{name}`.                                               |
+| `500`  | Internal channel closed before the snapshot could be returned (worker crashed, etc.). |
+
+Example:
+
+```bash
+curl -s \
+  -H "X-API-Key: $RELAY_BROKER_API_KEY" \
+  "http://127.0.0.1:7777/api/spawned/reviewer/snapshot?format=plain"
+```
+
+### `agent-relay-broker dump-pty <name>`
+
+Admin CLI that wraps the snapshot route — useful for "what does this
+worker's screen look like right now?" debugging.
+
+```bash
+# Plain text snapshot (default)
+agent-relay-broker dump-pty reviewer
+
+# ANSI reproduction bytes — pipe to a terminal to redraw
+agent-relay-broker dump-pty reviewer --format ansi | cat
+```
+
+Flags:
+
+| Flag           | Description                                                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `<name>`       | Worker to snapshot. Required positional.                                                                                         |
+| `--format`     | `plain` (default) or `ansi`. `plain` writes the rendered screen as UTF-8; `ansi` writes the decoded reproduction bytes.          |
+| `--broker-url` | Override the broker base URL. Falls back to `RELAY_BROKER_URL`, then to `.agent-relay/connection.json` in the current directory. |
+| `--api-key`    | Override the API key. Falls back to `RELAY_BROKER_API_KEY`, then to the value in `.agent-relay/connection.json`.                 |
+| `--state-dir`  | Directory containing `connection.json` when discovering the broker. Defaults to `.agent-relay/` (or the current directory).      |
+
+The command prints the screen to stdout and exits 0 on success. On error
+(unknown worker, broker unreachable, invalid format) it prints a diagnostic
+to stderr and exits non-zero.

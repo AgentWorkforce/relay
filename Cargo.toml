@@ -40,6 +40,7 @@ futures-lite = "2.6"
 uuid = { version = "1.15", features = ["v4", "serde"] }
 urlencoding = "2.1"
 alacritty_terminal = "0.26"
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
