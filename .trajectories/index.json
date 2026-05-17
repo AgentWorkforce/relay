@@ -2,6 +2,13 @@
   "version": 1,
   "lastUpdated": "2026-05-15T13:00:15.473Z",
   "trajectories": {
+    "traj_9gq96irkj00s": {
+      "title": "Update relay to use published relaycast Rust reclaim fix",
+      "status": "completed",
+      "startedAt": "2026-05-10T18:45:02.118Z",
+      "completedAt": "2026-05-10T18:48:11.532Z",
+      "path": ".trajectories/completed/2026-05/traj_9gq96irkj00s.json"
+    },
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
       "status": "completed",
