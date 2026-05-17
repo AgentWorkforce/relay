@@ -216,6 +216,15 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     clean.contains(expected)
 }
 
+/// Rendered terminal state used by grid-aware readiness checks.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GridReadinessSnapshot<'a> {
+    /// Plain text rendered from the visible VT grid.
+    pub screen: &'a str,
+    /// Current 1-indexed cursor position, if known.
+    pub cursor: Option<(u16, u16)>,
+}
+
 /// Detect whether a CLI has finished startup and is ready to receive input.
 ///
 /// Delegates per-CLI text matching to [`crate::wait::for_cli`] so the
@@ -223,6 +232,7 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
 /// the AND-composed `WaitSet` primitive: the explicit `->pty:ready`
 /// signal, gemini's "still waiting for auth" *negative* check, and the
 /// byte-count startup fallback for non-claude / non-gemini CLIs.
+#[cfg(test)]
 pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> bool {
     use crate::wait::for_cli;
 
@@ -279,6 +289,93 @@ pub(crate) fn detect_cli_ready(cli: &str, output: &str, total_bytes: usize) -> b
     total_bytes > 500
 }
 
+/// Detect CLI readiness from the visible VT grid instead of the accumulated
+/// byte stream. The raw `output` is still consulted for protocol-level
+/// ready/auth markers and the historical byte-count fallback.
+pub(crate) fn detect_cli_ready_with_grid(
+    cli: &str,
+    output: &str,
+    total_bytes: usize,
+    grid: GridReadinessSnapshot<'_>,
+) -> bool {
+    use crate::wait::for_cli;
+
+    let clean = strip_ansi(output);
+    let lower_cli = cli.to_lowercase();
+
+    if clean.contains("->pty:ready") {
+        return true;
+    }
+
+    if lower_cli.contains("claude") {
+        return claude_grid_ready(grid);
+    }
+
+    let grid_snapshot = snapshot_for_grid(grid);
+
+    if lower_cli.contains("gemini") {
+        let clean_window = tail_chars(&clean, 2000).to_lowercase();
+        let screen_lower = grid.screen.to_lowercase();
+        if clean_window.contains("waiting for auth") || screen_lower.contains("waiting for auth") {
+            return false;
+        }
+        return for_cli::gemini().evaluate(&grid_snapshot).is_some();
+    }
+
+    let set = if lower_cli.contains("codex") {
+        for_cli::codex()
+    } else {
+        for_cli::generic()
+    };
+    if set.evaluate(&grid_snapshot).is_some() {
+        return true;
+    }
+
+    total_bytes > 500
+}
+
+/// Detect only prompt visibility from the rendered grid. This is used after
+/// relaycast boot, where the byte-count fallback would be too permissive.
+pub(crate) fn cli_prompt_ready_with_grid(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
+    use crate::wait::for_cli;
+
+    let lower_cli = cli.to_lowercase();
+    let grid_snapshot = snapshot_for_grid(grid);
+
+    if lower_cli.contains("claude") {
+        return claude_prompt_row(grid);
+    }
+    if lower_cli.contains("gemini") {
+        return for_cli::gemini().evaluate(&grid_snapshot).is_some();
+    }
+
+    let set = if lower_cli.contains("codex") {
+        for_cli::codex()
+    } else {
+        for_cli::generic()
+    };
+    set.evaluate(&grid_snapshot).is_some()
+}
+
+fn claude_grid_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let has_welcome = grid.screen.contains("Welcome back") || grid.screen.contains("Welcome to ");
+    has_welcome && claude_prompt_row(grid)
+}
+
+fn claude_prompt_row(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, _col)) = grid.cursor else {
+        return false;
+    };
+    if row == 0 {
+        return false;
+    }
+    grid.screen
+        .lines()
+        .nth((row - 1) as usize)
+        .map(str::trim)
+        .is_some_and(|line| matches!(line, "❯" | ">"))
+}
+
 /// Return the suffix of `s` containing at most `n` bytes, snapped to a
 /// char boundary so multi-byte sequences aren't sliced.
 fn tail_chars(s: &str, n: usize) -> &str {
@@ -292,8 +389,18 @@ fn tail_chars(s: &str, n: usize) -> &str {
 
 /// Build a `WaitSnapshot` for a polling caller that only cares about
 /// text matching — Idle/Change/Exit are vacuously satisfied.
+#[cfg(test)]
 fn snapshot_for_text(screen: &str) -> crate::wait::WaitSnapshot<'_> {
     crate::wait::WaitSnapshot::text_only(screen)
+}
+
+fn snapshot_for_grid(grid: GridReadinessSnapshot<'_>) -> crate::wait::WaitSnapshot<'_> {
+    let snap = crate::wait::WaitSnapshot::text_only(grid.screen);
+    if let Some((row, col)) = grid.cursor {
+        snap.with_cursor(row, col)
+    } else {
+        snap
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1360,6 +1467,80 @@ mod tests {
     fn detect_cli_ready_claude_no_welcome_not_ready() {
         // Bare prompt without welcome banner — not ready (could be UI noise)
         assert!(!detect_cli_ready("claude", "some startup output\n❯\n", 100));
+    }
+
+    #[test]
+    fn detect_cli_ready_with_grid_uses_visible_screen_not_stale_bytes() {
+        let raw_with_cleared_prompt = "old prompt\n> \n\x1b[2Jstill loading";
+        let grid = GridReadinessSnapshot {
+            screen: "still loading\n",
+            cursor: Some((1, 14)),
+        };
+
+        assert!(detect_cli_ready("aider", raw_with_cleared_prompt, 100));
+        assert!(!detect_cli_ready_with_grid(
+            "aider",
+            raw_with_cleared_prompt,
+            100,
+            grid
+        ));
+    }
+
+    #[test]
+    fn detect_cli_ready_with_grid_detects_visible_generic_prompt() {
+        let grid = GridReadinessSnapshot {
+            screen: "ready\n$ \n",
+            cursor: Some((2, 3)),
+        };
+
+        assert!(detect_cli_ready_with_grid("aider", "loading...", 100, grid));
+    }
+
+    #[test]
+    fn detect_cli_ready_with_grid_requires_claude_cursor_on_bare_prompt_row() {
+        let ready_grid = GridReadinessSnapshot {
+            screen: "Welcome back Khaliq!\nOpus 4.5\n❯\n",
+            cursor: Some((3, 2)),
+        };
+        assert!(detect_cli_ready_with_grid("claude", "", 100, ready_grid));
+
+        let cursor_elsewhere = GridReadinessSnapshot {
+            screen: ready_grid.screen,
+            cursor: Some((2, 1)),
+        };
+        assert!(!detect_cli_ready_with_grid(
+            "claude",
+            "",
+            100,
+            cursor_elsewhere
+        ));
+
+        let menu_grid = GridReadinessSnapshot {
+            screen: "Welcome to Claude Code v2.1.19\n❯ 1. Dark mode\n  2. Light mode\n",
+            cursor: Some((2, 2)),
+        };
+        assert!(!detect_cli_ready_with_grid("claude", "", 100, menu_grid));
+    }
+
+    #[test]
+    fn detect_cli_ready_with_grid_uses_visible_gemini_prompt() {
+        let stale_prompt = "Type your message or @path/to/file\n\x1b[2JWaiting for auth";
+        let grid = GridReadinessSnapshot {
+            screen: "Waiting for auth... (Press ESC or CTRL+C to cancel)\n",
+            cursor: Some((1, 1)),
+        };
+        assert!(!detect_cli_ready_with_grid(
+            "gemini",
+            stale_prompt,
+            5_000,
+            grid
+        ));
+
+        let grid = GridReadinessSnapshot {
+            screen: "Type your message or @path/to/file\n",
+            cursor: Some((1, 36)),
+        };
+        assert!(detect_cli_ready_with_grid("gemini", "", 5_000, grid));
     }
 
     #[test]

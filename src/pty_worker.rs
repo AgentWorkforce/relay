@@ -1,10 +1,11 @@
 use super::*;
 use crate::helpers::{
-    check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
-    format_injection_for_worker_with_workspace, parse_cli_command, parse_continuity_command,
-    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+    check_echo_in_output, cli_prompt_ready_with_grid, current_timestamp_ms,
+    delivery_injected_event_payload, delivery_queued_event_payload, detect_cli_ready_with_grid,
+    floor_char_boundary, format_injection_for_worker_with_workspace, parse_cli_command,
+    parse_continuity_command, ActivityDetector, DeliveryOutcome, GridReadinessSnapshot,
+    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
+    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 
@@ -95,6 +96,7 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
@@ -106,8 +108,50 @@ fn startup_gate_ready(
     if wait_for_relaycast_boot {
         saw_relaycast_boot && output_has_prompt(resolved_cli, post_boot_output)
     } else {
-        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes)
+        crate::helpers::detect_cli_ready(resolved_cli, startup_output, startup_total_bytes)
     }
+}
+
+fn startup_gate_ready_with_grid(
+    resolved_cli: &str,
+    startup_output: &str,
+    startup_total_bytes: usize,
+    wait_for_relaycast_boot: bool,
+    saw_relaycast_boot: bool,
+    post_boot_output: &str,
+    grid: GridReadinessSnapshot<'_>,
+) -> bool {
+    if wait_for_relaycast_boot {
+        saw_relaycast_boot
+            && output_has_prompt(resolved_cli, post_boot_output)
+            && cli_prompt_ready_with_grid(resolved_cli, grid)
+    } else {
+        detect_cli_ready_with_grid(resolved_cli, startup_output, startup_total_bytes, grid)
+    }
+}
+
+fn startup_gate_ready_from_pty(
+    resolved_cli: &str,
+    startup_output: &str,
+    startup_total_bytes: usize,
+    wait_for_relaycast_boot: bool,
+    saw_relaycast_boot: bool,
+    post_boot_output: &str,
+    pty: &PtySession,
+) -> bool {
+    let screen = pty.screen_text();
+    startup_gate_ready_with_grid(
+        resolved_cli,
+        startup_output,
+        startup_total_bytes,
+        wait_for_relaycast_boot,
+        saw_relaycast_boot,
+        post_boot_output,
+        GridReadinessSnapshot {
+            screen: &screen,
+            cursor: Some(pty.cursor_position()),
+        },
+    )
 }
 
 fn should_block_pending_injection(
@@ -333,13 +377,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .unwrap_or_else(|| "pty-worker".to_string());
                                 init_request_id = frame.request_id;
                                 init_received_at = Some(Instant::now());
-                                let startup_ready = startup_gate_ready(
+                                let startup_ready = startup_gate_ready_from_pty(
                                     &resolved_cli,
                                     &startup_output,
                                     startup_total_bytes,
                                     wait_for_relaycast_boot,
                                     saw_relaycast_boot,
                                     &post_boot_output,
+                                    &pty,
                                 );
                                 try_emit_worker_ready(
                                     &out_tx,
@@ -487,13 +532,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 );
                             }
                         }
-                        let startup_ready = startup_gate_ready(
+                        let startup_ready = startup_gate_ready_from_pty(
                             &resolved_cli,
                             &startup_output,
                             startup_total_bytes,
                             wait_for_relaycast_boot,
                             saw_relaycast_boot,
                             &post_boot_output,
+                            &pty,
                         );
                         try_emit_worker_ready(
                             &out_tx,
@@ -837,13 +883,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
-                let startup_ready = startup_gate_ready(
+                let startup_ready = startup_gate_ready_from_pty(
                     &resolved_cli,
                     &startup_output,
                     startup_total_bytes,
                     wait_for_relaycast_boot,
                     saw_relaycast_boot,
                     &post_boot_output,
+                    &pty,
                 );
                 try_emit_worker_ready(
                     &out_tx,
@@ -1093,6 +1140,48 @@ mod tests {
             true,
             true,
             "done\n› ",
+        ));
+    }
+
+    #[test]
+    fn startup_gate_with_grid_requires_visible_post_boot_prompt() {
+        let startup_output = "Welcome\n› ";
+        let post_boot_output = "done\n› ";
+        let loading_grid = GridReadinessSnapshot {
+            screen: "MCP loading...\n",
+            cursor: Some((1, 15)),
+        };
+        assert!(!startup_gate_ready_with_grid(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            post_boot_output,
+            loading_grid,
+        ));
+
+        let ready_grid = GridReadinessSnapshot {
+            screen: "done\n› \n",
+            cursor: Some((2, 3)),
+        };
+        assert!(!startup_gate_ready_with_grid(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            "MCP loading...",
+            ready_grid,
+        ));
+        assert!(startup_gate_ready_with_grid(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            post_boot_output,
+            ready_grid,
         ));
     }
 
