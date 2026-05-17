@@ -583,7 +583,7 @@
       "status": "completed",
       "startedAt": "2026-05-17T14:19:10.603Z",
       "completedAt": "2026-05-17T14:33:32.293Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a8d2a44bf540f70c0/.trajectories/completed/2026-05/traj_cbmwd07phhm2.json"
+      "path": ".trajectories/completed/2026-05/traj_cbmwd07phhm2.json"
     }
   }
 }

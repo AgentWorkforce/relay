@@ -59,12 +59,14 @@ straight to a terminal to redraw the captured screen.
 
 Status codes:
 
-| Status | When                                                                                  |
-| ------ | ------------------------------------------------------------------------------------- |
-| `200`  | Snapshot captured successfully.                                                       |
-| `400`  | `format` is neither `plain` nor `ansi`.                                               |
-| `404`  | No worker is registered under `{name}`.                                               |
-| `500`  | Internal channel closed before the snapshot could be returned (worker crashed, etc.). |
+| Status | When                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| `200`  | Snapshot captured successfully.                                                                       |
+| `400`  | `format` is neither `plain` nor `ansi`.                                                               |
+| `404`  | No worker is registered under `{name}`.                                                               |
+| `409`  | Worker exists but its runtime cannot service `snapshot_pty` (e.g. it is a headless / non-PTY worker). |
+| `500`  | Internal channel closed before the snapshot could be returned (worker crashed, etc.).                 |
+| `504`  | Worker accepted the request but did not respond within the broker's snapshot timeout (5 s).           |
 
 Example:
 

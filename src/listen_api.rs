@@ -917,6 +917,16 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
         (axum::http::StatusCode::NOT_FOUND, "agent_not_found")
     } else if err.starts_with("unsupported_operation") {
         (axum::http::StatusCode::BAD_REQUEST, "unsupported_operation")
+    } else if err.starts_with("unsupported_runtime") {
+        // Caller asked for an operation that this worker's runtime
+        // doesn't support (e.g. snapshot_pty against a headless worker).
+        // 409 Conflict — the request itself is well-formed; the conflict
+        // is with the resource's current capabilities.
+        (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
+    } else if err.starts_with("snapshot_timeout") {
+        // Worker died or stalled between accepting the frame and
+        // replying. This is a server-side fault, not a bad request.
+        (axum::http::StatusCode::GATEWAY_TIMEOUT, "snapshot_timeout")
     } else if err.starts_with("invalid_") {
         (axum::http::StatusCode::BAD_REQUEST, "invalid_request")
     } else {
@@ -2417,6 +2427,65 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_unsupported_runtime_to_409() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::Snapshot { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(
+                    "unsupported_runtime: worker 'h' is headless; snapshot_pty is only supported on PTY workers"
+                        .to_string(),
+                ));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/h/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("unsupported_runtime"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_snapshot_timeout_to_504() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::Snapshot { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(
+                    "snapshot_timeout: worker did not respond in time".to_string()
+                ));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/slow/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("snapshot_timeout"));
         replier.await.expect("replier should complete");
     }
 }

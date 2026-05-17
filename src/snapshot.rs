@@ -162,6 +162,16 @@ impl Snapshot {
             write_cup(&mut out, (row_idx as u16).saturating_add(1), 1);
 
             for cell in row {
+                // Wide-character spacers (the second cell of a CJK / emoji
+                // glyph) carry a placeholder space alongside the
+                // `WIDE_CHAR_SPACER` flag. Alacritty itself skips them
+                // when emitting a line (see `Term::line_content` for the
+                // reference implementation). Emitting that space as a real
+                // character on replay would push every cell after the wide
+                // glyph one column to the right, so we have to drop it.
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
                 let want = SgrState::from_cell(cell);
                 if want != current {
                     write_sgr_transition(&mut out, &current, &want);
@@ -306,13 +316,15 @@ fn write_color(out: &mut Vec<u8>, color: Color, role: ColorRole) {
 }
 
 /// Map an alacritty `NamedColor` to its SGR code, or `None` to fall back to
-/// the terminal's default (handled by the surrounding reset).
+/// the terminal's default (the leading `\x1b[0` reset in the SGR transition
+/// has already cleared the prior value, so emitting nothing is equivalent
+/// to emitting `;39` / `;49` but avoids the wasted bytes).
 fn named_color_sgr(named: NamedColor, role: &ColorRole) -> Option<u16> {
     // SGR foreground bases: 30..37 (normal), 90..97 (bright).
     // SGR background bases: 40..47 (normal), 100..107 (bright).
-    let (normal_base, bright_base, default_code) = match role {
-        ColorRole::Foreground => (30u16, 90u16, 39u16),
-        ColorRole::Background => (40u16, 100u16, 49u16),
+    let (normal_base, bright_base) = match role {
+        ColorRole::Foreground => (30u16, 90u16),
+        ColorRole::Background => (40u16, 100u16),
     };
 
     Some(match named {
@@ -343,13 +355,14 @@ fn named_color_sgr(named: NamedColor, role: &ColorRole) -> Option<u16> {
         NamedColor::DimMagenta => normal_base + 5,
         NamedColor::DimCyan => normal_base + 6,
         NamedColor::DimWhite => normal_base + 7,
-        // Foreground / Background default codes (39 / 49). Cursor and the
-        // bright/dim foreground synonyms have no clean SGR; treat as default.
+        // Semantic defaults — Foreground / Background / Cursor and the
+        // bright/dim foreground synonyms — have no concrete SGR colour we
+        // want to pin to. Skip emission so the leading reset stands.
         NamedColor::Foreground
         | NamedColor::Background
         | NamedColor::Cursor
         | NamedColor::BrightForeground
-        | NamedColor::DimForeground => default_code,
+        | NamedColor::DimForeground => return None,
     })
 }
 
@@ -504,6 +517,52 @@ mod tests {
         // a cell with all defaults should round-trip to default SgrState.
         let cell = SnapshotCell::default();
         assert_eq!(SgrState::from_cell(&cell), SgrState::default());
+    }
+
+    #[test]
+    fn ansi_skips_wide_char_spacer_so_layout_round_trips() {
+        // A double-width CJK glyph followed by ASCII. Without skipping the
+        // WIDE_CHAR_SPACER cell, the replayed grid is pushed one column to
+        // the right.
+        let term_a = parse_into(2, 10, &[b"\xe6\x96\x87X"]); // "文X"
+        let snap_a = Snapshot::from_term(&term_a);
+        let ansi = snap_a.to_ansi();
+
+        let term_b = parse_into(2, 10, &[&ansi]);
+        let snap_b = Snapshot::from_term(&term_b);
+
+        assert_eq!(
+            snap_a.to_plain(),
+            snap_b.to_plain(),
+            "wide char + ASCII round-trip mismatch (spacer cell was emitted as a real space?)"
+        );
+    }
+
+    #[test]
+    fn named_color_sgr_returns_none_for_semantic_defaults() {
+        // Defaults must skip emission so the leading `\x1b[0` reset stands —
+        // otherwise we'd waste bytes on redundant `;39` / `;49`.
+        assert_eq!(
+            named_color_sgr(NamedColor::Foreground, &ColorRole::Foreground),
+            None
+        );
+        assert_eq!(
+            named_color_sgr(NamedColor::Background, &ColorRole::Background),
+            None
+        );
+        assert_eq!(
+            named_color_sgr(NamedColor::Cursor, &ColorRole::Foreground),
+            None
+        );
+        // Concrete colours still resolve.
+        assert_eq!(
+            named_color_sgr(NamedColor::Green, &ColorRole::Foreground),
+            Some(32)
+        );
+        assert_eq!(
+            named_color_sgr(NamedColor::Red, &ColorRole::Background),
+            Some(41)
+        );
     }
 
     #[tokio::test]

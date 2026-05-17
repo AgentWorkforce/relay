@@ -832,22 +832,58 @@ struct BrokerConnection {
 
 /// Resolve the broker connection by checking, in order:
 ///
-/// 1. Explicit CLI args (`--broker-url`, `--api-key`).
+/// 1. Explicit CLI args (`--broker-url`, `--api-key`). When `--broker-url`
+///    is supplied without an API key, we still attempt to fall back to the
+///    API key from env / `.agent-relay/connection.json` so users don't have
+///    to repeat `--api-key` for every dump-pty invocation.
 /// 2. Env vars `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
-/// 3. `connection.json` in the supplied state dir, then `.agent-relay/`
-///    under the current working directory.
+/// 3. `connection.json` in the supplied state dir, otherwise
+///    `.agent-relay/connection.json` directly under the current working
+///    directory. The bare `cwd` is intentionally NOT probed — an unrelated
+///    `connection.json` sitting in the user's repo root must not silently
+///    redirect the snapshot request (and its broker API key) elsewhere.
 fn discover_broker_connection(
     explicit_url: Option<&str>,
     explicit_api_key: Option<&str>,
     state_dir: Option<&Path>,
 ) -> Result<BrokerConnection> {
+    // Walk the same search roots used for the URL fallback, but only to
+    // pull out a stored `api_key`. Lets `--broker-url` reuse the broker's
+    // saved key when the env var and `--api-key` are both unset.
+    let api_key_from_connection_file = || -> Option<String> {
+        let cwd = std::env::current_dir().ok()?;
+        let roots: Vec<PathBuf> = match state_dir {
+            Some(dir) => vec![dir.to_path_buf()],
+            None => vec![cwd.join(".agent-relay")],
+        };
+        for root in roots {
+            let path = root.join("connection.json");
+            if !path.is_file() {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).ok()?;
+            let value: Value = serde_json::from_str(&body).ok()?;
+            if let Some(key) = value.get("api_key").and_then(Value::as_str) {
+                if !key.trim().is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+        None
+    };
+
+    let resolve_api_key = |explicit: Option<&str>| -> Option<String> {
+        explicit
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(api_key_from_connection_file)
+            .filter(|value| !value.trim().is_empty())
+    };
+
     if let Some(url) = explicit_url {
         return Ok(BrokerConnection {
             base_url: url.trim_end_matches('/').to_string(),
-            api_key: explicit_api_key
-                .map(ToString::to_string)
-                .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
-                .filter(|value| !value.trim().is_empty()),
+            api_key: resolve_api_key(explicit_api_key),
         });
     }
 
@@ -856,10 +892,7 @@ fn discover_broker_connection(
         if !trimmed.is_empty() {
             return Ok(BrokerConnection {
                 base_url: trimmed.trim_end_matches('/').to_string(),
-                api_key: explicit_api_key
-                    .map(ToString::to_string)
-                    .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
-                    .filter(|value| !value.trim().is_empty()),
+                api_key: resolve_api_key(explicit_api_key),
             });
         }
     }
@@ -867,7 +900,7 @@ fn discover_broker_connection(
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let search_roots: Vec<PathBuf> = match state_dir {
         Some(dir) => vec![dir.to_path_buf()],
-        None => vec![cwd.join(".agent-relay"), cwd.clone()],
+        None => vec![cwd.join(".agent-relay")],
     };
 
     for root in &search_roots {
@@ -1361,8 +1394,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // Outstanding `Snapshot` HTTP requests waiting on a `snapshot_response`
     // frame from the PTY worker. Keyed by the `request_id` we put on the
     // outbound `snapshot_pty` frame; the reply oneshot is consumed when the
-    // worker echoes the same `request_id` back. Stale entries are dropped
-    // when the worker exits (see the worker-exit handler below).
+    // worker echoes the same `request_id` back. Stale entries are cleaned
+    // up by the deadline sweep in the `reap_tick` arm — see
+    // `SNAPSHOT_REQUEST_TIMEOUT` below. (#871 will generalise this
+    // request/response correlation pattern across other RPCs.)
     let mut pending_snapshots: HashMap<
         String,
         tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -2167,27 +2202,45 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             // the request_id back on its `snapshot_response`, which
                             // the broker uses to fulfill the oneshot (see the
                             // worker_event_rx arm below).
-                            if !workers.has_worker(&name) {
-                                let _ = reply.send(Err(format!(
-                                    "agent_not_found: no worker named '{name}'"
-                                )));
-                            } else {
-                                let request_id = format!("snap_{}", Uuid::new_v4().simple());
-                                if let Err(err) = workers.send_to_worker(
-                                    &name,
-                                    "snapshot_pty",
-                                    Some(request_id.clone()),
-                                    json!({ "format": format.as_wire_str() }),
-                                ).await {
+                            //
+                            // Headless workers don't run a VT and don't handle
+                            // `snapshot_pty` — short-circuit with a descriptive
+                            // error rather than letting the request sit in
+                            // `pending_snapshots` until the 5s timeout sweep
+                            // returns a misleading `snapshot_timeout`.
+                            let runtime = workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime.clone());
+                            match runtime {
+                                None => {
                                     let _ = reply.send(Err(format!(
-                                        "agent_not_found: {err}"
+                                        "agent_not_found: no worker named '{name}'"
                                     )));
-                                } else {
-                                    pending_snapshots.insert(request_id.clone(), reply);
-                                    snapshot_request_deadlines.insert(
-                                        request_id,
-                                        Instant::now() + SNAPSHOT_REQUEST_TIMEOUT,
-                                    );
+                                }
+                                Some(AgentRuntime::Headless) => {
+                                    let _ = reply.send(Err(format!(
+                                        "unsupported_runtime: worker '{name}' is headless; snapshot_pty is only supported on PTY workers"
+                                    )));
+                                }
+                                Some(AgentRuntime::Pty) => {
+                                    let request_id = format!("snap_{}", Uuid::new_v4().simple());
+                                    if let Err(err) = workers.send_to_worker(
+                                        &name,
+                                        "snapshot_pty",
+                                        Some(request_id.clone()),
+                                        json!({ "format": format.as_wire_str() }),
+                                    ).await {
+                                        let _ = reply.send(Err(format!(
+                                            "agent_not_found: {err}"
+                                        )));
+                                    } else {
+                                        pending_snapshots.insert(request_id.clone(), reply);
+                                        snapshot_request_deadlines.insert(
+                                            request_id,
+                                            Instant::now() + SNAPSHOT_REQUEST_TIMEOUT,
+                                        );
+                                    }
                                 }
                             }
                         }
