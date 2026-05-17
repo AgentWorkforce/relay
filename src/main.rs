@@ -11,6 +11,7 @@ mod cli_mcp_args;
 mod helpers;
 mod listen_api;
 mod pty_worker;
+mod readiness;
 mod routing;
 mod spawner;
 mod swarm;

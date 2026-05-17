@@ -6,13 +6,9 @@
 //! output chunks, then ask whether all the conditions are simultaneously
 //! satisfied.
 //!
-//! Today this replaces the per-CLI ad hoc readiness rules in
-//! [`crate::helpers::detect_cli_ready`] for the text-prompt half of
-//! detection. Cursor waits are evaluated against the 1-indexed cursor
+//! Readiness code can combine text, idle, change, exit, and cursor
+//! conditions. Cursor waits are evaluated against the 1-indexed cursor
 //! position exposed by the alacritty-backed PTY grid.
-//!
-#![allow(dead_code)]
-
 //! ```ignore
 //! use std::time::Duration;
 //!
@@ -32,6 +28,7 @@ use regex::Regex;
 
 /// A single wait primitive. `WaitSet` composes these with logical AND.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum WaitCondition {
     /// The (ANSI-stripped) screen must contain the given match.
     Text(TextMatch),
@@ -79,6 +76,7 @@ pub struct WaitSet {
     conditions: Vec<WaitCondition>,
 }
 
+#[allow(dead_code)]
 impl WaitSet {
     pub fn new() -> Self {
         Self::default()
@@ -142,8 +140,8 @@ impl WaitSet {
         WaitState::new(self)
     }
 
-    /// Evaluate against a pre-built snapshot. Useful for synchronous
-    /// callers that already hold accumulated output and timing.
+    /// Evaluate against a pre-built snapshot. Useful for callers that
+    /// already hold screen state and timing.
     pub fn evaluate(&self, snap: &WaitSnapshot<'_>) -> Option<Trigger> {
         if self.conditions.is_empty() {
             return None;
@@ -159,7 +157,7 @@ impl WaitSet {
 
 /// Snapshot of the world used by [`WaitSet::evaluate`].
 pub struct WaitSnapshot<'a> {
-    /// ANSI-stripped screen text accumulated so far.
+    /// Screen text used by `Text` conditions.
     pub screen: &'a str,
     /// How long since the last output chunk arrived. Used by `Idle`.
     pub idle_for: Duration,
@@ -212,6 +210,7 @@ fn condition_met(cond: &WaitCondition, snap: &WaitSnapshot<'_>) -> bool {
 /// screen, the last-chunk timestamp, whether any change was seen, and
 /// the exit flag. Use [`check`](Self::check) to ask whether *every*
 /// condition is currently satisfied.
+#[allow(dead_code)]
 pub struct WaitState<'a> {
     set: &'a WaitSet,
     screen: String,
@@ -221,6 +220,7 @@ pub struct WaitState<'a> {
     cursor: Option<(u16, u16)>,
 }
 
+#[allow(dead_code)]
 impl<'a> WaitState<'a> {
     fn new(set: &'a WaitSet) -> Self {
         Self {
@@ -342,11 +342,7 @@ fn preferred_trigger(conds: &[WaitCondition]) -> Trigger {
 
 /// Pre-built text-only `WaitSet`s expressing each CLI's "screen looks
 /// ready" rule.
-///
-/// These are the declarative replacement for the per-CLI string matching
-/// in [`crate::helpers::detect_cli_ready`], and the building block for
-/// streaming readiness callers — which typically chain `.idle(...)` or
-/// `.change()` on top to require a settle window.
+#[allow(dead_code)]
 pub mod for_cli {
     use std::time::Duration;
 
@@ -636,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_cursor_can_be_supplied_from_pty_grid() {
+    fn snapshot_cursor_position_satisfies_cursor_condition() {
         let set = WaitSet::new().text("ready").cursor(3, 5);
         let snapshot = WaitSnapshot::text_only("ready").with_cursor(3, 5);
 
