@@ -26,19 +26,25 @@ describe('installSkill', () => {
   });
 
   it('creates parent dir and writes the file with mode 0644', async () => {
-    const result = await installSkill({ src: srcPath, destRoot, skillName: 'spawn-cloud-swarm' });
+    const originalUmask = process.umask(0o077);
+    try {
+      const result = await installSkill({ src: srcPath, destRoot, skillName: 'spawn-cloud-swarm' });
 
-    expect(result.installed).toBe(true);
-    expect(result.destPath).toBe(path.join(destRoot, 'spawn-cloud-swarm', 'SKILL.md'));
+      expect(result.installed).toBe(true);
+      expect(result.destPath).toBe(path.join(destRoot, 'spawn-cloud-swarm', 'SKILL.md'));
 
-    const dirStat = await fs.stat(path.join(destRoot, 'spawn-cloud-swarm'));
-    expect(dirStat.isDirectory()).toBe(true);
+      const dirStat = await fs.stat(path.join(destRoot, 'spawn-cloud-swarm'));
+      expect(dirStat.isDirectory()).toBe(true);
+      expect(dirStat.mode & 0o777).toBe(0o755);
 
-    const fileStat = await fs.stat(result.destPath);
-    expect(fileStat.mode & 0o777).toBe(0o644);
+      const fileStat = await fs.stat(result.destPath);
+      expect(fileStat.mode & 0o777).toBe(0o644);
 
-    const written = await fs.readFile(result.destPath, 'utf-8');
-    expect(written).toBe(SOURCE_BODY_V1);
+      const written = await fs.readFile(result.destPath, 'utf-8');
+      expect(written).toBe(SOURCE_BODY_V1);
+    } finally {
+      process.umask(originalUmask);
+    }
   });
 
   it('is a no-op when destination hash matches source hash', async () => {

@@ -75,6 +75,7 @@ describe('registerCloudCommands', () => {
     const cloud = program.commands.find((command) => command.name() === 'cloud');
 
     expect(cloud).toBeDefined();
+    expect(cloud?.description()).toContain('skill install');
     expect(cloud?.commands.map((command) => command.name())).toEqual([
       'login',
       'logout',

@@ -177,7 +177,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   const cloudCommand = program
     .command('cloud')
-    .description('Cloud account, provider auth, and workflow commands');
+    .description('Cloud account, provider auth, workflow commands, and Claude skill install');
 
   // ── login ──────────────────────────────────────────────────────────────────
 

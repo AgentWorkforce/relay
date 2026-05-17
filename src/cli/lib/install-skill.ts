@@ -49,6 +49,7 @@ export async function installSkill(args: InstallSkillArgs): Promise<InstallSkill
   }
 
   await fs.mkdir(destDir, { recursive: true, mode: DIR_MODE });
+  await fs.chmod(destDir, DIR_MODE);
   await fs.writeFile(destPath, srcBuf, { mode: FILE_MODE });
   await fs.chmod(destPath, FILE_MODE);
 
