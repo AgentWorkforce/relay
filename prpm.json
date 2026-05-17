@@ -75,6 +75,21 @@
       "files": ["skills/running-headless-orchestrator/SKILL.md"]
     },
     {
+      "name": "spawn-cloud-swarm",
+      "version": "1.0.0",
+      "description": "Use when spawning a swarm of cloud agents that share the user's local working directory via relayfile. Orchestrates local-mount lifecycle (ensure → monitor → teardown) around N cloud.agent.spawn calls. Requires cloud.local-mount.* MCP tools.",
+      "format": "claude",
+      "subtype": "skill",
+      "tags": [
+        "cloud",
+        "multi-agent",
+        "relayfile",
+        "mount",
+        "swarm"
+      ],
+      "files": ["skills/spawn-cloud-swarm/SKILL.md"]
+    },
+    {
       "name": "agent-relay-snippet",
       "version": "1.2.0",
       "description": "AGENTS.md / CLAUDE.md snippet for agents on how to use agent-relay",
