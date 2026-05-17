@@ -293,12 +293,7 @@ fn tail_chars(s: &str, n: usize) -> &str {
 /// Build a `WaitSnapshot` for a polling caller that only cares about
 /// text matching — Idle/Change/Exit are vacuously satisfied.
 fn snapshot_for_text(screen: &str) -> crate::wait::WaitSnapshot<'_> {
-    crate::wait::WaitSnapshot {
-        screen,
-        idle_for: Duration::MAX,
-        change_seen: true,
-        exited: false,
-    }
+    crate::wait::WaitSnapshot::text_only(screen)
 }
 
 #[derive(Debug, Clone, Copy, Default)]

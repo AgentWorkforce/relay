@@ -8,10 +8,8 @@
 //!
 //! Today this replaces the per-CLI ad hoc readiness rules in
 //! [`crate::helpers::detect_cli_ready`] for the text-prompt half of
-//! detection. The `Cursor` variant is a stub: it requires a real VT100
-//! grid (tracked in #802) and is treated as permanently unsatisfied
-//! by the evaluator so callers can plumb it through the API today
-//! without it accidentally tripping a "ready" decision.
+//! detection. Cursor waits are evaluated against the 1-indexed cursor
+//! position exposed by the alacritty-backed PTY grid.
 //!
 #![allow(dead_code)]
 
@@ -38,13 +36,6 @@ pub enum WaitCondition {
     /// The (ANSI-stripped) screen must contain the given match.
     Text(TextMatch),
     /// The cursor must land at an exact 1-indexed (row, col).
-    ///
-    /// **Stub.** Evaluating this requires a real VT100 grid (tracked
-    /// in #802); until that lands the broker has no cursor state to
-    /// consult. `WaitState::feed` treats this as permanently
-    /// unsatisfied, so a `WaitSet` that includes a `Cursor` condition
-    /// will never report ready. The variant is kept on the enum so
-    /// the public API is stable.
     Cursor { row: u16, col: u16 },
     /// No output has arrived for at least this duration. The timer
     /// starts when `WaitState` is created and resets on every chunk.
@@ -130,8 +121,6 @@ impl WaitSet {
     }
 
     /// Require the cursor to land at an exact 1-indexed position.
-    ///
-    /// Currently a stub — see [`WaitCondition::Cursor`].
     pub fn cursor(self, row: u16, col: u16) -> Self {
         self.with(WaitCondition::Cursor { row, col })
     }
@@ -178,12 +167,38 @@ pub struct WaitSnapshot<'a> {
     pub change_seen: bool,
     /// Whether the process has exited.
     pub exited: bool,
+    /// Current 1-indexed cursor position from the PTY grid, if known.
+    pub cursor: Option<(u16, u16)>,
+}
+
+impl<'a> WaitSnapshot<'a> {
+    /// Build a text-only snapshot for callers that do not have a VT grid.
+    ///
+    /// Idle/Change are treated as satisfied so only `Text` conditions
+    /// participate. `Cursor` conditions remain unsatisfied because no
+    /// cursor position is available.
+    pub fn text_only(screen: &'a str) -> Self {
+        Self {
+            screen,
+            idle_for: Duration::MAX,
+            change_seen: true,
+            exited: false,
+            cursor: None,
+        }
+    }
+
+    /// Attach a 1-indexed cursor position, such as
+    /// `PtySession::cursor_position()`.
+    pub fn with_cursor(mut self, row: u16, col: u16) -> Self {
+        self.cursor = Some((row, col));
+        self
+    }
 }
 
 fn condition_met(cond: &WaitCondition, snap: &WaitSnapshot<'_>) -> bool {
     match cond {
         WaitCondition::Text(m) => m.is_match(snap.screen),
-        WaitCondition::Cursor { .. } => false, // stub: requires VT grid
+        WaitCondition::Cursor { row, col } => snap.cursor == Some((*row, *col)),
         WaitCondition::Idle(d) => snap.idle_for >= *d,
         WaitCondition::Change => snap.change_seen,
         WaitCondition::Exit => snap.exited,
@@ -203,6 +218,7 @@ pub struct WaitState<'a> {
     last_chunk_at: Instant,
     change_seen: bool,
     exited: bool,
+    cursor: Option<(u16, u16)>,
 }
 
 impl<'a> WaitState<'a> {
@@ -213,6 +229,7 @@ impl<'a> WaitState<'a> {
             last_chunk_at: Instant::now(),
             change_seen: false,
             exited: false,
+            cursor: None,
         }
     }
 
@@ -238,6 +255,18 @@ impl<'a> WaitState<'a> {
         self.exited = true;
     }
 
+    /// Update the current 1-indexed cursor position, typically from
+    /// `PtySession::cursor_position()`.
+    pub fn set_cursor_position(&mut self, row: u16, col: u16) {
+        self.cursor = Some((row, col));
+    }
+
+    /// Clear cursor state when the caller no longer has a trustworthy
+    /// PTY-grid snapshot.
+    pub fn clear_cursor_position(&mut self) {
+        self.cursor = None;
+    }
+
     pub fn screen(&self) -> &str {
         &self.screen
     }
@@ -250,12 +279,17 @@ impl<'a> WaitState<'a> {
         self.exited
     }
 
+    pub fn cursor_position(&self) -> Option<(u16, u16)> {
+        self.cursor
+    }
+
     fn snapshot(&self) -> WaitSnapshot<'_> {
         WaitSnapshot {
             screen: &self.screen,
             idle_for: self.last_chunk_at.elapsed(),
             change_seen: self.change_seen,
             exited: self.exited,
+            cursor: self.cursor,
         }
     }
 
@@ -474,10 +508,19 @@ mod tests {
     }
 
     #[test]
-    fn cursor_stub_never_ready() {
+    fn cursor_matches_snapshot_position() {
         let set = WaitSet::new().cursor(1, 1);
-        let s = set.state();
-        assert!(s.check().is_none(), "cursor variant is a stub");
+        let mut s = set.state();
+        assert!(s.check().is_none(), "no cursor snapshot yet");
+
+        s.set_cursor_position(2, 1);
+        assert!(s.check().is_none(), "wrong cursor row");
+
+        s.set_cursor_position(1, 1);
+        assert_eq!(s.check(), Some(Trigger::Cursor));
+
+        s.clear_cursor_position();
+        assert!(s.check().is_none(), "cursor was cleared");
     }
 
     #[test]
@@ -492,7 +535,11 @@ mod tests {
         assert!(s.check().is_none(), "text matched but idle not elapsed");
 
         thread::sleep(Duration::from_millis(50));
-        assert_eq!(s.check(), Some(Trigger::Text), "both satisfied; Text wins by priority");
+        assert_eq!(
+            s.check(),
+            Some(Trigger::Text),
+            "both satisfied; Text wins by priority"
+        );
     }
 
     #[test]
@@ -549,7 +596,10 @@ mod tests {
         assert_eq!(for_cli::detect("claude").len(), for_cli::claude().len());
         assert_eq!(for_cli::detect("gemini").len(), for_cli::gemini().len());
         assert_eq!(for_cli::detect("codex").len(), for_cli::codex().len());
-        assert_eq!(for_cli::detect("/usr/bin/aider").len(), for_cli::generic().len());
+        assert_eq!(
+            for_cli::detect("/usr/bin/aider").len(),
+            for_cli::generic().len()
+        );
     }
 
     #[test]
@@ -557,7 +607,10 @@ mod tests {
         let set = for_cli::with_settle(for_cli::generic());
         // Settle adds exactly one Idle condition.
         assert_eq!(set.len(), for_cli::generic().len() + 1);
-        assert!(matches!(set.conditions().last(), Some(WaitCondition::Idle(_))));
+        assert!(matches!(
+            set.conditions().last(),
+            Some(WaitCondition::Idle(_))
+        ));
     }
 
     #[test]
@@ -568,6 +621,7 @@ mod tests {
             idle_for: Duration::ZERO,
             change_seen: true,
             exited: false,
+            cursor: None,
         });
         assert_eq!(satisfied, Some(Trigger::Text));
 
@@ -576,7 +630,23 @@ mod tests {
             idle_for: Duration::ZERO,
             change_seen: false,
             exited: false,
+            cursor: None,
         });
         assert_eq!(not_yet, None);
+    }
+
+    #[test]
+    fn snapshot_cursor_can_be_supplied_from_pty_grid() {
+        let set = WaitSet::new().text("ready").cursor(3, 5);
+        let snapshot = WaitSnapshot::text_only("ready").with_cursor(3, 5);
+
+        assert_eq!(set.evaluate(&snapshot), Some(Trigger::Text));
+    }
+
+    #[test]
+    fn text_only_snapshot_does_not_satisfy_cursor() {
+        let set = WaitSet::new().cursor(3, 5);
+
+        assert_eq!(set.evaluate(&WaitSnapshot::text_only("")), None);
     }
 }
