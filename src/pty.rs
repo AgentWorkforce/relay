@@ -41,6 +41,20 @@ impl Dimensions for GridSize {
     }
 }
 
+impl GridSize {
+    /// Build a `GridSize` from PTY-style `(rows, cols)` while clamping
+    /// each axis to at least 1 cell. alacritty's grid allocator panics
+    /// (or worse, underflows) on a zero-dimension grid, and PTY
+    /// resize requests of 0 do arrive in practice (window minimized,
+    /// container without a TTY, race during teardown).
+    fn from_pty(rows: u16, cols: u16) -> Self {
+        Self {
+            columns: (cols as usize).max(1),
+            screen_lines: (rows as usize).max(1),
+        }
+    }
+}
+
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -55,11 +69,10 @@ pub struct PtySession {
     /// advances `processor` on every chunk; queries (`screen_text`,
     /// `cursor_position`, `cell_at`) read `term` under the same lock.
     term: Arc<Mutex<Term<VoidListener>>>,
-    /// Held on the struct only to extend the parser's lifetime to that
-    /// of the session — the reader thread owns a clone that does the
-    /// actual `advance()` calls. Future readers (e.g. a control-plane
-    /// thread that wants to feed bytes synthetically) would lock this.
-    #[allow(dead_code)]
+    /// Shared with the reader thread, which holds the actual lock most
+    /// of the time. Kept on the struct so `resize()` can take the same
+    /// lock the reader uses — preventing the child's post-resize
+    /// redraw from being parsed against the old grid dimensions.
     processor: Arc<Mutex<Processor>>,
 }
 
@@ -154,10 +167,7 @@ impl PtySession {
             .take_writer()
             .context("failed to take pty writer")?;
 
-        let size = GridSize {
-            columns: cols as usize,
-            screen_lines: rows as usize,
-        };
+        let size = GridSize::from_pty(rows, cols);
         let term = Arc::new(Mutex::new(Term::new(
             Config::default(),
             &size,
@@ -175,8 +185,10 @@ impl PtySession {
                     Ok(0) => break,
                     Ok(n) => {
                         {
-                            // Hold both locks together so the grid stays
-                            // consistent with the bytes about to be sent.
+                            // Lock order: processor THEN term. `resize`
+                            // takes the same order; matching prevents
+                            // deadlock and ensures bytes are never
+                            // parsed against stale dimensions.
                             let mut processor_guard = processor_clone.lock();
                             let mut term_guard = term_clone.lock();
                             processor_guard.advance(&mut *term_guard, &buf[..n]);
@@ -213,6 +225,15 @@ impl PtySession {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        // Race fix: the reader thread takes (processor, term) before
+        // advancing the parser. master.resize() can cause the child to
+        // emit a redraw immediately, so we acquire the same locks (in
+        // the same order) BEFORE the master resize and hold them until
+        // after term.resize(). That guarantees no bytes are parsed
+        // against the old grid dimensions.
+        let _processor_guard = self.processor.lock();
+        let mut term_guard = self.term.lock();
+
         self.master
             .resize(PtySize {
                 rows,
@@ -221,11 +242,7 @@ impl PtySession {
                 pixel_height: 0,
             })
             .context("failed to resize pty")?;
-        let size = GridSize {
-            columns: cols as usize,
-            screen_lines: rows as usize,
-        };
-        self.term.lock().resize(size);
+        term_guard.resize(GridSize::from_pty(rows, cols));
         Ok(())
     }
 
@@ -546,11 +563,7 @@ mod tests {
     #[test]
     fn parser_handles_clear_screen() {
         // Write text, then ESC[2J ESC[H to clear and home-cursor.
-        let term = parse_into(
-            4,
-            20,
-            &[b"garbage", b"\x1b[2J\x1b[H", b"fresh"],
-        );
+        let term = parse_into(4, 20, &[b"garbage", b"\x1b[2J\x1b[H", b"fresh"]);
         let screen = render(&term);
         assert!(
             screen.starts_with("fresh\n"),
@@ -595,6 +608,35 @@ mod tests {
         assert_eq!(pty.grid_size(), (24, 80));
         pty.resize(40, 120).unwrap();
         assert_eq!(pty.grid_size(), (40, 120));
+        let _ = pty.shutdown();
+    }
+
+    #[test]
+    fn grid_size_clamps_zero_dimensions_to_one() {
+        // alacritty panics on a zero-row or zero-column grid; PTY
+        // resize events of 0 do happen (window minimized, container
+        // without a TTY, teardown races). The clamp keeps us safe.
+        let zero_rows = GridSize::from_pty(0, 80);
+        assert_eq!(zero_rows.screen_lines, 1);
+        assert_eq!(zero_rows.columns, 80);
+
+        let zero_cols = GridSize::from_pty(24, 0);
+        assert_eq!(zero_cols.screen_lines, 24);
+        assert_eq!(zero_cols.columns, 1);
+
+        let both_zero = GridSize::from_pty(0, 0);
+        assert_eq!(both_zero.screen_lines, 1);
+        assert_eq!(both_zero.columns, 1);
+    }
+
+    #[tokio::test]
+    async fn resize_to_zero_does_not_panic() {
+        // Regression for the "alacritty grid underflow on zero
+        // dimensions" path the clamp closes.
+        let (pty, _rx) = PtySession::spawn("sleep", &["1".into()], 24, 80).unwrap();
+        assert!(pty.resize(0, 0).is_ok());
+        let (rows, cols) = pty.grid_size();
+        assert!(rows >= 1 && cols >= 1, "grid clamped to non-zero");
         let _ = pty.shutdown();
     }
 
