@@ -37,8 +37,15 @@ spawn flow depends on. Use the relaycast MCP `cloud.*` tools to probe; do
    `cloud.local-mount.status { localDir: CWD }` — if the MCP reports the
    directory is not registered, surface `NEEDS_RELAYFILE_SETUP` and instruct
    the user to run `relayfile setup --local-dir <CWD>`. Then stop.
+4. The relaycast MCP surface exposes every tool this skill drives. Before
+   the prereq checks above, confirm `cloud.local-mount.ensure`,
+   `cloud.local-mount.status`, and `cloud.local-mount.stop` are all
+   registered on the MCP client. If any are missing, surface
+   `MCP_LOCAL_MOUNT_TOOLS_MISSING` and the verbatim remediation: "Upgrade
+   `@relaycast/mcp` to a build that includes `cloud.local-mount.*` (see
+   relaycast PR `feat/cloud-local-mount-tools`)." Then stop.
 
-All three remediation strings must be quoted verbatim so downstream tooling
+All four remediation strings must be quoted verbatim so downstream tooling
 can match on them.
 
 ## Procedure
@@ -83,6 +90,7 @@ Once prereqs pass:
 | `NEEDS_CLOUD_LOGIN` | Prereq 1 | "Run `agent-relay cloud login` to authenticate." |
 | `NEEDS_CLI_CONNECTION` | Prereq 2 | "Run `agent-relay cloud connect claude` (or your CLI) to register a provider." |
 | `NEEDS_RELAYFILE_SETUP` | Prereq 3 | "Run `relayfile setup --local-dir <CWD>` to register this directory as a relayfile workspace." |
+| `MCP_LOCAL_MOUNT_TOOLS_MISSING` | Prereq 4 | "Upgrade `@relaycast/mcp` to a build that includes `cloud.local-mount.*` (see relaycast PR `feat/cloud-local-mount-tools`)." |
 | `MOUNT_FAILED` | Step 1 | Report the MCP-returned error string verbatim and instruct the user to inspect `relayfile status`. Do not retry — the user's environment needs attention. |
 | `QUOTA_EXCEEDED` | Step 2 | Internal: wait 10s and retry up to 3 cycles. If still failing, surface "Your cloud plan's concurrent worker limit was reached. Wait for a worker to finish or upgrade your plan." |
 | `MOUNT_DIED` | Step 3 | "The local mount stopped while workers were running. Their later writes did not reach your host. Run `relayfile status` and `cloud.local-mount.ensure` before re-spawning." |

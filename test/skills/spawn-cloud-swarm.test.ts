@@ -4,6 +4,11 @@ import url from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  MCP_PREFLIGHT_REMEDIATION,
+  REQUIRED_CLOUD_LOCAL_MOUNT_TOOLS,
+} from '../../src/cli/lib/mcp-preflight.js';
+
 const SKILL_PATH = path.resolve(
   path.dirname(url.fileURLToPath(import.meta.url)),
   '..',
@@ -164,6 +169,15 @@ describe('spawn-cloud-swarm SKILL.md', () => {
     const body = fs.readFileSync(SKILL_PATH, 'utf-8');
     expect(body).toMatch(/persist/i);
     expect(body).toMatch(/\[persist\]/);
+  });
+
+  it('quotes the MCP preflight remediation verbatim and references every required cloud.local-mount.* tool', () => {
+    const body = fs.readFileSync(SKILL_PATH, 'utf-8');
+    expect(body).toContain(MCP_PREFLIGHT_REMEDIATION);
+    expect(body).toContain('MCP_LOCAL_MOUNT_TOOLS_MISSING');
+    for (const tool of REQUIRED_CLOUD_LOCAL_MOUNT_TOOLS) {
+      expect(body).toContain(tool);
+    }
   });
 });
 
