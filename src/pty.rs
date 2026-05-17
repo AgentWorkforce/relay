@@ -307,6 +307,18 @@ impl PtySession {
         (grid.screen_lines() as u16, grid.columns() as u16)
     }
 
+    /// Run a closure against the live `Term`, holding the term lock for the
+    /// duration. Used by `snapshot::Snapshot::capture` to walk the grid
+    /// (cells + colours + flags) without exposing the underlying `Term` type
+    /// through `PtySession`'s public API.
+    ///
+    /// Keep the closure short — it blocks the reader thread from advancing
+    /// the VT parser while it runs.
+    pub fn with_term<R>(&self, f: impl FnOnce(&Term<VoidListener>) -> R) -> R {
+        let term = self.term.lock();
+        f(&term)
+    }
+
     /// Check if the child process has exited without blocking.
     /// Returns true if the child has exited (or was already reaped).
     ///

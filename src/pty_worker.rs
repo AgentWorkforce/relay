@@ -7,6 +7,8 @@ use crate::helpers::{
     ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
+use base64::Engine;
+use relay_broker::snapshot::Snapshot;
 
 #[derive(Debug, Clone)]
 struct PendingWorkerInjection {
@@ -423,6 +425,51 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
                                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
+                            }
+                            "snapshot_pty" => {
+                                // Visible-screen snapshot driven by the broker. The
+                                // broker correlates the response via request_id and
+                                // forwards the rendered payload back to the HTTP /
+                                // CLI caller.
+                                let format = frame
+                                    .payload
+                                    .get("format")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("plain")
+                                    .to_string();
+                                let snap = Snapshot::capture(&pty);
+                                let cursor = json!([snap.cursor.0, snap.cursor.1]);
+                                let payload = match format.as_str() {
+                                    "ansi" => {
+                                        let bytes = snap.to_ansi();
+                                        let encoded = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        json!({
+                                            "format": "ansi",
+                                            "rows": snap.rows,
+                                            "cols": snap.cols,
+                                            "cursor": cursor,
+                                            "screen": encoded,
+                                        })
+                                    }
+                                    "plain" | "" | "text" => json!({
+                                        "format": "plain",
+                                        "rows": snap.rows,
+                                        "cols": snap.cols,
+                                        "cursor": cursor,
+                                        "screen": snap.to_plain(),
+                                    }),
+                                    other => {
+                                        let _ = send_frame(&out_tx, "snapshot_response", frame.request_id, json!({
+                                            "error": {
+                                                "code": "invalid_format",
+                                                "message": format!("unsupported snapshot format '{other}' (expected 'plain' or 'ansi')"),
+                                            }
+                                        })).await;
+                                        continue;
+                                    }
+                                };
+                                let _ = send_frame(&out_tx, "snapshot_response", frame.request_id, payload).await;
                             }
                             other => {
                                 let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({

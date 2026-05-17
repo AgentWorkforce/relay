@@ -17,6 +17,7 @@ pub mod redact;
 pub mod relaycast_ws;
 pub mod replay_buffer;
 pub mod scheduler;
+pub mod snapshot;
 pub mod snippets;
 pub mod supervisor;
 pub mod telemetry;

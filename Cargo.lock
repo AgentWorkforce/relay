@@ -9,6 +9,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "crossterm",

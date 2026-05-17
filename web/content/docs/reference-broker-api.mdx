@@ -20,11 +20,13 @@ agent-relay up --port 3888                     # local only
 agent-relay up --port 3888 --api-bind 0.0.0.0  # accept remote
 ```
 
-All routes below live under `http://<host>:<port>`.
+All routes below live under `http://<host>:<port>`. The port is also
+written to `.agent-relay/connection.json` so SDK clients and admin CLI
+subcommands can discover it without flags.
 
 ## Authentication
 
-The broker requires an API key on every protected route. Pass it as
+All `/api/*` routes require an API key on every request, supplied as
 either header:
 
 ```
@@ -32,9 +34,11 @@ X-API-Key: <token>
 Authorization: Bearer <token>
 ```
 
-The expected token is read from the `RELAY_BROKER_API_KEY` environment
-variable. If that variable is unset, the broker runs **unauthenticated**
-— protected routes accept any request. In production, always set it.
+The expected token is read from `RELAY_BROKER_API_KEY` (when set at
+broker startup) or the auto-generated value stored in
+`.agent-relay/connection.json`. If neither is set, the broker runs
+**unauthenticated** — protected routes accept any request. In
+production, always set it.
 
 The only route exempt from auth is `GET /health`.
 
@@ -42,30 +46,30 @@ The only route exempt from auth is `GET /health`.
 
 ### Health and configuration
 
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `GET`  | `/health` | Liveness probe + workspace/startup status. Unauthenticated. |
-| `GET`  | `/api/session` | Broker version, protocol version, persist/ephemeral mode, uptime. |
-| `POST` | `/api/session/renew` | Renew the broker lease (persist mode only). |
-| `GET`  | `/api/config` | Relaycast workspace key and workspace memberships. |
-| `GET`  | `/api/metrics` | Broker metrics. Optional `?agent=<name>` filter. |
-| `GET`  | `/api/status` | Aggregate broker status. |
-| `GET`  | `/api/crash-insights` | Recent crash diagnostics. |
-| `GET`  | `/api/history/stats` | Stub message-history counters. |
-| `POST` | `/api/preflight` | Check that each `{ name, cli }` agent can be spawned. |
-| `POST` | `/api/shutdown` | Graceful broker shutdown. |
+| Method | Path                  | Purpose                                                           |
+| ------ | --------------------- | ----------------------------------------------------------------- |
+| `GET`  | `/health`             | Liveness probe + workspace/startup status. Unauthenticated.       |
+| `GET`  | `/api/session`        | Broker version, protocol version, persist/ephemeral mode, uptime. |
+| `POST` | `/api/session/renew`  | Renew the broker lease (persist mode only).                       |
+| `GET`  | `/api/config`         | Relaycast workspace key and workspace memberships.                |
+| `GET`  | `/api/metrics`        | Broker metrics. Optional `?agent=<name>` filter.                  |
+| `GET`  | `/api/status`         | Aggregate broker status.                                          |
+| `GET`  | `/api/crash-insights` | Recent crash diagnostics.                                         |
+| `GET`  | `/api/history/stats`  | Stub message-history counters.                                    |
+| `POST` | `/api/preflight`      | Check that each `{ name, cli }` agent can be spawned.             |
+| `POST` | `/api/shutdown`       | Graceful broker shutdown.                                         |
 
 ### Agent lifecycle
 
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `POST`   | `/api/spawn` | Spawn an agent as a child of the broker. |
-| `GET`    | `/api/spawned` | List running agents. |
-| `DELETE` | `/api/spawned/{name}` | Release / kill an agent. Optional body `{ "reason": "..." }`. |
-| `POST`   | `/api/spawned/{name}/model` | Change an agent's model. Body `{ "model": "...", "timeoutMs"?: number }`. |
-| `POST`   | `/api/spawned/{name}/subscribe` | Subscribe an agent to channels. Body `{ "channels": ["..."] }`. |
-| `POST`   | `/api/spawned/{name}/unsubscribe` | Unsubscribe an agent from channels. Body `{ "channels": ["..."] }`. |
-| `POST`   | `/api/agents/by-name/{name}/interrupt` | Interrupt an agent (not yet implemented — returns 501). |
+| Method   | Path                                   | Purpose                                                                   |
+| -------- | -------------------------------------- | ------------------------------------------------------------------------- |
+| `POST`   | `/api/spawn`                           | Spawn an agent as a child of the broker.                                  |
+| `GET`    | `/api/spawned`                         | List running agents.                                                      |
+| `DELETE` | `/api/spawned/{name}`                  | Release / kill an agent. Optional body `{ "reason": "..." }`.             |
+| `POST`   | `/api/spawned/{name}/model`            | Change an agent's model. Body `{ "model": "...", "timeoutMs"?: number }`. |
+| `POST`   | `/api/spawned/{name}/subscribe`        | Subscribe an agent to channels. Body `{ "channels": ["..."] }`.           |
+| `POST`   | `/api/spawned/{name}/unsubscribe`      | Unsubscribe an agent from channels. Body `{ "channels": ["..."] }`.       |
+| `POST`   | `/api/agents/by-name/{name}/interrupt` | Interrupt an agent (not yet implemented — returns 501).                   |
 
 #### `POST /api/spawn`
 
@@ -97,11 +101,11 @@ status on failure.
 
 ### PTY interaction
 
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `POST` | `/api/input/{name}` | Send raw bytes to an agent's PTY stdin. Body `{ "data": "..." }`. |
-| `POST` | `/api/resize/{name}` | Resize an agent's PTY. Body `{ "rows": <u16>, "cols": <u16> }`. |
-| `POST` | `/api/send` | Inject a relay message into an agent. |
+| Method | Path                 | Purpose                                                           |
+| ------ | -------------------- | ----------------------------------------------------------------- |
+| `POST` | `/api/input/{name}`  | Send raw bytes to an agent's PTY stdin. Body `{ "data": "..." }`. |
+| `POST` | `/api/resize/{name}` | Resize an agent's PTY. Body `{ "rows": <u16>, "cols": <u16> }`.   |
+| `POST` | `/api/send`          | Inject a relay message into an agent.                             |
 
 #### `POST /api/input/{name}`
 
@@ -135,12 +139,106 @@ inject when the agent is idle) or `steer` (inject immediately,
 even mid-response). Returns 504 on a 30s broker timeout; 404 if
 the target agent isn't registered.
 
+### Snapshots
+
+| Method | Path                            | Purpose                                                                  |
+| ------ | ------------------------------- | ------------------------------------------------------------------------ |
+| `GET`  | `/api/spawned/{name}/snapshot`  | Capture the current visible PTY screen of a running worker.              |
+
+#### `GET /api/spawned/{name}/snapshot`
+
+The broker proxies the request to the worker subprocess, which walks its
+`alacritty_terminal` VT grid and returns a rendered payload.
+
+Query parameters:
+
+| Param      | Default | Description                                                                                                                                                              |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `format`   | `plain` | Either `plain` (UTF-8, one line per row, trailing blanks trimmed) or `ansi` (a base64-encoded byte stream that reproduces the grid on a fresh terminal when written raw). |
+
+Response — `format=plain`:
+
+```json
+{
+  "format": "plain",
+  "rows": 24,
+  "cols": 80,
+  "cursor": [3, 12],
+  "screen": "line one\nline two\n…\n"
+}
+```
+
+Response — `format=ansi`:
+
+```json
+{
+  "format": "ansi",
+  "rows": 24,
+  "cols": 80,
+  "cursor": [3, 12],
+  "screen": "G1swbRtbSBtbMko…"
+}
+```
+
+`cursor` is a `[row, col]` pair, **1-indexed** (matching how the
+worker's internal grid talks about cells). The `ansi` `screen` field
+is base64-encoded because the bytes contain control characters;
+decode it and write the result straight to a terminal to redraw the
+captured screen.
+
+Status codes:
+
+| Status | When                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------------------------- |
+| `200`  | Snapshot captured successfully.                                                                       |
+| `400`  | `format` is neither `plain` nor `ansi`.                                                               |
+| `404`  | No worker is registered under `{name}`.                                                               |
+| `409`  | Worker exists but its runtime cannot service `snapshot_pty` (e.g. it is a headless / non-PTY worker). |
+| `500`  | Internal channel closed before the snapshot could be returned (worker crashed, etc.).                 |
+| `504`  | Worker accepted the request but did not respond within the broker's snapshot timeout (5s).            |
+
+Example:
+
+```bash
+curl -s \
+  -H "X-API-Key: $RELAY_BROKER_API_KEY" \
+  "http://127.0.0.1:3888/api/spawned/reviewer/snapshot?format=plain"
+```
+
+#### `agent-relay-broker dump-pty <name>`
+
+Admin CLI that wraps the snapshot route — useful for "what does this
+worker's screen look like right now?" debugging without going through
+the dashboard.
+
+```bash
+# Plain text snapshot (default)
+agent-relay-broker dump-pty reviewer
+
+# ANSI reproduction bytes — pipe to a terminal to redraw
+agent-relay-broker dump-pty reviewer --format ansi | cat
+```
+
+Flags:
+
+| Flag           | Description                                                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `<name>`       | Worker to snapshot. Required positional.                                                                                         |
+| `--format`     | `plain` (default) or `ansi`. `plain` writes the rendered screen as UTF-8; `ansi` writes the decoded reproduction bytes.          |
+| `--broker-url` | Override the broker base URL. Falls back to `RELAY_BROKER_URL`, then to `.agent-relay/connection.json` in the current directory. |
+| `--api-key`    | Override the API key. Falls back to `RELAY_BROKER_API_KEY`, then to the value in `.agent-relay/connection.json`.                 |
+| `--state-dir`  | Directory containing `connection.json` when discovering the broker. Defaults to `.agent-relay/` (or the current directory).      |
+
+The command prints the screen to stdout and exits 0 on success. On
+error (unknown worker, broker unreachable, invalid format) it prints
+a diagnostic to stderr and exits non-zero.
+
 ### Event stream
 
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `GET` | `/ws` | WebSocket: subscribe to broker events. |
-| `GET` | `/api/events/replay` | HTTP-based replay of events since a sequence number. |
+| Method | Path                 | Purpose                                              |
+| ------ | -------------------- | ---------------------------------------------------- |
+| `GET`  | `/ws`                | WebSocket: subscribe to broker events.               |
+| `GET`  | `/api/events/replay` | HTTP-based replay of events since a sequence number. |
 
 #### `GET /ws`
 
@@ -171,29 +269,29 @@ the first frame you receive will be:
 
 Durable (replayable via `?sinceSeq=...`):
 
-| `kind` | When it fires |
-| ------ | ------------- |
-| `agent_spawned` | An agent was successfully spawned. |
-| `agent_exit` / `agent_exited` | Worker process exited. |
-| `agent_idle` | Worker has been quiet past `idleThresholdSecs`. |
-| `agent_restarting` / `agent_restarted` | Worker is being restarted under the restart policy. |
-| `agent_released` | Worker was released by `/api/spawned/{name}` DELETE. |
-| `agent_permanently_dead` | Worker exhausted restart attempts. |
-| `worker_ready` | Worker finished startup and is ready for input. |
-| `worker_error` | Worker emitted an error frame. |
-| `relay_inbound` | Inbound relay message routed to an agent. |
-| `delivery_ack` | Message delivery acknowledged. |
-| `delivery_verified` | Echo verification confirmed the message was delivered. |
-| `delivery_failed` | Message delivery failed. |
-| `delivery_dropped` | Delivery was dropped (e.g. agent gone). |
-| `delivery_retry` | Delivery is being retried. |
+| `kind`                                 | When it fires                                          |
+| -------------------------------------- | ------------------------------------------------------ |
+| `agent_spawned`                        | An agent was successfully spawned.                     |
+| `agent_exit` / `agent_exited`          | Worker process exited.                                 |
+| `agent_idle`                           | Worker has been quiet past `idleThresholdSecs`.        |
+| `agent_restarting` / `agent_restarted` | Worker is being restarted under the restart policy.    |
+| `agent_released`                       | Worker was released by `/api/spawned/{name}` DELETE.   |
+| `agent_permanently_dead`               | Worker exhausted restart attempts.                     |
+| `worker_ready`                         | Worker finished startup and is ready for input.        |
+| `worker_error`                         | Worker emitted an error frame.                         |
+| `relay_inbound`                        | Inbound relay message routed to an agent.              |
+| `delivery_ack`                         | Message delivery acknowledged.                         |
+| `delivery_verified`                    | Echo verification confirmed the message was delivered. |
+| `delivery_failed`                      | Message delivery failed.                               |
+| `delivery_dropped`                     | Delivery was dropped (e.g. agent gone).                |
+| `delivery_retry`                       | Delivery is being retried.                             |
 
 Ephemeral (broadcast only, no replay):
 
-| `kind` | When it fires |
-| ------ | ------------- |
-| `worker_stream` | A chunk of stdout from a wrapped CLI. Payload contains `stream` (`"stdout"`) and `chunk` (the raw bytes — typically still ANSI-escaped). |
-| `delivery_active` | High-frequency progress events for in-flight deliveries. |
+| `kind`            | When it fires                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `worker_stream`   | A chunk of stdout from a wrapped CLI. Payload contains `stream` (`"stdout"`) and `chunk` (the raw bytes — typically still ANSI-escaped). |
+| `delivery_active` | High-frequency progress events for in-flight deliveries.                                                                       |
 
 ## Worked example: control a spawned agent end-to-end
 
@@ -223,7 +321,11 @@ curl -sX POST localhost:3888/api/send \
   -H "X-API-Key: $KEY" \
   -d '{"to":"Alice","from":"Bob","message":"please review #837"}'
 
-# 6. Release her
+# 6. Snapshot what's on her screen right now
+curl -s "localhost:3888/api/spawned/Alice/snapshot?format=plain" \
+  -H "X-API-Key: $KEY"
+
+# 7. Release her
 curl -sX DELETE localhost:3888/api/spawned/Alice \
   -H "X-API-Key: $KEY"
 ```

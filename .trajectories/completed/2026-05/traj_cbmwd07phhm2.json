@@ -1,0 +1,81 @@
+{
+  "id": "traj_cbmwd07phhm2",
+  "version": 1,
+  "task": {
+    "title": "Implement #869 snapshot module + dump-pty command",
+    "source": {
+      "system": "plain",
+      "id": "ENG-869"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-17T14:19:10.603Z",
+  "completedAt": "2026-05-17T14:33:32.293Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-17T14:19:14.457Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0mm9wrxxy6jz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-17T14:19:14.457Z",
+      "endedAt": "2026-05-17T14:33:32.293Z",
+      "events": [
+        {
+          "ts": 1779027554458,
+          "type": "decision",
+          "content": "Snapshot must execute in PTY worker subprocess, not broker: Snapshot must execute in PTY worker subprocess, not broker",
+          "raw": {
+            "question": "Snapshot must execute in PTY worker subprocess, not broker",
+            "chosen": "Snapshot must execute in PTY worker subprocess, not broker",
+            "alternatives": [],
+            "reasoning": "PtySession lives in the spawned 'agent-relay-broker pty' subprocess. Broker only has stdin/stdout JSON-RPC pipes to it. So implement snapshot as: broker proxies via 'snapshot_pty' frame, worker responds with 'snapshot_response' frame, broker correlates by request_id."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779028373112,
+          "type": "decision",
+          "content": "Built snapshot as a self-contained struct (rows/cols/cursor/cells), not a thin view over PtySession: Built snapshot as a self-contained struct (rows/cols/cursor/cells), not a thin view over PtySession",
+          "raw": {
+            "question": "Built snapshot as a self-contained struct (rows/cols/cursor/cells), not a thin view over PtySession",
+            "chosen": "Built snapshot as a self-contained struct (rows/cols/cursor/cells), not a thin view over PtySession",
+            "alternatives": [],
+            "reasoning": "Capture walks the grid once under the term lock then drops it. Renderers run against owned data, so they cannot block the PTY reader thread or race with subsequent grid mutations. Simpler invariant for callers too: no lifetime juggling with the live session."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779028375229,
+          "type": "decision",
+          "content": "Use a 5s timeout sweep for pending_snapshots to avoid stuck HTTP requests when a worker crashes: Use a 5s timeout sweep for pending_snapshots to avoid stuck HTTP requests when a worker crashes",
+          "raw": {
+            "question": "Use a 5s timeout sweep for pending_snapshots to avoid stuck HTTP requests when a worker crashes",
+            "chosen": "Use a 5s timeout sweep for pending_snapshots to avoid stuck HTTP requests when a worker crashes",
+            "alternatives": [],
+            "reasoning": "Without a sweep, a snapshot request whose worker died between send and reply would block the HTTP handler's oneshot forever. The reap_tick loop fires every 500ms anyway, so piggy-backing is cheap."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added snapshot module (capture / to_plain / to_ansi), GET /api/spawned/{name}/snapshot route, agent-relay-broker dump-pty CLI subcommand, and reference docs. Snapshot work routes through the PTY worker subprocess via snapshot_pty / snapshot_response frames keyed by request_id. 12 new tests, all 600 pass (was 588).",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "89c2c36a3c6f322029d8b766881884e209f6a7a5",
+    "endRef": "89c2c36a3c6f322029d8b766881884e209f6a7a5"
+  }
+}

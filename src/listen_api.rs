@@ -80,6 +80,11 @@ pub enum ListenApiRequest {
         cols: u16,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    Snapshot {
+        name: String,
+        format: SnapshotFormat,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     GetMetrics {
         agent: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -116,6 +121,32 @@ pub enum ListenApiRequest {
 pub struct PreflightEntry {
     pub name: String,
     pub cli: String,
+}
+
+/// Format requested by `GET /api/spawned/{name}/snapshot?format=…`. Parsed
+/// in the route handler so the broker loop receives a typed value instead of
+/// re-validating a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    Plain,
+    Ansi,
+}
+
+impl SnapshotFormat {
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ansi => "ansi",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "plain" | "text" => Some(Self::Plain),
+            "ansi" => Some(Self::Ansi),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -220,6 +251,10 @@ fn listen_api_router_with_auth(
         .route("/api/send", routing::post(listen_api_send))
         .route("/api/input/{name}", routing::post(listen_api_send_input))
         .route("/api/resize/{name}", routing::post(listen_api_resize_pty))
+        .route(
+            "/api/spawned/{name}/snapshot",
+            routing::get(listen_api_snapshot),
+        )
         .route("/api/metrics", routing::get(listen_api_metrics))
         .route("/api/status", routing::get(listen_api_status))
         .route(
@@ -882,6 +917,16 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
         (axum::http::StatusCode::NOT_FOUND, "agent_not_found")
     } else if err.starts_with("unsupported_operation") {
         (axum::http::StatusCode::BAD_REQUEST, "unsupported_operation")
+    } else if err.starts_with("unsupported_runtime") {
+        // Caller asked for an operation that this worker's runtime
+        // doesn't support (e.g. snapshot_pty against a headless worker).
+        // 409 Conflict — the request itself is well-formed; the conflict
+        // is with the resource's current capabilities.
+        (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
+    } else if err.starts_with("snapshot_timeout") {
+        // Worker died or stalled between accepting the frame and
+        // replying. This is a server-side fault, not a bad request.
+        (axum::http::StatusCode::GATEWAY_TIMEOUT, "snapshot_timeout")
     } else if err.starts_with("invalid_") {
         (axum::http::StatusCode::BAD_REQUEST, "invalid_request")
     } else {
@@ -949,6 +994,58 @@ async fn listen_api_resize_pty(
             name: name.clone(),
             rows: body.rows,
             cols: body.cols,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(ref err)) => {
+            let (status, code) = classify_error(err);
+            api_error(status, code, err.clone())
+        }
+        Err(_) => internal_error(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PTY snapshot
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct SnapshotQuery {
+    format: Option<String>,
+}
+
+/// Capture the current visible screen of a PTY worker.
+///
+/// Defaults to `format=plain`. Returns the rendered screen plus the cursor
+/// position and dimensions so callers can lay it out without re-querying
+/// the worker. The `ansi` variant base64-encodes the bytes because the
+/// reproduction stream is binary (contains control characters).
+async fn listen_api_snapshot(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SnapshotQuery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let format_raw = query.format.as_deref().unwrap_or("plain");
+    let Some(format) = SnapshotFormat::parse(format_raw) else {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_format",
+            format!("unsupported snapshot format '{format_raw}' (expected 'plain' or 'ansi')"),
+        );
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::Snapshot {
+            name: name.clone(),
+            format,
             reply: reply_tx,
         })
         .await
@@ -2196,5 +2293,199 @@ mod auth_tests {
                 "name": "worker a",
             })
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_defaults_to_plain_and_forwards_format() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Snapshot {
+                    name,
+                    format,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(format, super::SnapshotFormat::Plain);
+                    let _ = reply.send(Ok(json!({
+                        "format": "plain",
+                        "rows": 4,
+                        "cols": 20,
+                        "cursor": [1, 1],
+                        "screen": "hello\n\n\n\n",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["format"], json!("plain"));
+        assert_eq!(body["rows"], json!(4));
+        assert_eq!(body["screen"], json!("hello\n\n\n\n"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_passes_ansi_format_through() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Snapshot {
+                    name,
+                    format,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(format, super::SnapshotFormat::Ansi);
+                    let _ = reply.send(Ok(json!({
+                        "format": "ansi",
+                        "rows": 2,
+                        "cols": 5,
+                        "cursor": [1, 3],
+                        "screen": "AAAA",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot?format=ansi")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["format"], json!("ansi"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_rejects_unknown_format_without_calling_broker() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot?format=html")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_format"));
+
+        // The broker channel must not have received a Snapshot request.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_propagates_agent_not_found_as_404() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::Snapshot { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err("agent_not_found: no worker named 'ghost'".to_string()));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_unsupported_runtime_to_409() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::Snapshot { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(
+                    "unsupported_runtime: worker 'h' is headless; snapshot_pty is only supported on PTY workers"
+                        .to_string(),
+                ));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/h/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("unsupported_runtime"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_snapshot_timeout_to_504() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::Snapshot { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(
+                    "snapshot_timeout: worker did not respond in time".to_string()
+                ));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/slow/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("snapshot_timeout"));
+        replier.await.expect("replier should complete");
     }
 }
