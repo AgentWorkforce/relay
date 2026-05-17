@@ -9,13 +9,15 @@ const cloudMocks = vi.hoisted(() => ({
   syncWorkflowPatch: vi.fn(),
 }));
 
+const connectProviderMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@agent-relay/cloud', () => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
   REFRESH_WINDOW_MS: 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
   clearStoredAuth: vi.fn(),
-  connectProvider: vi.fn(),
+  connectProvider: (...args: unknown[]) => connectProviderMock(...args),
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
   getProviderHelpText: () =>
@@ -23,6 +25,15 @@ vi.mock('@agent-relay/cloud', () => ({
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
+  normalizeProvider: (provider: string) => {
+    const lower = provider.toLowerCase().trim();
+    const aliases: Record<string, string> = {
+      claude: 'anthropic',
+      codex: 'openai',
+      gemini: 'google',
+    };
+    return aliases[lower] ?? lower;
+  },
   readStoredAuth: vi.fn(),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
@@ -39,7 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function createHarness() {
+function createHarness(overrides: Partial<CloudDependencies> = {}) {
   const exit = vi.fn((code: number) => {
     throw new Error(`exit:${code}`);
   }) as unknown as CloudDependencies['exit'];
@@ -48,6 +59,7 @@ function createHarness() {
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
+    ...overrides,
   };
 
   const program = new Command();
@@ -343,5 +355,100 @@ describe('registerCloudCommands', () => {
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
+  });
+
+  describe('cloud connect spawn-cloud-swarm skill drop', () => {
+    it('invokes installSkill exactly once for provider=claude', async () => {
+      const installSkill = vi.fn(async () => ({
+        installed: true,
+        destPath: '/tmp/.claude/skills/spawn-cloud-swarm/SKILL.md',
+      }));
+      const resolveBundledSkillPath = vi.fn((name: string) => `/bundle/${name}/SKILL.md`);
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program, deps } = createHarness({
+        installSkill,
+        resolveBundledSkillPath,
+        skillsDestRoot: '/tmp/.claude/skills',
+      });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude']);
+
+      expect(installSkill).toHaveBeenCalledTimes(1);
+      expect(installSkill).toHaveBeenCalledWith({
+        src: '/bundle/spawn-cloud-swarm/SKILL.md',
+        destRoot: '/tmp/.claude/skills',
+        skillName: 'spawn-cloud-swarm',
+      });
+      expect(resolveBundledSkillPath).toHaveBeenCalledWith('spawn-cloud-swarm');
+      expect(deps.log).toHaveBeenCalledWith(
+        'Installed skill: /tmp/.claude/skills/spawn-cloud-swarm/SKILL.md'
+      );
+    });
+
+    it('does NOT invoke installSkill for other providers', async () => {
+      const installSkill = vi.fn();
+      const resolveBundledSkillPath = vi.fn((name: string) => `/bundle/${name}/SKILL.md`);
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program } = createHarness({
+        installSkill,
+        resolveBundledSkillPath,
+        skillsDestRoot: '/tmp/.claude/skills',
+      });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'codex']);
+
+      expect(installSkill).not.toHaveBeenCalled();
+      expect(resolveBundledSkillPath).not.toHaveBeenCalled();
+    });
+
+    it('does NOT install skill when connect itself fails (success=false)', async () => {
+      const installSkill = vi.fn();
+      const resolveBundledSkillPath = vi.fn((name: string) => `/bundle/${name}/SKILL.md`);
+      connectProviderMock.mockResolvedValueOnce({ success: false });
+
+      const { program } = createHarness({
+        installSkill,
+        resolveBundledSkillPath,
+        skillsDestRoot: '/tmp/.claude/skills',
+      });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude']);
+
+      expect(installSkill).not.toHaveBeenCalled();
+    });
+
+    it('connect still succeeds when skill install throws (warning is logged)', async () => {
+      const installSkill = vi.fn(async () => {
+        throw new Error('disk full');
+      });
+      const resolveBundledSkillPath = vi.fn((name: string) => `/bundle/${name}/SKILL.md`);
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program, deps } = createHarness({
+        installSkill,
+        resolveBundledSkillPath,
+        skillsDestRoot: '/tmp/.claude/skills',
+      });
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude'])
+      ).resolves.toBeDefined();
+
+      expect(installSkill).toHaveBeenCalledTimes(1);
+      expect(deps.log).toHaveBeenCalledWith(
+        expect.stringContaining('warning: failed to install spawn-cloud-swarm skill')
+      );
+    });
+
+    it('describes the skill drop in `cloud connect --help` text', () => {
+      const { program } = createHarness();
+      const cloud = program.commands.find((command) => command.name() === 'cloud');
+      const connect = cloud?.commands.find((command) => command.name() === 'connect');
+
+      expect(connect?.description()).toContain('spawn-cloud-swarm');
+      expect(connect?.description()).toContain('~/.claude/skills');
+    });
   });
 });
