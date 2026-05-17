@@ -1365,69 +1365,6 @@ fn derive_winner(summary: &SwarmSummary) -> (Option<String>, Option<String>) {
     (Some(winner.clone()), Some(rationale))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_timeout_supports_seconds_and_units() {
-        assert_eq!(parse_timeout_secs("300").unwrap(), 300);
-        assert_eq!(parse_timeout_secs("45s").unwrap(), 45);
-        assert_eq!(parse_timeout_secs("5m").unwrap(), 300);
-        assert_eq!(parse_timeout_secs("1h").unwrap(), 3600);
-    }
-
-    #[test]
-    fn parse_timeout_rejects_invalid_values() {
-        assert!(parse_timeout_secs("0").is_err());
-        assert!(parse_timeout_secs("abc").is_err());
-        assert!(parse_timeout_secs("10d").is_err());
-    }
-
-    #[test]
-    fn structured_output_marks_partial_with_continuation() {
-        let now = SystemTime::now();
-        let summary = SwarmSummary {
-            pattern: "fan-out".to_string(),
-            teams: 2,
-            timeout_secs: 300,
-            elapsed: Duration::from_secs(1),
-            results: vec![("swarm-team-1".to_string(), "done".to_string())],
-            timed_out: vec!["swarm-team-2".to_string()],
-        };
-
-        let envelope = build_structured_output(&summary, "run_1", now, now);
-        assert_eq!(envelope.status, "partial");
-        assert!(envelope.continuation.is_some());
-        assert_eq!(envelope.results.len(), 1);
-        assert_eq!(envelope.errors.len(), 1);
-    }
-
-    #[test]
-    fn structured_output_serializes_required_top_level_keys() {
-        let now = SystemTime::now();
-        let summary = SwarmSummary {
-            pattern: "fan-out".to_string(),
-            teams: 2,
-            timeout_secs: 300,
-            elapsed: Duration::from_secs(1),
-            results: vec![("swarm-team-1".to_string(), "done".to_string())],
-            timed_out: vec![],
-        };
-
-        let envelope = build_structured_output(&summary, "run_1", now, now);
-        let json = serde_json::to_value(envelope).unwrap();
-        let object = json.as_object().unwrap();
-
-        assert!(object.contains_key("runId"));
-        assert!(object.contains_key("mode"));
-        assert!(object.contains_key("status"));
-        assert!(object.contains_key("results"));
-        assert!(object.contains_key("errors"));
-        assert!(object.contains_key("governance"));
-    }
-}
-
 struct BrokerClient {
     child: Child,
     stdin: ChildStdin,
@@ -1705,5 +1642,68 @@ impl BrokerClient {
                 return Ok(value);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_timeout_supports_seconds_and_units() {
+        assert_eq!(parse_timeout_secs("300").unwrap(), 300);
+        assert_eq!(parse_timeout_secs("45s").unwrap(), 45);
+        assert_eq!(parse_timeout_secs("5m").unwrap(), 300);
+        assert_eq!(parse_timeout_secs("1h").unwrap(), 3600);
+    }
+
+    #[test]
+    fn parse_timeout_rejects_invalid_values() {
+        assert!(parse_timeout_secs("0").is_err());
+        assert!(parse_timeout_secs("abc").is_err());
+        assert!(parse_timeout_secs("10d").is_err());
+    }
+
+    #[test]
+    fn structured_output_marks_partial_with_continuation() {
+        let now = SystemTime::now();
+        let summary = SwarmSummary {
+            pattern: "fan-out".to_string(),
+            teams: 2,
+            timeout_secs: 300,
+            elapsed: Duration::from_secs(1),
+            results: vec![("swarm-team-1".to_string(), "done".to_string())],
+            timed_out: vec!["swarm-team-2".to_string()],
+        };
+
+        let envelope = build_structured_output(&summary, "run_1", now, now);
+        assert_eq!(envelope.status, "partial");
+        assert!(envelope.continuation.is_some());
+        assert_eq!(envelope.results.len(), 1);
+        assert_eq!(envelope.errors.len(), 1);
+    }
+
+    #[test]
+    fn structured_output_serializes_required_top_level_keys() {
+        let now = SystemTime::now();
+        let summary = SwarmSummary {
+            pattern: "fan-out".to_string(),
+            teams: 2,
+            timeout_secs: 300,
+            elapsed: Duration::from_secs(1),
+            results: vec![("swarm-team-1".to_string(), "done".to_string())],
+            timed_out: vec![],
+        };
+
+        let envelope = build_structured_output(&summary, "run_1", now, now);
+        let json = serde_json::to_value(envelope).unwrap();
+        let object = json.as_object().unwrap();
+
+        assert!(object.contains_key("runId"));
+        assert!(object.contains_key("mode"));
+        assert!(object.contains_key("status"));
+        assert!(object.contains_key("results"));
+        assert!(object.contains_key("errors"));
+        assert!(object.contains_key("governance"));
     }
 }

@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn channel_delivery_filters_by_workspace_id() {
-        let workers = vec![
+        let workers = [
             WorkerFixture::new("Alpha", &["general"]),
             WorkerFixture::new("Bravo", &["general"]),
         ];
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn legacy_workers_without_workspace_match_all() {
-        let workers = vec![
+        let workers = [
             WorkerFixture::new("Alpha", &["general"]),
             WorkerFixture::new("Bravo", &["general"]),
         ];

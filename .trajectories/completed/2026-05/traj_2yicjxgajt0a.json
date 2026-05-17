@@ -1,0 +1,53 @@
+{
+  "id": "traj_2yicjxgajt0a",
+  "version": 1,
+  "task": {
+    "title": "Review GPT-5.5 hardening"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T10:54:19.300Z",
+  "completedAt": "2026-05-15T10:54:19.476Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T10:54:19.409Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_bk88fzuvqkcp",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T10:54:19.409Z",
+      "endedAt": "2026-05-15T10:54:19.476Z",
+      "events": [
+        {
+          "ts": 1778842459410,
+          "type": "decision",
+          "content": "Keep OpenCode default on known-stable model: Keep OpenCode default on known-stable model",
+          "raw": {
+            "question": "Keep OpenCode default on known-stable model",
+            "chosen": "Keep OpenCode default on known-stable model",
+            "alternatives": [],
+            "reasoning": "GPT-5.5 should be listed for OpenCode/OpenAI consumers, but compatibility hardening is Codex-specific; leaving OpenCode default on openai/gpt-5.2 avoids introducing an unrelated unsupported-model regression."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reviewed GPT-5.5 hardening and narrowed OpenCode to list GPT-5.5 without making it the default. Regenerated model constants and rebuilt config.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7ffdbbdd13461798a678f520cf505ad8da722b7f",
+    "endRef": "7ffdbbdd13461798a678f520cf505ad8da722b7f"
+  }
+}

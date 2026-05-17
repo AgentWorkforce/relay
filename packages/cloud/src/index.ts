@@ -36,6 +36,18 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
+export { createWorkspace, issueWorkspaceToken } from './workspaces.js';
+
+export {
+  deployProactiveAgent,
+  listProactiveAgents,
+  inspectProactiveAgent,
+  undeployProactiveAgent,
+  createWorkspaceSecret,
+  getWorkspaceSecret,
+  deleteWorkspaceSecret,
+} from './proactive-runtime.js';
+
 export {
   runInteractiveSession,
   formatShellInvocation,
@@ -57,6 +69,12 @@ export {
   type StoredAuth,
   type WhoAmIResponse,
   type AuthSessionResponse,
+  type WorkspaceCreateResponse,
+  type WorkspaceTokenIssueResponse,
+  type WorkspaceTokenRecord,
+  type ProactiveDeploymentResponse,
+  type ProactiveAgentRecord,
+  type WorkspaceSecretRecord,
   type WorkflowFileType,
   type RunWorkflowResponse,
   type WorkflowSchedule,

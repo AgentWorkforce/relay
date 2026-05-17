@@ -5,3 +5,4 @@ target/
 *.lock
 packages/*/dist/
 web/content/docs/
+packages/config/src/cli-registry.generated.ts
