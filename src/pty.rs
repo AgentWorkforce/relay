@@ -72,7 +72,7 @@ pub struct PtySession {
     /// Shared with the reader thread, which holds the actual lock most
     /// of the time. Kept on the struct so `resize()` can take the same
     /// lock the reader uses — preventing the child's post-resize
-    /// redraw from being parsed against the old grid dimensions.
+    /// redraw from being parsed against stale grid dimensions.
     processor: Arc<Mutex<Processor>>,
 }
 
@@ -225,12 +225,10 @@ impl PtySession {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        // Race fix: the reader thread takes (processor, term) before
-        // advancing the parser. master.resize() can cause the child to
-        // emit a redraw immediately, so we acquire the same locks (in
-        // the same order) BEFORE the master resize and hold them until
-        // after term.resize(). That guarantees no bytes are parsed
-        // against the old grid dimensions.
+        // Keep resize and parser advancement serialized. The reader
+        // thread locks (processor, term) before parsing chunks; resize
+        // follows that order and holds both locks while updating PTY
+        // and grid dimensions.
         let _processor_guard = self.processor.lock();
         let mut term_guard = self.term.lock();
 
@@ -260,8 +258,7 @@ impl PtySession {
 
     /// Render the visible grid as plain text — one row per line, trailing
     /// blank cells trimmed. Useful for snapshots, debug commands, and
-    /// substring-match readiness checks that want the **rendered** screen
-    /// rather than the raw byte stream.
+    /// readiness checks.
     pub fn screen_text(&self) -> String {
         let term = self.term.lock();
         let grid = term.grid();
@@ -460,8 +457,8 @@ impl PtySession {
         }
         let mut child = self.child.lock();
         let _ = child.kill();
-        // Use try_wait instead of wait to avoid blocking if the child
-        // was already reaped between the check above and here.
+        // Avoid blocking if the child was reaped between the check
+        // above and here.
         match child.try_wait() {
             Ok(Some(_)) | Err(_) => {
                 // Child reaped or error (ECHILD) — done.

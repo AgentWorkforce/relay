@@ -1,11 +1,12 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
-    format_injection_for_worker_with_workspace, parse_cli_command, parse_continuity_command,
-    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker_with_workspace,
+    parse_cli_command, parse_continuity_command, ActivityDetector, DeliveryOutcome,
+    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
+    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
+use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
 use relay_broker::snapshot::Snapshot;
@@ -97,6 +98,24 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
     })
 }
 
+fn evaluate_startup_gate(
+    resolved_cli: &str,
+    startup_output: &str,
+    startup_total_bytes: usize,
+    wait_for_relaycast_boot: bool,
+    saw_relaycast_boot: bool,
+    post_boot_output: &str,
+    grid: GridReadinessSnapshot<'_>,
+) -> bool {
+    if wait_for_relaycast_boot {
+        saw_relaycast_boot
+            && output_has_prompt(resolved_cli, post_boot_output)
+            && cli_prompt_ready(resolved_cli, grid)
+    } else {
+        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes, grid)
+    }
+}
+
 fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
@@ -104,12 +123,21 @@ fn startup_gate_ready(
     wait_for_relaycast_boot: bool,
     saw_relaycast_boot: bool,
     post_boot_output: &str,
+    pty: &PtySession,
 ) -> bool {
-    if wait_for_relaycast_boot {
-        saw_relaycast_boot && output_has_prompt(resolved_cli, post_boot_output)
-    } else {
-        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes)
-    }
+    let screen = pty.screen_text();
+    evaluate_startup_gate(
+        resolved_cli,
+        startup_output,
+        startup_total_bytes,
+        wait_for_relaycast_boot,
+        saw_relaycast_boot,
+        post_boot_output,
+        GridReadinessSnapshot {
+            screen: &screen,
+            cursor: Some(pty.cursor_position()),
+        },
+    )
 }
 
 fn should_block_pending_injection(
@@ -184,9 +212,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let writer_task = tokio::spawn(async move {
         // Keep one async stdout handle for this process. Tokio's `write_all`
-        // is not cancel-safe if the task is aborted mid-write, but this task is
-        // normally shut down by dropping `out_tx` and awaiting it below, so the
-        // frame stream is drained instead of cancelled.
+        // is not cancel-safe if the task is aborted mid-write. This task
+        // shuts down by dropping `out_tx` and awaiting the writer so the
+        // frame stream drains cleanly.
         use tokio::io::AsyncWriteExt;
         let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
@@ -342,6 +370,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     wait_for_relaycast_boot,
                                     saw_relaycast_boot,
                                     &post_boot_output,
+                                    &pty,
                                 );
                                 try_emit_worker_ready(
                                     &out_tx,
@@ -541,6 +570,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             wait_for_relaycast_boot,
                             saw_relaycast_boot,
                             &post_boot_output,
+                            &pty,
                         );
                         try_emit_worker_ready(
                             &out_tx,
@@ -864,7 +894,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
 
-                    // Push to pending verifications instead of immediate ack
+                    // Queue echo verification before acknowledging delivery.
                     pending_verifications.push_back(PendingVerification {
                         delivery_id: pending.delivery.delivery_id.clone(),
                         event_id: pending.delivery.event_id.clone(),
@@ -891,6 +921,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     wait_for_relaycast_boot,
                     saw_relaycast_boot,
                     &post_boot_output,
+                    &pty,
                 );
                 try_emit_worker_ready(
                     &out_tx,
@@ -1031,10 +1062,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     child_exit_detected = true;
                     running = false;
                 } else {
-                    // If no PTY output for a long time, the agent is likely
-                    // idle (thinking, waiting for input, etc). Emit an idle
-                    // event instead of killing the process — the broker or
-                    // dashboard can decide what to do with idle agents.
+                    // If no PTY output arrives for a long time, emit an idle
+                    // event so the broker or dashboard can decide what to do.
                     let silent_duration = last_pty_output_time.elapsed();
                     if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT && !reported_idle {
                         tracing::info!(
@@ -1114,54 +1143,81 @@ mod tests {
     }
 
     #[test]
-    fn startup_gate_blocks_codex_until_post_boot_prompt() {
+    fn startup_gate_requires_visible_post_boot_prompt() {
         let startup_output = "Welcome\n› ";
-        let post_boot_output = "MCP loading...";
-        assert!(!startup_gate_ready(
+        let post_boot_output = "done\n› ";
+        let loading_grid = GridReadinessSnapshot {
+            screen: "MCP loading...\n",
+            cursor: Some((1, 15)),
+        };
+        assert!(!evaluate_startup_gate(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            post_boot_output,
+            loading_grid,
+        ));
+
+        let ready_grid = GridReadinessSnapshot {
+            screen: "done\n› \n",
+            cursor: Some((2, 3)),
+        };
+        assert!(!evaluate_startup_gate(
             "codex",
             startup_output,
             startup_output.len(),
             true,
             false,
             post_boot_output,
+            ready_grid,
         ));
-        assert!(!startup_gate_ready(
+        assert!(!evaluate_startup_gate(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            "MCP loading...",
+            ready_grid,
+        ));
+        assert!(evaluate_startup_gate(
             "codex",
             startup_output,
             startup_output.len(),
             true,
             true,
             post_boot_output,
-        ));
-        assert!(startup_gate_ready(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            true,
-            "done\n› ",
+            ready_grid,
         ));
     }
 
     #[test]
-    fn startup_gate_uses_generic_ready_detection_without_boot_requirement() {
-        // Claude requires welcome banner + bare prompt
-        assert!(startup_gate_ready(
+    fn startup_gate_uses_ready_detection_when_relaycast_boot_not_required() {
+        assert!(evaluate_startup_gate(
             "claude",
-            "Welcome back Khaliq!\n>\n",
+            "",
             20,
             false,
             false,
             "",
+            GridReadinessSnapshot {
+                screen: "Welcome back Khaliq!\n>\n",
+                cursor: Some((2, 2)),
+            },
         ));
-        // Non-claude CLIs use generic detection
-        assert!(startup_gate_ready(
+        assert!(evaluate_startup_gate(
             "aider",
-            "Ready\n> ",
+            "",
             20,
             false,
             false,
             "",
+            GridReadinessSnapshot {
+                screen: "Ready\n> \n",
+                cursor: Some((2, 3)),
+            },
         ));
     }
 
