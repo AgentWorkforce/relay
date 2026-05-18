@@ -18,6 +18,7 @@ mod swarm;
 mod swarm_tui;
 mod wait;
 mod worker;
+mod worker_request;
 mod wrap;
 
 use helpers::{
@@ -1393,19 +1394,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
     let mut terminal_failed_deliveries: HashSet<String> = HashSet::new();
-    // Outstanding `Snapshot` HTTP requests waiting on a `snapshot_response`
-    // frame from the PTY worker. Keyed by the `request_id` we put on the
-    // outbound `snapshot_pty` frame; the reply oneshot is consumed when the
-    // worker echoes the same `request_id` back. Stale entries are cleaned
-    // up by the deadline sweep in the `reap_tick` arm — see
-    // `SNAPSHOT_REQUEST_TIMEOUT` below. (#871 will generalise this
-    // request/response correlation pattern across other RPCs.)
-    let mut pending_snapshots: HashMap<
-        String,
-        tokio::sync::oneshot::Sender<Result<Value, String>>,
-    > = HashMap::new();
-    const SNAPSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-    let mut snapshot_request_deadlines: HashMap<String, Instant> = HashMap::new();
+    // Outstanding worker-bound RPC requests waiting on a `*_response`
+    // frame from the wrapped worker. Keyed by the `request_id` we put on
+    // the outbound request frame; the reply `oneshot` is consumed when
+    // the worker echoes the same `request_id` back, or the entry expires
+    // via the deadline sweep in the `reap_tick` arm below.
+    //
+    // Introduced for `snapshot_pty` (#870) and generalised in #871 so
+    // future request/response routes (`mode`, `pending`, `flush` from
+    // #864) can reuse the same correlation infrastructure — see
+    // `crate::worker_request`.
+    let mut pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -2198,49 +2197,61 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 })));
                             }
                         }
-                        ListenApiRequest::Snapshot { name, format, reply } => {
-                            // Stash the reply oneshot under a unique request_id, then
-                            // forward `snapshot_pty` to the worker. The worker echoes
-                            // the request_id back on its `snapshot_response`, which
-                            // the broker uses to fulfill the oneshot (see the
-                            // worker_event_rx arm below).
+                        ListenApiRequest::WorkerRequest { name, kind, payload, timeout, reply } => {
+                            // Generic worker request/response: validate the
+                            // worker exists and supports a PTY (request/response
+                            // routes today all target the PTY side), then ship
+                            // the frame and park the `reply` oneshot in
+                            // `pending_requests`. The response is fulfilled
+                            // either by the `*_response` arm below or by the
+                            // deadline sweep in `reap_tick`.
                             //
                             // Headless workers don't run a VT and don't handle
-                            // `snapshot_pty` — short-circuit with a descriptive
-                            // error rather than letting the request sit in
-                            // `pending_snapshots` until the 5s timeout sweep
-                            // returns a misleading `snapshot_timeout`.
+                            // PTY-oriented RPCs — short-circuit with a typed
+                            // error rather than letting the request sit until
+                            // the timeout sweep returns a misleading
+                            // `worker_timeout`.
                             let runtime = workers
                                 .workers
                                 .get(&name)
                                 .map(|handle| handle.spec.runtime.clone());
                             match runtime {
                                 None => {
-                                    let _ = reply.send(Err(format!(
-                                        "agent_not_found: no worker named '{name}'"
-                                    )));
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::WorkerNotFound(
+                                            format!("no worker named '{name}'"),
+                                        ),
+                                    ));
                                 }
                                 Some(AgentRuntime::Headless) => {
-                                    let _ = reply.send(Err(format!(
-                                        "unsupported_runtime: worker '{name}' is headless; snapshot_pty is only supported on PTY workers"
-                                    )));
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::UnsupportedRuntime(
+                                            format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
+                                        ),
+                                    ));
                                 }
                                 Some(AgentRuntime::Pty) => {
-                                    let request_id = format!("snap_{}", Uuid::new_v4().simple());
+                                    let request_id = format!("req_{}", Uuid::new_v4().simple());
                                     if let Err(err) = workers.send_to_worker(
                                         &name,
-                                        "snapshot_pty",
+                                        &kind,
                                         Some(request_id.clone()),
-                                        json!({ "format": format.as_wire_str() }),
+                                        payload,
                                     ).await {
-                                        let _ = reply.send(Err(format!(
-                                            "agent_not_found: {err}"
-                                        )));
+                                        let _ = reply.send(Err(
+                                            worker_request::RequestWorkerError::SendFailed(
+                                                err.to_string(),
+                                            ),
+                                        ));
                                     } else {
-                                        pending_snapshots.insert(request_id.clone(), reply);
-                                        snapshot_request_deadlines.insert(
+                                        pending_requests.insert(
                                             request_id,
-                                            Instant::now() + SNAPSHOT_REQUEST_TIMEOUT,
+                                            worker_request::PendingRequest {
+                                                kind,
+                                                worker_name: name,
+                                                reply,
+                                                deadline: Instant::now() + timeout,
+                                            },
                                         );
                                     }
                                 }
@@ -3198,45 +3209,30 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "error": value.get("payload").cloned().unwrap_or(Value::Null)
                                     })).await;
-                                } else if msg_type == "snapshot_response" {
-                                    // Route the response back to the HTTP /
-                                    // CLI caller using the request_id we put
-                                    // on the outbound snapshot_pty frame.
-                                    let request_id = value
-                                        .get("request_id")
-                                        .and_then(Value::as_str)
-                                        .map(ToOwned::to_owned);
-                                    if let Some(request_id) = request_id {
-                                        snapshot_request_deadlines.remove(&request_id);
-                                        if let Some(reply) = pending_snapshots.remove(&request_id) {
-                                            let payload = value
-                                                .get("payload")
-                                                .cloned()
-                                                .unwrap_or(Value::Null);
-                                            // The worker emits an error payload
-                                            // shaped like `{ "error": { "code":..., "message":... } }`
-                                            // when it can't honour the format.
-                                            if let Some(error) = payload.get("error") {
-                                                let message = error
-                                                    .get("message")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("snapshot failed");
-                                                let code = error
-                                                    .get("code")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("invalid_format");
-                                                let _ = reply.send(Err(format!("{code}: {message}")));
-                                            } else {
-                                                let _ = reply.send(Ok(payload));
-                                            }
-                                        } else {
-                                            tracing::debug!(
-                                                target = "agent_relay::broker",
-                                                worker = %name,
-                                                request_id = %request_id,
-                                                "snapshot_response with no pending caller — dropping"
-                                            );
-                                        }
+                                } else if msg_type.ends_with("_response") {
+                                    // Generic worker request/response dispatch.
+                                    // Any frame whose `type` ends in
+                                    // `_response` is routed by `request_id`
+                                    // into the matching parked `oneshot` in
+                                    // `pending_requests`. The pending entry
+                                    // owns the format/error decoding logic
+                                    // via `worker_request::fulfil_response_frame`.
+                                    let routed = worker_request::fulfil_response_frame(
+                                        &mut pending_requests,
+                                        &value,
+                                    );
+                                    if !routed {
+                                        let req_id = value
+                                            .get("request_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("<missing>");
+                                        tracing::debug!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            msg_type = %msg_type,
+                                            request_id = %req_id,
+                                            "worker response with no pending caller — dropping"
+                                        );
                                     }
                                 } else if msg_type == "worker_stream" {
                                     let _ = send_event(&sdk_out_tx, json!({
@@ -3540,32 +3536,20 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             _ = reap_tick.tick() => {
                 let now = Instant::now();
 
-                // Time out snapshot requests whose worker never responded.
-                // Common cause: worker crashed between us sending snapshot_pty
-                // and it parsing the frame. Without this sweep the HTTP
-                // handler would hang forever on its oneshot.
-                let timed_out: Vec<String> = snapshot_request_deadlines
-                    .iter()
-                    .filter_map(|(req_id, deadline)| {
-                        if *deadline <= now {
-                            Some(req_id.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for req_id in timed_out {
-                    snapshot_request_deadlines.remove(&req_id);
-                    if let Some(reply) = pending_snapshots.remove(&req_id) {
-                        tracing::warn!(
-                            target = "agent_relay::broker",
-                            request_id = %req_id,
-                            "snapshot request timed out before worker responded"
-                        );
-                        let _ = reply.send(Err(
-                            "snapshot_timeout: worker did not respond in time".into(),
-                        ));
-                    }
+                // Time out worker request/response calls whose worker never
+                // responded. Common cause: worker crashed between us sending
+                // the request frame and it parsing the frame. Without this
+                // sweep the HTTP handler would hang forever on its oneshot.
+                for (req_id, worker_name, kind) in
+                    worker_request::reap_expired(&mut pending_requests, now)
+                {
+                    tracing::warn!(
+                        target = "agent_relay::broker",
+                        request_id = %req_id,
+                        worker = %worker_name,
+                        kind = %kind,
+                        "worker request timed out before worker responded"
+                    );
                 }
 
                 let due_ids: Vec<String> = pending_deliveries
