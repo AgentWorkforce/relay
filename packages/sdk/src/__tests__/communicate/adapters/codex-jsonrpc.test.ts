@@ -208,3 +208,20 @@ test('spawnCodexAppServer merges env overrides with the parent environment', asy
     delete process.env.CODEX_ADAPTER_PARENT_ENV;
   }
 });
+
+test('spawnCodexAppServer surfaces spawn errors through onExit instead of crashing', async () => {
+  const { spawnCodexAppServer } = await loadJsonRpcModule();
+  const transport = spawnCodexAppServer({
+    command: '/nonexistent/codex-binary-for-test',
+    args: [],
+  });
+
+  const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    transport.onExit((exitCode: number | null, exitSignal: NodeJS.Signals | null) =>
+      resolve([exitCode, exitSignal])
+    );
+  });
+
+  assert.equal(code, null);
+  assert.equal(signal, null);
+});

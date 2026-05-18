@@ -363,6 +363,42 @@ test('communicate onRelay routes framework codex targets to the Codex adapter', 
   assert.equal(requestsFor(client, 'thread/start').length, 1);
 });
 
+test('Codex interrupt keeps activeTurnId when the turn/interrupt request fails', async () => {
+  const { onRelay } = await loadCodexAdapterModule();
+
+  class InterruptFailingClient extends FakeCodexClient {
+    failInterrupt = false;
+    async request<T = unknown>(method: string, params?: any): Promise<T> {
+      if (method === 'turn/interrupt' && this.failInterrupt) {
+        this.requests.push({ method, params });
+        throw new Error('interrupt boom');
+      }
+      return super.request<T>(method, params);
+    }
+  }
+
+  const client = new InterruptFailingClient(['relaycast']);
+  const handle = onRelay('CodexTester', { framework: 'codex', clientFactory: () => client }, new FakeRelay());
+  await handle.ready;
+
+  await client.emit({
+    method: 'turn/started',
+    params: { threadId: 'thread-1', turn: { id: 'turn-live' } },
+  });
+
+  client.failInterrupt = true;
+  await assert.rejects(handle.interrupt(), /interrupt boom/);
+
+  client.failInterrupt = false;
+  const response = await handle.interrupt();
+  assert.ok(response, 'expected a second interrupt to succeed because activeTurnId was preserved');
+
+  const interrupts = requestsFor(client, 'turn/interrupt');
+  assert.equal(interrupts.length, 2);
+  assert.equal(interrupts[0].params.turnId, 'turn-live');
+  assert.equal(interrupts[1].params.turnId, 'turn-live');
+});
+
 test('communicate onRelay routes direct framework codex targets to the Codex adapter', async () => {
   const { onRelay } = await loadCommunicateModule();
   const client = new FakeCodexClient(['relaycast']);

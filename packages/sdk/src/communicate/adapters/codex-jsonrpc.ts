@@ -117,13 +117,31 @@ export function spawnCodexAppServer(options: SpawnCodexAppServerOptions = {}): C
     stdio: 'pipe',
   });
 
+  let lastSpawnError: Error | undefined;
+  // Spawn failures (e.g. ENOENT for a missing `codex` binary) emit 'error' and
+  // can crash the process if nothing is listening. Capture the error so exit
+  // callbacks observe a clean transport teardown instead.
+  child.on('error', (error: Error) => {
+    lastSpawnError = error;
+  });
+
   return {
     stdin: child.stdin,
     stdout: child.stdout,
     stderr: child.stderr,
     kill: (signal?: NodeJS.Signals | number) => child.kill(signal),
     onExit: (callback) => {
-      child.once('exit', callback);
+      let settled = false;
+      const settle = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (settled) return;
+        settled = true;
+        callback(code, signal);
+      };
+      child.once('exit', settle);
+      child.once('error', () => settle(null, null));
+      if (lastSpawnError) {
+        settle(null, null);
+      }
     },
   };
 }

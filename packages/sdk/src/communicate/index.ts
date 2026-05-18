@@ -29,9 +29,13 @@ export function onRelay(
   configOrOptions?: Relay
 ): CodexHandle;
 export function onRelay(
-  nameOrAgent: string | Record<string, unknown>,
-  configOrOptions?: Record<string, unknown> | Relay,
+  nameOrAgent: string,
+  configOrOptions?: Record<string, unknown>,
   maybeRelay?: Relay
+): Record<string, unknown>;
+export function onRelay(
+  nameOrAgent: Record<string, unknown>,
+  configOrOptions?: Relay
 ): Record<string, unknown>;
 export function onRelay(
   nameOrAgent: string | Record<string, unknown> | CodexAdapterOptions,

@@ -366,11 +366,12 @@ export class CodexRelayHandle implements CodexHandle {
     }
 
     const turnId = this.activeTurnId;
-    this.activeTurnId = undefined;
-    return this.client.request<CodexTurnInterruptResponse>('turn/interrupt', {
+    const response = await this.client.request<CodexTurnInterruptResponse>('turn/interrupt', {
       threadId,
       turnId,
     });
+    this.activeTurnId = undefined;
+    return response;
   }
 
   async fork(options: CodexForkOptions = {}): Promise<CodexHandle> {
