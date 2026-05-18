@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-18T04:01:59.836Z",
+  "lastUpdated": "2026-05-18T05:52:06.915Z",
   "trajectories": {
     "traj_9gq96irkj00s": {
       "title": "Update relay to use published relaycast Rust reclaim fix",
@@ -414,7 +414,7 @@
       "title": "Upgrade .agentworkforce personas to latest 3.x shape",
       "status": "active",
       "startedAt": "2026-05-14T14:28:34.155Z",
-      "path": ".trajectories/active/traj_v87cyrs8dke9.json"
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a5c5b8a4961c9a051/.trajectories/active/traj_v87cyrs8dke9.json"
     },
     "traj_v1wexlfur5zr": {
       "title": "Fix broker headless reliability doc",
