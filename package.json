@@ -11,6 +11,7 @@
     "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
     "relay-snippets",
+    "skills",
     "LICENSE",
     "README.md"
   ],

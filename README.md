@@ -119,6 +119,8 @@ Or just describe what you want in plain language:
 > Split the migration into three relay workers, one for the schema, one for the API, and one for the frontend
 ```
 
+Bundled skills include `adding-swarm-patterns`, `using-agent-relay`, `running-headless-orchestrator`, and `spawn-cloud-swarm` (which orchestrates `cloud.local-mount.*` and `cloud.agent.spawn` for repo-attached cloud swarms; installed by `agent-relay cloud connect claude`).
+
 See [docs/plugin-claude-code.md](./docs/plugin-claude-code.md) and the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for more.
 
 ## Agent Relay CLI

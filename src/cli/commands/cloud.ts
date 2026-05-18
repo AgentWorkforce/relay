@@ -28,7 +28,13 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import { installSkill, resolveBundledSkillPath } from '../lib/install-skill.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
+
+const SPAWN_CLOUD_SWARM_SKILL_NAME = 'spawn-cloud-swarm';
+
+export type InstallSkillFn = typeof installSkill;
+export type ResolveBundledSkillPathFn = typeof resolveBundledSkillPath;
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
@@ -51,6 +57,9 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  installSkill?: InstallSkillFn;
+  resolveBundledSkillPath?: ResolveBundledSkillPathFn;
+  skillsDestRoot?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -168,7 +177,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   const cloudCommand = program
     .command('cloud')
-    .description('Cloud account, provider auth, and workflow commands');
+    .description('Cloud account, provider auth, workflow commands, and Claude skill install');
 
   // ── login ──────────────────────────────────────────────────────────────────
 
@@ -311,7 +320,9 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('connect')
-    .description('Connect a provider via interactive SSH session')
+    .description(
+      'Connect a provider via interactive SSH session. For the claude provider, also drops the `spawn-cloud-swarm` skill into ~/.claude/skills/.'
+    )
     .argument('<provider>', `Provider to connect (${getProviderHelpText()})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
@@ -320,6 +331,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       const started = Date.now();
       let success = false;
       let errorClass: string | undefined;
+      let skillInstalled = false;
       const trackedProvider = normalizeProvider(providerArg);
       try {
         const result = await connectProvider({
@@ -330,6 +342,29 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           io: { log: deps.log, error: deps.error },
         });
         success = result.success;
+
+        if (success && trackedProvider === 'anthropic') {
+          const installer = deps.installSkill ?? installSkill;
+          const resolver = deps.resolveBundledSkillPath ?? resolveBundledSkillPath;
+          const destRoot = deps.skillsDestRoot ?? path.join(os.homedir(), '.claude', 'skills');
+          try {
+            const installResult = await installer({
+              src: resolver(SPAWN_CLOUD_SWARM_SKILL_NAME),
+              destRoot,
+              skillName: SPAWN_CLOUD_SWARM_SKILL_NAME,
+            });
+            skillInstalled = installResult.installed;
+            if (installResult.installed) {
+              deps.log(`Installed skill: ${installResult.destPath}`);
+            } else {
+              deps.log(`Skill already up to date: ${installResult.destPath}`);
+            }
+          } catch (skillErr) {
+            deps.log(
+              `warning: failed to install spawn-cloud-swarm skill (${(skillErr as Error).message ?? 'unknown error'}); connect succeeded.`
+            );
+          }
+        }
       } catch (err) {
         errorClass = errorClassName(err);
         throw err;
@@ -339,6 +374,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           success,
           duration_ms: Date.now() - started,
           provider: trackedProvider,
+          skill_installed: skillInstalled,
           ...(errorClass ? { error_class: errorClass } : {}),
         });
       }
