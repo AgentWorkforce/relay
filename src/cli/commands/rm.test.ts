@@ -15,20 +15,45 @@ interface HarnessOptions {
   releaseThrows?: Error;
 }
 
+/** Captured request snapshot. `headers` is a flat record so tests can
+ *  assert on auth headers without unwrapping a `Headers` instance — the
+ *  CLI always passes header objects as plain records anyway. */
+interface FetchLogEntry {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+}
+
 function createHarness(opts: HarnessOptions = {}): {
   deps: RmDependencies;
   logs: unknown[][];
   errors: unknown[][];
-  fetchLog: Array<{ url: string; method: string }>;
+  fetchLog: FetchLogEntry[];
 } {
   const logs: unknown[][] = [];
   const errors: unknown[][] = [];
-  const fetchLog: Array<{ url: string; method: string }> = [];
+  const fetchLog: FetchLogEntry[] = [];
 
   const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
     const method = (init?.method ?? 'GET').toUpperCase();
-    fetchLog.push({ url, method });
+    // Normalize the headers shape. The CLI passes plain records; tests
+    // assert on those keys directly. If someone ever swaps to a real
+    // `Headers` instance, this materializes it the same way.
+    const headers: Record<string, string> = {};
+    const rawHeaders = init?.headers;
+    if (rawHeaders instanceof Headers) {
+      rawHeaders.forEach((value, key) => {
+        headers[key] = value;
+      });
+    } else if (Array.isArray(rawHeaders)) {
+      for (const [k, v] of rawHeaders) headers[k] = v;
+    } else if (rawHeaders && typeof rawHeaders === 'object') {
+      for (const [k, v] of Object.entries(rawHeaders)) {
+        headers[k] = String(v);
+      }
+    }
+    fetchLog.push({ url, method, headers });
     if (opts.releaseThrows) throw opts.releaseThrows;
     const status = opts.releaseStatus ?? 200;
     const body = opts.releaseBody ?? { success: true };
@@ -62,7 +87,18 @@ describe('releaseAgent', () => {
     const { deps, fetchLog } = createHarness();
     const result = await releaseAgent({ url: 'http://localhost:3889', apiKey: 'k' }, 'Alice', deps.fetch);
     expect(result.ok).toBe(true);
-    expect(fetchLog).toEqual([{ url: 'http://localhost:3889/api/spawned/Alice', method: 'DELETE' }]);
+    expect(fetchLog).toHaveLength(1);
+    expect(fetchLog[0]).toMatchObject({
+      url: 'http://localhost:3889/api/spawned/Alice',
+      method: 'DELETE',
+      headers: { 'X-API-Key': 'k' },
+    });
+  });
+
+  it('omits the API-key header when no key is configured', async () => {
+    const { deps, fetchLog } = createHarness();
+    await releaseAgent({ url: 'http://localhost:3889' }, 'Alice', deps.fetch);
+    expect(fetchLog[0].headers).not.toHaveProperty('X-API-Key');
   });
 
   it('returns ok:false with the broker-supplied error on 404', async () => {
