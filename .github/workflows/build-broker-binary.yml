@@ -60,11 +60,16 @@ jobs:
         uses: taiki-e/install-action@cross
 
       - name: Build static binary
-        # AGENT_RELAY_POSTHOG_KEY is read by `option_env!` in src/telemetry.rs
-        # and baked into the binary. Leave it unset (no secret configured) to
-        # ship a broker with telemetry hard-disabled.
+        # POSTHOG_PROJECT_KEY is a GitHub Actions repository *variable*
+        # (Settings → Variables, NOT Secrets) because the PostHog ingest
+        # key is a public-by-design write-only key — same category as a
+        # Sentry DSN. We map it into the code-side env var name
+        # `AGENT_RELAY_POSTHOG_KEY`, which `option_env!` in
+        # src/telemetry.rs reads and bakes into the binary. Unset
+        # variable → telemetry ships disabled (acceptable for forks and
+        # pre-release pipelines).
         env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --target ${{ matrix.target }} --bin agent-relay-broker

@@ -134,11 +134,15 @@ jobs:
 
       - name: Build broker binary (unix)
         if: runner.os != 'Windows'
-        # AGENT_RELAY_POSTHOG_KEY is consumed at compile time by
-        # `option_env!` in src/telemetry.rs. Missing secret → telemetry
-        # ships disabled (acceptable for forks / pre-release pipelines).
+        # POSTHOG_PROJECT_KEY is a repository *variable* (Settings →
+        # Variables, NOT Secrets) — the PostHog ingest key is
+        # public-by-design (same category as Sentry DSN). We map it into
+        # the code-side env var `AGENT_RELAY_POSTHOG_KEY`, which
+        # `option_env!` in src/telemetry.rs consumes at compile time.
+        # Unset variable → telemetry ships disabled (acceptable for
+        # forks / pre-release pipelines).
         env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
@@ -151,7 +155,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
           cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
@@ -227,14 +231,16 @@ jobs:
         run: npm run build
 
       - name: Build standalone binary
-        # AGENT_RELAY_POSTHOG_KEY is read via process.env in
-        # packages/telemetry/src/posthog-config.ts. The bun standalone is
-        # an end-user-shipped artifact, so we need the key baked in via
-        # --define rather than expected in the runtime env. Empty secret →
+        # `AGENT_RELAY_POSTHOG_KEY` (the code-side name read by
+        # packages/telemetry/src/posthog-config.ts via process.env) is
+        # populated from the `POSTHOG_PROJECT_KEY` repository *variable*
+        # (Settings → Variables, NOT Secrets). The bun standalone is an
+        # end-user-shipped artifact, so we bake the key in via --define
+        # rather than expecting it in the runtime env. Empty variable →
         # the define evaluates to "" and the telemetry no-op path takes
         # over (see readKey() in posthog-config.ts).
         env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           mkdir -p release-binaries
           # Exclude native modules - bun runtime has built-in bun:sqlite
@@ -345,9 +351,10 @@ jobs:
 
       - name: Build relay-acp standalone binary
         # See the standalone agent-relay build above — same rationale for
-        # baking the PostHog key in via --define.
+        # baking the PostHog key in via --define, same `POSTHOG_PROJECT_KEY`
+        # repository variable.
         env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
+          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           mkdir -p release-binaries
           bun build \
