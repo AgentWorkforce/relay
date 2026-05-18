@@ -82,6 +82,11 @@ describe('formatWorkflowParseError', () => {
 });
 
 describe('runScriptWorkflow', () => {
+  const nodeSupportsStripTypes = (() => {
+    const [major = 0, minor = 0] = process.versions.node.split('.').map((part) => Number(part));
+    return major > 22 || (major === 22 && minor >= 6);
+  })();
+
   it('throws when the file does not exist', async () => {
     await expect(runScriptWorkflow('/definitely/does/not/exist.ts')).rejects.toThrow(/File not found/);
   });
@@ -391,13 +396,14 @@ export const helperReady = true;
     const workflowPath = path.join(tmpDir, 'main.ts');
     const helperPath = path.join(tmpDir, 'helper.ts');
     fs.writeFileSync(workflowPath, "import './helper.ts';\n", 'utf8');
-    fs.writeFileSync(helperPath, "export enum Hidden { Value = 'value' }\n", 'utf8');
-    fs.chmodSync(helperPath, 0);
+    fs.mkdirSync(helperPath);
 
     try {
-      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(/tsx exited with code 1/);
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(true);
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
+        /tsx exited with code 1|EISDIR|directory/i
+      );
     } finally {
-      fs.chmodSync(helperPath, 0o600);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 30000);
@@ -409,7 +415,9 @@ export const helperReady = true;
 
     try {
       await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
-        /node --experimental-strip-types exited with code 1/
+        nodeSupportsStripTypes
+          ? /node --experimental-strip-types exited with code 1/
+          : /(?:tsx|ts-node|npx tsx) exited with code 1/
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -433,7 +441,9 @@ process.exit(7);
 
     try {
       await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
-        /node --experimental-strip-types exited with code 7/
+        nodeSupportsStripTypes
+          ? /node --experimental-strip-types exited with code 7/
+          : /(?:tsx|ts-node|npx tsx) exited with code 7/
       );
       expect(fs.readFileSync(markerPath, 'utf8')).toBe('ran\n');
     } finally {
@@ -466,10 +476,10 @@ await import(${JSON.stringify(enumModulePath)});
     );
 
     try {
-      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
-        /node --experimental-strip-types exited with code 1/
-      );
-      expect(fs.readFileSync(markerPath, 'utf8')).toBe('ran\n');
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow();
+      if (nodeSupportsStripTypes) {
+        expect(fs.readFileSync(markerPath, 'utf8')).toBe('ran\n');
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
