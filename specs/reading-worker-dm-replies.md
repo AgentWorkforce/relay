@@ -32,7 +32,7 @@ A secondary friction (worker didn't appear in `who` immediately after spawn) is 
 
 After this work, an orchestrator running headlessly can answer **"what did Worker2 say?"** with one command and get full, untruncated, sender-attributed message text:
 
-```
+```text
 $ agent-relay replies Worker2
 [2026-05-15T15:31:02Z] Worker2: Done. Created result.json with {"status":"success","worker":"claude"}.
 [2026-05-15T15:30:55Z] Worker2: Working on it now.
@@ -69,13 +69,17 @@ The existing `inbox`, `history`, and `send` commands keep working but become con
 - Bidirectional streaming / `tail -f` semantics for DMs. (Polling + `replies --since` is sufficient and matches existing patterns.)
 - Reworking the broker's DM storage layer.
 - Fixing the `who` race after spawn (tracked separately; see §8).
-- Adding a `--mark-read` toggle distinct from current behavior. Existing read-tracking semantics are preserved.
+- Changing the broker's global read-tracking semantics. The existing
+  auto-read-on-inbox behavior is preserved unchanged. (The `replies
+--mark-read` flag is in scope, but it is an explicit, command-local
+  acknowledgement only — it does not alter the default semantics other
+  commands rely on.)
 
 ## 4. CLI surface
 
 ### 4.1 New: `agent-relay replies <agent>`
 
-```
+```text
 agent-relay replies <agent> [options]
 
 Show messages received from <agent> in the DM conversation between the
@@ -108,14 +112,14 @@ The text renderer for `Unread DMs` changes from a count line to a content block.
 
 Before:
 
-```
+```text
 Unread DMs:
   relay: 1
 ```
 
 After:
 
-```
+```text
 Unread DMs:
   Worker2 → orchestrator (3 unread):
     [2026-05-15T15:31:02Z] Worker2: Done. Created result.json...
@@ -133,7 +137,7 @@ Rules:
 
 Today this command has two behaviors split by whether `--from` is also passed (`:648-703`). After this work it has **one** behavior: print messages in the conversation, newest at the bottom, no truncation.
 
-```
+```text
 $ agent-relay history --to Worker2
 [2026-05-15T15:29:10Z] orchestrator: Create a file called result.json...
 [2026-05-15T15:30:40Z] Worker2: Got it.
@@ -165,7 +169,7 @@ const senderName =
 
 The `--from` flag's help text is updated:
 
-```
+```text
 --from <name>   Sender name (registered identity in relaycast).
                 Default: $AGENT_RELAY_ORCHESTRATOR_NAME or "orchestrator".
                 Used so workers' replies are addressed to a stable name
@@ -191,7 +195,7 @@ On every DM message record returned by `replies`, `history --to <agent>`, and `i
 
 `.claude/skills/running-headless-orchestrator/SKILL.md` must change such that the canonical answer to "How do I read worker replies?" is:
 
-```
+```text
 agent-relay replies <worker>
 ```
 
@@ -215,7 +219,10 @@ Located in `src/cli/commands/messaging.test.ts` (existing) and a new `replies.te
 - `replies` exits 0 with `No DM conversation with <agent>.` when no conversation exists.
 - `replies --since 1h` filters by parsed duration; reuses `parseSince` already in the file.
 - `inbox` text output renders up to 3 unread messages per conversation full-text, and the truncation footer appears when N > 3.
-- `inbox --json` is byte-identical before/after this change for callers who do not opt into `direction` (i.e., `direction` is additive).
+- `inbox --json` changes are strictly additive: every pre-existing key keeps its
+  prior value and position, and the only difference is a new
+  `unread_dms[].last_message.direction` field. Callers that ignore unknown keys
+  are unaffected; no field is renamed, removed, or retyped.
 - `history --to <agent>` returns messages, not conversation summary, when `<agent>` is non-channel.
 - `send` without `--from` sends as `orchestrator` (verified by reading back via `replies`).
 - `send` honors `AGENT_RELAY_ORCHESTRATOR_NAME` env var when `--from` is omitted.
@@ -233,10 +240,10 @@ Required steps, run from a clean working tree on the feature branch:
 3. **Replay the issue #860 transcript verbatim.** Spawn two workers (one `codex`, one `claude`), send each a DM that asks them to write a file, then exercise every command in §4:
    - `agent-relay replies Worker2` — prints full inbound text, no truncation, sender is `Worker2`.
    - `agent-relay replies Worker2 --unread` — prints only unread, does not mark read.
-   - `agent-relay replies Worker2 --mark-read` — prints + marks read; a follow-up `--unread` call returns empty.
    - `agent-relay replies Worker2 --since 30s --json` — JSON includes the new `direction` field with value `inbound` for worker messages.
-   - `agent-relay inbox --agent Worker2` — renders message content (up to 3 per conversation), not counts.
+   - `agent-relay inbox --agent Worker2` — renders message content (up to 3 per conversation), not counts. Run this **before** `--mark-read` so unread rendering is exercised against still-unread messages.
    - `agent-relay inbox --agent Worker2 --json` — `unread_dms[].last_message` carries the worker's text; `from` is the worker's name, not `"relay"`.
+   - `agent-relay replies Worker2 --mark-read` — run **after** the inbox checks above; prints + marks read; a follow-up `--unread` call returns empty.
    - `agent-relay history --to Worker2` — chronological messages, no 60-char preview, outbound sender is `orchestrator`.
    - `agent-relay send Worker2 "ping"` with no `--from` — Worker2's subsequent `replies` view shows the outbound was attributed to `orchestrator`.
    - `AGENT_RELAY_ORCHESTRATOR_NAME=ops agent-relay send Worker2 "ping"` — outbound attributed to `ops`.

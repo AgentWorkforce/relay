@@ -1,0 +1,849 @@
+{
+  "id": "compact_56o4pdayyvzb",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-05-15T18:29:21.988Z",
+  "sourceTrajectories": [
+    "traj_hfkww5z7trxn",
+    "traj_wzzboitm85ee",
+    "traj_0e8i20oitwvz",
+    "traj_d89s38ddu7cj",
+    "traj_f3arvbmmlomn",
+    "traj_o251whkvy9rl",
+    "traj_4chzkm724ufo",
+    "traj_3gjtcykvybt5",
+    "traj_hrsndfzk0qay",
+    "traj_0o6gb2wvk59t",
+    "traj_2yicjxgajt0a",
+    "traj_9fdv7hxm0b60",
+    "traj_7zu7et53ph3l",
+    "traj_n8duofq5vq1a",
+    "traj_7uznwzoxbao6",
+    "traj_erzd7j9nto9r",
+    "traj_4vucir4qvqa2",
+    "traj_6sjeohtm3php",
+    "traj_v1wexlfur5zr",
+    "traj_gh05rj5gwsap",
+    "traj_whd40oxptlhn",
+    "traj_wx00tjvpptvg",
+    "traj_fh8oosbijpwc",
+    "traj_947wzpddsg9j",
+    "traj_4t07itef99ug",
+    "traj_tgism98me5na",
+    "traj_zfa6skfr32vy",
+    "traj_dpgn0am1jq1c",
+    "traj_z171lng2fbbi",
+    "traj_aw7stgf4qau0",
+    "traj_mz5m5ysjj31e",
+    "traj_iole5zdt9orr",
+    "traj_uf8y40ewrfh0",
+    "traj_oyc528j7suvo",
+    "traj_u4ixmbqqm2y1",
+    "traj_lieyyspidhfj",
+    "traj_34b1u84b19gz",
+    "traj_bdrlknyl8twj",
+    "traj_k7njijv51iq4",
+    "traj_6ujzpx82gqs9",
+    "traj_vkozdglobkyg",
+    "traj_60qc24ufr96g",
+    "traj_2tqxnib25omk",
+    "traj_m7mpv7j8n78h",
+    "traj_itgr2w8qs3xn",
+    "traj_tavtex0db4b0",
+    "traj_ui5omrgz819d",
+    "traj_o9cx33xn5u39",
+    "traj_3b3p1z4y7qlo",
+    "traj_222ha5671idc",
+    "traj_1776113772922_bc92f121",
+    "traj_qb54w47qwod6",
+    "traj_tjadoebpscps",
+    "traj_1776105988184_29f1270c",
+    "traj_1776105620545_9dcebb3d",
+    "traj_e5i62wdjx0jd",
+    "traj_1776073106646_1839be2d",
+    "traj_w0xpsaoxuiyw",
+    "traj_9tt55is74dq5",
+    "traj_1775914296101_a4397efe",
+    "traj_1775914133873_35667beb",
+    "traj_rs2bt3x0fqba",
+    "traj_4zqhfqw7g28l",
+    "traj_703m7sqyq89t",
+    "traj_0t92gxaz6igh",
+    "traj_g3muawdq6bsb",
+    "traj_d48czxmgx4ac",
+    "traj_abjovknvcijv",
+    "traj_o8kgzhfu6jth",
+    "traj_tv1x9pamkqad",
+    "traj_8oh4r5km5eic",
+    "traj_530xmbfeljyb",
+    "traj_mk0t0cgn4ytq",
+    "traj_05xg7j388bc4",
+    "traj_avmkyoo2s3rt"
+  ],
+  "dateRange": {
+    "start": "2026-04-10T14:42:17.242Z",
+    "end": "2026-05-15T13:00:15.366Z"
+  },
+  "summary": {
+    "totalDecisions": 73,
+    "totalEvents": 269,
+    "uniqueAgents": [
+      "default",
+      "orchestrator",
+      "lead-claude",
+      "impl-primary-codex",
+      "impl-codex",
+      "review-claude",
+      "planner",
+      "implementer",
+      "reviewer",
+      "impl",
+      "tester",
+      "fixer",
+      "fix-worker-1",
+      "verifier",
+      "lead",
+      "fix-worker-2",
+      "fix-worker-3",
+      "impl-1",
+      "impl-2",
+      "impl-3",
+      "impl-4"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Clarified broker readiness timeout message",
+          "chosen": "Clarified broker readiness timeout message",
+          "reasoning": "The readiness wait now applies both to existing brokers and autostarted brokers, so the timeout message should not imply autostart was always involved.",
+          "fromTrajectory": "traj_0e8i20oitwvz"
+        },
+        {
+          "question": "Tightened CLI readiness control flow",
+          "chosen": "Tightened CLI readiness control flow",
+          "reasoning": "Review found createSdkClient could mask a connected broker's readiness/session error by falling through to autostart; now autostart only follows connect failures, while connected-client readiness errors surface.",
+          "fromTrajectory": "traj_d89s38ddu7cj"
+        },
+        {
+          "question": "Investigate failed worktree E2E before editing",
+          "chosen": "Investigate failed worktree E2E before editing",
+          "reasoning": "The documented skill command failed in a real skills PR worktree with stale connection metadata and STOPPED status; need distinguish environmental port collision from CLI/doc defects before changing guidance.",
+          "fromTrajectory": "traj_4chzkm724ufo"
+        },
+        {
+          "question": "Use invocation-shape aware detached re-exec",
+          "chosen": "Use invocation-shape aware detached re-exec",
+          "reasoning": "Standalone Bun binaries do not have a separate Node script path; spawning execPath with cliScript as an extra argv item prevents the foreground child from running the intended up command.",
+          "fromTrajectory": "traj_7uznwzoxbao6"
+        },
+        {
+          "question": "Move spawn persistence fix onto clean main-based branch",
+          "chosen": "Move spawn persistence fix onto clean main-based branch",
+          "reasoning": "The original working branch had unrelated proactive-runtime commits; a PR from it would have included unrelated history. The fix branch now tracks origin/main and carries only the spawn persistence change plus trajectory records.",
+          "fromTrajectory": "traj_whd40oxptlhn"
+        },
+        {
+          "question": "Keep spawn broker scoped to invoking project",
+          "chosen": "Keep spawn broker scoped to invoking project",
+          "reasoning": "The CLI --cwd option describes the spawned worker working directory; using it to choose the broker made agent-relay who connect to a different project scope and hide the spawned agent.",
+          "fromTrajectory": "traj_wx00tjvpptvg"
+        },
+        {
+          "question": "Relaycast Track A implementation belongs in sibling repo <repo-root>/../relaycast because @relaycast/sdk source lives there",
+          "chosen": "Relaycast Track A implementation belongs in sibling repo <repo-root>/../relaycast because @relaycast/sdk source lives there",
+          "reasoning": "The relay repo only re-exports RelayCast from @relaycast/sdk; package source is in the sibling repo.",
+          "fromTrajectory": "traj_fh8oosbijpwc"
+        },
+        {
+          "question": "Included cloud in all SDK publish dependency paths",
+          "chosen": "Included cloud in all SDK publish dependency paths",
+          "reasoning": "Review feedback showed the negative smoke and SDK-only internal publish matrix must mirror the positive smoke path because @agent-relay/cloud is an exact-version runtime dependency of @agent-relay/sdk.",
+          "fromTrajectory": "traj_z171lng2fbbi"
+        },
+        {
+          "question": "Drain spawned broker stdout in SDK clients",
+          "chosen": "Drain spawned broker stdout in SDK clients",
+          "reasoning": "agent-relay run and direct SDK users both reach AgentRelayClient.spawn; after startup URL parsing stdout was left paused/undrained, so the root fix belongs in the TypeScript and Python SDK clients rather than only in Ricky's loader workaround.",
+          "fromTrajectory": "traj_mz5m5ysjj31e"
+        },
+        {
+          "question": "Merged main instead of rebasing PR 831",
+          "chosen": "Merged main instead of rebasing PR 831",
+          "reasoning": "The user asked to fix conflicts; a merge commit preserves the already-reviewed branch history while resolving the dirty PR state against origin/main.",
+          "fromTrajectory": "traj_uf8y40ewrfh0"
+        },
+        {
+          "question": "Repair deterministic gates inside the workflow runner",
+          "chosen": "Repair deterministic gates inside the workflow runner",
+          "reasoning": "Deterministic check failures should be treated as work for an existing workflow agent before becoming terminal workflow failures; this keeps workflows closer to a multi-agent prompt loop.",
+          "fromTrajectory": "traj_itgr2w8qs3xn"
+        },
+        {
+          "question": "Handled PR 747 feedback in tracked parent worktree",
+          "chosen": "Handled PR 747 feedback in tracked parent worktree",
+          "reasoning": "The cwd copy under .relay/workspace is not the git worktree; fixes must be applied to <repo-root> so the feature branch and PR contain them.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        },
+        {
+          "question": "Grouped findings by file ownership into two conflict-free buckets",
+          "chosen": "Grouped findings by file ownership into two conflict-free buckets",
+          "reasoning": "All findings on messaging.ts must stay together, all findings on fix-history-inbox-v2.ts must stay together, and both groups remain under the six-finding limit for parallel assignment.",
+          "fromTrajectory": "traj_e5i62wdjx0jd"
+        },
+        {
+          "question": "Switch production SST alias to orgin.agentrelay.net to avoid the existing apex alias conflict",
+          "chosen": "Switch production SST alias to orgin.agentrelay.net to avoid the existing apex alias conflict",
+          "reasoning": "The current production deployment path in the new AWS account cannot claim agentrelay.net because the live site is still attached elsewhere. Moving the new stack to orgin.agentrelay.net allows a no-downtime deploy while the main domain remains untouched.",
+          "fromTrajectory": "traj_rs2bt3x0fqba"
+        },
+        {
+          "question": "Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail",
+          "chosen": "Collapsed the mobile docs sidebar into the hamburger menu instead of rendering it above the content rail",
+          "reasoning": "On small screens the left rail consumes vertical space and duplicates navigation. Passing a mobile-only DocsNav into SiteNav keeps the docs tree available from the existing hamburger while preserving the desktop sidebar unchanged.",
+          "fromTrajectory": "traj_0t92gxaz6igh"
+        },
+        {
+          "question": "Added /cloud to the footer company links",
+          "chosen": "Added /cloud to the footer company links",
+          "reasoning": "Cloud is a first-class site destination and fits the footer's secondary navigation without adding new layout complexity.",
+          "fromTrajectory": "traj_o8kgzhfu6jth"
+        },
+        {
+          "question": "Implemented Browser primitive as SDK integration step",
+          "chosen": "Implemented Browser primitive as SDK integration step",
+          "reasoning": "The SDK runner already delegates type: integration steps through executeIntegrationStep, so the Browser primitive can plug in without changing DAG scheduling or runner internals.",
+          "fromTrajectory": "traj_05xg7j388bc4"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Resolved merge conflicts by accepting main trajectory artifacts and merging trajectory index",
+          "chosen": "Resolved merge conflicts by accepting main trajectory artifacts and merging trajectory index",
+          "reasoning": "Only conflicts were trajectory records and index metadata. The requested platform tradeoff sentence was not present in the branch or merged main checkout, so there was no prose conflict to resolve.",
+          "fromTrajectory": "traj_wzzboitm85ee"
+        },
+        {
+          "question": "Fix CLI spawn readiness by waiting for broker session",
+          "chosen": "Fix CLI spawn readiness by waiting for broker session",
+          "reasoning": "The observed Service Unavailable comes from the startup HTTP handler before the real API is installed, so the CLI autostart path should poll getSession instead of returning after finding the connection file.",
+          "fromTrajectory": "traj_o251whkvy9rl"
+        },
+        {
+          "question": "Return effective spawn spec from WorkerRegistry",
+          "chosen": "Return effective spawn spec from WorkerRegistry",
+          "reasoning": "Model fallback mutates the worker spec internally; returning the effective spec lets events, persisted state, and API replies report the actual model used.",
+          "fromTrajectory": "traj_o251whkvy9rl"
+        },
+        {
+          "question": "Fix broker integration harness strict typing before running E2E",
+          "chosen": "Fix broker integration harness strict typing before running E2E",
+          "reasoning": "Fresh validation uncovered that the broker integration suite could not compile because createWorkspace().apiKey is typed optional. The harness now throws if the workspace response lacks an API key instead of assigning undefined to RELAY_API_KEY.",
+          "fromTrajectory": "traj_0o6gb2wvk59t"
+        },
+        {
+          "question": "Report broker PID on detached readiness timeout",
+          "chosen": "Report broker PID on detached readiness timeout",
+          "reasoning": "When wrapper and broker PIDs differ, diagnostics must point operators at the process represented by connection.json, especially for live-but-API-unready failures.",
+          "fromTrajectory": "traj_erzd7j9nto9r"
+        },
+        {
+          "question": "Gate detached broker start on API readiness and report STARTING separately",
+          "chosen": "Gate detached broker start on API readiness and report STARTING separately",
+          "reasoning": "Headless orchestrators need command success to mean usable broker, and live-process/API-unready must not be collapsed into STOPPED.",
+          "fromTrajectory": "traj_4vucir4qvqa2"
+        },
+        {
+          "question": "Require broker API readiness for status --wait-for",
+          "chosen": "Require broker API readiness for status --wait-for",
+          "reasoning": "connection.json is written before Relaycast handshake and ready router setup, so PID-only polling can report RUNNING before spawn/control endpoints are usable.",
+          "fromTrajectory": "traj_6sjeohtm3php"
+        },
+        {
+          "question": "Bumped relaycast Rust SDK to 1.0.2",
+          "chosen": "Bumped relaycast Rust SDK to 1.0.2",
+          "reasoning": "1.0.2 contains the Channel deserialization fix for successful create-channel responses that omit workspace_id/channel_type and is the smallest available published crate bump from the existing exact pin.",
+          "fromTrajectory": "traj_gh05rj5gwsap"
+        },
+        {
+          "question": "Implement proactive-runtime relay commands as relay-only surfaces, preserving existing agent-relay setup commands and using cloud endpoint fallbacks for unstable APIs",
+          "chosen": "Implement proactive-runtime relay commands as relay-only surfaces, preserving existing agent-relay setup commands and using cloud endpoint fallbacks for unstable APIs",
+          "reasoning": "Avoid breaking current broker/workflow CLI users while still shipping the new relay init/deploy/logs/agents/secrets interface against evolving cloud backends",
+          "fromTrajectory": "traj_fh8oosbijpwc"
+        },
+        {
+          "question": "Expose workflow schedule helpers from @agent-relay/sdk/workflows",
+          "chosen": "Expose workflow schedule helpers from @agent-relay/sdk/workflows",
+          "reasoning": "Ricky and similar products should consume scheduling from Relay SDK instead of duplicating Cloud endpoint calls. The SDK re-exports the existing @agent-relay/cloud scheduling implementation.",
+          "fromTrajectory": "traj_oyc528j7suvo"
+        },
+        {
+          "question": "Implement Slack primitive as a local-only package with a thin WebClient adapter",
+          "chosen": "Implement Slack primitive as a local-only package with a thin WebClient adapter",
+          "reasoning": "The Phase A contract excludes alternate runtimes and Nango, so mirroring github-primitive shape should stop at package/API conventions while keeping routing local via SLACK_BOT_TOKEN.",
+          "fromTrajectory": "traj_6ujzpx82gqs9"
+        },
+        {
+          "question": "Patch current PR 826 review comments in place",
+          "chosen": "Patch current PR 826 review comments in place",
+          "reasoning": "The remaining review items were documentation/test-stub issues on the same branch, so the least disruptive response is a small follow-up commit on PR 826 rather than a stacked PR.",
+          "fromTrajectory": "traj_vkozdglobkyg"
+        },
+        {
+          "question": "Use a separate git worktree for the workflow repair runtime change",
+          "chosen": "Use a separate git worktree for the workflow repair runtime change",
+          "reasoning": "The user explicitly requested worktree isolation after the branch was created; keeping the dirty base checkout untouched avoids mixing this implementation with existing local edits.",
+          "fromTrajectory": "traj_tavtex0db4b0"
+        },
+        {
+          "question": "Constrain messaging fix to inbox agent override and history DM-target validation",
+          "chosen": "Constrain messaging fix to inbox agent override and history DM-target validation",
+          "reasoning": "User requested two specific CLI bug fixes in src/cli/commands/messaging.ts only; no broader behavior changes are warranted.",
+          "fromTrajectory": "traj_1776105620545_9dcebb3d"
+        },
+        {
+          "question": "Reversed the dark footer gradient so the brighter Relay blue sits on the top edge",
+          "chosen": "Reversed the dark footer gradient so the brighter Relay blue sits on the top edge",
+          "reasoning": "The footer background is driven by a single dark-mode token, so flipping the gradient stop order achieves the requested visual change without affecting the footer layout or light theme.",
+          "fromTrajectory": "traj_g3muawdq6bsb"
+        }
+      ]
+    },
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Treat Bun //root argv as a virtual executable entrypoint",
+          "chosen": "Treat Bun //root argv as a virtual executable entrypoint",
+          "reasoning": "CI showed compiled standalone still timed out; Bun compiled binaries report argv[1] as a virtual //root path while execPath is the real binary, so detached re-exec must preserve user args from argv[2] but omit the virtual path when spawning the child.",
+          "fromTrajectory": "traj_9fdv7hxm0b60"
+        },
+        {
+          "question": "Align headless success output with standalone smoke readiness contract",
+          "chosen": "Align headless success output with standalone smoke readiness contract",
+          "reasoning": "The fixed Bun re-exec path started the broker locally, but the CI smoke contract asserts exactly one 'Broker started.' readiness line. The detached path now emits that stable line and logs the PID separately.",
+          "fromTrajectory": "traj_9fdv7hxm0b60"
+        },
+        {
+          "question": "Added cloud to publish smoke local tarballs",
+          "chosen": "Added cloud to publish smoke local tarballs",
+          "reasoning": "@agent-relay/cloud is an exact-version SDK dependency after release version bump, so the pre-publish scratch install must use the locally packed cloud tarball just like config/github/slack/workflow-types.",
+          "fromTrajectory": "traj_aw7stgf4qau0"
+        },
+        {
+          "question": "Resolved package merge by keeping SDK cloud dependency and aligning internal versions to 6.0.14",
+          "chosen": "Resolved package merge by keeping SDK cloud dependency and aligning internal versions to 6.0.14",
+          "reasoning": "PR added @agent-relay/cloud exports from the SDK, while main released packages at 6.0.14; mismatched internal package versions were breaking install/typecheck CI.",
+          "fromTrajectory": "traj_iole5zdt9orr"
+        },
+        {
+          "question": "Break SDK and Slack primitive package cycle",
+          "chosen": "Break SDK and Slack primitive package cycle",
+          "reasoning": "CI failed because turbo detected @agent-relay/sdk and @agent-relay/slack-primitive as cyclic build dependencies; the SDK can depend on Slack primitive, but Slack primitive examples can resolve SDK from the workspace without declaring it as a devDependency.",
+          "fromTrajectory": "traj_lieyyspidhfj"
+        },
+        {
+          "question": "Made retry-mode workflows repair-aware by default",
+          "chosen": "Made retry-mode workflows repair-aware by default",
+          "reasoning": "Workflow reliability is now a product contract: SDK builder workflows and raw runner configs with agents get bounded repair retries unless callers explicitly choose fail-fast, continue, or repairRetries: 0. Agent/artifact failures now invoke repair before retrying, not only deterministic gates.",
+          "fromTrajectory": "traj_bdrlknyl8twj"
+        },
+        {
+          "question": "Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor",
+          "chosen": "Kept Slack primitive local-only and fixed the example by routing Slack and GitHub integration steps explicitly through a composite executor",
+          "reasoning": "The Phase A contract forbids alternate Slack runtimes, while the example includes both createPR and postMessage steps and needs deterministic local execution routing for each integration.",
+          "fromTrajectory": "traj_k7njijv51iq4"
+        },
+        {
+          "question": "Cover repair fallback, final validation, sibling isolation, and resume reliability",
+          "chosen": "Cover repair fallback, final validation, sibling isolation, and resume reliability",
+          "reasoning": "These are the failure modes that let repairable workflow errors leak into terminal failures: final validation gates, fan-out sibling state, invalid/missing repair agent configuration, and start-from recovery context.",
+          "fromTrajectory": "traj_60qc24ufr96g"
+        },
+        {
+          "question": "Make deterministic gate repair opt-in in Relay SDK",
+          "chosen": "Make deterministic gate repair opt-in in Relay SDK",
+          "reasoning": "PR feedback correctly identified that default repairRetries=2 would silently add LLM repair attempts, cost, and file mutation risk to existing workflows. Ricky-generated workflows can still opt in explicitly.",
+          "fromTrajectory": "traj_m7mpv7j8n78h"
+        },
+        {
+          "question": "Aligned publish-resolution CI check with publish build command",
+          "chosen": "Aligned publish-resolution CI check with publish build command",
+          "reasoning": "Codex review noted the new job used build:packages while publish runs npm run build. The CI guard now runs the full root build so root CLI/TypeScript failures are caught before merge.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        },
+        {
+          "question": "Pinned package build resolution to TypeScript 5.7.3 via exact devDependency and npx-based build script",
+          "chosen": "Pinned package build resolution to TypeScript 5.7.3 via exact devDependency and npx-based build script",
+          "reasoning": "These packages were using a ranged TypeScript version and bare tsc, which allows resolution drift across environments. Pinning both the dependency and the build invocation makes package builds deterministic.",
+          "fromTrajectory": "traj_9tt55is74dq5"
+        },
+        {
+          "question": "Identified deploy failure as CloudFront CNAME conflict on production web domain",
+          "chosen": "Identified deploy failure as CloudFront CNAME conflict on production web domain",
+          "reasoning": "GitHub Actions logs show sst deploy failed in WebCdnDistribution creation with AWS CloudFront 409 CNAMEAlreadyExists after the Next.js build completed successfully.",
+          "fromTrajectory": "traj_4zqhfqw7g28l"
+        },
+        {
+          "question": "Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle",
+          "chosen": "Stopped docs and blog content loaders from binding to build-machine absolute paths, and explicitly traced MDX content into the Next server bundle",
+          "reasoning": "The production stack showed a read against /home/runner/work/.../web/content/docs/introduction.mdx, which means the docs loader baked the GitHub runner path into the server chunk via import.meta.url. Resolving content from runtime cwd candidates fixes the path, and tracing content/docs plus content/blog ensures those source files are present in the deployed artifact.",
+          "fromTrajectory": "traj_703m7sqyq89t"
+        }
+      ]
+    },
+    {
+      "category": "database",
+      "decisions": [
+        {
+          "question": "Aligned GPT-5.5 default reasoning effort with Codex catalog",
+          "chosen": "Aligned GPT-5.5 default reasoning effort with Codex catalog",
+          "reasoning": "Installed Codex 0.130.0 reports gpt-5.5 default_reasoning_level=medium while the registry had xhigh. The OpenAI model docs also describe medium as the default, so registry metadata and SDK tests should use medium.",
+          "fromTrajectory": "traj_hfkww5z7trxn"
+        },
+        {
+          "question": "Ignore generated registry output in Prettier",
+          "chosen": "Ignore generated registry output in Prettier",
+          "reasoning": "CI validates raw codegen output, while lint-staged had formatted the generated TypeScript file after codegen. Ignoring the generated output keeps the committed file identical to npm run codegen:models.",
+          "fromTrajectory": "traj_3gjtcykvybt5"
+        },
+        {
+          "question": "Covered explicit Codex model args in local fallback",
+          "chosen": "Covered explicit Codex model args in local fallback",
+          "reasoning": "Broker spec.model fallback prevented the observed default failure, but explicit --model gpt-5.5 args could still hit old Codex CLI upgrade errors; rewriting those forms when the local catalog rejects 5.5 makes the fix comprehensive.",
+          "fromTrajectory": "traj_hrsndfzk0qay"
+        },
+        {
+          "question": "Keep OpenCode default on known-stable model",
+          "chosen": "Keep OpenCode default on known-stable model",
+          "reasoning": "GPT-5.5 should be listed for OpenCode/OpenAI consumers, but compatibility hardening is Codex-specific; leaving OpenCode default on openai/gpt-5.2 avoids introducing an unrelated unsupported-model regression.",
+          "fromTrajectory": "traj_2yicjxgajt0a"
+        },
+        {
+          "question": "Use Codex debug model catalog instead of version guessing",
+          "chosen": "Use Codex debug model catalog instead of version guessing",
+          "reasoning": "The local Codex CLI exposes a debug model catalog, so relay can verify whether gpt-5.5 is supported by the installed binary and fall back only when support is absent or unprobeable.",
+          "fromTrajectory": "traj_7zu7et53ph3l"
+        },
+        {
+          "question": "Treat catalog upgrade markers as unsupported models",
+          "chosen": "Treat catalog upgrade markers as unsupported models",
+          "reasoning": "A Codex catalog can expose a model slug while marking it as requiring an upgrade; relay should only pass gpt-5.5 through when the local catalog says the entry is usable.",
+          "fromTrajectory": "traj_7zu7et53ph3l"
+        },
+        {
+          "question": "Promoted gpt-5.5 to the Codex registry default",
+          "chosen": "Promoted gpt-5.5 to the Codex registry default",
+          "reasoning": "Official OpenAI model docs list gpt-5.5 as the flagship model for complex reasoning and coding, and the broker default already expects it.",
+          "fromTrajectory": "traj_n8duofq5vq1a"
+        },
+        {
+          "question": "Added openai/gpt-5.5 to the shared OpenCode model registry",
+          "chosen": "Added openai/gpt-5.5 to the shared OpenCode model registry",
+          "reasoning": "The shared registry is used beyond the Codex CLI section; adding the OpenAI-provider id keeps registry consumers aligned with GPT-5.5 availability while pricing already covers openai/gpt-5.5.",
+          "fromTrajectory": "traj_n8duofq5vq1a"
+        },
+        {
+          "question": "Localized workflow trajectory compatibility casts",
+          "chosen": "Localized workflow trajectory compatibility casts",
+          "reasoning": "Publish removes package-lock and resolves agent-trajectories@0.5.5, whose exported type aliases are narrower than its runtime schema. Keeping workflow metadata and casting only at the agent-trajectories adapter boundary preserves persisted trajectory shape while compiling against both 0.5.4 and 0.5.5.",
+          "fromTrajectory": "traj_1776113772922_bc92f121"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Validate via four independent surfaces",
+          "chosen": "Validate via four independent surfaces",
+          "reasoning": "For a fresh end-to-end pass, unit tests alone are not enough. Run the full Vitest suite, broker integration tests, direct built-CLI headless lifecycle, and packaged Bun standalone smoke so both Node and compiled binary invocation shapes are exercised.",
+          "fromTrajectory": "traj_0o6gb2wvk59t"
+        },
+        {
+          "question": "Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes",
+          "chosen": "Treat docs/BROKER_HEADLESS_RELIABILITY.md as an issue brief and implement the missing reliability fixes",
+          "reasoning": "The file was untracked in the original checkout and absent from latest main, so I copied its intent into the new worktree, corrected stale file references, and fixed the high-impact no-dashboard/status gaps in current main.",
+          "fromTrajectory": "traj_v1wexlfur5zr"
+        },
+        {
+          "question": "Kept existing proactive bootstrap command implementation and validated it instead of rewriting CLI surfaces",
+          "chosen": "Kept existing proactive bootstrap command implementation and validated it instead of rewriting CLI surfaces",
+          "reasoning": "The branch already contains top-level login/workspaces/tokens commands plus cloud workspace/token helpers; compile and test validation passed without additional code edits.",
+          "fromTrajectory": "traj_tgism98me5na"
+        },
+        {
+          "question": "Use existing proactive-bootstrap/cloud auth flows and add a relay-facing CLI alias instead of reimplementing login/workspace/token logic",
+          "chosen": "Use existing proactive-bootstrap/cloud auth flows and add a relay-facing CLI alias instead of reimplementing login/workspace/token logic",
+          "reasoning": "The repo already has working top-level login/workspaces/tokens commands and cloud helpers; the spec gap is the relay command surface, not the underlying bootstrap behavior.",
+          "fromTrajectory": "traj_zfa6skfr32vy"
+        },
+        {
+          "question": "Add a dedicated SDK workflow reliability contract suite",
+          "chosen": "Add a dedicated SDK workflow reliability contract suite",
+          "reasoning": "Workflow repair semantics should be enforced as product behavior with fast fake executors, not only incidental coverage in the broad runner test file.",
+          "fromTrajectory": "traj_2tqxnib25omk"
+        },
+        {
+          "question": "Run repair agents from the failed gate resolved cwd",
+          "chosen": "Run repair agents from the failed gate resolved cwd",
+          "reasoning": "The repair agent must see and edit the same filesystem context as the deterministic command that failed, especially when a step uses cwd or workdir overrides.",
+          "fromTrajectory": "traj_m7mpv7j8n78h"
+        },
+        {
+          "question": "Muted Commander output in messaging CLI tests",
+          "chosen": "Muted Commander output in messaging CLI tests",
+          "reasoning": "The missing-argument coverage test should assert exit behavior without polluting stderr; configuring the test Command output keeps the suite clean while preserving runtime CLI behavior.",
+          "fromTrajectory": "traj_1776105988184_29f1270c"
+        },
+        {
+          "question": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+          "chosen": "Preserved both sides of the trajectory merge by combining events and keeping the completed-file form",
+          "reasoning": "Your branch still contained recent UI and preview-routing decisions on the old active trajectory, while main had already abandoned that trajectory and added new CI hardening notes. The safe resolution was to keep all recorded events, move the entry to the completed path, and advance its completion time to the latest preserved event.",
+          "fromTrajectory": "traj_mk0t0cgn4ytq"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Implement relay dlq as a new top-level CLI command group with file-backed workspace records and a flexible replay adapter",
+          "chosen": "Implement relay dlq as a new top-level CLI command group with file-backed workspace records and a flexible replay adapter",
+          "reasoning": "The repo has no existing DLQ command surface, but it already has reusable CLI auth/session helpers and Relaycast client patterns.",
+          "fromTrajectory": "traj_fh8oosbijpwc"
+        },
+        {
+          "question": "Mirrored browser primitive workflow-step pattern for GitHub",
+          "chosen": "Mirrored browser primitive workflow-step pattern for GitHub",
+          "reasoning": "The SDK already routes integration steps through RunnerStepExecutor; serializing params/config/output preserves workflow template interpolation and keeps GitHub primitive behavior local to the primitive package.",
+          "fromTrajectory": "traj_tv1x9pamkqad"
+        },
+        {
+          "question": "Implemented GitHub actions as adapter-driven REST helpers",
+          "chosen": "Implemented GitHub actions as adapter-driven REST helpers",
+          "reasoning": "The existing local and cloud runtimes already share a request(method,path,options) abstraction, so action modules can work across gh CLI and Nango without runtime-specific branches.",
+          "fromTrajectory": "traj_8oh4r5km5eic"
+        },
+        {
+          "question": "Implemented GitHub primitive as base adapter layer with action stubs",
+          "chosen": "Implemented GitHub primitive as base adapter layer with action stubs",
+          "reasoning": "The requested step creates client/runtime infrastructure only; action-specific methods should exist on the contract but throw until the next implementation phase.",
+          "fromTrajectory": "traj_530xmbfeljyb"
+        },
+        {
+          "question": "Implemented browser primitive as a nested workspace package",
+          "chosen": "Implemented browser primitive as a nested workspace package",
+          "reasoning": "The design document defines packages/primitives/browser as an independent primitive, so the implementation needs package metadata, a workspace entry, and package build coverage in addition to source files.",
+          "fromTrajectory": "traj_avmkyoo2s3rt"
+        }
+      ]
+    },
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Reuse the existing proactive-bootstrap command group instead of adding a separate CLI path",
+          "chosen": "Reuse the existing proactive-bootstrap command group instead of adding a separate CLI path",
+          "reasoning": "The repo already exposes login, workspaces create, and tokens issue at the top level; the M1 work is integrating that surface cleanly, adding the relay binary alias, and avoiding conflicts with the legacy hidden init command.",
+          "fromTrajectory": "traj_947wzpddsg9j"
+        },
+        {
+          "question": "Use the existing root-level proactive bootstrap command implementation and validate it in place",
+          "chosen": "Use the existing root-level proactive bootstrap command implementation and validate it in place",
+          "reasoning": "The relay repo already contains the M1 login/workspaces/tokens surfaces plus related CLI wiring, so the task is to finish and verify the current implementation rather than duplicate it under a new command group.",
+          "fromTrajectory": "traj_4t07itef99ug"
+        },
+        {
+          "question": "Expose login, workspace creation, and workspace token issuance as top-level CLI bootstrap commands",
+          "chosen": "Expose login, workspace creation, and workspace token issuance as top-level CLI bootstrap commands",
+          "reasoning": "Matches the proactive runtime golden path while reusing the existing cloud auth flow and a reusable @agent-relay/cloud workspace client",
+          "fromTrajectory": "traj_dpgn0am1jq1c"
+        },
+        {
+          "question": "Shifted dark footer styling to the existing Relay blue gradient",
+          "chosen": "Shifted dark footer styling to the existing Relay blue gradient",
+          "reasoning": "The footer tokens lived in brand.css, so the cleanest change was to swap the dark footer background from near-black to the same blue range already used elsewhere in the dark theme and tint the divider line to match.",
+          "fromTrajectory": "traj_d48czxmgx4ac"
+        }
+      ]
+    },
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Matched orphan brokers by resolved project path or verified process cwd",
+          "chosen": "Matched orphan brokers by resolved project path or verified process cwd",
+          "reasoning": "PR feedback flagged basename and substring matching as unsafe; exact command-path boundaries plus lsof cwd verification preserve cleanup without killing sibling repos or shell harnesses",
+          "fromTrajectory": "traj_f3arvbmmlomn"
+        },
+        {
+          "question": "Fixed orphan cleanup process matching",
+          "chosen": "Fixed orphan cleanup process matching",
+          "reasoning": "The worktree E2E harness was killed by agent-relay down --force because orphan cleanup grepped ps output for projectRoot and agent-relay-broker anywhere in the command line; shell wrappers can contain both strings without being broker processes. The fix parses ps output and only targets commands whose executable basename is agent-relay-broker.",
+          "fromTrajectory": "traj_4chzkm724ufo"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [
+    "\"lead-plan\" completed → The lead plan file already exists with content matching all required sections (Non-goals, Routing contract, Implementati",
+    "\"lead-plan\" completed → Wrote `lead-plan.md` with the required headings (Non-goals, Routing contract, Implementation contract) plus Deliverables",
+    "\"implement-cloud-api-bootstrap\" completed → >7u›Write tests for @filename  gpt-5.5 high · Context 100% left · ~/Projects/AgentWorkforce/relay · gpt-5.5 …\r\n╭────────",
+    "\"implement-relay-cli-client\" completed → >7u›Write tests for @filename  gpt-5.5 high · Context 100% left · ~/Projects/AgentWorkforce/relay · gpt-5.5 …\r\n╭────────",
+    "\"fix-loop\" completed → >7u\r\n╭──────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.124.0)                   │\r\n│              ",
+    "\"final-review\" completed → Full review written to `.workflow-artifacts/cloud-run-start-from/final-review.md`.",
+    "\"plan\" completed → ✻ Crunched fo  1m 4s                                         \r❯",
+    "\"implement\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-cargo-check\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-mcp-args-tests\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"fix-regressions\" completed → >7u\r\n╭─────────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                          │\r\n│",
+    "\"review\" completed → ✽",
+    "\"plan\" completed → ✻ Baked for 1m 58s                                                \r❯",
+    "\"implement\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"fix-compile-errors\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"fix-test-failures\" completed → >7u\r\n╭─────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.121.0)                  │\r\n│                ",
+    "\"review\" completed → ✢",
+    "\"edit-build-bun\" completed → EDIT_DONE",
+    "\"write-live-integration-test\" completed → LIVE_TEST_WRITTEN",
+    "\"fix-live-test\" completed → LIVE_GREEN",
+    "\"fix-typecheck\" completed → TYPECHECK_OK",
+    "\"fix-unit-regressions\" completed → UNIT_GREEN",
+    "\"review-diff\" completed → **REVIEW_OK**",
+    "\"fix-worker-1-step\" completed → Both fixes look correct. Here's the summary:\n\n---\n\n## Fix Summary\n\n### Finding 1: Duplicate `bundledDependencies`/`bundl",
+    "\"update-tests\" completed → - Modified `src/cli/commands/messaging.test.ts` with the three requested test cases.",
+    "\"implement-fix\" completed → Artifact produced: updated `src/cli/commands/messaging.ts`.",
+    "\"fix-build\" completed → Build confirmed clean. Task required no action.",
+    "\"fix-unit-tests\" completed → Updated [src/cli/commands/messaging.test.ts](<repo-root>/src/cli/commands/messaging.",
+    "\"fix-regressions\" completed → No action taken. The provided full `vitest` run already passes: `50/50` test files and `711/711` tests. No regressions d",
+    "\"update-tests\" completed → - No other files were edited.",
+    "\"fix-build\" completed → Status: no action taken.\n\nThe provided build output ends with `BUILD_EXIT:0`, which indicates the TypeScript build succe",
+    "\"fix-unit-tests\" completed → - Recorded and completed the active `trail` trajectory for this fix",
+    "\"plan\" completed → >7u╭─────────────────────────────────────────────────────╮│ >_ OpenAI Codex (v0.116.0)                          ││      ",
+    "\"fix-worker-3-step\" completed → - Artifacts produced: none.",
+    "\"fix-worker-2-step\" completed → - No files outside the assigned group were modified.",
+    "\"fix-worker-1-step\" completed → **Completed**\n- Fixed [src/cli/commands/messaging.ts](<repo-root>/.msd-autofix-16b32ead/sr",
+    "\"plan\" completed → -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #708",
+    "\"fix-config\" completed → CHANGES_COMPLETE",
+    "\"fix-sdk\" completed → CHANGES_COMPLETE",
+    "\"fix-remaining-a\" completed → CHANGES_COMPLETE",
+    "\"fix-remaining-b\" completed → CHANGES_COMPLETE",
+    "\"review-results\" completed → REVIEW_COMPLETE"
+  ],
+  "filesAffected": [
+    "web/app/file/RelayfileContent.tsx",
+    "web/app/file/page.tsx",
+    "web/app/file/relayfile.module.css",
+    "web/app/primitives/PrimitivesContent.tsx",
+    "web/content/docs/file-sharing.mdx",
+    "src/cli/commands/agent-management.ts",
+    "src/cli/commands/agent-management.test.ts",
+    ".trajectories/index.json",
+    ".trajectories/completed/2026-05/traj_wx00tjvpptvg.json",
+    ".trajectories/completed/2026-05/traj_whd40oxptlhn.json",
+    "src/cli/bootstrap.test.ts",
+    "src/cli/bootstrap.ts",
+    "src/cli/commands/dlq.test.ts",
+    "src/cli/commands/dlq.ts",
+    "src/cli/index.test.ts",
+    ".github/workflows/publish.yml",
+    ".github/workflows/workflow-reliability.yml",
+    ".trajectories/active/traj_lieyyspidhfj.json",
+    ".trajectories/compacted/compact_j5u7qhaw4q6a_2026-05-08.md",
+    ".trajectories/completed/2026-05/traj_34b1u84b19gz.json",
+    ".trajectories/completed/2026-05/traj_34b1u84b19gz.md",
+    ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.json",
+    ".trajectories/completed/2026-05/traj_6ujzpx82gqs9.md",
+    ".trajectories/completed/2026-05/traj_bdrlknyl8twj.json",
+    ".trajectories/completed/2026-05/traj_bdrlknyl8twj.md",
+    ".trajectories/completed/2026-05/traj_k7njijv51iq4.json",
+    ".trajectories/completed/2026-05/traj_k7njijv51iq4.md",
+    ".trajectories/completed/2026-05/traj_tavtex0db4b0.json",
+    ".trajectories/completed/2026-05/traj_tavtex0db4b0.md",
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "packages/acp-bridge/package.json",
+    "packages/brand/package.json",
+    "packages/broker-darwin-arm64/package.json",
+    "packages/broker-darwin-x64/package.json",
+    "packages/broker-linux-arm64/package.json",
+    "packages/broker-linux-x64/package.json",
+    "packages/broker-win32-x64/package.json",
+    "packages/browser-primitive/package.json",
+    "packages/cloud/package.json",
+    "packages/config/package.json",
+    "packages/credential-proxy/package.json",
+    "packages/gateway/package.json",
+    "packages/github-primitive/package.json",
+    "packages/hooks/package.json",
+    "packages/memory/package.json",
+    "packages/openclaw/package.json",
+    "packages/personas/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/sdk/src/client.ts",
+    "packages/sdk/src/workflows/README.md",
+    "packages/sdk/src/workflows/__tests__/workflow-reliability-contract.test.ts",
+    "packages/sdk/src/workflows/__tests__/workflow-reliability-e2e.test.ts",
+    "packages/sdk/src/workflows/builder.ts",
+    "packages/sdk/src/workflows/runner.ts",
+    "packages/sdk/src/workflows/schema.json",
+    "packages/sdk/src/workflows/types.ts",
+    "packages/sdk/tsconfig.build.json",
+    "packages/sdk/tsconfig.json",
+    "packages/slack-primitive/examples/README.md",
+    "packages/slack-primitive/package.json",
+    "packages/slack-primitive/src/__tests__/cloud-relay-runtime.test.ts",
+    "packages/slack-primitive/src/__tests__/post-message.test.ts",
+    "packages/slack-primitive/src/__tests__/runtime-selection.test.ts",
+    "packages/slack-primitive/src/__tests__/workflow-step.test.ts",
+    "packages/slack-primitive/src/actions/post-message.ts",
+    "packages/slack-primitive/src/actions/resolve-user.ts",
+    "packages/slack-primitive/src/adapter.ts",
+    "packages/slack-primitive/src/cloud-relay-runtime.ts",
+    "packages/slack-primitive/src/noop-runtime.ts",
+    "packages/slack-primitive/src/types.ts",
+    "packages/slack-primitive/src/workflow-step.ts",
+    "packages/telemetry/package.json",
+    "packages/trajectory/package.json",
+    "packages/user-directory/package.json",
+    "packages/utils/package.json",
+    "packages/workflow-types/package.json",
+    "src/cli/lib/broker-lifecycle.test.ts",
+    "src/cli/lib/broker-lifecycle.ts"
+  ],
+  "commits": [
+    "9de8d537",
+    "07875f77",
+    "dd62e30a",
+    "6fd439f1",
+    "bdd8bab7",
+    "2e3d8e9f",
+    "557fca0d",
+    "622ec7c7",
+    "03c174e5",
+    "4814ee3d"
+  ],
+  "narrative": "This trajectory window covers ~3 weeks of work on the Agent Relay monorepo (relay CLI, broker, SDK, primitives, cloud, web). The dominant thread is hardening the headless broker readiness contract: PR #855/856 made `agent-relay up --no-dashboard` detach by default, added `status --wait-for` that polls the actual HTTP API rather than PID/connection.json (which is written before the Relaycast handshake and ready router), introduced STARTING vs STOPPED distinction with non-zero exit on timeout, and fixed standalone Bun-compiled binary detached re-exec by treating argv[1] `//root` as a virtual entrypoint and using `execPath` instead. Orphan cleanup in `agent-relay down --force` was tightened from substring/basename matching (which killed shell wrappers containing both the project path and `agent-relay-broker` strings) to parsed-ps executable-basename matching plus `lsof` cwd verification. A parallel thread hardened Codex GPT-5.5 spawning (PR #856/857): relay now probes the local Codex debug model catalog before injecting `--model gpt-5.5`, falls back to gpt-5.4 when unsupported or marked upgrade-required, rewrites explicit `--model/-m` args, returns the effective spawn spec from `WorkerRegistry` so events/state/API reflect the actual model, and defaults reasoning effort to `medium` to match the installed Codex 0.130.0 catalog.",
+  "decisions": [
+    {
+      "question": "How should `status --wait-for` determine broker readiness?",
+      "chosen": "Poll the broker HTTP API for session lookup instead of connection.json/PID presence",
+      "reasoning": "connection.json is written before the Relaycast handshake and ready router are installed, so PID-only polling reports RUNNING while spawn/control endpoints still return 503 Service Unavailable",
+      "impact": "Headless orchestrators can treat command success as 'broker is usable'; added regression test for live PID with 503 startup API"
+    },
+    {
+      "question": "How should orphan cleanup match agent-relay-broker processes?",
+      "chosen": "Parse ps output and only target commands whose executable basename is `agent-relay-broker`, verified via lsof cwd",
+      "reasoning": "PR feedback flagged substring/basename grep as unsafe — shell wrappers containing both the project root path and the string `agent-relay-broker` were being killed during `down --force`, including the caller shell in worktree E2E",
+      "impact": "Fixed self-termination of the headless CLI worktree harness; preserves cleanup without killing sibling repos"
+    },
+    {
+      "question": "Should relay always pass `--model gpt-5.5` to local Codex?",
+      "chosen": "Probe Codex debug model catalog; pass through only when entry is present and not marked upgrade-required, otherwise fall back to gpt-5.4",
+      "reasoning": "Older installed Codex CLIs reject gpt-5.5 with upgrade errors; catalogs may list a slug while marking it as requiring upgrade",
+      "impact": "Covers default and explicit `--model/-m` args; WorkerRegistry returns the effective spec so persisted state and API responses report the actual model used"
+    },
+    {
+      "question": "Where should CLI autostart fall through to broker autostart?",
+      "chosen": "Only on connect failures, not on connected-client readiness/session errors",
+      "reasoning": "Previous flow let `createSdkClient` mask a connected broker's readiness error by falling through to autostart",
+      "impact": "Surfaces real readiness failures instead of silently respawning"
+    },
+    {
+      "question": "Should deterministic gate repair be on by default in the SDK?",
+      "chosen": "Opt-in via repairRetries; builder presets can enable",
+      "reasoning": "PR #826 review noted default repairRetries=2 would silently add LLM cost and file-mutation risk to existing workflows",
+      "impact": "Repair runs from the failed gate's resolved cwd; ricky-generated workflows opt in explicitly"
+    },
+    {
+      "question": "How should standalone Bun binaries detach the headless broker?",
+      "chosen": "Detect Bun compiled argv shape, omit the virtual `//root` argv[1] during detached re-exec, spawn `execPath` directly",
+      "reasoning": "Standalone Bun binaries report argv[1] as a virtual `//root` path while execPath is the real binary; passing cliScript as an extra argv ran the wrong entrypoint",
+      "impact": "Fixed macOS standalone smoke; detached startup now emits the exact `Broker started.` readiness line the smoke contract asserts"
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Validate end-to-end across four independent surfaces: full Vitest, broker integration, built-CLI headless lifecycle, packaged Bun standalone smoke",
+      "rationale": "Unit tests miss Bun argv shape, broker handshake timing, and CLI/SDK boundary issues; each surface catches a different class of regression",
+      "scope": "Headless broker and CLI release validation"
+    },
+    {
+      "pattern": "Generated codegen output (model registry TS) is excluded from Prettier; CI validates raw codegen output",
+      "rationale": "lint-staged was reformatting generated files after `npm run codegen:models`, causing CI to diff against the formatted version",
+      "scope": "`.prettierignore` for `packages/*/src/generated/**` model constants"
+    },
+    {
+      "pattern": "Pin TypeScript exactly (5.7.3) and invoke via `npx -p typescript@5.7.3 tsc` in package build scripts",
+      "rationale": "Ranged TS versions + bare `tsc` allow resolution drift across publish environments",
+      "scope": "packages/sdk, config, acp-bridge, memory, trajectory, cloud"
+    },
+    {
+      "pattern": "WorkerRegistry returns the effective spawn spec after model fallback",
+      "rationale": "Internal mutation of spec.model needs to propagate to events, persisted worker state, and API replies so observability matches reality",
+      "scope": "relay-pty broker WorkerRegistry and TS API responses"
+    },
+    {
+      "pattern": "Repair agents run from the failed gate's resolved cwd",
+      "rationale": "Repair must see the same filesystem the deterministic command saw, especially when steps use cwd/workdir overrides",
+      "scope": "SDK workflow runner deterministic gate repair"
+    },
+    {
+      "pattern": "SDK clients drain spawned broker stdout after startup URL parsing",
+      "rationale": "Leaving stdout paused/undrained caused downstream consumers (Ricky loader) to stall once the broker emitted post-startup output",
+      "scope": "@agent-relay/sdk TS AgentRelayClient.spawn and Python SDK spawn (with cancel on shutdown)"
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "connection.json existence ≠ broker API readiness",
+      "context": "`status` and CLI autostart originally polled the connection file, which the broker writes before installing the ready router; spawn calls then returned 503",
+      "recommendation": "Always gate readiness on a real API probe (session lookup) and report broker PID separately in timeout diagnostics so operators target the right process"
+    },
+    {
+      "lesson": "`ps | grep <pattern>` orphan cleanup is unsafe when patterns can appear in unrelated command lines",
+      "context": "`down --force` killed the worktree E2E shell because its command line contained both the projectRoot and `agent-relay-broker`",
+      "recommendation": "Parse ps output and match on executable basename; verify cwd via lsof before sending signals"
+    },
+    {
+      "lesson": "Bun standalone binaries have a different argv shape than Node — argv[1] is a virtual `//root` path",
+      "context": "Detached re-exec re-ran the wrong entrypoint on macOS standalone smoke until the virtual argv was detected and omitted",
+      "recommendation": "For compiled-binary detached re-exec, spawn `process.execPath` with user args only, not with cliScript prepended"
+    },
+    {
+      "lesson": "Model registry metadata must match the locally installed CLI's catalog, not vendor docs alone",
+      "context": "GPT-5.5 default reasoning was set to xhigh in the registry while installed Codex 0.130.0 reports `medium`; OpenAI docs also list medium",
+      "recommendation": "Cross-check registry defaults against the debug model catalog of the shipped CLI version, and treat catalog upgrade markers as 'unsupported'"
+    },
+    {
+      "lesson": "Internal SDK packages with cross-package devDependencies can produce turbo build cycles",
+      "context": "@agent-relay/sdk ↔ @agent-relay/slack-primitive cycle broke CI; slack-primitive examples were importing SDK as devDep",
+      "recommendation": "Resolve examples from the workspace without declaring SDK as devDependency on packages the SDK consumes"
+    },
+    {
+      "lesson": "Publish smoke must include every exact-version internal dep transitively",
+      "context": "@agent-relay/cloud became an exact SDK runtime dep; positive smoke installed it but the negative smoke and SDK-only internal-deps matrix didn't, causing publish failures",
+      "recommendation": "Add a static check that the smoke workflows cover all `@agent-relay/*` SDK dependencies across pack, positive smoke, negative smoke, and publish matrix"
+    },
+    {
+      "lesson": "Repair-on-failure must be opt-in to avoid silent cost and mutation",
+      "context": "Default repairRetries=2 in SDK would add LLM repair to existing workflows without consent",
+      "recommendation": "Keep deterministic repair opt-in; surface it via builder presets and explicit config rather than default behavior"
+    }
+  ],
+  "openQuestions": [
+    "Broad broker integration test suite still has limitations documented but not resolved during fresh-eyes validation",
+    "Web production deploy was unblocked by switching to orgin.agentrelay.net due to CloudFront CNAMEAlreadyExists on agentrelay.net — apex domain reclaim is still pending",
+    "Two unrelated benchmark-threshold tests in packages/memory and packages/utils were observed failing during M1 CLI validation and not addressed",
+    "Phase B (askQuestion) and Phase C (Block Kit, reactions, updates) of the Slack primitive remain unimplemented; runner schema change for askQuestion audit trail tracked as issue #825"
+  ]
+}

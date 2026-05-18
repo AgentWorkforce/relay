@@ -1,0 +1,47 @@
+# Trajectory Compaction: 2026-04-10 - 2026-05-15
+
+## Summary
+
+This trajectory window covers ~3 weeks of work on the Agent Relay monorepo (relay CLI, broker, SDK, primitives, cloud, web). The dominant thread is hardening the headless broker readiness contract: PR #855/856 made `agent-relay up --no-dashboard` detach by default, added `status --wait-for` that polls the actual HTTP API rather than PID/connection.json (which is written before the Relaycast handshake and ready router), introduced STARTING vs STOPPED distinction with non-zero exit on timeout, and fixed standalone Bun-compiled binary detached re-exec by treating argv[1] `//root` as a virtual entrypoint and using `execPath` instead. Orphan cleanup in `agent-relay down --force` was tightened from substring/basename matching (which killed shell wrappers containing both the project path and `agent-relay-broker` strings) to parsed-ps executable-basename matching plus `lsof` cwd verification. A parallel thread hardened Codex GPT-5.5 spawning (PR #856/857): relay now probes the local Codex debug model catalog before injecting `--model gpt-5.5`, falls back to gpt-5.4 when unsupported or marked upgrade-required, rewrites explicit `--model/-m` args, returns the effective spawn spec from `WorkerRegistry` so events/state/API reflect the actual model, and defaults reasoning effort to `medium` to match the installed Codex 0.130.0 catalog.
+
+## Key Decisions (6)
+
+| Question                                                       | Decision                                                                                                                                 | Impact                                                                                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| How should `status --wait-for` determine broker readiness?     | Poll the broker HTTP API for session lookup instead of connection.json/PID presence                                                      | Headless orchestrators can treat command success as 'broker is usable'; added regression test for live PID with 503 startup API                            |
+| How should orphan cleanup match agent-relay-broker processes?  | Parse ps output and only target commands whose executable basename is `agent-relay-broker`, verified via lsof cwd                        | Fixed self-termination of the headless CLI worktree harness; preserves cleanup without killing sibling repos                                               |
+| Should relay always pass `--model gpt-5.5` to local Codex?     | Probe Codex debug model catalog; pass through only when entry is present and not marked upgrade-required, otherwise fall back to gpt-5.4 | Covers default and explicit `--model/-m` args; WorkerRegistry returns the effective spec so persisted state and API responses report the actual model used |
+| Where should CLI autostart fall through to broker autostart?   | Only on connect failures, not on connected-client readiness/session errors                                                               | Surfaces real readiness failures instead of silently respawning                                                                                            |
+| Should deterministic gate repair be on by default in the SDK?  | Opt-in via repairRetries; builder presets can enable                                                                                     | Repair runs from the failed gate's resolved cwd; ricky-generated workflows opt in explicitly                                                               |
+| How should standalone Bun binaries detach the headless broker? | Detect Bun compiled argv shape, omit the virtual `//root` argv[1] during detached re-exec, spawn `execPath` directly                     | Fixed macOS standalone smoke; detached startup now emits the exact `Broker started.` readiness line the smoke contract asserts                             |
+
+## Conventions Established
+
+- **Validate end-to-end across four independent surfaces: full Vitest, broker integration, built-CLI headless lifecycle, packaged Bun standalone smoke**: Unit tests miss Bun argv shape, broker handshake timing, and CLI/SDK boundary issues; each surface catches a different class of regression (scope: Headless broker and CLI release validation)
+- **Generated codegen output (model registry TS) is excluded from Prettier; CI validates raw codegen output**: lint-staged was reformatting generated files after `npm run codegen:models`, causing CI to diff against the formatted version (scope: `.prettierignore` for `packages/*/src/generated/**` model constants)
+- **Pin TypeScript exactly (5.7.3) and invoke via `npx -p typescript@5.7.3 tsc` in package build scripts**: Ranged TS versions + bare `tsc` allow resolution drift across publish environments (scope: packages/sdk, config, acp-bridge, memory, trajectory, cloud)
+- **WorkerRegistry returns the effective spawn spec after model fallback**: Internal mutation of spec.model needs to propagate to events, persisted worker state, and API replies so observability matches reality (scope: relay-pty broker WorkerRegistry and TS API responses)
+- **Repair agents run from the failed gate's resolved cwd**: Repair must see the same filesystem the deterministic command saw, especially when steps use cwd/workdir overrides (scope: SDK workflow runner deterministic gate repair)
+- **SDK clients drain spawned broker stdout after startup URL parsing**: Leaving stdout paused/undrained caused downstream consumers (Ricky loader) to stall once the broker emitted post-startup output (scope: @agent-relay/sdk TS AgentRelayClient.spawn and Python SDK spawn (with cancel on shutdown))
+
+## Lessons Learned
+
+- connection.json existence ≠ broker API readiness (`status` and CLI autostart originally polled the connection file, which the broker writes before installing the ready router; spawn calls then returned 503) - Always gate readiness on a real API probe (session lookup) and report broker PID separately in timeout diagnostics so operators target the right process
+- `ps | grep <pattern>` orphan cleanup is unsafe when patterns can appear in unrelated command lines (`down --force` killed the worktree E2E shell because its command line contained both the projectRoot and `agent-relay-broker`) - Parse ps output and match on executable basename; verify cwd via lsof before sending signals
+- Bun standalone binaries have a different argv shape than Node — argv[1] is a virtual `//root` path (Detached re-exec re-ran the wrong entrypoint on macOS standalone smoke until the virtual argv was detected and omitted) - For compiled-binary detached re-exec, spawn `process.execPath` with user args only, not with cliScript prepended
+- Model registry metadata must match the locally installed CLI's catalog, not vendor docs alone (GPT-5.5 default reasoning was set to xhigh in the registry while installed Codex 0.130.0 reports `medium`; OpenAI docs also list medium) - Cross-check registry defaults against the debug model catalog of the shipped CLI version, and treat catalog upgrade markers as 'unsupported'
+- Internal SDK packages with cross-package devDependencies can produce turbo build cycles (@agent-relay/sdk ↔ @agent-relay/slack-primitive cycle broke CI; slack-primitive examples were importing SDK as devDep) - Resolve examples from the workspace without declaring SDK as devDependency on packages the SDK consumes
+- Publish smoke must include every exact-version internal dep transitively (@agent-relay/cloud became an exact SDK runtime dep; positive smoke installed it but the negative smoke and SDK-only internal-deps matrix didn't, causing publish failures) - Add a static check that the smoke workflows cover all `@agent-relay/*` SDK dependencies across pack, positive smoke, negative smoke, and publish matrix
+- Repair-on-failure must be opt-in to avoid silent cost and mutation (Default repairRetries=2 in SDK would add LLM repair to existing workflows without consent) - Keep deterministic repair opt-in; surface it via builder presets and explicit config rather than default behavior
+
+## Open Questions
+
+- Broad broker integration test suite still has limitations documented but not resolved during fresh-eyes validation
+- Web production deploy was unblocked by switching to orgin.agentrelay.net due to CloudFront CNAMEAlreadyExists on agentrelay.net — apex domain reclaim is still pending
+- Two unrelated benchmark-threshold tests in packages/memory and packages/utils were observed failing during M1 CLI validation and not addressed
+- Phase B (askQuestion) and Phase C (Block Kit, reactions, updates) of the Slack primitive remain unimplemented; runner schema change for askQuestion audit trail tracked as issue #825
+
+## Stats
+
+- Sessions: 75, Agents: default, orchestrator, lead-claude, impl-primary-codex, impl-codex, review-claude, planner, implementer, reviewer, impl, tester, fixer, fix-worker-1, verifier, lead, fix-worker-2, fix-worker-3, impl-1, impl-2, impl-3, impl-4, Files: 82, Commits: 10
+- Date range: 2026-04-10T14:42:17.242Z - 2026-05-15T13:00:15.366Z

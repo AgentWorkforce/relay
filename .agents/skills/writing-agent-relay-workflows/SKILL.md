@@ -1289,7 +1289,13 @@ steps:
 
 ### Agent Transport Must Not Be The First Hard Gate
 
-#### Interactive lead-and-worker teams are useful, but they are still process
+Interactive lead-and-worker teams are useful, but they are still process
+sessions. A long-running PTY can go idle, emit noisy terminal output, or fail
+to respawn with a transport error before the workflow reaches tests. If every
+downstream gate depends directly on that agent step, the workflow can fail
+without giving a repair owner command output to fix. For long rollouts, keep
+the critical path evidence-based — gate on artifacts and deterministic checks,
+not directly on the agent transport:
 
 ```typescript
 .step('runtime-implementation', {

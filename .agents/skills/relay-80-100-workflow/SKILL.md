@@ -427,9 +427,18 @@ Only edit this one file.`,
   })
 
   // ── Phase 6: Commit ──────────────────────────────────────────────
-  .step('commit', {
+  .step('record-head-baseline', {
     type: 'deterministic',
     dependsOn: ['fix-regressions'],
+    // Snapshot HEAD *before* committing so verify-commit-created can prove
+    // HEAD actually advanced, not just that the latest subject happens to match.
+    command: 'git rev-parse HEAD > .workflow-head-before',
+    captureOutput: true,
+    failOnError: true,
+  })
+  .step('commit', {
+    type: 'deterministic',
+    dependsOn: ['record-head-baseline'],
     command: [
       'npx tsx --test tests/my-feature.test.ts',
       'npm test',
@@ -451,8 +460,16 @@ Output:
   .step('verify-commit-created', {
     type: 'deterministic',
     dependsOn: ['repair-commit'],
+    // Assert HEAD advanced past the baseline AND the new commit has the
+    // expected subject AND nothing is left uncommitted. Checking the subject
+    // alone passes falsely when HEAD was already a matching commit and the
+    // commit step never created a new one.
     command:
-      'git log -1 --pretty=%s | grep -q "^feat: " && echo "COMMIT_OK" || (echo "COMMIT_MISSING"; exit 1)',
+      [
+        'test "$(git rev-parse HEAD)" != "$(cat .workflow-head-before)"',
+        'git log -1 --pretty=%s | grep -q "^feat: "',
+        'test -z "$(git status --porcelain)"',
+      ].join(' && ') + ' && echo "COMMIT_OK" || (echo "COMMIT_MISSING_OR_HEAD_UNCHANGED"; exit 1)',
     captureOutput: true,
     failOnError: true,
   })
