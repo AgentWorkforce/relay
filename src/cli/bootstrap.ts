@@ -27,6 +27,7 @@ import { registerConnectCommands } from './commands/connect.js';
 import { registerOnCommands } from './commands/on.js';
 import { registerDlqCommands } from './commands/dlq.js';
 import { registerViewCommands } from './commands/view.js';
+import { registerDriveCommands } from './commands/drive.js';
 
 dotenvConfig({ quiet: true });
 
@@ -283,6 +284,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerConnectCommands(program);
   registerDlqCommands(program);
   registerViewCommands(program);
+  registerDriveCommands(program);
 
   return program;
 }

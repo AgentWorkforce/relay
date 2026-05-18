@@ -38,6 +38,7 @@ const expectedLeafCommands = [
   'run',
   'connect',
   'view',
+  'drive',
   'dlq list',
   'dlq inspect',
   'dlq replay',
