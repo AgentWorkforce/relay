@@ -320,6 +320,9 @@ function collectTopLevelVerbs(program: Command): Set<string> {
   const verbs = new Set<string>();
   for (const command of program.commands) {
     verbs.add(command.name());
+    for (const alias of command.aliases()) {
+      verbs.add(alias);
+    }
   }
   return verbs;
 }

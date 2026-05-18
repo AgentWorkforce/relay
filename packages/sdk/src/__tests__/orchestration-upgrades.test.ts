@@ -260,12 +260,12 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
-  it('exposes session mode and pending queue HTTP routes', async () => {
+  it('exposes inbound delivery mode and pending queue HTTP routes', async () => {
     const client = createProtocolClient();
     const request = vi
       .spyOn((client as any).transport, 'request')
-      .mockResolvedValueOnce({ mode: 'human' })
-      .mockResolvedValueOnce({ mode: 'passthrough', flushed: 2 })
+      .mockResolvedValueOnce({ mode: 'manual_flush' })
+      .mockResolvedValueOnce({ mode: 'auto_inject', flushed: 2 })
       .mockResolvedValueOnce({
         pending: [
           {
@@ -281,18 +281,18 @@ describe('AgentRelayClient orchestration payloads', () => {
       })
       .mockResolvedValueOnce({ flushed: 1 });
 
-    await expect(client.getSessionMode('worker a')).resolves.toBe('human');
-    await expect(client.setSessionMode('worker a', 'passthrough')).resolves.toEqual({
-      mode: 'passthrough',
+    await expect(client.getInboundDeliveryMode('worker a')).resolves.toBe('manual_flush');
+    await expect(client.setInboundDeliveryMode('worker a', 'auto_inject')).resolves.toEqual({
+      mode: 'auto_inject',
       flushed: 2,
     });
     await expect(client.getPending('worker a')).resolves.toHaveLength(1);
     await expect(client.flushPending('worker a')).resolves.toEqual({ flushed: 1 });
 
-    expect(request).toHaveBeenNthCalledWith(1, '/api/spawned/worker%20a/mode');
-    expect(request).toHaveBeenNthCalledWith(2, '/api/spawned/worker%20a/mode', {
+    expect(request).toHaveBeenNthCalledWith(1, '/api/spawned/worker%20a/delivery-mode');
+    expect(request).toHaveBeenNthCalledWith(2, '/api/spawned/worker%20a/delivery-mode', {
       method: 'PUT',
-      body: JSON.stringify({ mode: 'passthrough' }),
+      body: JSON.stringify({ mode: 'auto_inject' }),
     });
     expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker%20a/pending');
     expect(request).toHaveBeenNthCalledWith(4, '/api/spawned/worker%20a/flush', { method: 'POST' });
@@ -370,7 +370,7 @@ describe('AgentRelayClient orchestration payloads', () => {
     );
     const client = new AgentRelayClient({ baseUrl: TEST_BASE_URL, fetch: fetchMock as typeof fetch });
 
-    await expect(client.getSessionMode('ghost')).rejects.toMatchObject({
+    await expect(client.getInboundDeliveryMode('ghost')).rejects.toMatchObject({
       code: 'agent_not_found',
       status: 404,
       message: "no agent named 'ghost'",

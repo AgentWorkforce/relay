@@ -6,7 +6,7 @@ export {
   type AgentRelayBrokerInitArgs,
   type AgentRelayClientOptions,
   type AgentRelaySpawnOptions,
-  type SetSessionModeResult,
+  type SetInboundDeliveryModeResult,
   type SessionInfo,
   type WorkerStreamSubscriptionOptions,
 } from './client.js';

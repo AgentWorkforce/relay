@@ -130,7 +130,7 @@ interface Agent {
 ## Low-Level Broker Client
 
 `AgentRelay` is the high-level orchestration API. Use `AgentRelayClient`
-when you need direct broker control over spawned workers, PTYs, session
+when you need direct broker control over spawned workers, PTYs, inbound delivery
 mode, or the broker event stream.
 
 ```typescript
@@ -172,7 +172,7 @@ const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
 | `client.subscribeChannels(name, channels)` | `POST /api/spawned/{name}/subscribe` | Subscribe a worker to channels. |
 | `client.unsubscribeChannels(name, channels)` | `POST /api/spawned/{name}/unsubscribe` | Unsubscribe a worker from channels. |
 
-### PTY and Session Control
+### PTY and Delivery Control
 
 These methods are the programmatic primitives behind CLI attach flows such
 as `drive`, `view`, and `passthrough`.
@@ -182,20 +182,20 @@ as `drive`, `view`, and `passthrough`.
 | `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
 | `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
 | `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
-| `client.getSessionMode(name)` | `GET /api/spawned/{name}/mode` | Read `human` or `passthrough` mode. |
-| `client.setSessionMode(name, mode)` | `PUT /api/spawned/{name}/mode` | Set session mode and return `{ mode, flushed }`. |
-| `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `human` mode. |
+| `client.getInboundDeliveryMode(name)` | `GET /api/spawned/{name}/delivery-mode` | Read `manual_flush` or `auto_inject`. |
+| `client.setInboundDeliveryMode(name, mode)` | `PUT /api/spawned/{name}/delivery-mode` | Set inbound delivery mode and return `{ mode, flushed }`. |
+| `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `manual_flush` mode. |
 | `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
 | `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
 
 ```typescript
-import { AgentRelayClient, type SessionMode } from '@agent-relay/sdk';
+import { AgentRelayClient, type InboundDeliveryMode } from '@agent-relay/sdk';
 
 const client = AgentRelayClient.connect({ cwd: '/my/project' });
 const name = 'Reviewer';
 
-const previousMode: SessionMode = await client.getSessionMode(name);
-await client.setSessionMode(name, 'human');
+const previousMode: InboundDeliveryMode = await client.getInboundDeliveryMode(name);
+await client.setInboundDeliveryMode(name, 'manual_flush');
 
 try {
   const snapshot = await client.snapshot(name, 'plain');
@@ -208,7 +208,7 @@ try {
   await client.resizePty(name, 40, 120);
   await client.flushPending(name);
 } finally {
-  await client.setSessionMode(name, previousMode);
+  await client.setInboundDeliveryMode(name, previousMode);
 }
 ```
 

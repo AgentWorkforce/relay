@@ -242,56 +242,56 @@ The command prints the screen to stdout and exits 0 on success. On
 error (unknown worker, broker unreachable, invalid format) it prints
 a diagnostic to stderr and exits non-zero.
 
-### Session mode
+### Inbound delivery mode
 
-Per-agent **session mode** controls how the broker dispatches inbound
+Per-agent **inbound delivery mode** controls how the broker dispatches inbound
 relay messages to a spawned worker. Two modes are supported:
 
-- **`passthrough`** (default) — inbound messages auto-inject into the
-  worker's PTY. Use this for headless agents that should react to
-  incoming traffic on their own, or for a `passthrough` client session
-  where the human types alongside the broker.
-- **`human`** — inbound messages are *queued* in a per-worker pending
-  buffer instead of being injected. A human operator (or the
-  `agent-relay drive` client) decides when to drain the queue. Useful
-  when you've taken over an agent's PTY interactively and don't want
-  background traffic racing your keystrokes.
+- **`auto_inject`** (default) — inbound messages auto-inject into the
+  worker's PTY. Use this for headless agents that should react to incoming
+  traffic on their own, or for an `agent-relay passthrough` client session where
+  the human types alongside the broker.
+- **`manual_flush`** — inbound messages are *queued* in a per-worker pending
+  buffer instead of being injected. A human operator, SDK client, or
+  `agent-relay drive` client decides when to drain the queue. Useful when
+  you've taken over an agent's PTY interactively and don't want background
+  traffic racing your keystrokes.
 
 Mode is broker-side state only — the worker process never observes it.
-Mode resets to `passthrough` when the broker restarts and the pending queue
+Mode resets to `auto_inject` when the broker restarts and the pending queue
 is dropped (no on-disk persistence).
 
 | Method | Path                              | Purpose                                                                          |
 | ------ | --------------------------------- | -------------------------------------------------------------------------------- |
-| `GET`  | `/api/spawned/{name}/mode`        | Read the current session mode. Returns `{ "mode": "passthrough" \| "human" }`.         |
-| `PUT`  | `/api/spawned/{name}/mode`        | Set the session mode. Body `{ "mode": "passthrough" \| "human" }`.                     |
+| `GET`  | `/api/spawned/{name}/delivery-mode` | Read the current inbound delivery mode. Returns `{ "mode": "auto_inject" \| "manual_flush" }`. |
+| `PUT`  | `/api/spawned/{name}/delivery-mode` | Set the inbound delivery mode. Body `{ "mode": "auto_inject" \| "manual_flush" }`.             |
 | `GET`  | `/api/spawned/{name}/pending`     | Snapshot the per-worker pending queue (FIFO, head first).                        |
 | `POST` | `/api/spawned/{name}/flush`       | Drain the pending queue and inject every message into the worker. FIFO order.    |
 
-TypeScript SDK equivalents: `client.getSessionMode(name)`,
-`client.setSessionMode(name, mode)`, `client.getPending(name)`, and
+TypeScript SDK equivalents: `client.getInboundDeliveryMode(name)`,
+`client.setInboundDeliveryMode(name, mode)`, `client.getPending(name)`, and
 `client.flushPending(name)`.
 
-#### `PUT /api/spawned/{name}/mode`
+#### `PUT /api/spawned/{name}/delivery-mode`
 
 ```json
-{ "mode": "human" }
+{ "mode": "manual_flush" }
 ```
 
-On a `human → passthrough` transition the broker auto-drains the pending
+On a `manual_flush → auto_inject` transition the broker auto-drains the pending
 queue into the worker (via the normal inject path) **before** returning,
-so flipping back to `passthrough` never strands queued messages. The response
+so flipping back to `auto_inject` never strands queued messages. The response
 reports how many messages were flushed:
 
 ```json
-{ "mode": "passthrough", "flushed": 3 }
+{ "mode": "auto_inject", "flushed": 3 }
 ```
 
-A `passthrough → human` flip or a same-mode noop returns `"flushed": 0`.
+An `auto_inject → manual_flush` flip or a same-mode noop returns `"flushed": 0`.
 
 Status codes: `200` on success, `400` on a body that isn't
-`{ "mode": "passthrough" }` or `{ "mode": "human" }`, `404` if the agent is
-not registered.
+`{ "mode": "auto_inject" }` or `{ "mode": "manual_flush" }`, `404` if the
+agent is not registered.
 
 #### `GET /api/spawned/{name}/pending`
 
@@ -337,8 +337,8 @@ oldest entry is evicted with a broker-side warning.
 #### `POST /api/spawned/{name}/flush`
 
 Drains the queue and injects each message into the worker in FIFO order.
-The session mode is **not** changed; a caller still in `human` mode will
-continue queuing newly-arriving messages.
+The inbound delivery mode is **not** changed; a caller still in `manual_flush`
+mode will continue queuing newly-arriving messages.
 
 ```json
 { "flushed": 7 }
@@ -398,9 +398,9 @@ Durable (replayable via `?sinceSeq=...`):
 | `delivery_failed`                      | Message delivery failed.                               |
 | `delivery_dropped`                     | Delivery was dropped (e.g. agent gone).                |
 | `delivery_retry`                       | Delivery is being retried.                             |
-| `delivery_queued`                      | Inbound delivery parked in the per-worker pending queue because the worker is in `human` session mode. Payload carries `event_id`, `from`, `target`, and `reason: "session_mode_human"`. |
-| `agent_session_mode_changed`           | A worker's session mode flipped via `PUT /api/spawned/{name}/mode`. Payload carries `previous_mode` and `mode`. |
-| `agent_pending_drained`                | The per-worker pending queue was drained. Payload carries `count` and `reason` (`mode_transition` for the auto-drain on `human → passthrough`, `explicit_flush` for `POST .../flush`). |
+| `delivery_queued`                      | Inbound delivery parked in the per-worker pending queue because the worker is in `manual_flush` inbound delivery mode. Payload carries `event_id`, `from`, `target`, and `reason: "inbound_delivery_manual_flush"`. |
+| `agent_inbound_delivery_mode_changed`  | A worker's inbound delivery mode flipped via `PUT /api/spawned/{name}/delivery-mode`. Payload carries `previous_mode` and `mode`. |
+| `agent_pending_drained`                | The per-worker pending queue was drained. Payload carries `count` and `reason` (`delivery_mode_transition` for the auto-drain on `manual_flush → auto_inject`, `explicit_flush` for `POST .../flush`). |
 
 Ephemeral (broadcast only, no replay):
 
@@ -454,21 +454,21 @@ curl -sX DELETE localhost:3888/api/spawned/Alice \
   -H "X-API-Key: $KEY"
 ```
 
-## Worked example: take over an agent with session mode
+## Worked example: take over an agent with inbound delivery mode
 
-The four session-mode routes back the upcoming `agent-relay drive`
-client. The typical drive-mode flow looks like this:
+The four inbound-delivery-mode routes back the `agent-relay drive` and
+`agent-relay passthrough` clients. The typical drive-mode flow looks like this:
 
 ```bash
 KEY="$RELAY_BROKER_API_KEY"
 
-# 1. Flip Alice into human mode. Now inbound relay traffic
+# 1. Flip Alice into manual_flush mode. Now inbound relay traffic
 #    will queue instead of injecting.
-curl -sX PUT localhost:3888/api/spawned/Alice/mode \
+curl -sX PUT localhost:3888/api/spawned/Alice/delivery-mode \
   -H "X-API-Key: $KEY" \
-  -d '{"mode":"human"}'
+  -d '{"mode":"manual_flush"}'
 
-# 2. Send some messages while Alice is in human mode —
+# 2. Send some messages while Alice is in manual_flush mode —
 #    these land in her pending queue, not her PTY.
 curl -sX POST localhost:3888/api/send \
   -H "X-API-Key: $KEY" \
@@ -485,11 +485,11 @@ curl -s localhost:3888/api/spawned/Alice/pending \
 curl -sX POST localhost:3888/api/spawned/Alice/flush \
   -H "X-API-Key: $KEY"
 
-# 5. Flip Alice back to passthrough mode. Any messages still in the
+# 5. Flip Alice back to auto_inject mode. Any messages still in the
 #    queue are drained automatically before this call returns.
-curl -sX PUT localhost:3888/api/spawned/Alice/mode \
+curl -sX PUT localhost:3888/api/spawned/Alice/delivery-mode \
   -H "X-API-Key: $KEY" \
-  -d '{"mode":"passthrough"}'
+  -d '{"mode":"auto_inject"}'
 ```
 
 ## Error envelope

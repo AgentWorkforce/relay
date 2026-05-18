@@ -1,22 +1,22 @@
 /**
- * `agent-relay passthrough <name>` — read-write attach in passthrough mode.
+ * `agent-relay passthrough <name>` — read-write attach in passthrough session.
  *
  * The broker auto-injects inbound relay messages into the agent's PTY
  * while the human also types; both writers race. That's the point —
- * passthrough mode is for observe-and-occasionally-nudge sessions
+ * passthrough is for observe-and-occasionally-nudge sessions
  * while the broker does its coordination thing. For exclusive
  * deterministic control with no auto-inject, use `drive` instead.
  *
- * On attach, ensures the worker is in `passthrough` mode (it's the
+ * On attach, ensures the worker is in `auto_inject` delivery mode (it's the
  * broker default, but if someone left a `drive` session the worker may
- * be in `human` mode — `passthrough` flips it back for the session's
+ * be in `manual_flush` mode — `passthrough` flips it back for the session's
  * duration and restores the prior mode on detach). On detach, restores
  * the prior mode and leaves the agent running.
  *
  * The session loop (snapshot-on-attach, raw stdin, resize forwarding,
  * detach keybind, Ctrl+C-as-detach safety alias) mirrors the shape of
  * `drive.ts` minus the pending-queue UI and `Ctrl+G` flush binding
- * (there's no queue in passthrough mode). `drive.ts` is the more
+ * (there's no queue in passthrough session). `drive.ts` is the more
  * heavily-commented version of the shared shape; this module
  * duplicates rather than abstracts because the trimmed surface is
  * small enough that an extra layer of indirection would cost more
@@ -40,7 +40,13 @@ import {
   toWsUrl,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
-import { getSessionMode, resizeWorker, sendInput, setSessionMode, type SessionMode } from './drive.js';
+import {
+  getInboundDeliveryMode,
+  resizeWorker,
+  sendInput,
+  setInboundDeliveryMode,
+  type InboundDeliveryMode,
+} from './drive.js';
 
 type ExitFn = (code: number) => never;
 
@@ -141,8 +147,8 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
 
 /** Discriminated union of broker events the `passthrough` client cares
  *  about. No `delivery_queued` / `agent_pending_drained` — there's no
- *  queue in passthrough mode, so those events (which the broker doesn't
- *  emit for passthrough-mode workers anyway) would be `other`. */
+ *  queue in passthrough session, so those events (which the broker doesn't
+ *  emit while the worker is in `auto_inject`) would be `other`. */
 export type PassthroughWsEvent = { kind: 'worker_stream'; chunk: string } | { kind: 'other' };
 
 /**
@@ -237,17 +243,17 @@ export class PassthroughKeybindParser {
 /**
  * Render the bottom-of-terminal status line for `passthrough`. Same
  * save/restore-cursor trick as `drive`, no pending counter (there
- * isn't one in passthrough mode).
+ * isn't one in passthrough session).
  */
 export function renderStatusLine(opts: {
   name: string;
-  mode: SessionMode;
+  mode: InboundDeliveryMode;
   showHelp: boolean;
   rows?: number;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
   const help = opts.showHelp ? ' | Ctrl+B D detach | Ctrl+B ? hide help' : ' | Ctrl+B D detach';
-  const text = `[passthrough ${opts.name} | mode=${opts.mode}${help}]`;
+  const text = `[passthrough ${opts.name} | delivery=${opts.mode}${help}]`;
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
 }
 
@@ -256,7 +262,7 @@ export function renderStatusLine(opts: {
 /**
  * Open a `passthrough` session. Resolves with the exit code the CLI
  * should propagate. Cleans up its own stdin raw-mode and best-effort
- * restores the worker's previous session mode on any exit path.
+ * restores the worker's previous inbound delivery mode on any exit path.
  */
 export async function runPassthroughSession(
   agentName: string,
@@ -284,24 +290,24 @@ export async function runPassthroughSession(
 
   // Remember the worker's prior mode so we can restore on detach.
   // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `passthrough` in that case (which
+  // we default the restore target to `auto_inject` in that case (which
   // is also our preferred final state).
-  const previousMode = await getSessionMode(connection, name, deps.fetch);
+  const previousMode = await getInboundDeliveryMode(connection, name, deps.fetch);
 
-  // If the worker is in `human` mode (e.g. someone left a `drive`
-  // session), flip it back to `passthrough` for the duration of our
+  // If the worker is in `manual_flush` mode (e.g. someone left a `drive`
+  // session), flip it back to `auto_inject` for the duration of our
   // session. This matches the verb's intent: `agent-relay passthrough alice`
   // means "watch alice with auto-inject on". If the worker is already
-  // in `passthrough` we still issue the PUT — it's idempotent on the
+  // in `auto_inject` we still issue the PUT — it's idempotent on the
   // broker and gives us an early hard-failure on missing-agent before
   // we touch the terminal.
-  const flip = await setSessionMode(connection, name, 'passthrough', deps.fetch);
+  const flip = await setInboundDeliveryMode(connection, name, 'auto_inject', deps.fetch);
   if (!flip.ok) {
     if (flip.status === 404) {
       deps.error(`Error: no agent named '${name}'`);
     } else {
       deps.error(
-        `Error: could not ensure '${name}' is in passthrough mode: ${flip.message ?? 'unknown error'}`
+        `Error: could not ensure '${name}' is in passthrough session: ${flip.message ?? 'unknown error'}`
       );
     }
     return 1;
@@ -316,11 +322,11 @@ export async function runPassthroughSession(
     case 'ok':
       break;
     case 'not_found':
-      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to attach to`}`);
       return 1;
     case 'unavailable':
@@ -339,7 +345,7 @@ export async function runPassthroughSession(
     (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
 
   const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ name, mode: 'passthrough', showHelp, rows: terminalRows }));
+    deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', showHelp, rows: terminalRows }));
   };
   paintStatus();
 
@@ -447,8 +453,8 @@ export async function runPassthroughSession(
         // best effort
       }
       // Restore the worker's previous mode (no-op if it was already
-      // passthrough, which is the common case).
-      void setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch).finally(() => {
+      // auto-inject, which is the common case).
+      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
         resolve(code);
       });
     };
@@ -518,7 +524,7 @@ export function registerPassthroughCommands(
   program
     .command('passthrough')
     .description(
-      'Watch a running agent in passthrough mode: broker auto-injects inbound relay messages while you type alongside (last-writer-wins)'
+      'Watch a running agent in passthrough session: broker auto-injects inbound relay messages while you type alongside (last-writer-wins)'
     )
     .argument('<name>', 'Agent name to attach to')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')

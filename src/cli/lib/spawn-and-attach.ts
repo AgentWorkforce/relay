@@ -44,7 +44,11 @@ import {
   type DriveTerminal,
   type DriveWebSocket,
 } from '../commands/drive.js';
-import { runPassthroughSession, type PassthroughDependencies } from '../commands/passthrough.js';
+import {
+  runPassthroughSession,
+  type PassthroughDependencies,
+  type PassthroughWebSocket,
+} from '../commands/passthrough.js';
 import { runViewSession, type ViewDependencies, type ViewWebSocket } from '../commands/view.js';
 
 export type AttachMode = 'view' | 'drive' | 'passthrough';
@@ -170,7 +174,7 @@ export function buildDefaultAttachChildDeps(): AttachChildDependencies {
 
   const passthroughDeps: PassthroughDependencies = {
     ...sharedConnectionDeps,
-    createWebSocket: (url, headers) => new WebSocket(url, { headers }) as DriveWebSocket,
+    createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
     writeChunk: sharedWriteChunk,
     onSignal: sharedOnSignal,
     log: sharedLog,

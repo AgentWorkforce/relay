@@ -25,7 +25,7 @@ import type {
   HeadlessProvider,
   PendingRelayMessage,
   PtySnapshot,
-  SessionMode,
+  InboundDeliveryMode,
   SnapshotFormat,
 } from './protocol.js';
 import type {
@@ -89,8 +89,8 @@ export interface SessionInfo {
   uptime_secs: number;
 }
 
-export interface SetSessionModeResult {
-  mode: SessionMode;
+export interface SetInboundDeliveryModeResult {
+  mode: InboundDeliveryMode;
   flushed: number;
 }
 
@@ -494,31 +494,34 @@ export class AgentRelayClient {
     });
   }
 
-  async getSessionMode(name: string): Promise<SessionMode> {
+  async getInboundDeliveryMode(name: string): Promise<InboundDeliveryMode> {
     const result = await this.transport.request<{ mode?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/mode`
+      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`
     );
-    if (result.mode !== 'human' && result.mode !== 'passthrough') {
+    if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new AgentRelayProtocolError({
         code: 'invalid_response',
-        message: "session mode response missing valid 'mode'",
+        message: "inbound delivery mode response missing valid 'mode'",
       });
     }
     return result.mode;
   }
 
-  async setSessionMode(name: string, mode: SessionMode): Promise<SetSessionModeResult> {
+  async setInboundDeliveryMode(
+    name: string,
+    mode: InboundDeliveryMode
+  ): Promise<SetInboundDeliveryModeResult> {
     const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/mode`,
+      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
       {
         method: 'PUT',
         body: JSON.stringify({ mode }),
       }
     );
-    if (result.mode !== 'human' && result.mode !== 'passthrough') {
+    if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
       throw new AgentRelayProtocolError({
         code: 'invalid_response',
-        message: "set session mode response missing valid 'mode'",
+        message: "set inbound delivery mode response missing valid 'mode'",
       });
     }
     return {

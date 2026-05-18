@@ -134,7 +134,12 @@ describe('runNew', () => {
     const { deps, logs, fetchLog } = createHarness();
     const code = await runNew('Alice', 'claude', ['--say', 'hi'], {}, deps);
     expect(code).toBe(0);
-    expect(fetchLog[0].body).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
+    expect(fetchLog[0].body).toEqual({
+      name: 'Alice',
+      cli: 'claude',
+      args: ['--say', 'hi'],
+      channels: [],
+    });
     expect(logs.some((args) => String(args[0]).includes('Spawned agent: Alice'))).toBe(true);
     expect(logs.some((args) => String(args[0]).includes('attach with: agent-relay drive Alice'))).toBe(true);
   });
@@ -179,6 +184,7 @@ describe('runNew', () => {
     expect(fetchLog[0].body).toEqual({
       name: 'Alice',
       cli: 'claude',
+      args: [],
       task: 'fix the bug',
       team: 'core',
       model: 'opus',

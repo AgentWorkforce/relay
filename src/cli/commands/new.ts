@@ -261,7 +261,7 @@ export function registerNewCommands(
     .option('--attach', 'After spawning, immediately open a session (default mode: drive)')
     .option(
       '--mode <mode>',
-      'With --attach: session mode to open (view | drive | passthrough). Ignored without --attach.'
+      'With --attach: session to open (view | drive | passthrough). Ignored without --attach.'
     )
     .option('--ephemeral', 'With --attach: release the agent on client exit. Ignored without --attach.')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')

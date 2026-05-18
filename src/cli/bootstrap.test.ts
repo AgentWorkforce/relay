@@ -152,7 +152,14 @@ describe('verbless `-n NAME CLI` silent alias', () => {
   // that — here we just need the live snapshot.
   function knownVerbs(): Set<string> {
     const program = createProgram();
-    return new Set(program.commands.map((c) => c.name()));
+    const verbs = new Set<string>();
+    for (const command of program.commands) {
+      verbs.add(command.name());
+      for (const alias of command.aliases()) {
+        verbs.add(alias);
+      }
+    }
+    return verbs;
   }
 
   it('recognises `-n NAME CLI`', () => {

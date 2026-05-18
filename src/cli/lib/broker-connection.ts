@@ -1,6 +1,6 @@
 /**
  * Shared broker-connection discovery for the attach-style CLI verbs
- * (`view`, `drive`, `relay`).
+ * (`view`, `drive`, `passthrough`).
  *
  * Resolution order matches `agent-relay-broker dump-pty` so users don't
  * have to learn two patterns:
