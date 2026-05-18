@@ -1,0 +1,69 @@
+---
+title: 'Messaging'
+description: 'Send direct messages, inspect recent history, and check the unread inbox from the CLI.'
+---
+
+Once the broker is up, the CLI can act as a lightweight operator console for human-to-agent messages and recent conversation history.
+
+## Send a message
+
+```bash
+agent-relay send reviewer "Please summarize the riskiest changes first."
+```
+
+The target argument accepts:
+
+- an agent name such as `reviewer`
+- a channel such as `#general`
+- `*` for broadcast
+
+Optional flags:
+
+- `--from <name>` changes the sender identity from the default CLI sender.
+- `--thread <id>` keeps follow-ups grouped under an existing thread.
+
+## Read recent history
+
+```bash
+agent-relay history --to '#general' --since 30m
+```
+
+Useful filters:
+
+- `--from <agent>` keeps only one sender.
+- `--to <agent-or-channel>` narrows to a target or channel.
+- `--since <time>` accepts values like `30m`, `1h`, or an ISO date.
+- `--json` emits structured output for scripts.
+
+## Check the inbox
+
+```bash
+agent-relay inbox
+```
+
+`inbox` summarizes unread channels, mentions, and DMs. Add `--json` if another tool will parse the result.
+
+## Practical pattern
+
+```bash
+agent-relay send planner "Create the plan, then hand implementation to coder."
+agent-relay history --from planner --since 15m
+agent-relay inbox
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Agent management" href="/docs/cli-agent-management">
+    Spawn agents before trying to message them.
+  </Card>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    SDK patterns for the same message flow.
+  </Card>
+  <Card title="Channels" href="/docs/channels">
+    Design shared communication spaces.
+  </Card>
+  <Card title="DMs" href="/docs/dms">
+    One-to-one coordination patterns.
+  </Card>
+</CardGroup>

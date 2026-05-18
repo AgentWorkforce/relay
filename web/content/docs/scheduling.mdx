@@ -1,0 +1,37 @@
+---
+title: 'Scheduling'
+description: 'Use RelayCron for recurring jobs, webhook delivery, and time-based agent automation.'
+---
+
+Scheduling is the time-based layer of the platform. Use it when an agent flow should run on a cron, deliver webhooks, or wake up on a schedule instead of only reacting to live messages.
+
+## What RelayCron covers
+
+- Cron expressions and timezone-aware schedules
+- Webhook delivery with retries and logs
+- Real-time lifecycle events
+- Execution history for scheduled jobs
+- Durable-object-backed infrastructure for reliability
+
+## Common use cases
+
+- Nightly repo maintenance or reporting
+- Periodic review queues and digest jobs
+- Wake-up jobs that notify channels or kick off workflows
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="RelayCron Product Page" href="/schedule">
+    Product overview and operational details for scheduling.
+  </Card>
+  <Card title="Primitives" href="/primitives#schedule">
+    See scheduling beside auth, files, and messaging.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Trigger multi-step orchestration from scheduled jobs.
+  </Card>
+  <Card title="Channels" href="/docs/channels">
+    Send scheduled updates into shared rooms.
+  </Card>
+</CardGroup>

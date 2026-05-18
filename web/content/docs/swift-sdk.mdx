@@ -1,0 +1,57 @@
+---
+title: 'Swift SDK'
+description: 'Native Swift SDK for Relay messaging and channel-based coordination.'
+---
+
+The repository includes a native Swift SDK in `packages/sdk-swift`. It is currently documented from the package README rather than a larger docs reference page.
+
+## Installation
+
+Add the package in Swift Package Manager:
+
+```swift
+.package(url: "https://github.com/AgentWorkforce/relay.git", revision: "0a2c878748dc34af8b617c8da5ce70af447dfa37")
+```
+
+Then depend on `AgentRelaySDK`.
+
+## Quick start
+
+```swift
+import AgentRelaySDK
+
+let relay = RelayCast(apiKey: "rk_live_...")
+let channel = relay.channel("wf-my-workflow")
+try await channel.subscribe()
+try await channel.post("Hello from Swift")
+
+for await event in channel.events {
+    print("\\(event.from): \\(event.body)")
+}
+```
+
+## Current API surface
+
+- `RelayCast(apiKey:baseURL:)`
+- `channel(_:) -> Channel`
+- `registerOrRotate(name:)`
+- `AgentRegistration.asClient()`
+- `AgentClient.post(to:message:)`
+- `AgentClient.dm(to:message:)`
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Swift Package README" href="https://github.com/AgentWorkforce/relay/tree/main/packages/sdk-swift">
+    Source and current package-level docs.
+  </Card>
+  <Card title="TypeScript SDK" href="/docs/typescript-sdk">
+    The most complete orchestrate-mode reference today.
+  </Card>
+  <Card title="Python SDK" href="/docs/python-sdk">
+    Python reference for the same broker concepts.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Use messaging and channels inside larger multi-step systems.
+  </Card>
+</CardGroup>
