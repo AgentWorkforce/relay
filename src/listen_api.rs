@@ -142,9 +142,9 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<SessionMode, SessionRouteError>>,
     },
     /// `PUT /api/spawned/{name}/mode` — set the session mode. On a
-    /// `human → relay` transition the broker drains the pending queue
-    /// into the worker (via the existing inject path) before replying;
-    /// `flushed` reports how many messages were injected.
+    /// `human → passthrough` transition the broker drains the pending
+    /// queue into the worker (via the existing inject path) before
+    /// replying; `flushed` reports how many messages were injected.
     SetSessionMode {
         name: String,
         mode: SessionMode,
@@ -165,12 +165,11 @@ pub enum ListenApiRequest {
     },
 }
 
-/// Typed errors for the four session-mode HTTP routes added in #864
-/// sub-PR 2. Keeps the broker arm's reply payload structured so the
-/// HTTP handler can map cleanly to 404 without parsing strings. The
-/// "broker channel closed" / "reply dropped" failure modes are handled
-/// at the HTTP boundary via [`internal_error`], so they don't need a
-/// variant here.
+/// Typed errors for the four session-mode HTTP routes. Keeps the broker
+/// arm's reply payload structured so the HTTP handler can map cleanly
+/// to 404 without parsing strings. The "broker channel closed" / "reply
+/// dropped" failure modes are handled at the HTTP boundary via
+/// [`internal_error`], so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionRouteError {
     /// No worker with that name is currently registered with the broker.
@@ -191,7 +190,7 @@ impl std::error::Error for SessionRouteError {}
 
 /// Reply payload for [`ListenApiRequest::SetSessionMode`]. `flushed`
 /// is the number of pending messages drained during the transition
-/// (always `0` unless we transitioned `human → relay`).
+/// (always `0` unless we transitioned `human → passthrough`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetSessionModeOk {
     pub mode: SessionMode,
@@ -1166,14 +1165,13 @@ async fn listen_api_snapshot(
 // ---------------------------------------------------------------------------
 // Session mode (per-agent inject vs. queue, plus pending-queue inspection)
 //
-// Added in #864 sub-PR 2 to back the upcoming `agent-relay drive` client
-// (sub-PR 3). The broker keeps a `SessionMode` per worker; `Human` mode
-// parks inbound relay messages in a FIFO `pending` queue instead of
-// injecting them. These four routes are the server-side surface the
-// `drive` client will call.
+// The broker keeps a `SessionMode` per worker; `Human` mode parks
+// inbound relay messages in a FIFO `pending` queue instead of injecting
+// them. These four routes are the server-side surface the `drive`
+// client calls.
 // ---------------------------------------------------------------------------
 
-/// `GET /api/spawned/{name}/mode` → `{ "mode": "relay" | "human" }`.
+/// `GET /api/spawned/{name}/mode` → `{ "mode": "passthrough" | "human" }`.
 async fn listen_api_get_session_mode(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1205,12 +1203,12 @@ struct SetSessionModePayload {
     mode: String,
 }
 
-/// `PUT /api/spawned/{name}/mode` — body `{ "mode": "relay" | "human" }`.
+/// `PUT /api/spawned/{name}/mode` — body `{ "mode": "passthrough" | "human" }`.
 ///
-/// On a `human → relay` transition the broker drains the pending queue
-/// into the worker via the existing inject path *before* replying, so a
-/// caller flipping back to relay never strands messages. The response
-/// reports `flushed` (always `0` unless we drained).
+/// On a `human → passthrough` transition the broker drains the pending
+/// queue into the worker via the existing inject path *before* replying,
+/// so a caller flipping back to passthrough never strands messages. The
+/// response reports `flushed` (always `0` unless we drained).
 async fn listen_api_set_session_mode(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1221,7 +1219,7 @@ async fn listen_api_set_session_mode(
             axum::http::StatusCode::BAD_REQUEST,
             "invalid_mode",
             format!(
-                "unsupported session mode '{}' (expected 'relay' or 'human')",
+                "unsupported session mode '{}' (expected 'passthrough' or 'human')",
                 body.mode
             ),
         );
@@ -2944,9 +2942,9 @@ mod auth_tests {
             match rx.recv().await {
                 Some(ListenApiRequest::SetSessionMode { name, mode, reply }) => {
                     assert_eq!(name, "worker-a");
-                    assert_eq!(mode, SessionMode::Relay);
+                    assert_eq!(mode, SessionMode::Passthrough);
                     let _ = reply.send(Ok(SetSessionModeOk {
-                        mode: SessionMode::Relay,
+                        mode: SessionMode::Passthrough,
                         flushed: 3,
                     }));
                 }
@@ -2961,7 +2959,7 @@ mod auth_tests {
                     .method("PUT")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "mode": "relay" }).to_string()))
+                    .body(Body::from(json!({ "mode": "passthrough" }).to_string()))
                     .expect("request should build"),
             )
             .await
@@ -2969,7 +2967,7 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "mode": "relay", "flushed": 3 }));
+        assert_eq!(body, json!({ "mode": "passthrough", "flushed": 3 }));
         replier.await.expect("replier should complete");
     }
 
@@ -3207,7 +3205,7 @@ mod auth_tests {
                         .uri(path)
                         .method(method)
                         .header("content-type", "application/json")
-                        .body(Body::from(json!({ "mode": "relay" }).to_string()))
+                        .body(Body::from(json!({ "mode": "passthrough" }).to_string()))
                         .expect("request should build"),
                 )
                 .await

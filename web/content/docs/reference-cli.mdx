@@ -128,17 +128,17 @@ agent-relay drive reviewer
 
 `drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. Multi-driver coordination is tracked in a follow-up issue.
 
-`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling is `relay` (below).
+`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling is `passthrough` (below).
 
-## `relay`
+## `passthrough`
 
-Watch a running agent in relay mode. Where [`drive`](#drive) flips the worker into `human` mode and parks inbound relay messages in a queue, `relay` leaves the worker in `relay` mode (the broker default) so the broker auto-injects inbound relay messages into the agent's PTY *while you also type*. Both streams race — that's the verb's whole point. Use `relay` when you want to observe and occasionally nudge while the broker does its coordination thing; use `drive` when you want exclusive deterministic control.
+Watch a running agent in passthrough mode. Where [`drive`](#drive) flips the worker into `human` mode and parks inbound relay messages in a queue, `passthrough` leaves the worker in `passthrough` mode (the broker default) so the broker auto-injects inbound relay messages into the agent's PTY *while you also type*. Both streams race — that's the verb's whole point. Use `passthrough` when you want to observe and occasionally nudge while the broker does its coordination thing; use `drive` when you want exclusive deterministic control.
 
 ```bash
-agent-relay relay reviewer
+agent-relay passthrough reviewer
 ```
 
-Connection discovery, snapshot-on-attach, resize forwarding, and detach semantics are identical to `drive`. On attach, `relay` issues an idempotent `PUT /api/spawned/{name}/mode` with `{ "mode": "relay" }` so a worker that someone left in `human` mode is moved back to relay for the duration of your session, and the prior mode is restored on detach.
+Connection discovery, snapshot-on-attach, resize forwarding, and detach semantics are identical to `drive`. On attach, `passthrough` issues an idempotent `PUT /api/spawned/{name}/mode` with `{ "mode": "passthrough" }` so a worker that someone left in `human` mode is moved back to passthrough for the duration of your session, and the prior mode is restored on detach.
 
 Flags:
 
@@ -154,20 +154,20 @@ Keybinds:
 | ---- | ------ |
 | `Ctrl+B` then `D` / `d` / `Ctrl+D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. |
 | `Ctrl+B` then `?` | Toggle the inline help hint in the status line. |
-| `Ctrl+C` | Safety alias for detach — `relay` never kills the agent. |
+| `Ctrl+C` | Safety alias for detach — `passthrough` never kills the agent. |
 | `Ctrl+B` then any other key | Forwarded to the agent unchanged. |
 
-`relay` does *not* bind `Ctrl+G` (there's no queue to flush in relay mode — that's a `drive` concept). The status line is similar to `drive`'s but without the pending counter:
+`passthrough` does *not* bind `Ctrl+G` (there's no queue to flush in passthrough mode — that's a `drive` concept). The status line is similar to `drive`'s but without the pending counter:
 
 ```
-[relay reviewer | mode=relay | Ctrl+B D detach]
+[passthrough reviewer | mode=passthrough | Ctrl+B D detach]
 ```
 
-`relay` is single-driver-assumed in the same way `drive` is — last writer wins on keystrokes between the broker's auto-inject and your typing.
+`passthrough` is single-driver-assumed in the same way `drive` is — last writer wins on keystrokes between the broker's auto-inject and your typing.
 
 ## `new`
 
-Spawn a new agent under the broker. Headless by default — the agent keeps running as a child of the broker and you attach later with `view`, `drive`, or `relay`. Pass `--attach` to immediately open a session.
+Spawn a new agent under the broker. Headless by default — the agent keeps running as a child of the broker and you attach later with `view`, `drive`, or `passthrough`. Pass `--attach` to immediately open a session.
 
 ```bash
 # Spawn-only (headless): agent survives in the background.
@@ -176,10 +176,10 @@ agent-relay new Alice claude --task "review the auth changes"
 agent-relay new Alice claude --channels general,reviews --model opus
 
 # Spawn + attach in one shot.
-agent-relay new Alice claude --attach                    # default mode: drive
-agent-relay new Alice claude --attach --mode relay       # auto-inject + human types alongside
-agent-relay new Alice claude --attach --mode view        # read-only
-agent-relay new Alice claude --attach --ephemeral        # release on client exit
+agent-relay new Alice claude --attach                       # default mode: drive
+agent-relay new Alice claude --attach --mode passthrough    # auto-inject + human types alongside
+agent-relay new Alice claude --attach --mode view           # read-only
+agent-relay new Alice claude --attach --ephemeral           # release on client exit
 ```
 
 `new` POSTs to `/api/spawn` with the supplied positional CLI (`claude`, `codex`, `gemini`, `opencode`, `aider`, …) and any trailing args, then either prints a one-line attach hint and exits (default), or composes the matching session verb (with `--attach`).
@@ -192,7 +192,7 @@ Positional arguments:
 
 | Position | Required | Description |
 | -------- | -------- | ----------- |
-| `<name>` | yes | Agent name. Matches the positional shape of `drive`, `view`, `relay`, and `rm`. |
+| `<name>` | yes | Agent name. Matches the positional shape of `drive`, `view`, `passthrough`, and `rm`. |
 | `<cli>` | yes | CLI to spawn (`claude`, `codex`, `gemini`, `opencode`, `aider`, …). |
 | `[args...]` | no | Extra positional arguments passed through to the spawned CLI. |
 
@@ -206,7 +206,7 @@ Flags:
 | `--team <team>` | no | Team name for the agent. |
 | `--model <model>` | no | Model override (e.g. `opus`, `sonnet`, `gpt-4o`). |
 | `--attach` | no | After spawning, immediately open a session (default mode: `drive`). |
-| `--mode <mode>` | no | With `--attach`: session mode (`view`, `drive`, or `relay`). Defaults to `drive`. |
+| `--mode <mode>` | no | With `--attach`: session mode (`view`, `drive`, or `passthrough`). Defaults to `drive`. |
 | `--ephemeral` | no | With `--attach`: release the agent on client exit. |
 | `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
 | `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
@@ -214,7 +214,7 @@ Flags:
 
 ### `-n NAME CLI` shorthand
 
-A bare `-n NAME CLI` invocation is also recognised — it routes to the spawn-and-attach composition in relay mode with `--ephemeral` on:
+A bare `-n NAME CLI` invocation is also recognised — it routes to the spawn-and-attach composition in passthrough mode with `--ephemeral` on:
 
 ```bash
 agent-relay -n Alice claude
@@ -223,14 +223,14 @@ agent-relay -n Alice claude
 is equivalent to:
 
 ```bash
-agent-relay new Alice claude --attach --mode relay --ephemeral
+agent-relay new Alice claude --attach --mode passthrough --ephemeral
 ```
 
 The shorthand is detected by a small pre-parse pass before Commander runs.
 
 | Shape | Routes to |
 | ----- | --------- |
-| `agent-relay -n NAME CLI [args...]` | `agent-relay new NAME CLI [args...] --attach --mode relay --ephemeral` |
+| `agent-relay -n NAME CLI [args...]` | `agent-relay new NAME CLI [args...] --attach --mode passthrough --ephemeral` |
 | `agent-relay --name NAME CLI [args...]` | (same) |
 | `agent-relay -nNAME CLI [args...]` | (same — joined short flag form) |
 | `agent-relay --name=NAME CLI [args...]` | (same — equals form) |
@@ -253,4 +253,4 @@ Flags:
 
 Returns 1 with a friendly error if the agent doesn't exist (`404`) or the broker is unreachable.
 
-The `new`, `relay`, and `rm` verbs above round out the attach-style client surface alongside `view` and `drive`. Together they're the first-class client interface on the broker's HTTP and WebSocket routes.
+The `new`, `passthrough`, and `rm` verbs above round out the attach-style client surface alongside `view` and `drive`. Together they're the first-class client interface on the broker's HTTP and WebSocket routes.

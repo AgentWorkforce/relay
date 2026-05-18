@@ -6,7 +6,7 @@
  *   1. `agent-relay new NAME CLI --attach [--mode …] [--ephemeral]`
  *      — the explicit, flag-driven path.
  *   2. `agent-relay -n NAME CLI [args...]` — the bare `-n` shorthand,
- *      hardcoded to `--mode relay --ephemeral`.
+ *      hardcoded to `--mode passthrough --ephemeral`.
  *
  * Both call `runSpawnAndAttach()` here. There is one function that does
  * the work, and the only difference between the two entry points is
@@ -44,10 +44,10 @@ import {
   type DriveTerminal,
   type DriveWebSocket,
 } from '../commands/drive.js';
-import { runRelaySession, type RelayDependencies } from '../commands/relay.js';
+import { runPassthroughSession, type PassthroughDependencies } from '../commands/passthrough.js';
 import { runViewSession, type ViewDependencies, type ViewWebSocket } from '../commands/view.js';
 
-export type AttachMode = 'view' | 'drive' | 'relay';
+export type AttachMode = 'view' | 'drive' | 'passthrough';
 
 /** Options the composition layer understands. */
 export interface SpawnAndAttachOptions {
@@ -76,8 +76,8 @@ export interface SpawnAndAttachDependencies {
   newDeps: NewDependencies;
   /** For `--mode drive` attach. */
   driveDeps: DriveDependencies;
-  /** For `--mode relay` attach. */
-  relayDeps: RelayDependencies;
+  /** For `--mode passthrough` attach. */
+  passthroughDeps: PassthroughDependencies;
   /** For `--mode view` attach. */
   viewDeps: ViewDependencies;
   /** Issue a release on ephemeral teardown. Default delegates to `rm.releaseAgent`. */
@@ -96,12 +96,12 @@ export interface SpawnAndAttachDependencies {
 export interface AttachChildDependencies {
   newDeps: NewDependencies;
   driveDeps: DriveDependencies;
-  relayDeps: RelayDependencies;
+  passthroughDeps: PassthroughDependencies;
   viewDeps: ViewDependencies;
 }
 
 /**
- * Build the default child-module deps (`new` / `drive` / `relay` /
+ * Build the default child-module deps (`new` / `drive` / `passthrough` /
  * `view`) using the production defaults — global `fetch`, real
  * WebSocket, real signal registration, real stdin/stdout. Exported so
  * bootstrap-layer callers can wire production defaults without
@@ -168,7 +168,7 @@ export function buildDefaultAttachChildDeps(): AttachChildDependencies {
     terminal: terminalHandle,
   };
 
-  const relayDeps: RelayDependencies = {
+  const passthroughDeps: PassthroughDependencies = {
     ...sharedConnectionDeps,
     createWebSocket: (url, headers) => new WebSocket(url, { headers }) as DriveWebSocket,
     writeChunk: sharedWriteChunk,
@@ -194,7 +194,7 @@ export function buildDefaultAttachChildDeps(): AttachChildDependencies {
     captureAndRenderSnapshot: sharedSnapshot,
   };
 
-  return { newDeps, driveDeps, relayDeps, viewDeps };
+  return { newDeps, driveDeps, passthroughDeps, viewDeps };
 }
 
 /**
@@ -209,7 +209,7 @@ export function buildSpawnAndAttachDeps(
   return {
     newDeps: childDeps.newDeps,
     driveDeps: childDeps.driveDeps,
-    relayDeps: childDeps.relayDeps,
+    passthroughDeps: childDeps.passthroughDeps,
     viewDeps: childDeps.viewDeps,
     releaseAgent: (conn, name, fetchFn) => releaseAgent(conn, name, fetchFn),
     onSignal: childDeps.driveDeps.onSignal,
@@ -248,17 +248,17 @@ export async function runSpawnAndAttach(
 ): Promise<number> {
   const name = options.name?.trim();
   if (!name) {
-    deps.error('Error: agent name is required (use -n NAME)');
+    deps.error('Error: agent name is required');
     return 1;
   }
   const cli = options.cli?.trim();
   if (!cli) {
-    deps.error(`Error: CLI is required, e.g. \`agent-relay new -n ${name} claude --attach\``);
+    deps.error(`Error: CLI is required, e.g. \`agent-relay new ${name} claude --attach\``);
     return 1;
   }
   const mode: AttachMode = options.mode ?? 'drive';
-  if (mode !== 'view' && mode !== 'drive' && mode !== 'relay') {
-    deps.error(`Error: --mode must be one of view|drive|relay (got '${String(options.mode)}')`);
+  if (mode !== 'view' && mode !== 'drive' && mode !== 'passthrough') {
+    deps.error(`Error: --mode must be one of view|drive|passthrough (got '${String(options.mode)}')`);
     return 1;
   }
 
@@ -330,8 +330,8 @@ export async function runSpawnAndAttach(
       case 'drive':
         attachCode = await runDriveSession(name, attachOptions, deps.driveDeps);
         break;
-      case 'relay':
-        attachCode = await runRelaySession(name, attachOptions, deps.relayDeps);
+      case 'passthrough':
+        attachCode = await runPassthroughSession(name, attachOptions, deps.passthroughDeps);
         break;
       case 'view':
         attachCode = await runViewSession(name, attachOptions, deps.viewDeps);
@@ -354,7 +354,7 @@ export async function runSpawnAndAttach(
 /**
  * Tiny standalone entry point for the verbless `-n NAME CLI` shorthand
  * dispatcher in `bootstrap.ts`. Hands off to `runSpawnAndAttach` with
- * the shorthand's hardcoded preset (`--mode relay`, `--ephemeral`).
+ * the shorthand's hardcoded preset (`--mode passthrough`, `--ephemeral`).
  */
 export async function runVerblessAliasDispatch(
   parsedArgs: { name: string; cli: string; args: string[] },
@@ -365,7 +365,7 @@ export async function runVerblessAliasDispatch(
       name: parsedArgs.name,
       cli: parsedArgs.cli,
       args: parsedArgs.args,
-      mode: 'relay',
+      mode: 'passthrough',
       ephemeral: true,
     },
     buildSpawnAndAttachDeps(childDeps)
@@ -391,7 +391,7 @@ export async function runVerblessAliasDispatch(
  *   - `-n` without a CLI positional
  *
  * Exported for unit testing alongside the byte-equivalence test that
- * proves the shorthand parse matches what `new NAME CLI --attach --mode relay --ephemeral`
+ * proves the shorthand parse matches what `new NAME CLI --attach --mode passthrough --ephemeral`
  * decomposes into at the action layer.
  */
 export function parseVerblessAlias(

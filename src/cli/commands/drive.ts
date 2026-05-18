@@ -47,7 +47,7 @@ import { defaultExit, runSignalHandler } from '../lib/exit.js';
 type ExitFn = (code: number) => never;
 
 /** Wire string for the broker's `SessionMode` enum. */
-export type SessionMode = 'human' | 'relay';
+export type SessionMode = 'human' | 'passthrough';
 
 /** Minimal WebSocket surface we depend on — same shape as `view`'s. */
 export interface DriveWebSocket {
@@ -167,7 +167,7 @@ function authHeaders(connection: BrokerConnection): Record<string, string> {
 
 /** ----- HTTP helpers ----- */
 
-/** `GET /api/spawned/{name}/mode` → `'human' | 'relay'` or `null` on failure. */
+/** `GET /api/spawned/{name}/mode` → `'human' | 'passthrough'` or `null` on failure. */
 export async function getSessionMode(
   connection: BrokerConnection,
   agentName: string,
@@ -178,7 +178,7 @@ export async function getSessionMode(
     const res = await fetchFn(url, { headers: authHeaders(connection) });
     if (!res.ok) return null;
     const body = (await res.json()) as { mode?: unknown };
-    if (body.mode === 'human' || body.mode === 'relay') return body.mode;
+    if (body.mode === 'human' || body.mode === 'passthrough') return body.mode;
     return null;
   } catch {
     return null;
@@ -189,7 +189,7 @@ export async function getSessionMode(
 export interface SetSessionModeResult {
   ok: boolean;
   status: number;
-  /** Server-reported number of pending messages drained on a `human→relay` flip. */
+  /** Server-reported number of pending messages drained on a `human→passthrough` flip. */
   flushed?: number;
   /** Human-readable error message when `ok` is false. */
   message?: string;
@@ -518,8 +518,8 @@ export async function runDriveSession(
 
   // Remember the worker's prior mode so we can restore it on detach.
   // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `relay` in that case so the queue
-  // doesn't keep growing.
+  // we default the restore target to `passthrough` in that case so the
+  // queue doesn't keep growing.
   const previousMode = await getSessionMode(connection, agentName, deps.fetch);
 
   // Flip the worker into human mode. If this fails outright, abort
@@ -548,11 +548,11 @@ export async function runDriveSession(
       break;
     case 'not_found':
       // Best-effort restore — we did flip the mode above.
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
+      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
+      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to drive`}`);
       return 1;
     case 'unavailable':
@@ -725,7 +725,7 @@ export async function runDriveSession(
       }
       // Best-effort: restore the worker's previous mode so we don't
       // leave it stuck in human and silently piling up queued messages.
-      void setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch).finally(() => {
+      void setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch).finally(() => {
         resolve(code);
       });
     };

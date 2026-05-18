@@ -1,22 +1,22 @@
 /**
- * `agent-relay relay <name>` — read-write attach in relay mode.
+ * `agent-relay passthrough <name>` — read-write attach in passthrough mode.
  *
  * The broker auto-injects inbound relay messages into the agent's PTY
  * while the human also types; both writers race. That's the point —
- * relay mode is for observe-and-occasionally-nudge sessions while the
- * broker does its coordination thing. For exclusive deterministic
- * control with no auto-inject, use `drive` instead.
+ * passthrough mode is for observe-and-occasionally-nudge sessions
+ * while the broker does its coordination thing. For exclusive
+ * deterministic control with no auto-inject, use `drive` instead.
  *
- * On attach, ensures the worker is in `relay` mode (it's the broker
- * default, but if someone left a `drive` session the worker may be in
- * `human` mode — `relay` flips it back for the session's duration and
- * restores the prior mode on detach). On detach, restores the prior
- * mode and leaves the agent running.
+ * On attach, ensures the worker is in `passthrough` mode (it's the
+ * broker default, but if someone left a `drive` session the worker may
+ * be in `human` mode — `passthrough` flips it back for the session's
+ * duration and restores the prior mode on detach). On detach, restores
+ * the prior mode and leaves the agent running.
  *
  * The session loop (snapshot-on-attach, raw stdin, resize forwarding,
  * detach keybind, Ctrl+C-as-detach safety alias) mirrors the shape of
  * `drive.ts` minus the pending-queue UI and `Ctrl+G` flush binding
- * (there's no queue in relay mode). `drive.ts` is the more
+ * (there's no queue in passthrough mode). `drive.ts` is the more
  * heavily-commented version of the shared shape; this module
  * duplicates rather than abstracts because the trimmed surface is
  * small enough that an extra layer of indirection would cost more
@@ -45,7 +45,7 @@ import { getSessionMode, resizeWorker, sendInput, setSessionMode, type SessionMo
 type ExitFn = (code: number) => never;
 
 /** Minimal WebSocket surface we depend on — same shape as `drive`'s. */
-export interface RelayWebSocket {
+export interface PassthroughWebSocket {
   on(event: 'open', listener: () => void): unknown;
   on(event: 'message', listener: (data: WebSocket.RawData) => void): unknown;
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown;
@@ -53,13 +53,16 @@ export interface RelayWebSocket {
   close(code?: number, reason?: string): void;
 }
 
-export type RelayWebSocketFactory = (url: string, headers: Record<string, string>) => RelayWebSocket;
+export type PassthroughWebSocketFactory = (
+  url: string,
+  headers: Record<string, string>
+) => PassthroughWebSocket;
 
-export interface RelaySignalRegistrar {
+export interface PassthroughSignalRegistrar {
   (signal: NodeJS.Signals, handler: () => void | Promise<void>): void;
 }
 
-export interface RelayStdin {
+export interface PassthroughStdin {
   setRawMode?: (mode: boolean) => unknown;
   isTTY?: boolean;
   resume(): unknown;
@@ -69,18 +72,18 @@ export interface RelayStdin {
   removeListener?(event: 'data', listener: (chunk: Buffer) => void): unknown;
 }
 
-export interface RelayTerminal {
+export interface PassthroughTerminal {
   getSize(): { rows: number; cols: number } | null;
   onResize(handler: () => void): () => void;
 }
 
-export interface RelayDependencies {
+export interface PassthroughDependencies {
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
   env: NodeJS.ProcessEnv;
-  createWebSocket: RelayWebSocketFactory;
+  createWebSocket: PassthroughWebSocketFactory;
   writeChunk: (chunk: string) => void;
-  onSignal: RelaySignalRegistrar;
+  onSignal: PassthroughSignalRegistrar;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -90,16 +93,16 @@ export interface RelayDependencies {
     agentName: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
-  stdin: RelayStdin;
-  terminal: RelayTerminal;
+  stdin: PassthroughStdin;
+  terminal: PassthroughTerminal;
 }
 
-function withDefaults(overrides: Partial<RelayDependencies> = {}): RelayDependencies {
+function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
     env: process.env,
-    createWebSocket: (url, headers) => new WebSocket(url, { headers }) as RelayWebSocket,
+    createWebSocket: (url, headers) => new WebSocket(url, { headers }) as PassthroughWebSocket,
     writeChunk: (chunk) => {
       process.stdout.write(chunk);
     },
@@ -111,7 +114,7 @@ function withDefaults(overrides: Partial<RelayDependencies> = {}): RelayDependen
     exit: defaultExit,
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
-    stdin: process.stdin as RelayStdin,
+    stdin: process.stdin as PassthroughStdin,
     terminal: {
       getSize: () => {
         const stdout = process.stdout;
@@ -136,18 +139,18 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Discriminated union of broker events the `relay` client cares about.
- *  No `delivery_queued` / `agent_pending_drained` — there's no queue in
- *  relay mode, so those events (which the broker doesn't emit for
- *  relay-mode workers anyway) would be `other`. */
-export type RelayWsEvent = { kind: 'worker_stream'; chunk: string } | { kind: 'other' };
+/** Discriminated union of broker events the `passthrough` client cares
+ *  about. No `delivery_queued` / `agent_pending_drained` — there's no
+ *  queue in passthrough mode, so those events (which the broker doesn't
+ *  emit for passthrough-mode workers anyway) would be `other`. */
+export type PassthroughWsEvent = { kind: 'worker_stream'; chunk: string } | { kind: 'other' };
 
 /**
  * Inspect a single WebSocket frame and classify it relative to the
  * agent we're following. Non-matching / malformed frames return
  * `{ kind: 'other' }` so the caller can ignore them cheaply.
  */
-export function classifyWsEvent(rawMessage: string, agentName: string): RelayWsEvent {
+export function classifyWsEvent(rawMessage: string, agentName: string): PassthroughWsEvent {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -166,17 +169,17 @@ export function classifyWsEvent(rawMessage: string, agentName: string): RelayWsE
 
 /** ----- Keybind state machine ----- */
 
-export interface RelayKeybindOutcome {
+export interface PassthroughKeybindOutcome {
   forward: Buffer;
-  actions: RelayKeybindAction[];
+  actions: PassthroughKeybindAction[];
 }
 
-export type RelayKeybindAction = 'detach' | 'toggle_help';
+export type PassthroughKeybindAction = 'detach' | 'toggle_help';
 
 /**
- * Stateful parser for the relay client's keybind vocabulary. Smaller
- * than `drive`'s because there's no queue to flush — no `Ctrl+G`
- * binding.
+ * Stateful parser for the passthrough client's keybind vocabulary.
+ * Smaller than `drive`'s because there's no queue to flush — no
+ * `Ctrl+G` binding.
  *
  * Semantics:
  *   - `Ctrl+C` (0x03)    → emit `detach`, never forwarded.
@@ -188,12 +191,12 @@ export type RelayKeybindAction = 'detach' | 'toggle_help';
  *                                     TUI apps using `Ctrl+B` themselves
  *                                     aren't deprived.
  */
-export class RelayKeybindParser {
+export class PassthroughKeybindParser {
   private pendingPrefix = false;
 
-  feed(chunk: Buffer): RelayKeybindOutcome {
+  feed(chunk: Buffer): PassthroughKeybindOutcome {
     const forward: number[] = [];
-    const actions: RelayKeybindAction[] = [];
+    const actions: PassthroughKeybindAction[] = [];
 
     for (const byte of chunk) {
       if (this.pendingPrefix) {
@@ -232,9 +235,9 @@ export class RelayKeybindParser {
 /** ----- Status line rendering ----- */
 
 /**
- * Render the bottom-of-terminal status line for `relay`. Same
+ * Render the bottom-of-terminal status line for `passthrough`. Same
  * save/restore-cursor trick as `drive`, no pending counter (there
- * isn't one in relay mode).
+ * isn't one in passthrough mode).
  */
 export function renderStatusLine(opts: {
   agentName: string;
@@ -244,21 +247,21 @@ export function renderStatusLine(opts: {
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
   const help = opts.showHelp ? ' | Ctrl+B D detach | Ctrl+B ? hide help' : ' | Ctrl+B D detach';
-  const text = `[relay ${opts.agentName} | mode=${opts.mode}${help}]`;
+  const text = `[passthrough ${opts.agentName} | mode=${opts.mode}${help}]`;
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
 }
 
 /** ----- Main session runner ----- */
 
 /**
- * Open a `relay` session. Resolves with the exit code the CLI should
- * propagate. Cleans up its own stdin raw-mode and best-effort restores
- * the worker's previous session mode on any exit path.
+ * Open a `passthrough` session. Resolves with the exit code the CLI
+ * should propagate. Cleans up its own stdin raw-mode and best-effort
+ * restores the worker's previous session mode on any exit path.
  */
-export async function runRelaySession(
+export async function runPassthroughSession(
   agentName: string,
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
-  deps: RelayDependencies
+  deps: PassthroughDependencies
 ): Promise<number> {
   if (!agentName.trim()) {
     deps.error('Error: agent name is required');
@@ -276,24 +279,24 @@ export async function runRelaySession(
 
   // Remember the worker's prior mode so we can restore on detach.
   // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `relay` in that case (which is
-  // also our preferred final state).
+  // we default the restore target to `passthrough` in that case (which
+  // is also our preferred final state).
   const previousMode = await getSessionMode(connection, agentName, deps.fetch);
 
   // If the worker is in `human` mode (e.g. someone left a `drive`
-  // session), flip it back to `relay` for the duration of our session.
-  // This matches the verb's intent: `agent-relay relay alice` means
-  // "watch alice in relay mode". If the worker is already in `relay`
-  // we still issue the PUT — it's idempotent on the broker and gives
-  // us an early hard-failure on missing-agent before we touch the
-  // terminal.
-  const flip = await setSessionMode(connection, agentName, 'relay', deps.fetch);
+  // session), flip it back to `passthrough` for the duration of our
+  // session. This matches the verb's intent: `agent-relay passthrough alice`
+  // means "watch alice with auto-inject on". If the worker is already
+  // in `passthrough` we still issue the PUT — it's idempotent on the
+  // broker and gives us an early hard-failure on missing-agent before
+  // we touch the terminal.
+  const flip = await setSessionMode(connection, agentName, 'passthrough', deps.fetch);
   if (!flip.ok) {
     if (flip.status === 404) {
       deps.error(`Error: no agent named '${agentName}'`);
     } else {
       deps.error(
-        `Error: could not ensure '${agentName}' is in relay mode: ${flip.message ?? 'unknown error'}`
+        `Error: could not ensure '${agentName}' is in passthrough mode: ${flip.message ?? 'unknown error'}`
       );
     }
     return 1;
@@ -308,17 +311,17 @@ export async function runRelaySession(
     case 'ok':
       break;
     case 'not_found':
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
+      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to relay`}`);
+      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
+      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to attach to`}`);
       return 1;
     case 'unavailable':
     case 'transport_error':
       deps.log(
-        `[relay] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+        `[passthrough] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
       );
       break;
   }
@@ -331,7 +334,7 @@ export async function runRelaySession(
     (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
 
   const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ agentName, mode: 'relay', showHelp, rows: terminalRows }));
+    deps.writeChunk(renderStatusLine({ agentName, mode: 'passthrough', showHelp, rows: terminalRows }));
   };
   paintStatus();
 
@@ -345,7 +348,7 @@ export async function runRelaySession(
     );
     if (!initialResize.ok) {
       deps.log(
-        `[relay] could not sync agent PTY size to local terminal (${initialResize.message ?? 'unknown'}); continuing`
+        `[passthrough] could not sync agent PTY size to local terminal (${initialResize.message ?? 'unknown'}); continuing`
       );
     }
   }
@@ -360,7 +363,7 @@ export async function runRelaySession(
     let settled = false;
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
-    const parser = new RelayKeybindParser();
+    const parser = new PassthroughKeybindParser();
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
@@ -368,7 +371,7 @@ export async function runRelaySession(
       terminalRows = size.rows;
       void resizeWorker(connection, agentName, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
-          deps.log(`[relay] resize forward failed: ${res.message ?? 'unknown error'}`);
+          deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
       });
       paintStatus();
@@ -379,7 +382,7 @@ export async function runRelaySession(
       if (outcome.forward.length > 0) {
         void sendInput(connection, agentName, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
           if (!res.ok) {
-            deps.log(`[relay] input send failed: ${res.message ?? 'unknown error'}`);
+            deps.log(`[passthrough] input send failed: ${res.message ?? 'unknown error'}`);
           }
         });
       }
@@ -434,13 +437,13 @@ export async function runRelaySession(
       settled = true;
       teardownStdin();
       try {
-        socket.close(1000, 'relay client exiting');
+        socket.close(1000, 'passthrough client exiting');
       } catch {
         // best effort
       }
       // Restore the worker's previous mode (no-op if it was already
-      // relay, which is the common case).
-      void setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch).finally(() => {
+      // passthrough, which is the common case).
+      void setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch).finally(() => {
         resolve(code);
       });
     };
@@ -451,7 +454,7 @@ export async function runRelaySession(
     deps.onSignal('SIGTERM', () => finish(0));
 
     socket.on('open', () => {
-      deps.log(`[relay] relaying ${agentName} via ${connection.url} (Ctrl+B D to detach)`);
+      deps.log(`[passthrough] attached to ${agentName} via ${connection.url} (Ctrl+B D to detach)`);
       try {
         if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
           deps.stdin.setRawMode(true);
@@ -462,7 +465,7 @@ export async function runRelaySession(
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`[relay] could not enable raw input mode: ${message}`);
+        deps.error(`[passthrough] could not enable raw input mode: ${message}`);
         finish(1);
       }
     });
@@ -482,7 +485,7 @@ export async function runRelaySession(
     });
 
     socket.on('error', (err: Error) => {
-      deps.error(`[relay] WebSocket error: ${err.message}`);
+      deps.error(`[passthrough] WebSocket error: ${err.message}`);
     });
 
     socket.on('close', (code: number, reason: Buffer) => {
@@ -491,28 +494,33 @@ export async function runRelaySession(
       if (code === 1000 || code === 1005) {
         finish(0);
       } else {
-        deps.error(`[relay] connection closed (code: ${code}${reasonText ? `, reason: ${reasonText}` : ''})`);
+        deps.error(
+          `[passthrough] connection closed (code: ${code}${reasonText ? `, reason: ${reasonText}` : ''})`
+        );
         finish(1);
       }
     });
   });
 }
 
-/** Register `agent-relay relay <name>` on the supplied commander program. */
-export function registerRelayCommands(program: Command, overrides: Partial<RelayDependencies> = {}): void {
+/** Register `agent-relay passthrough <name>` on the supplied commander program. */
+export function registerPassthroughCommands(
+  program: Command,
+  overrides: Partial<PassthroughDependencies> = {}
+): void {
   const deps = withDefaults(overrides);
 
   program
-    .command('relay')
+    .command('passthrough')
     .description(
-      'Watch a running agent in relay mode: broker auto-injects inbound relay messages while you type alongside (last-writer-wins)'
+      'Watch a running agent in passthrough mode: broker auto-injects inbound relay messages while you type alongside (last-writer-wins)'
     )
-    .argument('<name>', 'Agent name to relay')
+    .argument('<name>', 'Agent name to attach to')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
     .action(async (name: string, options: { brokerUrl?: string; apiKey?: string; stateDir?: string }) => {
-      const code = await runRelaySession(name, options, deps);
+      const code = await runPassthroughSession(name, options, deps);
       if (code !== 0) {
         deps.exit(code);
       }

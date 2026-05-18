@@ -139,7 +139,7 @@ interface FetchScript {
   /** Map of route key → handler. Default behaviour returns 200 + sensible body. */
   routes?: Record<string, FetchRoute>;
   /** Default mode reported by `GET …/mode`. */
-  initialMode?: 'human' | 'relay';
+  initialMode?: 'human' | 'passthrough';
   /** Default pending count reported by `GET …/pending`. */
   initialPending?: number;
   /** Make `PUT …/mode` to `human` fail with this status / body. */
@@ -174,7 +174,7 @@ function createHarness(opts: FetchScript = {}): {
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
   );
 
-  const initialMode = opts.initialMode ?? 'relay';
+  const initialMode = opts.initialMode ?? 'passthrough';
   const initialPending = opts.initialPending ?? 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
@@ -449,7 +449,7 @@ describe('renderStatusLine', () => {
 
 describe('runDriveSession', () => {
   it('flips to human mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
-    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'relay' });
+    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'passthrough' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
@@ -470,10 +470,10 @@ describe('runDriveSession', () => {
     // Raw mode restored.
     expect(stdin.rawModeCalls).toEqual([true, false]);
 
-    // Last PUT /mode call should restore to 'relay' (the prior mode).
+    // Last PUT /mode call should restore to 'passthrough' (the prior mode).
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
     expect(modeCalls).toHaveLength(2);
-    expect(modeCalls[1].body).toEqual({ mode: 'relay' });
+    expect(modeCalls[1].body).toEqual({ mode: 'passthrough' });
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
@@ -496,7 +496,7 @@ describe('runDriveSession', () => {
     expect(errors[0]?.[0]).toMatch(/no agent named/);
     // Best-effort restore PUT should still have fired.
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'relay' }]);
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'passthrough' }]);
   });
 
   it('aborts before opening the WS when the worker has no PTY', async () => {
@@ -587,7 +587,7 @@ describe('runDriveSession', () => {
   });
 
   it('restores the prior mode even on abnormal WebSocket close', async () => {
-    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'relay' });
+    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'passthrough' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
@@ -597,7 +597,7 @@ describe('runDriveSession', () => {
     expect(errors.some((args) => String(args[0]).includes('connection closed'))).toBe(true);
 
     const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'relay' }]);
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'passthrough' }]);
   });
 
   it('proceeds when the worker is already in human mode (re-attach scenario)', async () => {

@@ -40,7 +40,7 @@ const expectedLeafCommands = [
   'connect',
   'view',
   'drive',
-  'relay',
+  'passthrough',
   'new',
   'rm',
   'dlq list',
@@ -194,7 +194,7 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     // `-n NAME drive` is too ambiguous — let commander error.
     expect(parseVerblessAlias(['-n', 'Alice', 'drive'], knownVerbs())).toBeNull();
     expect(parseVerblessAlias(['-n', 'Alice', 'view'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'relay'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'passthrough'], knownVerbs())).toBeNull();
     expect(parseVerblessAlias(['-n', 'Alice', 'new'], knownVerbs())).toBeNull();
   });
 
@@ -205,14 +205,14 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-V'], knownVerbs())).toBeNull();
   });
 
-  it('byte-equivalence: alias parse matches what `new NAME CLI --attach --mode relay --ephemeral` would dispatch', () => {
-    // The alias dispatcher hardcodes `mode: 'relay'` and `ephemeral: true`
+  it('byte-equivalence: alias parse matches what `new NAME CLI --attach --mode passthrough --ephemeral` would dispatch', () => {
+    // The alias dispatcher hardcodes `mode: 'passthrough'` and `ephemeral: true`
     // and feeds the parsed `name`, `cli`, `args` to `runSpawnAndAttach`.
     // The `new --attach` command path receives the same three positions
     // from commander and feeds them to the same function. The two paths
     // are byte-equivalent iff the parser extracts the same triplet here.
     const argvForAlias = ['-n', 'Alice', 'claude', '--say', 'hi'];
-    // What `new Alice claude --attach --mode relay --ephemeral --say hi`
+    // What `new Alice claude --attach --mode passthrough --ephemeral --say hi`
     // decomposes into at the commander action layer: positional
     // `<name>` ('Alice'), positional `<cli>` ('claude'), variadic
     // `[args...]` (['--say', 'hi']). `--attach` / `--mode` / `--ephemeral`
@@ -224,7 +224,7 @@ describe('verbless `-n NAME CLI` silent alias', () => {
       'claude',
       '--attach',
       '--mode',
-      'relay',
+      'passthrough',
       '--ephemeral',
       '--say',
       'hi',
