@@ -36,12 +36,13 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
-import {
-  buildSpawnAndAttachDeps,
-  runSpawnAndAttach,
-  type AttachChildDependencies,
-  type AttachMode,
-} from '../lib/spawn-and-attach.js';
+// Types are erased at compile time — keeping them at the top costs
+// nothing at runtime. The runtime symbols (`runSpawnAndAttach` /
+// `buildSpawnAndAttachDeps`) are lazy-loaded inside `runNewWithAttach`
+// below; without the dynamic import, a headless `agent-relay new …`
+// invocation would also load `ws`, `drive`, `passthrough`, `view`,
+// and every transitive session-runner dependency for nothing.
+import type { AttachChildDependencies, AttachMode } from '../lib/spawn-and-attach.js';
 
 type ExitFn = (code: number) => never;
 
@@ -224,6 +225,10 @@ export async function runNewWithAttach(
   options: NewOptions,
   childDeps: AttachChildDependencies
 ): Promise<number> {
+  // Dynamic import — only paid when the user actually asked for an
+  // attach. Pulls in `ws` + the three session runners + their
+  // transitive deps. Headless `new …` invocations never touch it.
+  const { runSpawnAndAttach, buildSpawnAndAttachDeps } = await import('../lib/spawn-and-attach.js');
   const mode = (options.mode ?? 'drive') as AttachMode;
   return runSpawnAndAttach(
     {
