@@ -71,3 +71,61 @@ Flags:
 If the initial snapshot can't be served (broker hiccup, transient timeout) `view` prints a warning to stderr and falls through to the live stream — you may briefly see a blank screen until the agent next produces output. If the agent doesn't exist or has no PTY (headless worker), `view` aborts with an explanatory error.
 
 `view` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). It shares the snapshot-on-attach helper with the upcoming `drive` and `relay` verbs so all three open with a faithful redraw of the agent's current screen.
+
+## `drive`
+
+Take interactive control of a running agent. `drive` flips the worker's session mode to `human` so the broker parks new inbound relay messages in a per-worker FIFO queue, forwards your keystrokes to the worker's PTY, lets you drain the queue on demand, and detaches cleanly without killing the agent.
+
+```bash
+agent-relay drive reviewer
+```
+
+The client auto-discovers the running broker the same way `view` does (`--broker-url` → `RELAY_BROKER_URL` → `.agent-relay/connection.json`). On attach it:
+
+1. Records the worker's current session mode so it can be restored on detach.
+2. Calls `PUT /api/spawned/{name}/mode` with `{ "mode": "human" }` to start queueing relay messages.
+3. Captures and renders the agent's current visible screen via `GET /api/spawned/{name}/snapshot?format=ansi`.
+4. Calls `GET /api/spawned/{name}/pending` once to seed the status-line counter.
+5. Opens a WebSocket to `/ws` and subscribes to `worker_stream`, `delivery_queued`, and `agent_pending_drained` events for this agent.
+6. Switches local stdin to raw mode and forwards keystrokes to `POST /api/input/{name}`.
+7. Syncs the agent's PTY dimensions to your local terminal via `POST /api/resize/{name}` and forwards every subsequent `SIGWINCH`. Without this, a TUI in the agent would render into whatever 24×80 box the PTY was spawned with regardless of how big your terminal actually is. Skipped entirely when stdout isn't a TTY.
+
+On detach (clean or abnormal), `drive` best-effort restores the worker's previous session mode so the queue doesn't fill up indefinitely, and leaves the agent running under the broker.
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json` to use for auto-discovery. Defaults to `.agent-relay/` under the project root. |
+
+Keybinds:
+
+| Keys | Action |
+| ---- | ------ |
+| `Ctrl+G` | Flush the pending queue (`POST /api/spawned/{name}/flush`). The broker injects each queued message in FIFO order and emits `agent_pending_drained`. |
+| `Ctrl+B` then `D` / `d` / `Ctrl+D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. The parser accepts uppercase, lowercase, or `Ctrl+D` after the `Ctrl+B` prefix. |
+| `Ctrl+B` then `?` | Toggle a small help hint inside the status line. |
+| `Ctrl+C` | Safety alias for detach. `drive` never kills the agent — use `agent-relay agents:kill` for that. |
+| `Ctrl+B` then any other key | Forwarded to the agent unchanged so TUI apps that use `Ctrl+B` themselves aren't deprived. |
+
+Status line: `drive` paints a one-line summary on the bottom row of your terminal using ANSI save/restore-cursor escapes so the agent's output isn't disturbed. It shows the agent name, current session mode, and the number of relay messages currently queued. The line repaints whenever the queue size changes (`delivery_queued` / `agent_pending_drained`) or the agent emits new output.
+
+```
+[drive reviewer | mode=human | pending=3 | Ctrl+G flush | Ctrl+B D detach]
+```
+
+Example session:
+
+```bash
+# Take over the `reviewer` agent
+agent-relay drive reviewer
+# … type instructions interactively, watch the queue grow as other agents
+# send messages, flush them when you're ready with Ctrl+G, detach with
+# Ctrl+B D when you're done.
+```
+
+`drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. Multi-driver coordination is tracked in a follow-up issue.
+
+`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling `relay` verb is coming in a follow-up PR.
