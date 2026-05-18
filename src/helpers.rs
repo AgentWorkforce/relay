@@ -216,89 +216,6 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     clean.contains(expected)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) enum TerminalQueryState {
-    #[default]
-    Idle,
-    Esc,
-    Csi,
-    CsiQmark,
-    Csi6,
-    CsiQmark6,
-    /// CSI 0 — could be DA1 param (ESC [ 0 c)
-    Csi0,
-    /// CSI 5 — could be DSR (ESC [ 5 n)
-    Csi5,
-    /// CSI > — DA2 prefix (ESC [ > c)
-    CsiGt,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct TerminalQueryParser {
-    pub(crate) state: TerminalQueryState,
-}
-
-impl TerminalQueryParser {
-    pub(crate) fn feed(&mut self, chunk: &[u8]) -> Vec<&'static [u8]> {
-        const ESC: u8 = 0x1b;
-        const CSI: u8 = b'[';
-        const QMARK: u8 = b'?';
-        const SIX: u8 = b'6';
-        const N: u8 = b'n';
-
-        let mut out = Vec::new();
-        for byte in chunk {
-            self.state = match (self.state, *byte) {
-                (_, ESC) => TerminalQueryState::Esc,
-                (TerminalQueryState::Esc, CSI) => TerminalQueryState::Csi,
-                (TerminalQueryState::Csi, QMARK) => TerminalQueryState::CsiQmark,
-                (TerminalQueryState::Csi, b'>') => TerminalQueryState::CsiGt,
-                (TerminalQueryState::Csi, SIX) => TerminalQueryState::Csi6,
-                (TerminalQueryState::Csi, b'0') => TerminalQueryState::Csi0,
-                (TerminalQueryState::Csi, b'5') => TerminalQueryState::Csi5,
-                (TerminalQueryState::CsiQmark, SIX) => TerminalQueryState::CsiQmark6,
-                // CSI 6 n → Cursor Position Report (CPR)
-                (TerminalQueryState::Csi6, N) => {
-                    out.push(b"\x1b[1;1R".as_slice());
-                    TerminalQueryState::Idle
-                }
-                (TerminalQueryState::CsiQmark6, N) => {
-                    out.push(b"\x1b[?1;1R".as_slice());
-                    TerminalQueryState::Idle
-                }
-                // CSI c → DA1 (Device Attributes primary, no params)
-                (TerminalQueryState::Csi, b'c') => {
-                    out.push(b"\x1b[?1;2c".as_slice()); // VT100 with AVO
-                    TerminalQueryState::Idle
-                }
-                // CSI 0 c → DA1 with explicit 0 param
-                (TerminalQueryState::Csi0, b'c') => {
-                    out.push(b"\x1b[?1;2c".as_slice());
-                    TerminalQueryState::Idle
-                }
-                // CSI > c → DA2 (Device Attributes secondary)
-                (TerminalQueryState::CsiGt, b'c') => {
-                    out.push(b"\x1b[>1;10;0c".as_slice()); // VT100, version 10
-                    TerminalQueryState::Idle
-                }
-                // CSI 5 n → DSR (Device Status Report)
-                (TerminalQueryState::Csi5, N) => {
-                    out.push(b"\x1b[0n".as_slice()); // terminal OK
-                    TerminalQueryState::Idle
-                }
-                _ => TerminalQueryState::Idle,
-            };
-        }
-        out
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn terminal_query_responses(chunk: &[u8]) -> Vec<&'static [u8]> {
-    let mut parser = TerminalQueryParser::default();
-    parser.feed(chunk)
-}
-
 fn workspace_context_label(
     workspace_id: Option<&str>,
     workspace_alias: Option<&str>,
@@ -1196,46 +1113,6 @@ mod tests {
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
 
-    #[test]
-    fn terminal_query_da1_no_param() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[c");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[?1;2c");
-    }
-
-    #[test]
-    fn terminal_query_da1_with_zero() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[0c");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[?1;2c");
-    }
-
-    #[test]
-    fn terminal_query_da2() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[>c");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[>1;10;0c");
-    }
-
-    #[test]
-    fn terminal_query_dsr() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[5n");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[0n");
-    }
-
-    #[test]
-    fn terminal_query_cpr_still_works() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[6n");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[1;1R");
-    }
-
     // ==================== detect_codex_model_prompt tests ====================
 
     #[test]
@@ -1467,55 +1344,6 @@ mod tests {
         let (has_header, has_allow) = detect_opencode_permission_prompt("");
         assert!(!has_header);
         assert!(!has_allow);
-    }
-
-    // ==================== terminal query parser edge cases ====================
-
-    #[test]
-    fn terminal_query_multiple_queries_in_one_chunk() {
-        let mut parser = TerminalQueryParser::default();
-        // DA1 + CPR + DSR all in one chunk
-        let responses = parser.feed(b"\x1b[c\x1b[6n\x1b[5n");
-        assert_eq!(responses.len(), 3);
-        assert_eq!(responses[0], b"\x1b[?1;2c"); // DA1
-        assert_eq!(responses[1], b"\x1b[1;1R"); // CPR
-        assert_eq!(responses[2], b"\x1b[0n"); // DSR
-    }
-
-    #[test]
-    fn terminal_query_interleaved_with_text() {
-        let mut parser = TerminalQueryParser::default();
-        // Normal text + DA1 query + more text
-        let responses = parser.feed(b"Hello\x1b[cWorld");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[?1;2c");
-    }
-
-    #[test]
-    fn terminal_query_split_across_chunks() {
-        let mut parser = TerminalQueryParser::default();
-        // ESC in first chunk, [6n in second
-        let r1 = parser.feed(b"\x1b");
-        assert_eq!(r1.len(), 0);
-        let r2 = parser.feed(b"[6n");
-        assert_eq!(r2.len(), 1);
-        assert_eq!(r2[0], b"\x1b[1;1R");
-    }
-
-    #[test]
-    fn terminal_query_incomplete_sequence_reset() {
-        let mut parser = TerminalQueryParser::default();
-        // ESC [ but then a regular char (not a query) — should reset
-        let responses = parser.feed(b"\x1b[A");
-        assert_eq!(responses.len(), 0, "cursor up should not generate response");
-    }
-
-    #[test]
-    fn terminal_query_qmark_cpr() {
-        let mut parser = TerminalQueryParser::default();
-        let responses = parser.feed(b"\x1b[?6n");
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0], b"\x1b[?1;1R");
     }
 
     // ==================== throttle edge cases ====================
