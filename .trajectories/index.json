@@ -410,6 +410,12 @@
       "completedAt": "2026-05-13T11:00:43.100Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
     },
+    "traj_v87cyrs8dke9": {
+      "title": "Upgrade .agentworkforce personas to latest 3.x shape",
+      "status": "active",
+      "startedAt": "2026-05-14T14:28:34.155Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/active/traj_v87cyrs8dke9.json"
+    },
     "traj_v1wexlfur5zr": {
       "title": "Fix broker headless reliability doc",
       "status": "completed",
@@ -591,6 +597,13 @@
       "startedAt": "2026-05-17T14:19:10.603Z",
       "completedAt": "2026-05-17T14:33:32.293Z",
       "path": ".trajectories/completed/2026-05/traj_cbmwd07phhm2.json"
+    },
+    "traj_ybcrij9wg8m1": {
+      "title": "Implement agent-relay view <name> read-only stream client (#864 sub-1)",
+      "status": "completed",
+      "startedAt": "2026-05-18T02:02:07.524Z",
+      "completedAt": "2026-05-18T02:05:41.120Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a65b9343cd7dbadb3/.trajectories/completed/2026-05/traj_ybcrij9wg8m1.json"
     },
     "traj_piik8r6zu3i7": {
       "title": "Issue 867: RelayEventListener",

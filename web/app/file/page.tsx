@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 
+import { GitHubStarsBadge } from '../../components/GitHubStars';
+
 import { RelayfileContent } from './RelayfileContent';
 
 export const metadata: Metadata = {
@@ -9,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function FilePage() {
-  return <RelayfileContent />;
+  return <RelayfileContent navActions={<GitHubStarsBadge />} />;
 }
