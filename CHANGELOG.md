@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **Task injection failures now return errors**: When spawning an agent with a task, if delivery fails after 3 retry attempts, spawn returns `success: false` and kills the agent. Previously, spawn would return `success: true` even if task injection silently failed, leaving zombie agents.
+- **Messaging sender default changed**: `agent-relay send` now defaults to the orchestrator identity (`$AGENT_RELAY_ORCHESTRATOR_NAME` or `orchestrator`) so `agent-relay replies <worker>` can correlate direct-message conversations.
 
 ### Migration Guidance
 
@@ -21,12 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`@agent-relay/cloud` provider connect SDK** (6.1.0): Exposes `connectProvider()`, `runInteractiveSession()`, and SSH runtime helpers (`loadSSH2`, `createAskpassScript`, `buildSystemSshArgs`) so other CLIs can drive the same Daytona-brokered provider auth flow that powers `agent-relay cloud connect`. `ssh2` is now an `optionalDependency` of the cloud package.
 - **`@agent-relay/sdk/workflows` script runner** (6.1.0): Exposes `runScriptWorkflow()`, `parseTsxStderr`, `formatWorkflowParseError`, `findLocalSdkWorkspace`, `ensureLocalSdkWorkflowRuntime`, plus `RunScriptWorkflowOptions` / `ParsedWorkflowError` types. The body of `agent-relay run <script>` now lives in the SDK, so other CLIs (ricky, future tools) can drive the same `.ts` / `.tsx` / `.py` execution flow in-process instead of shelling out. The relay CLI's `run` command is unchanged externally — it now delegates to the SDK function.
+- **Messaging replies workflow**: Added `agent-relay replies`, unread DM rendering in `agent-relay inbox`, and a `direction` field for DM JSON output.
 - **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
 - **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
 - **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
 - **Prerelease Publishing**: New prerelease script for staging environment, enabling faster iteration and testing cycles (#495428cd).
 - **`--api-bind` flag for broker HTTP API**: Configures the bind address for the broker's HTTP/WS server (default: `127.0.0.1`). Use `--api-bind 0.0.0.0` when running inside Daytona sandboxes to accept remote connections from the desktop app.
 - **`write_pty` PTY worker message**: New protocol message type that writes arbitrary data to the PTY. Used internally by the broker's `send_input` handler. The PTY worker responds with `ok` (including `bytes_written`) or `worker_error`.
+
+### Changed
+
+- `agent-relay inbox` now shows selected unread DM message content in text and JSON output, with terminal controls stripped from text-mode summaries.
 
 ### Fixed
 
@@ -41,11 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.0.22] - 2026-05-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Bump agent-relay-workflow writer timeouts (#857) (#857)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.22
 
 ---

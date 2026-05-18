@@ -1,15 +1,7 @@
 {
   "id": "relay-orchestrator",
   "intent": "relay-orchestrator",
-  "tags": [
-    "planning",
-    "implementation",
-    "testing",
-    "debugging",
-    "documentation",
-    "discovery",
-    "analytics"
-  ],
+  "tags": ["planning", "implementation", "testing", "debugging", "documentation", "discovery", "analytics"],
   "description": "A model-agnostic relay orchestrator persona that uses a headless orchestrator to spawn larger models for assistance. It routes conversations, loads the headless orchestrator, and manages agent spawning with a focus on fast orchestration.",
   "skills": [
     {
