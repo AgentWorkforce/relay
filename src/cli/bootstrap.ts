@@ -28,6 +28,10 @@ import { registerOnCommands } from './commands/on.js';
 import { registerDlqCommands } from './commands/dlq.js';
 import { registerViewCommands } from './commands/view.js';
 import { registerDriveCommands } from './commands/drive.js';
+import { registerRelayCommands } from './commands/relay.js';
+import { registerNewCommands } from './commands/new.js';
+import { registerRmCommands } from './commands/rm.js';
+import { parseVerblessAlias, registerRunActionExtensions, runVerblessAliasDispatch } from './commands/run.js';
 
 dotenvConfig({ quiet: true });
 
@@ -285,6 +289,15 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerDlqCommands(program);
   registerViewCommands(program);
   registerDriveCommands(program);
+  registerRelayCommands(program);
+  registerNewCommands(program);
+  registerRmCommands(program);
+  // The `run` command itself is registered by `registerSetupCommands` (the
+  // workflow runner). `registerRunActionExtensions` slots the new
+  // spawn-and-attach flags onto that same `run` command and dispatches based
+  // on whether `-n` is provided — see `src/cli/commands/run.ts`. Must come
+  // AFTER `registerSetupCommands(program)` above.
+  registerRunActionExtensions(program);
 
   return program;
 }
@@ -298,6 +311,20 @@ function maybeRunUpdateCheck(version: string, argv: string[]): void {
 function shouldSkipTelemetryInit(argv: string[]): boolean {
   const commandName = argv[2];
   return Boolean(commandName && TELEMETRY_MANAGEMENT_COMMANDS.has(commandName));
+}
+
+/**
+ * Top-level verb names that the verbless `-n NAME CLI` silent alias
+ * must NOT swallow. Built once from the program's leaf+group command
+ * tree so we can't drift if a new verb is added without updating both
+ * places.
+ */
+function collectTopLevelVerbs(program: Command): Set<string> {
+  const verbs = new Set<string>();
+  for (const command of program.commands) {
+    verbs.add(command.name());
+  }
+  return verbs;
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
@@ -315,6 +342,34 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   const program = createProgram({ name: resolveProgramName(argv) });
   installTelemetryHooks(program);
   installExitHooks();
+
+  // Silent alias for the pre-#864 shorthand: `agent-relay -n NAME CLI [args...]`
+  // ≡ `agent-relay run -n NAME CLI --mode relay --ephemeral`. Detected here
+  // BEFORE commander parses so the user's existing scripts keep working
+  // byte-for-byte. See `parseVerblessAlias` in `commands/run.ts`.
+  const knownVerbs = collectTopLevelVerbs(program);
+  const aliasMatch = parseVerblessAlias(argv.slice(2), knownVerbs);
+  if (aliasMatch) {
+    try {
+      const code = await runVerblessAliasDispatch(aliasMatch);
+      try {
+        await shutdownTelemetry();
+      } catch {
+        // Never let telemetry shutdown mask the real exit code.
+      }
+      if (code !== 0) {
+        process.exit(code);
+      }
+      return program;
+    } catch (err) {
+      try {
+        await shutdownTelemetry();
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
+  }
 
   try {
     await program.parseAsync(argv);

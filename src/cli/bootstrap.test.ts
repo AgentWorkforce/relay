@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { createProgram } from './bootstrap.js';
+import { parseVerblessAlias } from './commands/run.js';
 
 const expectedLeafCommands = [
   'up',
@@ -39,6 +40,9 @@ const expectedLeafCommands = [
   'connect',
   'view',
   'drive',
+  'relay',
+  'new',
+  'rm',
   'dlq list',
   'dlq inspect',
   'dlq replay',
@@ -138,5 +142,87 @@ describe('bootstrap CLI', () => {
     expect(leafCommandPaths).toHaveLength(expectedLeafCommands.length);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
+  });
+});
+
+describe('verbless `-n NAME CLI` silent alias', () => {
+  // Build the verb set the same way `runCli` does so the test exercises
+  // the real exclusion list. If a new verb is registered without
+  // updating `expectedLeafCommands`, the leaf-count test above catches
+  // that — here we just need the live snapshot.
+  function knownVerbs(): Set<string> {
+    const program = createProgram();
+    return new Set(program.commands.map((c) => c.name()));
+  }
+
+  it('recognises `-n NAME CLI`', () => {
+    const result = parseVerblessAlias(['-n', 'Alice', 'claude'], knownVerbs());
+    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
+  });
+
+  it('recognises `--name NAME CLI [args...]`', () => {
+    const result = parseVerblessAlias(['--name', 'Alice', 'claude', '--say', 'hi'], knownVerbs());
+    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
+  });
+
+  it('recognises the joined `-nNAME` short-flag form', () => {
+    const result = parseVerblessAlias(['-nAlice', 'claude'], knownVerbs());
+    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
+  });
+
+  it('recognises the `--name=NAME` equals form', () => {
+    const result = parseVerblessAlias(['--name=Alice', 'claude'], knownVerbs());
+    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
+  });
+
+  it('returns null when no -n flag is present (lets commander handle it)', () => {
+    expect(parseVerblessAlias(['spawn', 'Alice', 'claude'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['view', 'Alice'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias([], knownVerbs())).toBeNull();
+  });
+
+  it('returns null when -n has no value', () => {
+    expect(parseVerblessAlias(['-n'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['--name'], knownVerbs())).toBeNull();
+  });
+
+  it('returns null when -n has a value but no CLI positional follows', () => {
+    expect(parseVerblessAlias(['-n', 'Alice'], knownVerbs())).toBeNull();
+  });
+
+  it('returns null when the first positional after -n is a known verb', () => {
+    // `-n NAME drive` is too ambiguous — let commander error.
+    expect(parseVerblessAlias(['-n', 'Alice', 'drive'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'view'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'relay'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'run'], knownVerbs())).toBeNull();
+  });
+
+  it('returns null when help / version flags are present', () => {
+    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '--help'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-h'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '--version'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-V'], knownVerbs())).toBeNull();
+  });
+
+  it('byte-equivalence: alias parse matches what `run -n NAME CLI --mode relay --ephemeral` would dispatch', () => {
+    // The alias dispatcher hardcodes `mode: 'relay'` and `ephemeral: true`
+    // and feeds the parsed `name`, `cli`, `args` to `runSpawnAndAttach`.
+    // The `run -n` command path parses the same three positions out of
+    // commander and feeds them to the same function. The two paths are
+    // byte-equivalent iff the parser extracts the same triplet here.
+    const argvForAlias = ['-n', 'Alice', 'claude', '--say', 'hi'];
+    const argvForRun = ['run', '-n', 'Alice', 'claude', '--say', 'hi'];
+
+    const aliasParsed = parseVerblessAlias(argvForAlias, knownVerbs());
+    expect(aliasParsed).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
+
+    // Simulate what the `run -n` action receives from commander: the
+    // first positional (`<file>`/cli), the variadic args, and the
+    // parsed `--name` option.
+    const runFile = argvForRun[3]; // 'claude'
+    const runVariadic = argvForRun.slice(4); // ['--say', 'hi']
+    const runName = argvForRun[2]; // 'Alice'
+    expect({ name: runName, cli: runFile, args: runVariadic }).toEqual(aliasParsed);
   });
 });

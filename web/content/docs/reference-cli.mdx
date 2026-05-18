@@ -128,4 +128,128 @@ agent-relay drive reviewer
 
 `drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. Multi-driver coordination is tracked in a follow-up issue.
 
-`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling `relay` verb is coming in a follow-up PR.
+`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling is `relay` (below).
+
+## `relay`
+
+Watch a running agent in relay mode. Where [`drive`](#drive) flips the worker into `human` mode and parks inbound relay messages in a queue, `relay` leaves the worker in `relay` mode (the broker default) so the broker auto-injects inbound relay messages into the agent's PTY *while you also type*. Both streams race — that's the verb's whole point. Use `relay` when you want to observe and occasionally nudge while the broker does its coordination thing; use `drive` when you want exclusive deterministic control.
+
+```bash
+agent-relay relay reviewer
+```
+
+Connection discovery, snapshot-on-attach, resize forwarding, and detach semantics are identical to `drive`. On attach, `relay` issues an idempotent `PUT /api/spawned/{name}/mode` with `{ "mode": "relay" }` so a worker that someone left in `human` mode is moved back to relay for the duration of your session, and the prior mode is restored on detach.
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+Keybinds:
+
+| Keys | Action |
+| ---- | ------ |
+| `Ctrl+B` then `D` / `d` / `Ctrl+D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. |
+| `Ctrl+B` then `?` | Toggle the inline help hint in the status line. |
+| `Ctrl+C` | Safety alias for detach — `relay` never kills the agent. |
+| `Ctrl+B` then any other key | Forwarded to the agent unchanged. |
+
+`relay` does *not* bind `Ctrl+G` (there's no queue to flush in relay mode — that's a `drive` concept). The status line is similar to `drive`'s but without the pending counter:
+
+```
+[relay reviewer | mode=relay | Ctrl+B D detach]
+```
+
+`relay` is single-driver-assumed in the same way `drive` is — last writer wins on keystrokes between the broker's auto-inject and your typing.
+
+## `new`
+
+Spawn a new agent under the broker and exit. No terminal attachment, no mode flip, no WebSocket subscription — the agent keeps running headless as a child of the broker, and you attach later with `view`, `drive`, or `relay`.
+
+```bash
+agent-relay new -n Alice claude
+agent-relay new -n Alice claude --task "review the auth changes"
+agent-relay new -n Alice claude --channels general,reviews --model opus
+```
+
+`new` POSTs to `/api/spawn` with the supplied positional CLI (`claude`, `codex`, `gemini`, `opencode`, `aider`, …) and any trailing args, then prints the agent name and a one-line attach hint. It's the lightest spawn entry point in the CLI — the longer-form `spawn` command in [agent management](./reference-broker-api) does the same thing but autostarts a broker if there isn't one.
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `-n, --name <name>` | yes | Agent name. |
+| `--task <task>` | no | Initial task description sent to the agent on spawn. |
+| `--channels <list>` | no | Comma-separated channel names for the agent to join. |
+| `--cwd <path>` | no | Working directory for the agent's process. |
+| `--team <team>` | no | Team name for the agent. |
+| `--model <model>` | no | Model override (e.g. `opus`, `sonnet`, `gpt-4o`). |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+## `run`
+
+Composition of `new` + the matching session verb. Spawns the agent and immediately opens an attach client. Useful for the common one-shot case of "spawn this and watch it".
+
+```bash
+agent-relay run -n Alice claude                   # spawn, then attach in drive mode (the default)
+agent-relay run -n Alice claude --mode relay      # spawn, then attach in relay mode
+agent-relay run -n Alice claude --mode view       # spawn, then attach read-only
+agent-relay run -n Alice claude --ephemeral       # release the agent on client exit
+```
+
+Default `--mode` is `drive` (the safer queue-and-flush default). With `--ephemeral`, `run` registers a teardown that calls `DELETE /api/spawned/{name}` on clean detach, SIGINT, SIGTERM, or abnormal WebSocket close — handy for ad-hoc experiments where you don't want the agent surviving the terminal. Without it, the agent keeps running after detach (the post-#864 default).
+
+Flags: everything from [`new`](#new) plus:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--mode <mode>` | no | `view`, `drive`, or `relay`. Defaults to `drive`. |
+| `--ephemeral` | no | Release the agent on client exit. |
+
+### `-n NAME CLI` shorthand (non-breaking alias)
+
+The pre-#864 shorthand still works exactly as it did before:
+
+```bash
+agent-relay -n Alice claude
+```
+
+is a silent alias for:
+
+```bash
+agent-relay run -n Alice claude --mode relay --ephemeral
+```
+
+Same byte-for-byte behaviour as today's `agent-relay -n` — spawn under the broker, attach in relay mode (broker auto-inject + human typing race), agent dies when the terminal closes. Scripts that use the old shorthand keep working without changes. The alias is recognised by a small pre-parse pass before Commander runs; no deprecation warning, no version bump.
+
+| Shape | Routes to |
+| ----- | --------- |
+| `agent-relay -n NAME CLI [args...]` | `agent-relay run -n NAME CLI [args...] --mode relay --ephemeral` |
+| `agent-relay --name NAME CLI [args...]` | (same) |
+| `agent-relay -nNAME CLI [args...]` | (same — joined short flag form) |
+| `agent-relay --name=NAME CLI [args...]` | (same — equals form) |
+
+## `rm`
+
+Release a running agent via the broker. Wraps `DELETE /api/spawned/{name}` — the lightweight counterpart to the longer-form `release` command, useful when you already have a broker running and don't want the SDK-client autostart.
+
+```bash
+agent-relay rm Alice
+```
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+Returns 1 with a friendly error if the agent doesn't exist (`404`) or the broker is unreachable.
+
+The `new` / `run` / `relay` / `rm` verbs above complete the broker-owned agent model from [issue #864](https://github.com/AgentWorkforce/relay/issues/864). Together with `view` and `drive` they're the first-class client surface on the broker's existing HTTP/WS routes.
