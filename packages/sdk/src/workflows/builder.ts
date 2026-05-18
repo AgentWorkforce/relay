@@ -137,6 +137,15 @@ export interface WorkflowRunOptions {
   onCloudStatusChange?: (status: string, runId: string) => void;
 }
 
+/** Constructor-name extractor for `error_class` telemetry. */
+function sdkErrorClass(err: unknown): string {
+  if (err instanceof Error) return err.constructor.name;
+  if (err && typeof err === 'object') {
+    return (err as { constructor?: { name?: string } }).constructor?.name ?? 'Object';
+  }
+  return typeof err;
+}
+
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
 
 /**
@@ -469,6 +478,49 @@ export class WorkflowBuilder {
   async run(options: WorkflowRunOptions & { dryRun: true }): Promise<DryRunReport>;
   async run(options?: WorkflowRunOptions): Promise<WorkflowRunRow>;
   async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow | DryRunReport> {
+    const startedAt = Date.now();
+    const stepCount = this._steps.length;
+    const workflowName = this._name;
+    let success = false;
+    let errorClass: string | undefined;
+    try {
+      const result = await this._runInternal(options);
+      // For dry-run reports, treat completion-without-throw as success;
+      // for real runs, also require the runner's status to be "completed".
+      const isDryRun = options.dryRun ?? !!process.env.DRY_RUN;
+      if (isDryRun) {
+        success = true;
+      } else {
+        const status = (result as { status?: string })?.status;
+        success = status === 'completed' || status === 'success';
+        if (!success) {
+          errorClass = 'WorkflowNotCompleted';
+        }
+      }
+      return result;
+    } catch (err) {
+      success = false;
+      errorClass = sdkErrorClass(err);
+      throw err;
+    } finally {
+      // Lazy import keeps the no-telemetry-key path zero-cost for users who
+      // never enable telemetry.
+      try {
+        const { trackSdkEvent } = await import('../telemetry.js');
+        trackSdkEvent('sdk_workflow_run', {
+          workflow_name: workflowName,
+          step_count: stepCount,
+          success,
+          duration_ms: Date.now() - startedAt,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      } catch {
+        // Telemetry must never alter user-visible behaviour.
+      }
+    }
+  }
+
+  private async _runInternal(options: WorkflowRunOptions): Promise<WorkflowRunRow | DryRunReport> {
     const config = this.toConfig();
     const runnerCwd = options.cwd ?? process.cwd();
     const dbPath = path.join(runnerCwd, '.agent-relay', 'workflow-runs.jsonl');

@@ -600,6 +600,16 @@ export function optionsFromEnv(): PatchedMcpServerOptions {
 }
 
 if (isEntrypoint()) {
+  // When relaycast-mcp runs as its own stdio subprocess (e.g. spawned by
+  // Claude Code/Cursor/Zed via .mcp.json), the parent CLI's bootstrap
+  // hook never ran — install the harness header interceptor ourselves so
+  // outgoing relaycast calls still carry `X-Relaycast-Harness`.
+  void import('./lib/relaycast-fetch-interceptor.js')
+    .then(({ installRelaycastFetchInterceptor }) => {
+      installRelaycastFetchInterceptor();
+    })
+    .catch(() => undefined);
+
   startPatchedStdio(optionsFromEnv()).catch((error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     process.stderr.write(`${message}\n`);

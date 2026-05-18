@@ -16,6 +16,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
+import { trackSdkEvent } from './telemetry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -109,6 +110,38 @@ function isProcessRunning(pid: number): boolean {
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Wrap a public client method invocation with `sdk_method_call` telemetry.
+ * Fire-and-forget — never throws, and the user-observable behaviour is
+ * identical with or without telemetry configured.
+ */
+async function trackMethod<T>(methodName: string, fn: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const result = await fn();
+    trackSdkEvent('sdk_method_call', {
+      method_name: methodName,
+      success: true,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  } catch (err) {
+    let errorClass = 'Error';
+    if (err instanceof Error) {
+      errorClass = err.constructor.name;
+    } else if (err && typeof err === 'object') {
+      errorClass = (err as { constructor?: { name?: string } }).constructor?.name ?? 'Object';
+    }
+    trackSdkEvent('sdk_method_call', {
+      method_name: methodName,
+      success: false,
+      duration_ms: Date.now() - startedAt,
+      error_class: errorClass,
+    });
+    throw err;
   }
 }
 
@@ -374,26 +407,28 @@ export class AgentRelayClient {
   // ── Agent lifecycle ────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
-    return this.transport.request('/api/spawn', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: input.name,
-        cli: input.cli,
-        model: input.model,
-        args: input.args ?? [],
-        task: input.task,
-        channels: input.channels ?? [],
-        cwd: input.cwd,
-        team: input.team,
-        agentToken: input.agentToken,
-        shadowOf: input.shadowOf,
-        shadowMode: input.shadowMode,
-        continueFrom: input.continueFrom,
-        idleThresholdSecs: input.idleThresholdSecs,
-        restartPolicy: input.restartPolicy,
-        skipRelayPrompt: input.skipRelayPrompt,
-      }),
-    });
+    return trackMethod('AgentRelayClient.spawnPty', () =>
+      this.transport.request('/api/spawn', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: input.name,
+          cli: input.cli,
+          model: input.model,
+          args: input.args ?? [],
+          task: input.task,
+          channels: input.channels ?? [],
+          cwd: input.cwd,
+          team: input.team,
+          agentToken: input.agentToken,
+          shadowOf: input.shadowOf,
+          shadowMode: input.shadowMode,
+          continueFrom: input.continueFrom,
+          idleThresholdSecs: input.idleThresholdSecs,
+          restartPolicy: input.restartPolicy,
+          skipRelayPrompt: input.skipRelayPrompt,
+        }),
+      })
+    );
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -404,27 +439,29 @@ export class AgentRelayClient {
       );
     }
 
-    return this.transport.request('/api/spawn', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: input.name,
-        cli: input.provider,
-        model: input.model,
-        args: input.args ?? [],
-        task: input.task,
-        channels: input.channels ?? [],
-        cwd: input.cwd,
-        team: input.team,
-        agentToken: input.agentToken,
-        shadowOf: input.shadowOf,
-        shadowMode: input.shadowMode,
-        continueFrom: input.continueFrom,
-        idleThresholdSecs: input.idleThresholdSecs,
-        restartPolicy: input.restartPolicy,
-        skipRelayPrompt: input.skipRelayPrompt,
-        transport,
-      }),
-    });
+    return trackMethod('AgentRelayClient.spawnProvider', () =>
+      this.transport.request('/api/spawn', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: input.name,
+          cli: input.provider,
+          model: input.model,
+          args: input.args ?? [],
+          task: input.task,
+          channels: input.channels ?? [],
+          cwd: input.cwd,
+          team: input.team,
+          agentToken: input.agentToken,
+          shadowOf: input.shadowOf,
+          shadowMode: input.shadowMode,
+          continueFrom: input.continueFrom,
+          idleThresholdSecs: input.idleThresholdSecs,
+          restartPolicy: input.restartPolicy,
+          skipRelayPrompt: input.skipRelayPrompt,
+          transport,
+        }),
+      })
+    );
   }
 
   async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -444,15 +481,19 @@ export class AgentRelayClient {
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
-    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
-      method: 'DELETE',
-      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-    });
+    return trackMethod('AgentRelayClient.release', () =>
+      this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+      })
+    );
   }
 
   async listAgents(): Promise<ListAgent[]> {
-    const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
-    return result.agents;
+    return trackMethod('AgentRelayClient.listAgents', async () => {
+      const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
+      return result.agents;
+    });
   }
 
   // ── PTY control ────────────────────────────────────────────────────
@@ -478,27 +519,29 @@ export class AgentRelayClient {
   // ── Messaging ──────────────────────────────────────────────────────
 
   async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
-    try {
-      return await this.transport.request('/api/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          to: input.to,
-          text: input.text,
-          from: input.from,
-          threadId: input.threadId,
-          workspaceId: input.workspaceId,
-          workspaceAlias: input.workspaceAlias,
-          priority: input.priority,
-          data: input.data,
-          mode: input.mode,
-        }),
-      });
-    } catch (error) {
-      if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
-        return { event_id: 'unsupported_operation', targets: [] };
+    return trackMethod('AgentRelayClient.sendMessage', async () => {
+      try {
+        return await this.transport.request('/api/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            to: input.to,
+            text: input.text,
+            from: input.from,
+            threadId: input.threadId,
+            workspaceId: input.workspaceId,
+            workspaceAlias: input.workspaceAlias,
+            priority: input.priority,
+            data: input.data,
+            mode: input.mode,
+          }),
+        });
+      } catch (error) {
+        if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
+          return { event_id: 'unsupported_operation', targets: [] };
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   // ── Model control ──────────────────────────────────────────────────

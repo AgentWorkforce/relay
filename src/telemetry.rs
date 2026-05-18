@@ -315,6 +315,151 @@ fn detect_os_version() -> Option<String> {
     }
 }
 
+/// Canonical harness slug set — must stay aligned with the TS
+/// `OrchestratorHarness` union in `packages/telemetry/src/harness.ts`
+/// and the relaycast server-side enum (#132).
+const KNOWN_HARNESSES: &[&str] = &[
+    "claude-code",
+    "cursor",
+    "codex",
+    "gemini",
+    "aider",
+    "cline",
+    "continue",
+    "windsurf",
+    "zed",
+    "unknown",
+];
+
+/// Map a process basename to a harness slug, or `None` for unrecognized.
+/// Match is case-insensitive against the executable basename.
+fn classify_harness_basename(basename: &str) -> Option<&'static str> {
+    let lower = basename.trim().to_lowercase();
+    // Strip Windows .exe suffix for portability with the TS classifier.
+    let stripped = lower.strip_suffix(".exe").unwrap_or(&lower);
+    match stripped {
+        "claude" | "claude-code" => Some("claude-code"),
+        "cursor" => Some("cursor"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "aider" => Some("aider"),
+        "cline" => Some("cline"),
+        "continue" => Some("continue"),
+        "windsurf" => Some("windsurf"),
+        "zed" => Some("zed"),
+        _ => {
+            // Catch helper-style names like "Cursor Helper", "Claude Helper".
+            if stripped.starts_with("cursor ") {
+                Some("cursor")
+            } else if stripped.starts_with("claude ") {
+                Some("claude-code")
+            } else if stripped.starts_with("windsurf ") {
+                Some("windsurf")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Read the basename portion of a process command string.
+fn command_basename(command: &str) -> String {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let stripped = first.trim_matches(['"', '\''].as_ref());
+    let last_sep = stripped.rfind(['/', '\\'].as_ref());
+    match last_sep {
+        Some(idx) => stripped[idx + 1..].to_string(),
+        None => stripped.to_string(),
+    }
+}
+
+/// Linux-only: read `/proc/<pid>/comm` and `/proc/<pid>/status`.
+#[cfg(target_os = "linux")]
+fn read_proc_info(pid: u32) -> Option<(String, u32)> {
+    let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        .ok()?
+        .trim()
+        .to_string();
+    let status = std::fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    let ppid = status
+        .lines()
+        .find(|line| line.starts_with("PPid:"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((comm, ppid))
+}
+
+/// macOS: shell out to `ps -o ppid=,command= -p <pid>`. Cheap enough for
+/// the small number of ancestor walks we do at startup.
+#[cfg(target_os = "macos")]
+fn read_proc_info(pid: u32) -> Option<(String, u32)> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=,command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let ppid_str = parts.next()?.trim();
+    let command = parts.next()?.trim().to_string();
+    let ppid = ppid_str.parse::<u32>().ok()?;
+    Some((command, ppid))
+}
+
+/// Fallback for platforms we don't implement (Windows, BSDs, etc.).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_proc_info(_pid: u32) -> Option<(String, u32)> {
+    None
+}
+
+/// Walk the parent process chain looking for a known harness basename.
+/// Returns `"unknown"` on any failure or after exhausting the depth limit.
+///
+/// Resolution order:
+///   1. `AGENT_RELAY_ORCHESTRATOR_HARNESS` env var (set by the TS CLI before
+///      spawning the broker — Option A in the issue).
+///   2. Process-tree walk via platform-specific APIs (fallback for the SDK
+///      case where user code spawns the broker directly).
+///   3. `"unknown"` as the long-tail baseline.
+fn detect_orchestrator_harness() -> String {
+    // 1. Env-var hint set by a parent CLI — saves the broker from re-walking.
+    if let Some(value) = env_nonempty("AGENT_RELAY_ORCHESTRATOR_HARNESS") {
+        let lower = value.to_lowercase();
+        if KNOWN_HARNESSES.iter().any(|&h| h == lower) {
+            return lower;
+        }
+        return "unknown".to_string();
+    }
+
+    // 2. Walk the parent chain — up to 10 hops.
+    #[cfg(unix)]
+    {
+        let mut pid: u32 = unsafe { libc::getppid() } as u32;
+        for _ in 0..10 {
+            if pid <= 1 {
+                break;
+            }
+            let Some((command, ppid)) = read_proc_info(pid) else {
+                break;
+            };
+            let basename = command_basename(&command);
+            if let Some(harness) = classify_harness_basename(&basename) {
+                return harness.to_string();
+            }
+            if ppid == pid || ppid <= 1 {
+                break;
+            }
+            pid = ppid;
+        }
+    }
+
+    // 3. Fallback.
+    "unknown".to_string()
+}
+
 /// Tiny hex encoder (avoids adding the `hex` crate).
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
@@ -343,6 +488,12 @@ pub struct TelemetryClient {
     /// OS release string (best-effort via `uname -r`, empty on failure /
     /// platforms where that isn't meaningful).
     os_version: Option<String>,
+    /// Parent orchestrator harness driving the broker (Claude Code, Cursor,
+    /// Codex, etc.). Read from `AGENT_RELAY_ORCHESTRATOR_HARNESS` if the
+    /// CLI set it before spawning; otherwise detected via a parent-process
+    /// walk. Always falls back to `"unknown"` so dashboards can size the
+    /// long tail.
+    orchestrator_harness: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,6 +522,7 @@ impl TelemetryClient {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: "unknown".to_string(),
         }
     }
 
@@ -418,6 +570,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
+            orchestrator_harness: detect_orchestrator_harness(),
         }
     }
 
@@ -456,6 +609,11 @@ impl TelemetryClient {
                 obj.insert("os_version".to_string(), json!(v));
             }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+            obj.insert(
+                "orchestrator_harness".to_string(),
+                json!(self.orchestrator_harness),
+            );
+            obj.insert("surface".to_string(), json!("broker"));
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -604,11 +762,53 @@ mod tests {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: "unknown".to_string(),
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
         client.shutdown();
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+    }
+
+    #[test]
+    fn classify_harness_basename_recognizes_known_harnesses() {
+        assert_eq!(classify_harness_basename("claude"), Some("claude-code"));
+        assert_eq!(
+            classify_harness_basename("claude-code"),
+            Some("claude-code")
+        );
+        assert_eq!(classify_harness_basename("Claude"), Some("claude-code"));
+        assert_eq!(classify_harness_basename("Cursor"), Some("cursor"));
+        assert_eq!(classify_harness_basename("cursor.exe"), Some("cursor"));
+        assert_eq!(classify_harness_basename("Cursor Helper"), Some("cursor"));
+        assert_eq!(classify_harness_basename("codex"), Some("codex"));
+        assert_eq!(classify_harness_basename("gemini"), Some("gemini"));
+        assert_eq!(classify_harness_basename("zed"), Some("zed"));
+        assert_eq!(classify_harness_basename("bash"), None);
+        assert_eq!(classify_harness_basename("node"), None);
+    }
+
+    #[test]
+    fn command_basename_strips_path_and_quotes() {
+        assert_eq!(command_basename("/usr/bin/claude --foo"), "claude");
+        assert_eq!(
+            command_basename("\"/Applications/Claude.app/Claude\""),
+            "Claude"
+        );
+        assert_eq!(command_basename("zed"), "zed");
+        assert_eq!(command_basename(""), "");
+    }
+
+    #[test]
+    fn detect_orchestrator_harness_respects_env_hint() {
+        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "claude-code");
+        assert_eq!(detect_orchestrator_harness(), "claude-code");
+        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "garbage-value");
+        assert_eq!(detect_orchestrator_harness(), "unknown");
+        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "CURSOR");
+        // Case-insensitive normalization.
+        assert_eq!(detect_orchestrator_harness(), "cursor");
+        std::env::remove_var("AGENT_RELAY_ORCHESTRATOR_HARNESS");
     }
 
     #[test]

@@ -16,12 +16,15 @@ import {
   loadPrefs,
 } from './config.js';
 import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
+import { detectOrchestratorHarness } from './harness.js';
 import { getPostHogConfig } from './posthog-config.js';
 
 let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
 let anonymousId: string | null = null;
 let initialized = false;
+/** True when the first-run notice fired on this init — used to also fire `cli_install`. */
+let firstRunDetected = false;
 
 function findPackageJson(startDir: string): string | null {
   let dir = startDir;
@@ -77,11 +80,18 @@ function buildCommonProperties(versions: {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
+    orchestrator_harness: detectOrchestratorHarness(),
   };
 }
 
 function showFirstRunNotice(): void {
   if (wasNotified()) return;
+
+  // First run regardless of opt-out — flag so initTelemetry can fire
+  // `cli_install` once telemetry is wired up. Doing it here (vs in
+  // initTelemetry directly) keeps the "first run" definition tied to the
+  // same prefs-file write so the two never disagree.
+  firstRunDetected = true;
 
   if (isDisabledByEnv()) {
     markNotified();
@@ -138,6 +148,17 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     brokerVersion: options.brokerVersion,
   });
   anonymousId = getAnonymousId();
+
+  // Fire `cli_install` on the very first run after install. We do this once
+  // telemetry is fully initialised so the event carries the same common
+  // properties (including orchestrator_harness) as every other event.
+  if (firstRunDetected) {
+    track('cli_install', {
+      version: commonProps.cli_version ?? commonProps.agent_relay_version,
+      success: true,
+    });
+    firstRunDetected = false;
+  }
 }
 
 export function track<E extends TelemetryEventName>(event: E, properties?: TelemetryEventMap[E]): void {

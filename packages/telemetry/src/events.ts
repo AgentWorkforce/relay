@@ -73,6 +73,22 @@ export interface CommonProperties {
   node_version?: string;
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
+  /**
+   * Parent orchestrator harness driving this process — distinct from the
+   * spawned child agent's CLI. Detected via parent-process-tree walk.
+   * `unknown` is the expected baseline for the long tail; new harnesses
+   * surface in PostHog as `unknown` until we add them to the classifier.
+   * Always present so dashboards can group on it without coalescing.
+   */
+  orchestrator_harness: string;
+  /**
+   * Coarse-grained surface that emitted the event: `cli`, `broker`, or
+   * `sdk`. Lets dashboards split by emitter without inferring from event
+   * name. Optional on legacy CLI/broker events (the surface there is
+   * obvious from `cli_version`/`broker_version`); always set on SDK events
+   * so `surface = sdk` is a single-filter pivot in PostHog.
+   */
+  surface?: 'cli' | 'broker' | 'sdk';
 }
 
 // =============================================================================
@@ -342,6 +358,84 @@ export interface BridgeSpawnEvent {
 }
 
 // =============================================================================
+// Tier 4: Lifecycle / Distribution Events (install + update)
+// =============================================================================
+
+/**
+ * cli_install — fired exactly once per machine, on the first CLI run after
+ * install. Detected by the absence of a stored telemetry-prefs file: the
+ * first invocation that writes prefs also fires this event. We deliberately
+ * don't try to capture install events from the bash installer (no Node, no
+ * batching) — the first-run heuristic is good enough to size adoption.
+ */
+export interface CliInstallEvent {
+  /** Version of the installed CLI. */
+  version: string;
+  /**
+   * True if the first-run setup succeeded without throwing. Always `true`
+   * today since we fire post-init; `success` is kept for forward
+   * compatibility with a future installer-side hook.
+   */
+  success: boolean;
+  /** Error constructor name when success=false. */
+  error_class?: string;
+}
+
+/**
+ * cli_update — fired by `agent-relay update` after `npm install -g` returns
+ * (success or failure). The `to_version` is what the registry advertised;
+ * confirming the actual installed version requires a re-exec which we don't
+ * do here.
+ */
+export interface CliUpdateEvent {
+  /** Version we were running before the update attempt. */
+  from_version: string;
+  /** Version requested from the registry (`latest` or an explicit pin). */
+  to_version: string;
+  /** True if `npm install -g` exited 0. */
+  success: boolean;
+  /** Error constructor name on failure. */
+  error_class?: string;
+}
+
+// =============================================================================
+// Tier 5: SDK Events (emitted by user code via @agent-relay/sdk)
+// =============================================================================
+
+/**
+ * sdk_workflow_run — fired when a `WorkflowBuilder.run()` invocation
+ * completes (success or failure). Mirrors `workflow_run` but originates
+ * from the SDK in the user's process, not the CLI.
+ */
+export interface SdkWorkflowRunEvent {
+  /** Workflow name from the builder, when cheap to extract. */
+  workflow_name?: string;
+  /** Number of declared steps in the workflow config. */
+  step_count: number;
+  /** True if the runner returned without throwing AND status was completed. */
+  success: boolean;
+  /** Wall-clock duration in milliseconds. */
+  duration_ms: number;
+  /** Error constructor name on failure. */
+  error_class?: string;
+}
+
+/**
+ * sdk_method_call — fired for public SDK method invocations (spawn, release,
+ * sendMessage, etc.). Lets us see which surface area users actually exercise.
+ */
+export interface SdkMethodCallEvent {
+  /** Dotted method name, e.g. `AgentRelayClient.spawnPty`. */
+  method_name: string;
+  /** True if the method returned without throwing. */
+  success: boolean;
+  /** Wall-clock duration in milliseconds. */
+  duration_ms: number;
+  /** Error constructor name on failure. */
+  error_class?: string;
+}
+
+// =============================================================================
 // Event Union Type
 // =============================================================================
 
@@ -362,7 +456,11 @@ export type TelemetryEventName =
   | 'provider_auth'
   | 'setup_init'
   | 'swarm_run'
-  | 'bridge_spawn';
+  | 'bridge_spawn'
+  | 'cli_install'
+  | 'cli_update'
+  | 'sdk_workflow_run'
+  | 'sdk_method_call';
 
 export interface TelemetryEventMap {
   broker_start: BrokerStartEvent;
@@ -382,4 +480,8 @@ export interface TelemetryEventMap {
   setup_init: SetupInitEvent;
   swarm_run: SwarmRunEvent;
   bridge_spawn: BridgeSpawnEvent;
+  cli_install: CliInstallEvent;
+  cli_update: CliUpdateEvent;
+  sdk_workflow_run: SdkWorkflowRunEvent;
+  sdk_method_call: SdkMethodCallEvent;
 }
