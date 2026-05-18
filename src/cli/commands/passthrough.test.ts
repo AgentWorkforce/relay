@@ -138,14 +138,19 @@ function createHarness(opts: FetchScript = {}): {
   errors: unknown[][];
   logs: unknown[][];
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
-  fetchLog: Array<{ url: string; method: string; body?: unknown }>;
+  fetchLog: Array<{ url: string; method: string; body?: unknown; headers: Record<string, string> }>;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
   const logs: unknown[][] = [];
   const signals = new Map<NodeJS.Signals, () => void | Promise<void>>();
   const sockets: FakeWebSocket[] = [];
-  const fetchLog: Array<{ url: string; method: string; body?: unknown }> = [];
+  const fetchLog: Array<{
+    url: string;
+    method: string;
+    body?: unknown;
+    headers: Record<string, string>;
+  }> = [];
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
@@ -196,7 +201,23 @@ function createHarness(opts: FetchScript = {}): {
         bodyJson = String(init.body);
       }
     }
-    fetchLog.push({ url, method, body: bodyJson });
+    // Normalize whatever shape the CLI passed for `init.headers`
+    // (plain record / Headers instance / [k,v][] tuples) into a flat
+    // record so tests can assert on auth headers ergonomically.
+    const headers: Record<string, string> = {};
+    const rawHeaders = init?.headers;
+    if (rawHeaders instanceof Headers) {
+      rawHeaders.forEach((value, key) => {
+        headers[key] = value;
+      });
+    } else if (Array.isArray(rawHeaders)) {
+      for (const [k, v] of rawHeaders) headers[k] = v;
+    } else if (rawHeaders && typeof rawHeaders === 'object') {
+      for (const [k, v] of Object.entries(rawHeaders)) {
+        headers[k] = String(v);
+      }
+    }
+    fetchLog.push({ url, method, body: bodyJson, headers });
 
     let key: string | null = null;
     if (/\/api\/spawned\/[^/]+\/mode$/.test(url)) {
@@ -486,6 +507,38 @@ describe('runPassthroughSession', () => {
     const code = await runPassthroughSession('Alice', {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+  });
+
+  // ---- API-key header propagation ----
+
+  it('sends X-API-Key on every broker request when configured', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Every fetch the runner made must carry the configured API key.
+    // Without this the broker (when running with RELAY_BROKER_API_KEY)
+    // would 401 every call and the session would be silently broken.
+    expect(fetchLog.length).toBeGreaterThan(0);
+    for (const call of fetchLog) {
+      expect(call.headers).toMatchObject({ 'X-API-Key': 'k' });
+    }
+  });
+
+  it('omits X-API-Key on every broker request when no key is configured', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness();
+    deps.readConnectionFile = vi.fn(() => ({ url: 'http://localhost:3889' })); // no api_key
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    expect(fetchLog.length).toBeGreaterThan(0);
+    for (const call of fetchLog) {
+      expect(call.headers).not.toHaveProperty('X-API-Key');
+    }
   });
 
   it('forwards the local terminal size to the broker on attach', async () => {
