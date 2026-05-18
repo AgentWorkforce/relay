@@ -1,14 +1,9 @@
 /**
- * Tests for orchestrator harness detection.
+ * Tests for harness detection.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  detectOrchestratorHarness,
-  HARNESS_ENV_VAR,
-  resetHarnessCacheForTests,
-  __internal,
-} from './harness.js';
+import { detectHarness, HARNESS_ENV_VAR, resetHarnessCacheForTests, __internal } from './harness.js';
 
 describe('classifyBasename', () => {
   const cases: Array<{ basename: string; expected: ReturnType<typeof __internal.classifyBasename> }> = [
@@ -60,7 +55,7 @@ describe('commandBasename', () => {
   });
 });
 
-describe('detectOrchestratorHarness', () => {
+describe('detectHarness', () => {
   const originalEnv = process.env[HARNESS_ENV_VAR];
 
   beforeEach(() => {
@@ -78,19 +73,19 @@ describe('detectOrchestratorHarness', () => {
 
   it('uses the env hint when set to a known value', () => {
     process.env[HARNESS_ENV_VAR] = 'claude-code';
-    expect(detectOrchestratorHarness()).toBe('claude-code');
+    expect(detectHarness()).toBe('claude-code');
   });
 
   it('returns `unknown` for an unrecognized env hint', () => {
     process.env[HARNESS_ENV_VAR] = 'made-up-harness';
-    expect(detectOrchestratorHarness()).toBe('unknown');
+    expect(detectHarness()).toBe('unknown');
   });
 
   it('caches the result across calls', () => {
     process.env[HARNESS_ENV_VAR] = 'cursor';
-    const first = detectOrchestratorHarness();
+    const first = detectHarness();
     process.env[HARNESS_ENV_VAR] = 'codex';
-    expect(detectOrchestratorHarness()).toBe(first);
+    expect(detectHarness()).toBe(first);
   });
 
   it('falls back to `unknown` when env unset and parent not classifiable', () => {
@@ -98,7 +93,7 @@ describe('detectOrchestratorHarness', () => {
     // The test runner is the parent — almost certainly not a known harness,
     // so this should fall back to 'unknown' on platforms we support and on
     // unsupported platforms.
-    const result = detectOrchestratorHarness();
+    const result = detectHarness();
     expect([
       'unknown',
       'claude-code',

@@ -10,7 +10,7 @@ import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
 import {
-  detectOrchestratorHarness,
+  detectHarness,
   HARNESS_ENV_VAR,
   initTelemetry,
   shutdown as shutdownTelemetry,
@@ -117,12 +117,12 @@ function propagateVersionsToChildren(): void {
   if (SDK_VERSION && !process.env.AGENT_RELAY_SDK_VERSION) {
     process.env.AGENT_RELAY_SDK_VERSION = SDK_VERSION;
   }
-  // Detect the orchestrator harness (Claude Code / Cursor / Codex / ...)
+  // Detect the harness (Claude Code / Cursor / Codex / ...)
   // once in the TS process and propagate to every child (notably the Rust
   // broker). Children can still re-detect if the var is unset — e.g. when
   // user code spawns the broker directly via the SDK.
   if (!process.env[HARNESS_ENV_VAR]) {
-    process.env[HARNESS_ENV_VAR] = detectOrchestratorHarness();
+    process.env[HARNESS_ENV_VAR] = detectHarness();
   }
 }
 
@@ -318,7 +318,7 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   maybeRunUpdateCheck(VERSION, argv);
   propagateVersionsToChildren();
 
-  // Tag every outgoing relaycast HTTP call with the orchestrator harness.
+  // Tag every outgoing relaycast HTTP call with the harness.
   // Install before any command action so MCP / messaging code paths pick it
   // up automatically.
   installRelaycastFetchInterceptor();

@@ -1,5 +1,5 @@
 /**
- * Orchestrator harness detection.
+ * Harness detection.
  *
  * Walks the current process's parent chain looking for a known harness
  * basename (Claude Code, Cursor, Codex, etc.). The classification answers
@@ -32,7 +32,7 @@ import { readFileSync } from 'node:fs';
  * sanitizer is permissive (lowercase, ASCII-only, ≤40 chars) — we send the
  * canonical slug so values round-trip without truncation or coercion.
  */
-export type OrchestratorHarness =
+export type Harness =
   | 'claude-code'
   | 'cursor'
   | 'codex'
@@ -45,7 +45,7 @@ export type OrchestratorHarness =
   | 'unknown';
 
 /** Env var the CLI sets so the spawned broker doesn't re-detect. */
-export const HARNESS_ENV_VAR = 'AGENT_RELAY_ORCHESTRATOR_HARNESS';
+export const HARNESS_ENV_VAR = 'AGENT_RELAY_HARNESS';
 
 /**
  * Maximum number of ancestor processes to inspect before giving up.
@@ -60,7 +60,7 @@ const MAX_ANCESTOR_DEPTH = 10;
  *
  * Ordering matters: more specific patterns first.
  */
-const HARNESS_PATTERNS: Array<{ harness: OrchestratorHarness; re: RegExp }> = [
+const HARNESS_PATTERNS: Array<{ harness: Harness; re: RegExp }> = [
   // Claude Code ships as `claude` on PATH plus a desktop "Claude" app on macOS.
   { harness: 'claude-code', re: /^claude(?:-code)?(?:\.exe)?$/i },
   { harness: 'claude-code', re: /^Claude(?:\s+Helper)?$/ },
@@ -83,7 +83,7 @@ const HARNESS_PATTERNS: Array<{ harness: OrchestratorHarness; re: RegExp }> = [
   { harness: 'zed', re: /^zed(?:\.exe)?$/i },
 ];
 
-function classifyBasename(basename: string): OrchestratorHarness | null {
+function classifyBasename(basename: string): Harness | null {
   for (const { harness, re } of HARNESS_PATTERNS) {
     if (re.test(basename)) {
       return harness;
@@ -142,19 +142,19 @@ function readProcInfo(pid: number): ProcInfo | null {
   return null;
 }
 
-let cachedHarness: OrchestratorHarness | null = null;
+let cachedHarness: Harness | null = null;
 
 /**
- * Detect the orchestrator harness driving this process. Cached after the
+ * Detect the harness driving this process. Cached after the
  * first call — process trees don't change for a given run.
  *
  * Resolution order:
- *   1. `AGENT_RELAY_ORCHESTRATOR_HARNESS` env var (set by a parent CLI when
+ *   1. `AGENT_RELAY_HARNESS` env var (set by a parent CLI when
  *      it spawns the broker — saves the broker from re-walking).
  *   2. Process-tree walk via platform-specific APIs.
  *   3. `'unknown'` on any failure.
  */
-export function detectOrchestratorHarness(): OrchestratorHarness {
+export function detectHarness(): Harness {
   if (cachedHarness !== null) {
     return cachedHarness;
   }
@@ -202,7 +202,7 @@ const KNOWN_HARNESSES: ReadonlySet<string> = new Set([
   'unknown',
 ]);
 
-function isKnownHarness(value: string): value is OrchestratorHarness {
+function isKnownHarness(value: string): value is Harness {
   return KNOWN_HARNESSES.has(value);
 }
 

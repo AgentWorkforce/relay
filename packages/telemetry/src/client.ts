@@ -16,7 +16,7 @@ import {
   loadPrefs,
 } from './config.js';
 import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
-import { detectOrchestratorHarness } from './harness.js';
+import { detectHarness } from './harness.js';
 import { getPostHogConfig } from './posthog-config.js';
 
 let client: PostHog | null = null;
@@ -80,7 +80,7 @@ function buildCommonProperties(versions: {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
-    orchestrator_harness: detectOrchestratorHarness(),
+    harness: detectHarness(),
   };
 }
 
@@ -151,7 +151,7 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
 
   // Fire `cli_install` on the very first run after install. We do this once
   // telemetry is fully initialised so the event carries the same common
-  // properties (including orchestrator_harness) as every other event.
+  // properties (including harness) as every other event.
   if (firstRunDetected) {
     track('cli_install', {
       version: commonProps.cli_version ?? commonProps.agent_relay_version,

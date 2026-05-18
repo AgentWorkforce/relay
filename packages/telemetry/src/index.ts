@@ -56,9 +56,4 @@ export type {
 
 export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';
 
-export {
-  detectOrchestratorHarness,
-  HARNESS_ENV_VAR,
-  resetHarnessCacheForTests,
-  type OrchestratorHarness,
-} from './harness.js';
+export { detectHarness, HARNESS_ENV_VAR, resetHarnessCacheForTests, type Harness } from './harness.js';

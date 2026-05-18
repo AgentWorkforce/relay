@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const SDK_SURFACE = 'sdk' as const;
 const POSTHOG_HOST = 'https://us.i.posthog.com';
-const HARNESS_ENV_VAR = 'AGENT_RELAY_ORCHESTRATOR_HARNESS';
+const HARNESS_ENV_VAR = 'AGENT_RELAY_HARNESS';
 const HTTP_TIMEOUT_MS = 5000;
 
 /** Lower-kebab-case harness slugs — must match the TS/Rust classifier sets. */
@@ -61,7 +61,7 @@ interface SdkCommonProps {
   os_version?: string;
   node_version: string;
   arch: string;
-  orchestrator_harness: string;
+  harness: string;
   surface: typeof SDK_SURFACE;
 }
 
@@ -201,7 +201,7 @@ function init(): void {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
-    orchestrator_harness: resolveHarness(),
+    harness: resolveHarness(),
     surface: SDK_SURFACE,
   };
 }

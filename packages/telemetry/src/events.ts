@@ -74,13 +74,13 @@ export interface CommonProperties {
   /** CPU architecture (e.g., arm64, x64) */
   arch: string;
   /**
-   * Parent orchestrator harness driving this process — distinct from the
-   * spawned child agent's CLI. Detected via parent-process-tree walk.
-   * `unknown` is the expected baseline for the long tail; new harnesses
-   * surface in PostHog as `unknown` until we add them to the classifier.
-   * Always present so dashboards can group on it without coalescing.
+   * Parent harness driving this process — distinct from the spawned child
+   * agent's CLI. Detected via parent-process-tree walk. `unknown` is the
+   * expected baseline for the long tail; new harnesses surface in PostHog
+   * as `unknown` until we add them to the classifier. Always present so
+   * dashboards can group on it without coalescing.
    */
-  orchestrator_harness: string;
+  harness: string;
   /**
    * Coarse-grained surface that emitted the event: `cli`, `broker`, or
    * `sdk`. Lets dashboards split by emitter without inferring from event

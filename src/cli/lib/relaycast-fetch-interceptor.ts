@@ -17,7 +17,7 @@
  *   it on every server-side event.
  */
 
-import { detectOrchestratorHarness } from '@agent-relay/telemetry';
+import { detectHarness } from '@agent-relay/telemetry';
 
 const RELAYCAST_HARNESS_HEADER = 'X-Relaycast-Harness';
 
@@ -70,7 +70,7 @@ export function installRelaycastFetchInterceptor(): void {
   if (typeof originalFetch !== 'function') return;
 
   installed = true;
-  const harness = detectOrchestratorHarness();
+  const harness = detectHarness();
 
   const patched: typeof fetch = async (input, init) => {
     // Fast path: not a relaycast URL — skip header merge entirely.

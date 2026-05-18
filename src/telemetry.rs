@@ -316,7 +316,7 @@ fn detect_os_version() -> Option<String> {
 }
 
 /// Canonical harness slug set — must stay aligned with the TS
-/// `OrchestratorHarness` union in `packages/telemetry/src/harness.ts`
+/// `Harness` union in `packages/telemetry/src/harness.ts`
 /// and the relaycast server-side enum (#132).
 const KNOWN_HARNESSES: &[&str] = &[
     "claude-code",
@@ -419,14 +419,14 @@ fn read_proc_info(_pid: u32) -> Option<(String, u32)> {
 /// Returns `"unknown"` on any failure or after exhausting the depth limit.
 ///
 /// Resolution order:
-///   1. `AGENT_RELAY_ORCHESTRATOR_HARNESS` env var (set by the TS CLI before
+///   1. `AGENT_RELAY_HARNESS` env var (set by the TS CLI before
 ///      spawning the broker — Option A in the issue).
 ///   2. Process-tree walk via platform-specific APIs (fallback for the SDK
 ///      case where user code spawns the broker directly).
 ///   3. `"unknown"` as the long-tail baseline.
-fn detect_orchestrator_harness() -> String {
+fn detect_harness() -> String {
     // 1. Env-var hint set by a parent CLI — saves the broker from re-walking.
-    if let Some(value) = env_nonempty("AGENT_RELAY_ORCHESTRATOR_HARNESS") {
+    if let Some(value) = env_nonempty("AGENT_RELAY_HARNESS") {
         let lower = value.to_lowercase();
         if KNOWN_HARNESSES.iter().any(|&h| h == lower) {
             return lower;
@@ -488,12 +488,12 @@ pub struct TelemetryClient {
     /// OS release string (best-effort via `uname -r`, empty on failure /
     /// platforms where that isn't meaningful).
     os_version: Option<String>,
-    /// Parent orchestrator harness driving the broker (Claude Code, Cursor,
-    /// Codex, etc.). Read from `AGENT_RELAY_ORCHESTRATOR_HARNESS` if the
+    /// Parent harness driving the broker (Claude Code, Cursor,
+    /// Codex, etc.). Read from `AGENT_RELAY_HARNESS` if the
     /// CLI set it before spawning; otherwise detected via a parent-process
     /// walk. Always falls back to `"unknown"` so dashboards can size the
     /// long tail.
-    orchestrator_harness: String,
+    harness: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -522,7 +522,7 @@ impl TelemetryClient {
             cli_version: None,
             sdk_version: None,
             os_version: None,
-            orchestrator_harness: "unknown".to_string(),
+            harness: "unknown".to_string(),
         }
     }
 
@@ -570,7 +570,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
-            orchestrator_harness: detect_orchestrator_harness(),
+            harness: detect_harness(),
         }
     }
 
@@ -609,10 +609,7 @@ impl TelemetryClient {
                 obj.insert("os_version".to_string(), json!(v));
             }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
-            obj.insert(
-                "orchestrator_harness".to_string(),
-                json!(self.orchestrator_harness),
-            );
+            obj.insert("harness".to_string(), json!(self.harness));
             obj.insert("surface".to_string(), json!("broker"));
         }
 
@@ -762,7 +759,7 @@ mod tests {
             cli_version: None,
             sdk_version: None,
             os_version: None,
-            orchestrator_harness: "unknown".to_string(),
+            harness: "unknown".to_string(),
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
@@ -800,15 +797,15 @@ mod tests {
     }
 
     #[test]
-    fn detect_orchestrator_harness_respects_env_hint() {
-        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "claude-code");
-        assert_eq!(detect_orchestrator_harness(), "claude-code");
-        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "garbage-value");
-        assert_eq!(detect_orchestrator_harness(), "unknown");
-        std::env::set_var("AGENT_RELAY_ORCHESTRATOR_HARNESS", "CURSOR");
+    fn detect_harness_respects_env_hint() {
+        std::env::set_var("AGENT_RELAY_HARNESS", "claude-code");
+        assert_eq!(detect_harness(), "claude-code");
+        std::env::set_var("AGENT_RELAY_HARNESS", "garbage-value");
+        assert_eq!(detect_harness(), "unknown");
+        std::env::set_var("AGENT_RELAY_HARNESS", "CURSOR");
         // Case-insensitive normalization.
-        assert_eq!(detect_orchestrator_harness(), "cursor");
-        std::env::remove_var("AGENT_RELAY_ORCHESTRATOR_HARNESS");
+        assert_eq!(detect_harness(), "cursor");
+        std::env::remove_var("AGENT_RELAY_HARNESS");
     }
 
     #[test]
