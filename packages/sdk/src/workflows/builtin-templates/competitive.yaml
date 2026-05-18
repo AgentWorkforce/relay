@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: competitive
-description: "Multiple agents independently implement solutions, then compare and select the best approach."
+description: 'Multiple agents independently implement solutions, then compare and select the best approach.'
 swarm:
   pattern: competitive
   maxConcurrency: 4
@@ -9,19 +9,23 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Defines spec, judges implementations, and selects winner"
+    role: 'Defines spec, judges implementations, and selects winner'
+    permissions: { access: readwrite }
   - name: team-alpha
     cli: claude
-    role: "Independent implementation team A"
+    role: 'Independent implementation team A'
+    permissions: { access: readwrite }
   - name: team-beta
     cli: codex
-    role: "Independent implementation team B"
+    role: 'Independent implementation team B'
+    permissions: { access: readwrite }
   - name: team-gamma
     cli: gemini
-    role: "Independent implementation team C"
+    role: 'Independent implementation team C'
+    permissions: { access: readwrite }
 workflows:
   - name: competitive-build
-    description: "Independent parallel implementations followed by comparison and selection."
+    description: 'Independent parallel implementations followed by comparison and selection.'
     onError: fail
     steps:
       - name: define-spec

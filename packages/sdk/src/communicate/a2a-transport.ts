@@ -72,7 +72,7 @@ export class A2ATransport {
       name,
       this.config.agentDescription ?? `Agent Relay agent: ${name}`,
       `http://${host}:{PORT}`,
-      this.config.skills ?? [],
+      this.config.skills ?? []
     );
 
     return new Promise((resolve, reject) => {
@@ -190,10 +190,7 @@ export class A2ATransport {
     res.end(JSON.stringify(a2aAgentCardToDict(this.agentCard)));
   }
 
-  private async _handleJsonRpcHttp(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-  ): Promise<void> {
+  private async _handleJsonRpcHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     let body: Record<string, unknown>;
     try {
       const raw = await this._readBody(req);
@@ -300,10 +297,7 @@ export class A2ATransport {
 
     const task = this.tasks.get(taskId)!;
     if (['completed', 'failed', 'canceled'].includes(task.status.state)) {
-      throw new A2AError(
-        A2A_TASK_NOT_CANCELABLE,
-        `Task ${taskId} is already ${task.status.state}`,
-      );
+      throw new A2AError(A2A_TASK_NOT_CANCELABLE, `Task ${taskId} is already ${task.status.state}`);
     }
 
     task.status = createA2ATaskStatus('canceled');
@@ -328,6 +322,9 @@ export class A2ATransport {
 
     const data = (await response.json()) as Record<string, unknown>;
     const card = a2aAgentCardFromDict(data);
+    if (!card.url) {
+      card.url = normalizedUrl;
+    }
     this._discoveredCards.set(normalizedUrl, card);
     return card;
   }

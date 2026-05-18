@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: security-audit
-description: "Blueprint-style security assessment with deterministic scanning and agent triage."
+description: 'Blueprint-style security assessment with deterministic scanning and agent triage.'
 swarm:
   pattern: pipeline
   maxConcurrency: 1
@@ -13,26 +13,36 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Owns final risk sign-off and recommendations"
+    role: 'Owns final risk sign-off and recommendations'
+    permissions: { access: full }
   - name: analyst
     cli: claude
-    role: "Prioritizes findings and recommends mitigations"
+    role: 'Prioritizes findings and recommends mitigations'
+    permissions:
+      access: readonly
+      files:
+        deny: ['.env', 'secrets/**', '*.pem', '*.key']
   - name: remediator
     cli: codex
-    role: "Implements approved remediations"
+    role: 'Implements approved remediations'
+    permissions: { access: readwrite }
     interactive: false
   - name: verifier
     cli: gemini
-    role: "Verifies fixes and residual exposure"
+    role: 'Verifies fixes and residual exposure'
+    permissions:
+      access: readonly
+      files:
+        deny: ['.env', 'secrets/**', '*.pem', '*.key']
 workflows:
   - name: audit-pipeline
-    description: "Scan, triage, remediate, verify, and report security posture."
+    description: 'Scan, triage, remediate, verify, and report security posture.'
     onError: fail
     preflight:
       - command: npm audit --json 2>/dev/null | head -100 || echo "{}"
-        description: "Run npm audit preflight check"
+        description: 'Run npm audit preflight check'
       - command: git diff --check 2>/dev/null || echo "clean"
-        description: "Check for whitespace errors"
+        description: 'Check for whitespace errors'
     steps:
       # Deterministic: Run npm audit
       - name: scan-npm

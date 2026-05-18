@@ -607,6 +607,25 @@ impl AuthClient {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
+        if strict_name {
+            let request = CreateAgentRequest {
+                name,
+                agent_type: Some(agent_type.unwrap_or("agent").to_string()),
+                persona: None,
+                metadata: None,
+            };
+            let result = relay
+                .register_or_get_agent(request)
+                .await
+                .map_err(relay_error_to_anyhow)?;
+            return Ok((
+                result.id,
+                result.name,
+                result.token,
+                None, // workspace_id not returned in CreateAgentResponse
+            ));
+        }
+
         loop {
             let request = CreateAgentRequest {
                 name: name.clone(),
@@ -627,16 +646,12 @@ impl AuthClient {
                 Err(RelayError::Api { code, status, .. })
                     if is_conflict_code(&code) || status == 409 =>
                 {
-                    if strict_name {
-                        anyhow::bail!("agent name '{}' already exists", name);
-                    }
                     if !attempted_retry {
                         attempted_retry = true;
                         let suffix = Uuid::new_v4().simple().to_string();
                         name = format!("{}-{}", name, &suffix[..8]);
                         continue;
                     }
-                    // Second conflict — give up
                     return Err(relay_error_to_anyhow(RelayError::Api {
                         code: "agent_already_exists".to_string(),
                         message: format!("agent name '{}' already exists after retry", name),
@@ -770,6 +785,11 @@ fn is_workspace_name_conflict(error: &RelayError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // These tests intentionally hold the process-env mutex across awaits so
+    // concurrent async tests cannot mutate RELAY_* variables underneath each
+    // other.
+    #![allow(clippy::await_holding_lock)]
+
     use std::sync::{Mutex, MutexGuard};
 
     use httpmock::Method::{GET, POST};
@@ -900,19 +920,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_name_returns_conflict_error() {
+    async fn strict_name_conflict_reclaims_via_sdk_register_or_get_agent() {
+        // Regression test for issue #797: when a broker is restarted (or a
+        // second broker joins via shared workspace key) with a name that's
+        // already registered, registration must reclaim the existing agent
+        // through the relaycast SDK instead of failing the broker startup.
         let _env_guard = clear_relay_env();
         let server = MockServer::start();
-        let workspace = server.mock(|when, then| {
-            when.method(POST).path("/v1/workspaces");
-            then.status(200)
-                .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"workspace_id":"ws_new","api_key":"rk_live_cached","created_at":"2025-01-01T00:00:00Z"}}"#);
-        });
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+        }
         let conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents")
-                .header("authorization", "Bearer rk_live_cached")
+                .header("authorization", "Bearer rk_live_shared")
                 .json_body(json!({
                     "name": "lead",
                     "type": "agent"
@@ -921,17 +942,42 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
         });
+        let get_existing = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                // Mirrors the live cloud's GET /v1/agents/{name} payload that
+                // relaycast 1.0.1 accepts while reclaiming the agent.
+                .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+        });
 
         let client = AuthClient::new(server.base_url());
-        let err = client
+        let session = client
             .startup_session_with_options(Some("lead"), true, None)
             .await
-            .unwrap_err();
+            .expect("strict-name conflict should reclaim via relaycast SDK");
 
-        let rendered = format!("{err:#}");
-        assert!(rendered.contains("agent name 'lead' already exists"));
-        workspace.assert_hits(1);
+        assert_eq!(session.token, "at_live_rotated");
+        assert_eq!(session.credentials.agent_id, "a_existing");
+        assert_eq!(session.credentials.api_key, "rk_live_shared");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
         conflict.assert_hits(1);
+        get_existing.assert_hits(1);
+        rotate.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
     }
 
     #[tokio::test]
@@ -997,7 +1043,7 @@ mod tests {
         let second_workspace = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/workspaces")
-                .body_contains(&format!("\"name\":\"{workspace_name}-"));
+                .body_contains(format!("\"name\":\"{workspace_name}-"));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"workspace_id":"ws_fallback","api_key":"rk_live_fallback","created_at":"2025-01-01T00:00:00Z"}}"#);

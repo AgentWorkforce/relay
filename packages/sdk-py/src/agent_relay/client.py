@@ -14,9 +14,6 @@ import os
 import platform
 import secrets
 import shutil
-import stat
-import subprocess
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 from urllib.parse import quote
@@ -64,98 +61,43 @@ def _resolve_spawn_transport(provider: str, transport: Optional[AgentTransport])
 # ── Binary resolution ─────────────────────────────────────────────────────────
 
 
-def _detect_platform() -> str:
+_ARCH_ALIASES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _normalized_platform_tag() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()
-
-    if system == "darwin":
-        os_name = "darwin"
-    elif system == "linux":
-        os_name = "linux"
-    else:
-        raise AgentRelayProcessError(f"Unsupported OS: {system}")
-
-    if machine in ("x86_64", "amd64"):
-        arch = "x64"
-    elif machine in ("arm64", "aarch64"):
-        arch = "arm64"
-    else:
-        raise AgentRelayProcessError(f"Unsupported architecture: {machine}")
-
-    return f"{os_name}-{arch}"
-
-
-def _get_latest_version() -> str:
-    url = "https://api.github.com/repos/AgentWorkforce/relay/releases/latest"
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"token {token}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode())
-        tag = data.get("tag_name", "")
-        return tag.lstrip("v")
-
-
-def _install_broker_binary() -> str:
-    install_dir = Path.home() / ".agent-relay"
-    bin_dir = install_dir / "bin"
-    target_path = bin_dir / "agent-relay-broker"
-
-    plat = _detect_platform()
-    print(f"[agent-relay] Broker binary not found, installing for {plat}...")
-
-    version = _get_latest_version()
-    if not version:
-        raise AgentRelayProcessError(
-            "Failed to fetch latest agent-relay version from GitHub"
-        )
-
-    binary_name = f"agent-relay-broker-{plat}"
-    download_url = f"https://github.com/AgentWorkforce/relay/releases/download/v{version}/{binary_name}"
-
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[agent-relay] Downloading v{version} from {download_url}")
-    try:
-        urllib.request.urlretrieve(download_url, str(target_path))
-    except Exception as e:
-        target_path.unlink(missing_ok=True)
-        raise AgentRelayProcessError(f"Failed to download broker binary: {e}") from e
-
-    target_path.chmod(
-        target_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
-
-    if platform.system() == "Darwin":
-        try:
-            subprocess.run(
-                ["xattr", "-d", "com.apple.quarantine", str(target_path)],
-                capture_output=True, timeout=10,
-            )
-        except Exception:
-            pass
-        try:
-            subprocess.run(
-                ["codesign", "--force", "--sign", "-", str(target_path)],
-                capture_output=True, timeout=10,
-            )
-        except Exception:
-            pass
-
-    print(f"[agent-relay] Broker installed to {target_path}")
-    return str(target_path)
+    arch = _ARCH_ALIASES.get(machine, machine)
+    return f"{system}-{arch}"
 
 
 def _resolve_default_binary_path() -> str:
     broker_exe = "agent-relay-broker"
-    standalone = Path.home() / ".agent-relay" / "bin" / broker_exe
-    if standalone.exists():
-        return str(standalone)
+
+    for env_var in ("BROKER_BINARY_PATH", "AGENT_RELAY_BIN"):
+        override = os.environ.get(env_var)
+        if not override:
+            continue
+        if Path(override).exists():
+            return override
+        raise AgentRelayProcessError(
+            f"{env_var} is set to {override!r}, but no file exists at that path."
+        )
+
+    embedded = Path(__file__).parent / "bin" / broker_exe
+    if embedded.exists():
+        return str(embedded)
+
     found = shutil.which(broker_exe)
     if found:
         return found
-    return _install_broker_binary()
+
+    raise AgentRelayProcessError(
+        "agent-relay-broker not found. The installed wheel does not include a "
+        f"binary for this platform ({_normalized_platform_tag()}). Supported "
+        "platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64. "
+        "Set BROKER_BINARY_PATH to override."
+    )
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -184,6 +126,7 @@ class AgentRelayClient:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._ws_task: Optional[asyncio.Task[None]] = None
         self._lease_task: Optional[asyncio.Task[None]] = None
+        self._stdout_task: Optional[asyncio.Task[None]] = None
         self._stderr_task: Optional[asyncio.Task[None]] = None
         self._process: Optional[asyncio.subprocess.Process] = None
         self._event_listeners: list[Callable[[BrokerEvent], None]] = []
@@ -247,13 +190,29 @@ class AgentRelayClient:
 
         # Parse API URL from stdout
         base_url = await _wait_for_api_url(process, startup_timeout_ms)
+        stdout_task = asyncio.create_task(_drain_stdout(process))
 
         client = cls(base_url=base_url, api_key=api_key)
+        client._stdout_task = stdout_task
         client._stderr_task = stderr_task
         client._process = process
 
-        # Get session metadata
-        session = await client.get_session()
+        # Broker may still be connecting to Relaycast after binding its API
+        # listener. Retry get_session with backoff while it returns 503.
+        # Mirrors packages/sdk/src/client.ts.
+        session: Optional[dict[str, Any]] = None
+        last_error: Optional[Exception] = None
+        for attempt in range(10):
+            try:
+                session = await client.get_session()
+                break
+            except AgentRelayProtocolError as err:
+                last_error = err
+                is_503 = err.code == "http_503" or "Service Unavailable" in str(err)
+                if not is_503 or attempt >= 9:
+                    raise
+                await asyncio.sleep(1.0)
+        assert session is not None, last_error
         client.workspace_key = session.get("workspace_key")
 
         # Start event stream
@@ -550,6 +509,9 @@ class AgentRelayClient:
         if self._stderr_task and not self._stderr_task.done():
             self._stderr_task.cancel()
 
+        if self._stdout_task and not self._stdout_task.done():
+            self._stdout_task.cancel()
+
         if self._session and not self._session.closed:
             await self._session.close()
 
@@ -605,3 +567,11 @@ async def _wait_for_api_url(
         raise AgentRelayProcessError(
             f"Broker did not report API URL within {timeout_ms}ms"
         ) from None
+
+
+async def _drain_stdout(process: asyncio.subprocess.Process) -> None:
+    """Drain broker stdout after startup so the broker cannot block on a full pipe."""
+    if not process.stdout:
+        return
+    while await process.stdout.read(65536):
+        pass

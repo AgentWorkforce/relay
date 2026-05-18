@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 
 const crewaiAdapterModulePath = '../../../communicate/adapters/crewai.js';
 
@@ -65,13 +65,7 @@ test('CrewAI onRelay appends relay tools to agent.tools', async () => {
   onRelay(agent, relay);
 
   const toolNames = agent.tools.map((t: any) => t.tool_name);
-  assert.deepEqual(toolNames, [
-    'existing_tool',
-    'relay_send',
-    'relay_inbox',
-    'relay_post',
-    'relay_agents',
-  ]);
+  assert.deepEqual(toolNames, ['existing_tool', 'relay_send', 'relay_inbox', 'relay_post', 'relay_agents']);
 
   for (const toolName of ['relay_send', 'relay_inbox', 'relay_post', 'relay_agents']) {
     const tool = agent.tools.find((t: any) => t.tool_name === toolName);
@@ -142,7 +136,9 @@ test('CrewAI onRelay routes incoming messages via step_callback', async () => {
   const relay = new FakeRelay();
   const stepCalls: any[] = [];
   const agent = createAgent({
-    step_callback: (step: any) => { stepCalls.push(step); },
+    step_callback: (step: any) => {
+      stepCalls.push(step);
+    },
   });
 
   onRelay(agent, relay);
@@ -164,7 +160,9 @@ test('CrewAI onRelay unsubscribe stops message routing', async () => {
   const relay = new FakeRelay();
   const stepCalls: any[] = [];
   const agent = createAgent({
-    step_callback: (step: any) => { stepCalls.push(step); },
+    step_callback: (step: any) => {
+      stepCalls.push(step);
+    },
   });
 
   const { unsubscribe } = onRelay(agent, relay);
@@ -201,8 +199,18 @@ test('CrewAI onCrewRelay unsubscribe stops all routing', async () => {
   const relay = new FakeRelay();
   const stepCalls1: any[] = [];
   const stepCalls2: any[] = [];
-  const agent1 = createAgent({ role: 'a1', step_callback: (s: any) => { stepCalls1.push(s); } });
-  const agent2 = createAgent({ role: 'a2', step_callback: (s: any) => { stepCalls2.push(s); } });
+  const agent1 = createAgent({
+    role: 'a1',
+    step_callback: (s: any) => {
+      stepCalls1.push(s);
+    },
+  });
+  const agent2 = createAgent({
+    role: 'a2',
+    step_callback: (s: any) => {
+      stepCalls2.push(s);
+    },
+  });
   const crew = createCrew([agent1, agent2]);
 
   const { unsubscribe } = onCrewRelay(crew, relay);

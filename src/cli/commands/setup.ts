@@ -1,13 +1,38 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { execFileSync, spawn as spawnProcess } from 'node:child_process';
+import { spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
-import { runWorkflow } from '@agent-relay/sdk/workflows';
+import {
+  enableTelemetry,
+  disableTelemetry,
+  getStatus,
+  isDisabledByEnv,
+  track,
+  type WorkflowFileType as TelemetryWorkflowFileType,
+} from '@agent-relay/telemetry';
+import {
+  runWorkflow,
+  runScriptWorkflow,
+  ensureLocalSdkWorkflowRuntime,
+  findLocalSdkWorkspace,
+  parseTsxStderr,
+  formatWorkflowParseError,
+  type ParsedWorkflowError,
+} from '@agent-relay/sdk/workflows';
 import type { WorkflowEvent } from '@agent-relay/sdk/workflows';
+import { CliExit, defaultExit } from '../lib/exit.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
+
+export {
+  ensureLocalSdkWorkflowRuntime,
+  findLocalSdkWorkspace,
+  parseTsxStderr,
+  formatWorkflowParseError,
+  type ParsedWorkflowError,
+};
+
 type ExitFn = (code: number) => never;
 type RunInitOptions = {
   yes?: boolean;
@@ -26,12 +51,6 @@ type WorkflowRunResult = {
   error?: string;
 };
 
-type LocalSdkWorkspace = {
-  rootDir: string;
-  sdkDir: string;
-};
-
-type ExecFileSyncLike = typeof execFileSync;
 export interface SetupDependencies {
   runInit: (options: RunInitOptions) => Promise<void>;
   runTelemetry: (action?: string) => Promise<void> | void;
@@ -49,7 +68,7 @@ export interface SetupDependencies {
   runScriptWorkflow: (
     filePath: string,
     options?: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string }
-  ) => void;
+  ) => void | Promise<void>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -58,9 +77,6 @@ interface SetupIo {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependencies {
   const log = overrides.log ?? ((...args: unknown[]) => console.log(...args));
@@ -71,7 +87,7 @@ function withDefaults(overrides: Partial<SetupDependencies> = {}): SetupDependen
     runInit: overrides.runInit ?? ((options: RunInitOptions) => runInitDefault(options, io)),
     runTelemetry: overrides.runTelemetry ?? ((action?: string) => runTelemetryDefault(action, io)),
     runYamlWorkflow: runYamlWorkflowDefault,
-    runScriptWorkflow: runScriptFile,
+    runScriptWorkflow,
     log,
     error,
     exit,
@@ -105,155 +121,6 @@ async function runYamlWorkflowDefault(
   }
   return result;
 }
-export function findLocalSdkWorkspace(startDir: string): LocalSdkWorkspace | null {
-  let current = path.resolve(startDir);
-  const root = path.parse(current).root;
-
-  while (true) {
-    const packageJsonPath = path.join(current, 'package.json');
-    const sdkDir = path.join(current, 'packages', 'sdk');
-    const sdkPackageJsonPath = path.join(sdkDir, 'package.json');
-
-    try {
-      if (fs.existsSync(packageJsonPath) && fs.existsSync(sdkPackageJsonPath)) {
-        const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { name?: string };
-        const sdkPkg = JSON.parse(fs.readFileSync(sdkPackageJsonPath, 'utf8')) as { name?: string };
-        if (pkg.name === 'agent-relay' && sdkPkg.name === '@agent-relay/sdk') {
-          return { rootDir: current, sdkDir };
-        }
-      }
-    } catch {
-      // Ignore parse/read errors and continue walking upward.
-    }
-
-    if (current === root) return null;
-    current = path.dirname(current);
-  }
-}
-
-export function ensureLocalSdkWorkflowRuntime(
-  startDir: string,
-  execRunner: ExecFileSyncLike = execFileSync
-): void {
-  const workspace = findLocalSdkWorkspace(startDir);
-  if (!workspace) return;
-
-  const workflowsEntry = path.join(workspace.sdkDir, 'dist', 'workflows', 'index.js');
-  if (fs.existsSync(workflowsEntry)) return;
-
-  console.log(
-    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...'
-  );
-  execRunner('npm', ['run', 'build:sdk'], {
-    cwd: workspace.rootDir,
-    stdio: 'inherit',
-    env: process.env,
-  });
-
-  if (!fs.existsSync(workflowsEntry)) {
-    throw new Error(`Local SDK workflows runtime is still missing after build: ${workflowsEntry}`);
-  }
-}
-
-function runScriptFile(
-  filePath: string,
-  options: { dryRun?: boolean; resume?: string; startFrom?: string; previousRunId?: string } = {}
-): void {
-  const resolved = path.resolve(filePath);
-  if (!fs.existsSync(resolved)) {
-    throw new Error(`File not found: ${resolved}`);
-  }
-  const ext = path.extname(resolved).toLowerCase();
-  const runIdFile = path.join(
-    process.cwd(),
-    '.agent-relay',
-    `script-run-id-${process.pid}-${Date.now()}.txt`
-  );
-  try {
-    fs.mkdirSync(path.dirname(runIdFile), { recursive: true });
-  } catch {
-    // Run-id hint is optional — don't abort if directory is not writable
-  }
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, AGENT_RELAY_RUN_ID_FILE: runIdFile };
-  if (options.dryRun) childEnv.DRY_RUN = 'true';
-  if (options.resume) childEnv.RESUME_RUN_ID = options.resume;
-  if (options.startFrom) childEnv.START_FROM = options.startFrom;
-  if (options.previousRunId) childEnv.PREVIOUS_RUN_ID = options.previousRunId;
-
-  const augmentErrorWithRunId = (err: any): never => {
-    try {
-      if (fs.existsSync(runIdFile)) {
-        const runId = fs.readFileSync(runIdFile, 'utf8').trim();
-        if (runId && typeof err?.message === 'string' && !err.message.includes('Run ID:')) {
-          err.message += `
-Run ID: ${runId}`;
-        }
-      }
-    } catch {
-      // Ignore run-id hint failures and preserve the original error.
-    } finally {
-      try {
-        fs.rmSync(runIdFile, { force: true });
-      } catch {
-        // Ignore cleanup failure.
-      }
-    }
-    throw err;
-  };
-  const cleanupRunIdFile = () => {
-    try {
-      fs.rmSync(runIdFile, { force: true });
-    } catch {
-      /* ignore */
-    }
-  };
-
-  if (ext === '.ts' || ext === '.tsx') {
-    ensureLocalSdkWorkflowRuntime(path.dirname(resolved));
-
-    const runners = ['tsx', 'ts-node'];
-    for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
-        }
-      }
-    }
-    try {
-      execFileSync('npx', ['tsx', resolved], { stdio: 'inherit', env: childEnv });
-      cleanupRunIdFile();
-    } catch (err: any) {
-      return augmentErrorWithRunId(err);
-    }
-    return;
-  }
-  if (ext === '.py') {
-    const runners = ['python3', 'python'];
-    for (const runner of runners) {
-      try {
-        execFileSync(runner, [resolved], { stdio: 'inherit', env: childEnv });
-        cleanupRunIdFile();
-        return;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
-          return augmentErrorWithRunId(err);
-        }
-      }
-    }
-    cleanupRunIdFile();
-    throw new Error('Python not found. Install Python 3.10+ to run .py workflow files.');
-  }
-  try {
-    fs.rmSync(runIdFile, { force: true });
-  } catch {
-    // Ignore cleanup failure.
-  }
-  throw new Error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
-}
 async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<void> {
   const prompt = async (question: string, defaultYes = true): Promise<boolean> => {
     if (options.yes) return true;
@@ -267,6 +134,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     if (!normalized) return defaultYes;
     return normalized === 'y' || normalized === 'yes';
   };
+  const yesFlag = Boolean(options.yes);
+  const skipBrokerFlag = Boolean(options.skipBroker);
   io.log('');
   io.log('  ╭─────────────────────────────────────╮');
   io.log('  │                                     │');
@@ -281,6 +150,13 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     io.log('  ℹ  Detected: Cloud workspace');
     io.log('     MCP tools are pre-configured in cloud environments.');
     io.log('');
+    track('setup_init', {
+      is_cloud: true,
+      broker_was_running: false,
+      user_started_broker: false,
+      yes_flag: yesFlag,
+      skip_broker: skipBrokerFlag,
+    });
     return;
   }
   io.log('  ℹ  Detected: Local environment');
@@ -296,6 +172,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       // Process dead — stale connection file
     }
   }
+  const brokerWasRunning = brokerRunning;
+  let userStartedBroker = false;
   if (brokerRunning) {
     io.log('  ✓  Broker is already running');
   } else {
@@ -324,6 +202,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
       io.log('  ✓  Broker started in background');
       io.log('');
       brokerRunning = true;
+      userStartedBroker = true;
     }
   }
   io.log('  ╭─────────────────────────────────────────────────────────╮');
@@ -352,11 +231,18 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('');
   io.log('  Dashboard: http://localhost:3888 (when broker is running)');
   io.log('');
+  track('setup_init', {
+    is_cloud: false,
+    broker_was_running: brokerWasRunning,
+    user_started_broker: userStartedBroker,
+    yes_flag: yesFlag,
+    skip_broker: skipBrokerFlag,
+  });
 }
 function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   if (action === 'enable') {
     if (isDisabledByEnv()) {
-      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED is set');
+      io.log('Cannot enable: AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK is set');
       io.log('Remove the environment variable to enable telemetry.');
       return;
     }
@@ -376,7 +262,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('================');
   io.log(`Enabled: ${status.enabled ? 'Yes' : 'No'}`);
   if (status.disabledByEnv) {
-    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED environment variable)');
+    io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK environment variable)');
   }
   io.log(`Anonymous ID: ${status.anonymousId}`);
   if (status.notifiedAt) {
@@ -387,19 +273,21 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   io.log('  agent-relay telemetry enable   - Opt in to telemetry');
   io.log('  agent-relay telemetry disable  - Opt out of telemetry');
   io.log('');
-  io.log('Learn more: https://agentrelay.dev/telemetry');
+  io.log('Learn more: https://agentrelay.com/telemetry');
 }
 export function registerSetupCommands(program: Command, overrides: Partial<SetupDependencies> = {}): void {
   const deps = withDefaults(overrides);
-  program
-    .command('init', { hidden: true })
-    .description('First-time setup wizard - start broker')
-    .option('-y, --yes', 'Accept all defaults (non-interactive)')
-    .option('--skip-broker', 'Skip broker startup prompt')
-    .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
-    .action(async (options: RunInitOptions) => {
-      await deps.runInit(options);
-    });
+  if (program.name() !== 'relay' && !program.commands.some((command) => command.name() === 'init')) {
+    program
+      .command('init', { hidden: true })
+      .description('First-time setup wizard - start broker')
+      .option('-y, --yes', 'Accept all defaults (non-interactive)')
+      .option('--skip-broker', 'Skip broker startup prompt')
+      .addHelpText('after', '\nBREAKING CHANGE: daemon options were removed. Use broker terminology only.')
+      .action(async (options: RunInitOptions) => {
+        await deps.runInit(options);
+      });
+  }
   program
     .command('setup', { hidden: true })
     .description('Alias for "init" - first-time setup wizard')
@@ -426,10 +314,34 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
     .option('--start-from <step>', 'Start from a specific step and skip predecessor steps')
     .option('--previous-run-id <runId>', 'Use cached outputs from a previous run when starting from a step')
     .action(async (filePath: string, options: RunWorkflowOptions) => {
-      let isScriptWorkflow = false;
+      const ext = path.extname(filePath).toLowerCase();
+      const isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
+      const fileType: TelemetryWorkflowFileType =
+        ext === '.yaml' || ext === '.yml'
+          ? 'yaml'
+          : ext === '.ts' || ext === '.tsx'
+            ? 'ts'
+            : ext === '.py'
+              ? 'py'
+              : 'unknown';
+      const started = Date.now();
+      let tracked = false;
+      const emit = (result: { success: boolean; errorClass?: string }): void => {
+        if (tracked) return;
+        tracked = true;
+        track('workflow_run', {
+          file_type: fileType,
+          is_dry_run: Boolean(options.dryRun),
+          is_resume: Boolean(options.resume),
+          is_start_from: Boolean(options.startFrom),
+          is_script: isScriptWorkflow,
+          success: result.success,
+          duration_ms: Date.now() - started,
+          ...(result.errorClass ? { error_class: result.errorClass } : {}),
+        });
+      };
+
       try {
-        const ext = path.extname(filePath).toLowerCase();
-        isScriptWorkflow = ext === '.ts' || ext === '.tsx' || ext === '.py';
         if (ext === '.yaml' || ext === '.yml') {
           if (options.resume) {
             deps.log(`Resuming workflow run ${options.resume} from ${filePath}...`);
@@ -440,11 +352,13 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
             });
             if (result.status === 'completed') {
               deps.log('\nWorkflow resumed and completed successfully.');
+              emit({ success: true });
             } else {
               deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
               deps.error(
                 `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
               );
+              emit({ success: false, errorClass: 'WorkflowNotCompleted' });
               deps.exit(1);
             }
             return;
@@ -464,32 +378,43 @@ export function registerSetupCommands(program: Command, overrides: Partial<Setup
           });
           if (options.dryRun) {
             // Report was already printed by runWorkflow
+            emit({ success: true });
             return;
           }
           if (result.status === 'completed') {
             deps.log('\nWorkflow completed successfully.');
+            emit({ success: true });
           } else {
             deps.error(`\nWorkflow ${result.status}${result.error ? `: ${result.error}` : ''}`);
             deps.error(
               `Run ID: ${result.id} — resume with: agent-relay run ${filePath} --resume ${result.id}`
             );
+            emit({ success: false, errorClass: 'WorkflowNotCompleted' });
             deps.exit(1);
           }
           return;
         }
         if (ext === '.ts' || ext === '.tsx' || ext === '.py') {
           deps.log(`Running workflow script ${filePath}...`);
-          deps.runScriptWorkflow(filePath, {
+          await deps.runScriptWorkflow(filePath, {
             dryRun: options.dryRun,
             resume: options.resume,
             startFrom: options.startFrom,
             previousRunId: options.previousRunId,
           });
+          emit({ success: true });
           return;
         }
         deps.error(`Unsupported file type: ${ext}. Use .yaml, .yml, .ts, or .py`);
+        emit({ success: false, errorClass: 'UnsupportedFileType' });
         deps.exit(1);
       } catch (err: any) {
+        // `deps.exit(1)` above throws `CliExit` in production so runCli can
+        // flush telemetry — let that bubble straight through instead of
+        // treating it as an unexpected error (which would print the internal
+        // "cli-exit:1" message and clobber `error_class` with 'CliExit').
+        if (err instanceof CliExit) throw err;
+        emit({ success: false, errorClass: errorClassName(err) });
         deps.error(`Error: ${err.message}`);
         if (isScriptWorkflow) {
           const runIdMatch = typeof err?.message === 'string' ? err.message.match(/Run ID:\s*(\S+)/) : null;

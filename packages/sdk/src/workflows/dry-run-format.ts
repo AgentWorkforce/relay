@@ -26,7 +26,20 @@ export function formatDryRunReport(report: DryRunReport): string {
     for (const agent of report.agents) {
       const stepLabel = agent.stepCount === 1 ? '1 step' : `${agent.stepCount} steps`;
       const cwdInfo = agent.cwd ? ` [cwd: ${agent.cwd}]` : '';
-      lines.push(`  ${agent.name.padEnd(maxNameLen)}  ${agent.cli.padEnd(maxCliLen)}  ${stepLabel}${cwdInfo}`);
+      lines.push(
+        `  ${agent.name.padEnd(maxNameLen)}  ${agent.cli.padEnd(maxCliLen)}  ${stepLabel}${cwdInfo}`
+      );
+    }
+    lines.push('');
+  }
+
+  // Permissions
+  if (report.permissions && report.permissions.length > 0) {
+    lines.push(`Permissions (${report.permissions.length} agents):`);
+    for (const perm of report.permissions) {
+      lines.push(
+        `  ${perm.agent}: ${perm.access} (read: ${perm.readPaths}, write: ${perm.writePaths}, deny: ${perm.denyPaths}, scopes: ${perm.scopes}) [${perm.source}]`
+      );
     }
     lines.push('');
   }

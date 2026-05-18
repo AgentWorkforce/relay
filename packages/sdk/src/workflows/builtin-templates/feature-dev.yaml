@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: feature-dev
-description: "Blueprint-style feature development with deterministic quality gates."
+description: 'Blueprint-style feature development with deterministic quality gates.'
 swarm:
   pattern: hub-spoke
   maxConcurrency: 2
@@ -13,28 +13,32 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Lead engineer coordinating delivery"
+    role: 'Lead engineer coordinating delivery'
+    permissions: { access: full }
   - name: planner
     cli: codex
-    role: "Plans implementation and acceptance criteria"
+    role: 'Plans implementation and acceptance criteria'
+    permissions: { access: readonly }
     interactive: false
   - name: developer
     cli: codex
-    role: "Implements planned changes"
+    role: 'Implements planned changes'
+    permissions: { access: readwrite }
     interactive: false
   - name: reviewer
     cli: claude
-    role: "Reviews code quality and release risk"
+    role: 'Reviews code quality and release risk'
+    permissions: { access: readonly }
 workflows:
   - name: feature-delivery
-    description: "Plan, implement, review, and finalize a feature request with quality gates."
+    description: 'Plan, implement, review, and finalize a feature request with quality gates.'
     onError: retry
     preflight:
       - command: git status --porcelain
         failIf: non-empty
-        description: "Ensure working directory is clean"
+        description: 'Ensure working directory is clean'
       - command: npm run type-check 2>/dev/null || echo "skip"
-        description: "Run type checking if available"
+        description: 'Run type checking if available'
     steps:
       # Agent: Planning
       - name: plan

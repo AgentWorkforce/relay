@@ -13,12 +13,15 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
+import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
+import { track } from '@agent-relay/telemetry';
 
 import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -129,10 +132,6 @@ export interface CoreDependencies {
   exit: ExitFn;
 }
 
-function defaultExit(code: number): never {
-  process.exit(code);
-}
-
 function findPackageJson(startDir: string, fileSystem: CoreFileSystem): string {
   let current = startDir;
   while (current !== path.dirname(current)) {
@@ -171,17 +170,21 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   }
 
   // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
-  const siblingWorkspaceBuild = path.resolve(
-    process.cwd(),
-    '..',
-    'relay-dashboard',
-    'packages',
-    'dashboard-server',
-    'dist',
-    'start.js'
-  );
-  if (fileSystem.existsSync(siblingWorkspaceBuild)) {
-    return siblingWorkspaceBuild;
+  // Only when RELAY_LOCAL_DEV is set — otherwise the installed binary should win so
+  // users don't accidentally run a stale dev build.
+  if (process.env.RELAY_LOCAL_DEV === '1') {
+    const siblingWorkspaceBuild = path.resolve(
+      process.cwd(),
+      '..',
+      'relay-dashboard',
+      'packages',
+      'dashboard-server',
+      'dist',
+      'start.js'
+    );
+    if (fileSystem.existsSync(siblingWorkspaceBuild)) {
+      return siblingWorkspaceBuild;
+    }
   }
 
   // In workspace / local dev mode, try resolving the dashboard-server package directly
@@ -243,13 +246,14 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
-  const binaryArgs: string[] = [];
+  const binaryArgs: AgentRelayBrokerInitArgs = {};
   if (apiPort > 0) {
-    binaryArgs.push('--persist', '--api-port', String(apiPort));
+    binaryArgs.persist = true;
+    binaryArgs.apiPort = apiPort;
   }
   const stateDir = process.env.AGENT_RELAY_STATE_DIR;
   if (stateDir) {
-    binaryArgs.push('--state-dir', stateDir);
+    binaryArgs.stateDir = stateDir;
   }
   const client = await createAgentRelayClient({
     cwd,
@@ -343,9 +347,10 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {
-      process.on(signal, () => {
-        void handler();
-      });
+      // See `runSignalHandler` — wraps the handler so `CliExit` thrown by
+      // `deps.exit(code)` becomes a flush-then-real-exit, not an unhandled
+      // async rejection (which would override the intended exit code).
+      process.on(signal, () => runSignalHandler(handler));
     },
     holdOpen: () => new Promise(() => undefined),
     resolveTemplatesDir: () => {
@@ -406,6 +411,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
+    .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
@@ -415,6 +421,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         port?: string;
         spawn?: boolean;
         background?: boolean;
+        foreground?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
         stateDir?: string;
@@ -466,7 +473,8 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .command('status')
     .description('Check broker status')
     .option('--state-dir <path>', 'Directory for broker state and connection files')
-    .action(async (options: { stateDir?: string }) => {
+    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
+    .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
     });
 
@@ -514,6 +522,11 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--cli <tool>', 'CLI tool override for all projects')
     .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
     .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
+      track('bridge_spawn', {
+        project_count: projectPaths.length,
+        cli: options.cli ?? 'default',
+        has_architect: options.architect !== undefined && options.architect !== false,
+      });
       await runBridgeCommand(projectPaths, options, deps);
     });
 

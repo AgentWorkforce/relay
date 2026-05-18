@@ -65,6 +65,31 @@ function createWorkdir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-rtools-'));
 }
 
+function createEnvEchoCliDir(cliName: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wf-rtools-cli-'));
+  const scriptPath = path.join(dir, cliName);
+  const script = `#!/usr/bin/env bash
+MARKER=""
+if [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-review-[A-Za-z0-9]+$ ]]; then
+  MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+elif [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-(worker|owner)-[A-Za-z0-9]+$ ]]; then
+  MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+elif [[ "\${RELAY_AGENT_NAME:-}" =~ ^(.+)-[A-Za-z0-9]+$ ]]; then
+  MARKER="STEP_COMPLETE:\${BASH_REMATCH[1]}"
+fi
+[[ -n "$MARKER" ]] && echo "$MARKER"
+printf 'RELAY_API_KEY=%s\n' "\${RELAY_API_KEY:-}"
+printf 'RELAY_LLM_PROXY=%s\n' "\${RELAY_LLM_PROXY:-}"
+printf 'RELAY_LLM_PROXY_URL=%s\n' "\${RELAY_LLM_PROXY_URL:-}"
+printf 'CREDENTIAL_PROXY_TOKEN=%s\n' "\${CREDENTIAL_PROXY_TOKEN:-}"
+printf 'RELAY_LLM_PROXY_TOKEN=%s\n' "\${RELAY_LLM_PROXY_TOKEN:-}"
+printf 'OPENAI_BASE_URL=%s\n' "\${OPENAI_BASE_URL:-}"
+printf 'OPENAI_API_KEY=%s\n' "\${OPENAI_API_KEY:-}"
+`;
+  fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+  return dir;
+}
+
 /** Build a minimal single-step workflow config for an interactive agent. */
 function makeRelayToolWorkflow(opts: {
   cli: string;
@@ -107,10 +132,12 @@ function makeRelayToolWorkflow(opts: {
 
 async function runRealWorkflow(
   config: RelayYamlConfig,
-  workdir: string
+  workdir: string,
+  relayEnv?: NodeJS.ProcessEnv
 ): Promise<{
   status: string;
   error?: string;
+  stepOutput?: string;
   events: Array<{ type: string; stepName?: string; error?: string }>;
 }> {
   const apiKey = await ensureApiKey();
@@ -118,7 +145,7 @@ async function runRealWorkflow(
     cwd: workdir,
     relay: {
       binaryPath: resolveBinaryPath(),
-      env: { ...process.env, RELAY_API_KEY: apiKey },
+      env: { ...process.env, RELAY_API_KEY: apiKey, ...relayEnv },
     },
   });
 
@@ -127,7 +154,10 @@ async function runRealWorkflow(
 
   try {
     const run = await runner.execute(config, 'default');
-    return { status: run.status, error: run.error, events };
+    const stepCompleted = events.find((e) => e.type === 'step:completed' && e.stepName === 'relay-check') as
+      | { output?: string }
+      | undefined;
+    return { status: run.status, error: run.error, stepOutput: stepCompleted?.output, events };
   } catch (err: unknown) {
     return { status: 'failed', error: err instanceof Error ? err.message : String(err), events };
   }
@@ -265,6 +295,75 @@ test(
       assertStepCompleted(result, 'step');
     } finally {
       await harness.stop();
+      fs.rmSync(workdir, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'workflow-relay-tools: interactive subprocess receives merged relay env and proxy overrides',
+  { timeout: 60_000 },
+  async (t) => {
+    if (skipIfMissing(t) || skipIfNestedClaude(t)) return;
+
+    const workdir = createWorkdir();
+    const fakeCliDir = createEnvEchoCliDir('codex');
+    const proxyUrl = `https://proxy.local/${uniqueSuffix()}`;
+    const proxyToken = `proxy-token-${uniqueSuffix()}`;
+    const relayApiKey = `relay-key-${uniqueSuffix()}`;
+
+    try {
+      const result = await runRealWorkflow(
+        {
+          version: '1',
+          name: 'test-relay-env-merge',
+          swarm: { pattern: 'pipeline', timeoutMs: 60_000 },
+          agents: [{ name: 'worker', cli: 'codex', interactive: true, credentials: { proxy: true } } as any],
+          workflows: [
+            {
+              name: 'default',
+              steps: [
+                {
+                  name: 'relay-check',
+                  agent: 'worker',
+                  task: 'Print the relay and proxy environment.',
+                  timeoutMs: 30_000,
+                  verification: { type: 'output_contains', value: `OPENAI_BASE_URL=${proxyUrl}` },
+                },
+              ],
+            },
+          ],
+        },
+        workdir,
+        {
+          PATH: `${fakeCliDir}${path.delimiter}${process.env.PATH ?? ''}`,
+          AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1',
+          RELAY_WORKSPACES_JSON: '{}',
+          RELAY_API_KEY: relayApiKey,
+          RELAY_LLM_PROXY: proxyUrl,
+          CREDENTIAL_PROXY_TOKEN: proxyToken,
+        }
+      );
+
+      assert.equal(result.status, 'completed', result.error ?? '(no error)');
+      assert.match(result.stepOutput ?? '', new RegExp(`RELAY_API_KEY=${relayApiKey}`));
+      assert.match(
+        result.stepOutput ?? '',
+        new RegExp(`RELAY_LLM_PROXY=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
+      assert.match(
+        result.stepOutput ?? '',
+        new RegExp(`RELAY_LLM_PROXY_URL=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
+      assert.match(result.stepOutput ?? '', new RegExp(`CREDENTIAL_PROXY_TOKEN=${proxyToken}`));
+      assert.match(result.stepOutput ?? '', new RegExp(`RELAY_LLM_PROXY_TOKEN=${proxyToken}`));
+      assert.match(
+        result.stepOutput ?? '',
+        new RegExp(`OPENAI_BASE_URL=${proxyUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+      );
+      assert.match(result.stepOutput ?? '', new RegExp(`OPENAI_API_KEY=${proxyToken}`));
+    } finally {
+      fs.rmSync(fakeCliDir, { recursive: true, force: true });
       fs.rmSync(workdir, { recursive: true, force: true });
     }
   }

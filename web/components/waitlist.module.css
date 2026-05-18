@@ -35,8 +35,8 @@
 .button {
   flex-shrink: 0;
   padding: 10px 24px;
-  background: var(--primary);
-  color: var(--bg);
+  background: var(--btn-bg);
+  color: var(--primary-fg);
   border: none;
   border-radius: 100px;
   font-family: var(--font-geist-sans), sans-serif;
@@ -44,13 +44,15 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
-  transition: background 0.2s, transform 0.15s;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
   white-space: nowrap;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: var(--btn-hover);
   transform: translateY(-1px);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--btn-bg) 35%, transparent);
 }
 
 .button:disabled {

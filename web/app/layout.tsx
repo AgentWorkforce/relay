@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
+import { PostHogProvider } from '@posthog/next';
 import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
+import { POSTHOG_HOST, SITE_URL } from '../lib/site';
+import { WebsitePostHogPageView } from './PostHogPageView';
 import './globals.css';
 
 const inter = Inter({
@@ -20,14 +23,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://agentrelay.dev'),
+  metadataBase: new URL(SITE_URL),
   applicationName: 'Agent Relay',
   title: {
     default: 'Agent Relay',
     template: '%s | Agent Relay',
   },
   description:
-    'Spawn, coordinate, and connect AI agents from TypeScript or Python.',
+    'Build AI systems where agents communicate, share context, and coordinate work through channels, messages, files, and workflows.',
   keywords: [
     'Agent Relay',
     'multi-agent',
@@ -35,6 +38,7 @@ export const metadata: Metadata = {
     'MCP',
     'AI SDK',
     'agent relay',
+    'slack for agents',
   ],
   robots: {
     index: true,
@@ -70,13 +74,31 @@ const themeScript = `
 `;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  const content = postHogKey ? (
+    <PostHogProvider
+      clientOptions={{
+        api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? POSTHOG_HOST,
+        autocapture: true,
+        capture_exceptions: true,
+        capture_heatmaps: true,
+        capture_pageleave: true,
+      }}
+    >
+      <WebsitePostHogPageView />
+      {children}
+    </PostHogProvider>
+  ) : (
+    children
+  );
+
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>
-        {children}
+      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`} suppressHydrationWarning>
+        {content}
       </body>
     </html>
   );

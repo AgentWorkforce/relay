@@ -1,12 +1,15 @@
 use super::*;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
-    delivery_queued_event_payload, detect_cli_ready, floor_char_boundary,
-    format_injection_for_worker_with_workspace, parse_cli_command, parse_continuity_command,
-    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+    delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker_with_workspace,
+    parse_cli_command, parse_continuity_command, ActivityDetector, DeliveryOutcome,
+    PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
+    ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
+use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
+use base64::Engine;
+use relay_broker::snapshot::Snapshot;
 
 #[derive(Debug, Clone)]
 struct PendingWorkerInjection {
@@ -95,6 +98,24 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
     })
 }
 
+fn evaluate_startup_gate(
+    resolved_cli: &str,
+    startup_output: &str,
+    startup_total_bytes: usize,
+    wait_for_relaycast_boot: bool,
+    saw_relaycast_boot: bool,
+    post_boot_output: &str,
+    grid: GridReadinessSnapshot<'_>,
+) -> bool {
+    if wait_for_relaycast_boot {
+        saw_relaycast_boot
+            && output_has_prompt(resolved_cli, post_boot_output)
+            && cli_prompt_ready(resolved_cli, grid)
+    } else {
+        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes, grid)
+    }
+}
+
 fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
@@ -102,12 +123,21 @@ fn startup_gate_ready(
     wait_for_relaycast_boot: bool,
     saw_relaycast_boot: bool,
     post_boot_output: &str,
+    pty: &PtySession,
 ) -> bool {
-    if wait_for_relaycast_boot {
-        saw_relaycast_boot && output_has_prompt(resolved_cli, post_boot_output)
-    } else {
-        detect_cli_ready(resolved_cli, startup_output, startup_total_bytes)
-    }
+    let screen = pty.screen_text();
+    evaluate_startup_gate(
+        resolved_cli,
+        startup_output,
+        startup_total_bytes,
+        wait_for_relaycast_boot,
+        saw_relaycast_boot,
+        post_boot_output,
+        GridReadinessSnapshot {
+            screen: &screen,
+            cursor: Some(pty.cursor_position()),
+        },
+    )
 }
 
 fn should_block_pending_injection(
@@ -174,23 +204,27 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
-    #[cfg(unix)]
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
-    #[cfg(not(unix))]
-    let (init_rows, init_cols) = (24u16, 80u16);
     let (pty, mut pty_rx) =
         PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
-    let mut terminal_query_parser = TerminalQueryParser::default();
+    // Query responses (DSR/DA1/DA2/CPR) are answered by alacritty's
+    // `RelayEventListener` inside `PtySession` — no parser needed here.
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let writer_task = tokio::spawn(async move {
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write. This task
+        // shuts down by dropping `out_tx` and awaiting the writer so the
+        // frame stream drains cleanly.
+        use tokio::io::AsyncWriteExt;
+        let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+            if let Ok(mut line) = serde_json::to_string(&frame) {
+                line.push('\n');
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
+                    break;
+                }
             }
         }
     });
@@ -207,10 +241,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         Some(Duration::from_secs(cmd.idle_threshold_secs))
     };
 
-    // --- SIGWINCH (terminal resize) ---
-    let mut sigwinch =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-            .expect("failed to register SIGWINCH handler");
+    // Terminal resize arrives from the broker as a `resize_pty` protocol
+    // frame on stdin (see the frame handler below) — the worker itself
+    // never observes the user's TTY, since its stdout is a pipe.
 
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -338,6 +371,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     wait_for_relaycast_boot,
                                     saw_relaycast_boot,
                                     &post_boot_output,
+                                    &pty,
                                 );
                                 try_emit_worker_ready(
                                     &out_tx,
@@ -422,6 +456,51 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
                                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
                             }
+                            "snapshot_pty" => {
+                                // Visible-screen snapshot driven by the broker. The
+                                // broker correlates the response via request_id and
+                                // forwards the rendered payload back to the HTTP /
+                                // CLI caller.
+                                let format = frame
+                                    .payload
+                                    .get("format")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("plain")
+                                    .to_string();
+                                let snap = Snapshot::capture(&pty);
+                                let cursor = json!([snap.cursor.0, snap.cursor.1]);
+                                let payload = match format.as_str() {
+                                    "ansi" => {
+                                        let bytes = snap.to_ansi();
+                                        let encoded = base64::engine::general_purpose::STANDARD
+                                            .encode(&bytes);
+                                        json!({
+                                            "format": "ansi",
+                                            "rows": snap.rows,
+                                            "cols": snap.cols,
+                                            "cursor": cursor,
+                                            "screen": encoded,
+                                        })
+                                    }
+                                    "plain" | "" | "text" => json!({
+                                        "format": "plain",
+                                        "rows": snap.rows,
+                                        "cols": snap.cols,
+                                        "cursor": cursor,
+                                        "screen": snap.to_plain(),
+                                    }),
+                                    other => {
+                                        let _ = send_frame(&out_tx, "snapshot_response", frame.request_id, json!({
+                                            "error": {
+                                                "code": "invalid_format",
+                                                "message": format!("unsupported snapshot format '{other}' (expected 'plain' or 'ansi')"),
+                                            }
+                                        })).await;
+                                        continue;
+                                    }
+                                };
+                                let _ = send_frame(&out_tx, "snapshot_response", frame.request_id, payload).await;
+                            }
                             other => {
                                 let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
                                     "code":"unknown_type",
@@ -443,9 +522,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         reported_idle = false;
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
-                        for response in terminal_query_parser.feed(&chunk) {
-                            let _ = pty.write_all(response);
-                        }
                         let text = String::from_utf8_lossy(&chunk).to_string();
                         let clean_text = strip_ansi(&text);
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
@@ -492,6 +568,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             wait_for_relaycast_boot,
                             saw_relaycast_boot,
                             &post_boot_output,
+                            &pty,
                         );
                         try_emit_worker_ready(
                             &out_tx,
@@ -815,7 +892,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     pty_auto.last_injection_time = Some(Instant::now());
                     pty_auto.auto_enter_retry_count = 0;
 
-                    // Push to pending verifications instead of immediate ack
+                    // Queue echo verification before acknowledging delivery.
                     pending_verifications.push_back(PendingVerification {
                         delivery_id: pending.delivery.delivery_id.clone(),
                         event_id: pending.delivery.event_id.clone(),
@@ -842,6 +919,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     wait_for_relaycast_boot,
                     saw_relaycast_boot,
                     &post_boot_output,
+                    &pty,
                 );
                 try_emit_worker_ready(
                     &out_tx,
@@ -930,13 +1008,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 }
             }
 
-            // --- SIGWINCH: forward terminal resize to PTY ---
-            _ = sigwinch.recv() => {
-                if let Some((rows, cols)) = get_terminal_size() {
-                    let _ = pty.resize(rows, cols);
-                }
-            }
-
             // --- Child process watchdog ---
             // Detects when the child exits but the PTY reader doesn't notice.
             // Uses has_exited() which handles ECHILD (already reaped) and
@@ -989,10 +1060,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     child_exit_detected = true;
                     running = false;
                 } else {
-                    // If no PTY output for a long time, the agent is likely
-                    // idle (thinking, waiting for input, etc). Emit an idle
-                    // event instead of killing the process — the broker or
-                    // dashboard can decide what to do with idle agents.
+                    // If no PTY output arrives for a long time, emit an idle
+                    // event so the broker or dashboard can decide what to do.
                     let silent_duration = last_pty_output_time.elapsed();
                     if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT && !reported_idle {
                         tracing::info!(
@@ -1072,54 +1141,81 @@ mod tests {
     }
 
     #[test]
-    fn startup_gate_blocks_codex_until_post_boot_prompt() {
+    fn startup_gate_requires_visible_post_boot_prompt() {
         let startup_output = "Welcome\n› ";
-        let post_boot_output = "MCP loading...";
-        assert!(!startup_gate_ready(
+        let post_boot_output = "done\n› ";
+        let loading_grid = GridReadinessSnapshot {
+            screen: "MCP loading...\n",
+            cursor: Some((1, 15)),
+        };
+        assert!(!evaluate_startup_gate(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            post_boot_output,
+            loading_grid,
+        ));
+
+        let ready_grid = GridReadinessSnapshot {
+            screen: "done\n› \n",
+            cursor: Some((2, 3)),
+        };
+        assert!(!evaluate_startup_gate(
             "codex",
             startup_output,
             startup_output.len(),
             true,
             false,
             post_boot_output,
+            ready_grid,
         ));
-        assert!(!startup_gate_ready(
+        assert!(!evaluate_startup_gate(
+            "codex",
+            startup_output,
+            startup_output.len(),
+            true,
+            true,
+            "MCP loading...",
+            ready_grid,
+        ));
+        assert!(evaluate_startup_gate(
             "codex",
             startup_output,
             startup_output.len(),
             true,
             true,
             post_boot_output,
-        ));
-        assert!(startup_gate_ready(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            true,
-            "done\n› ",
+            ready_grid,
         ));
     }
 
     #[test]
-    fn startup_gate_uses_generic_ready_detection_without_boot_requirement() {
-        // Claude requires welcome banner + bare prompt
-        assert!(startup_gate_ready(
+    fn startup_gate_uses_ready_detection_when_relaycast_boot_not_required() {
+        assert!(evaluate_startup_gate(
             "claude",
-            "Welcome back Khaliq!\n>\n",
+            "",
             20,
             false,
             false,
             "",
+            GridReadinessSnapshot {
+                screen: "Welcome back Khaliq!\n>\n",
+                cursor: Some((2, 2)),
+            },
         ));
-        // Non-claude CLIs use generic detection
-        assert!(startup_gate_ready(
+        assert!(evaluate_startup_gate(
             "aider",
-            "Ready\n> ",
+            "",
             20,
             false,
             false,
             "",
+            GridReadinessSnapshot {
+                screen: "Ready\n> \n",
+                cursor: Some((2, 3)),
+            },
         ));
     }
 

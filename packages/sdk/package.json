@@ -1,11 +1,13 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "4.0.0",
+  "version": "6.0.22",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "workerd": "./dist/workers.js",
+      "worker": "./dist/workers.js",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
@@ -24,6 +26,11 @@
       "types": "./dist/relay.d.ts",
       "import": "./dist/relay.js",
       "default": "./dist/relay.js"
+    },
+    "./personas": {
+      "types": "./dist/personas.d.ts",
+      "import": "./dist/personas.js",
+      "default": "./dist/personas.js"
     },
     "./logs": {
       "types": "./dist/logs.d.ts",
@@ -55,6 +62,26 @@
       "import": "./dist/communicate/index.js",
       "default": "./dist/communicate/index.js"
     },
+    "./communicate/a2a-types": {
+      "types": "./dist/communicate/a2a-types.d.ts",
+      "import": "./dist/communicate/a2a-types.js",
+      "default": "./dist/communicate/a2a-types.js"
+    },
+    "./communicate/a2a-server": {
+      "types": "./dist/communicate/a2a-server.d.ts",
+      "import": "./dist/communicate/a2a-server.js",
+      "default": "./dist/communicate/a2a-server.js"
+    },
+    "./communicate/a2a-transport": {
+      "types": "./dist/communicate/a2a-transport.d.ts",
+      "import": "./dist/communicate/a2a-transport.js",
+      "default": "./dist/communicate/a2a-transport.js"
+    },
+    "./communicate/a2a-bridge": {
+      "types": "./dist/communicate/a2a-bridge.d.ts",
+      "import": "./dist/communicate/a2a-bridge.js",
+      "default": "./dist/communicate/a2a-bridge.js"
+    },
     "./communicate/adapters/pi": {
       "types": "./dist/communicate/adapters/pi.d.ts",
       "import": "./dist/communicate/adapters/pi.js",
@@ -79,6 +106,16 @@
       "types": "./dist/broker-path.d.ts",
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
+    },
+    "./github": {
+      "types": "./dist/github.d.ts",
+      "import": "./dist/github.js",
+      "default": "./dist/github.js"
+    },
+    "./slack": {
+      "types": "./dist/slack.d.ts",
+      "import": "./dist/slack.js",
+      "default": "./dist/slack.js"
     }
   },
   "files": [
@@ -93,8 +130,8 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../config run build",
-    "build": "tsc -p tsconfig.build.json",
+    "prebuild": "npm --prefix ../workflow-types run build && npm --prefix ../github-primitive run build && npm --prefix ../slack-primitive run build && npm --prefix ../config run build && npm --prefix ../cloud run build",
+    "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -108,19 +145,37 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
-    "@types/ws": "^8.5.10",
-    "typescript": "^5.7.3"
+    "@types/tar": "^6.1.13",
+    "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/config": "4.0.0",
+    "@agent-relay/cloud": "6.0.22",
+    "@agent-relay/config": "6.0.22",
+    "@agent-relay/github-primitive": "6.0.22",
+    "@agent-relay/slack-primitive": "6.0.22",
+    "@agent-relay/workflow-types": "6.0.22",
+    "@agentworkforce/harness-kit": "^0.11.0",
+    "@agentworkforce/workload-router": "^0.11.0",
     "@relaycast/sdk": "^1.1.0",
+    "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
+    "agent-trajectories": "^0.5.4",
     "chalk": "^4.1.2",
+    "ignore": "^7.0.5",
     "listr2": "^10.2.1",
+    "tar": "^7.5.10",
     "ws": "^8.18.3",
     "yaml": "^2.7.0"
   },
+  "optionalDependencies": {
+    "@agent-relay/broker-darwin-arm64": "6.0.22",
+    "@agent-relay/broker-darwin-x64": "6.0.22",
+    "@agent-relay/broker-linux-arm64": "6.0.22",
+    "@agent-relay/broker-linux-x64": "6.0.22",
+    "@agent-relay/broker-win32-x64": "6.0.22"
+  },
   "peerDependencies": {
+    "@agent-relay/credential-proxy": "6.0.22",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",
@@ -130,6 +185,9 @@
     "crewai": ">=1.0.0"
   },
   "peerDependenciesMeta": {
+    "@agent-relay/credential-proxy": {
+      "optional": true
+    },
     "@anthropic-ai/claude-agent-sdk": {
       "optional": true
     },

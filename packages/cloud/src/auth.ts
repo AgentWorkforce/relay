@@ -1,29 +1,82 @@
-import fs from "node:fs/promises";
-import http from "node:http";
-import os from "node:os";
-import path from "node:path";
-import { spawn } from "node:child_process";
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 
-import { buildApiUrl } from "./api-client.js";
-import { AUTH_FILE_PATH, REFRESH_WINDOW_MS, type StoredAuth } from "./types.js";
+import { buildApiUrl } from './api-client.js';
+import { AUTH_FILE_PATH, REFRESH_WINDOW_MS, type StoredAuth } from './types.js';
+
+const envBackedAuth = new WeakSet<StoredAuth>();
+
+function markEnvBackedAuth(auth: StoredAuth): StoredAuth {
+  envBackedAuth.add(auth);
+  return auth;
+}
+
+function isEnvBackedAuth(auth: StoredAuth): boolean {
+  return envBackedAuth.has(auth);
+}
+
+function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
+  const apiUrl = env.CLOUD_API_URL?.trim();
+  const accessToken = env.CLOUD_API_ACCESS_TOKEN?.trim();
+  const refreshToken = env.CLOUD_API_REFRESH_TOKEN?.trim();
+  const accessTokenExpiresAt = env.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT?.trim();
+
+  if (!apiUrl || !accessToken || !refreshToken || !accessTokenExpiresAt) {
+    return null;
+  }
+
+  try {
+    new URL(apiUrl);
+  } catch {
+    return null;
+  }
+
+  if (Number.isNaN(Date.parse(accessTokenExpiresAt))) {
+    return null;
+  }
+
+  return markEnvBackedAuth({
+    apiUrl,
+    accessToken,
+    refreshToken,
+    accessTokenExpiresAt,
+  });
+}
+
+function toEnvAuthRefreshError(error: unknown): Error {
+  const message = error instanceof Error && error.message ? `${error.message}. ` : '';
+
+  return new Error(
+    `${message}Env-backed cloud auth could not be refreshed interactively; re-provision CLOUD_API_URL, CLOUD_API_ACCESS_TOKEN, CLOUD_API_REFRESH_TOKEN, and CLOUD_API_ACCESS_TOKEN_EXPIRES_AT.`,
+    error instanceof Error ? { cause: error } : undefined
+  );
+}
 
 function isValidStoredAuth(value: unknown): value is StoredAuth {
-  if (!value || typeof value !== "object") {
+  if (!value || typeof value !== 'object') {
     return false;
   }
 
   const auth = value as Partial<StoredAuth>;
   return (
-    typeof auth.accessToken === "string" &&
-    typeof auth.refreshToken === "string" &&
-    typeof auth.accessTokenExpiresAt === "string" &&
-    typeof auth.apiUrl === "string"
+    typeof auth.accessToken === 'string' &&
+    typeof auth.refreshToken === 'string' &&
+    typeof auth.accessTokenExpiresAt === 'string' &&
+    typeof auth.apiUrl === 'string'
   );
 }
 
-export async function readStoredAuth(): Promise<StoredAuth | null> {
+export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Promise<StoredAuth | null> {
+  const envAuth = readEnvAuth(env);
+  if (envAuth) {
+    return envAuth;
+  }
+
   try {
-    const file = await fs.readFile(AUTH_FILE_PATH, "utf8");
+    const file = await fs.readFile(AUTH_FILE_PATH, 'utf8');
     const parsed = JSON.parse(file) as unknown;
     return isValidStoredAuth(parsed) ? parsed : null;
   } catch {
@@ -37,7 +90,7 @@ export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
     mode: 0o700,
   });
   await fs.writeFile(AUTH_FILE_PATH, `${JSON.stringify(auth, null, 2)}\n`, {
-    encoding: "utf8",
+    encoding: 'utf8',
     mode: 0o600,
   });
 }
@@ -58,33 +111,33 @@ function shouldRefresh(accessTokenExpiresAt: string): boolean {
 function openBrowser(url: string) {
   const platform = os.platform();
 
-  if (platform === "darwin") {
-    return spawn("open", [url], { stdio: "ignore", detached: true });
+  if (platform === 'darwin') {
+    return spawn('open', [url], { stdio: 'ignore', detached: true });
   }
 
-  if (platform === "win32") {
-    return spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true });
+  if (platform === 'win32') {
+    return spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', detached: true });
   }
 
-  return spawn("xdg-open", [url], { stdio: "ignore", detached: true });
+  return spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
 }
 
 function redirectToHostedCliAuthPage(
   response: http.ServerResponse<http.IncomingMessage>,
   apiUrl: string,
   options: {
-    status: "success" | "error";
+    status: 'success' | 'error';
     detail?: string;
-  },
+  }
 ): void {
-  const resultUrl = buildApiUrl(apiUrl, "/cli/auth-result");
-  resultUrl.searchParams.set("status", options.status);
+  const resultUrl = buildApiUrl(apiUrl, '/cli/auth-result');
+  resultUrl.searchParams.set('status', options.status);
   if (options.detail) {
-    resultUrl.searchParams.set("detail", options.detail);
+    resultUrl.searchParams.set('detail', options.detail);
   }
 
   response.statusCode = 302;
-  response.setHeader("location", resultUrl.toString());
+  response.setHeader('location', resultUrl.toString());
   response.end();
 }
 
@@ -95,35 +148,35 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
     let settled = false;
 
     const server = http.createServer((request, response) => {
-      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+      const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
 
-      if (requestUrl.pathname !== "/callback") {
+      if (requestUrl.pathname !== '/callback') {
         response.statusCode = 404;
-        response.end("Not found");
+        response.end('Not found');
         return;
       }
 
-      const returnedState = requestUrl.searchParams.get("state");
+      const returnedState = requestUrl.searchParams.get('state');
 
       // Validate state parameter first (CSRF protection) — this check
       // must run unconditionally, before any user-controlled values.
       if (returnedState !== state) {
         redirectToHostedCliAuthPage(response, apiUrl, {
-          status: "error",
-          detail: "Invalid state parameter",
+          status: 'error',
+          detail: 'Invalid state parameter',
         });
         if (!settled) {
           settled = true;
           server.close();
-          reject(new Error("Invalid state parameter in CLI login callback"));
+          reject(new Error('Invalid state parameter in CLI login callback'));
         }
         return;
       }
 
-      const error = requestUrl.searchParams.get("error");
+      const error = requestUrl.searchParams.get('error');
       if (error) {
         redirectToHostedCliAuthPage(response, apiUrl, {
-          status: "error",
+          status: 'error',
           detail: error,
         });
         if (!settled) {
@@ -134,31 +187,26 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
         return;
       }
 
-      const accessToken = requestUrl.searchParams.get("access_token");
-      const refreshToken = requestUrl.searchParams.get("refresh_token");
-      const accessTokenExpiresAt = requestUrl.searchParams.get("access_token_expires_at");
-      const returnedApiUrl = requestUrl.searchParams.get("api_url");
+      const accessToken = requestUrl.searchParams.get('access_token');
+      const refreshToken = requestUrl.searchParams.get('refresh_token');
+      const accessTokenExpiresAt = requestUrl.searchParams.get('access_token_expires_at');
+      const returnedApiUrl = requestUrl.searchParams.get('api_url');
 
-      if (
-        !accessToken ||
-        !refreshToken ||
-        !accessTokenExpiresAt ||
-        !returnedApiUrl
-      ) {
+      if (!accessToken || !refreshToken || !accessTokenExpiresAt || !returnedApiUrl) {
         redirectToHostedCliAuthPage(response, apiUrl, {
-          status: "error",
-          detail: "Expected access token, refresh token, API URL, and expiration timestamp.",
+          status: 'error',
+          detail: 'Expected access token, refresh token, API URL, and expiration timestamp.',
         });
         if (!settled) {
           settled = true;
           server.close();
-          reject(new Error("CLI login callback was missing required fields"));
+          reject(new Error('CLI login callback was missing required fields'));
         }
         return;
       }
 
       redirectToHostedCliAuthPage(response, returnedApiUrl, {
-        status: "success",
+        status: 'success',
         detail: `API endpoint: ${returnedApiUrl}`,
       });
 
@@ -174,24 +222,24 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       }
     });
 
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, '127.0.0.1', () => {
       const address = server.address();
-      if (!address || typeof address === "string") {
+      if (!address || typeof address === 'string') {
         if (!settled) {
           settled = true;
           server.close();
-          reject(new Error("Failed to start local callback server"));
+          reject(new Error('Failed to start local callback server'));
         }
         return;
       }
 
-      const callbackUrl = new URL("/callback", `http://127.0.0.1:${address.port}`);
-      const loginUrl = buildApiUrl(apiUrl, "/api/v1/cli/login");
-      loginUrl.searchParams.set("redirect_uri", callbackUrl.toString());
-      loginUrl.searchParams.set("state", state);
+      const callbackUrl = new URL('/callback', `http://127.0.0.1:${address.port}`);
+      const loginUrl = buildApiUrl(apiUrl, '/api/v1/cli/login');
+      loginUrl.searchParams.set('redirect_uri', callbackUrl.toString());
+      loginUrl.searchParams.set('state', state);
 
       console.log(`Opening browser for cloud login: ${loginUrl.toString()}`);
-      console.log("If the browser does not open, paste this URL into your browser.");
+      console.log('If the browser does not open, paste this URL into your browser.');
 
       try {
         const child = openBrowser(loginUrl.toString());
@@ -201,7 +249,7 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       }
     });
 
-    server.on("error", (error) => {
+    server.on('error', (error) => {
       if (!settled) {
         settled = true;
         reject(error);
@@ -212,31 +260,29 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       if (!settled) {
         settled = true;
         server.close();
-        reject(new Error("Timed out waiting for browser login"));
+        reject(new Error('Timed out waiting for browser login'));
       }
     }, 5 * 60_000).unref();
   });
 }
 
 export async function refreshStoredAuth(auth: StoredAuth): Promise<StoredAuth> {
-  const response = await fetch(buildApiUrl(auth.apiUrl, "/api/v1/auth/token/refresh"), {
-    method: "POST",
+  const response = await fetch(buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'), {
+    method: 'POST',
     headers: {
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
     body: JSON.stringify({ refreshToken: auth.refreshToken }),
   });
 
-  const payload = (await response.json().catch(() => null)) as
-    | {
-        accessToken?: string;
-        refreshToken?: string;
-        accessTokenExpiresAt?: string;
-      }
-    | null;
+  const payload = (await response.json().catch(() => null)) as {
+    accessToken?: string;
+    refreshToken?: string;
+    accessTokenExpiresAt?: string;
+  } | null;
 
   if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload?.accessTokenExpiresAt) {
-    throw new Error("Stored cloud login has expired");
+    throw new Error('Stored cloud login has expired');
   }
 
   const nextAuth: StoredAuth = {
@@ -245,6 +291,11 @@ export async function refreshStoredAuth(auth: StoredAuth): Promise<StoredAuth> {
     refreshToken: payload.refreshToken,
     accessTokenExpiresAt: payload.accessTokenExpiresAt,
   };
+
+  if (isEnvBackedAuth(auth)) {
+    return markEnvBackedAuth(nextAuth);
+  }
+
   await writeStoredAuth(nextAuth);
   return nextAuth;
 }
@@ -256,11 +307,19 @@ async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
   return auth;
 }
 
-export async function ensureAuthenticated(apiUrl: string, options?: { force?: boolean }): Promise<StoredAuth> {
+export async function ensureAuthenticated(
+  apiUrl: string,
+  options?: { force?: boolean }
+): Promise<StoredAuth> {
   const force = options?.force === true;
   const stored = !force ? await readStoredAuth() : null;
 
-  if (!stored || stored.apiUrl !== apiUrl) {
+  // Stored auth is authoritative on its own host. A host mismatch between
+  // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
+  // to force a fresh browser login — the user already linked, and the default
+  // may have drifted (e.g. CLOUD_API_URL env set/unset between sessions).
+  // Only `--force` re-links to a different host.
+  if (!stored) {
     return loginWithBrowser(apiUrl);
   }
 
@@ -270,8 +329,12 @@ export async function ensureAuthenticated(apiUrl: string, options?: { force?: bo
 
   try {
     return await refreshStoredAuth(stored);
-  } catch {
-    return loginWithBrowser(apiUrl);
+  } catch (error) {
+    if (isEnvBackedAuth(stored)) {
+      throw toEnvAuthRefreshError(error);
+    }
+
+    return loginWithBrowser(stored.apiUrl);
   }
 }
 
@@ -279,12 +342,12 @@ function apiFetch(
   apiUrl: string,
   accessToken: string,
   requestPath: string,
-  init: RequestInit,
+  init: RequestInit
 ): Promise<Response> {
   return fetch(buildApiUrl(apiUrl, requestPath), {
     ...init,
     headers: {
-      "content-type": "application/json",
+      'content-type': 'application/json',
       authorization: `Bearer ${accessToken}`,
       ...(init.headers ?? {}),
     },
@@ -294,7 +357,7 @@ function apiFetch(
 export async function authorizedApiFetch(
   auth: StoredAuth,
   requestPath: string,
-  init: RequestInit,
+  init: RequestInit
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
@@ -305,7 +368,11 @@ export async function authorizedApiFetch(
 
   try {
     activeAuth = await refreshStoredAuth(activeAuth);
-  } catch {
+  } catch (error) {
+    if (isEnvBackedAuth(activeAuth)) {
+      throw toEnvAuthRefreshError(error);
+    }
+
     activeAuth = await loginWithBrowser(activeAuth.apiUrl);
   }
 

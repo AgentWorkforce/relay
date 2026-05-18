@@ -5,6 +5,7 @@
 //!
 //! Opt-out:
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
+//!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
 //!   - Or write `{"enabled": false}` to `~/.agent-relay/telemetry.json`
 
 use std::path::PathBuf;
@@ -25,6 +26,11 @@ Run `agent-relay telemetry disable` to opt out.";
 // ---------------------------------------------------------------------------
 
 /// Telemetry events emitted by the broker at key lifecycle points.
+///
+/// Schema aligns with the TypeScript definitions in
+/// `packages/telemetry/src/events.ts` — when you add or change a field here,
+/// update that file too so dashboards stay coherent across the CLI/broker
+/// boundary.
 pub enum TelemetryEvent {
     BrokerStart,
     BrokerStop {
@@ -32,13 +38,31 @@ pub enum TelemetryEvent {
         agent_spawn_count: u32,
     },
     AgentSpawn {
+        /// Which agent CLI was spawned (claude, codex, gemini, ...).
         cli: String,
+        /// Internal runtime label (e.g. `"pty"`). Not in the TS schema but
+        /// still useful for operational debugging.
         runtime: String,
+        /// Where the spawn originated — matches TS `ActionSource`.
+        spawn_source: ActionSource,
+        /// Whether the spawner supplied an initial task string.
+        has_task: bool,
+        /// Whether this is a shadow agent (spawned with `shadow_of`/`shadow_mode`).
+        is_shadow: bool,
     },
     AgentRelease {
+        /// Which agent CLI was released (may be empty when unknown at the
+        /// release site — relaycast-driven releases don't resolve the CLI
+        /// from the worker name alone).
         cli: String,
+        /// Broker-local category of the release reason (e.g. `"ws_command"`,
+        /// `"relaycast_release"`). Retained for continuity with historical
+        /// events; the product-level reason lives in `release_source`.
         release_reason: String,
+        /// Wall-clock lifetime of the agent in seconds.
         lifetime_seconds: u64,
+        /// Who initiated the release — matches TS `ActionSource`.
+        release_source: ActionSource,
     },
     AgentCrash {
         cli: String,
@@ -52,6 +76,27 @@ pub enum TelemetryEvent {
     CliCommandRun {
         command_name: String,
     },
+}
+
+/// Mirror of the TypeScript `ActionSource` union. Serialized as snake_case
+/// strings so PostHog dashboards can filter on string literals cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionSource {
+    HumanCli,
+    HumanDashboard,
+    Agent,
+    Protocol,
+}
+
+impl ActionSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::HumanCli => "human_cli",
+            Self::HumanDashboard => "human_dashboard",
+            Self::Agent => "agent",
+            Self::Protocol => "protocol",
+        }
+    }
 }
 
 impl TelemetryEvent {
@@ -79,18 +124,29 @@ impl TelemetryEvent {
                 "uptime_seconds": uptime_seconds,
                 "agent_spawn_count": agent_spawn_count,
             }),
-            Self::AgentSpawn { cli, runtime } => json!({
+            Self::AgentSpawn {
+                cli,
+                runtime,
+                spawn_source,
+                has_task,
+                is_shadow,
+            } => json!({
                 "cli": cli,
                 "runtime": runtime,
+                "spawn_source": spawn_source.as_str(),
+                "has_task": has_task,
+                "is_shadow": is_shadow,
             }),
             Self::AgentRelease {
                 cli,
                 release_reason,
                 lifetime_seconds,
+                release_source,
             } => json!({
                 "cli": cli,
                 "release_reason": release_reason,
                 "lifetime_seconds": lifetime_seconds,
+                "release_source": release_source.as_str(),
             }),
             Self::AgentCrash {
                 cli,
@@ -214,6 +270,38 @@ fn anonymous_id(machine_id: &str) -> String {
     hex::encode(&hash[..8]) // first 8 bytes = 16 hex chars
 }
 
+/// Read an env var and return `Some(trimmed)` iff it's set and non-empty.
+/// Never throws; caller uses the result to tag events, not to gate logic.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+/// Best-effort OS release string for telemetry tagging. Shells out to
+/// `uname -r` on unix (broker is unix-only anyway); returns `None` on
+/// failure so we just omit the property rather than risking a crash.
+fn detect_os_version() -> Option<String> {
+    let output = std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
 /// Tiny hex encoder (avoids adding the `hex` crate).
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
@@ -233,6 +321,15 @@ pub struct TelemetryClient {
     enabled: bool,
     distinct_id: String,
     tx: Option<mpsc::UnboundedSender<PostHogCapture>>,
+    /// CLI version read from `AGENT_RELAY_CLI_VERSION` when the broker is
+    /// spawned by the CLI. Absent for standalone broker invocations.
+    cli_version: Option<String>,
+    /// SDK version read from `AGENT_RELAY_SDK_VERSION` when the broker is
+    /// spawned by the CLI.
+    sdk_version: Option<String>,
+    /// OS release string (best-effort via `uname -r`, empty on failure /
+    /// platforms where that isn't meaningful).
+    os_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +358,9 @@ impl TelemetryClient {
                 enabled: false,
                 distinct_id: String::new(),
                 tx: None,
+                cli_version: None,
+                sdk_version: None,
+                os_version: None,
             };
         }
 
@@ -284,6 +384,9 @@ impl TelemetryClient {
             enabled: true,
             distinct_id,
             tx: Some(tx),
+            cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
+            sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
+            os_version: detect_os_version(),
         }
     }
 
@@ -302,13 +405,25 @@ impl TelemetryClient {
         };
 
         let mut props = event.properties();
-        // Merge common properties.
+        // Merge common properties. Version identification mirrors the
+        // TypeScript `CommonProperties` shape so dashboards can filter on
+        // `cli_version` / `sdk_version` / `broker_version` independent of
+        // which component emitted the event. `agent_relay_version` is kept
+        // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            obj.insert(
-                "agent_relay_version".to_string(),
-                json!(env!("CARGO_PKG_VERSION")),
-            );
+            let broker_version = env!("CARGO_PKG_VERSION");
+            obj.insert("agent_relay_version".to_string(), json!(broker_version));
+            obj.insert("broker_version".to_string(), json!(broker_version));
+            if let Some(ref v) = self.cli_version {
+                obj.insert("cli_version".to_string(), json!(v));
+            }
+            if let Some(ref v) = self.sdk_version {
+                obj.insert("sdk_version".to_string(), json!(v));
+            }
             obj.insert("os".to_string(), json!(std::env::consts::OS));
+            if let Some(ref v) = self.os_version {
+                obj.insert("os_version".to_string(), json!(v));
+            }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
         }
 
@@ -337,9 +452,13 @@ impl TelemetryClient {
 
     fn check_enabled() -> bool {
         // Environment variable opt-out.
-        if let Ok(val) = std::env::var("AGENT_RELAY_TELEMETRY_DISABLED") {
-            if val == "1" || val.eq_ignore_ascii_case("true") {
-                return false;
+        // AGENT_RELAY_TELEMETRY_DISABLED is the product-specific switch;
+        // DO_NOT_TRACK (https://consoledonottrack.com) is the cross-tool convention.
+        for key in ["AGENT_RELAY_TELEMETRY_DISABLED", "DO_NOT_TRACK"] {
+            if let Ok(val) = std::env::var(key) {
+                if val == "1" || val.eq_ignore_ascii_case("true") {
+                    return false;
+                }
             }
         }
         // Prefs file opt-out.
@@ -403,11 +522,15 @@ mod tests {
             TelemetryEvent::AgentSpawn {
                 cli: "claude".into(),
                 runtime: "pty".into(),
+                spawn_source: ActionSource::HumanCli,
+                has_task: true,
+                is_shadow: false,
             },
             TelemetryEvent::AgentRelease {
                 cli: "claude".into(),
                 release_reason: "user".into(),
                 lifetime_seconds: 30,
+                release_source: ActionSource::HumanCli,
             },
             TelemetryEvent::AgentCrash {
                 cli: "claude".into(),
@@ -441,11 +564,90 @@ mod tests {
             enabled: false,
             distinct_id: String::new(),
             tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
         client.shutdown();
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+    }
+
+    #[test]
+    fn do_not_track_disables_telemetry() {
+        // Clear both vars, set DO_NOT_TRACK, and verify check_enabled is false.
+        std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
+        std::env::set_var("DO_NOT_TRACK", "1");
+        assert!(!TelemetryClient::check_enabled());
+        std::env::set_var("DO_NOT_TRACK", "true");
+        assert!(!TelemetryClient::check_enabled());
+        std::env::set_var("DO_NOT_TRACK", "0");
+        // Value "0" is not truthy — prefs file / default wins. We only assert
+        // that "0" does not itself force-disable; actual enabled state depends
+        // on prefs, so just re-enable cleanup.
+        std::env::remove_var("DO_NOT_TRACK");
+    }
+
+    #[test]
+    fn action_source_serializes_to_snake_case_strings() {
+        assert_eq!(ActionSource::HumanCli.as_str(), "human_cli");
+        assert_eq!(ActionSource::HumanDashboard.as_str(), "human_dashboard");
+        assert_eq!(ActionSource::Agent.as_str(), "agent");
+        assert_eq!(ActionSource::Protocol.as_str(), "protocol");
+    }
+
+    #[test]
+    fn agent_spawn_properties_include_new_fields() {
+        let event = TelemetryEvent::AgentSpawn {
+            cli: "claude".into(),
+            runtime: "pty".into(),
+            spawn_source: ActionSource::HumanDashboard,
+            has_task: true,
+            is_shadow: false,
+        };
+        let props = event.properties();
+        assert_eq!(props["cli"], "claude");
+        assert_eq!(props["runtime"], "pty");
+        assert_eq!(props["spawn_source"], "human_dashboard");
+        assert_eq!(props["has_task"], true);
+        assert_eq!(props["is_shadow"], false);
+    }
+
+    #[test]
+    fn agent_release_properties_include_release_source() {
+        let event = TelemetryEvent::AgentRelease {
+            cli: String::new(),
+            release_reason: "relaycast_release".into(),
+            lifetime_seconds: 42,
+            release_source: ActionSource::Protocol,
+        };
+        let props = event.properties();
+        assert_eq!(props["release_reason"], "relaycast_release");
+        assert_eq!(props["release_source"], "protocol");
+        assert_eq!(props["lifetime_seconds"], 42);
+    }
+
+    #[test]
+    fn env_nonempty_handles_missing_empty_and_whitespace() {
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_MISSING");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_MISSING"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_EMPTY", "");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_EMPTY"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_WS", "   ");
+        assert_eq!(env_nonempty("AGENT_RELAY_TEST_TELEMETRY_WS"), None);
+
+        std::env::set_var("AGENT_RELAY_TEST_TELEMETRY_SET", "4.0.30");
+        assert_eq!(
+            env_nonempty("AGENT_RELAY_TEST_TELEMETRY_SET"),
+            Some("4.0.30".to_string())
+        );
+
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_EMPTY");
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_WS");
+        std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_SET");
     }
 
     #[test]

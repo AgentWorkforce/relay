@@ -13,19 +13,33 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { compileDotfiles, hasDotfiles } from './dotfiles.js';
 import { ensureRelayfileMountBinary } from './relayfile-binary.js';
+import { launchOnMount } from '@relayfile/local-mount';
 import { mintToken } from './token.js';
-import { seedWorkspace as seedWorkspaceFiles, seedAclRules } from './workspace.js';
-import { ensureAuthenticated } from '@agent-relay/cloud';
+import { seedAclRules } from './workspace.js';
+import { seedWorkspace } from '../../../../packages/sdk/src/provisioner/seeder.js';
+import {
+  createLocalJwks,
+  exportPrivateKeyPem,
+  RELAYAUTH_JWKS_URL_ENV,
+  RELAYAUTH_JWT_KID_ENV,
+  RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
+  type LocalJwksSigningKey,
+} from '../../../../packages/sdk/src/provisioner/local-jwks.js';
+import { ensureAuthenticated, readStoredAuth } from '@agent-relay/cloud';
 
 interface OnOptions {
   agent?: string;
   workspace?: string;
   portAuth: string;
   portFile: string;
+  shared?: boolean;
+  cloud?: boolean;
+  url?: string;
 }
 
 interface RelayConfigAgent {
@@ -80,10 +94,12 @@ interface WorkspaceSessionRequest {
   workspaceName?: string;
   agentName: string;
   scopes: string[];
-  signingSecret?: string;
+  tokenSigningKey?: LocalJwksSigningKey;
   relayDir?: string;
   relaycastBaseUrl?: string;
   fetchFn?: FetchFn;
+  /** When true, prefer local workspace session over remote even if authBase is a remote URL */
+  preferLocalSession?: boolean;
 }
 
 interface LocalWorkspaceEntry {
@@ -243,7 +259,10 @@ function readWorkspaceRegistry(relayDir?: string): LocalWorkspaceRegistry {
 
 function writeWorkspaceRegistry(relayDir: string, registry: LocalWorkspaceRegistry): void {
   ensureDirectory(relayDir);
-  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(getWorkspaceRegistryPath(relayDir), `${JSON.stringify(registry, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
 }
 
 function updateWorkspaceRegistry(
@@ -280,18 +299,35 @@ async function postWorkspaceApi(
     'X-Correlation-Id': `agent-relay-on-${Date.now()}`,
   };
 
-  // Attach cloud auth token for remote endpoints
+  // For remote endpoints, try anonymous first — attach existing auth if
+  // available but never force a browser login. If the server returns 401,
+  // fall back to interactive login and retry once.
   if (!isLocalBaseUrl(url)) {
+    const stored = await readStoredAuth().catch(() => null);
     const parsed = new URL(url);
-    const auth = await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
-    headers['Authorization'] = `Bearer ${auth.accessToken}`;
+    const targetOrigin = `${parsed.protocol}//${parsed.host}`;
+    if (stored && stored.apiUrl === targetOrigin) {
+      headers['Authorization'] = `Bearer ${stored.accessToken}`;
+    }
   }
 
-  const response = await fetchFn(url, {
+  let response = await fetchFn(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
+
+  // Retry with interactive login if the server requires auth
+  if (response.status === 401 && !isLocalBaseUrl(url)) {
+    const parsed = new URL(url);
+    const auth = await ensureAuthenticated(`${parsed.protocol}//${parsed.host}`);
+    headers['Authorization'] = `Bearer ${auth.accessToken}`;
+    response = await fetchFn(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
 
   const raw = await response.text();
   if (!response.ok) {
@@ -445,14 +481,14 @@ async function createRelaycastWorkspace(
 async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): Promise<WorkspaceSession> {
   const fetchFn = options.fetchFn ?? fetch;
   const relayDir = options.relayDir;
-  const signingSecret = toString(options.signingSecret);
+  const tokenSigningKey = options.tokenSigningKey;
   const requestedWorkspaceId = normalizeWorkspaceId(options.requestedWorkspaceId);
 
   if (!relayDir) {
     throw new Error('relayDir is required for local workspace sessions');
   }
-  if (!signingSecret) {
-    throw new Error('signingSecret is required for local workspace sessions');
+  if (!tokenSigningKey) {
+    throw new Error('tokenSigningKey is required for local workspace sessions');
   }
 
   const workspaceId = requestedWorkspaceId ?? generateWorkspaceId();
@@ -464,13 +500,18 @@ async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): P
   let relaycastApiKey = toString(existing?.relaycastApiKey) || undefined;
   let createdAt = toString(existing?.createdAt) || undefined;
   if (!relaycastApiKey) {
-    const created = await createRelaycastWorkspace(
-      fetchFn,
-      options.relaycastBaseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_RELAYCAST_BASE_URL,
-      toString(options.workspaceName, workspaceId)
-    );
-    relaycastApiKey = created.apiKey;
-    createdAt = created.createdAt ?? createdAt;
+    try {
+      const created = await createRelaycastWorkspace(
+        fetchFn,
+        options.relaycastBaseUrl ?? process.env.RELAYCAST_BASE_URL ?? DEFAULT_RELAYCAST_BASE_URL,
+        toString(options.workspaceName, workspaceId)
+      );
+      relaycastApiKey = created.apiKey;
+      createdAt = created.createdAt ?? createdAt;
+    } catch {
+      // Relaycast workspace creation is optional — symlink/local mode works without it.
+      // Multi-agent relay features (RELAY_API_KEY) will be unavailable.
+    }
   }
 
   const registryEntry = updateWorkspaceRegistry(relayDir, workspaceId, {
@@ -484,7 +525,8 @@ async function requestLocalWorkspaceSession(options: WorkspaceSessionRequest): P
     created: !requestedWorkspaceId,
     workspaceId,
     token: mintToken({
-      secret: signingSecret,
+      privateKey: tokenSigningKey.privateKey,
+      kid: tokenSigningKey.kid,
       agentName: options.agentName,
       workspace: workspaceId,
       scopes: options.scopes,
@@ -499,7 +541,11 @@ export async function requestWorkspaceSession(options: WorkspaceSessionRequest):
   const fetchFn = options.fetchFn ?? fetch;
   const requestedWorkspaceId = normalizeWorkspaceId(options.requestedWorkspaceId);
 
-  if (isLocalBaseUrl(options.authBase) && options.relayDir && options.signingSecret) {
+  if (
+    (isLocalBaseUrl(options.authBase) || options.preferLocalSession) &&
+    options.relayDir &&
+    options.tokenSigningKey
+  ) {
     return requestLocalWorkspaceSession({ ...options, fetchFn, requestedWorkspaceId });
   }
 
@@ -617,13 +663,10 @@ function loadConfigFromFile(configPath: string, projectDir: string): RelayConfig
   const fallbackWorkspace = path.basename(projectDir);
 
   const workspace = toString(payload.workspace, toString(root.workspace, fallbackWorkspace));
-  const signing_secret = toString(payload.signing_secret, toString(root.signing_secret, process.env.SIGNING_KEY ?? ''));
-  if (!signing_secret) {
-    throw new Error(
-      `relay config at ${configPath} is missing signing_secret and SIGNING_KEY env var is not set. ` +
-        'Set signing_secret in your config or export SIGNING_KEY.'
-    );
-  }
+  const signing_secret = toString(
+    payload.signing_secret,
+    toString(root.signing_secret, process.env.SIGNING_KEY ?? '')
+  );
   const agents = normalizeAgents(payload.agents ?? root.agents);
 
   return { workspace, signing_secret, agents };
@@ -862,7 +905,7 @@ function countFilesForSync(baseDir: string): number {
       const entryPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
         stack.push(entryPath);
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
         total += 1;
       }
     }
@@ -975,12 +1018,14 @@ function pickDeniedCount(syncOutput: string): number {
 function generateTokenFromScript(
   config: RelayConfig,
   agent: RelayConfigAgent,
+  tokenSigningKey: LocalJwksSigningKey,
   log: LogFn,
   error: LogFn
 ): string | null {
   try {
     return mintToken({
-      secret: config.signing_secret,
+      privateKey: tokenSigningKey.privateKey,
+      kid: tokenSigningKey.kid,
       agentName: agent.name,
       workspace: config.workspace,
       scopes: agent.scopes,
@@ -1027,10 +1072,19 @@ interface GoOnRelayDeps {
   error?: LogFn;
   exit?: (code: number) => never | void;
   fetch?: FetchFn;
-  provision?: (config: RelayConfig, agent: RelayConfigAgent) => Promise<void>;
-  provisionAgentToken?: (opts: { config: RelayConfig; agent: RelayConfigAgent; tokenPath: string }) => Promise<string | undefined>;
-  ensureServicesRunning?: (authBase: string, fileBase: string) => Promise<void>;
-  startServices?: (opts: { authBase: string; fileBase: string }) => Promise<void>;
+  provision?: (
+    config: RelayConfig,
+    agent: RelayConfigAgent,
+    tokenSigningKey: LocalJwksSigningKey
+  ) => Promise<void>;
+  provisionAgentToken?: (opts: {
+    config: RelayConfig;
+    agent: RelayConfigAgent;
+    tokenPath: string;
+    tokenSigningKey: LocalJwksSigningKey;
+  }) => Promise<string | undefined>;
+  ensureServicesRunning?: (authBase: string, fileBase: string, jwksUrl: string) => Promise<void>;
+  startServices?: (opts: { authBase: string; fileBase: string; jwksUrl: string }) => Promise<void>;
 }
 
 function getSandboxFlags(cli: string): string[] {
@@ -1052,6 +1106,7 @@ function getSandboxFlags(cli: string): string[] {
 async function ensureProvisioned(
   config: RelayConfig,
   agent: RelayConfigAgent,
+  tokenSigningKey: LocalJwksSigningKey,
   relayfileRoot: string,
   projectDir: string,
   tokenPath: string,
@@ -1066,7 +1121,7 @@ async function ensureProvisioned(
   }
 
   if (typeof deps?.provision === 'function') {
-    await deps.provision(config, { ...agent });
+    await deps.provision(config, { ...agent }, tokenSigningKey);
     try {
       return readFileSync(tokenPath, 'utf8').trim();
     } catch {
@@ -1075,7 +1130,7 @@ async function ensureProvisioned(
   }
 
   if (typeof deps?.provisionAgentToken === 'function') {
-    const generated = await deps.provisionAgentToken({ config, agent, tokenPath });
+    const generated = await deps.provisionAgentToken({ config, agent, tokenPath, tokenSigningKey });
     if (typeof generated === 'string' && generated.trim()) {
       const generatedToken = generated.trim();
       writeFileSync(tokenPath, `${generatedToken}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -1083,7 +1138,7 @@ async function ensureProvisioned(
     }
   }
 
-  const generatedToken = generateTokenFromScript(config, agent, log, error);
+  const generatedToken = generateTokenFromScript(config, agent, tokenSigningKey, log, error);
   if (generatedToken) {
     ensureDirectory(path.dirname(tokenPath));
     writeFileSync(tokenPath, `${generatedToken}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -1096,6 +1151,7 @@ async function ensureProvisioned(
 async function ensureServices(
   authBase: string,
   fileBase: string,
+  jwksUrl: string,
   deps: GoOnRelayDeps,
   log: LogFn,
   error: LogFn
@@ -1111,14 +1167,14 @@ async function ensureServices(
   if (authHealthy && fileHealthy) return;
 
   if (typeof deps?.ensureServicesRunning === 'function') {
-    await deps.ensureServicesRunning(authBase, fileBase);
+    await deps.ensureServicesRunning(authBase, fileBase, jwksUrl);
     const postAuthHealthy = !needsLocalAuth || (await waitForHttpHealthy(authBase));
     const postFileHealthy = !needsLocalFile || (await waitForHttpHealthy(fileBase));
     if (postAuthHealthy && postFileHealthy) return;
   }
 
   if (typeof deps?.startServices === 'function') {
-    await deps.startServices({ authBase, fileBase });
+    await deps.startServices({ authBase, fileBase, jwksUrl });
     const postAuthHealthy = !needsLocalAuth || (await waitForHttpHealthy(authBase));
     const postFileHealthy = !needsLocalFile || (await waitForHttpHealthy(fileBase));
     if (postAuthHealthy && postFileHealthy) return;
@@ -1135,7 +1191,12 @@ async function ensureServices(
 }
 
 async function cleanupRun(state: CleanupState, agentName: string, log: LogFn): Promise<void> {
-  if (!state.mountProc && !state.mountDir && !state.mountLogPath) return;
+  // mountLogPath is intentionally omitted from this guard: cleanupRun only
+  // touches mountProc and mountDir. Including mountLogPath would trigger a
+  // "Cleaned relay mount" log with no actual work on FUSE-only log-setup
+  // failure paths.
+  if (!state.mountProc && !state.mountDir) return;
+
   const mountDir = state.mountDir;
   if (state.mountProc) {
     await killMountProcess(state.mountProc);
@@ -1177,266 +1238,359 @@ export async function goOnTheRelay(
     throw new Error('node and npx must be available in PATH to run relay.');
   }
 
-  ensureStateDirs(relayDir);
-  const defaultAgentName = toString(options.agent, path.basename(cli));
-  const config = resolveConfig(projectDir, relayDir, defaultAgentName);
-  const agent = findAgentConfig(config, defaultAgentName);
-  const authBase = normalizeBaseUrl(options.portAuth);
-  const fileBase = normalizeBaseUrl(options.portFile);
-  const mountBin = process.env.RELAYFILE_ROOT
-    ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
-    : await ensureRelayfileMountBinary();
+  const localJwks = await createLocalJwks();
+  try {
+    const privateKeyPem = exportPrivateKeyPem(localJwks.privateKey);
 
-  if (!existsSync(mountBin)) {
-    throw new Error(`missing relayfile mount binary: ${mountBin}`);
-  }
+    ensureStateDirs(relayDir);
+    const defaultAgentName = toString(options.agent, path.basename(cli));
+    const config = resolveConfig(projectDir, relayDir, defaultAgentName);
+    const agent = findAgentConfig(config, defaultAgentName);
+    const authBase = normalizeBaseUrl(options.cloud && options.url ? options.url : options.portAuth);
+    const fileBase = normalizeBaseUrl(options.portFile);
+    // Default: solo local (symlink mount). --shared or --cloud: use relayfile.
+    const useSymlinkMount = !options.shared && !options.cloud;
 
-  await ensureServices(authBase, fileBase, deps, log, error);
+    await ensureServices(authBase, fileBase, localJwks.jwksUrl, deps, log, error);
 
-  const workspaceSession = await requestWorkspaceSession({
-    authBase,
-    fallbackRelayfileUrl: fileBase,
-    requestedWorkspaceId: options.workspace,
-    workspaceName: config.workspace,
-    agentName: agent.name,
-    scopes: agent.scopes,
-    signingSecret: config.signing_secret,
-    relayDir,
-    relaycastBaseUrl: process.env.RELAYCAST_BASE_URL,
-    fetchFn: deps.fetch,
-  });
+    const workspaceSession = await requestWorkspaceSession({
+      authBase,
+      fallbackRelayfileUrl: fileBase,
+      requestedWorkspaceId: options.workspace,
+      workspaceName: config.workspace,
+      agentName: agent.name,
+      scopes: agent.scopes,
+      tokenSigningKey: localJwks,
+      relayDir,
+      relaycastBaseUrl: process.env.RELAYCAST_BASE_URL,
+      fetchFn: deps.fetch,
+      preferLocalSession: useSymlinkMount,
+    });
 
-  // Compile dotfile permissions for this agent
-  const hasDots = hasDotfiles(projectDir);
-  const dotfileAcl = hasDots
-    ? compileDotfiles(projectDir, agent.name, workspaceSession.workspaceId)
-    : null;
+    // Compile dotfile permissions for this agent
+    const hasDots = hasDotfiles(projectDir);
+    const dotfileAcl = hasDots ? compileDotfiles(projectDir, agent.name, workspaceSession.workspaceId) : null;
+    const compiledPath = path.join(relayDir, 'compiled-acl.json');
+    const compiled = extractPermissionPatternsFromCompiled(compiledPath, agent.name);
+    const fallback = collectPermissionPatternsFromDotfiles(projectDir);
+    const readonlyPatterns =
+      compiled.readonlyPatterns.length > 0 ? compiled.readonlyPatterns : fallback.readonlyPatterns;
+    const ignoredPatterns =
+      compiled.ignoredPatterns.length > 0 ? compiled.ignoredPatterns : fallback.ignoredPatterns;
+    const permsDoc = buildPermissionDoc(agent.name, readonlyPatterns, ignoredPatterns);
 
-  if (workspaceSession.created) {
     const seedExcludes = [...DEFAULT_SEED_EXCLUDES];
     if (dotfileAcl) {
-      // Add ignored patterns so ignored files are never uploaded
       for (const [dir, rules] of Object.entries(dotfileAcl.acl)) {
-        if (rules.some(r => r.startsWith('deny:agent:'))) {
+        if (rules.some((r) => r.startsWith('deny:agent:'))) {
           seedExcludes.push(dir.replace(/^\//, ''));
         }
       }
     }
-    await seedWorkspaceFiles(
-      workspaceSession.relayfileUrl,
-      workspaceSession.token,
-      workspaceSession.workspaceId,
-      projectDir,
-      seedExcludes
-    );
 
-    if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
-      await seedAclRules(
+    const mountDirName = `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`;
+    // Symlink mounts live under ~/.agent-relay/mounts/ (outside the project tree).
+    // @relayfile/local-mount refuses any mountDir that overlaps projectDir as a
+    // safety check against destroying the project on cleanup, and putting mounts
+    // in $HOME keeps them durable across reboots (unlike $TMPDIR) and scoped to
+    // the user, consistent with ~/.agent-workforce/. The FUSE path keeps the
+    // historical in-project location under .relay/ — it's managed by the
+    // relayfile-mount Go binary, not @relayfile/local-mount, so the overlap
+    // guard doesn't apply.
+    const mountDir = useSymlinkMount
+      ? path.join(os.homedir(), '.agent-relay', 'mounts', mountDirName)
+      : path.join(relayDir, mountDirName);
+    const sandboxFlags = getSandboxFlags(cli);
+
+    const buildAgentEnv = (): NodeJS.ProcessEnv => ({
+      RELAY_AGENT_TOKEN: workspaceSession.token,
+      RELAYFILE_TOKEN: workspaceSession.token,
+      RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
+      RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
+      [RELAYAUTH_JWKS_URL_ENV]: localJwks.jwksUrl,
+      [RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV]: privateKeyPem,
+      [RELAYAUTH_JWT_KID_ENV]: localJwks.kid,
+      RELAY_WORKSPACE_ID: workspaceSession.workspaceId,
+      RELAY_DEFAULT_WORKSPACE: workspaceSession.workspaceId,
+      RELAY_WORKSPACE: mountDir,
+      RELAY_AGENT_NAME: agent.name,
+      ...(workspaceSession.relaycastApiKey
+        ? {
+            RELAY_API_KEY: workspaceSession.relaycastApiKey,
+            RELAY_WORKSPACES_JSON: JSON.stringify([
+              {
+                workspace_id: workspaceSession.workspaceId,
+                api_key: workspaceSession.relaycastApiKey,
+              },
+            ]),
+          }
+        : {}),
+    });
+
+    if (useSymlinkMount) {
+      log(`Preparing local workspace at ${mountDir}...`);
+      const agentArgs = [...sandboxFlags, ...extraArgs];
+      // Extend ignoredPatterns with `_PERMISSIONS.md` so @relayfile/local-mount's
+      // syncBack() does not copy the permissions doc we write in onBeforeLaunch
+      // into the user's project directory (the library only hides its own
+      // _MOUNT_README.md / .relayfile-local-mount marker from sync-back).
+      const launchIgnoredPatterns = [...ignoredPatterns, '_PERMISSIONS.md'];
+      // Ensure `.relay` is excluded from the mount — @relayfile/local-mount no
+      // longer has it in the default excludeDirs list, and seedExcludes already
+      // includes it for symlink + cloud paths.
+      const launchResult = await launchOnMount({
+        cli,
+        projectDir,
+        mountDir,
+        args: agentArgs,
+        ignoredPatterns: launchIgnoredPatterns,
+        readonlyPatterns,
+        excludeDirs: seedExcludes,
+        env: { ...process.env, ...buildAgentEnv() },
+        agentName: agent.name,
+        onBeforeLaunch: (realMountDir) => {
+          // Write the richer agent-relay permissions doc. This coexists with the
+          // generic _MOUNT_README.md that @relayfile/local-mount writes itself.
+          writeFileSync(path.join(realMountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
+
+          const mountedFiles = countFilesForSync(realMountDir);
+          log(`On the relay as ${agent.name}`);
+          log(`  Workspace: ${workspaceSession.workspaceId}`);
+          log(`  Join: ${workspaceSession.joinCommand}`);
+          log(`  Mounted files: ${mountedFiles}`);
+          log(`  Permissions denied (initial sync): 0`);
+          if (sandboxFlags.length > 0) {
+            log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
+            log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
+          }
+        },
+        onAfterSync: (synced) => {
+          log(`  ✓ ${synced} file(s) synced back`);
+          log(`Cleaned relay mount for ${agent.name}`);
+        },
+      });
+
+      log('Off the relay.');
+      exit(launchResult.exitCode);
+      return;
+    }
+
+    // Cloud / --shared path: use the relayfile-mount FUSE binary.
+    const mountBin = process.env.RELAYFILE_ROOT
+      ? path.join(process.env.RELAYFILE_ROOT, 'bin', 'relayfile-mount')
+      : await ensureRelayfileMountBinary();
+
+    if (!existsSync(mountBin)) {
+      throw new Error(`missing relayfile mount binary: ${mountBin}`);
+    }
+
+    if (workspaceSession.created) {
+      await seedWorkspace(
         workspaceSession.relayfileUrl,
         workspaceSession.token,
         workspaceSession.workspaceId,
-        dotfileAcl.acl
+        projectDir,
+        seedExcludes
       );
 
-      // Write compiled ACL for mount to read
-      const bundlePath = path.join(relayDir, 'compiled-acl.json');
-      writeFileSync(bundlePath, JSON.stringify({
-        workspace: workspaceSession.workspaceId,
-        acl: dotfileAcl.acl,
-        summary: dotfileAcl.summary,
-        agents: [{ name: agent.name, summary: dotfileAcl.summary }],
-      }, null, 2) + '\n', { encoding: 'utf8' });
-    }
-  }
+      if (dotfileAcl && Object.keys(dotfileAcl.acl).length > 0) {
+        await seedAclRules(
+          workspaceSession.relayfileUrl,
+          workspaceSession.token,
+          workspaceSession.workspaceId,
+          dotfileAcl.acl
+        );
 
-  const mountDir = path.join(
-    relayDir,
-    `workspace-${sanitizePathComponent(workspaceSession.workspaceId)}-${sanitizePathComponent(agent.name)}`
-  );
-  mkdirSync(mountDir, { recursive: true });
-  const mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
-  writeFileSync(mountLogPath, '', 'utf8');
-
-  const mountBaseArgs = [
-    '--base-url',
-    workspaceSession.relayfileUrl,
-    '--workspace',
-    workspaceSession.workspaceId,
-    '--local-dir',
-    mountDir,
-  ];
-  const onceArgs = [...mountBaseArgs, '--once'];
-  const mountEnv = { ...process.env, RELAYFILE_TOKEN: workspaceSession.token };
-
-  let initialSyncOutput = '';
-  log(`Mounting workspace at ${mountDir}...`);
-  try {
-    initialSyncOutput = await runCommandCapture(mountBin, onceArgs, mountEnv);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`initial workspace sync failed for ${agent.name}: ${message}`);
-  }
-
-  const deniedCount = pickDeniedCount(initialSyncOutput);
-  const compiledPath = path.join(relayDir, 'compiled-acl.json');
-  const compiled = extractPermissionPatternsFromCompiled(compiledPath, agent.name);
-  const fallback = collectPermissionPatternsFromDotfiles(projectDir);
-  const readonlyPatterns =
-    compiled.readonlyPatterns.length > 0 ? compiled.readonlyPatterns : fallback.readonlyPatterns;
-  const ignoredPatterns =
-    compiled.ignoredPatterns.length > 0 ? compiled.ignoredPatterns : fallback.ignoredPatterns;
-  const permsDoc = buildPermissionDoc(agent.name, readonlyPatterns, ignoredPatterns);
-  writeFileSync(path.join(mountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
-
-  const projectDeny = path.join(projectDir, '.agentdeny');
-  if (existsSync(projectDeny)) {
-    cpSync(projectDeny, path.join(mountDir, '.agentdeny'), { force: true });
-  }
-
-  const mountedFiles = countFilesForSync(mountDir);
-  log(`On the relay as ${agent.name}`);
-  log(`  Workspace: ${workspaceSession.workspaceId}`);
-  log(`  Join: ${workspaceSession.joinCommand}`);
-  log(`  Mounted files: ${mountedFiles}`);
-  log(`  Permissions denied (initial sync): ${deniedCount}`);
-  const sandboxFlags = getSandboxFlags(cli);
-  if (sandboxFlags.length > 0) {
-    log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
-    log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
-  }
-
-  const cleanupState: CleanupState = {
-    mountDir,
-    mountLogPath,
-    projectDir,
-    relayDir,
-    workspace: workspaceSession.workspaceId,
-    readonlyPatterns,
-    ignoredPatterns,
-  };
-
-  let mountProc: ChildProcessWithoutNullStreams | undefined;
-  let agentProc: ReturnType<typeof spawn> | undefined;
-  let cleanupDone = false;
-
-  const finalizeCleanup = async (): Promise<void> => {
-    if (cleanupDone) return;
-    cleanupDone = true;
-    cleanupState.mountProc = mountProc;
-    await cleanupRun(cleanupState, agent.name, log);
-  };
-
-  try {
-    const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin, mountBaseArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: mountEnv,
-    });
-    mountProc = mountedProc;
-
-    mountedProc.stdout.on('data', (chunk: Buffer) => {
-      appendFileSync(mountLogPath, chunk);
-    });
-    mountedProc.stderr.on('data', (chunk: Buffer) => {
-      appendFileSync(mountLogPath, chunk);
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => resolve(), 600);
-      mountedProc.on('error', (spawnError) => {
-        clearTimeout(timer);
-        reject(spawnError);
-      });
-      mountedProc.on('spawn', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
-
-    if (!ensureProcessRunning(mountedProc)) {
-      throw new Error(`mount process for ${agent.name} exited before continuing`);
+        writeFileSync(
+          compiledPath,
+          JSON.stringify(
+            {
+              workspace: workspaceSession.workspaceId,
+              acl: dotfileAcl.acl,
+              summary: dotfileAcl.summary,
+              agents: [{ name: agent.name, summary: dotfileAcl.summary }],
+            },
+            null,
+            2
+          ) + '\n',
+          { encoding: 'utf8' }
+        );
+      }
     }
 
-    cleanupState.mountProc = mountProc;
+    mkdirSync(mountDir, { recursive: true });
+    const mountLogPath = path.join(relayDir, 'logs', `${agent.name}-mount.log`);
+    writeFileSync(mountLogPath, '', 'utf8');
 
-    let agentExitCode = 0;
-    await new Promise<void>((resolve, reject) => {
-      const envVars = {
-        ...process.env,
-        RELAYFILE_TOKEN: workspaceSession.token,
-        RELAYFILE_BASE_URL: workspaceSession.relayfileUrl,
-        RELAYFILE_WORKSPACE: workspaceSession.workspaceId,
-        RELAY_WORKSPACE_ID: workspaceSession.workspaceId,
-        RELAY_DEFAULT_WORKSPACE: workspaceSession.workspaceId,
-        RELAY_WORKSPACE: mountDir,
-        RELAY_AGENT_NAME: agent.name,
-        ...(workspaceSession.relaycastApiKey
-          ? {
-              RELAY_API_KEY: workspaceSession.relaycastApiKey,
-              RELAY_WORKSPACES_JSON: JSON.stringify([
-                {
-                  workspace_id: workspaceSession.workspaceId,
-                  api_key: workspaceSession.relaycastApiKey,
-                },
-              ]),
-            }
-          : {}),
-      };
+    const mountBaseArgs = [
+      '--base-url',
+      workspaceSession.relayfileUrl,
+      '--workspace',
+      workspaceSession.workspaceId,
+      '--local-dir',
+      mountDir,
+    ];
+    const onceArgs = [...mountBaseArgs, '--once'];
+    const mountEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      RELAYFILE_TOKEN: workspaceSession.token,
+      [RELAYAUTH_JWKS_URL_ENV]: localJwks.jwksUrl,
+    };
 
-      agentProc = spawn(cli, [...sandboxFlags, ...extraArgs], {
-        cwd: mountDir,
-        stdio: 'inherit',
-        env: envVars,
+    log(`Mounting workspace at ${mountDir}...`);
+    let initialSyncOutput = '';
+    try {
+      initialSyncOutput = await runCommandCapture(mountBin, onceArgs, mountEnv);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`initial workspace sync failed for ${agent.name}: ${message}`);
+    }
+
+    const deniedCount = pickDeniedCount(initialSyncOutput);
+    writeFileSync(path.join(mountDir, '_PERMISSIONS.md'), permsDoc, 'utf8');
+
+    const projectDeny = path.join(projectDir, '.agentdeny');
+    if (existsSync(projectDeny)) {
+      cpSync(projectDeny, path.join(mountDir, '.agentdeny'), { force: true });
+    }
+
+    const mountedFiles = countFilesForSync(mountDir);
+    log(`On the relay as ${agent.name}`);
+    log(`  Workspace: ${workspaceSession.workspaceId}`);
+    log(`  Join: ${workspaceSession.joinCommand}`);
+    log(`  Mounted files: ${mountedFiles}`);
+    log(`  Permissions denied (initial sync): ${deniedCount}`);
+    if (sandboxFlags.length > 0) {
+      log(`  Sandbox: relay-enforced (${sandboxFlags.join(' ')})`);
+      log(`  ⚠ Agent CLI sandbox bypassed — relay file permissions are the only safety layer`);
+    }
+
+    const cleanupState: CleanupState = {
+      mountDir,
+      mountLogPath,
+      projectDir,
+      relayDir,
+      workspace: workspaceSession.workspaceId,
+      readonlyPatterns,
+      ignoredPatterns,
+    };
+
+    let mountProc: ChildProcessWithoutNullStreams | undefined;
+    let agentProc: ReturnType<typeof spawn> | undefined;
+    let cleanupDone = false;
+
+    const finalizeCleanup = async (): Promise<void> => {
+      if (cleanupDone) return;
+      cleanupDone = true;
+      cleanupState.mountProc = mountProc;
+      await cleanupRun(cleanupState, agent.name, log);
+    };
+
+    try {
+      const mountedProc: ChildProcessWithoutNullStreams = spawn(mountBin, mountBaseArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: mountEnv,
+      });
+      mountProc = mountedProc;
+
+      mountedProc.stdout.on('data', (chunk: Buffer) => {
+        appendFileSync(mountLogPath, chunk);
+      });
+      mountedProc.stderr.on('data', (chunk: Buffer) => {
+        appendFileSync(mountLogPath, chunk);
       });
 
-      let cleanupInProgress: Promise<void> | undefined;
-      const cleanupHook = () => {
-        if (agentProc && !agentProc.killed) {
-          agentProc.kill('SIGTERM');
-        }
-        // Wait for the agent process to exit so agentExitCode is set by the close handler,
-        // then ensure cleanup completes before resolving — avoids data loss from premature exit
-        cleanupInProgress = new Promise<void>((r) => {
-          if (!agentProc || agentProc.exitCode !== null) { r(); return; }
-          const t = setTimeout(r, 2000);
-          agentProc.once('close', () => { clearTimeout(t); r(); });
-        }).then(() => finalizeCleanup()).then(() => resolve());
-      };
-
-      process.once('SIGINT', cleanupHook);
-      process.once('SIGTERM', cleanupHook);
-
-      agentProc.on('error', (err) => {
-        process.removeListener('SIGINT', cleanupHook);
-        process.removeListener('SIGTERM', cleanupHook);
-        reject(err);
-      });
-
-      agentProc.on('close', (code, signal) => {
-        process.removeListener('SIGINT', cleanupHook);
-        process.removeListener('SIGTERM', cleanupHook);
-        if (typeof code === 'number') {
-          agentExitCode = code;
-        } else if (signal === 'SIGINT') {
-          agentExitCode = 130;
-        } else if (signal === 'SIGTERM') {
-          agentExitCode = 143;
-        } else {
-          agentExitCode = 1;
-        }
-        // If cleanup was triggered by a signal, wait for it to finish
-        if (cleanupInProgress) {
-          cleanupInProgress.then(() => resolve());
-        } else {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(), 600);
+        mountedProc.on('error', (spawnError) => {
+          clearTimeout(timer);
+          reject(spawnError);
+        });
+        mountedProc.on('spawn', () => {
+          clearTimeout(timer);
           resolve();
-        }
+        });
       });
-      // Finalization happens in outer finally.
-    });
 
-    await finalizeCleanup();
-    log('Off the relay.');
-    exit(agentExitCode);
+      if (!ensureProcessRunning(mountedProc)) {
+        throw new Error(`mount process for ${agent.name} exited before continuing`);
+      }
+
+      cleanupState.mountProc = mountProc;
+
+      let agentExitCode = 0;
+      await new Promise<void>((resolve, reject) => {
+        const envVars = {
+          ...process.env,
+          ...buildAgentEnv(),
+        };
+
+        agentProc = spawn(cli, [...sandboxFlags, ...extraArgs], {
+          cwd: mountDir,
+          stdio: 'inherit',
+          env: envVars,
+        });
+
+        let cleanupInProgress: Promise<void> | undefined;
+        const cleanupHook = () => {
+          if (agentProc && !agentProc.killed) {
+            agentProc.kill('SIGTERM');
+          }
+          // Wait for the agent process to exit so agentExitCode is set by the close handler,
+          // then ensure cleanup completes before resolving — avoids data loss from premature exit
+          cleanupInProgress = new Promise<void>((r) => {
+            if (!agentProc || agentProc.exitCode !== null) {
+              r();
+              return;
+            }
+            const t = setTimeout(r, 2000);
+            agentProc.once('close', () => {
+              clearTimeout(t);
+              r();
+            });
+          })
+            .then(() => finalizeCleanup())
+            .then(() => resolve());
+        };
+
+        process.once('SIGINT', cleanupHook);
+        process.once('SIGTERM', cleanupHook);
+
+        agentProc.on('error', (err) => {
+          process.removeListener('SIGINT', cleanupHook);
+          process.removeListener('SIGTERM', cleanupHook);
+          reject(err);
+        });
+
+        agentProc.on('close', (code, signal) => {
+          process.removeListener('SIGINT', cleanupHook);
+          process.removeListener('SIGTERM', cleanupHook);
+          if (typeof code === 'number') {
+            agentExitCode = code;
+          } else if (signal === 'SIGINT') {
+            agentExitCode = 130;
+          } else if (signal === 'SIGTERM') {
+            agentExitCode = 143;
+          } else {
+            agentExitCode = 1;
+          }
+          // If cleanup was triggered by a signal, wait for it to finish
+          if (cleanupInProgress) {
+            cleanupInProgress.then(() => resolve());
+          } else {
+            resolve();
+          }
+        });
+        // Finalization happens in outer finally.
+      });
+
+      await finalizeCleanup();
+      log('Off the relay.');
+      exit(agentExitCode);
+    } finally {
+      await finalizeCleanup();
+    }
   } finally {
-    await finalizeCleanup();
+    await localJwks.shutdown();
   }
 }

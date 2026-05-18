@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 
+import { defaultExit } from '../lib/exit.js';
 import { checkPrereqs } from './on/prereqs.js';
 import { scanPermissions } from './on/scan.js';
 import { goOnTheRelay } from './on/start.js';
@@ -11,10 +12,6 @@ export interface OnDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 
 function withDefaults(overrides: Partial<OnDependencies> = {}): OnDependencies {
@@ -35,10 +32,25 @@ export function registerOnCommands(program: Command, overrides: Partial<OnDepend
     .argument('[cli]', 'Agent CLI to launch (codex, claude, gemini, aider)')
     .option('--agent <name>', 'Agent identity name (default: CLI basename)')
     .option('--workspace <id>', 'Join an existing relay workspace')
+    .option('--shared', 'Enable multi-agent shared workspace via relayfile (local)')
+    .option('--cloud', 'Run in cloud mode with remote relayfile')
+    .option(
+      '--url <url>',
+      'Cloud API URL (used with --cloud)',
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.com/cloud'
+    )
     .option('--scan', 'Preview what the agent will see without launching')
     .option('--doctor', 'Check prerequisites and exit')
-    .option('--port-auth <port>', 'Auth service URL or local port', process.env.RELAY_AUTH_URL ?? 'https://agentrelay.dev/cloud')
-    .option('--port-file <port>', 'Relayfile service URL or local port', process.env.RELAY_FILE_URL ?? 'https://api.relayfile.dev')
+    .option(
+      '--port-auth <port>',
+      'Auth service URL or local port',
+      process.env.RELAY_AUTH_URL ?? 'https://agentrelay.com/cloud'
+    )
+    .option(
+      '--port-file <port>',
+      'Relayfile service URL or local port',
+      process.env.RELAY_FILE_URL ?? 'https://api.relayfile.dev'
+    )
     .allowUnknownOption(true) // pass extra args to agent CLI
     .action(async (cli: string | undefined, options: any, command: Command) => {
       if (options.doctor) {

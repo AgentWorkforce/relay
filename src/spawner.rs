@@ -243,10 +243,11 @@ pub fn spawn_env_vars(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        env.push((
-            "RELAYFILE_WORKSPACE".to_string(),
-            default_workspace.to_string(),
-        ));
+        // `default_workspace` is the relaycast workspace id; do NOT stamp it
+        // as RELAYFILE_WORKSPACE. Relaycast and relayfile workspace ids are
+        // independent — callers set RELAYFILE_WORKSPACE explicitly through
+        // their own spawn env when they want spawned agents to talk to a
+        // specific relayfile workspace.
         env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
             default_workspace.to_string(),

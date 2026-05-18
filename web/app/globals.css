@@ -45,7 +45,14 @@ pre {
 html[data-theme='dark'] .shiki,
 html[data-theme='dark'] .shiki span {
   color: var(--shiki-dark) !important;
-  background-color: var(--shiki-dark-bg) !important;
+}
+
+html[data-theme='dark'] .shiki {
+  background-color: var(--code-bg) !important;
+}
+
+html[data-theme='dark'] .shiki span {
+  background-color: transparent !important;
 }
 
 .skill-page {

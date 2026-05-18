@@ -2,19 +2,29 @@
 .page {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 36% 28% at 10% 8%, color-mix(in srgb, var(--primary) 16%, white 22%), transparent 72%),
-    radial-gradient(ellipse 34% 26% at 90% 10%, color-mix(in srgb, var(--primary) 14%, white 20%), transparent 70%),
+    radial-gradient(
+      ellipse 36% 28% at 10% 8%,
+      color-mix(in srgb, var(--primary) 16%, white 22%),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 34% 26% at 90% 10%,
+      color-mix(in srgb, var(--primary) 14%, white 20%),
+      transparent 70%
+    ),
     var(--landing-hero-bg);
   color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 .heroSection {
   position: relative;
   overflow: hidden;
-  margin-top: -60px;
+  margin-top: 0;
   padding-top: 60px;
 }
 
@@ -55,13 +65,14 @@
   max-width: 1280px;
   width: 100%;
   margin: 0 auto;
-  padding: 28px 40px 48px;
+  padding: 44px 40px 48px;
 }
 
 .heroLeft {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  padding-top: 56px;
 }
 
 .heroRight {
@@ -94,13 +105,18 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .headline {
   font-family: var(--font-heading), sans-serif;
-  font-size: clamp(3.2rem, 7vw, 5.5rem);
+  font-size: clamp(3rem, 6vw, 5rem);
   font-weight: 500;
   line-height: 1.05;
   letter-spacing: -0.03em;
@@ -126,6 +142,7 @@
   display: flex;
   align-items: center;
   gap: 16px;
+  padding-top: 4px;
 }
 
 .ctaPrimary {
@@ -137,11 +154,14 @@
   letter-spacing: 0.01em;
   padding: 12px 28px;
   background: var(--btn-bg);
-  color: #fff;
+  color: var(--primary-fg);
   border-radius: 100px;
   text-decoration: none;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
-  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
 }
 
 .ctaPrimary:hover {
@@ -163,7 +183,10 @@
   border: 1.5px solid var(--line);
   border-radius: 100px;
   text-decoration: none;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s;
 }
 
 .ctaSecondary:hover {
@@ -187,7 +210,11 @@
   border-radius: 36px;
   background:
     radial-gradient(circle at 30% 28%, color-mix(in srgb, var(--primary) 26%, transparent), transparent 34%),
-    radial-gradient(circle at 74% 26%, color-mix(in srgb, var(--secondary-400) 22%, transparent), transparent 30%),
+    radial-gradient(
+      circle at 74% 26%,
+      color-mix(in srgb, var(--secondary-400) 22%, transparent),
+      transparent 30%
+    ),
     radial-gradient(circle at 50% 74%, color-mix(in srgb, var(--primary) 14%, white 8%), transparent 38%);
   filter: blur(22px);
   opacity: 0.9;
@@ -201,8 +228,11 @@
   border-radius: 28px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--primary) 16%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 92%, transparent) 0%, color-mix(in srgb, var(--surface) 96%, transparent) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-strong) 92%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 96%, transparent) 100%
+  );
   box-shadow:
     0 24px 80px rgba(0, 0, 0, 0.14),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
@@ -246,7 +276,10 @@
     linear-gradient(to right, color-mix(in srgb, var(--line) 55%, transparent) 1px, transparent 1px),
     linear-gradient(to bottom, color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px),
     linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--primary) 3%, transparent) 100%);
-  background-size: 90px 90px, 90px 90px, auto;
+  background-size:
+    90px 90px,
+    90px 90px,
+    auto;
 }
 
 .folderCard,
@@ -263,13 +296,19 @@
 }
 
 .folderCard {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--secondary-50) 90%, white 10%) 0%, color-mix(in srgb, var(--secondary-100) 94%, white 6%) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--secondary-50) 90%, white 10%) 0%,
+    color-mix(in srgb, var(--secondary-100) 94%, white 6%) 100%
+  );
 }
 
 :global(html[data-theme='dark']) .folderCard {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--secondary-900) 34%, var(--surface-strong) 66%) 0%, color-mix(in srgb, var(--secondary-950) 26%, var(--surface) 74%) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--secondary-900) 34%, var(--surface-strong) 66%) 0%,
+    color-mix(in srgb, var(--secondary-950) 26%, var(--surface) 74%) 100%
+  );
 }
 
 .folderCardMain {
@@ -409,13 +448,23 @@
 }
 
 @keyframes floatPrimary {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-10px); }
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 @keyframes floatSoft {
-  0%, 100% { transform: translateY(0px) translateX(0px); }
-  50% { transform: translateY(-8px) translateX(3px); }
+  0%,
+  100% {
+    transform: translateY(0px) translateX(0px);
+  }
+  50% {
+    transform: translateY(-8px) translateX(3px);
+  }
 }
 
 .featuresWrapper {
@@ -486,8 +535,11 @@
   padding: 22px;
   border-radius: 18px;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%, color-mix(in srgb, var(--surface) 98%, transparent) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 98%, transparent) 100%
+  );
   box-shadow: 0 8px 24px color-mix(in srgb, var(--primary) 4%, transparent);
 }
 
@@ -637,7 +689,11 @@
   font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.15s, border-color 0.2s, color 0.2s, background 0.2s;
+  transition:
+    transform 0.15s,
+    border-color 0.2s,
+    color 0.2s,
+    background 0.2s;
 }
 
 .tabButton:hover {
@@ -697,10 +753,18 @@
   color: var(--terminal-fg);
 }
 
-.codeKeyword { color: var(--terminal-keyword); }
-.codeString { color: var(--terminal-string); }
-.codeType { color: var(--terminal-type); }
-.codeMethod { color: var(--terminal-method); }
+.codeKeyword {
+  color: var(--terminal-keyword);
+}
+.codeString {
+  color: var(--terminal-string);
+}
+.codeType {
+  color: var(--terminal-type);
+}
+.codeMethod {
+  color: var(--terminal-method);
+}
 
 .deploySection {
   max-width: 1280px;
@@ -725,7 +789,10 @@
   border: 1px solid var(--line);
   background: var(--card-bg);
   text-align: left;
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    transform 0.2s;
 }
 
 .deployCard:hover {
@@ -904,6 +971,7 @@
   .folderCardMain {
     left: 50%;
     transform: translateX(-50%);
+    animation: none;
   }
 
   .folderCardTop {
@@ -924,6 +992,7 @@
     left: 50%;
     bottom: 72px;
     transform: translateX(-50%);
+    animation: none;
   }
 
   .activityRail {

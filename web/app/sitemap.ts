@@ -2,12 +2,7 @@ import type { MetadataRoute } from 'next';
 
 import { getAllPosts } from '../lib/blog';
 import { getAllDocSlugs } from '../lib/docs-nav';
-
-const SITE_URL = 'https://agentrelay.dev';
-
-function absoluteUrl(path: string) {
-  return `${SITE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-}
+import { absoluteUrl } from '../lib/site';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
@@ -37,6 +32,24 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'weekly',
       priority: 0.8,
     },
+    {
+      url: absoluteUrl('/primitives'),
+      lastModified: now,
+      changeFrequency: 'weekly',
+      priority: 0.9,
+    },
+    {
+      url: absoluteUrl('/brand'),
+      lastModified: now,
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    },
+    {
+      url: absoluteUrl('/brand/theme'),
+      lastModified: now,
+      changeFrequency: 'monthly',
+      priority: 0.5,
+    },
   ];
 
   const docsRoutes: MetadataRoute.Sitemap = getAllDocSlugs().map((slug) => ({
@@ -48,7 +61,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const blogRoutes: MetadataRoute.Sitemap = getAllPosts().map((post) => ({
     url: absoluteUrl(`/blog/${post.slug}`),
-    lastModified: post.frontmatter.date ? new Date(post.frontmatter.date) : now,
+    lastModified: post.frontmatter.updatedAt
+      ? new Date(post.frontmatter.updatedAt)
+      : post.frontmatter.date
+        ? new Date(post.frontmatter.date)
+        : now,
     changeFrequency: 'monthly',
     priority: 0.7,
   }));

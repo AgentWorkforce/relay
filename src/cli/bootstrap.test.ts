@@ -24,6 +24,7 @@ const expectedLeafCommands = [
   'read',
   'history',
   'inbox',
+  'login',
   'metrics',
   'health',
   'profile',
@@ -36,15 +37,25 @@ const expectedLeafCommands = [
   'off',
   'run',
   'connect',
+  'view',
+  'dlq list',
+  'dlq inspect',
+  'dlq replay',
+  'dlq purge',
   'workflows list',
+  'workspaces create',
+  'tokens issue',
   'cloud login',
   'cloud logout',
   'cloud whoami',
   'cloud connect',
   'cloud run',
+  'cloud schedule',
+  'cloud schedules',
   'cloud status',
   'cloud logs',
   'cloud sync',
+  'cloud cancel',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -97,6 +108,7 @@ describe('bootstrap CLI', () => {
         'read',
         'history',
         'inbox',
+        'login',
         'cloud',
         'metrics',
         'health',
@@ -109,7 +121,10 @@ describe('bootstrap CLI', () => {
         'on',
         'off',
         'run',
+        'dlq',
+        'workspaces',
         'workflows',
+        'tokens',
       ])
     );
     expect(topLevelCommands).not.toContain('create-agent');
@@ -119,7 +134,7 @@ describe('bootstrap CLI', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(41);
+    expect(leafCommandPaths).toHaveLength(expectedLeafCommands.length);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toContain('create-agent');
   });

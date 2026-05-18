@@ -66,15 +66,12 @@ log_info "Updated PATH to include: $NPM_BIN"
 log_info "Cleaning previous global installation..."
 npm uninstall -g agent-relay 2>/dev/null || true
 
-# Install globally
+# Install globally (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} globally..."
-npm install -g "$PACKAGE_SPEC"
-INSTALL_EXIT=$?
-log_info "npm install exit code: $INSTALL_EXIT"
-if [ $INSTALL_EXIT -eq 0 ]; then
+if retry-command.sh "Global npm install of ${PACKAGE_SPEC}" npm install -g "$PACKAGE_SPEC"; then
     record_pass "Global npm install succeeded"
 else
-    record_fail "Global npm install failed with exit code $INSTALL_EXIT"
+    record_fail "Global npm install failed after retries"
 fi
 
 # Verify the binary exists
@@ -189,12 +186,12 @@ cd "$TEST_PROJECT_DIR"
 log_info "Initializing package.json..."
 npm init -y > /dev/null 2>&1
 
-# Install as local dependency
+# Install as local dependency (with retry for CDN propagation delays)
 log_info "Installing ${PACKAGE_SPEC} locally..."
-if npm install "$PACKAGE_SPEC" 2>&1; then
+if retry-command.sh "Local npm install of ${PACKAGE_SPEC}" npm install "$PACKAGE_SPEC"; then
     record_pass "Local npm install succeeded"
 else
-    record_fail "Local npm install failed"
+    record_fail "Local npm install failed after retries"
 fi
 
 # Test via npx (should use local version)
@@ -224,71 +221,53 @@ else
 fi
 
 # ============================================
-# Test 4: agent-relay-broker binary verification
+# Test 4: broker binary resolution via SDK resolver
 # ============================================
-log_header "Test 4: agent-relay-broker binary verification"
+# The broker is delivered as a platform-specific optional dependency
+# (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
+# canonical way clients locate it at runtime.
+log_header "Test 4: broker binary resolution"
 
-# Check if agent-relay-broker binary exists
-log_info "Checking for agent-relay-broker binary..."
+BROKER_TEST=$(node --input-type=module -e "
+import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+import { accessSync, constants } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+try {
+    const expected = getOptionalDepPackageName();
+    const p = getBrokerBinaryPath();
+    console.log('expected:', expected);
+    console.log('resolved:', p);
+    if (!p) { console.log('BROKER_FAIL: resolver returned null'); process.exit(0); }
+    if (!p.replace(/\\\\/g, '/').includes(expected)) {
+        console.log('BROKER_FAIL: not via optional-dep package');
+        process.exit(0);
+    }
+    accessSync(p, constants.X_OK);
+    const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
+    if (!out.includes('agent-relay-broker')) {
+        console.log('BROKER_FAIL: --help output missing agent-relay-broker');
+        process.exit(0);
+    }
+    console.log('BROKER_OK');
+} catch (e) {
+    console.log('BROKER_FAIL:', e && e.message ? e.message : String(e));
+}
+" 2>&1) || true
 
-# Get the installed package location
-PACKAGE_DIR="./node_modules/agent-relay"
-BIN_DIR="$PACKAGE_DIR/bin"
+log_info "Broker resolution output:"
+echo "$BROKER_TEST"
 
-if [ -d "$BIN_DIR" ]; then
-    log_info "Binary directory found: $BIN_DIR"
-    log_info "Contents of bin directory:"
-    ls -la "$BIN_DIR"
-
-    # Check for platform-specific binaries
-    PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m)
-
-    # Map architecture names
-    case "$ARCH" in
-        x86_64) ARCH_NAME="x64" ;;
-        aarch64|arm64) ARCH_NAME="arm64" ;;
-        *) ARCH_NAME="$ARCH" ;;
-    esac
-
-    log_info "Platform: $PLATFORM, Architecture: $ARCH_NAME"
-
-    # Check for the platform-specific agent-relay-broker binary
-    PLATFORM_BINARY="agent-relay-broker-${PLATFORM}-${ARCH_NAME}"
-    if [ -f "$BIN_DIR/$PLATFORM_BINARY" ]; then
-        record_pass "agent-relay-broker binary exists: $PLATFORM_BINARY"
-
-        # Check if executable
-        if [ -x "$BIN_DIR/$PLATFORM_BINARY" ]; then
-            record_pass "agent-relay-broker binary is executable"
-
-            # Test the binary
-            log_info "Testing agent-relay-broker --help..."
-            BROKER_HELP=$("$BIN_DIR/$PLATFORM_BINARY" --help 2>&1) || true
-            if [ -n "$BROKER_HELP" ]; then
-                record_pass "agent-relay-broker --help works"
-            else
-                log_info "agent-relay-broker output: $BROKER_HELP"
-                record_fail "agent-relay-broker --help returned empty output"
-            fi
-        else
-            record_fail "agent-relay-broker binary is not executable"
-        fi
-    else
-        record_fail "agent-relay-broker binary not found: $BIN_DIR/$PLATFORM_BINARY"
-        log_info "Available binaries:"
-        ls "$BIN_DIR"/agent-relay-broker-* 2>/dev/null || echo "  (none)"
-    fi
+if echo "$BROKER_TEST" | grep -q "BROKER_OK"; then
+    record_pass "broker binary resolves via optional-dep package and --help works"
 else
-    record_fail "Binary directory not found: $BIN_DIR"
+    record_fail "broker binary resolution failed"
 fi
 
 # ============================================
-# Test 5: SDK exports and binary resolution
+# Test 5: SDK exports
 # ============================================
-log_header "Test 5: SDK exports and binary resolution"
+log_header "Test 5: SDK exports"
 
-# Verify key SDK exports can be loaded
 log_info "Testing if SDK exports are accessible..."
 SDK_TEST=$(node -e "
 try {
@@ -315,46 +294,120 @@ else
     record_fail "Failed to load agent-relay package: $SDK_TEST"
 fi
 
-# Test binary resolution for agent-relay-broker
-log_info "Testing agent-relay-broker binary resolution..."
-BINARY_RESOLUTION=$(node -e "
-const path = require('path');
-const fs = require('fs');
+# ============================================
+# Test 6: @agent-relay/utils resolution (regression guard for bundledDependencies)
+# ============================================
+log_header "Test 6: @agent-relay/utils resolution"
 
-const packageDir = path.dirname(require.resolve('agent-relay/package.json'));
-const binDir = path.join(packageDir, 'bin');
-
-const platform = process.platform;
-const arch = process.arch;
-
-const platformMap = { darwin: 'darwin', linux: 'linux', win32: 'windows' };
-const archMap = { x64: 'x64', arm64: 'arm64' };
-
-const platformName = platformMap[platform] || platform;
-const archName = archMap[arch] || arch;
-
-const brokerBinary = path.join(binDir, 'agent-relay-broker-' + platformName + '-' + archName);
-
-console.log('Package dir:', packageDir);
-console.log('Looking for:', brokerBinary);
-
-if (fs.existsSync(brokerBinary)) {
-    console.log('RESOLUTION_OK');
-} else {
-    // List what's actually in the bin dir
-    const files = fs.readdirSync(binDir).filter(f => f.startsWith('agent-relay-broker'));
-    console.log('Available broker binaries:', files.join(', '));
-    console.log('RESOLUTION_FAILED');
+log_info "Verifying @agent-relay/utils resolves from installed agent-relay..."
+UTILS_RESOLUTION=$(node -e "
+try {
+    const path = require('path');
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const resolved = require.resolve('@agent-relay/utils', { paths: [pkgDir] });
+    console.log('RESOLVED:', resolved);
+    console.log('UTILS_RESOLVE_OK');
+} catch (e) {
+    console.log('UTILS_RESOLVE_FAIL:', e.code || e.message);
 }
 " 2>&1) || true
 
-log_info "Binary resolution output:"
-echo "$BINARY_RESOLUTION"
-
-if echo "$BINARY_RESOLUTION" | grep -q "RESOLUTION_OK"; then
-    record_pass "Binary resolution finds agent-relay-broker"
+log_info "Utils resolution output: $UTILS_RESOLUTION"
+if echo "$UTILS_RESOLUTION" | grep -q "UTILS_RESOLVE_OK"; then
+    record_pass "@agent-relay/utils resolves from installed agent-relay"
 else
-    record_fail "Binary resolution failed - agent-relay-broker not found"
+    record_fail "@agent-relay/utils is NOT resolvable - bundledDependencies regression"
+fi
+
+log_info "Inspecting installed CLI cloud command directory..."
+ls -la ./node_modules/agent-relay/dist/cli/commands/cloud/ 2>/dev/null || \
+    ls -la ./node_modules/agent-relay/dist/src/cli/commands/cloud/ 2>/dev/null || \
+    log_warn "No packaged cloud command directory found; falling back to dist scan"
+
+log_info "Resolving packaged module that imports @agent-relay/utils..."
+UTILS_IMPORT_TARGET=$(node -e "
+const fs = require('fs');
+const path = require('path');
+
+try {
+    const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
+    const candidates = [
+        path.join(pkgDir, 'dist/cli/commands/cloud/connect.js'),
+        path.join(pkgDir, 'dist/src/cli/commands/cloud/connect.js'),
+        path.join(pkgDir, 'dist/cli/commands/core.js'),
+        path.join(pkgDir, 'dist/src/cli/commands/core.js'),
+        path.join(pkgDir, 'dist/cli/bootstrap.js'),
+        path.join(pkgDir, 'dist/src/cli/bootstrap.js')
+    ];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            console.log(candidate);
+            process.exit(0);
+        }
+    }
+
+    const distDir = path.join(pkgDir, 'dist');
+    const stack = [distDir];
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current || !fs.existsSync(current)) {
+            continue;
+        }
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(fullPath);
+                continue;
+            }
+            if (!entry.isFile() || !fullPath.endsWith('.js')) {
+                continue;
+            }
+            const content = fs.readFileSync(fullPath, 'utf8');
+            if (content.includes('@agent-relay/utils')) {
+                console.log(fullPath);
+                process.exit(0);
+            }
+        }
+    }
+
+    console.log('UTILS_IMPORT_TARGET_NOT_FOUND');
+} catch (e) {
+    console.log('UTILS_IMPORT_TARGET_ERROR:', e.code || e.message);
+}
+" 2>&1 | tail -n 1) || true
+
+log_info "Selected smoke-test target: $UTILS_IMPORT_TARGET"
+log_info "Dynamic-import smoke test for packaged module that imports @agent-relay/utils..."
+CLOUD_CONNECT_SMOKE=$(node --input-type=module -e "
+import { pathToFileURL } from 'node:url';
+
+try {
+    const target = process.argv[1];
+    if (!target || target === 'UTILS_IMPORT_TARGET_NOT_FOUND' || target.startsWith('UTILS_IMPORT_TARGET_ERROR:')) {
+        console.log('CLOUD_CONNECT_IMPORT_FAIL:', target || 'missing target');
+    } else {
+        await import(pathToFileURL(target).href);
+        console.log('CLOUD_CONNECT_IMPORT_OK');
+    }
+} catch (e) {
+    if (e && e.code === 'ERR_MODULE_NOT_FOUND') {
+        console.log('CLOUD_CONNECT_IMPORT_FAIL:', e.message);
+    } else {
+        // A different error (e.g. expecting argv) is fine - the module loaded
+        console.log('CLOUD_CONNECT_IMPORT_OK_WITH_RUNTIME_ERR');
+    }
+}
+" "$UTILS_IMPORT_TARGET" 2>&1) || true
+
+log_info "Cloud connect import output: $CLOUD_CONNECT_SMOKE"
+if echo "$CLOUD_CONNECT_SMOKE" | grep -q "CLOUD_CONNECT_IMPORT_OK"; then
+    record_pass "cloud connect module imports without ERR_MODULE_NOT_FOUND"
+elif echo "$CLOUD_CONNECT_SMOKE" | grep -q "CLOUD_CONNECT_IMPORT_FAIL"; then
+    record_fail "cloud connect import FAILED with ERR_MODULE_NOT_FOUND: $CLOUD_CONNECT_SMOKE"
+else
+    log_warn "cloud connect import had unknown outcome: $CLOUD_CONNECT_SMOKE"
+    record_fail "cloud connect import indeterminate"
 fi
 
 # Cleanup test project

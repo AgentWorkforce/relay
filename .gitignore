@@ -78,8 +78,17 @@ __pycache__/
 *.pyo
 *.egg-info/
 .pytest_cache/
+
 .agent-relay/
+.relay/
 
 .sst
 web/waitlist.json
 web/.open-next
+.msd/
+/workflows/*
+.workflow-artifacts/*
+!/workflows/ci/
+!/workflows/refactor/
+!/workflows/relayauth-integration/
+!/workflows/cloud-connect/

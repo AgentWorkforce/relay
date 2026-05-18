@@ -1,172 +1,225 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 import { FadeIn } from '../../components/FadeIn';
+import { SiteFooter } from '../../components/SiteFooter';
+import { SiteNav } from '../../components/SiteNav';
+
 import s from './relayfile.module.css';
 
 const featureCards = [
   {
-    title: 'Read Files',
-    desc: 'Fetch full contents or byte ranges with the same API across local and remote volumes.',
+    title: 'Provider files',
+    desc: 'Mount Linear issues, GitHub PRs, Notion pages, Slack channels, and SaaS records as ordinary paths.',
   },
   {
-    title: 'Write Files',
-    desc: 'Create, overwrite, append, and patch files safely from agents and tools.',
+    title: 'File writeback',
+    desc: 'Create, patch, and delete provider records by saving files. Adapters validate changes and queue writeback.',
   },
   {
-    title: 'Watch Changes',
-    desc: 'Subscribe to file events and trigger follow-up work the moment something changes.',
+    title: 'Realtime sync',
+    desc: 'Every writer publishes a new revision so other agents see fresh state on their next read.',
   },
   {
-    title: 'Shared Volumes',
-    desc: 'Mount the same workspace into multiple agents so they can collaborate on identical state.',
+    title: 'Scoped mounts',
+    desc: 'Give each agent path-level read, write, watch, or admin permissions instead of broad provider credentials.',
   },
   {
-    title: 'File Locking',
-    desc: 'Coordinate concurrent writes with explicit locks and conflict-aware workflows.',
+    title: 'Deterministic digests',
+    desc: 'Precompute high-value rollups like yesterday.md so agents start with the answer-shaped file.',
   },
   {
-    title: 'Permissions',
-    desc: 'Control which agents can read, write, watch, or administer each path.',
+    title: 'Native tools',
+    desc: 'Agents use cat, grep, find, jq, rg, and editors against a real local mount or the HTTP API.',
   },
 ];
 
-const toolBadges = [
-  'Claude Code',
-  'Codex',
-  'Gemini CLI',
-  'OpenCode',
-  'Copilot',
-  'Aider',
-  'Goose',
-  'Custom agents',
+const integrationBadges = [
+  'Linear',
+  'GitHub',
+  'Notion',
+  'Slack',
+  'HubSpot',
+  'Salesforce',
+  'Google Drive',
+  'Gmail',
+  'Composio',
+  'Pipedream',
+  'Nango',
+  'Custom APIs',
 ];
 
 const sdkTabs = {
-  typescript: {
-    label: 'TypeScript',
-    code: `import { Relayfile } from '@agent-relay/relayfile';
+  mount: {
+    label: 'Mount SDK',
+    language: 'typescript',
+    code: `import { RelayfileSetup } from '@relayfile/sdk';
 
-const relayfile = new Relayfile({
-  apiKey: process.env.RELAY_API_KEY,
+const setup = new RelayfileSetup({
+  accessToken: process.env.RELAYFILE_ACCESS_TOKEN!,
 });
 
-await relayfile.files.write({
-  volume: 'workspace',
-  path: '/plans/launch.md',
-  content: '# Launch plan\\n\\n- ship relayfile',
+const handle = await setup.ensureMountedWorkspace({
+  workspaceId: 'rw_123',
+  provider: 'notion',
+  verifyProvider: true,
+  localDir: '/workspace/relayfile',
 });
 
-const notes = await relayfile.files.read({
-  volume: 'workspace',
-  path: '/plans/launch.md',
-});
+console.log(handle.env().RELAYFILE_LOCAL_DIR);`,
+    bullets: [
+      'Attach a hosted workspace inside Daytona, E2B, CI, or your own sandbox.',
+      'Gate startup on provider readiness before the agent begins work.',
+      'The agent receives a normal directory plus environment variables.',
+    ],
+  },
+  vercel: {
+    label: 'Vercel AI SDK',
+    language: 'typescript',
+    code: `import { generateText, tool } from 'ai';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
 
-const stream = await relayfile.watch.subscribe({
-  volume: 'workspace',
-  prefix: '/plans',
-  onEvent(event) {
-    console.log(event.type, event.path);
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
+
+const { text } = await generateText({
+  model: process.env.AI_MODEL!,
+  prompt: 'What changed yesterday across GitHub, Linear, and Notion?',
+  tools: {
+    readRelayfile: tool({
+      description: 'Read a file from the Relayfile workspace',
+      inputSchema: z.object({ path: z.string() }),
+      execute: ({ path }) => files.readFile('rw_123', path),
+    }),
   },
 });`,
     bullets: [
-      'Typed APIs for file reads, writes, watches, and metadata.',
-      'Works cleanly in app servers, workers, and agent harnesses.',
-      'Matches the same resource model as the HTTP API.',
+      'Expose one Relayfile read tool instead of one tool per provider.',
+      'Let the model inspect digests first, then open raw provider files as needed.',
+      'Works with generateText, streamText, and AI Gateway model strings.',
     ],
   },
-  python: {
-    label: 'Python',
-    code: `from relayfile import Relayfile
+  anthropic: {
+    label: 'Claude Agent SDK',
+    language: 'typescript',
+    code: `import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
 
-client = Relayfile(api_key=os.environ["RELAY_API_KEY"])
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
 
-client.files.write(
-    volume="workspace",
-    path="/artifacts/build.json",
-    content='{"status":"green"}',
-)
+const relayfileServer = createSdkMcpServer({
+  name: 'relayfile',
+  tools: [
+    tool('readRelayfile', 'Read workspace files', { path: z.string() }, async ({ path }) => ({
+      content: [{ type: 'text', text: JSON.stringify(await files.readFile('rw_123', path)) }],
+    })),
+  ],
+});
 
-artifact = client.files.read(
-    volume="workspace",
-    path="/artifacts/build.json",
-)
-
-for event in client.watch.stream(volume="workspace", prefix="/artifacts"):
-    print(event["type"], event["path"])`,
+for await (const message of query({
+  prompt: 'Summarize yesterday.md, then draft Linear follow-ups.',
+  options: { mcpServers: { relayfile: relayfileServer } },
+})) {
+  console.log(message);
+}`,
     bullets: [
-      'Simple synchronous flows for scripts and orchestration.',
-      'Streaming watch events for long-running workers.',
-      'Built for task runners, notebooks, and agent backends.',
+      'Keep Claude in its normal agent loop while Relayfile owns provider context.',
+      'Use path-scoped tokens for the files the Claude worker may read or write.',
+      'Pair with a mounted directory when the agent should use bash directly.',
+    ],
+  },
+  openai: {
+    label: 'OpenAI Agents',
+    language: 'typescript',
+    code: `import { Agent, run, tool } from '@openai/agents';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
+
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
+
+const agent = new Agent({
+  name: 'workspace-reviewer',
+  instructions: 'Use Relayfile paths before asking for provider-specific tools.',
+  tools: [
+    tool({
+      name: 'read_relayfile',
+      parameters: z.object({ path: z.string() }),
+      execute: ({ path }) => files.readFile('rw_123', path),
+    }),
+  ],
+});
+
+await run(agent, 'Review /digests/yesterday.md and file Linear follow-ups.');`,
+    bullets: [
+      'Use Relayfile as the agent state and integration layer for SDK-owned runs.',
+      'Keep orchestration, approvals, and tracing in the framework you already use.',
+      'Add write tools only for scoped paths that the agent is allowed to change.',
     ],
   },
   curl: {
     label: 'cURL',
-    code: `curl -X PUT https://api.agentrelay.dev/v1/files/content \\
-  -H "authorization: Bearer $RELAY_API_KEY" \\
+    language: 'curl',
+    code: `curl "https://api.agentrelay.com/relayfile/v1/workspaces/rw_123/fs/tree?path=/" \\
+  -H "authorization: Bearer $RELAYFILE_TOKEN"
+
+curl "https://api.agentrelay.com/relayfile/v1/workspaces/rw_123/fs/file?path=/digests/yesterday.md" \\
+  -H "authorization: Bearer $RELAYFILE_TOKEN"
+
+curl -X PUT "https://api.agentrelay.com/relayfile/v1/workspaces/rw_123/fs/file?path=/linear/issues/AGE-12.json" \\
+  -H "authorization: Bearer $RELAYFILE_TOKEN" \\
   -H "content-type: application/json" \\
-  -d '{
-    "volume": "workspace",
-    "path": "/scratch/brief.txt",
-    "content": "Draft the product brief"
-  }'
-
-curl "https://api.agentrelay.dev/v1/files/content?volume=workspace&path=%2Fscratch%2Fbrief.txt" \\
-  -H "authorization: Bearer $RELAY_API_KEY"
-
-curl "https://api.agentrelay.dev/v1/files/watch?volume=workspace&prefix=%2Fscratch" \\
-  -H "authorization: Bearer $RELAY_API_KEY"`,
+  -d '{"contentType":"application/json","content":"{\\"state\\":\\"In Review\\"}"}'`,
     bullets: [
-      'Raw HTTP for quick debugging and shell-based workflows.',
-      'Easy to plug into CI, demos, and documentation examples.',
-      'Same primitives as the SDKs with no special transport layer.',
+      'Debug the exact HTTP surface behind the SDK and mount daemon.',
+      'Use standard shell tools in CI or one-off operational scripts.',
+      'Query the tree, read files, and submit provider writeback from one API.',
     ],
   },
 } as const;
 
 const whyCards = [
   {
-    title: 'Zero infrastructure',
-    desc: 'No NFS setup, no homegrown sync daemon, no object-store glue code. Relayfile gives agents one coherent filesystem abstraction.',
+    title: 'No schema tax',
+    desc: 'Agents open the files they need instead of loading a large typed tool surface for every connected provider.',
   },
   {
-    title: 'Instant setup',
-    desc: 'Create a volume, write a file, and start watching changes in minutes. The API is designed for immediate use from scripts and SDKs.',
+    title: 'Useful writes',
+    desc: 'Provider updates are file operations with validation, retries, and audit trails handled by the integration layer.',
   },
   {
-    title: 'Framework-agnostic',
-    desc: 'Use Relayfile from custom agent harnesses, MCP servers, background jobs, editors, or production services without changing the core model.',
+    title: 'Multi-agent by default',
+    desc: 'Reviewer, implementer, and orchestrator agents can all mount the same workspace and react to the same revisions.',
   },
 ];
 
 const steps = [
   {
     step: '01',
-    title: 'Create a volume',
-    code: `curl -X POST https://api.agentrelay.dev/v1/volumes \\
-  -H "authorization: Bearer $RELAY_API_KEY" \\
-  -H "content-type: application/json" \\
-  -d '{"name":"workspace"}'`,
+    title: 'Connect a provider',
+    code: `npx relayfile setup \\
+  --provider notion \\
+  --workspace research-room \\
+  --local-dir ./relayfile-mount`,
   },
   {
     step: '02',
-    title: 'Write a file',
-    code: `curl -X PUT https://api.agentrelay.dev/v1/files/content \\
-  -H "authorization: Bearer $RELAY_API_KEY" \\
-  -H "content-type: application/json" \\
-  -d '{
-    "volume":"workspace",
-    "path":"/docs/spec.md",
-    "content":"# Relayfile\\n\\nShared state for agents."
-  }'`,
+    title: 'Read the tree',
+    code: `ls ./relayfile-mount
+cat ./relayfile-mount/LAYOUT.md
+cat ./relayfile-mount/digests/yesterday.md`,
   },
   {
     step: '03',
-    title: 'Watch for changes',
-    code: `curl "https://api.agentrelay.dev/v1/files/watch?volume=workspace&prefix=%2Fdocs" \\
-  -H "authorization: Bearer $RELAY_API_KEY"`,
+    title: 'Write back',
+    code: `cat > ./relayfile-mount/linear/issues/drafts/follow-up.json <<'JSON'
+{
+  "title": "Follow up from digest",
+  "state": "Todo"
+}
+JSON`,
   },
 ];
 
@@ -186,16 +239,10 @@ function highlight(code: string, lang: Lang) {
       : lang === 'curl'
         ? /\b(curl)\b/g
         : /\b(import|from|const|await|new)\b/g;
-  const types =
-    lang === 'python'
-      ? /\b(Relayfile)\b/g
-      : /\b(Relayfile)\b/g;
+  const types = /\b(RelayfileSetup|RelayFileClient|Agent|Relayfile)\b/g;
   const methods = /\.(\w+)\(/g;
 
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   const parts: string[] = [];
   let lastIndex = 0;
@@ -252,12 +299,7 @@ function RelayfileAnimation() {
             <span className={s.fileMeta}>streaming</span>
           </div>
 
-          <svg
-            className={s.boardLinks}
-            viewBox="0 0 640 420"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
+          <svg className={s.boardLinks} viewBox="0 0 640 420" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M312 118C276 150 244 186 194 210" />
             <path d="M328 122C382 164 414 182 468 208" />
             <path d="M320 142C320 220 320 238 320 286" />
@@ -289,14 +331,16 @@ function RelayfileAnimation() {
   );
 }
 
-export function RelayfileContent() {
-  const [activeTab, setActiveTab] = useState<keyof typeof sdkTabs>('typescript');
+export function RelayfileContent({ navActions }: { navActions?: ReactNode }) {
+  const [activeTab, setActiveTab] = useState<keyof typeof sdkTabs>('mount');
   const activeSdk = sdkTabs[activeTab];
-  const highlightedSdk = useMemo(() => highlight(activeSdk.code, activeTab), [activeSdk.code, activeTab]);
+  const highlightedSdk = useMemo(() => highlight(activeSdk.code, activeSdk.language), [activeSdk]);
   const highlightedSteps = useMemo(() => steps.map((step) => highlight(step.code, 'curl')), []);
 
   return (
     <div className={s.page}>
+      <SiteNav actions={navActions} />
+
       <div className={s.heroSection}>
         <svg
           className={s.heroBgSvg}
@@ -364,20 +408,19 @@ export function RelayfileContent() {
           <div className={s.heroLeft}>
             <span className={s.badge}>
               <span className={s.badgeDot} />
-              HEADLESS FILESYSTEM FOR AGENTS
+              INTEGRATION FILESYSTEM FOR AGENTS
             </span>
 
             <h1 className={s.headline}>
-              Files
+              Relayfile
               <br />
-              for agents
+              gives agents files
             </h1>
 
             <p className={s.subtitle}>
-              Relayfile gives AI agents one place to read, write, watch, and
-              coordinate files. Shared volumes, locks, metadata, and realtime
-              change events let multi-agent systems work on the same state
-              without building storage plumbing first.
+              Mount Linear, GitHub, Notion, Slack, HubSpot, Salesforce, and your own systems as a realtime
+              filesystem. Agents inspect provider data with bash, write records by saving files, and
+              coordinate through scoped mounts instead of bespoke tool glue.
             </p>
 
             <div className={s.ctas}>
@@ -406,21 +449,16 @@ export function RelayfileContent() {
 
       <div className={s.featuresWrapper}>
         <div className={s.featuresHeader}>
-          <h2 className={s.featuresTitle}>Filesystem primitives for agent coordination</h2>
+          <h2 className={s.featuresTitle}>The file interface for integration work</h2>
           <p className={s.featuresSubtitle}>
-            Everything agents need to share state, react to changes, and work
-            safely in parallel.
+            Relayfile turns the systems where work happens into paths an agent can list, read, grep, edit, and
+            watch.
           </p>
         </div>
 
         <section className={s.featuresSection}>
           {featureCards.map((feature, index) => (
-            <FadeIn
-              key={feature.title}
-              direction="up"
-              delay={index * 45}
-              className={s.featureCol}
-            >
+            <FadeIn key={feature.title} direction="up" delay={index * 45} className={s.featureCol}>
               <div className={s.featureTile}>
                 <div className={s.featureChip}>{String(index + 1).padStart(2, '0')}</div>
                 <h3 className={s.featureTitle}>{feature.title}</h3>
@@ -434,17 +472,16 @@ export function RelayfileContent() {
       <div className={s.byohWrapper}>
         <section className={s.byohSection}>
           <FadeIn direction="up" className={s.byohText}>
-            <h2 className={s.byohTitle}>Works with every AI tool</h2>
+            <h2 className={s.byohTitle}>Mount the systems agents actually use</h2>
             <p className={s.byohSubtitle}>
-              Use Relayfile from coding agents, task runners, MCP hosts, CI, or
-              your own orchestration layer. If it can make HTTP calls, it can
-              share files through Relayfile.
+              Provider auth, pagination, sync, and writeback stay behind the mount. The agent sees one
+              workspace tree with layouts, indexes, digests, and provider records side by side.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={120} className={s.byohLogos}>
-            {toolBadges.map((tool) => (
-              <span key={tool} className={s.toolBadge}>
-                {tool}
+            {integrationBadges.map((integration) => (
+              <span key={integration} className={s.toolBadge}>
+                {integration}
               </span>
             ))}
           </FadeIn>
@@ -455,11 +492,10 @@ export function RelayfileContent() {
         <section className={s.sdkSection}>
           <FadeIn direction="right" className={s.sdkText}>
             <span className={s.openclawBadge}>SDK</span>
-            <h2 className={s.sdkTitle}>One API surface across every client</h2>
+            <h2 className={s.sdkTitle}>Use the same files from code, HTTP, or a mount</h2>
             <p className={s.sdkSubtitle}>
-              Read files, watch directories, and attach metadata from
-              TypeScript, Python, or straight HTTP. The primitives stay the
-              same even when your harness changes.
+              Vercel AI SDK, Claude Agent SDK, OpenAI Agents SDK, scripts, and terminal-native agents can all
+              read the same workspace tree and write through the same contract.
             </p>
 
             <div className={s.tabRow}>
@@ -508,7 +544,7 @@ export function RelayfileContent() {
           <FadeIn direction="up">
             <h2 className={s.deployTitle}>Why Relayfile</h2>
             <p className={s.deploySubtitle}>
-              Purpose-built shared storage for multi-agent systems.
+              Purpose-built for agents that need to work across real SaaS systems.
             </p>
           </FadeIn>
 
@@ -531,11 +567,10 @@ export function RelayfileContent() {
       <div className={s.openclawWrapper}>
         <section className={s.openclawSection}>
           <FadeIn direction="right" className={s.openclawText}>
-            <h2 className={s.openclawTitle}>Get started in three requests</h2>
+            <h2 className={s.openclawTitle}>Get useful in three moves</h2>
             <p className={s.openclawSubtitle}>
-              Create a workspace, write shared state, and subscribe to file
-              changes. Relayfile is designed to be useful before you build any
-              additional abstractions around it.
+              Connect a provider, read the generated workspace, then write back through the same file
+              interface. The first useful workflow is a directory listing, not a framework migration.
             </p>
           </FadeIn>
 
@@ -562,12 +597,14 @@ export function RelayfileContent() {
           <div className={s.poweredCard}>
             <span className={s.poweredEyebrow}>Powered by Agent Relay</span>
             <p className={s.poweredText}>
-              Relayfile extends the Agent Relay platform with shared storage for
-              agents that communicate, coordinate, and act on the same files.
+              Relayfile extends the Agent Relay platform with shared storage for agents that communicate,
+              coordinate, and act on the same files.
             </p>
           </div>
         </FadeIn>
       </div>
+
+      <SiteFooter />
     </div>
   );
 }

@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: code-review
-description: "Blueprint-style parallel code review with deterministic diff capture."
+description: 'Blueprint-style parallel code review with deterministic diff capture.'
 swarm:
   pattern: fan-out
   maxConcurrency: 4
@@ -13,26 +13,30 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Aggregates review output and final recommendations"
+    role: 'Aggregates review output and final recommendations'
+    permissions: { access: full }
   - name: reviewer-architecture
     cli: codex
-    role: "Assesses architecture and maintainability"
+    role: 'Assesses architecture and maintainability'
+    permissions: { access: readonly }
     interactive: false
   - name: reviewer-correctness
     cli: claude
-    role: "Assesses correctness and testing"
+    role: 'Assesses correctness and testing'
+    permissions: { access: readonly }
     interactive: false
   - name: reviewer-security
     cli: gemini
-    role: "Assesses security posture and abuse resistance"
+    role: 'Assesses security posture and abuse resistance'
+    permissions: { access: readonly }
     interactive: false
 workflows:
   - name: parallel-review
-    description: "Run focused reviews in parallel and synthesize final guidance."
+    description: 'Run focused reviews in parallel and synthesize final guidance.'
     onError: fail
     preflight:
       - command: git diff --stat HEAD~1 2>/dev/null || git diff --stat 2>/dev/null || echo "No diff available"
-        description: "Check there are changes to review"
+        description: 'Check there are changes to review'
     steps:
       # Deterministic: Capture diff for review
       - name: capture-diff

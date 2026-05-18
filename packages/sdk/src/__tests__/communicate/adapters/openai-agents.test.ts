@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 
 const adapterModulePath = '../../../communicate/adapters/openai-agents.js';
 
@@ -36,7 +36,9 @@ class FakeRelay {
   }
 }
 
-function createAgent(instructions: string | ((...args: unknown[]) => string | Promise<string>) = 'You are a helpful agent.') {
+function createAgent(
+  instructions: string | ((...args: unknown[]) => string | Promise<string>) = 'You are a helpful agent.'
+) {
   return {
     name: 'TestAgent',
     instructions,
@@ -53,13 +55,7 @@ test('onRelay appends relay tools to agent.tools', async () => {
   const result = onRelay(agent, relay);
 
   const toolNames = result.agent.tools.map((t: any) => t.name);
-  assert.deepEqual(toolNames, [
-    'existing-tool',
-    'relay_send',
-    'relay_inbox',
-    'relay_post',
-    'relay_agents',
-  ]);
+  assert.deepEqual(toolNames, ['existing-tool', 'relay_send', 'relay_inbox', 'relay_post', 'relay_agents']);
 
   for (const toolName of ['relay_send', 'relay_inbox', 'relay_post', 'relay_agents']) {
     const tool = result.agent.tools.find((t: any) => t.name === toolName);

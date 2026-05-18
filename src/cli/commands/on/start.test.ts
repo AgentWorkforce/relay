@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@agent-relay/cloud', () => ({
+  readStoredAuth: vi.fn().mockResolvedValue(null),
   ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
 }));
 
@@ -13,6 +14,7 @@ vi.mock('./dotfiles.js', () => ({
 }));
 
 import { requestWorkspaceSession } from './start.js';
+import { createLocalJwksKeyPair } from '../../../../packages/sdk/src/provisioner/local-jwks.js';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -24,6 +26,11 @@ function jsonResponse(payload: unknown, status = 200): Response {
 function decodeJwtPayload(token: string): Record<string, unknown> {
   const [, payload = ''] = token.split('.');
   return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
+}
+
+function testSigningKey() {
+  const { privateKey, kid } = createLocalJwksKeyPair();
+  return { privateKey, kid };
 }
 
 describe('requestWorkspaceSession', () => {
@@ -134,7 +141,7 @@ describe('requestWorkspaceSession', () => {
         workspaceName: 'my-project',
         agentName: 'codex',
         scopes: ['fs:read', 'fs:write'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         fetchFn: fetchFn as unknown as typeof fetch,
       });
@@ -161,6 +168,78 @@ describe('requestWorkspaceSession', () => {
         createdAt: '2026-03-27T00:00:00Z',
         agents: ['codex'],
       });
+    } finally {
+      rmSync(relayDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses local session when preferLocalSession is true even with a remote authBase', async () => {
+    const relayDir = mkdtempSync(path.join(tmpdir(), 'agent-relay-on-'));
+    try {
+      const fetchFn = vi.fn(async () =>
+        jsonResponse({
+          ok: true,
+          data: { api_key: 'rk_live_relaycast', created_at: '2026-04-01T00:00:00Z' },
+        })
+      );
+
+      const session = await requestWorkspaceSession({
+        authBase: 'https://agentrelay.dev/cloud',
+        fallbackRelayfileUrl: 'http://127.0.0.1:8080',
+        workspaceName: 'my-project',
+        agentName: 'claude',
+        scopes: ['fs:read', 'fs:write'],
+        tokenSigningKey: testSigningKey(),
+        relayDir,
+        preferLocalSession: true,
+        fetchFn: fetchFn as unknown as typeof fetch,
+      });
+
+      // Should NOT have called the cloud workspace create endpoint
+      expect(fetchFn).not.toHaveBeenCalledWith(
+        expect.stringContaining('agentrelay.dev/cloud'),
+        expect.anything()
+      );
+      // Should have called the relaycast API for the workspace key
+      expect(fetchFn).toHaveBeenCalledWith(
+        'https://api.relaycast.dev/v1/workspaces',
+        expect.objectContaining({ method: 'POST' })
+      );
+      expect(session.created).toBe(true);
+      expect(session.workspaceId).toMatch(/^rw_[a-z0-9]{8}$/);
+      expect(session.relaycastApiKey).toBe('rk_live_relaycast');
+
+      const claims = decodeJwtPayload(session.token);
+      expect(claims.wks).toBe(session.workspaceId);
+      expect(claims.agent_name).toBe('claude');
+    } finally {
+      rmSync(relayDir, { recursive: true, force: true });
+    }
+  });
+
+  it('proceeds without relaycastApiKey when relaycast is unavailable in local session', async () => {
+    const relayDir = mkdtempSync(path.join(tmpdir(), 'agent-relay-on-'));
+    try {
+      const fetchFn = vi.fn(async () => {
+        throw new Error('network error');
+      });
+
+      const session = await requestWorkspaceSession({
+        authBase: 'https://agentrelay.dev/cloud',
+        fallbackRelayfileUrl: 'http://127.0.0.1:8080',
+        workspaceName: 'my-project',
+        agentName: 'claude',
+        scopes: ['fs:read'],
+        tokenSigningKey: testSigningKey(),
+        relayDir,
+        preferLocalSession: true,
+        fetchFn: fetchFn as unknown as typeof fetch,
+      });
+
+      expect(session.created).toBe(true);
+      expect(session.workspaceId).toMatch(/^rw_[a-z0-9]{8}$/);
+      expect(session.relaycastApiKey).toBeUndefined();
+      expect(session.token).toBeTruthy();
     } finally {
       rmSync(relayDir, { recursive: true, force: true });
     }
@@ -193,7 +272,7 @@ describe('requestWorkspaceSession', () => {
         requestedWorkspaceId: 'rw_a7f3x9k2',
         agentName: 'claude',
         scopes: ['fs:read'],
-        signingSecret: 'dev-secret',
+        tokenSigningKey: testSigningKey(),
         relayDir,
         fetchFn: fetchFn as unknown as typeof fetch,
       });

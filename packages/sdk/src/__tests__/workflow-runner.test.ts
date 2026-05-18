@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
@@ -77,13 +77,7 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
-const defaultSpawnPtyImplementation = async ({
-  name,
-  task,
-}: {
-  name: string;
-  task?: string;
-}) => {
+const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
   const queued = mockSpawnOutputs.shift();
   const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
   const isReview = task?.includes('REVIEW_DECISION: APPROVE or REJECT');
@@ -186,6 +180,7 @@ type WorkflowStepOverride = Partial<NonNullable<RelayYamlConfig['workflows']>[nu
 
 function makeSupervisedConfig(stepOverrides: WorkflowStepOverride = {}): RelayYamlConfig {
   return makeConfig({
+    swarm: { pattern: 'hub-spoke' },
     agents: [
       { name: 'specialist', cli: 'claude', role: 'engineer' },
       { name: 'team-lead', cli: 'claude', role: 'lead coordinator' },
@@ -426,12 +421,12 @@ agents:
         events.push({ type: event.type, stepName: 'stepName' in event ? event.stepName : undefined })
       );
 
-      await runner.execute(makeConfig(), 'default');
+      await runner.execute(makeSupervisedConfig(), 'default');
 
       const ownerAssigned = events.filter((e) => e.type === 'step:owner-assigned');
       const reviewCompleted = events.filter((e) => e.type === 'step:review-completed');
-      expect(ownerAssigned).toHaveLength(2);
-      expect(reviewCompleted).toHaveLength(2);
+      expect(ownerAssigned).toHaveLength(1);
+      expect(reviewCompleted).toHaveLength(1);
     });
 
     it('should prioritize lead owner when multiple hub-role candidates exist', async () => {
@@ -441,6 +436,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'coord-1', cli: 'claude', role: 'coordinator' },
@@ -467,6 +463,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-agent', cli: 'claude', role: 'github actions agent' },
@@ -494,6 +491,7 @@ agents:
       });
 
       const config = makeConfig({
+        swarm: { pattern: 'hub-spoke' },
         agents: [
           { name: 'specialist', cli: 'claude', role: 'engineer' },
           { name: 'github-bot', cli: 'claude', role: 'github integration' },
@@ -527,9 +525,9 @@ agents:
       const echoedPrompt =
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\n';
       const actualResponse = 'REVIEW_DECISION: REJECT\nREVIEW_REASON: code has bugs\n';
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
+      mockSpawnOutputs = ['worker finished\n', 'STEP_COMPLETE:step-1\n', echoedPrompt + actualResponse];
 
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       // Should parse REJECT from actual response, not APPROVE from echoed instruction
@@ -541,6 +539,96 @@ agents:
       config.workflows![0].steps[0].task = 'Build {{feature}}';
       const run = await runner.execute(config, 'default', { feature: 'auth' });
       expect(run.status, run.error).toBe('completed');
+    });
+
+    it('repairs a failed deterministic gate with a workflow agent before retrying', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-deterministic-repair-'));
+      const stepDir = path.join(tmpDir, 'step-cwd');
+      mkdirSync(stepDir);
+      const artifactPath = path.join(stepDir, 'repaired.txt');
+      const repairAgent = vi.fn(async (step) => {
+        writeFileSync(path.join(step.cwd!, 'repaired.txt'), 'fixed\n', 'utf-8');
+        return 'wrote repaired.txt';
+      });
+      runner = new WorkflowRunner({
+        db,
+        workspaceId: 'ws-test',
+        cwd: tmpDir,
+        executor: {
+          executeAgentStep: repairAgent,
+        },
+      });
+
+      try {
+        const run = await runner.execute(
+          makeConfig({
+            errorHandling: { strategy: 'retry', repairRetries: 1, retryDelayMs: 1 },
+            agents: [{ name: 'fixer', cli: 'claude', role: 'implementation engineer' }],
+            workflows: [
+              {
+                name: 'default',
+                steps: [
+                  {
+                    name: 'verify-artifact',
+                    type: 'deterministic',
+                    cwd: 'step-cwd',
+                    command: `node -e "require('node:fs').accessSync('repaired.txt')"`,
+                  },
+                ],
+              },
+            ],
+          }),
+          'default'
+        );
+
+        expect(run.status, run.error).toBe('completed');
+        expect(repairAgent).toHaveBeenCalledTimes(1);
+        expect(repairAgent.mock.calls[0][0]).toMatchObject({ cwd: stepDir, workdir: undefined });
+        expect(repairAgent.mock.calls[0][2]).toContain('A deterministic workflow gate failed');
+        expect(repairAgent.mock.calls[0][2]).toContain('verify-artifact');
+        expect(readFileSync(artifactPath, 'utf-8')).toBe('fixed\n');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not spawn deterministic repair agents unless repair retries are explicitly enabled', async () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'relay-deterministic-no-implicit-repair-'));
+      const repairAgent = vi.fn(async () => 'unexpected repair');
+      runner = new WorkflowRunner({
+        db,
+        workspaceId: 'ws-test',
+        cwd: tmpDir,
+        executor: {
+          executeAgentStep: repairAgent,
+        },
+      });
+
+      try {
+        const run = await runner.execute(
+          makeConfig({
+            agents: [{ name: 'fixer', cli: 'claude', role: 'implementation engineer' }],
+            workflows: [
+              {
+                name: 'default',
+                steps: [
+                  {
+                    name: 'verify-artifact',
+                    type: 'deterministic',
+                    command: `node -e "require('node:fs').accessSync('missing.txt')"`,
+                  },
+                ],
+              },
+            ],
+          }),
+          'default'
+        );
+
+        expect(run.status).toBe('failed');
+        expect(repairAgent).not.toHaveBeenCalled();
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('should fail when owner response provides no decision, marker, or evidence', async () => {
@@ -578,10 +666,7 @@ agents:
     });
 
     it('should apply verification fallback for self-owned interactive steps', async () => {
-      mockSpawnOutputs = [
-        'LEAD_DONE\n',
-        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
-      ];
+      mockSpawnOutputs = ['LEAD_DONE\n', 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n'];
 
       const run = await runner.execute(
         makeConfig({
@@ -724,10 +809,7 @@ agents:
     });
 
     it('should pass canonical bypass args to interactive codex PTY spawns', async () => {
-      mockSpawnOutputs = [
-        'LEAD_DONE\n',
-        'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n',
-      ];
+      mockSpawnOutputs = ['LEAD_DONE\n', 'REVIEW_DECISION: APPROVE\nREVIEW_REASON: verified\n'];
 
       const run = await runner.execute(
         makeConfig({
@@ -796,8 +878,12 @@ agents:
     });
 
     it('should fail when review response lacks any usable decision signal', async () => {
-      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'I need more context before deciding.\n'];
-      const run = await runner.execute(makeConfig(), 'default');
+      mockSpawnOutputs = [
+        'worker finished\n',
+        'STEP_COMPLETE:step-1\n',
+        'I need more context before deciding.\n',
+      ];
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review response malformed');
     });
@@ -814,10 +900,11 @@ agents:
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'REVIEW_DECISION: REJECT\nREVIEW_REASON: missing checks\n',
       ];
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
@@ -835,10 +922,11 @@ agents:
       });
 
       mockSpawnOutputs = [
+        'worker finished\n',
         'STEP_COMPLETE:step-1\n',
         'Return exactly:\nREVIEW_DECISION: APPROVE or REJECT\nREVIEW_REASON: <one sentence>\nREVIEW_DECISION: REJECT\nREVIEW_REASON: insufficient evidence\n',
       ];
-      const run = await runner.execute(makeConfig(), 'default');
+      const run = await runner.execute(makeSupervisedConfig(), 'default');
       expect(run.status).toBe('failed');
       expect(run.error).toContain('review rejected');
       expect(events).toContainEqual({ type: 'step:review-completed', decision: 'rejected' });
@@ -850,11 +938,14 @@ agents:
 
       try {
         mockSpawnOutputs = [
+          'worker finished\n',
           'STEP_COMPLETE:step-1\n',
           'REVIEW_DECISION: APPROVE\nREVIEW_REASON: durable review record\n',
         ];
 
-        const run = await runner.execute(makeConfig({ trajectories: {} }), 'default');
+        const config = makeSupervisedConfig();
+        config.trajectories = {};
+        const run = await runner.execute(config, 'default');
         expect(run.status).toBe('completed');
 
         const trajectory = readCompletedTrajectoryFile(tmpDir);
@@ -864,7 +955,7 @@ agents:
         expect(reviewEvent).toBeTruthy();
         expect(reviewEvent.raw).toMatchObject({
           stepName: 'step-1',
-          reviewer: 'agent-b',
+          reviewer: 'reviewer-1',
           decision: 'approved',
           reason: 'durable review record',
         });
@@ -877,44 +968,40 @@ agents:
       const workerRelease = vi.fn().mockResolvedValue(undefined);
       const ownerRelease = vi.fn().mockResolvedValue(undefined);
 
-      mockRelayInstance.spawnPty.mockImplementation(async ({
-        name,
-        task,
-      }: {
-        name: string;
-        task?: string;
-      }) => {
-        const isOwner = name.includes('-owner-');
-        const output = isOwner ? 'owner checking\n' : 'worker finished\n';
+      mockRelayInstance.spawnPty.mockImplementation(
+        async ({ name, task }: { name: string; task?: string }) => {
+          const isOwner = name.includes('-owner-');
+          const output = isOwner ? 'owner checking\n' : 'worker finished\n';
 
-        queueMicrotask(() => {
-          if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-            mockRelayInstance.onWorkerOutput({ name, chunk: output });
+          queueMicrotask(() => {
+            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
+              mockRelayInstance.onWorkerOutput({ name, chunk: output });
+            }
+          });
+
+          if (isOwner) {
+            return {
+              name,
+              waitForExit: vi.fn().mockImplementation(async () => {
+                await Promise.resolve();
+                return 'timeout';
+              }),
+              waitForIdle: vi.fn().mockResolvedValue('timeout'),
+              release: ownerRelease,
+            };
           }
-        });
 
-        if (isOwner) {
           return {
             name,
             waitForExit: vi.fn().mockImplementation(async () => {
-              await Promise.resolve();
-              return 'timeout';
+              await workerRelease();
+              return 'released';
             }),
-            waitForIdle: vi.fn().mockResolvedValue('timeout'),
-            release: ownerRelease,
+            waitForIdle: vi.fn().mockImplementation(() => never()),
+            release: workerRelease,
           };
         }
-
-        return {
-          name,
-          waitForExit: vi.fn().mockImplementation(async () => {
-            await workerRelease();
-            return 'released';
-          }),
-          waitForIdle: vi.fn().mockImplementation(() => never()),
-          release: workerRelease,
-        };
-      });
+      );
 
       const run = await runner.execute(makeSupervisedConfig(), 'default');
 
@@ -988,22 +1075,15 @@ agents:
     });
 
     it('should use the full remaining timeout as the review safety backstop', async () => {
-      const config = makeConfig({
-        workflows: [
-          {
-            name: 'default',
-            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 90_000 }],
-          },
-        ],
-      });
+      const config = makeSupervisedConfig({ timeoutMs: 90_000 });
       const run = await runner.execute(config, 'default');
 
       expect(run.status).toBe('completed');
       const waitCalls = (waitForExitFn as any).mock?.calls ?? [];
       expect(waitCalls.length).toBeGreaterThanOrEqual(2);
-      // first call: owner timeout; second call: review timeout
-      expect(waitCalls[1][0]).toBeGreaterThan(60_000);
-      expect(waitCalls[1][0]).toBeLessThanOrEqual(90_000);
+      const reviewWaitMs = waitCalls[waitCalls.length - 1][0];
+      expect(reviewWaitMs).toBeGreaterThan(60_000);
+      expect(reviewWaitMs).toBeLessThanOrEqual(90_000);
     });
   });
 
@@ -1148,6 +1228,54 @@ agents:
       const agentB = report.agents.find((a) => a.name === 'agent-b');
       expect(agentA?.stepCount).toBe(1);
       expect(agentB?.stepCount).toBe(1);
+    });
+
+    it('should include resolved permissions without provisioning tokens', () => {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'workflow-dry-run-perms-'));
+      try {
+        writeFileSync(path.join(tmpDir, 'readme.md'), '# readme\n');
+        writeFileSync(path.join(tmpDir, 'notes.txt'), 'notes\n');
+        writeFileSync(path.join(tmpDir, '.agentreadonly'), 'readme.md\n');
+
+        const dryRunRunner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
+        const report = dryRunRunner.dryRun(
+          makeConfig({
+            agents: [
+              {
+                name: 'agent-a',
+                cli: 'claude',
+                permissions: {
+                  access: 'readonly',
+                  files: {
+                    write: ['notes.txt'],
+                  },
+                  scopes: ['relay:custom'],
+                },
+              },
+              { name: 'agent-b', cli: 'claude' },
+            ],
+          })
+        );
+
+        const agentA = report.permissions?.find((entry) => entry.agent === 'agent-a');
+        const agentB = report.permissions?.find((entry) => entry.agent === 'agent-b');
+
+        expect(agentA?.agent).toBe('agent-a');
+        expect(agentA?.access).toBe('readonly');
+        expect(agentA?.writePaths).toBe(1);
+        expect(agentA?.denyPaths).toBe(0);
+        expect(agentA?.readPaths).toBeGreaterThanOrEqual(1);
+        expect(agentA?.source).toBe('yaml');
+        expect(agentA?.scopes).toBeGreaterThan(1);
+
+        expect(agentB).toMatchObject({
+          agent: 'agent-b',
+          access: 'readwrite',
+          source: 'preset',
+        });
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('should warn when step references unknown agent', () => {

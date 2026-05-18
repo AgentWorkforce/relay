@@ -26,6 +26,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   e2e-test:
     name: E2E Integration Test

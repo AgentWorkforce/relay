@@ -1,17 +1,15 @@
 {
   "name": "agent-relay",
-  "version": "4.0.0",
+  "version": "6.0.22",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/src/index.d.ts",
   "files": [
     "dist",
-    "bin",
     "install.sh",
     "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
-    "packages",
     "relay-snippets",
     "LICENSE",
     "README.md"
@@ -23,64 +21,19 @@
       "import": "./dist/src/index.js",
       "default": "./dist/index.cjs"
     },
-    "./package.json": "./package.json",
-    "./broker": {
-      "types": "./packages/sdk/dist/index.d.ts",
-      "import": "./packages/sdk/dist/index.js",
-      "default": "./packages/sdk/dist/index.js"
-    },
-    "./broker/client": {
-      "types": "./packages/sdk/dist/client.d.ts",
-      "import": "./packages/sdk/dist/client.js",
-      "default": "./packages/sdk/dist/client.js"
-    },
-    "./broker/protocol": {
-      "types": "./packages/sdk/dist/protocol.d.ts",
-      "import": "./packages/sdk/dist/protocol.js",
-      "default": "./packages/sdk/dist/protocol.js"
-    },
-    "./broker/relay": {
-      "types": "./packages/sdk/dist/relay.d.ts",
-      "import": "./packages/sdk/dist/relay.js",
-      "default": "./packages/sdk/dist/relay.js"
-    },
-    "./broker/logs": {
-      "types": "./packages/sdk/dist/logs.d.ts",
-      "import": "./packages/sdk/dist/logs.js",
-      "default": "./packages/sdk/dist/logs.js"
-    },
-    "./broker/consensus": {
-      "types": "./packages/sdk/dist/consensus.d.ts",
-      "import": "./packages/sdk/dist/consensus.js",
-      "default": "./packages/sdk/dist/consensus.js"
-    },
-    "./broker/shadow": {
-      "types": "./packages/sdk/dist/shadow.d.ts",
-      "import": "./packages/sdk/dist/shadow.js",
-      "default": "./packages/sdk/dist/shadow.js"
-    },
-    "./broker/browser": {
-      "types": "./packages/sdk/dist/browser.d.ts",
-      "import": "./packages/sdk/dist/browser.js",
-      "default": "./packages/sdk/dist/browser.js"
-    }
+    "./package.json": "./package.json"
   },
   "bin": {
-    "agent-relay": "dist/src/cli/index.js"
+    "agent-relay": "dist/src/cli/index.js",
+    "relay": "dist/src/cli/index.js"
   },
   "workspaces": [
     "packages/*",
     "web"
   ],
   "bundledDependencies": [
-    "@agent-relay/cloud",
-    "@agent-relay/config",
-    "@agent-relay/hooks",
-    "@agent-relay/sdk",
-    "@agent-relay/telemetry",
-    "@agent-relay/trajectory",
-    "@agent-relay/user-directory",
-    "@agent-relay/utils"
+    "@relaycast/sdk",
+    "@relayfile/local-mount"
   ],
   "publishConfig": {
     "access": "public"
@@ -103,9 +56,9 @@
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "postbuild": "chmod +x dist/src/cli/bootstrap.js dist/src/cli/index.js && npm run build:cjs",
-    "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi",
+    "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi && node scripts/prepack-materialize-workspaces.mjs && node scripts/verify-bundled-deps.mjs",
+    "prepublishOnly": "node scripts/verify-bundled-deps.mjs",
     "dev:watch": "tsc -w",
-    "docs": "cd ./docs && npx mintlify dev",
     "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch dist/src/cli/index.js start dashboard.js claude\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
@@ -130,8 +83,8 @@
     "knip": "knip",
     "syncpack": "syncpack list-mismatches",
     "audit:deps": "node scripts/audit-bundled-deps.mjs",
+    "pack:validate": "node scripts/validate-npm-tarball.mjs",
     "clean": "rm -rf dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
-    "docs:dev": "cd docs && npm run dev",
     "hooks:install": "./scripts/hooks/install.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -142,7 +95,8 @@
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
     "prepare": "node scripts/prepare-husky.cjs",
-    "dev:web": "cd web && ../node_modules/.bin/sst dev"
+    "dev:web": "cd web && ../node_modules/.bin/sst dev",
+    "web": "cd web && npm run dev"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -153,7 +107,7 @@
     ],
     "packages/shared/cli-registry.yaml": [
       "npm run codegen:models",
-      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/agent_relay/models.py packages/sdk-py/agent_relay/__init__.py"
+      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py"
     ]
   },
   "keywords": [
@@ -166,7 +120,7 @@
     "codex",
     "gemini"
   ],
-  "author": "AgentWorkforce <hi@agent-relay.com>",
+  "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -177,28 +131,31 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/cloud": "4.0.0",
-    "@agent-relay/config": "4.0.0",
-    "@agent-relay/hooks": "4.0.0",
-    "@agent-relay/sdk": "4.0.0",
-    "@agent-relay/telemetry": "4.0.0",
-    "@agent-relay/trajectory": "4.0.0",
-    "@agent-relay/user-directory": "4.0.0",
-    "@agent-relay/utils": "4.0.0",
+    "@agent-relay/cloud": "6.0.22",
+    "@agent-relay/config": "6.0.22",
+    "@agent-relay/hooks": "6.0.22",
+    "@agent-relay/sdk": "6.0.22",
+    "@agent-relay/telemetry": "6.0.22",
+    "@agent-relay/trajectory": "6.0.22",
+    "@agent-relay/user-directory": "6.0.22",
+    "@agent-relay/utils": "6.0.22",
     "@aws-sdk/client-s3": "3.1020.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
     "@relayauth/sdk": "^0.1.2",
     "@relaycast/mcp": "1.0.0",
-    "@relaycast/sdk": "1.0.0",
-    "@relayfile/sdk": "^0.1.2",
+    "@relaycast/sdk": "^1.1.0",
+    "@relayfile/local-mount": "^0.2.2",
+    "@relayfile/sdk": "^0.6.0",
     "@sinclair/typebox": "^0.34.14",
+    "agent-trajectories": "^0.5.8",
     "chalk": "^4.1.2",
     "chokidar": "^5.0.0",
     "commander": "^12.1.0",
     "compare-versions": "^6.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.27.2",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
     "ignore": "^7.0.5",
@@ -228,9 +185,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
     "@vitest/coverage-v8": "^3.2.4",
-    "agent-trajectories": "^0.4.1",
     "concurrently": "^9.2.1",
-    "esbuild": "^0.27.2",
     "eslint": "^8.57.1",
     "husky": "^9.1.7",
     "jsdom": "^25.0.1",
@@ -239,7 +194,7 @@
     "sst": "^4.5.1",
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
-    "typescript": "^5.9.3",
+    "typescript": "5.9.3",
     "vitest": "^3.2.4"
   },
   "engines": {
@@ -250,15 +205,5 @@
     "flatted": "^3.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-  },
-  "bundleDependencies": [
-    "@agent-relay/cloud",
-    "@agent-relay/config",
-    "@agent-relay/hooks",
-    "@agent-relay/sdk",
-    "@agent-relay/telemetry",
-    "@agent-relay/trajectory",
-    "@agent-relay/user-directory",
-    "@agent-relay/utils"
-  ]
+  }
 }

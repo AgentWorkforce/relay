@@ -55,7 +55,7 @@ describe('client-factory', () => {
       cwd: '/tmp/project',
       channels: ['ops'],
       binaryPath: '/custom/broker',
-      binaryArgs: ['--debug'],
+      binaryArgs: { persist: true, apiPort: 4321 },
       env: { TEST: '1' } as unknown as NodeJS.ProcessEnv,
     });
 
@@ -64,7 +64,7 @@ describe('client-factory', () => {
         cwd: '/tmp/project',
         channels: ['ops'],
         binaryPath: '/custom/broker',
-        binaryArgs: ['--debug'],
+        binaryArgs: { persist: true, apiPort: 4321 },
       })
     );
   });

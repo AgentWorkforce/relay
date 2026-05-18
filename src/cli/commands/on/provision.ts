@@ -2,13 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { createWorkspace, seedAclRules, seedWorkspace as seedWorkspaceFiles } from './workspace.js';
-import { compileDotfiles, discoverAgents as discoverAgentsFromCore, hasDotfiles as hasDotfilesFromCore } from './dotfiles.js';
-import { mintToken } from './token.js';
+import {
+  compileDotfiles,
+  discoverAgents as discoverAgentsFromCore,
+  hasDotfiles as hasDotfilesFromCore,
+} from './dotfiles.js';
+import { mintAgentToken as mintToken } from '../../../../packages/sdk/src/provisioner/token.js';
+import type { LocalJwksSigningKey } from '../../../../packages/sdk/src/provisioner/local-jwks.js';
 
 interface ProvisionConfig {
   relayauthRoot: string;
   relayfileRoot: string;
-  secret: string;
+  tokenSigningKey: LocalJwksSigningKey;
   workspace: string;
   projectDir: string;
   portAuth: number;
@@ -93,24 +98,25 @@ function mergeAcl(target: Record<string, string[]>, source: Record<string, strin
 }
 
 function tokenForScope(
-  secret: string,
+  tokenSigningKey: LocalJwksSigningKey,
   subject: string,
   agentName: string,
   workspace: string,
   scopes: string[]
 ): string {
   const token = mintToken({
-    secret,
+    privateKey: tokenSigningKey.privateKey,
+    kid: tokenSigningKey.kid,
     agentName,
     workspace,
     scopes,
+    ttlSeconds: 3600,
   });
   if (!token) {
     throw new Error(`failed to mint token for ${subject}`);
   }
   return token;
 }
-
 
 export async function provision(config: ProvisionConfig): Promise<ProvisionResult> {
   const projectDir = normalizeRoot(config.projectDir);
@@ -138,7 +144,7 @@ export async function provision(config: ProvisionConfig): Promise<ProvisionResul
   let readwriteCount = 0;
 
   const adminToken = tokenForScope(
-    config.secret,
+    config.tokenSigningKey,
     'relay-admin',
     'relay-admin',
     config.workspace,
@@ -148,11 +154,11 @@ export async function provision(config: ProvisionConfig): Promise<ProvisionResul
   for (const agentName of discoveredAgents) {
     const compiled = compileAgent(projectDir, config.workspace, agentName);
     const agentToken = tokenForScope(
-      config.secret,
+      config.tokenSigningKey,
       `agent_${agentName}`,
       agentName,
       config.workspace,
-      compiled.scopes,
+      compiled.scopes
     );
 
     const tokenPath = path.join(projectDir, '.relay', 'tokens', `${agentName}.jwt`);
@@ -179,26 +185,22 @@ export async function provision(config: ProvisionConfig): Promise<ProvisionResul
   }
 
   try {
-    await createWorkspace(
-      relayfileBaseUrl,
-      adminToken,
-      config.workspace,
-    );
+    await createWorkspace(relayfileBaseUrl, adminToken, config.workspace);
   } catch (error) {
     // Workspace creation is optional for local seeding, but log auth failures
     // to prevent silent token leaks in subsequent seedWorkspaceFiles calls.
     const status = (error as { status?: number }).status;
     if (status === 401 || status === 403) {
-      throw new Error(`Workspace creation failed with auth error (HTTP ${status}). Aborting to prevent token misuse.`);
+      throw new Error(
+        `Workspace creation failed with auth error (HTTP ${status}). Aborting to prevent token misuse.`
+      );
     }
   }
-  const seededCount = await seedWorkspaceFiles(
-    relayfileBaseUrl,
-    adminToken,
-    config.workspace,
-    projectDir,
-    ['.relay', '.git', 'node_modules'],
-  );
+  const seededCount = await seedWorkspaceFiles(relayfileBaseUrl, adminToken, config.workspace, projectDir, [
+    '.relay',
+    '.git',
+    'node_modules',
+  ]);
   if (discoveredHasDotfiles) {
     const mergedPayload = {
       workspace: config.workspace,

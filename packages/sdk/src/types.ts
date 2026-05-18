@@ -25,6 +25,14 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
+  agentToken?: string;
 }
 
 export interface SpawnHeadlessInput {
@@ -34,6 +42,14 @@ export interface SpawnHeadlessInput {
   channels?: string[];
   task?: string;
   skipRelayPrompt?: boolean;
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
+  agentToken?: string;
 }
 
 export type AgentTransport = 'pty' | 'headless';
@@ -54,6 +70,14 @@ export interface SpawnProviderInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
+  agentToken?: string;
 }
 
 export interface SendMessageInput {

@@ -637,6 +637,51 @@ function drawDeniedLabel(ctx: CanvasRenderingContext2D, x: number, y: number, al
   ctx.restore();
 }
 
+function advanceMessage(message: Message) {
+  if (message.kind === 'denied') {
+    if (message.t < 0.7) {
+      message.t = Math.min(message.t + message.speed, 0.7);
+      return;
+    }
+
+    message.blockedAge = (message.blockedAge ?? 0) + 1;
+    return;
+  }
+
+  message.t += message.speed;
+}
+
+function handleDeniedMessageFrame(
+  ctx: CanvasRenderingContext2D,
+  nodes: AgentNode[],
+  message: Message,
+  blockedMarks: BlockedMark[],
+  x: number,
+  y: number
+): 'active' | 'remove' | 'ignore' {
+  if (message.kind !== 'denied' || message.t < 0.7) {
+    return 'ignore';
+  }
+
+  const blockedAge = message.blockedAge ?? 0;
+  const blinkAlpha = blockedAge < 10
+    ? (blockedAge % 2 === 0 ? 1 : 0.3)
+    : Math.max(0, 1 - (blockedAge - 10) / 30);
+
+  drawAuthPulse(ctx, x, y, message.kind, blinkAlpha);
+
+  if (blockedAge === 0) {
+    setNodeDenied(nodes[message.from]);
+    spawnBlockedMark(blockedMarks, x, y);
+  }
+
+  if (blockedAge >= 10) {
+    drawDeniedLabel(ctx, x, y, Math.max(0, 1 - (blockedAge - 10) / 30));
+  }
+
+  return blockedAge >= 40 ? 'remove' : 'active';
+}
+
 function drawMessages(
   ctx: CanvasRenderingContext2D,
   nodes: AgentNode[],
@@ -647,16 +692,7 @@ function drawMessages(
 ) {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
     const message = messages[messageIndex];
-
-    if (message.kind === 'denied') {
-      if (message.t < 0.7) {
-        message.t = Math.min(message.t + message.speed, 0.7);
-      } else {
-        message.blockedAge = (message.blockedAge ?? 0) + 1;
-      }
-    } else {
-      message.t += message.speed;
-    }
+    advanceMessage(message);
 
     const from = centers[message.from];
     const to = centers[message.to];
@@ -672,21 +708,9 @@ function drawMessages(
     message.trail.push({ x: px, y: py, age: 0 });
     drawMessageTrail(ctx, message);
 
-    if (message.kind === 'denied' && message.t >= 0.7) {
-      const blockedAge = message.blockedAge ?? 0;
-      const blinkAlpha = blockedAge < 10 ? (blockedAge % 2 === 0 ? 1 : 0.3) : Math.max(0, 1 - (blockedAge - 10) / 30);
-      drawAuthPulse(ctx, px, py, message.kind, blinkAlpha);
-
-      if (blockedAge === 0) {
-        setNodeDenied(nodes[message.from]);
-        spawnBlockedMark(blockedMarks, px, py);
-      }
-
-      if (blockedAge >= 10) {
-        drawDeniedLabel(ctx, px, py, Math.max(0, 1 - (blockedAge - 10) / 30));
-      }
-
-      if (blockedAge >= 40) {
+    const deniedState = handleDeniedMessageFrame(ctx, nodes, message, blockedMarks, px, py);
+    if (deniedState !== 'ignore') {
+      if (deniedState === 'remove') {
         messages.splice(messageIndex, 1);
       }
 
@@ -698,11 +722,9 @@ function drawMessages(
       continue;
     }
 
-    if (message.kind !== 'denied') {
-      const arrivalKind = message.kind as Exclude<AuthEventKind, 'denied'>;
-      spawnLandingToast(landingToasts, to.cx, to.cy, arrivalKind);
-      handleMessageArrival(message, nodes, messages);
-    }
+    const arrivalKind = message.kind as Exclude<AuthEventKind, 'denied'>;
+    spawnLandingToast(landingToasts, to.cx, to.cy, arrivalKind);
+    handleMessageArrival(message, nodes, messages);
 
     messages.splice(messageIndex, 1);
   }

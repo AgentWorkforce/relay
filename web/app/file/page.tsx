@@ -1,21 +1,15 @@
 import type { Metadata } from 'next';
 
-import { SiteFooter } from '../../components/SiteFooter';
-import { SiteNav } from '../../components/SiteNav';
+import { GitHubStarsBadge } from '../../components/GitHubStars';
+
 import { RelayfileContent } from './RelayfileContent';
 
 export const metadata: Metadata = {
-  title: 'Relayfile — Headless Filesystem for AI Agents',
+  title: 'Relayfile | Integration filesystem for AI agents',
   description:
-    'Give your AI agents a shared filesystem for reading, writing, watching, and coordinating file changes without building storage infrastructure.',
+    'Mount SaaS integrations as files so agents can read, write, watch, and coordinate through one realtime workspace.',
 };
 
-export default function RelayfilePage() {
-  return (
-    <>
-      <SiteNav />
-      <RelayfileContent />
-      <SiteFooter />
-    </>
-  );
+export default function FilePage() {
+  return <RelayfileContent navActions={<GitHubStarsBadge />} />;
 }

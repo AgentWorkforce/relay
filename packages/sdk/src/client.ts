@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
-import { getBrokerBinaryPath } from './broker-path.js';
+import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -26,6 +26,7 @@ import type {
 } from './protocol.js';
 import type {
   AgentTransport,
+  SpawnHeadlessInput,
   SpawnPtyInput,
   SpawnProviderInput,
   SendMessageInput,
@@ -41,11 +42,22 @@ export interface AgentRelayClientOptions {
   requestTimeoutMs?: number;
 }
 
+export interface AgentRelayBrokerInitArgs {
+  /** Optional HTTP API port for dashboard proxy (0 = disabled). */
+  apiPort?: number;
+  /** Bind address for the HTTP API. Defaults to 127.0.0.1 in the broker. */
+  apiBind?: string;
+  /** Enable persistence for broker state under the working directory. */
+  persist?: boolean;
+  /** Override the directory used for broker state files. */
+  stateDir?: string;
+}
+
 export interface AgentRelaySpawnOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if omitted. */
   binaryPath?: string;
-  /** Extra args passed to `broker init` (e.g. ['--persist']). */
-  binaryArgs?: string[];
+  /** Structured options mapped to the broker's Rust `init` CLI flags. */
+  binaryArgs?: AgentRelayBrokerInitArgs;
   /** Broker name. Defaults to cwd basename. */
   brokerName?: string;
   /** Default channels for spawned agents. */
@@ -56,7 +68,7 @@ export interface AgentRelaySpawnOptions {
   env?: NodeJS.ProcessEnv;
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
-  /** Timeout in ms to wait for broker to become ready. Default: 15000. */
+  /** Timeout in ms to wait for broker to become ready. Default: 45000. */
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
   requestTimeoutMs?: number;
@@ -69,6 +81,14 @@ export interface SessionInfo {
   default_workspace_id?: string;
   mode: string;
   uptime_secs: number;
+}
+
+interface BrokerStartupDebugContext {
+  binaryPath: string;
+  args: string[];
+  cwd: string;
+  stdoutLines: string[];
+  stderrLines: string[];
 }
 
 function isHeadlessProvider(value: string): value is HeadlessProvider {
@@ -90,6 +110,29 @@ function isProcessRunning(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
+  if (!args) {
+    return [];
+  }
+
+  const cliArgs: string[] = [];
+
+  if (args.persist) {
+    cliArgs.push('--persist');
+  }
+  if (args.apiPort !== undefined) {
+    cliArgs.push('--api-port', String(args.apiPort));
+  }
+  if (args.apiBind !== undefined) {
+    cliArgs.push('--api-bind', args.apiBind);
+  }
+  if (args.stateDir !== undefined) {
+    cliArgs.push('--state-dir', args.stateDir);
+  }
+
+  return cliArgs;
 }
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -134,7 +177,7 @@ export class AgentRelayClient {
     }
 
     const raw = readFileSync(connPath, 'utf-8');
-    let conn: { url?: string; api_key?: string; port?: number; pid?: number };
+    let conn: { url?: string; api_key?: string; workspace_key?: string; port?: number; pid?: number };
     try {
       conn = JSON.parse(raw);
     } catch {
@@ -167,38 +210,58 @@ export class AgentRelayClient {
    * 6. Starts event stream + lease renewal
    */
   static async spawn(options?: AgentRelaySpawnOptions): Promise<AgentRelayClient> {
-    const binaryPath = options?.binaryPath ?? getBrokerBinaryPath() ?? 'agent-relay-broker';
+    let binaryPath = options?.binaryPath;
+    if (!binaryPath) {
+      const resolved = getBrokerBinaryPath();
+      if (!resolved) {
+        throw new Error(formatBrokerNotFoundError());
+      }
+      binaryPath = resolved;
+    }
     const cwd = options?.cwd ?? process.cwd();
     const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
     const channels = options?.channels ?? ['general'];
-    const timeoutMs = options?.startupTimeoutMs ?? 15_000;
-    const userArgs = options?.binaryArgs ?? [];
+    const timeoutMs = options?.startupTimeoutMs ?? 45_000;
+    const userArgs = buildBrokerInitArgs(options?.binaryArgs);
 
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
 
     const env = {
       ...process.env,
       ...options?.env,
+      AGENT_RELAY_STARTUP_DEBUG:
+        options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? process.env.AGENT_RELAY_STARTUP_DEBUG ?? '1',
       RELAY_BROKER_API_KEY: apiKey,
     };
 
     const args = ['init', '--name', brokerName, '--channels', channels.join(','), ...userArgs];
+    const stderrLines: string[] = [];
+    const stdoutLines: string[] = [];
 
     const child = spawn(binaryPath, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', options?.onStderr ? 'pipe' : 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    // Forward stderr if requested
-    if (options?.onStderr && child.stderr) {
+    if (child.stderr) {
       const { createInterface } = await import('node:readline');
       const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => options.onStderr!(line));
+      rl.on('line', (line) => {
+        pushBufferedLine(stderrLines, line);
+        options?.onStderr?.(line);
+      });
     }
 
     // Parse the API URL from stdout (the broker prints it after binding)
-    const baseUrl = await waitForApiUrl(child, timeoutMs);
+    const baseUrl = await waitForApiUrl(child, timeoutMs, {
+      binaryPath,
+      args,
+      cwd,
+      stdoutLines,
+      stderrLines,
+    });
+    drainBrokerStdioAfterStartup(child);
 
     const client = new AgentRelayClient({
       baseUrl,
@@ -207,7 +270,50 @@ export class AgentRelayClient {
     });
     client.child = child;
 
-    await client.getSession();
+    // The broker prints "API listening on …" the moment its TCP listener is
+    // bound, but it still needs to complete a Relaycast handshake before
+    // `getSession()` will return. Two failure modes to handle:
+    //
+    //   1. Broker is alive and warming up — the startup-only API responds
+    //      503 until the handshake completes. Poll until it succeeds.
+    //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
+    //      the in-flight fetch sees the socket drop as `TypeError: fetch
+    //      failed`, which is uninformative on its own.
+    //
+    // We race each `getSession()` against `brokerExited` so case (2) reports
+    // as the actual broker exit (with its stderr tail and exit code), not as
+    // a mystery network error. No backoff for the death case — we know it
+    // immediately. 503 polling stays simple at 1s intervals.
+    const brokerExited = new Promise<never>((_, reject) => {
+      child.once('exit', (code) => {
+        reject(
+          new Error(
+            formatBrokerStartupError(
+              `Broker process exited with code ${code} during initial handshake`,
+              child,
+              { binaryPath, args, cwd, stdoutLines, stderrLines }
+            )
+          )
+        );
+      });
+    });
+    // Suppress unhandledRejection if the race is won by getSession before
+    // the broker exits later (e.g. on normal shutdown).
+    brokerExited.catch(() => {});
+
+    let session: SessionInfo | undefined;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        session = await Promise.race([client.getSession(), brokerExited]);
+        break;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const is503 = message.includes('503') || message.includes('Service Unavailable');
+        if (!is503 || attempt >= 9) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+
     client.connectEvents();
 
     // Renew the owner lease so the broker doesn't auto-shutdown
@@ -279,6 +385,7 @@ export class AgentRelayClient {
         channels: input.channels ?? [],
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         continueFrom: input.continueFrom,
@@ -308,6 +415,7 @@ export class AgentRelayClient {
         channels: input.channels ?? [],
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         continueFrom: input.continueFrom,
@@ -319,14 +427,7 @@ export class AgentRelayClient {
     });
   }
 
-  async spawnHeadless(input: {
-    name: string;
-    provider: HeadlessProvider;
-    args?: string[];
-    channels?: string[];
-    task?: string;
-    skipRelayPrompt?: boolean;
-  }): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
     return this.spawnProvider({ ...input, transport: 'headless' });
   }
 
@@ -511,7 +612,11 @@ export class AgentRelayClient {
  *   [agent-relay] API listening on http://{bind}:{port}
  * Returns the full URL (e.g. "http://127.0.0.1:3889").
  */
-async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<string> {
+async function waitForApiUrl(
+  child: ChildProcess,
+  timeoutMs: number,
+  debug: BrokerStartupDebugContext
+): Promise<string> {
   const { createInterface } = await import('node:readline');
 
   return new Promise<string>((resolve, reject) => {
@@ -527,7 +632,12 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
       if (!resolved) {
         resolved = true;
         rl.close();
-        reject(new Error(`Broker did not report API port within ${timeoutMs}ms`));
+        child.kill('SIGTERM');
+        reject(
+          new Error(
+            formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
+          )
+        );
       }
     }, timeoutMs);
 
@@ -536,7 +646,15 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
         resolved = true;
         clearTimeout(timer);
         rl.close();
-        reject(new Error(`Broker process exited with code ${code} before becoming ready`));
+        reject(
+          new Error(
+            formatBrokerStartupError(
+              `Broker process exited with code ${code} before becoming ready`,
+              child,
+              debug
+            )
+          )
+        );
       }
     });
 
@@ -545,12 +663,13 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
         resolved = true;
         clearTimeout(timer);
         rl.close();
-        reject(new Error(`Failed to start broker: ${err.message}`));
+        reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
       }
     });
 
     rl.on('line', (line) => {
       if (resolved) return;
+      pushBufferedLine(debug.stdoutLines, line);
 
       const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
       if (match) {
@@ -561,6 +680,67 @@ async function waitForApiUrl(child: ChildProcess, timeoutMs: number): Promise<st
       }
     });
   });
+}
+
+function drainBrokerStdioAfterStartup(child: ChildProcess): void {
+  // Drain both stdout AND stderr after startup so high-volume broker
+  // diagnostics/events cannot fill either pipe and block the broker process.
+  // Stderr also has a readline consumer above for line buffering/onStderr; this
+  // raw drain is intentionally no-op and exists only to keep the stream flowing
+  // if that consumer is changed or removed later.
+  for (const stream of [child.stdout, child.stderr]) {
+    if (!stream) continue;
+    stream.on('data', () => {});
+    stream.resume();
+  }
+}
+
+/** @internal Test-only hooks; not part of the public SDK API. */
+export const __clientTestInternals = {
+  drainBrokerStdioAfterStartup,
+};
+
+function pushBufferedLine(lines: string[], line: string): void {
+  lines.push(line);
+  if (lines.length > 40) {
+    lines.splice(0, lines.length - 40);
+  }
+}
+
+function formatBrokerStartupError(
+  message: string,
+  child: ChildProcess,
+  debug: BrokerStartupDebugContext
+): string {
+  const details = [
+    `pid=${child.pid ?? 'unknown'}`,
+    `cwd=${debug.cwd}`,
+    `command=${formatCommand(debug.binaryPath, debug.args)}`,
+    `stdout_tail=${formatBufferedLines(debug.stdoutLines)}`,
+    `stderr_tail=${formatBufferedLines(debug.stderrLines)}`,
+  ];
+  return `${message} (${details.join('; ')})`;
+}
+
+function formatBufferedLines(lines: string[]): string {
+  if (lines.length === 0) {
+    return '<empty>';
+  }
+  return lines
+    .slice(-8)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(' | ');
+}
+
+function formatCommand(binaryPath: string, args: string[]): string {
+  const render = [binaryPath, ...args].map((value) => {
+    if (/^[A-Za-z0-9_./:@=-]+$/u.test(value)) {
+      return value;
+    }
+    return JSON.stringify(value);
+  });
+  return render.join(' ');
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
