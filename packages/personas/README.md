@@ -37,16 +37,16 @@ agentworkforce install ./packages/personas --persona relay-orchestrator
 
 ## Personas
 
-| Persona | Purpose |
-| --- | --- |
-| `relay-orchestrator` | Coordinates Relay implementation and operations work via a headless orchestrator that spawns larger models as needed. |
-| `agent-relay-workflow` | Authors complete, runnable agent-relay workflow artifacts that follow the workflow skill contract and ship via GitHub primitives. |
-| `agent-relay-e2e-conductor` | Drives full sage ↔ cloud ↔ Slack end-to-end validation across a real docker-compose stack. |
-| `cloud-sandbox-infra` | Implements cloud sandbox provisioning, session management, credentials, executor wiring, and Daytona SDK integration. |
-| `cloud-slack-proxy-guard` | Owns the canonical `POST /api/v1/proxy/slack` route — allow-listed methods, shared-secret auth, rate limits, audit log, stable response envelope. |
-| `sage-slack-egress-migrator` | Migrates sage Slack egress off direct `NangoClient` and onto the `@relayfile/sdk` `ConnectionProvider` abstraction with no hardcoded `providerConfigKey` defaults. |
-| `sage-proactive-rewirer` | Rewires sage's proactive Slack paths to resolve `connectionId` and `providerConfigKey` from stored state instead of guessing. |
-| `opencode-workflow-specialist` | Diagnoses and repairs opencode-based agent-relay workflow failures across SDK, broker, cloud bootstrap, and CLI layers. |
+| Persona                        | Purpose                                                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `relay-orchestrator`           | Coordinates Relay implementation and operations work via a headless orchestrator that spawns larger models as needed.                                              |
+| `agent-relay-workflow`         | Authors complete, runnable agent-relay workflow artifacts that follow the workflow skill contract and ship via GitHub primitives.                                  |
+| `agent-relay-e2e-conductor`    | Drives full sage ↔ cloud ↔ Slack end-to-end validation across a real docker-compose stack.                                                                         |
+| `cloud-sandbox-infra`          | Implements cloud sandbox provisioning, session management, credentials, executor wiring, and Daytona SDK integration.                                              |
+| `cloud-slack-proxy-guard`      | Owns the canonical `POST /api/v1/proxy/slack` route — allow-listed methods, shared-secret auth, rate limits, audit log, stable response envelope.                  |
+| `sage-slack-egress-migrator`   | Migrates sage Slack egress off direct `NangoClient` and onto the `@relayfile/sdk` `ConnectionProvider` abstraction with no hardcoded `providerConfigKey` defaults. |
+| `sage-proactive-rewirer`       | Rewires sage's proactive Slack paths to resolve `connectionId` and `providerConfigKey` from stored state instead of guessing.                                      |
+| `opencode-workflow-specialist` | Diagnoses and repairs opencode-based agent-relay workflow failures across SDK, broker, cloud bootstrap, and CLI layers.                                            |
 
 ## Persona pack metadata
 
@@ -68,7 +68,7 @@ its file basename matching the persona `id`.
 ## Persona shape
 
 Each persona JSON file has the following shape, matching the AgentWorkforce
-persona schema:
+persona schema (workforce v3 — flat, no per-tier map):
 
 ```json
 {
@@ -76,20 +76,21 @@ persona schema:
   "intent": "string",
   "tags": ["..."],
   "description": "string",
-  "skills": [
-    { "id": "string", "source": "url-or-pkg", "description": "string" }
-  ],
-  "tiers": {
-    "best":        { "harness": "...", "model": "...", "systemPrompt": "...", "harnessSettings": { } },
-    "best-value":  { "harness": "...", "model": "...", "systemPrompt": "...", "harnessSettings": { } },
-    "minimum":     { "harness": "...", "model": "...", "systemPrompt": "...", "harnessSettings": { } }
-  }
+  "skills": [{ "id": "string", "source": "url-or-pkg", "description": "string" }],
+  "harness": "claude | codex | opencode",
+  "model": "string",
+  "systemPrompt": "string",
+  "harnessSettings": { "reasoning": "low | medium | high", "timeoutSeconds": 900 }
 }
 ```
 
-`skills` is optional. `tiers` is required and must contain at least one of
-`best`, `best-value`, or `minimum`. Persona prompts are model-agnostic where
-possible.
+`skills` and `harnessSettings` are optional. `harness`, `model`, and
+`systemPrompt` are required top-level fields. Persona prompts are
+model-agnostic where possible.
+
+> **Note:** workforce v3 removed the old per-tier persona shape. The `tiers`
+> map and `defaultTier` field are no longer supported — runtime config now
+> lives directly on the persona as top-level fields.
 
 ## Validation
 
@@ -103,9 +104,11 @@ The validator checks every JSON file under `personas/`:
 
 - file is valid JSON
 - `id` is present and matches the file basename
-- `intent`, `description`, and `tiers` are present
-- at least one of the three known tiers (`best`, `best-value`, `minimum`) is set
-- each tier has `harness`, `model`, and `systemPrompt`
+- `intent` and `description` are present
+- `harness` is present and one of `claude`, `codex`, or `opencode`
+- `model` and `systemPrompt` are present, non-empty strings
+- `harnessSettings`, when present, is an object
+- the legacy `tiers` / `defaultTier` fields are rejected
 
 ## Versioning and publishing
 

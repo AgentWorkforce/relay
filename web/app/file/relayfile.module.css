@@ -24,7 +24,7 @@
 .heroSection {
   position: relative;
   overflow: hidden;
-  margin-top: -60px;
+  margin-top: 0;
   padding-top: 60px;
 }
 
@@ -65,13 +65,14 @@
   max-width: 1280px;
   width: 100%;
   margin: 0 auto;
-  padding: 28px 40px 48px;
+  padding: 44px 40px 48px;
 }
 
 .heroLeft {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  padding-top: 56px;
 }
 
 .heroRight {
@@ -115,7 +116,7 @@
 
 .headline {
   font-family: var(--font-heading), sans-serif;
-  font-size: clamp(3.2rem, 7vw, 5.5rem);
+  font-size: clamp(3rem, 6vw, 5rem);
   font-weight: 500;
   line-height: 1.05;
   letter-spacing: -0.03em;
@@ -141,6 +142,7 @@
   display: flex;
   align-items: center;
   gap: 16px;
+  padding-top: 4px;
 }
 
 .ctaPrimary {

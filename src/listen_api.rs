@@ -7,14 +7,18 @@
 use std::time::{Duration, Instant};
 
 use relay_broker::{
-    multi_workspace::WorkspaceMembershipSummary, protocol::MessageInjectionMode,
+    multi_workspace::WorkspaceMembershipSummary,
+    protocol::MessageInjectionMode,
     replay_buffer::ReplayBuffer,
+    types::{PendingRelayMessage, SessionMode},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::timeout;
 use uuid::Uuid;
+
+use crate::worker_request::{RequestWorkerError, DEFAULT_REQUEST_TIMEOUT};
 
 const LISTEN_API_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -80,6 +84,28 @@ pub enum ListenApiRequest {
         cols: u16,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// Generic worker request/response RPC: park a oneshot in the
+    /// broker's `pending_requests` map keyed by a fresh `request_id`,
+    /// frame the request, and ship it to the named worker over its
+    /// stdin pipe. The reply fires when the worker echoes a matching
+    /// `*_response` frame or the deadline elapses (whichever first).
+    ///
+    /// Used by request/response routes like `GET /api/spawned/{name}/snapshot`.
+    /// Fire-and-forget routes (`send_input`, `resize_pty`) keep their
+    /// existing single-arm channel pattern.
+    WorkerRequest {
+        name: String,
+        /// Outbound frame `type`, e.g. `"snapshot_pty"`. The worker is
+        /// expected to reply with `"{kind}_response"`.
+        kind: String,
+        /// Worker stdin frame payload — must match the worker-side
+        /// schema for `kind`.
+        payload: Value,
+        /// Max wall-clock duration the broker will wait for the worker's
+        /// response before sending [`RequestWorkerError::Timeout`].
+        timeout: Duration,
+        reply: tokio::sync::oneshot::Sender<Result<Value, RequestWorkerError>>,
+    },
     GetMetrics {
         agent: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -110,12 +136,97 @@ pub enum ListenApiRequest {
     RenewLease {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// `GET /api/spawned/{name}/mode` — read the current session mode.
+    GetSessionMode {
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Result<SessionMode, SessionRouteError>>,
+    },
+    /// `PUT /api/spawned/{name}/mode` — set the session mode. On a
+    /// `human → relay` transition the broker drains the pending queue
+    /// into the worker (via the existing inject path) before replying;
+    /// `flushed` reports how many messages were injected.
+    SetSessionMode {
+        name: String,
+        mode: SessionMode,
+        reply: tokio::sync::oneshot::Sender<Result<SetSessionModeOk, SessionRouteError>>,
+    },
+    /// `GET /api/spawned/{name}/pending` — snapshot the per-worker
+    /// pending-message queue (FIFO, head first).
+    GetPending {
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, SessionRouteError>>,
+    },
+    /// `POST /api/spawned/{name}/flush` — drain the pending queue and
+    /// inject every message into the worker via the existing
+    /// fire-and-forget inject path. Does *not* change the mode.
+    FlushPending {
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Result<usize, SessionRouteError>>,
+    },
+}
+
+/// Typed errors for the session-mode HTTP routes. Keeps the broker arm's
+/// reply payload structured so the HTTP handler can map cleanly to 404
+/// without parsing strings. The "broker channel closed" / "reply dropped"
+/// failure modes are handled at the HTTP boundary via [`internal_error`],
+/// so they don't need a variant here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionRouteError {
+    /// No worker with that name is currently registered with the broker.
+    WorkerNotFound(String),
+}
+
+impl std::fmt::Display for SessionRouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionRouteError::WorkerNotFound(name) => {
+                write!(f, "agent_not_found: no worker named '{name}'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionRouteError {}
+
+/// Reply payload for [`ListenApiRequest::SetSessionMode`]. `flushed`
+/// is the number of pending messages drained during the transition
+/// (always `0` unless we transitioned `human → relay`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetSessionModeOk {
+    pub mode: SessionMode,
+    pub flushed: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PreflightEntry {
     pub name: String,
     pub cli: String,
+}
+
+/// Format requested by `GET /api/spawned/{name}/snapshot?format=…`. Parsed
+/// in the route handler so the broker loop receives a typed value instead of
+/// re-validating a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    Plain,
+    Ansi,
+}
+
+impl SnapshotFormat {
+    pub fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ansi => "ansi",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "plain" | "text" => Some(Self::Plain),
+            "ansi" => Some(Self::Ansi),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -220,6 +331,22 @@ fn listen_api_router_with_auth(
         .route("/api/send", routing::post(listen_api_send))
         .route("/api/input/{name}", routing::post(listen_api_send_input))
         .route("/api/resize/{name}", routing::post(listen_api_resize_pty))
+        .route(
+            "/api/spawned/{name}/snapshot",
+            routing::get(listen_api_snapshot),
+        )
+        .route(
+            "/api/spawned/{name}/mode",
+            routing::get(listen_api_get_session_mode).put(listen_api_set_session_mode),
+        )
+        .route(
+            "/api/spawned/{name}/pending",
+            routing::get(listen_api_get_pending),
+        )
+        .route(
+            "/api/spawned/{name}/flush",
+            routing::post(listen_api_flush_pending),
+        )
         .route("/api/metrics", routing::get(listen_api_metrics))
         .route("/api/status", routing::get(listen_api_status))
         .route(
@@ -876,12 +1003,30 @@ fn api_error(
     )
 }
 
-/// Parse an error string like "agent_not_found: worker-a" into a (code, status) pair.
+/// Parse an error string like "agent_not_found: worker-a" into a
+/// (code, status) pair.
+///
+/// Used by routes that still surface stringly-typed errors (e.g.
+/// `send_input`, `resize_pty`). Routes built on `WorkerRequest` go
+/// through [`worker_request_error_to_response`] instead, which
+/// preserves typed-error code/status mappings but falls back here for
+/// the structured `RequestWorkerError::WorkerError` envelope so worker-
+/// side codes like `invalid_format` keep producing 400s.
 fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
     if err.starts_with("agent_not_found") {
         (axum::http::StatusCode::NOT_FOUND, "agent_not_found")
     } else if err.starts_with("unsupported_operation") {
         (axum::http::StatusCode::BAD_REQUEST, "unsupported_operation")
+    } else if err.starts_with("unsupported_runtime") {
+        // Caller asked for an operation that this worker's runtime
+        // doesn't support (e.g. snapshot_pty against a headless worker).
+        // 409 Conflict — the request itself is well-formed; the conflict
+        // is with the resource's current capabilities.
+        (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
+    } else if err.starts_with("worker_timeout") {
+        // Worker died or stalled between accepting the frame and
+        // replying. This is a server-side fault, not a bad request.
+        (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
     } else if err.starts_with("invalid_") {
         (axum::http::StatusCode::BAD_REQUEST, "invalid_request")
     } else {
@@ -963,6 +1108,293 @@ async fn listen_api_resize_pty(
             api_error(status, code, err.clone())
         }
         Err(_) => internal_error(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PTY snapshot
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct SnapshotQuery {
+    format: Option<String>,
+}
+
+/// Capture the current visible screen of a PTY worker.
+///
+/// Defaults to `format=plain`. Returns the rendered screen plus the cursor
+/// position and dimensions so callers can lay it out without re-querying
+/// the worker. The `ansi` variant base64-encodes the bytes because the
+/// reproduction stream is binary (contains control characters).
+async fn listen_api_snapshot(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SnapshotQuery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let format_raw = query.format.as_deref().unwrap_or("plain");
+    let Some(format) = SnapshotFormat::parse(format_raw) else {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_format",
+            format!("unsupported snapshot format '{format_raw}' (expected 'plain' or 'ansi')"),
+        );
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::WorkerRequest {
+            name: name.clone(),
+            kind: "snapshot_pty".to_string(),
+            payload: json!({ "format": format.as_wire_str() }),
+            timeout: DEFAULT_REQUEST_TIMEOUT,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => worker_request_error_to_response(&err),
+        Err(_) => internal_error(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session mode (per-agent inject vs. queue, plus pending-queue inspection)
+//
+// The broker keeps a `SessionMode` per worker; `Human` mode parks inbound
+// relay messages in a FIFO `pending` queue instead of injecting them.
+// These four routes are the server-side surface the `agent-relay drive`
+// client calls to flip modes, inspect the queue, and drain it.
+// ---------------------------------------------------------------------------
+
+/// `GET /api/spawned/{name}/mode` → `{ "mode": "relay" | "human" }`.
+async fn listen_api_get_session_mode(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetSessionMode {
+            name: name.clone(),
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(mode)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(json!({ "mode": mode.as_wire_str() })),
+        ),
+        Ok(Err(err)) => session_route_error_to_response(&err),
+        Err(_) => internal_error(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSessionModePayload {
+    mode: String,
+}
+
+/// `PUT /api/spawned/{name}/mode` — body `{ "mode": "relay" | "human" }`.
+///
+/// On a `human → relay` transition the broker drains the pending queue
+/// into the worker via the existing inject path *before* replying, so a
+/// caller flipping back to relay never strands messages. The response
+/// reports `flushed` (always `0` unless we drained).
+async fn listen_api_set_session_mode(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<SetSessionModePayload>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let Some(mode) = SessionMode::parse(&body.mode) else {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_mode",
+            format!(
+                "unsupported session mode '{}' (expected 'relay' or 'human')",
+                body.mode
+            ),
+        );
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SetSessionMode {
+            name: name.clone(),
+            mode,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(ok)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(json!({
+                "mode": ok.mode.as_wire_str(),
+                "flushed": ok.flushed,
+            })),
+        ),
+        Ok(Err(err)) => session_route_error_to_response(&err),
+        Err(_) => internal_error(),
+    }
+}
+
+/// `GET /api/spawned/{name}/pending` → `{ "pending": [ ... ] }`, FIFO
+/// (head of queue first). Empty array when the worker is in relay mode
+/// or simply has no pending messages.
+async fn listen_api_get_pending(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetPending {
+            name: name.clone(),
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(messages)) => {
+            let pending: Vec<Value> = messages
+                .into_iter()
+                .map(|m| {
+                    let mut payload = json!({
+                        "from": m.from,
+                        "body": m.body,
+                        "target": m.target,
+                        "priority": m.priority,
+                        "mode": m.mode,
+                        "queued_at_ms": m.queued_at_ms,
+                    });
+                    let obj = payload.as_object_mut().expect("payload object built above");
+                    if let Some(thread_id) = m.thread_id {
+                        obj.insert("thread_id".to_string(), Value::String(thread_id));
+                    }
+                    if let Some(workspace_id) = m.workspace_id {
+                        obj.insert("workspace_id".to_string(), Value::String(workspace_id));
+                    }
+                    if let Some(workspace_alias) = m.workspace_alias {
+                        obj.insert(
+                            "workspace_alias".to_string(),
+                            Value::String(workspace_alias),
+                        );
+                    }
+                    if let Some(event_id) = m.event_id {
+                        obj.insert("event_id".to_string(), Value::String(event_id));
+                    }
+                    payload
+                })
+                .collect();
+            (
+                axum::http::StatusCode::OK,
+                axum::Json(json!({ "pending": pending })),
+            )
+        }
+        Ok(Err(err)) => session_route_error_to_response(&err),
+        Err(_) => internal_error(),
+    }
+}
+
+/// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
+///
+/// Drains the queue and injects each message into the worker in order
+/// using the existing fire-and-forget inject path. The session mode is
+/// *not* changed — a caller still in human mode will continue to queue
+/// newly-arriving messages.
+async fn listen_api_flush_pending(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::FlushPending {
+            name: name.clone(),
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(flushed)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(json!({ "flushed": flushed })),
+        ),
+        Ok(Err(err)) => session_route_error_to_response(&err),
+        Err(_) => internal_error(),
+    }
+}
+
+/// Centralised mapping from [`SessionRouteError`] to HTTP responses for
+/// the four session-mode routes. Mirrors
+/// [`worker_request_error_to_response`] in shape.
+fn session_route_error_to_response(
+    err: &SessionRouteError,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    match err {
+        SessionRouteError::WorkerNotFound(_) => api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "agent_not_found",
+            err.to_string(),
+        ),
+    }
+}
+
+/// Map a [`RequestWorkerError`] to an HTTP response. Centralised so every
+/// route built on `WorkerRequest` produces consistent status codes.
+fn worker_request_error_to_response(
+    err: &RequestWorkerError,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    use axum::http::StatusCode;
+    match err {
+        RequestWorkerError::WorkerNotFound(_) => {
+            api_error(StatusCode::NOT_FOUND, "agent_not_found", err.to_string())
+        }
+        RequestWorkerError::UnsupportedRuntime(_) => {
+            api_error(StatusCode::CONFLICT, "unsupported_runtime", err.to_string())
+        }
+        RequestWorkerError::Timeout => api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "worker_timeout",
+            err.to_string(),
+        ),
+        RequestWorkerError::WorkerError { code, message } => {
+            // Reuse classify_error so worker-side codes ("invalid_format",
+            // "agent_not_found", …) keep producing their canonical HTTP
+            // status. Any unknown code falls back to 400.
+            let composed = format!("{code}: {message}");
+            let (status, mapped_code) = classify_error(&composed);
+            let mapped_code = mapped_code.to_string();
+            api_error(status, &mapped_code, composed)
+        }
+        RequestWorkerError::SendFailed(_) => {
+            api_error(StatusCode::NOT_FOUND, "agent_not_found", err.to_string())
+        }
+        RequestWorkerError::WorkerDisappeared(_) => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "worker_disappeared",
+            err.to_string(),
+        ),
+        RequestWorkerError::ChannelClosed => internal_error(),
     }
 }
 
@@ -1280,8 +1712,8 @@ async fn handle_dashboard_ws(
 // ---------------------------------------------------------------------------
 
 /// Broadcast an event payload to all connected WS clients. Every event kind
-/// is forwarded so SDK consumers receive the same stream they previously got
-/// over the stdio protocol.
+/// is forwarded so SDK consumers receive the same stream they would over the
+/// stdio protocol.
 ///
 /// Events are classified as:
 /// - **Ephemeral**: high-frequency, not stored in replay buffer (`worker_stream`,
@@ -1469,7 +1901,13 @@ mod auth_tests {
     use tokio::sync::{broadcast, mpsc};
     use tower::ServiceExt;
 
-    use super::{listen_api_router_with_auth, ListenApiConfig, ListenApiRequest};
+    use super::{
+        listen_api_router_with_auth, ListenApiConfig, ListenApiRequest, SessionRouteError,
+        SetSessionModeOk,
+    };
+    use crate::worker_request::RequestWorkerError;
+    use relay_broker::protocol::MessageInjectionMode;
+    use relay_broker::types::{PendingRelayMessage, SessionMode};
 
     fn test_router(
         broker_api_key: Option<&str>,
@@ -2196,5 +2634,587 @@ mod auth_tests {
                 "name": "worker a",
             })
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_defaults_to_plain_and_forwards_format() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::WorkerRequest {
+                    name,
+                    kind,
+                    payload,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(kind, "snapshot_pty");
+                    assert_eq!(payload["format"], json!("plain"));
+                    let _ = reply.send(Ok(json!({
+                        "format": "plain",
+                        "rows": 4,
+                        "cols": 20,
+                        "cursor": [1, 1],
+                        "screen": "hello\n\n\n\n",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["format"], json!("plain"));
+        assert_eq!(body["rows"], json!(4));
+        assert_eq!(body["screen"], json!("hello\n\n\n\n"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_passes_ansi_format_through() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::WorkerRequest {
+                    name,
+                    kind,
+                    payload,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(kind, "snapshot_pty");
+                    assert_eq!(payload["format"], json!("ansi"));
+                    let _ = reply.send(Ok(json!({
+                        "format": "ansi",
+                        "rows": 2,
+                        "cols": 5,
+                        "cursor": [1, 3],
+                        "screen": "AAAA",
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot?format=ansi")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["format"], json!("ansi"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_rejects_unknown_format_without_calling_broker() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot?format=html")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_format"));
+
+        // The broker channel must not have received a WorkerRequest.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_propagates_agent_not_found_as_404() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::WorkerRequest { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(RequestWorkerError::WorkerNotFound(
+                    "no worker named 'ghost'".to_string(),
+                )));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("agent_not_found"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_unsupported_runtime_to_409() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::WorkerRequest { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(RequestWorkerError::UnsupportedRuntime(
+                    "worker 'h' is headless; snapshot_pty is only supported on PTY workers"
+                        .to_string(),
+                )));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/h/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("unsupported_runtime"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_maps_worker_timeout_to_504() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::WorkerRequest { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(RequestWorkerError::Timeout));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/slow/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("worker_timeout"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_propagates_worker_error_envelope() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::WorkerRequest { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(RequestWorkerError::WorkerError {
+                    code: "invalid_format".to_string(),
+                    message: "unsupported format 'qoi'".to_string(),
+                }));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/snapshot")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        // classify_error maps "invalid_*" prefixes to 400 / "invalid_request".
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_request"));
+        replier.await.expect("replier should complete");
+    }
+
+    // -----------------------------------------------------------------
+    // Session mode: four routes that back the `agent-relay drive`
+    // client. The HTTP layer only forwards typed requests over the
+    // broker channel — these tests cover the request shaping and
+    // response mapping, not the broker arms (those live in main.rs and
+    // are exercised by the broker integration tests).
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_session_mode_route_returns_mode_string() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetSessionMode { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(SessionMode::Human));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/mode")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body, json!({ "mode": "human" }));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn get_session_mode_route_returns_404_when_worker_missing() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::GetSessionMode { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/mode")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("agent_not_found"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_route_forwards_parsed_mode_and_returns_flushed() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SetSessionMode { name, mode, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(mode, SessionMode::Relay);
+                    let _ = reply.send(Ok(SetSessionModeOk {
+                        mode: SessionMode::Relay,
+                        flushed: 3,
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "mode": "relay" }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body, json!({ "mode": "relay", "flushed": 3 }));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_route_rejects_invalid_mode_without_calling_broker() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "mode": "drive" }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_mode"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid mode should not enqueue request"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_session_mode_route_returns_404_when_worker_missing() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::SetSessionMode { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "mode": "human" }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("agent_not_found"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn get_pending_route_returns_fifo_list_with_event_id() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetPending { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(vec![
+                        PendingRelayMessage {
+                            from: "Alice".to_string(),
+                            body: "one".to_string(),
+                            target: "#general".to_string(),
+                            thread_id: Some("thr_42".to_string()),
+                            workspace_id: Some("ws_demo".to_string()),
+                            workspace_alias: Some("Demo".to_string()),
+                            priority: 1,
+                            mode: MessageInjectionMode::Steer,
+                            queued_at_ms: 100,
+                            event_id: Some("evt_1".to_string()),
+                        },
+                        PendingRelayMessage {
+                            from: "Bob".to_string(),
+                            body: "two".to_string(),
+                            target: "worker-a".to_string(),
+                            thread_id: None,
+                            workspace_id: None,
+                            workspace_alias: None,
+                            priority: 2,
+                            mode: MessageInjectionMode::Wait,
+                            queued_at_ms: 200,
+                            event_id: None,
+                        },
+                    ]));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/pending")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["pending"].as_array().expect("array").len(), 2);
+        // First entry: channel-targeted, threaded, full workspace
+        // context, custom priority + mode — all surface in the JSON
+        // and round-trip via the snapshot serializer.
+        assert_eq!(body["pending"][0]["from"], json!("Alice"));
+        assert_eq!(body["pending"][0]["body"], json!("one"));
+        assert_eq!(body["pending"][0]["target"], json!("#general"));
+        assert_eq!(body["pending"][0]["thread_id"], json!("thr_42"));
+        assert_eq!(body["pending"][0]["workspace_id"], json!("ws_demo"));
+        assert_eq!(body["pending"][0]["workspace_alias"], json!("Demo"));
+        assert_eq!(body["pending"][0]["priority"], json!(1));
+        assert_eq!(body["pending"][0]["mode"], json!("steer"));
+        assert_eq!(body["pending"][0]["queued_at_ms"], json!(100));
+        assert_eq!(body["pending"][0]["event_id"], json!("evt_1"));
+        // Second entry: minimal context — optional fields stay absent
+        // from the JSON, defaults surface as concrete numbers/strings.
+        assert_eq!(body["pending"][1]["from"], json!("Bob"));
+        assert_eq!(body["pending"][1]["target"], json!("worker-a"));
+        assert_eq!(body["pending"][1]["priority"], json!(2));
+        assert_eq!(body["pending"][1]["mode"], json!("wait"));
+        assert_eq!(body["pending"][1].get("thread_id"), None);
+        assert_eq!(body["pending"][1].get("workspace_id"), None);
+        assert_eq!(body["pending"][1].get("workspace_alias"), None);
+        assert_eq!(body["pending"][1].get("event_id"), None);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn get_pending_route_returns_404_when_worker_missing() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::GetPending { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/pending")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("agent_not_found"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn flush_route_returns_flushed_count() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::FlushPending { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(5));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/flush")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body, json!({ "flushed": 5 }));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn flush_route_returns_404_when_worker_missing() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::FlushPending { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/ghost/flush")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("agent_not_found"));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn session_mode_routes_require_auth() {
+        let (router, _rx) = test_router(Some("secret"));
+        for (method, path) in [
+            ("GET", "/api/spawned/worker-a/mode"),
+            ("PUT", "/api/spawned/worker-a/mode"),
+            ("GET", "/api/spawned/worker-a/pending"),
+            ("POST", "/api/spawned/worker-a/flush"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .method(method)
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({ "mode": "relay" }).to_string()))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("request should succeed");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} should require auth"
+            );
+        }
     }
 }

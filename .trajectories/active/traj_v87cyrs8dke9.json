@@ -1,0 +1,58 @@
+{
+  "id": "traj_v87cyrs8dke9",
+  "version": 1,
+  "task": {
+    "title": "Upgrade .agentworkforce personas to latest 3.x shape"
+  },
+  "status": "active",
+  "startedAt": "2026-05-14T14:28:34.155Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-18T04:01:59.334Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_alw03jfffmtf",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-18T04:01:59.334Z",
+      "events": [
+        {
+          "ts": 1779076919335,
+          "type": "decision",
+          "content": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
+          "raw": {
+            "question": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
+            "chosen": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
+            "alternatives": [],
+            "reasoning": "Drive and view both need the same flag/env/connection.json fallback chain; pulling it out keeps both verbs aligned and unblocks future relay/new/run verbs from sub-PR 4."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779076919835,
+          "type": "decision",
+          "content": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
+          "raw": {
+            "question": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
+            "chosen": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
+            "alternatives": [],
+            "reasoning": "All bindings are ASCII control chars (Ctrl+G/Ctrl+C/Ctrl+B prefix). Tiny stateful parser handles cross-chunk Ctrl+B prefix cleanly and is trivially testable."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "83ecfbca9cd87540629ae0a9b2f155cd2c3070cf",
+    "endRef": "83ecfbca9cd87540629ae0a9b2f155cd2c3070cf"
+  }
+}
