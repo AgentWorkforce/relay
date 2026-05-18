@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-18T04:01:59.836Z",
+  "lastUpdated": "2026-05-18T10:48:48.192Z",
   "trajectories": {
     "traj_9gq96irkj00s": {
       "title": "Update relay to use published relaycast Rust reclaim fix",
@@ -618,6 +618,312 @@
       "startedAt": "2026-05-18T02:56:55.314Z",
       "completedAt": "2026-05-18T03:02:35.202Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-aff3649a00a0f36ab/.trajectories/completed/2026-05/traj_ryf5sstno6p3.json"
+    },
+    "traj_0z98tkaigaxg": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:58.558Z",
+      "completedAt": "2026-05-15T21:35:56.724Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_0z98tkaigaxg.json"
+    },
+    "traj_1778873209642_c70e32ab": {
+      "title": "ricky-child-update-2-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T19:26:49.642Z",
+      "completedAt": "2026-05-15T19:36:18.257Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_1778873209642_c70e32ab.json"
+    },
+    "traj_1778873211616_6db3b2cd": {
+      "title": "ricky-child-update-docs-sync-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T19:26:51.616Z",
+      "completedAt": "2026-05-15T19:35:07.059Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_1778873211616_6db3b2cd.json"
+    },
+    "traj_5q8i0iz4klpo": {
+      "title": "ricky-child-update-2-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:07:02.452Z",
+      "completedAt": "2026-05-15T21:36:03.688Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_5q8i0iz4klpo.json"
+    },
+    "traj_8ljgydz61do5": {
+      "title": "ricky-child-update-messaging-2-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:54.217Z",
+      "completedAt": "2026-05-15T21:41:56.478Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_8ljgydz61do5.json"
+    },
+    "traj_elx0fcwgs37x": {
+      "title": "ricky-child-update-messaging-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:50.250Z",
+      "completedAt": "2026-05-15T21:46:46.167Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_elx0fcwgs37x.json"
+    },
+    "traj_ij5b3kcatvwn": {
+      "title": "ricky-reading-worker-dm-replies-design-spec-status-draft-date-2026-05-15-issue-860-hea-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:45.545Z",
+      "completedAt": "2026-05-15T21:50:07.842Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_ij5b3kcatvwn.json"
+    },
+    "traj_ootb5rt3tozd": {
+      "title": "ricky-child-update-docs-sync-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:07:04.494Z",
+      "completedAt": "2026-05-15T21:45:20.368Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_ootb5rt3tozd.json"
+    },
+    "traj_t5uknesn2fcw": {
+      "title": "ricky-child-update-skill-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:52.453Z",
+      "completedAt": "2026-05-15T21:40:04.209Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_t5uknesn2fcw.json"
+    },
+    "traj_u33qn99ijbh4": {
+      "title": "ricky-child-update-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:07:00.444Z",
+      "completedAt": "2026-05-15T21:30:50.445Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_u33qn99ijbh4.json"
+    },
+    "traj_v9x3o92ag682": {
+      "title": "ricky-child-update-messaging-test-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:06:56.418Z",
+      "completedAt": "2026-05-15T21:34:35.623Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_v9x3o92ag682.json"
+    },
+    "traj_wbn62q4cq16h": {
+      "title": "Update generated workflow to Codex agents only",
+      "status": "completed",
+      "startedAt": "2026-05-15T21:03:02.671Z",
+      "completedAt": "2026-05-15T21:06:00.384Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_wbn62q4cq16h.json"
+    },
+    "traj_zu3252hxzoqh": {
+      "title": "Open PR for reading worker DM replies",
+      "status": "completed",
+      "startedAt": "2026-05-16T06:08:22.396Z",
+      "completedAt": "2026-05-16T06:09:24.599Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zu3252hxzoqh.json"
+    },
+    "traj_1778873052429_03a4dacb": {
+      "title": "ricky-reading-worker-dm-replies-design-spec-status-draft-date-2026-05-15-issue-860-hea-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:24:12.429Z",
+      "completedAt": "2026-05-15T20:01:57.036Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873052429_03a4dacb.json"
+    },
+    "traj_1778873197540_01102ade": {
+      "title": "ricky-child-update-messaging-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:37.540Z",
+      "completedAt": "2026-05-15T19:43:47.629Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873197540_01102ade.json"
+    },
+    "traj_1778873199489_f2ce4060": {
+      "title": "ricky-child-update-skill-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:39.489Z",
+      "completedAt": "2026-05-15T19:43:43.149Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873199489_f2ce4060.json"
+    },
+    "traj_1778873201502_0dacf7c5": {
+      "title": "ricky-child-update-messaging-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:41.502Z",
+      "completedAt": "2026-05-15T19:43:35.011Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873201502_0dacf7c5.json"
+    },
+    "traj_1778873203502_4c225b7e": {
+      "title": "ricky-child-update-messaging-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:43.502Z",
+      "completedAt": "2026-05-15T19:44:33.074Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873203502_4c225b7e.json"
+    },
+    "traj_1778873205470_a4e5f0cb": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:45.470Z",
+      "completedAt": "2026-05-15T19:43:37.134Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873205470_a4e5f0cb.json"
+    },
+    "traj_1778873207471_b7def991": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:26:47.471Z",
+      "completedAt": "2026-05-15T19:43:24.329Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778873207471_b7def991.json"
+    },
+    "traj_1778874205797_81e92307": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:25.797Z",
+      "completedAt": "2026-05-15T19:43:43.995Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874205797_81e92307.json"
+    },
+    "traj_1778874216773_c6b12ab2": {
+      "title": "ricky-child-update-messaging-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:36.773Z",
+      "completedAt": "2026-05-15T19:44:08.270Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874216773_c6b12ab2.json"
+    },
+    "traj_1778874218579_a0225559": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:38.579Z",
+      "completedAt": "2026-05-15T19:43:58.721Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874218579_a0225559.json"
+    },
+    "traj_1778874224855_9c722c4b": {
+      "title": "ricky-child-update-skill-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:44.855Z",
+      "completedAt": "2026-05-15T19:44:16.528Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874224855_9c722c4b.json"
+    },
+    "traj_1778874226983_3367d527": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:46.983Z",
+      "completedAt": "2026-05-15T19:44:05.612Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874226983_3367d527.json"
+    },
+    "traj_1778874229373_9cce9465": {
+      "title": "ricky-child-update-messaging-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:43:49.374Z",
+      "completedAt": "2026-05-15T19:44:20.096Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874229373_9cce9465.json"
+    },
+    "traj_1778874240339_51b823cd": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:00.339Z",
+      "completedAt": "2026-05-15T19:44:18.916Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874240339_51b823cd.json"
+    },
+    "traj_1778874241076_caa675a9": {
+      "title": "ricky-child-update-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:01.076Z",
+      "completedAt": "2026-05-15T19:44:32.521Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874241076_caa675a9.json"
+    },
+    "traj_1778874248966_e29c4c54": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:08.966Z",
+      "completedAt": "2026-05-15T19:44:27.330Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874248966_e29c4c54.json"
+    },
+    "traj_1778874249983_12a98df3": {
+      "title": "ricky-child-update-messaging-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:09.983Z",
+      "completedAt": "2026-05-15T19:44:41.100Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874249983_12a98df3.json"
+    },
+    "traj_1778874258229_0bdc53d8": {
+      "title": "ricky-child-update-skill-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:18.229Z",
+      "completedAt": "2026-05-15T19:44:49.274Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874258229_0bdc53d8.json"
+    },
+    "traj_1778874261453_55f49624": {
+      "title": "ricky-child-update-messaging-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:21.453Z",
+      "completedAt": "2026-05-15T19:44:53.643Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874261453_55f49624.json"
+    },
+    "traj_1778874261608_48fb9bf5": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:21.608Z",
+      "completedAt": "2026-05-15T19:44:40.761Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874261608_48fb9bf5.json"
+    },
+    "traj_1778874269139_d7d7485a": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:29.139Z",
+      "completedAt": "2026-05-15T19:44:48.083Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874269139_d7d7485a.json"
+    },
+    "traj_1778874274412_70843e0e": {
+      "title": "ricky-child-update-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:34.412Z",
+      "completedAt": "2026-05-15T19:45:06.798Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874274412_70843e0e.json"
+    },
+    "traj_1778874274581_71efa470": {
+      "title": "ricky-child-update-messaging-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:34.581Z",
+      "completedAt": "2026-05-15T19:44:54.182Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874274581_71efa470.json"
+    },
+    "traj_1778874282200_39ad11db": {
+      "title": "ricky-child-update-issue-860-transcript-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:42.200Z",
+      "completedAt": "2026-05-15T19:45:02.477Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874282200_39ad11db.json"
+    },
+    "traj_1778874283570_ce3585b8": {
+      "title": "ricky-child-update-messaging-2-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:43.570Z",
+      "completedAt": "2026-05-15T19:45:14.888Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874283570_ce3585b8.json"
+    },
+    "traj_1778874289674_e3f868c8": {
+      "title": "ricky-child-update-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:49.674Z",
+      "completedAt": "2026-05-15T19:45:08.337Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874289674_e3f868c8.json"
+    },
+    "traj_1778874291950_0b1b5c1f": {
+      "title": "ricky-child-update-skill-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:51.950Z",
+      "completedAt": "2026-05-15T19:45:23.421Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874291950_0b1b5c1f.json"
+    },
+    "traj_1778874295927_4083d181": {
+      "title": "ricky-child-update-messaging-test-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:55.927Z",
+      "completedAt": "2026-05-15T19:45:15.333Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874295927_4083d181.json"
+    },
+    "traj_1778874296362_bdf727ff": {
+      "title": "ricky-child-update-messaging-workflow",
+      "status": "abandoned",
+      "startedAt": "2026-05-15T19:44:56.362Z",
+      "completedAt": "2026-05-15T19:45:27.624Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/traj_1778874296362_bdf727ff.json"
+    },
+    "traj_j9k10fez3e81": {
+      "title": "review-loop-mpb2bvnf-1-workflow",
+      "status": "active",
+      "startedAt": "2026-05-18T10:30:09.927Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_j9k10fez3e81.json"
+    },
+    "traj_2fd97w39cyn1": {
+      "title": "review-loop-mpb2zpj9-1-workflow",
+      "status": "active",
+      "startedAt": "2026-05-18T10:48:41.746Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/active/traj_2fd97w39cyn1.json"
     }
   }
 }
