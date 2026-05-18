@@ -13,6 +13,18 @@ export function formatRelativeTime(iso?: string): string {
   return `${diffDays}d ago`;
 }
 
+/** Format an uptime expressed in whole seconds as a compact `1h 02m 03s`. */
+export function formatUptimeSecs(totalSecs: number): string {
+  if (!Number.isFinite(totalSecs) || totalSecs < 0) return '-';
+  const secs = Math.floor(totalSecs);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
 export function parseSince(input?: string): number | undefined {
   if (!input) return undefined;
   const trimmed = String(input).trim();

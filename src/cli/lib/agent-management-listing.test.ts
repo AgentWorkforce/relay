@@ -7,13 +7,20 @@ import {
   type ListingWorkerInfo,
 } from './agent-management-listing.js';
 
-function createDeps(options?: { workers?: ListingWorkerInfo[]; listAgentsError?: Error; nowIso?: string }) {
+function createDeps(options?: {
+  workers?: ListingWorkerInfo[];
+  listAgentsError?: Error;
+  nowIso?: string;
+  metrics?: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+}) {
   const workers = options?.workers ?? [];
   const listAgents = options?.listAgentsError
     ? vi.fn(async () => {
         throw options.listAgentsError;
       })
     : vi.fn(async () => workers);
+  const getMetrics =
+    options?.metrics !== undefined ? vi.fn(async () => ({ agents: options.metrics })) : undefined;
   const shutdown = vi.fn(async () => undefined);
   const log = vi.fn(() => undefined);
   const error = vi.fn(() => undefined);
@@ -26,6 +33,7 @@ function createDeps(options?: { workers?: ListingWorkerInfo[]; listAgentsError?:
     getDataDir: vi.fn(() => '/tmp/data'),
     createClient: vi.fn(() => ({
       listAgents,
+      ...(getMetrics ? { getMetrics } : {}),
       shutdown,
     })),
     fileExists: vi.fn(() => false),
@@ -68,13 +76,13 @@ describe('agent-management-listing JSON output', () => {
     ]);
   });
 
-  it('runWhoCommand emits deterministic JSON with timestamp and status', async () => {
+  it('runWhoCommand emits structured JSON with real broker metrics', async () => {
     const { deps, log, shutdown } = createDeps({
       workers: [
         { name: 'WorkerWho', cli: 'claude' },
         { name: 'Dashboard', runtime: 'pty' },
       ],
-      nowIso: '2026-03-04T12:34:56.000Z',
+      metrics: [{ name: 'WorkerWho', pid: 4321, memory_bytes: 1048576, uptime_secs: 421 }],
     });
 
     await runWhoCommand({ json: true }, deps);
@@ -85,8 +93,29 @@ describe('agent-management-listing JSON output', () => {
       {
         name: 'WorkerWho',
         cli: 'claude',
-        lastSeen: '2026-03-04T12:34:56.000Z',
-        status: 'ONLINE',
+        status: 'online',
+        pid: 4321,
+        uptimeSecs: 421,
+        memoryBytes: 1048576,
+      },
+    ]);
+  });
+
+  it('runWhoCommand falls back to list-only fields when metrics are unavailable', async () => {
+    const { deps, log } = createDeps({
+      workers: [{ name: 'WorkerWho', cli: 'claude', pid: 99 }],
+    });
+
+    await runWhoCommand({ json: true }, deps);
+
+    expect(JSON.parse(log.mock.calls[0][0] as string)).toEqual([
+      {
+        name: 'WorkerWho',
+        cli: 'claude',
+        status: 'online',
+        pid: 99,
+        uptimeSecs: null,
+        memoryBytes: null,
       },
     ]);
   });

@@ -277,6 +277,46 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('One -> #general'));
   });
 
+  it('channel history prints full untruncated text in chronological order', async () => {
+    const longLine = 'X'.repeat(400);
+    const relaycastClient = createRelaycastClientMock({
+      // Deliberately returned newest-first / out of order to prove the
+      // command re-sorts chronologically instead of trusting feed order.
+      messages: vi.fn(async () => [
+        {
+          id: 'm2',
+          agent_name: 'SstVerify',
+          text: 'GO/NO-GO: GO\nrationale line 2',
+          created_at: '2026-02-20T11:00:05.000Z',
+        },
+        {
+          id: 'm1',
+          agent_name: 'SstFix',
+          text: longLine,
+          created_at: '2026-02-20T11:00:01.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', '#phase3']);
+
+    expect(exitCode).toBeUndefined();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+    // Full 400-char payload, no "..." truncation.
+    expect(logged).toContain(`[2026-02-20T11:00:01.000Z] SstFix -> #phase3: ${longLine}`);
+    expect(logged.some((l) => l.includes('...'))).toBe(false);
+    // Multi-line message rendered under an indented header.
+    expect(logged).toContain('[2026-02-20T11:00:05.000Z] SstVerify -> #phase3:');
+    expect(logged).toContain('  GO/NO-GO: GO');
+    expect(logged).toContain('  rationale line 2');
+    // Chronological order: older SstFix header logged before newer SstVerify.
+    const fixIdx = logged.findIndex((l) => l.includes('SstFix -> #phase3'));
+    const verifyIdx = logged.findIndex((l) => l.includes('SstVerify -> #phase3'));
+    expect(fixIdx).toBeGreaterThanOrEqual(0);
+    expect(fixIdx).toBeLessThan(verifyIdx);
+  });
+
   it('shows message history as JSON with stable payload fields', async () => {
     const relaycastClient = createRelaycastClientMock({
       messages: vi.fn(async () => [
@@ -679,9 +719,7 @@ describe('registerMessagingCommands', () => {
       'conv_orchestrator_worker',
       expect.objectContaining({ limit: expect.any(Number) })
     );
-    expect(deps.log).toHaveBeenCalledWith(
-      '[2026-02-20T12:01:01.000Z] WorkerA: correct reader transcript'
-    );
+    expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:01:01.000Z] WorkerA: correct reader transcript');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('wrong reader transcript'));
   });
 
@@ -1373,7 +1411,9 @@ describe('registerMessagingCommands', () => {
       '    [2026-02-20T12:00:01.000Z] Worker2: worker reply hidden behind outbound echoes'
     );
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('newer outbound echo'));
-    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('run `agent-relay replies Worker2 --unread`'));
+    expect(deps.log).not.toHaveBeenCalledWith(
+      expect.stringContaining('run `agent-relay replies Worker2 --unread`')
+    );
   });
 
   it('inbox --json does not execute text-renderer DM message fetches', async () => {

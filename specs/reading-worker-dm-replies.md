@@ -278,3 +278,34 @@ This spec is complete when an orchestrator can run the exact command sequence fr
 - All tests in §6.1 pass.
 - §6.2 end-to-end validation has been performed against a locally-built CLI and a live broker, and the transcript is pasted into the PR description.
 - CHANGELOG and docs are updated, and the `.mdx`/`.md` mirror invariant from `.claude/rules/docs-sync.md` holds.
+
+## 10. Addendum: channel history & structured `who` (issue #860 follow-on)
+
+The original spec scoped the no-truncation fix to **DM** history only (§4.3,
+"when `<agent>` is not a channel"). Field use surfaced that the same friction
+applies to channel reads and to agent health, so this work additionally:
+
+- **Channel history is no longer truncated.** `agent-relay history --to '#<channel>'`
+  prints full message text (multi-line messages render under an indented
+  header), matching the DM transcript behavior. Substantive payloads (literal
+  diffs, grep counts, GO/NO-GO reasoning) are readable in full instead of cut
+  at ~200 chars.
+- **Channel history is chronological.** Messages are sorted oldest→newest and
+  the most recent `--limit` are kept, so a reader reconstructs the
+  conversation top-to-bottom without cross-referencing. The relaycast feed
+  order is no longer trusted; an explicit sort prevents interleaving. The
+  `--from` cross-context history view is de-truncated the same way.
+- **`agent-relay who` reports real lifecycle, not placeholders.** The previous
+  output fabricated `status: "ONLINE"` and `lastSeen: <now>`. `who` now joins
+  the broker `/api/metrics` data so `who --json` emits structured, pollable
+  records: `{ name, cli, status, pid, uptimeSecs, memoryBytes }`. This gives a
+  headless orchestrator a machine-readable health signal instead of scraping
+  the worker TTY. (Idle/exited/restart event-state and an in-TUI context-budget
+  figure remain out of scope — they require a follow-up broker change; `who`
+  does not synthesize values it cannot observe.)
+- **Skill guidance.** `running-headless-orchestrator` (canonical copy plus the
+  `.claude`/`.agents` mirrors) now states that the spawning orchestrator is not
+  a registered relaycast agent — `mcp__relaycast__message_*` tools fail with
+  `Not registered. Call agent.register first.` — so the CLI is the supported
+  path, and `--json` is the recommended way to read full, untruncated,
+  parseable output (`replies`, `history`, `inbox`, `who`).

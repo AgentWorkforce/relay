@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { formatRelativeTime, formatTableRow } from './formatting.js';
+import { formatTableRow, formatUptimeSecs } from './formatting.js';
 import { getWorkerLogsDir } from './paths.js';
 
 type ExitFn = (code: number) => never;
@@ -39,16 +39,29 @@ interface RemoteBrokerAgentsResponse {
   }>;
 }
 
+/** Real per-agent metrics as served by the broker `/api/metrics` endpoint. */
+export interface ListingAgentMetrics {
+  name: string;
+  pid?: number;
+  memory_bytes?: number;
+  uptime_secs?: number;
+}
+
+export interface ListingClient {
+  listAgents: () => Promise<ListingWorkerInfo[]>;
+  /**
+   * Optional: fetch real broker metrics (pid / memory / uptime) so `who`
+   * can report machine-readable lifecycle data instead of fabricated
+   * "ONLINE / just now" placeholders.
+   */
+  getMetrics?: (agentName?: string) => Promise<unknown>;
+  shutdown: () => Promise<unknown>;
+}
+
 export interface AgentManagementListingDependencies {
   getProjectRoot: () => string;
   getDataDir: () => string;
-  createClient: (cwd: string) => {
-    listAgents: () => Promise<ListingWorkerInfo[]>;
-    shutdown: () => Promise<unknown>;
-  } | Promise<{
-    listAgents: () => Promise<ListingWorkerInfo[]>;
-    shutdown: () => Promise<unknown>;
-  }>;
+  createClient: (cwd: string) => ListingClient | Promise<ListingClient>;
   fileExists: (filePath: string) => boolean;
   readFile: (filePath: string, encoding?: BufferEncoding) => string;
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
@@ -249,19 +262,57 @@ export async function runWhoCommand(
     }
     return;
   }
+  // Real per-agent metrics from the broker (pid / memory / uptime). This
+  // replaces the previous fabricated `status: 'ONLINE'` + `lastSeen: now()`
+  // placeholders so an orchestrator can poll a machine-readable lifecycle
+  // signal instead of scraping the agent TTY.
+  let metricsByName = new Map<string, ListingAgentMetrics>();
+  if (typeof client.getMetrics === 'function') {
+    try {
+      const raw = (await client.getMetrics()) as { agents?: ListingAgentMetrics[] } | undefined;
+      for (const m of raw?.agents ?? []) {
+        if (m && typeof m.name === 'string') {
+          metricsByName.set(m.name, m);
+        }
+      }
+    } catch {
+      // Metrics are best-effort enrichment — fall back to list-only data.
+      metricsByName = new Map();
+    }
+  }
+
   const onlineAgents = await client
     .listAgents()
     .then((list) =>
       list
         .filter((agent) => (options.all ? true : !shouldHideLocalAgentByDefault(agent.name)))
-        .map((agent) => ({
-          name: agent.name,
-          cli: agent.cli || agent.runtime,
-          lastSeen: deps.nowIso(),
-          status: 'ONLINE',
-        }))
+        .map((agent) => {
+          const m = metricsByName.get(agent.name);
+          return {
+            name: agent.name,
+            cli: agent.cli || agent.runtime || null,
+            // An agent present in the broker's live list is connected. We
+            // do not synthesize idle/exited here — that requires broker
+            // lifecycle state the CLI cannot observe without a follow-up
+            // broker change.
+            status: 'online' as const,
+            pid: m?.pid ?? agent.pid ?? null,
+            uptimeSecs: typeof m?.uptime_secs === 'number' ? m.uptime_secs : null,
+            memoryBytes: typeof m?.memory_bytes === 'number' ? m.memory_bytes : null,
+          };
+        })
     )
-    .catch(() => []);
+    .catch(
+      () =>
+        [] as Array<{
+          name: string;
+          cli: string | null;
+          status: 'online';
+          pid: number | null;
+          uptimeSecs: number | null;
+          memoryBytes: number | null;
+        }>
+    );
 
   await client.shutdown().catch(() => undefined);
 
@@ -276,15 +327,16 @@ export async function runWhoCommand(
     return;
   }
 
-  deps.log('NAME            STATUS   CLI       LAST SEEN');
-  deps.log('---------------------------------------------');
+  deps.log('NAME            STATUS   CLI       PID      UPTIME');
+  deps.log('-----------------------------------------------------');
   onlineAgents.forEach((agent) => {
     deps.log(
       formatTableRow([
         { value: agent.name ?? 'unknown', width: 15 },
         { value: agent.status, width: 8 },
         { value: agent.cli ?? '-', width: 8 },
-        { value: formatRelativeTime(agent.lastSeen) },
+        { value: agent.pid != null ? String(agent.pid) : '-', width: 8 },
+        { value: agent.uptimeSecs != null ? formatUptimeSecs(agent.uptimeSecs) : '-' },
       ])
     );
   });
@@ -295,8 +347,9 @@ export async function runAgentsLogsCommand(
   options: { lines?: string; follow?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
-  const logFileCandidates = getWorkerLogsDirCandidates(deps.getProjectRoot())
-    .map((logsDir) => path.join(logsDir, `${name}.log`));
+  const logFileCandidates = getWorkerLogsDirCandidates(deps.getProjectRoot()).map((logsDir) =>
+    path.join(logsDir, `${name}.log`)
+  );
   const logFile = logFileCandidates.find((candidate) => deps.fileExists(candidate));
 
   if (!logFile) {

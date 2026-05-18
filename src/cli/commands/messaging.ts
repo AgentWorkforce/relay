@@ -827,11 +827,19 @@ export function registerMessagingCommands(
           }
 
           allItems.forEach((item) => {
-            const body = item.text.length > 200 ? item.text.slice(0, 197) + '...' : item.text;
-            if (item.kind === 'dm') {
-              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ' (DM): ' + body);
+            const suffix = item.kind === 'dm' ? ' (DM)' : '';
+            const header = `[${item.ts}] ${options.from} -> ${item.to}${suffix}`;
+            // No truncation: substantive payloads (diffs, grep counts,
+            // GO/NO-GO reasoning) must be readable in full. Multi-line
+            // messages print under an indented header.
+            const lines = item.text.split(/\r?\n/);
+            if (lines.length === 1) {
+              deps.log(`${header}: ${item.text}`);
             } else {
-              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ': ' + body);
+              deps.log(`${header}:`);
+              for (const line of lines) {
+                deps.log(`  ${line}`);
+              }
             }
           });
           return;
@@ -862,8 +870,7 @@ export function registerMessagingCommands(
             }
 
             const collected: Array<NormalizedDmMessage & { to: string }> = [];
-            const rawFetchLimit =
-              options.from || sinceTs ? getFilteredDmFetchLimit(limit) : limit;
+            const rawFetchLimit = options.from || sinceTs ? getFilteredDmFetchLimit(limit) : limit;
             const dmMessages = await dmClient.dms.messages(conversation.id, { limit: rawFetchLimit });
             for (const message of dmMessages) {
               const normalized = normalizeDmMessage(message);
@@ -941,7 +948,14 @@ export function registerMessagingCommands(
             return true;
           });
 
-          filteredMessages = filteredMessages.slice(0, limit);
+          // Order chronologically (oldest first, newest at the bottom) so a
+          // reader reconstructs the conversation top-to-bottom like a
+          // transcript, then keep the most recent `limit` messages. The
+          // relaycast feed order is not guaranteed, so an explicit sort is
+          // required to stop messages interleaving out of order.
+          filteredMessages = filteredMessages
+            .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+            .slice(-limit);
 
           if (options.json) {
             const payload = filteredMessages.map((msg) => ({
@@ -964,9 +978,20 @@ export function registerMessagingCommands(
             return;
           }
 
+          // No truncation: channel evidence (literal diffs, grep counts,
+          // GO/NO-GO reasoning) must be fully readable. Multi-line messages
+          // print under an indented header.
           filteredMessages.forEach((msg) => {
-            const body = msg.text.length > 200 ? `${msg.text.slice(0, 197)}...` : msg.text;
-            deps.log(`[${msg.createdAt}] ${msg.agentName} -> #${channel}: ${body}`);
+            const header = `[${msg.createdAt}] ${msg.agentName} -> #${channel}`;
+            const lines = msg.text.split(/\r?\n/);
+            if (lines.length === 1) {
+              deps.log(`${header}: ${msg.text}`);
+            } else {
+              deps.log(`${header}:`);
+              for (const line of lines) {
+                deps.log(`  ${line}`);
+              }
+            }
           });
         } catch (err: any) {
           deps.error(`Failed to fetch history: ${err?.message || String(err)}`);

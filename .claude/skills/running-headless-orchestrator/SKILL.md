@@ -102,22 +102,29 @@ agent-relay spawn Worker1 claude "Implement the authentication module following 
 
 ### Step 3: Monitor and Coordinate
 
-```
-# Read Worker1's DM replies with full content (use `as` to read as that worker)
-mcp__relaycast__message_dm_list(as: "Worker1")
-
-# CLI equivalent
+```bash
+# Read Worker1's DM replies with full content (chronological, untruncated)
 agent-relay replies Worker1
 
+# Machine-readable: full text + direction, safe to parse in a loop
+agent-relay replies Worker1 --json
+
 # Send a targeted DM to a specific worker
-mcp__relaycast__message_dm_send(to: "Worker1", text: "Also add unit tests")
+agent-relay send Worker1 "Also add unit tests"
 
 # Broadcast to all agents on a channel
-mcp__relaycast__message_post(channel: "general", text: "All workers: wrap up current task")
+agent-relay send '#general' "All workers: wrap up current task"
 
-# List active workers
-mcp__relaycast__agent_list()
+# List active workers (structured status for polling)
+agent-relay who --json
 ```
+
+> **The spawning orchestrator is not a registered relaycast agent.** The
+> `mcp__relaycast__message_*` / `agent_list` MCP tools require a registered
+> identity and will fail for you with `Not registered. Call agent.register
+first.` Use the `agent-relay` CLI for all reading, sending, and listing.
+> Add `--json` to any read command (`replies`, `history`, `inbox`, `who`)
+> when you need full, untruncated, parseable output.
 
 ### Step 4: Release Workers
 
@@ -162,14 +169,17 @@ agent-relay history --to Worker1
 agent-relay history --to Worker1 --from Orchestrator
 ```
 
-```
-# WRONG — inbox_check only tells you there are unread messages, not what they say
+```bash
+# WRONG — MCP message tools require a registered agent identity; as the
+# spawning orchestrator you are not registered and these return
+# "Not registered. Call agent.register first."
 mcp__relaycast__message_inbox_check()
-
-# RIGHT — list Worker1's DM conversations and content (as = the agent to read as)
 mcp__relaycast__message_dm_list(as: "Worker1")
 
-# MCP returns full message content with no truncation, matching CLI replies behavior.
+# RIGHT — read via the CLI. --json gives full untruncated text plus the
+# `direction` field, which is the reliable substrate for substantive
+# payloads (diffs, grep counts, GO/NO-GO reasoning).
+agent-relay replies Worker1 --json
 ```
 
 ### Detecting task completion
@@ -220,17 +230,20 @@ agent-relay release Worker1
 ### Monitoring Workers (Essential)
 
 ```bash
-# Show currently active agents
-agent-relay who
+# Show currently active agents (structured: pid, uptimeSecs, memoryBytes,
+# status) — poll this instead of scraping the worker TTY for health
+agent-relay who --json
 
 # View real-time output from a worker (critical for debugging)
 agent-relay agents:logs Worker1
 
-# Read DM replies from a specific worker
-agent-relay replies Worker1
+# Read DM replies from a specific worker (use --json to parse safely)
+agent-relay replies Worker1 --json
 
-# View channel message history (channel posts only — not DMs)
-agent-relay history --to '#general'
+# View channel message history (channel posts only — not DMs).
+# Channel evidence (diffs, grep counts, GO/NO-GO) is full-text and
+# untruncated; use --json when you need to parse it programmatically.
+agent-relay history --to '#general' --json
 
 # Check overall system status
 agent-relay status
