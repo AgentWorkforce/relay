@@ -748,7 +748,7 @@ export function registerMessagingCommands(
         since?: string;
         json?: boolean;
       }) => {
-        const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
+        const limit = Math.max(1, Number.parseInt(options.limit ?? '50', 10)) || 50;
         const sinceTs = parseSince(options.since);
 
         if (options.from && !options.to) {
@@ -767,7 +767,11 @@ export function registerMessagingCommands(
               .filter(isPresent)
               .filter((msg) => msg.agentName === options.from)
               .filter((msg) => !sinceTs || Date.parse(msg.createdAt) >= sinceTs)
-              .slice(0, limit);
+              // Relaycast feed order is not guaranteed: sort chronologically
+              // and keep the most recent `limit` (matches the channel branch).
+              // A bare slice(0, limit) here silently kept the OLDEST messages.
+              .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+              .slice(-limit);
             for (const msg of raw) {
               channelItems.push({ ts: msg.createdAt, to: '#general', text: msg.text, kind: 'channel' });
             }
@@ -1144,7 +1148,7 @@ export function registerMessagingCommands(
           full?: boolean;
         }
       ) => {
-        const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
+        const limit = Math.max(1, Number.parseInt(options.limit ?? '50', 10)) || 50;
         const sinceTs = parseSince(options.since);
         const readerName = options.as?.trim() || getDefaultOrchestratorName();
 
@@ -1187,7 +1191,12 @@ export function registerMessagingCommands(
             options.unread
               ? hasUnreadFlags
                 ? messages.filter((message) => message.unread)
-                : messages.slice(-unreadCount)
+                : // No per-message unread flags: fall back to the conversation's
+                  // unread count. Guard zero explicitly — `slice(-0)` is
+                  // `slice(0)` which would return the ENTIRE read history.
+                  unreadCount > 0
+                  ? messages.slice(-unreadCount)
+                  : []
               : messages
           ).slice(-limit);
 

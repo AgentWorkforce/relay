@@ -879,6 +879,76 @@ describe('registerMessagingCommands', () => {
     expect(relaycastClient.markRead).not.toHaveBeenCalled();
   });
 
+  it('replies --unread with zero unread and no unread flags prints nothing', async () => {
+    // Regression: unreadCount 0 + no per-message unread flags made
+    // `messages.slice(-0)` === `slice(0)` and printed the ENTIRE read history.
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'already read one',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          },
+          {
+            id: 'msg_2',
+            agentName: 'WorkerA',
+            text: 'already read two',
+            createdAt: '2026-02-20T12:00:02.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('No messages found.');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('already read one'));
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('already read two'));
+  });
+
+  it('replies --unread --json with zero unread emits an empty array', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'already read',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([]);
+  });
+
   it('replies --mark-read flips read state after output only for printed messages', async () => {
     const relaycastClient = createRelaycastClientMock({
       dms: {
@@ -1746,6 +1816,30 @@ describe('registerMessagingCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hello from relay'));
+  });
+
+  it('history --from agent keeps the newest channel messages in chronological order', async () => {
+    // Feed returned out of order to prove the --from branch re-sorts and
+    // keeps the most recent `limit` (regression: it used to slice(0, limit)
+    // off the raw feed, silently keeping the OLDEST messages).
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        { id: 'm3', agent_name: 'relay', text: 'third', created_at: '2026-02-20T11:00:03.000Z' },
+        { id: 'm1', agent_name: 'relay', text: 'first', created_at: '2026-02-20T11:00:01.000Z' },
+        { id: 'm2', agent_name: 'relay', text: 'second', created_at: '2026-02-20T11:00:02.000Z' },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--limit', '2']);
+
+    expect(exitCode).toBeUndefined();
+    const lines = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+    const idx2 = lines.findIndex((l) => l.includes('second'));
+    const idx3 = lines.findIndex((l) => l.includes('third'));
+    expect(lines.some((l) => l.includes('first'))).toBe(false); // oldest dropped
+    expect(idx2).toBeGreaterThanOrEqual(0);
+    expect(idx3).toBeGreaterThan(idx2); // chronological
   });
 
   it('history --from agent shows DM messages sent by that agent', async () => {
