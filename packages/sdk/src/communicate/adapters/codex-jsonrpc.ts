@@ -139,8 +139,12 @@ export function spawnCodexAppServer(options: SpawnCodexAppServerOptions = {}): C
       };
       child.once('exit', settle);
       child.once('error', () => settle(null, null));
+      // Cover the race where the child terminated before this listener was
+      // registered — emitted 'exit'/'error' events are not replayed.
       if (lastSpawnError) {
         settle(null, null);
+      } else if (child.exitCode !== null || child.signalCode !== null) {
+        settle(child.exitCode, child.signalCode ?? null);
       }
     },
   };

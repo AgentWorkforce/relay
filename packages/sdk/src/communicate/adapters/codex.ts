@@ -577,7 +577,8 @@ export class CodexRelayHandle implements CodexHandle {
     }
 
     if (notification.method === 'turn/completed') {
-      if (!params.turn?.id || params.turn.id === this.activeTurnId) {
+      const completedTurnId = params.turn?.id ?? params.turnId;
+      if (!completedTurnId || completedTurnId === this.activeTurnId) {
         this.activeTurnId = undefined;
       }
       await this.flushInboxToNextTurn();

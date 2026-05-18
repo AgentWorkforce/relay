@@ -209,6 +209,24 @@ test('spawnCodexAppServer merges env overrides with the parent environment', asy
   }
 });
 
+test('spawnCodexAppServer.onExit fires when the child has already exited before registration', async () => {
+  const { spawnCodexAppServer } = await loadJsonRpcModule();
+  const transport = spawnCodexAppServer({
+    command: process.execPath,
+    args: ['-e', 'process.exit(0)'],
+  });
+
+  // Wait long enough for the child to exit before we register onExit.
+  await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
+  const [code] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    transport.onExit((exitCode: number | null, exitSignal: NodeJS.Signals | null) =>
+      resolve([exitCode, exitSignal])
+    );
+  });
+  assert.equal(code, 0);
+});
+
 test('spawnCodexAppServer surfaces spawn errors through onExit instead of crashing', async () => {
   const { spawnCodexAppServer } = await loadJsonRpcModule();
   const transport = spawnCodexAppServer({

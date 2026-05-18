@@ -363,6 +363,43 @@ test('communicate onRelay routes framework codex targets to the Codex adapter', 
   assert.equal(requestsFor(client, 'thread/start').length, 1);
 });
 
+test('Codex turn/completed clears activeTurnId when payload uses params.turnId', async () => {
+  const { onRelay } = await loadCodexAdapterModule();
+  const client = new FakeCodexClient(['relaycast']);
+  const handle = onRelay('CodexTester', { framework: 'codex', clientFactory: () => client }, new FakeRelay());
+  await handle.ready;
+
+  await client.emit({
+    method: 'turn/started',
+    params: { threadId: 'thread-1', turnId: 'turn-via-id' },
+  });
+  assert.equal(handle.currentTurnId, 'turn-via-id');
+
+  await client.emit({
+    method: 'turn/completed',
+    params: { threadId: 'thread-1', turnId: 'turn-via-id' },
+  });
+  assert.equal(handle.currentTurnId, undefined);
+});
+
+test('Codex turn/completed for a different turnId leaves the active turn intact', async () => {
+  const { onRelay } = await loadCodexAdapterModule();
+  const client = new FakeCodexClient(['relaycast']);
+  const handle = onRelay('CodexTester', { framework: 'codex', clientFactory: () => client }, new FakeRelay());
+  await handle.ready;
+
+  await client.emit({
+    method: 'turn/started',
+    params: { threadId: 'thread-1', turnId: 'turn-live' },
+  });
+
+  await client.emit({
+    method: 'turn/completed',
+    params: { threadId: 'thread-1', turnId: 'turn-other' },
+  });
+  assert.equal(handle.currentTurnId, 'turn-live');
+});
+
 test('Codex interrupt keeps activeTurnId when the turn/interrupt request fails', async () => {
   const { onRelay } = await loadCodexAdapterModule();
 
