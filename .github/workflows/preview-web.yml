@@ -67,10 +67,11 @@ jobs:
         with:
           script: |
             const prNum = context.payload.pull_request.number;
+            const url = `https://pr-${prNum}.agentrelay.net`;
             const body = `**Preview deployed!**\n\n` +
-              `| Environment | Details |\n` +
-              `|-------------|---------|\n` +
-              `| Web | SST preview stage \`pr-${prNum}\` deployed successfully. |\n\n` +
+              `| Environment | URL |\n` +
+              `|-------------|-----|\n` +
+              `| Web | ${url} |\n\n` +
               `This preview will be cleaned up when the PR is merged or closed.`;
 
             const { data: comments } = await github.rest.issues.listComments({
