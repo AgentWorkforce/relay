@@ -59,6 +59,10 @@ export function sanitizeForTerminal(input: string): string {
   /* eslint-enable no-control-regex */
 }
 
+export function sanitizeForTerminalLine(input: string): string {
+  return sanitizeForTerminal(input.replace(/[\r\n\t]+/g, ' '));
+}
+
 export interface TableColumn {
   value: string;
   width?: number;

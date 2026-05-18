@@ -3,13 +3,15 @@ import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { defaultExit } from '../lib/exit.js';
-import { parseSince, sanitizeForTerminal } from '../lib/formatting.js';
+import { parseSince, sanitizeForTerminal, sanitizeForTerminalLine } from '../lib/formatting.js';
 
 type ExitFn = (code: number) => never;
 const MAX_DM_FETCH_LIMIT = 1000;
 const MARK_READ_CONCURRENCY = 8;
 const HISTORY_DM_CONVERSATION_SCAN_LIMIT = 50;
+const HISTORY_DM_PER_CONVERSATION_FETCH_LIMIT = 100;
 const INBOX_UNREAD_DM_FETCH_CONVERSATION_LIMIT = 50;
+const INBOX_DM_PREVIEW_FETCH_LIMIT = 10;
 const FALLBACK_DM_CREATED_AT = '1970-01-01T00:00:00.000Z';
 
 interface RelaycastMessage {
@@ -196,7 +198,6 @@ export interface MessagingRelaycastClient {
     options?: { limit?: number; before?: string; after?: string }
   ): Promise<RelaycastMessage[]>;
   inbox(): Promise<RelaycastInbox>;
-  markRead?: (messageId: string) => Promise<unknown>;
   dm(to: string, text: string): Promise<void>;
   post(channel: string, text: string): Promise<void>;
   dms: {
@@ -263,20 +264,81 @@ function getDefaultOrchestratorName(): string {
   return process.env.AGENT_RELAY_ORCHESTRATOR_NAME?.trim() || 'orchestrator';
 }
 
-function parseMessageLimit(value: string | undefined, defaultValue = 50): number {
-  const parsed = Number.parseInt(value ?? String(defaultValue), 10);
-  if (!Number.isFinite(parsed)) {
-    return defaultValue;
+function getAllowedReadAgentNames(): Set<string> {
+  const allowed = new Set([getDefaultOrchestratorName()]);
+  for (const name of (process.env.AGENT_RELAY_ALLOWED_READ_IDENTITIES ?? '').split(',')) {
+    const trimmed = name.trim();
+    if (trimmed) {
+      allowed.add(trimmed);
+    }
   }
-  return Math.min(Math.max(1, parsed), 1000);
+  return allowed;
 }
 
-function parseSinceOption(value: string | undefined): number | undefined {
-  const parsed = parseSince(value);
-  if (value !== undefined && String(value).trim() && parsed === undefined) {
+function isAuthorizedReadIdentity(agentName: string): boolean {
+  return getAllowedReadAgentNames().has(agentName);
+}
+
+function reportUnauthorizedReadIdentity(deps: MessagingDependencies, agentName: string): void {
+  deps.error(
+    `Refusing to read as ${sanitizeForTerminalLine(
+      agentName
+    )}: read identities must be the configured orchestrator or listed in AGENT_RELAY_ALLOWED_READ_IDENTITIES.`
+  );
+  deps.exit(1);
+}
+
+function parseMessageLimit(value: string | undefined, defaultValue = 50): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  const trimmed = String(value).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid --limit value: ${value}`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid --limit value: ${value}`);
+  }
+  return Math.min(parsed, MAX_DM_FETCH_LIMIT);
+}
+
+type SinceFilter = { kind: 'none' } | { kind: 'time'; ts: number } | { kind: 'cursor'; id: string };
+
+/**
+ * `--since` accepts either a time (`5m`, `1h`, ISO-8601) or a message-id
+ * cursor. A cursor returns only messages strictly AFTER that id in
+ * chronological order, so a polling caller (`--since <lastId>`) never
+ * re-receives a message it already saw — the spec's stale-replay fix.
+ */
+function resolveSince(value: string | undefined): SinceFilter {
+  if (value === undefined || !String(value).trim()) return { kind: 'none' };
+  const trimmed = String(value).trim();
+  const ts = parseSince(trimmed);
+  if (ts !== undefined) return { kind: 'time', ts };
+  // Not a time. Treat as an opaque message-id cursor. Whitespace means it is
+  // neither a valid time nor a plausible id — surface the original error.
+  if (/\s/.test(trimmed)) {
     throw new Error(`Invalid --since value: ${value}`);
   }
-  return parsed;
+  return { kind: 'cursor', id: trimmed };
+}
+
+/**
+ * Drop everything up to and including the cursor message. If the cursor id
+ * is not in the (already chronologically sorted) window, return nothing —
+ * never replay older messages. `messages` MUST be sorted oldest→newest.
+ */
+function sliceAfterCursor<T extends { id: string }>(messages: T[], cursorId: string): T[] {
+  let cut = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].id === cursorId) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut === -1) return [];
+  return messages.slice(cut + 1);
 }
 
 function normalizeUnreadCount(value: number | undefined): number {
@@ -291,11 +353,15 @@ function shellQuote(value: string): string {
 }
 
 function renderShellQuotedForTerminal(value: string): string {
-  return shellQuote(sanitizeForTerminal(value));
+  return shellQuote(sanitizeForTerminalLine(value));
 }
 
 async function disconnectRelaycastClient(client: MessagingRelaycastClient | undefined): Promise<void> {
-  await Promise.resolve(client?.disconnect?.()).catch(() => undefined);
+  try {
+    await client?.disconnect?.();
+  } catch {
+    // Best-effort cleanup must not mask the command result.
+  }
 }
 
 function getDmParticipantName(participant: DmConversationParticipant): string | undefined {
@@ -397,8 +463,8 @@ function renderTranscriptMessage(
   log: MessagingDependencies['log'],
   message: Pick<NormalizedDmMessage, 'agentName' | 'text' | 'createdAt'>
 ): void {
-  const agentName = sanitizeForTerminal(message.agentName);
-  const createdAt = sanitizeForTerminal(message.createdAt);
+  const agentName = sanitizeForTerminalLine(message.agentName);
+  const createdAt = sanitizeForTerminalLine(message.createdAt);
   const lines = message.text.split(/\r?\n/).map(sanitizeForTerminal);
   if (lines.length === 1) {
     log(`[${createdAt}] ${agentName}: ${lines[0]}`);
@@ -452,12 +518,12 @@ function renderUnreadDmMessage(
   senderName: string
 ): void {
   if (message.diagnostic) {
-    log(`    ${sanitizeForTerminal(message.diagnostic)}`);
+    log(`    ${sanitizeForTerminalLine(message.diagnostic)}`);
     return;
   }
   const lines = message.text.split(/\r?\n/).map(sanitizeForTerminal);
-  const displaySender = sanitizeForTerminal(message.agentName || senderName);
-  const createdAt = sanitizeForTerminal(message.createdAt);
+  const displaySender = sanitizeForTerminalLine(message.agentName || senderName);
+  const createdAt = sanitizeForTerminalLine(message.createdAt);
   if (lines.length === 1) {
     log(`    [${createdAt}] ${displaySender}: ${lines[0]}`);
     return;
@@ -480,7 +546,7 @@ function getLastMessageDirection(
   if (message.agentName === readerName) {
     return 'outbound';
   }
-  return 'outbound';
+  return message.agentName ? 'outbound' : 'inbound';
 }
 
 function normalizeUnreadChannel(channel: RelaycastUnreadChannel): NormalizedRelaycastUnreadChannel | null {
@@ -538,16 +604,20 @@ function normalizeLastMessage(
 
 function normalizeUnreadDm(dm: RelaycastUnreadDm): NormalizedRelaycastUnreadDm | null {
   const conversationId = readString(dm.conversationId, dm.conversation_id);
+  const from = readString(dm.from);
   const unreadCount = normalizeUnreadCount(readNumber(dm.unreadCount, dm.unread_count));
-  if (!conversationId || unreadCount === undefined) {
+  if (!conversationId || !from) {
     return null;
   }
 
   return {
     conversationId,
-    from: dm.from,
+    from,
     unreadCount,
     lastMessage: normalizeLastMessage(dm.lastMessage ?? dm.last_message),
+    // Current Relaycast inbox summaries expose last_message without sender
+    // metadata. Keep messages[] forward-compatible, but production previews
+    // are expected to use the explicit DM body fetch path today.
     messages: (Array.isArray(dm.messages) ? dm.messages : []).map(normalizeLastMessage).filter(isPresent),
   };
 }
@@ -607,7 +677,7 @@ async function getUnreadDmDisplayMessages(
   try {
     const fetchedMessages = (
       await relaycast.dms.messages(dm.conversationId, {
-        limit: getFilteredDmFetchLimit(3, dm.unreadCount),
+        limit: INBOX_DM_PREVIEW_FETCH_LIMIT,
       })
     )
       .map((message) =>
@@ -652,21 +722,6 @@ async function mapWithConcurrency<T, R>(
     for (const [batchIndex, result] of batchResults.entries()) {
       results[index + batchIndex] = result;
     }
-  }
-  return results;
-}
-
-async function markReadWithConcurrency(
-  messages: Array<Pick<NormalizedDmMessage, 'id'>>,
-  markRead: (id: string) => Promise<unknown>
-): Promise<PromiseSettledResult<unknown>[]> {
-  const results: PromiseSettledResult<unknown>[] = [];
-  for (let index = 0; index < messages.length; index += MARK_READ_CONCURRENCY) {
-    results.push(
-      ...(await Promise.allSettled(
-        messages.slice(index, index + MARK_READ_CONCURRENCY).map((message) => markRead(message.id))
-      ))
-    );
   }
   return results;
 }
@@ -801,7 +856,7 @@ export function registerMessagingCommands(
           } else {
             await relaycastClient.dm(agent, message);
           }
-          deps.log(`Message sent to ${agent}`);
+          deps.log(`Message sent to ${sanitizeForTerminalLine(agent)}`);
           return;
         } catch {
           // Fall through to broker path
@@ -828,7 +883,7 @@ export function registerMessagingCommands(
           from: senderName,
           threadId: options.thread,
         });
-        deps.log(`Message sent to ${agent}`);
+        deps.log(`Message sent to ${sanitizeForTerminalLine(agent)}`);
       } catch (err: any) {
         deps.error(`Failed to send message: ${err?.message || String(err)}`);
         deps.exit(1);
@@ -862,9 +917,9 @@ export function registerMessagingCommands(
           throw new Error(`message ${messageId} is missing sender or timestamp metadata`);
         }
 
-        deps.log(`From: ${normalizedMessage.agentName}`);
+        deps.log(`From: ${sanitizeForTerminalLine(normalizedMessage.agentName)}`);
         deps.log('To: #channel');
-        deps.log(`Time: ${normalizedMessage.createdAt}`);
+        deps.log(`Time: ${sanitizeForTerminalLine(normalizedMessage.createdAt)}`);
         deps.log('---');
         deps.log(normalizedMessage.text);
       } catch (err: any) {
@@ -883,7 +938,10 @@ export function registerMessagingCommands(
     .option('-f, --from <agent>', 'Filter by sender')
     .option('-t, --to <agent>', 'Filter by recipient')
     .option('--thread <id>', 'Filter by thread ID')
-    .option('--since <time>', 'Since time (e.g., "1h", "30m", "2024-01-01")')
+    .option(
+      '--since <time|id>',
+      'Time ("1h", "30m", "2024-01-01") or a message-id cursor (only messages after that id)'
+    )
     .option('--json', 'Output as JSON')
     .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
     .action(
@@ -895,15 +953,17 @@ export function registerMessagingCommands(
         since?: string;
         json?: boolean;
       }) => {
-        const limit = parseMessageLimit(options.limit);
-        let sinceTs: number | undefined;
+        let limit: number;
+        let since: SinceFilter;
         try {
-          sinceTs = parseSinceOption(options.since);
+          limit = parseMessageLimit(options.limit);
+          since = resolveSince(options.since);
         } catch (err: any) {
           deps.error(err?.message || String(err));
           deps.exit(1);
           return;
         }
+        const sinceTs = since.kind === 'time' ? since.ts : undefined;
 
         if (options.from && !options.to) {
           // Cross-context sender history: channel messages + DMs sent by this agent
@@ -996,6 +1056,10 @@ export function registerMessagingCommands(
             return;
           }
 
+          if (sourceErrors.length > 0) {
+            deps.error(`Warning: partial history results; ${sourceErrors.join('; ')}`);
+          }
+
           if (options.json) {
             deps.log(
               JSON.stringify(
@@ -1018,15 +1082,11 @@ export function registerMessagingCommands(
             return;
           }
 
-          if (sourceErrors.length > 0) {
-            deps.error(`Warning: partial history results; ${sourceErrors.join('; ')}`);
-          }
-
           allItems.forEach((item) => {
             const suffix = item.kind === 'dm' ? ' (DM)' : '';
-            const header = `[${sanitizeForTerminal(item.ts)}] ${sanitizeForTerminal(
+            const header = `[${sanitizeForTerminalLine(item.ts)}] ${sanitizeForTerminalLine(
               options.from ?? ''
-            )} -> ${sanitizeForTerminal(item.to)}${suffix}`;
+            )} -> ${sanitizeForTerminalLine(item.to)}${suffix}`;
             // No truncation: substantive payloads (diffs, grep counts,
             // GO/NO-GO reasoning) must be readable in full. Multi-line
             // messages print under an indented header.
@@ -1063,7 +1123,11 @@ export function registerMessagingCommands(
             const conversation = findDirectDmConversation(conversations, readerName, toName);
 
             if (!conversation) {
-              deps.log(`No DM conversation found between ${readerName} and ${toName}.`);
+              deps.log(
+                `No DM conversation found between ${sanitizeForTerminalLine(
+                  readerName
+                )} and ${sanitizeForTerminalLine(toName)}.`
+              );
               return;
             }
 
@@ -1084,7 +1148,11 @@ export function registerMessagingCommands(
               });
             }
 
-            const messages = sortDmMessagesChronologically(collected).slice(-limit);
+            const ordered = sortDmMessagesChronologically(collected);
+            // `--since <id>`: only messages strictly after that id (no replay).
+            const messages = (since.kind === 'cursor' ? sliceAfterCursor(ordered, since.id) : ordered).slice(
+              -limit
+            );
 
             if (options.json) {
               deps.log(
@@ -1156,9 +1224,14 @@ export function registerMessagingCommands(
           // transcript, then keep the most recent `limit` messages. The
           // relaycast feed order is not guaranteed, so an explicit sort is
           // required to stop messages interleaving out of order.
-          filteredMessages = filteredMessages
-            .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-            .slice(-limit);
+          filteredMessages = filteredMessages.sort(
+            (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
+          );
+          // `--since <id>`: only messages strictly after that id (no replay).
+          if (since.kind === 'cursor') {
+            filteredMessages = sliceAfterCursor(filteredMessages, since.id);
+          }
+          filteredMessages = filteredMessages.slice(-limit);
 
           if (options.json) {
             const payload = filteredMessages.map((msg) => ({
@@ -1185,9 +1258,9 @@ export function registerMessagingCommands(
           // GO/NO-GO reasoning) must be fully readable. Multi-line messages
           // print under an indented header.
           filteredMessages.forEach((msg) => {
-            const header = `[${sanitizeForTerminal(msg.createdAt)}] ${sanitizeForTerminal(
+            const header = `[${sanitizeForTerminalLine(msg.createdAt)}] ${sanitizeForTerminalLine(
               msg.agentName
-            )} -> #${sanitizeForTerminal(channel)}`;
+            )} -> #${sanitizeForTerminalLine(channel)}`;
             const lines = msg.text.split(/\r?\n/).map(sanitizeForTerminal);
             if (lines.length === 1) {
               deps.log(`${header}: ${lines[0]}`);
@@ -1214,7 +1287,12 @@ export function registerMessagingCommands(
     .option('--agent <name>', 'Agent whose inbox to check (defaults to cli user)')
     .option('--json', 'Output as JSON')
     .action(async (options: { agent?: string; json?: boolean }) => {
-      const readerName = options.agent?.trim() || '__cli_inbox__';
+      const requestedReaderName = options.agent?.trim();
+      if (requestedReaderName && !isAuthorizedReadIdentity(requestedReaderName)) {
+        reportUnauthorizedReadIdentity(deps, requestedReaderName);
+        return;
+      }
+      const readerName = requestedReaderName || '__cli_inbox__';
       let relaycast: MessagingRelaycastClient | undefined;
       try {
         relaycast = await deps.createRelaycastClient({
@@ -1250,7 +1328,9 @@ export function registerMessagingCommands(
             })),
             unread_dms: inbox.unreadDms.map((dm, index) => {
               const selectedMessage = unreadDmDisplays[index]?.[0];
-              const lastMessage = selectedMessage ?? dm.lastMessage;
+              const lastMessageError = selectedMessage?.diagnostic;
+              const selectedDisplayMessage = lastMessageError ? undefined : selectedMessage;
+              const lastMessage = selectedDisplayMessage ?? dm.lastMessage;
               return {
                 conversation_id: dm.conversationId,
                 from: dm.from,
@@ -1261,12 +1341,13 @@ export function registerMessagingCommands(
                       text: lastMessage.text,
                       created_at: lastMessage.createdAt,
                       direction:
-                        selectedMessage?.direction ??
-                        (selectedMessage
+                        selectedDisplayMessage?.direction ??
+                        (selectedDisplayMessage
                           ? 'inbound'
                           : getLastMessageDirection(lastMessage, dm.from, readerName)),
                     }
                   : null,
+                ...(lastMessageError ? { last_message_error: lastMessageError } : {}),
               };
             }),
             recent_reactions: inbox.recentReactions.map((reaction) => ({
@@ -1295,7 +1376,7 @@ export function registerMessagingCommands(
         if (inbox.unreadChannels.length > 0) {
           deps.log('Unread Channels:');
           for (const item of inbox.unreadChannels) {
-            deps.log(`  #${sanitizeForTerminal(item.channelName)}: ${item.unreadCount}`);
+            deps.log(`  #${sanitizeForTerminalLine(item.channelName)}: ${item.unreadCount}`);
           }
           deps.log('');
         }
@@ -1305,9 +1386,9 @@ export function registerMessagingCommands(
           for (const mention of inbox.mentions) {
             const preview = mention.text.length > 120 ? `${mention.text.slice(0, 117)}...` : mention.text;
             deps.log(
-              `  [${sanitizeForTerminal(mention.createdAt)}] #${sanitizeForTerminal(
+              `  [${sanitizeForTerminalLine(mention.createdAt)}] #${sanitizeForTerminalLine(
                 mention.channelName
-              )} @${sanitizeForTerminal(mention.agentName)}: ${sanitizeForTerminal(preview)}`
+              )} @${sanitizeForTerminalLine(mention.agentName)}: ${sanitizeForTerminalLine(preview)}`
             );
           }
           deps.log('');
@@ -1323,7 +1404,7 @@ export function registerMessagingCommands(
           );
           for (const [index, dm] of inbox.unreadDms.entries()) {
             deps.log(
-              `  ${sanitizeForTerminal(dm.from)} → ${sanitizeForTerminal(readerName)} (${dm.unreadCount} unread):`
+              `  ${sanitizeForTerminalLine(dm.from)} → ${sanitizeForTerminalLine(readerName)} (${dm.unreadCount} unread):`
             );
             const displayMessages = unreadDmDisplays[index] ?? [];
             const visibleMessages = displayMessages.slice(0, 3);
@@ -1346,9 +1427,9 @@ export function registerMessagingCommands(
           deps.log('Recent Reactions:');
           for (const reaction of inbox.recentReactions) {
             deps.log(
-              `  [${sanitizeForTerminal(reaction.createdAt)}] #${sanitizeForTerminal(
+              `  [${sanitizeForTerminalLine(reaction.createdAt)}] #${sanitizeForTerminalLine(
                 reaction.channelName
-              )} ${sanitizeForTerminal(reaction.emoji)} by @${sanitizeForTerminal(reaction.agentName)}`
+              )} ${sanitizeForTerminalLine(reaction.emoji)} by @${sanitizeForTerminalLine(reaction.agentName)}`
             );
           }
         }
@@ -1365,9 +1446,11 @@ export function registerMessagingCommands(
     .description('Show DM replies received from an agent')
     .argument('<agent>', 'Agent whose replies to show')
     .option('-n, --limit <count>', 'Number of messages to show', '50')
-    .option('--since <time>', 'Only messages after time (e.g., "5m", "1h", ISO-8601)')
+    .option(
+      '--since <time|id>',
+      'Time ("5m", "1h", ISO-8601) or a message-id cursor (only messages after that id; no replay)'
+    )
     .option('--unread', 'Only unread messages')
-    .option('--mark-read', 'Mark printed messages as read after printing')
     .option('--as <name>', 'Read as this orchestrator identity')
     .option('--json', 'Output as JSON')
     .option('--full', 'Disable truncation; text is always printed in full')
@@ -1378,22 +1461,28 @@ export function registerMessagingCommands(
           limit?: string;
           since?: string;
           unread?: boolean;
-          markRead?: boolean;
           as?: string;
           json?: boolean;
           full?: boolean;
         }
       ) => {
-        const limit = parseMessageLimit(options.limit);
-        let sinceTs: number | undefined;
+        let limit: number;
+        let since: SinceFilter;
         try {
-          sinceTs = parseSinceOption(options.since);
+          limit = parseMessageLimit(options.limit);
+          since = resolveSince(options.since);
         } catch (err: any) {
           deps.error(err?.message || String(err));
           deps.exit(1);
           return;
         }
-        const readerName = options.as?.trim() || getDefaultOrchestratorName();
+        const sinceTs = since.kind === 'time' ? since.ts : undefined;
+        const requestedReaderName = options.as?.trim();
+        if (requestedReaderName && !isAuthorizedReadIdentity(requestedReaderName)) {
+          reportUnauthorizedReadIdentity(deps, requestedReaderName);
+          return;
+        }
+        const readerName = requestedReaderName || getDefaultOrchestratorName();
 
         let relaycast: MessagingRelaycastClient | undefined;
         try {
@@ -1412,13 +1501,12 @@ export function registerMessagingCommands(
           const conversation = findDirectDmConversation(conversations, readerName, agent);
 
           if (!conversation) {
-            deps.log(`No DM conversation with ${agent}.`);
+            deps.log(`No DM conversation with ${sanitizeForTerminalLine(agent)}.`);
             return;
           }
 
-          const unreadCount = normalizeUnreadCount(
-            readNumber(conversation.unreadCount, conversation.unread_count)
-          );
+          const rawUnreadCount = readNumber(conversation.unreadCount, conversation.unread_count);
+          const unreadCount = normalizeUnreadCount(rawUnreadCount);
           const messages = sortDmMessagesChronologically(
             (
               await relaycast.dms.messages(conversation.id, {
@@ -1436,8 +1524,15 @@ export function registerMessagingCommands(
               .filter((message) => !sinceTs || Date.parse(message.createdAt) >= sinceTs)
           );
 
+          // `--since <id>`: only messages strictly after that id, so a
+          // polling caller never re-receives what it already saw.
+          const cursored = since.kind === 'cursor' ? sliceAfterCursor(messages, since.id) : messages;
+
+          const hasPerMessageReadState = cursored.some((message) => message.unread !== undefined);
+          const unreadStateUnknown =
+            options.unread === true && rawUnreadCount === undefined && !hasPerMessageReadState;
           const filteredMessages = (
-            options.unread ? selectUnreadCandidates(messages, unreadCount) : messages
+            options.unread && !unreadStateUnknown ? selectUnreadCandidates(cursored, unreadCount) : cursored
           ).slice(-limit);
 
           if (options.json) {
@@ -1450,6 +1545,7 @@ export function registerMessagingCommands(
                   text: message.text,
                   createdAt: message.createdAt,
                   direction: 'inbound',
+                  ...(unreadStateUnknown ? { unread_state: 'unknown' } : {}),
                   ...(message.unread !== undefined ? { unread: message.unread } : {}),
                 })),
                 null,
@@ -1459,26 +1555,17 @@ export function registerMessagingCommands(
           } else if (!filteredMessages.length) {
             deps.log('No messages found.');
           } else {
+            if (unreadStateUnknown) {
+              deps.log('Unread state unavailable — showing recent inbound messages.');
+            }
             for (const message of filteredMessages) {
               renderTranscriptMessage(deps.log, message);
             }
           }
-
-          if (options.markRead && filteredMessages.length > 0) {
-            if (!relaycast.markRead) {
-              deps.error(
-                'Warning: --mark-read requested, but this relaycast client does not support markRead.'
-              );
-            } else {
-              const results = await markReadWithConcurrency(filteredMessages, relaycast.markRead);
-              const failed = results.filter((result) => result.status === 'rejected');
-              if (failed.length > 0) {
-                deps.error(`Warning: failed to mark ${failed.length} printed message(s) as read.`);
-              }
-            }
-          }
         } catch (err: any) {
-          deps.error(`Failed to fetch replies for ${sanitizeForTerminal(agent)}: ${formatErrorDetail(err)}`);
+          deps.error(
+            `Failed to fetch replies for ${sanitizeForTerminalLine(agent)}: ${formatErrorDetail(err)}`
+          );
           deps.exit(1);
         } finally {
           await disconnectRelaycastClient(relaycast);

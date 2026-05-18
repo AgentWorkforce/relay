@@ -6,6 +6,7 @@ import {
   formatUptimeSecs,
   parseSince,
   sanitizeForTerminal,
+  sanitizeForTerminalLine,
 } from './formatting';
 
 describe('formatting helpers', () => {
@@ -81,5 +82,11 @@ describe('sanitizeForTerminal', () => {
     expect(sanitizeForTerminal('a\x1bMb')).toBe('ab');
     expect(sanitizeForTerminal('x\x9bDy')).toBe('xy');
     expect(sanitizeForTerminal('p\x1b]0;t\x1b\\q')).toBe('pq');
+  });
+});
+
+describe('sanitizeForTerminalLine', () => {
+  it('normalizes line-breaking controls for scalar terminal fields', () => {
+    expect(sanitizeForTerminalLine('evil\n[fake]\rroot\tok\x1b[31m')).toBe('evil [fake] root ok');
   });
 });
