@@ -44,7 +44,7 @@ import { defaultExit, runSignalHandler } from '../lib/exit.js';
 type ExitFn = (code: number) => never;
 
 /** Wire string for the broker's `SessionMode` enum. */
-export type SessionMode = 'human' | 'relay';
+export type SessionMode = 'human' | 'passthrough';
 
 /** Minimal WebSocket surface we depend on — same shape as `view`'s. */
 export interface DriveWebSocket {
@@ -108,7 +108,7 @@ export interface DriveDependencies {
   /** Override for the snapshot-on-attach helper (tests substitute a stub). */
   captureAndRenderSnapshot: (
     connection: AttachSnapshotConnection,
-    agentName: string,
+    name: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   /** Stdin handle — defaults to `process.stdin`. */
@@ -164,18 +164,18 @@ function authHeaders(connection: BrokerConnection): Record<string, string> {
 
 /** ----- HTTP helpers ----- */
 
-/** `GET /api/spawned/{name}/mode` → `'human' | 'relay'` or `null` on failure. */
+/** `GET /api/spawned/{name}/mode` → `'human' | 'passthrough'` or `null` on failure. */
 export async function getSessionMode(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<SessionMode | null> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/mode`;
+  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/mode`;
   try {
     const res = await fetchFn(url, { headers: authHeaders(connection) });
     if (!res.ok) return null;
     const body = (await res.json()) as { mode?: unknown };
-    if (body.mode === 'human' || body.mode === 'relay') return body.mode;
+    if (body.mode === 'human' || body.mode === 'passthrough') return body.mode;
     return null;
   } catch {
     return null;
@@ -186,7 +186,7 @@ export async function getSessionMode(
 export interface SetSessionModeResult {
   ok: boolean;
   status: number;
-  /** Server-reported number of pending messages drained on a `human→relay` flip. */
+  /** Server-reported number of pending messages drained on a `human→passthrough` flip. */
   flushed?: number;
   /** Human-readable error message when `ok` is false. */
   message?: string;
@@ -194,11 +194,11 @@ export interface SetSessionModeResult {
 
 export async function setSessionMode(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   mode: SessionMode,
   fetchFn: typeof globalThis.fetch
 ): Promise<SetSessionModeResult> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/mode`;
+  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/mode`;
   try {
     const res = await fetchFn(url, {
       method: 'PUT',
@@ -232,10 +232,10 @@ export async function setSessionMode(
 /** `GET /api/spawned/{name}/pending` → count, or `0` on failure (best-effort). */
 export async function getPendingCount(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<number> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/pending`;
+  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/pending`;
   try {
     const res = await fetchFn(url, { headers: authHeaders(connection) });
     if (!res.ok) return 0;
@@ -249,10 +249,10 @@ export async function getPendingCount(
 /** `POST /api/spawned/{name}/flush` → server returns `{ flushed: N }`. */
 export async function flushPending(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; flushed?: number; message?: string }> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/flush`;
+  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/flush`;
   try {
     const res = await fetchFn(url, { method: 'POST', headers: authHeaders(connection) });
     if (!res.ok) {
@@ -274,11 +274,11 @@ export async function flushPending(
 /** `POST /api/input/{name}` body `{ data: "<bytes>" }`. */
 export async function sendInput(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   data: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/input/${encodeURIComponent(agentName)}`;
+  const url = `${connection.url}/api/input/${encodeURIComponent(name)}`;
   try {
     const res = await fetchFn(url, {
       method: 'POST',
@@ -303,12 +303,12 @@ export async function sendInput(
  */
 export async function resizeWorker(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   rows: number,
   cols: number,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/resize/${encodeURIComponent(agentName)}`;
+  const url = `${connection.url}/api/resize/${encodeURIComponent(name)}`;
   try {
     const res = await fetchFn(url, {
       method: 'POST',
@@ -345,7 +345,7 @@ export type DriveWsEvent =
  *
  * Exported for unit testing the filter in isolation.
  */
-export function classifyWsEvent(rawMessage: string, agentName: string): DriveWsEvent {
+export function classifyWsEvent(rawMessage: string, name: string): DriveWsEvent {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -354,7 +354,7 @@ export function classifyWsEvent(rawMessage: string, agentName: string): DriveWsE
   }
   if (!isStringObject(parsed)) return { kind: 'other' };
   // All three events we care about are scoped by the worker `name` field.
-  if (parsed.name !== agentName) return { kind: 'other' };
+  if (parsed.name !== name) return { kind: 'other' };
 
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
@@ -470,7 +470,7 @@ export class KeybindParser {
  * pending-count change.
  */
 export function renderStatusLine(opts: {
-  agentName: string;
+  name: string;
   mode: SessionMode;
   pending: number;
   showHelp: boolean;
@@ -481,7 +481,7 @@ export function renderStatusLine(opts: {
   const help = opts.showHelp
     ? ' | Ctrl+G flush | Ctrl+B D detach | Ctrl+B ? hide help'
     : ' | Ctrl+G flush | Ctrl+B D detach';
-  const text = `[drive ${opts.agentName} | mode=${opts.mode} | pending=${opts.pending}${help}]`;
+  const text = `[drive ${opts.name} | mode=${opts.mode} | pending=${opts.pending}${help}]`;
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -499,7 +499,12 @@ export async function runDriveSession(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: DriveDependencies
 ): Promise<number> {
-  if (!agentName.trim()) {
+  // Normalize once so every downstream broker call, WS-event match,
+  // status-line label, and error message uses the same trimmed value.
+  // Without this a stray space in the raw input turns into a silent
+  // 404 (the broker stores names verbatim).
+  const name = agentName.trim();
+  if (!name) {
     deps.error('Error: agent name is required');
     return 1;
   }
@@ -515,19 +520,19 @@ export async function runDriveSession(
 
   // Remember the worker's prior mode so we can restore it on detach.
   // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `relay` in that case so the queue
-  // doesn't keep growing.
-  const previousMode = await getSessionMode(connection, agentName, deps.fetch);
+  // we default the restore target to `passthrough` in that case so the
+  // queue doesn't keep growing.
+  const previousMode = await getSessionMode(connection, name, deps.fetch);
 
   // Flip the worker into human mode. If this fails outright, abort
   // before doing anything else — we don't want to redraw the screen
   // and then silently keep auto-injecting into the agent.
-  const flip = await setSessionMode(connection, agentName, 'human', deps.fetch);
+  const flip = await setSessionMode(connection, name, 'human', deps.fetch);
   if (!flip.ok) {
     if (flip.status === 404) {
-      deps.error(`Error: no agent named '${agentName}'`);
+      deps.error(`Error: no agent named '${name}'`);
     } else {
-      deps.error(`Error: could not switch '${agentName}' to human mode: ${flip.message ?? 'unknown error'}`);
+      deps.error(`Error: could not switch '${name}' to human mode: ${flip.message ?? 'unknown error'}`);
     }
     return 1;
   }
@@ -537,7 +542,7 @@ export async function runDriveSession(
   // errors warn and proceed.
   const snapshot = await deps.captureAndRenderSnapshot(
     { url: connection.url, apiKey: connection.apiKey },
-    agentName,
+    name,
     { fetch: deps.fetch, writeChunk: deps.writeChunk }
   );
   switch (snapshot.status) {
@@ -545,12 +550,12 @@ export async function runDriveSession(
       break;
     case 'not_found':
       // Best-effort restore — we did flip the mode above.
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
+      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to drive`}`);
+      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to drive`}`);
       return 1;
     case 'unavailable':
     case 'transport_error':
@@ -562,7 +567,7 @@ export async function runDriveSession(
 
   // Seed the pending counter so the status line is correct from the
   // first paint.
-  let pending = await getPendingCount(connection, agentName, deps.fetch);
+  let pending = await getPendingCount(connection, name, deps.fetch);
   let showHelp = false;
 
   // Status-line row tracks the LOCAL terminal's bottom row, not the
@@ -578,7 +583,7 @@ export async function runDriveSession(
   const paintStatus = (): void => {
     deps.writeChunk(
       renderStatusLine({
-        agentName,
+        name,
         mode: 'human',
         pending,
         showHelp,
@@ -597,7 +602,7 @@ export async function runDriveSession(
   if (initialLocalSize) {
     const initialResize = await resizeWorker(
       connection,
-      agentName,
+      name,
       initialLocalSize.rows,
       initialLocalSize.cols,
       deps.fetch
@@ -630,7 +635,7 @@ export async function runDriveSession(
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
-      void resizeWorker(connection, agentName, size.rows, size.cols, deps.fetch).then((res) => {
+      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
           deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
@@ -652,7 +657,7 @@ export async function runDriveSession(
         // 'binary' would map bytes ≥ 0x80 to Latin-1 code points,
         // which then get UTF-8 re-encoded on the wire, doubling
         // multi-byte characters (e.g. `é` → `Ã©` on the agent's side).
-        void sendInput(connection, agentName, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
+        void sendInput(connection, name, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
           if (!res.ok) {
             deps.log(`[drive] input send failed: ${res.message ?? 'unknown error'}`);
           }
@@ -661,7 +666,7 @@ export async function runDriveSession(
       for (const action of outcome.actions) {
         switch (action) {
           case 'flush':
-            void flushPending(connection, agentName, deps.fetch).then((res) => {
+            void flushPending(connection, name, deps.fetch).then((res) => {
               if (!res.ok) {
                 deps.log(`[drive] flush failed: ${res.message ?? 'unknown error'}`);
               }
@@ -722,7 +727,7 @@ export async function runDriveSession(
       }
       // Best-effort: restore the worker's previous mode so we don't
       // leave it stuck in human and silently piling up queued messages.
-      void setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch).finally(() => {
+      void setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch).finally(() => {
         resolve(code);
       });
     };
@@ -733,7 +738,7 @@ export async function runDriveSession(
     deps.onSignal('SIGTERM', () => finish(0));
 
     socket.on('open', () => {
-      deps.log(`[drive] driving ${agentName} via ${connection.url} (Ctrl+B D to detach)`);
+      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
       // Now that the WS is up, take over stdin. We do this on `open`
       // rather than synchronously so a failed connection doesn't leave
       // the user's terminal in raw mode with nothing to type into.
@@ -758,7 +763,7 @@ export async function runDriveSession(
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const event = classifyWsEvent(text, agentName);
+      const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
           deps.writeChunk(event.chunk);

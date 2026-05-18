@@ -222,8 +222,8 @@ Send targeted DM instructions:
 Broadcast to all workers:
   agent-relay send '#general' "All workers: prioritize the auth module"
 
-Read worker replies (DMs are not visible in history):
-  agent-relay inbox --agent Worker1
+Read worker DM replies (full text, sender-attributed):
+  agent-relay replies Worker1
 
 Release when done:
   agent-relay release Worker1
@@ -232,10 +232,10 @@ Release when done:
 - Workers will ACK when they receive tasks
 - Workers will send DONE when complete
 - Use `agent-relay agents:logs <name>` to monitor progress
-- Use `agent-relay inbox --agent <name>` to read **unread** DM replies from a worker (clears after reading)
+- Prefer `agent-relay replies <name>` for worker DM replies
+- Use `agent-relay replies <name> --unread --mark-read` only when you want read-state filtering
 - Use `agent-relay history --to <name>` to re-read the full DM conversation (read + unread)
 - Use `agent-relay history --to '#general'` to see channel message flow
-- Do NOT use `agent-relay history` alone to check worker replies — it only shows channel posts, DM replies are invisible there
 ```
 
 ### Lifecycle Events
@@ -264,10 +264,9 @@ The broker emits these events (available via SDK subscriptions):
 | Workers not connecting                                     | Ensure broker started; check `agent-relay who` and worker logs                                                                                                                   |
 | Not monitoring workers                                     | Use `agent-relay agents:logs <name>` frequently to track progress                                                                                                                |
 | Workers seem stuck                                         | Check logs with `agent-relay agents:logs <name>` for errors                                                                                                                      |
-| Messages not delivered                                     | Check `agent-relay history --to '#general'` for channel messages; use `agent-relay inbox --agent <name>` for DMs                                                                 |
-| Worker replies not showing in history                      | Expected — `history` only shows channel posts. Use `agent-relay inbox --agent <name>` (unread only) or `agent-relay history --to <name>` (full thread) to read DM replies        |
-| `inbox_check` shows unread but can't see content           | `inbox_check` only returns counts. Use `mcp__relaycast__message_dm_list(as: "<name>")` to list conversations, or `agent-relay inbox --agent <name>` via CLI                      |
-| `inbox --agent` showed messages once but now shows nothing | `inbox` only shows **unread** — already-read messages won't reappear. Use `agent-relay history --to <name>` to re-read the full conversation                                     |
+| Messages not delivered                                     | Check `agent-relay history --to '#general'` for channel messages; use `agent-relay replies <name>` for DMs                                                                       |
+| `inbox_check` shows unread but can't see content           | `inbox_check` only returns counts. Use `agent-relay replies <name>` or `mcp__relaycast__message_dm_list(as: "<name>")` to list conversations with content                        |
+| `inbox --agent` showed messages once but now shows nothing | `inbox --agent` is legacy unread-only behavior. Use `agent-relay replies <name>` for a persistent view; use `--unread` and `--mark-read` only when you want read-state filtering |
 | Sent to wrong destination                                  | `agent-relay send Worker1 "..."` = DM; `agent-relay send '#general' "..."` = channel broadcast. The `#` prefix is required for channels                                          |
 
 ### Overview

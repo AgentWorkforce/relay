@@ -535,7 +535,9 @@ Output:
     // commit step never created a new one.
     command:
       [
-        'test "$(git rev-parse HEAD)" != "$(cat .workflow-head-before)"',
+        'baseline="$(cat .workflow-head-before)"',
+        'rm -f .workflow-head-before',
+        'test "$(git rev-parse HEAD)" != "$baseline"',
         'git log -1 --pretty=%s | grep -q "^feat: "',
         'test -z "$(git status --porcelain)"',
       ].join(' && ') + ' && echo "COMMIT_OK" || (echo "COMMIT_MISSING_OR_HEAD_UNCHANGED"; exit 1)',

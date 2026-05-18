@@ -548,6 +548,7 @@ export async function runAgentsLogsCommand(
               // File was truncated/rotated, reset
               lastSize = 0;
               remainder = '';
+              prevStreamLine = undefined;
             }
           } catch {
             // Ignore read errors during follow, file may be temporarily unavailable

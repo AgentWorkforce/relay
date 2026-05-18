@@ -224,6 +224,10 @@ Located in `src/cli/commands/messaging.test.ts` (existing) and a new `replies.te
   `unread_dms[].last_message.direction` field. Callers that ignore unknown keys
   are unaffected; no field is renamed, removed, or retyped.
 - `history --to <agent>` returns messages, not conversation summary, when `<agent>` is non-channel.
+- `history --to '#<channel>'` renders full channel message text, preserves multi-line payloads, and keeps the newest `--limit` messages in chronological order.
+- `history --from <agent>` combines DM and channel messages, applies `--limit` after combining/filtering, and returns partial results with a warning when only one source fails.
+- `who --json` uses broker metrics for `status`, `pid`, `uptimeSecs`, and `memoryBytes`; when metrics are unavailable, the fields fall back to list-only values/nulls without fabricating "last seen" timestamps.
+- `who` human output includes real `PID` and `UPTIME` columns and omits the old placeholder `LAST SEEN` column.
 - `send` without `--from` sends as `orchestrator` (verified by reading back via `replies`).
 - `send` honors `AGENT_RELAY_ORCHESTRATOR_NAME` env var when `--from` is omitted.
 
@@ -245,6 +249,8 @@ Required steps, run from a clean working tree on the feature branch:
    - `agent-relay inbox --agent Worker2 --json` — `unread_dms[].last_message` carries the worker's text; `from` is the worker's name, not `"relay"`.
    - `agent-relay replies Worker2 --mark-read` — run **after** the inbox checks above; prints + marks read; a follow-up `--unread` call returns empty.
    - `agent-relay history --to Worker2` — chronological messages, no 60-char preview, outbound sender is `orchestrator`.
+   - `agent-relay history --to '#general' --json` — channel posts are chronological, untruncated, and parseable; multi-line payloads remain intact.
+   - `agent-relay who --json` — Worker2 has real lifecycle fields (`status`, `pid`, `uptimeSecs`, `memoryBytes`) from broker metrics when available, or explicit nulls when unavailable.
    - `agent-relay send Worker2 "ping"` with no `--from` — Worker2's subsequent `replies` view shows the outbound was attributed to `orchestrator`.
    - `AGENT_RELAY_ORCHESTRATOR_NAME=ops agent-relay send Worker2 "ping"` — outbound attributed to `ops`.
 4. **Run the polling-loop snippet from the updated skill.** Confirm it terminates correctly when a worker emits `done`/`completed` and that it does not false-positive on the orchestrator's own outbound DMs (this is the failure mode the `direction` field is designed to prevent).
@@ -274,6 +280,8 @@ This spec is complete when an orchestrator can run the exact command sequence fr
 - `agent-relay replies Worker2` prints Worker2's full reply text with sender attribution.
 - `agent-relay inbox --agent Worker2` prints content, not counts.
 - `agent-relay history --to Worker2` prints messages, not a conversation summary, and the orchestrator's outbound DMs are clearly attributed to `orchestrator` (or the configured name), not `relay`.
+- `agent-relay history --to '#general'` prints channel messages in chronological order without truncating substantive payloads.
+- `agent-relay who --json` exposes broker-derived lifecycle data suitable for polling instead of fabricated placeholders.
 - The running-headless-orchestrator skill's "read worker replies" guidance is one command, not three.
 - All tests in §6.1 pass.
 - §6.2 end-to-end validation has been performed against a locally-built CLI and a live broker, and the transcript is pasted into the PR description.

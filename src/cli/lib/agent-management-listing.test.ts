@@ -421,4 +421,40 @@ describe('runAgentsLogsCommand --plain / --json', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
   });
+
+  it('--plain --follow resets dedupe state after log rotation', async () => {
+    vi.useFakeTimers();
+    const log = vi.fn(() => undefined);
+    const error = vi.fn(() => undefined);
+    const exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    }) as unknown as AgentManagementListingDependencies['exit'];
+    const snapshots = ['same\n', '', 'same\n'];
+    const deps: AgentManagementListingDependencies = {
+      getProjectRoot: vi.fn(() => '/tmp/project'),
+      getDataDir: vi.fn(() => '/tmp/data'),
+      createClient: vi.fn(() => ({
+        listAgents: vi.fn(async () => []),
+        shutdown: vi.fn(async () => undefined),
+      })),
+      fileExists: vi.fn(() => true),
+      readFile: vi.fn(() => snapshots.shift() ?? 'same\n'),
+      fetch: vi.fn(async () => {
+        throw new Error('not implemented');
+      }),
+      nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      log,
+      error,
+      exit,
+    };
+
+    void runAgentsLogsCommand('WorkerA', { plain: true, follow: true, lines: '1' }, deps);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(log.mock.calls.map((call) => call[0])).toEqual(['same', 'same']);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
 });
