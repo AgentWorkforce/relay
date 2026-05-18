@@ -83,7 +83,7 @@ export class BrokerTransport {
       headers['Content-Type'] = 'application/json';
     }
     if (this.apiKey) {
-      headers['X-API-Key'] = this.apiKey;
+      setHeader(headers, 'X-API-Key', this.apiKey);
     }
 
     const signal = init?.signal ?? AbortSignal.timeout(this.requestTimeoutMs);
@@ -105,8 +105,16 @@ export class BrokerTransport {
       });
     }
 
+    if (isEmptySuccessResponse(res)) {
+      return undefined as T;
+    }
+
+    const bodyText = await res.text();
+    if (bodyText.length === 0) {
+      return undefined as T;
+    }
     try {
-      return (await res.json()) as T;
+      return JSON.parse(bodyText) as T;
     } catch {
       throw new AgentRelayProtocolError({
         code: 'invalid_response',
@@ -265,4 +273,21 @@ function headersToRecord(headersInit: HeadersInit | undefined): Record<string, s
 function hasHeader(headers: Record<string, string>, name: string): boolean {
   const lowerName = name.toLowerCase();
   return Object.keys(headers).some((key) => key.toLowerCase() === lowerName);
+}
+
+function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName && key !== name) {
+      delete headers[key];
+    }
+  }
+  headers[name] = value;
+}
+
+function isEmptySuccessResponse(res: Response): boolean {
+  if (res.status === 204 || res.status === 205) {
+    return true;
+  }
+  return res.headers.get('content-length')?.trim() === '0';
 }
