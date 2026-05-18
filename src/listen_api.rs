@@ -152,7 +152,8 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>,
     },
     /// `GET /api/spawned/{name}/pending` — snapshot the per-worker
-    /// pending-message queue (FIFO, head first).
+    /// pending-message queue (FIFO, head first). Auto-inject workers usually
+    /// report an empty queue because they drain in the same broker turn.
     GetPending {
         name: String,
         reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, DeliveryRouteError>>,
@@ -1165,11 +1166,11 @@ async fn listen_api_snapshot(
 }
 
 // ---------------------------------------------------------------------------
-// Inbound delivery mode (per-agent inject vs. queue, plus pending-queue inspection)
+// Inbound delivery mode (per-agent drain policy plus pending-queue inspection)
 //
-// The broker keeps an `InboundDeliveryMode` per worker; `manual_flush`
-// mode parks inbound relay messages in a FIFO `pending` queue instead
-// of injecting them.
+// The broker keeps an `InboundDeliveryMode` per worker. All inbound relay
+// messages pass through a FIFO `pending` queue; `auto_inject` drains it
+// immediately, while `manual_flush` parks messages until the caller flushes.
 // These four routes are the server-side surface the `agent-relay drive`
 // client calls to flip modes, inspect the queue, and drain it.
 // ---------------------------------------------------------------------------
@@ -1256,8 +1257,8 @@ async fn listen_api_set_inbound_delivery_mode(
 }
 
 /// `GET /api/spawned/{name}/pending` → `{ "pending": [ ... ] }`, FIFO
-/// (head of queue first). Empty array when the worker is not in
-/// `manual_flush` delivery mode or simply has no pending messages.
+/// (head of queue first). In `auto_inject` mode this is normally empty because
+/// inbound messages drain in the same broker turn.
 async fn listen_api_get_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
