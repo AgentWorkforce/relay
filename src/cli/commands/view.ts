@@ -20,6 +20,11 @@ import WebSocket from 'ws';
 
 import { getProjectPaths } from '@agent-relay/config';
 
+import {
+  captureAndRenderSnapshot,
+  type AttachSnapshotConnection,
+  type AttachSnapshotDeps,
+} from '../lib/attach.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 type ExitFn = (code: number) => never;
@@ -68,6 +73,14 @@ export interface ViewDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  /** HTTP client used by the snapshot-on-attach call. Defaults to global `fetch`. */
+  fetch: typeof globalThis.fetch;
+  /** Override for the snapshot-on-attach helper (tests substitute a stub). */
+  captureAndRenderSnapshot: (
+    connection: AttachSnapshotConnection,
+    agentName: string,
+    deps: AttachSnapshotDeps
+  ) => ReturnType<typeof captureAndRenderSnapshot>;
 }
 
 function readConnectionFileFromDisk(stateDir: string): unknown {
@@ -102,6 +115,8 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
+    fetch: (input, init) => fetch(input, init),
+    captureAndRenderSnapshot,
     ...overrides,
   };
 }
@@ -205,6 +220,35 @@ export async function runViewSession(
         'or run from a directory containing .agent-relay/connection.json.'
     );
     return 1;
+  }
+
+  // Render the agent's current screen before the live stream begins, so
+  // the user sees what's there instead of staring at a blank terminal
+  // until the agent happens to produce more output. Hard errors
+  // (`not_found` / `no_pty`) abort — there's nothing meaningful to view.
+  // Transient errors (`unavailable` / `transport_error`) are surfaced as
+  // a warning and we fall through to the live stream; the agent may
+  // still produce useful output even if the snapshot couldn't be served.
+  const snapshot = await deps.captureAndRenderSnapshot(
+    { url: connection.url, apiKey: connection.apiKey },
+    agentName,
+    { fetch: deps.fetch, writeChunk: deps.writeChunk }
+  );
+  switch (snapshot.status) {
+    case 'ok':
+      break;
+    case 'not_found':
+      deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
+      return 1;
+    case 'no_pty':
+      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to view`}`);
+      return 1;
+    case 'unavailable':
+    case 'transport_error':
+      deps.log(
+        `[view] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+      );
+      break;
   }
 
   const wsUrl = toWsUrl(connection.url);

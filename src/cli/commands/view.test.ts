@@ -56,6 +56,11 @@ interface HarnessOverrides {
   env?: NodeJS.ProcessEnv;
   connectionFile?: unknown;
   defaultStateDir?: string;
+  /** Override the snapshot helper outcome. Defaults to `{ status: 'ok' }`
+   *  with no writes — most tests don't care about the snapshot path. */
+  snapshotResult?: Awaited<ReturnType<ViewDependencies['captureAndRenderSnapshot']>>;
+  /** If set, snapshot helper writes this string to `writeChunk` when called. */
+  snapshotChunk?: string;
 }
 
 function createHarness(overrides: HarnessOverrides = {}): {
@@ -96,6 +101,16 @@ function createHarness(overrides: HarnessOverrides = {}): {
     exit: vi.fn((code: number) => {
       throw new ExitSignal(code);
     }) as unknown as ViewDependencies['exit'],
+    // Snapshot path: tests opt in by overriding either the result or the
+    // emitted chunk via `HarnessOverrides`. Default is `ok` with no write
+    // so existing tests continue to assert on live-stream writes only.
+    fetch: vi.fn(async () => new Response('', { status: 200 })) as ViewDependencies['fetch'],
+    captureAndRenderSnapshot: vi.fn(async (_conn, _name, snapshotDeps) => {
+      if (overrides.snapshotChunk !== undefined) {
+        snapshotDeps.writeChunk(overrides.snapshotChunk);
+      }
+      return overrides.snapshotResult ?? { status: 'ok' };
+    }) as ViewDependencies['captureAndRenderSnapshot'],
   };
 
   return { deps, writes, errors, logs, signals, sockets };
@@ -330,6 +345,89 @@ describe('runViewSession', () => {
     expect(socket.headers['X-API-Key']).toBeUndefined();
     socket.emit('close', 1000, Buffer.from(''));
     await sessionPromise;
+  });
+
+  it('renders the snapshot to stdout BEFORE the WebSocket opens', async () => {
+    // The snapshot helper writes a clear-screen + welcome banner first;
+    // the live WS then appends a delta. The user's terminal should see
+    // the snapshot bytes first, then the live chunk.
+    const snapshotBytes = '\x1b[2J\x1b[H\x1b[32mWelcome back Will\x1b[0m\n❯\n';
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
+      snapshotChunk: snapshotBytes,
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Snapshot must have been written before any WS chunk arrives.
+    expect(writes).toEqual([snapshotBytes]);
+
+    const socket = sockets[0];
+    socket.emit('open');
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live delta' })
+    );
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    expect(writes).toEqual([snapshotBytes, 'live delta']);
+  });
+
+  it('aborts with exit code 1 when the snapshot reports not_found', async () => {
+    const { deps, errors, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
+    });
+
+    const code = await runViewSession('Ghost', {}, deps);
+    expect(code).toBe(1);
+    expect(sockets).toHaveLength(0); // never opened the WS
+    expect(errors[0]?.[0]).toMatch(/no agent named/);
+  });
+
+  it('aborts with exit code 1 when the worker has no PTY', async () => {
+    const { deps, errors, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotResult: {
+        status: 'no_pty',
+        message: "agent 'Headless' has no PTY (headless worker — nothing to view)",
+      },
+    });
+
+    const code = await runViewSession('Headless', {}, deps);
+    expect(code).toBe(1);
+    expect(sockets).toHaveLength(0);
+    expect(errors[0]?.[0]).toMatch(/no PTY/);
+  });
+
+  it('logs and continues when the snapshot is transiently unavailable', async () => {
+    // Snapshot fails (broker hiccup, worker crashed mid-snapshot, etc.)
+    // but the live stream should still attach — the agent may produce
+    // useful output even if the current screen couldn't be captured.
+    const { deps, logs, sockets, writes } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotResult: { status: 'unavailable', message: 'snapshot returned HTTP 504' },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(sockets).toHaveLength(1); // WS still opened
+    expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
+
+    const socket = sockets[0];
+    socket.emit('open');
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'live' })
+    );
+    socket.emit('close', 1000, Buffer.from(''));
+
+    const code = await sessionPromise;
+    expect(code).toBe(0);
+    expect(writes).toEqual(['live']);
   });
 });
 
