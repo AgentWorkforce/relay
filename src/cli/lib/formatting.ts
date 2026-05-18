@@ -30,7 +30,7 @@ export function parseSince(input?: string): number | undefined {
   const trimmed = String(input).trim();
   if (!trimmed) return undefined;
 
-  const durationMatch = trimmed.match(/^(-?\d+)([smhd])$/i);
+  const durationMatch = trimmed.match(/^(\d+)([smhd])$/i);
   if (durationMatch) {
     const value = Number(durationMatch[1]);
     const unit = durationMatch[2].toLowerCase();
@@ -46,6 +46,17 @@ export function parseSince(input?: string): number | undefined {
   const parsed = Date.parse(trimmed);
   if (Number.isNaN(parsed)) return undefined;
   return parsed;
+}
+
+export function sanitizeForTerminal(input: string): string {
+  /* eslint-disable no-control-regex -- intentionally matching ANSI/control bytes to strip them */
+  return input
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x9B[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1B[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F-\x9F]/g, '');
+  /* eslint-enable no-control-regex */
 }
 
 export interface TableColumn {

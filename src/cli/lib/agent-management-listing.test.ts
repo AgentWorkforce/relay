@@ -12,6 +12,7 @@ function createDeps(options?: {
   listAgentsError?: Error;
   nowIso?: string;
   metrics?: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
+  getMetricsError?: Error;
 }) {
   const workers = options?.workers ?? [];
   const listAgents = options?.listAgentsError
@@ -20,7 +21,13 @@ function createDeps(options?: {
       })
     : vi.fn(async () => workers);
   const getMetrics =
-    options?.metrics !== undefined ? vi.fn(async () => ({ agents: options.metrics })) : undefined;
+    options?.getMetricsError !== undefined
+      ? vi.fn(async () => {
+          throw options.getMetricsError;
+        })
+      : options?.metrics !== undefined
+        ? vi.fn(async () => ({ agents: options.metrics }))
+        : undefined;
   const shutdown = vi.fn(async () => undefined);
   const log = vi.fn(() => undefined);
   const error = vi.fn(() => undefined);
@@ -120,6 +127,46 @@ describe('agent-management-listing JSON output', () => {
     ]);
   });
 
+  it('runWhoCommand falls back to list-only fields when getMetrics throws', async () => {
+    const { deps, log } = createDeps({
+      workers: [{ name: 'WorkerWho', cli: 'claude', pid: 99 }],
+      getMetricsError: new Error('metrics unavailable'),
+    });
+
+    await runWhoCommand({ json: true }, deps);
+
+    expect(JSON.parse(log.mock.calls[0][0] as string)).toEqual([
+      {
+        name: 'WorkerWho',
+        cli: 'claude',
+        status: 'online',
+        pid: 99,
+        uptimeSecs: null,
+        memoryBytes: null,
+      },
+    ]);
+  });
+
+  it('runWhoCommand matches metrics by agent name without leaking mismatched metrics', async () => {
+    const { deps, log } = createDeps({
+      workers: [{ name: 'WorkerWho', cli: 'claude', pid: 99 }],
+      metrics: [{ name: 'OtherWorker', pid: 4321, memory_bytes: 1048576, uptime_secs: 421 }],
+    });
+
+    await runWhoCommand({ json: true }, deps);
+
+    expect(JSON.parse(log.mock.calls[0][0] as string)).toEqual([
+      {
+        name: 'WorkerWho',
+        cli: 'claude',
+        status: 'online',
+        pid: 99,
+        uptimeSecs: null,
+        memoryBytes: null,
+      },
+    ]);
+  });
+
   it('runWhoCommand renders the human table with real PID and UPTIME columns', async () => {
     const { deps, log } = createDeps({
       workers: [{ name: 'WorkerWho', cli: 'claude' }],
@@ -135,6 +182,8 @@ describe('agent-management-listing JSON output', () => {
     expect(row).toContain('online');
     expect(row).toContain('4321');
     expect(row).toContain('7m 01s');
+    expect(lines[0]).not.toContain('MEMORY');
+    expect(row).not.toContain('1048576');
     expect(lines.some((l) => l.includes('LAST SEEN'))).toBe(false);
   });
 

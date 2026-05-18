@@ -142,16 +142,7 @@ function createRelaycastClientMock(
                   id: lastMessage.id,
                   text: lastMessage.text,
                   created_at: lastMessage.createdAt,
-                  direction: lastMessage.direction,
                 },
-                messages: unreadMessages.map((message) => ({
-                  id: message.id,
-                  text: message.text,
-                  created_at: message.createdAt,
-                  agent_name: message.agentName,
-                  direction: message.direction,
-                  unread: message.unread,
-                })),
               },
             ]
           : [],
@@ -194,7 +185,6 @@ function createRelaycastClientMock(
             text: message.text,
             createdAt: message.createdAt,
             unread: message.unread,
-            direction: message.direction,
           }))
       ),
       markRead: markMessagesRead,
@@ -352,7 +342,12 @@ describe('issue #860 replies command', () => {
     const unread = await runTranscriptCommand(state, ['replies', 'Worker2', '--unread']);
     const relaycastClient = createRelaycastClientMock(state, 'orchestrator');
     const markRead = createHarness({ state, relaycastClient });
-    const markReadExitCode = await runCommand(markRead.program, ['replies', 'Worker2', '--unread', '--mark-read']);
+    const markReadExitCode = await runCommand(markRead.program, [
+      'replies',
+      'Worker2',
+      '--unread',
+      '--mark-read',
+    ]);
     const unreadAfterMark = await runTranscriptCommand(state, ['replies', 'Worker2', '--unread']);
 
     expect(unread.exitCode).toBeUndefined();
@@ -430,7 +425,7 @@ describe('issue #860 inbox renderer', () => {
     expect(text).toContain('Final note before handoff.');
     expect(text).toContain('One more implementation detail is ready.');
     expect(text).toContain('Done. Created result.json with {"status":"success","worker":"claude"}.');
-    expect(text).toContain('… (1 more — run `agent-relay replies Worker2 --unread` to see all)');
+    expect(text).toContain("… (1 more — run `agent-relay replies 'Worker2' --unread` to see all)");
   });
 
   it('keeps inbox JSON structured while carrying message direction', async () => {
@@ -549,6 +544,12 @@ describe('issue #860 outbound suppression', () => {
     const parsed = jsonOutput(deps) as Array<{ from: string; text: string; direction: TranscriptDirection }>;
 
     expect(exitCode).toBeUndefined();
+    expect(parsed).toHaveLength(3);
+    expect(parsed.map((message) => message.text)).toEqual([
+      'Got it.',
+      'Working on it now.',
+      'Done. Created result.json with {"status":"success","worker":"claude"}.',
+    ]);
     expect(parsed.every((message) => message.from === 'Worker2')).toBe(true);
     expect(parsed.every((message) => message.direction === 'inbound')).toBe(true);
     expect(parsed.map((message) => message.text)).not.toContain(

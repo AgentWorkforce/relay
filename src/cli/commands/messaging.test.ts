@@ -353,6 +353,111 @@ describe('registerMessagingCommands', () => {
     ]);
   });
 
+  it('history --from applies the limit after combining channel and DM messages', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'ch_old',
+          agent_name: 'relay',
+          text: 'channel old',
+          created_at: '2026-02-20T12:00:01.000Z',
+        },
+        {
+          id: 'ch_new',
+          agent_name: 'relay',
+          text: 'channel new',
+          created_at: '2026-02-20T12:00:04.000Z',
+        },
+      ]),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'dm_1',
+            participants: [{ agentName: 'relay' }, { agentName: 'orchestrator' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'dm_old',
+            agentName: 'relay',
+            text: 'dm old',
+            createdAt: '2026-02-20T12:00:02.000Z',
+          },
+          {
+            id: 'dm_new',
+            agentName: 'relay',
+            text: 'dm new',
+            createdAt: '2026-02-20T12:00:03.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--limit', '2']);
+
+    expect(exitCode).toBeUndefined();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0] as string);
+    expect(logged).toHaveLength(2);
+    expect(logged[0]).toContain('dm new');
+    expect(logged[1]).toContain('channel new');
+    expect(logged.some((line) => line.includes('channel old') || line.includes('dm old'))).toBe(false);
+  });
+
+  it('history --from --json applies the limit after combining channel and DM messages', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'ch_old',
+          agent_name: 'relay',
+          text: 'channel old',
+          created_at: '2026-02-20T12:00:01.000Z',
+        },
+        {
+          id: 'ch_new',
+          agent_name: 'relay',
+          text: 'channel new',
+          created_at: '2026-02-20T12:00:04.000Z',
+        },
+      ]),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'dm_1',
+            participants: [{ agentName: 'relay' }, { agentName: 'orchestrator' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'dm_old',
+            agentName: 'relay',
+            text: 'dm old',
+            createdAt: '2026-02-20T12:00:02.000Z',
+          },
+          {
+            id: 'dm_new',
+            agentName: 'relay',
+            text: 'dm new',
+            createdAt: '2026-02-20T12:00:03.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--limit', '2', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    const parsed = JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string);
+    expect(parsed.map((item: { text: string }) => item.text)).toEqual(['dm new', 'channel new']);
+  });
+
   it('shows unread inbox summary', async () => {
     const relaycastClient = createRelaycastClientMock({
       inbox: vi.fn(async () => ({
@@ -371,19 +476,27 @@ describe('registerMessagingCommands', () => {
             conversation_id: 'dm_1',
             from: 'Teammate',
             unread_count: 1,
-            last_message: null,
-            messages: [
-              {
-                id: 'dm_msg_1',
-                text: 'Please check the latest patch.',
-                created_at: '2026-02-20T12:01:00.000Z',
-                direction: 'inbound',
-              },
-            ],
+            last_message: {
+              id: 'dm_msg_1',
+              text: 'Please check the latest patch.',
+              created_at: '2026-02-20T12:01:00.000Z',
+            },
           },
         ],
         recent_reactions: [],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'dm_msg_1',
+            agentName: 'Teammate',
+            text: 'Please check the latest patch.',
+            createdAt: '2026-02-20T12:01:00.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -427,16 +540,7 @@ describe('registerMessagingCommands', () => {
               id: 'msg_1',
               text: 'hello',
               createdAt: '2026-02-20T12:01:00.000Z',
-              direction: 'inbound',
             },
-            messages: [
-              {
-                id: 'msg_1',
-                text: 'hello',
-                createdAt: '2026-02-20T12:01:00.000Z',
-                direction: 'inbound',
-              },
-            ],
           },
         ],
         recentReactions: [
@@ -449,6 +553,18 @@ describe('registerMessagingCommands', () => {
           },
         ],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'Teammate',
+            text: 'hello',
+            createdAt: '2026-02-20T12:01:00.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -784,6 +900,50 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('group-only reply'));
   });
 
+  it('replies <agent> selects a typed 1:1 conversation before an untyped exact participant match', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_untyped',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'Worker2' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+          {
+            id: 'conv_typed',
+            type: '1:1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'Worker2' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:01:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async (conversationId: string) => [
+          {
+            id: `${conversationId}_msg`,
+            agentName: 'Worker2',
+            text: `${conversationId} reply`,
+            createdAt: '2026-02-20T12:01:01.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'Worker2']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledTimes(1);
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith(
+      'conv_typed',
+      expect.objectContaining({ limit: expect.any(Number) })
+    );
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('conv_typed reply'));
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('conv_untyped reply'));
+  });
+
   it('replies <agent> --as selects the conversation shared by the overridden reader and agent', async () => {
     const relaycastClient = createRelaycastClientMock({
       dms: {
@@ -919,6 +1079,84 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('already read two'));
   });
 
+  it('replies --unread suppresses count fallback when messages are explicitly read', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 2,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'explicitly read one',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: false,
+          },
+          {
+            id: 'msg_2',
+            agentName: 'WorkerA',
+            text: 'explicitly read two',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: false,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('No messages found.');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('explicitly read'));
+  });
+
+  it('replies --unread falls back to unread_count for real SDK-shaped DMs without per-message read flags', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 2,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'real sdk shape one',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          },
+          {
+            id: 'msg_2',
+            agentName: 'WorkerA',
+            text: 'real sdk shape two',
+            createdAt: '2026-02-20T12:00:02.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([
+      expect.objectContaining({ id: 'msg_1', text: 'real sdk shape one' }),
+      expect.objectContaining({ id: 'msg_2', text: 'real sdk shape two' }),
+    ]);
+  });
+
   it('replies --unread --json with zero unread emits an empty array', async () => {
     const relaycastClient = createRelaycastClientMock({
       dms: {
@@ -1019,6 +1257,281 @@ describe('registerMessagingCommands', () => {
     expect(logMock.mock.invocationCallOrder[0]).toBeLessThan(markReadMock.mock.invocationCallOrder[0]);
   });
 
+  it('replies --mark-read warns when the client has no markRead capability', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      markRead: undefined,
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 1,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'needs attention',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread', '--mark-read']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:00:01.000Z] WorkerA: needs attention');
+    expect(deps.error).toHaveBeenCalledWith(
+      'Warning: --mark-read requested, but this relaycast client does not support markRead.'
+    );
+  });
+
+  it('replies --mark-read warning preserves exit 0 on partial markRead failure', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      markRead: vi.fn(async (id: string) => {
+        if (id === 'msg_2') {
+          throw new Error('broker write failed');
+        }
+      }),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 2,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'msg_2',
+            agentName: 'WorkerA',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread', '--mark-read']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.markRead).toHaveBeenCalledTimes(2);
+    expect(deps.error).toHaveBeenCalledWith('Warning: failed to mark 1 printed message(s) as read.');
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('replies --mark-read bounds concurrent markRead calls', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const messages = Array.from({ length: 25 }, (_, index) => ({
+      id: `msg_${index}`,
+      agentName: 'WorkerA',
+      text: `message ${index}`,
+      createdAt: `2026-02-20T12:00:${String(index).padStart(2, '0')}.000Z`,
+      unread: true,
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      markRead: vi.fn(async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight -= 1;
+      }),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: messages.length,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => messages),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, [
+      'replies',
+      'WorkerA',
+      '--unread',
+      '--mark-read',
+      '--limit',
+      '25',
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.markRead).toHaveBeenCalledTimes(25);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+  });
+
+  it('replies --mark-read reports exact failures across concurrency batch boundaries', async () => {
+    const seenIds: string[] = [];
+    const failedIds = new Set(['msg_8', 'msg_16']);
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      id: `msg_${index}`,
+      agentName: 'WorkerA',
+      text: `message ${index}`,
+      createdAt: `2026-02-20T12:00:${String(index).padStart(2, '0')}.000Z`,
+      unread: true,
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      markRead: vi.fn(async (id: string) => {
+        seenIds.push(id);
+        if (failedIds.has(id)) {
+          throw new Error(`failed ${id}`);
+        }
+      }),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: messages.length,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => messages),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, [
+      'replies',
+      'WorkerA',
+      '--unread',
+      '--mark-read',
+      '--limit',
+      '20',
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(new Set(seenIds)).toEqual(new Set(messages.map((message) => message.id)));
+    expect(seenIds).toHaveLength(messages.length);
+    expect(deps.error).toHaveBeenCalledWith('Warning: failed to mark 2 printed message(s) as read.');
+  });
+
+  it('replies renders messages with missing text instead of exiting 1', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          } as any,
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:00:01.000Z] WorkerA: ');
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('replies keeps messages with missing sender or timestamp metadata visible', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'missing_sender',
+            text: 'sender missing',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          } as any,
+          {
+            id: 'missing_time',
+            agentName: 'WorkerA',
+            text: 'timestamp missing',
+          } as any,
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('[1970-01-01T00:00:00.000Z] WorkerA: timestamp missing');
+    expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:00:01.000Z] WorkerA: sender missing');
+    expect(deps.log).not.toHaveBeenCalledWith('No messages found.');
+  });
+
+  it('history --to keeps messages with missing sender or timestamp metadata visible', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'missing_sender',
+            text: 'sender missing',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          } as any,
+          {
+            id: 'missing_time',
+            agentName: 'WorkerA',
+            text: 'timestamp missing',
+          } as any,
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'WorkerA']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('[1970-01-01T00:00:00.000Z] WorkerA: timestamp missing');
+    expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:00:01.000Z] WorkerA: sender missing');
+    expect(deps.log).not.toHaveBeenCalledWith('No messages found.');
+  });
+
   it('replies applies the display limit after filtering outbound raw messages', async () => {
     const rawMessages = [
       {
@@ -1061,6 +1574,52 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('operator echo'));
   });
 
+  it('replies clamps excessive limits before fetching DM history', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--limit', '100000000']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_1', { limit: 1000 });
+  });
+
+  it('replies clamps excessive unread counts before fetching DM history', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 1_000_000_000,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--unread']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_1', { limit: 1000 });
+  });
+
   it('replies exits 0 with friendly message when no conversation exists', async () => {
     const relaycastClient = createRelaycastClientMock({
       dms: {
@@ -1075,6 +1634,44 @@ describe('registerMessagingCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(relaycastClient.dms.messages).not.toHaveBeenCalled();
     expect(deps.log).toHaveBeenCalledWith('No DM conversation with WorkerA.');
+  });
+
+  it('replies exits 1 when the relaycast client cannot be initialized', async () => {
+    const { program, deps } = createHarness({
+      createRelaycastError: new Error('auth failed'),
+    });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to initialize relaycast client: auth failed');
+  });
+
+  it('replies exits 1 when fetching the DM transcript fails', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => {
+          throw new Error('\x1b]0;x\x07transcript unavailable');
+        }),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to fetch replies for WorkerA: transcript unavailable');
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('\x1b'));
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('\x07'));
   });
 
   it('replies --since 1h filters by parsed duration', async () => {
@@ -1114,6 +1711,18 @@ describe('registerMessagingCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T12:30:00.000Z] WorkerA: inside window');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('too old'));
+  });
+
+  it('replies rejects invalid --since before fetching or marking messages', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['replies', 'WorkerA', '--since', 'nope', '--mark-read']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Invalid --since value: nope');
+    expect(deps.createRelaycastClient).not.toHaveBeenCalled();
+    expect(relaycastClient.markRead).not.toHaveBeenCalled();
   });
 
   it('replies --as <name> overrides the orchestrator identity', async () => {
@@ -1191,6 +1800,48 @@ describe('registerMessagingCommands', () => {
     ]);
   });
 
+  it('sanitizes terminal controls in text mode while preserving JSON payloads', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'orchestrator' }, { agentName: 'WorkerA' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'WorkerA',
+            text: 'before\x1b]52;c;YWJj\x07\x1b[2Jold\roverwrite',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          },
+        ]),
+      },
+    });
+    const textHarness = createHarness({ relaycastClient });
+
+    const textExitCode = await runCommand(textHarness.program, ['replies', 'WorkerA']);
+
+    expect(textExitCode).toBeUndefined();
+    expect(textHarness.deps.log).toHaveBeenCalledWith(
+      '[2026-02-20T12:00:01.000Z] WorkerA: beforeoldoverwrite'
+    );
+    expect(textHarness.deps.log).not.toHaveBeenCalledWith(expect.stringContaining('\x1b'));
+    expect(textHarness.deps.log).not.toHaveBeenCalledWith(expect.stringContaining('\r'));
+
+    const jsonHarness = createHarness({ relaycastClient });
+    const jsonExitCode = await runCommand(jsonHarness.program, ['replies', 'WorkerA', '--json']);
+
+    expect(jsonExitCode).toBeUndefined();
+    expect(JSON.parse((jsonHarness.deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual(
+      [expect.objectContaining({ text: 'before\x1b]52;c;YWJj\x07\x1b[2Jold\roverwrite' })]
+    );
+  });
+
   it('inbox text renderer uses the registered reader in unread DM headers', async () => {
     const relaycastClient = createRelaycastClientMock({
       inbox: vi.fn(async () => ({
@@ -1199,15 +1850,40 @@ describe('registerMessagingCommands', () => {
             conversationId: 'dm_1',
             from: 'Worker2',
             unreadCount: 3,
-            lastMessage: null,
-            messages: [
-              { id: 'm1', text: 'first', createdAt: '2026-02-20T12:00:01.000Z', direction: 'inbound' },
-              { id: 'm2', text: 'second', createdAt: '2026-02-20T12:00:02.000Z', direction: 'inbound' },
-              { id: 'm3', text: 'third', createdAt: '2026-02-20T12:00:03.000Z', direction: 'inbound' },
-            ],
+            lastMessage: {
+              id: 'm3',
+              text: 'third',
+              createdAt: '2026-02-20T12:00:03.000Z',
+            },
           },
         ],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker2',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+          {
+            id: 'm3',
+            agentName: 'Worker2',
+            text: 'third',
+            createdAt: '2026-02-20T12:00:03.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -1233,17 +1909,54 @@ describe('registerMessagingCommands', () => {
             conversationId: 'dm_1',
             from: 'Worker2',
             unreadCount: 5,
-            lastMessage: null,
-            messages: [
-              { id: 'm1', text: 'first', createdAt: '2026-02-20T12:00:01.000Z', direction: 'inbound' },
-              { id: 'm2', text: 'second', createdAt: '2026-02-20T12:00:02.000Z', direction: 'inbound' },
-              { id: 'm3', text: 'third', createdAt: '2026-02-20T12:00:03.000Z', direction: 'inbound' },
-              { id: 'm4', text: 'fourth', createdAt: '2026-02-20T12:00:04.000Z', direction: 'inbound' },
-              { id: 'm5', text: 'fifth', createdAt: '2026-02-20T12:00:05.000Z', direction: 'inbound' },
-            ],
+            lastMessage: {
+              id: 'm5',
+              text: 'fifth',
+              createdAt: '2026-02-20T12:00:05.000Z',
+            },
           },
         ],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker2',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+          {
+            id: 'm3',
+            agentName: 'Worker2',
+            text: 'third',
+            createdAt: '2026-02-20T12:00:03.000Z',
+            unread: true,
+          },
+          {
+            id: 'm4',
+            agentName: 'Worker2',
+            text: 'fourth',
+            createdAt: '2026-02-20T12:00:04.000Z',
+            unread: true,
+          },
+          {
+            id: 'm5',
+            agentName: 'Worker2',
+            text: 'fifth',
+            createdAt: '2026-02-20T12:00:05.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -1255,7 +1968,7 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('    [2026-02-20T12:00:03.000Z] Worker2: third');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('second'));
     expect(deps.log).toHaveBeenCalledWith(
-      '    … (2 more — run `agent-relay replies Worker2 --unread` to see all)'
+      "    … (2 more — run `agent-relay replies 'Worker2' --unread` to see all)"
     );
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('... (2 more - run'));
   });
@@ -1272,11 +1985,22 @@ describe('registerMessagingCommands', () => {
               id: 'm1',
               text: 'ops-only update',
               createdAt: '2026-02-20T12:00:01.000Z',
-              direction: 'inbound',
             },
           },
         ],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'ops-only update',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -1295,26 +2019,33 @@ describe('registerMessagingCommands', () => {
             conversationId: 'dm_1',
             from: 'Worker2',
             unreadCount: 2,
-            lastMessage: null,
-            messages: [
-              {
-                id: 'm1',
-                agentName: 'Worker2',
-                text: 'actual worker reply',
-                createdAt: '2026-02-20T12:00:01.000Z',
-                direction: 'inbound',
-              },
-              {
-                id: 'm2',
-                agentName: 'orchestrator',
-                text: 'outbound response',
-                createdAt: '2026-02-20T12:00:02.000Z',
-                direction: 'outbound',
-              },
-            ],
+            lastMessage: {
+              id: 'm2',
+              text: 'outbound response',
+              createdAt: '2026-02-20T12:00:02.000Z',
+            },
           },
         ],
       })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'actual worker reply',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'orchestrator',
+            text: 'outbound response',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+        ]),
+      },
     });
     const { program, deps } = createHarness({ relaycastClient });
 
@@ -1367,6 +2098,283 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('fetched outbound response'));
   });
 
+  it('inbox text renderer fetches DM messages when last_message lacks sender metadata', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'm1',
+              text: 'fetched reply',
+              createdAt: '2026-02-20T12:00:01.000Z',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'fetched reply',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('dm_1', { limit: 100 });
+    expect(deps.log).toHaveBeenCalledWith('    [2026-02-20T12:00:01.000Z] Worker2: fetched reply');
+  });
+
+  it('inbox text renderer does not fetch DM messages when unread count is zero', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 0,
+            lastMessage: null,
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => {
+          throw new Error('fallback should not run');
+        }),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).not.toHaveBeenCalled();
+  });
+
+  it('inbox text renderer prints overflow footer when embedded count equals visible limit', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 10,
+            lastMessage: {
+              id: 'm3',
+              text: 'third',
+              createdAt: '2026-02-20T12:00:03.000Z',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker2',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+          {
+            id: 'm3',
+            agentName: 'Worker2',
+            text: 'third',
+            createdAt: '2026-02-20T12:00:03.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      "    … (7 more — run `agent-relay replies 'Worker2' --unread` to see all)"
+    );
+  });
+
+  it('inbox text renderer emits a sanitized fallback line when unread body fetch fails', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: "Worker\x1b[31m'2",
+            unreadCount: 2,
+            lastMessage: null,
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => {
+          throw new Error('network down');
+        }),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0] as string);
+    // eslint-disable-next-line no-control-regex -- asserting output contains no raw escape/bell bytes
+    expect(logged.join('\n')).not.toMatch(/[\x1b\x07]/);
+    expect(deps.log).toHaveBeenCalledWith(
+      "    (could not load message bodies — run `agent-relay replies 'Worker'\\''2' --unread`)"
+    );
+  });
+
+  it('inbox clamps excessive unread counts before fetching DM messages', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 1_000_000_000,
+            lastMessage: null,
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('dm_1', { limit: 1000 });
+  });
+
+  it('inbox footer shell-quotes untrusted agent names in suggested commands', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'worker; touch /tmp/pwn',
+            unreadCount: 4,
+            lastMessage: {
+              id: 'm3',
+              text: 'third',
+              createdAt: '2026-02-20T12:00:03.000Z',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'worker; touch /tmp/pwn',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'worker; touch /tmp/pwn',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+          {
+            id: 'm3',
+            agentName: 'worker; touch /tmp/pwn',
+            text: 'third',
+            createdAt: '2026-02-20T12:00:03.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      "    … (1 more — run `agent-relay replies 'worker; touch /tmp/pwn' --unread` to see all)"
+    );
+  });
+
+  it('inbox DM renderer falls back to unread_count for SDK-shaped messages without read flags', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 2,
+            lastMessage: null,
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'oldest sdk-shaped message',
+            createdAt: '2026-02-20T12:00:01.000Z',
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker2',
+            text: 'newer sdk-shaped message',
+            createdAt: '2026-02-20T12:00:02.000Z',
+          },
+          {
+            id: 'm3',
+            agentName: 'Worker2',
+            text: 'newest sdk-shaped message',
+            createdAt: '2026-02-20T12:00:03.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      '    [2026-02-20T12:00:03.000Z] Worker2: newest sdk-shaped message'
+    );
+    expect(deps.log).toHaveBeenCalledWith('    [2026-02-20T12:00:02.000Z] Worker2: newer sdk-shaped message');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('oldest sdk-shaped message'));
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('more'));
+  });
+
   it('inbox text renderer fetches fallback when lastMessage is only an outbound echo', async () => {
     const relaycastClient = createRelaycastClientMock({
       inbox: vi.fn(async () => ({
@@ -1414,6 +2422,47 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('    [2026-02-20T12:00:01.000Z] Worker2: actual worker reply');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('outbound echo'));
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('1 more'));
+  });
+
+  it('inbox text renderer does not attribute real-shape last_message with unknown sender to the worker', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'm2',
+              text: 'operator echo',
+              createdAt: '2026-02-20T12:00:02.000Z',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm2',
+            agentName: '__cli_inbox__',
+            text: 'operator echo',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('dm_1', { limit: 100 });
+    expect(deps.log).not.toHaveBeenCalledWith('    [2026-02-20T12:00:02.000Z] Worker2: operator echo');
+    expect(deps.log).toHaveBeenCalledWith(
+      "    … (1 more — run `agent-relay replies 'Worker2' --unread` to see all)"
+    );
   });
 
   it('inbox text renderer fetches enough fallback messages past newer outbound echoes', async () => {
@@ -1482,11 +2531,215 @@ describe('registerMessagingCommands', () => {
     );
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('newer outbound echo'));
     expect(deps.log).not.toHaveBeenCalledWith(
-      expect.stringContaining('run `agent-relay replies Worker2 --unread`')
+      expect.stringContaining("run `agent-relay replies 'Worker2' --unread`")
     );
   });
 
-  it('inbox --json does not execute text-renderer DM message fetches', async () => {
+  it('inbox text renderer deduplicates overlapping embedded and fetched unread DM messages', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker2',
+            unreadCount: 2,
+            lastMessage: {
+              id: 'm1',
+              text: 'overlap once',
+              createdAt: '2026-02-20T12:00:01.000Z',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'overlap once',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker2',
+            text: 'newer fetched',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0] as string);
+    expect(logged.filter((line) => line.includes('overlap once'))).toHaveLength(1);
+    expect(logged.findIndex((line) => line.includes('newer fetched'))).toBeLessThan(
+      logged.findIndex((line) => line.includes('overlap once'))
+    );
+  });
+
+  it('inbox text renderer sanitizes untrusted summary fields before logging', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadChannels: [{ channelName: 'gen\x1b[2Jeral', unreadCount: 2 }],
+        mentions: [
+          {
+            id: 'mention_1',
+            channelName: 'ops\rhidden',
+            agentName: 'Lead\x1bM',
+            text: 'please\x1b]0;pwn\x07 review',
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ],
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Worker\x1b[31m2',
+            unreadCount: 4,
+            lastMessage: {
+              id: 'm3',
+              text: 'third',
+              createdAt: '2026-02-20T12:00:03.000Z',
+            },
+          },
+        ],
+        recentReactions: [
+          {
+            messageId: 'msg_1',
+            channelName: 'react\x9bDions',
+            emoji: 'eyes\x1b[0m',
+            agentName: 'Reviewer\rX',
+            createdAt: '2026-02-20T12:02:00.000Z',
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker\x1b[31m2',
+            text: 'first',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'Worker\x1b[31m2',
+            text: 'second',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+          {
+            id: 'm3',
+            agentName: 'Worker\x1b[31m2',
+            text: 'third',
+            createdAt: '2026-02-20T12:00:03.000Z',
+            unread: true,
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox', '--agent', 'ops\x1b]0;pwn\x07']);
+
+    expect(exitCode).toBeUndefined();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0] as string);
+    // eslint-disable-next-line no-control-regex -- asserting output contains no raw escape/CSI bytes
+    expect(logged.join('\n')).not.toMatch(/[\x1b\r\x9b]/);
+    expect(logged).toContain('  #general: 2');
+    expect(logged).toContain('  [2026-02-20T12:00:00.000Z] #opshidden @Lead: please review');
+    expect(logged).toContain('  Worker2 → ops (4 unread):');
+    expect(logged).toContain("    … (1 more — run `agent-relay replies 'Worker2' --unread` to see all)");
+    expect(logged).toContain('  [2026-02-20T12:02:00.000Z] #reactions eyes by @ReviewerX');
+  });
+
+  it('inbox bounds concurrent fallback DM body fetches', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const unreadDms = Array.from({ length: 20 }, (_, index) => ({
+      conversationId: `dm_${index}`,
+      from: `Worker${index}`,
+      unreadCount: 1,
+      lastMessage: null,
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({ unreadDms })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async (conversationId: string) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          inFlight -= 1;
+          const worker = `Worker${conversationId.split('_')[1]}`;
+          return [
+            {
+              id: `${conversationId}_msg`,
+              agentName: worker,
+              text: `${worker} body`,
+              createdAt: '2026-02-20T12:00:01.000Z',
+              unread: true,
+            },
+          ];
+        }),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledTimes(20);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+  });
+
+  it('inbox caps fallback DM body fetches to the first 50 unread conversations', async () => {
+    const unreadDms = Array.from({ length: 60 }, (_, index) => ({
+      conversationId: `dm_${index}`,
+      from: `Worker${index}`,
+      unreadCount: 1,
+      lastMessage: {
+        id: `last_${index}`,
+        text: `summary ${index}`,
+        createdAt: '2026-02-20T12:00:01.000Z',
+      },
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({ unreadDms })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async (conversationId: string) => {
+          const worker = `Worker${conversationId.split('_')[1]}`;
+          return [
+            {
+              id: `${conversationId}_msg`,
+              agentName: worker,
+              text: `${worker} body`,
+              createdAt: '2026-02-20T12:00:01.000Z',
+              unread: true,
+            },
+          ];
+        }),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledTimes(50);
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('dm_49', { limit: 100 });
+    expect(relaycastClient.dms.messages).not.toHaveBeenCalledWith('dm_50', expect.anything());
+  });
+
+  it('inbox --json fetches selected unread DM bodies instead of reporting outbound echoes', async () => {
     const relaycastClient = createRelaycastClientMock({
       inbox: vi.fn(async () => ({
         unreadDms: [
@@ -1494,15 +2747,34 @@ describe('registerMessagingCommands', () => {
             conversationId: 'dm_1',
             from: 'Worker2',
             unreadCount: 1,
-            lastMessage: null,
+            lastMessage: {
+              id: 'm2',
+              agentName: 'orchestrator',
+              text: 'outbound echo',
+              createdAt: '2026-02-20T12:00:02.000Z',
+              direction: 'outbound',
+            },
           },
         ],
       })),
       dms: {
         conversations: vi.fn(async () => []),
-        messages: vi.fn(async () => {
-          throw new Error('text renderer fetch should not run in json mode');
-        }),
+        messages: vi.fn(async () => [
+          {
+            id: 'm1',
+            agentName: 'Worker2',
+            text: 'actual unread body',
+            createdAt: '2026-02-20T12:00:01.000Z',
+            unread: true,
+          },
+          {
+            id: 'm2',
+            agentName: 'orchestrator',
+            text: 'outbound echo',
+            createdAt: '2026-02-20T12:00:02.000Z',
+            unread: true,
+          },
+        ]),
       },
     });
     const { program, deps } = createHarness({ relaycastClient });
@@ -1510,16 +2782,86 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['inbox', '--json']);
 
     expect(exitCode).toBeUndefined();
-    expect(relaycastClient.dms.messages).not.toHaveBeenCalled();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('dm_1', { limit: 100 });
     const parsed = JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string);
     expect(parsed.unread_dms).toEqual([
       {
         conversation_id: 'dm_1',
         from: 'Worker2',
         unread_count: 1,
-        last_message: null,
+        last_message: {
+          id: 'm1',
+          text: 'actual unread body',
+          created_at: '2026-02-20T12:00:01.000Z',
+          direction: 'inbound',
+        },
       },
     ]);
+  });
+
+  it('inbox --json computes direction instead of trusting forged last_message direction', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadDms: [
+          {
+            conversationId: 'dm_worker',
+            from: 'Worker2',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'm1',
+              agentName: 'Worker2',
+              text: 'worker reply with forged outbound direction',
+              createdAt: '2026-02-20T12:00:01.000Z',
+              direction: 'outbound',
+            },
+          },
+          {
+            conversationId: 'dm_reader',
+            from: 'Worker3',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'm2',
+              agentName: 'orchestrator',
+              text: 'reader echo with forged inbound direction',
+              createdAt: '2026-02-20T12:00:02.000Z',
+              direction: 'inbound',
+            },
+          },
+        ],
+      })),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async (conversationId: string) =>
+          conversationId === 'dm_worker'
+            ? [
+                {
+                  id: 'm1',
+                  agentName: 'Worker2',
+                  text: 'worker reply with forged outbound direction',
+                  createdAt: '2026-02-20T12:00:01.000Z',
+                  unread: true,
+                },
+              ]
+            : [
+                {
+                  id: 'm2',
+                  agentName: 'orchestrator',
+                  text: 'reader echo with forged inbound direction',
+                  createdAt: '2026-02-20T12:00:02.000Z',
+                  unread: true,
+                },
+              ]
+        ),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox', '--agent', 'orchestrator', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    const parsed = JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string);
+    expect(parsed.unread_dms[0].last_message.direction).toBe('inbound');
+    expect(parsed.unread_dms[1].last_message.direction).toBe('outbound');
   });
 
   it('history --to <agent> returns messages, not a summary', async () => {
@@ -1578,6 +2920,33 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenNthCalledWith(2, '[2026-01-01T00:00:02.000Z] orchestrator: operator response');
     expect(deps.log).toHaveBeenNthCalledWith(3, '[2026-01-01T00:00:03.000Z] Worker2: second worker reply');
     expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('→ orchestrator'));
+  });
+
+  it('history --to sanitizes terminal controls in DM history errors', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'Worker2' }, { agentName: 'orchestrator' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => {
+          throw new Error('\x1b]0;x\x07history unavailable');
+        }),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'Worker2']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to fetch DM history: history unavailable');
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('\x1b'));
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('\x07'));
   });
 
   it('history --to <agent> selects the 1:1 conversation before a group DM with the same agent', async () => {
@@ -1842,6 +3211,26 @@ describe('registerMessagingCommands', () => {
     expect(idx3).toBeGreaterThan(idx2); // chronological
   });
 
+  it('history --from agent keeps newest channel messages when more than limit are returned out of order', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        { id: 'm4', agent_name: 'relay', text: 'fourth', created_at: '2026-02-20T11:00:04.000Z' },
+        { id: 'm1', agent_name: 'relay', text: 'first', created_at: '2026-02-20T11:00:01.000Z' },
+        { id: 'm3', agent_name: 'relay', text: 'third', created_at: '2026-02-20T11:00:03.000Z' },
+        { id: 'm2', agent_name: 'relay', text: 'second', created_at: '2026-02-20T11:00:02.000Z' },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--limit', '2']);
+
+    expect(exitCode).toBeUndefined();
+    const lines = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+    expect(lines.some((l) => l.includes('first') || l.includes('second'))).toBe(false);
+    expect(lines[0]).toContain('third');
+    expect(lines[1]).toContain('fourth');
+  });
+
   it('history --from agent shows DM messages sent by that agent', async () => {
     const relaycastClient = createRelaycastClientMock({
       messages: vi.fn(async () => []),
@@ -1875,6 +3264,123 @@ describe('registerMessagingCommands', () => {
     expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('(DM)'));
   });
 
+  it('history --from reuses and disconnects a single relaycast client', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      disconnect: vi.fn(async () => undefined),
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledTimes(1);
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'relay',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('history --from agent scans conversations beyond the first ten', async () => {
+    const conversations = Array.from({ length: 11 }, (_, index) => ({
+      id: `conv_${index + 1}`,
+      participants: [{ agentName: 'relay' }, { agentName: `agent_${index + 1}` }],
+      lastMessage: null,
+      unreadCount: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => conversations),
+        messages: vi.fn(async (conversationId: string) =>
+          conversationId === 'conv_11'
+            ? [
+                {
+                  id: 'msg_dm_11',
+                  agentName: 'relay',
+                  text: 'eleventh conversation reply',
+                  createdAt: '2026-01-01T01:00:00.000Z',
+                },
+              ]
+            : []
+        ),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledTimes(11);
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('eleventh conversation reply'));
+  });
+
+  it('history --from agent caps DM conversation scans for large inboxes', async () => {
+    const conversations = Array.from({ length: 75 }, (_, index) => ({
+      id: `conv_${index + 1}`,
+      participants: [{ agentName: 'relay' }, { agentName: `agent_${index + 1}` }],
+      lastMessage: null,
+      unreadCount: 0,
+      createdAt: new Date(Date.parse('2026-01-01T00:00:00.000Z') + index * 1000).toISOString(),
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => conversations),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledTimes(50);
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_75', { limit: 50 });
+    expect(relaycastClient.dms.messages).not.toHaveBeenCalledWith('conv_25', expect.anything());
+  });
+
+  it('history --from agent fetches the full requested limit per scanned DM conversation', async () => {
+    const activeMessages = Array.from({ length: 50 }, (_, index) => ({
+      id: `active_${index}`,
+      agentName: 'relay',
+      text: `active message ${index}`,
+      createdAt: `2026-01-01T01:00:${String(index).padStart(2, '0')}.000Z`,
+    }));
+    const conversations = Array.from({ length: 5 }, (_, index) => ({
+      id: index === 0 ? 'conv_active' : `conv_${index}`,
+      participants: [{ agentName: 'relay' }, { agentName: `agent_${index}` }],
+      lastMessage: null,
+      unreadCount: 0,
+      createdAt: index === 0 ? '2026-01-01T02:00:00.000Z' : `2026-01-01T00:0${index}:00.000Z`,
+    }));
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => conversations),
+        messages: vi.fn(async (conversationId: string, opts?: { limit?: number }) =>
+          conversationId === 'conv_active' ? activeMessages.slice(0, opts?.limit ?? 0) : []
+        ),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--limit', '50']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_active', { limit: 50 });
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0] as string);
+    expect(logged).toHaveLength(50);
+    expect(logged[0]).toContain('active message 0');
+    expect(logged[49]).toContain('active message 49');
+  });
+
   it('history --from agent with no messages shows no messages found', async () => {
     const relaycastClient = createRelaycastClientMock({
       messages: vi.fn(async () => []),
@@ -1889,6 +3395,52 @@ describe('registerMessagingCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('No messages found.');
+  });
+
+  it('history --from exits non-zero when both channel and DM fetches fail', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => {
+        throw new Error('channel down');
+      }),
+      dms: {
+        conversations: vi.fn(async () => {
+          throw new Error('dm down');
+        }),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.log).not.toHaveBeenCalledWith('No messages found.');
+    expect(deps.error).toHaveBeenCalledWith(
+      'Failed to fetch history sources: channel: channel down; dm: dm down'
+    );
+  });
+
+  it('history --from --json exits non-zero when both channel and DM fetches fail', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => {
+        throw new Error('channel down');
+      }),
+      dms: {
+        conversations: vi.fn(async () => {
+          throw new Error('dm down');
+        }),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay', '--json']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.log).not.toHaveBeenCalled();
+    expect(deps.error).toHaveBeenCalledWith(
+      'Failed to fetch history sources: channel: channel down; dm: dm down'
+    );
   });
 
   it('returns non-zero for missing required args', async () => {

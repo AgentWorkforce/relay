@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -88,6 +90,135 @@ describe('runScriptWorkflow', () => {
     // pointing at one. Use the README as a stand-in.
     const fakePath = path.resolve(__dirname, '../../../README.md');
     await expect(runScriptWorkflow(fakePath)).rejects.toThrow(/Unsupported file type/);
+  });
+
+  it('falls back past Node strip-only mode for valid TypeScript enums', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'enum-workflow.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+enum Step {
+  Done = 'done',
+}
+if (Step.Done !== 'done') {
+  throw new Error('enum did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    // Skips Node strip-only, then cold-starts tsx to actually compile and run
+    // the enum — well over Vitest's default 5s budget on a cold runner.
+  }, 30000);
+
+  it('falls back past Node strip-only mode for enums in static local imports', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const enumModulePath = path.join(tmpDir, 'enum-module.ts');
+    fs.writeFileSync(
+      enumModulePath,
+      `
+export enum ImportedStep {
+  Done = 'done',
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { ImportedStep } from './enum-module.ts';
+if (ImportedStep.Done !== 'done') {
+  throw new Error('imported step did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('does not mask ordinary runtime failures by falling back to another TypeScript runner', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'runtime-failure.ts');
+    fs.writeFileSync(workflowPath, "throw new Error('intentional runtime failure');\n", 'utf8');
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
+        /node --experimental-strip-types exited with code 1/
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not retry side-effecting user code that only prints strip-types text', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'spoofed-strip-types.ts');
+    const markerPath = path.join(tmpDir, 'marker.txt');
+    fs.writeFileSync(
+      workflowPath,
+      `
+import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(markerPath)}, 'ran\\n');
+console.error('ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX');
+process.exit(7);
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
+        /node --experimental-strip-types exited with code 7/
+      );
+      expect(fs.readFileSync(markerPath, 'utf8')).toBe('ran\n');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not retry after user code dynamically imports unsupported strip-types syntax', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'dynamic-enum-import.ts');
+    const enumModulePath = path.join(tmpDir, 'enum-module.ts');
+    const markerPath = path.join(tmpDir, 'marker.txt');
+    fs.writeFileSync(
+      enumModulePath,
+      `
+export enum ImportedStep {
+  Done = 'done',
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      workflowPath,
+      `
+import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(markerPath)}, 'ran\\n');
+await import(${JSON.stringify(enumModulePath)});
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(
+        /node --experimental-strip-types exited with code 1/
+      );
+      expect(fs.readFileSync(markerPath, 'utf8')).toBe('ran\n');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -197,6 +197,73 @@ export function parseTsxStderr(stderr: string): ParsedWorkflowError | null {
   return null;
 }
 
+function resolveLocalTypeScriptImport(fromFile: string, specifier: string): string | null {
+  if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
+    return null;
+  }
+
+  const basePath = specifier.startsWith('/')
+    ? path.resolve(specifier)
+    : path.resolve(path.dirname(fromFile), specifier);
+  const candidates = path.extname(basePath)
+    ? [basePath]
+    : [
+        `${basePath}.ts`,
+        `${basePath}.tsx`,
+        `${basePath}.mts`,
+        `${basePath}.cts`,
+        path.join(basePath, 'index.ts'),
+        path.join(basePath, 'index.tsx'),
+        path.join(basePath, 'index.mts'),
+        path.join(basePath, 'index.cts'),
+      ];
+
+  for (const candidate of candidates) {
+    if (/\.(?:ts|tsx|mts|cts)$/.test(candidate) && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function findStaticLocalTypeScriptImports(filePath: string, source: string): string[] {
+  const imports: string[] = [];
+  const staticImportPattern =
+    /(?:^|[\n;])\s*(?:import\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?|export\s+(?:type\s+)?[^'"]*?\s+from\s+)['"]([^'"]+)['"]/g;
+  for (const match of source.matchAll(staticImportPattern)) {
+    const resolved = resolveLocalTypeScriptImport(filePath, match[1]!);
+    if (resolved) {
+      imports.push(resolved);
+    }
+  }
+  return imports;
+}
+
+function shouldSkipNodeStripTypesPreflight(filePath: string, seen = new Set<string>()): boolean {
+  const resolvedPath = path.resolve(filePath);
+  if (seen.has(resolvedPath)) {
+    return false;
+  }
+  seen.add(resolvedPath);
+
+  let source: string;
+  try {
+    source = fs.readFileSync(resolvedPath, 'utf8');
+  } catch {
+    return false;
+  }
+
+  // Node's strip-only runner cannot parse enums. Detecting them before
+  // execution lets valid enum workflows go straight to tsx without risking
+  // a retry after user code has already run and dynamically imported one.
+  if (/\benum\s+[A-Za-z_$][\w$]*/.test(source)) {
+    return true;
+  }
+  return findStaticLocalTypeScriptImports(resolvedPath, source).some((importPath) =>
+    shouldSkipNodeStripTypesPreflight(importPath, seen)
+  );
+}
+
 /**
  * Format a {@link ParsedWorkflowError} as an actionable workflow-author error
  * message with hints keyed off the most common mistakes in `command:` /
@@ -401,6 +468,10 @@ Run ID: ${runId}`;
       { label: 'ts-node', bin: 'ts-node', preArgs: [] },
     ];
     for (const { label, bin, preArgs } of runners) {
+      if (bin === 'node' && shouldSkipNodeStripTypesPreflight(resolved)) {
+        diag(`runScriptWorkflow: ${label} cannot parse this TypeScript file — trying next`);
+        continue;
+      }
       diag(`runScriptWorkflow: trying runner ${label}`);
       const result = await spawnRunnerWithStderrCapture(bin, [...preArgs, resolved], childEnv);
       if (result.error) {
@@ -412,11 +483,11 @@ Run ID: ${runId}`;
       }
       if (result.status !== 0) {
         // Node exits with code 9 ("Invalid Argument") when it doesn't
-        // recognise --experimental-strip-types (Node <22.6). Only skip
-        // to the next runner for that specific exit code; any other
-        // non-zero status is a real script failure.
+        // recognise --experimental-strip-types (Node <22.6). Other non-zero
+        // exits may have occurred after entry module evaluation, so do not
+        // retry them under another runner.
         if (bin === 'node' && result.status === 9) {
-          diag(`runScriptWorkflow: runner ${label} unsupported on this Node (exit 9) — trying next`);
+          diag(`runScriptWorkflow: runner ${label} cannot handle this TypeScript file — trying next`);
           continue;
         }
         return augmentErrorWithRunId(wrapRunnerError(label, result));
