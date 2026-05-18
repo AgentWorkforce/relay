@@ -165,11 +165,11 @@ pub enum ListenApiRequest {
     },
 }
 
-/// Typed errors for the four session-mode HTTP routes. Keeps the broker
-/// arm's reply payload structured so the HTTP handler can map cleanly
-/// to 404 without parsing strings. The "broker channel closed" / "reply
-/// dropped" failure modes are handled at the HTTP boundary via
-/// [`internal_error`], so they don't need a variant here.
+/// Typed errors for the session-mode HTTP routes. Keeps the broker arm's
+/// reply payload structured so the HTTP handler can map cleanly to 404
+/// without parsing strings. The "broker channel closed" / "reply dropped"
+/// failure modes are handled at the HTTP boundary via [`internal_error`],
+/// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionRouteError {
     /// No worker with that name is currently registered with the broker.
@@ -1165,10 +1165,10 @@ async fn listen_api_snapshot(
 // ---------------------------------------------------------------------------
 // Session mode (per-agent inject vs. queue, plus pending-queue inspection)
 //
-// The broker keeps a `SessionMode` per worker; `Human` mode parks
-// inbound relay messages in a FIFO `pending` queue instead of injecting
-// them. These four routes are the server-side surface the `drive`
-// client calls.
+// The broker keeps a `SessionMode` per worker; `Human` mode parks inbound
+// relay messages in a FIFO `pending` queue instead of injecting them.
+// These four routes are the server-side surface the `agent-relay drive`
+// client calls to flip modes, inspect the queue, and drain it.
 // ---------------------------------------------------------------------------
 
 /// `GET /api/spawned/{name}/mode` → `{ "mode": "passthrough" | "human" }`.
@@ -1712,8 +1712,8 @@ async fn handle_dashboard_ws(
 // ---------------------------------------------------------------------------
 
 /// Broadcast an event payload to all connected WS clients. Every event kind
-/// is forwarded so SDK consumers receive the same stream they previously got
-/// over the stdio protocol.
+/// is forwarded so SDK consumers receive the same stream they would over the
+/// stdio protocol.
 ///
 /// Events are classified as:
 /// - **Ephemeral**: high-frequency, not stored in replay buffer (`worker_stream`,
@@ -2870,11 +2870,11 @@ mod auth_tests {
     }
 
     // -----------------------------------------------------------------
-    // Session mode (#864 sub-PR 2): four routes that back the upcoming
-    // `agent-relay drive` client. The HTTP layer only forwards typed
-    // requests over the broker channel — these tests cover the
-    // request shaping and response mapping, not the broker arms (those
-    // live in main.rs and are exercised by the broker integration tests).
+    // Session mode: four routes that back the `agent-relay drive`
+    // client. The HTTP layer only forwards typed requests over the
+    // broker channel — these tests cover the request shaping and
+    // response mapping, not the broker arms (those live in main.rs and
+    // are exercised by the broker integration tests).
     // -----------------------------------------------------------------
 
     #[tokio::test]

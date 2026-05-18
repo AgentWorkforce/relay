@@ -1406,18 +1406,16 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // the worker echoes the same `request_id` back, or the entry expires
     // via the deadline sweep in the `reap_tick` arm below.
     //
-    // Introduced for `snapshot_pty` (#870) and generalised in #871 so
-    // future request/response routes (`mode`, `pending`, `flush` from
-    // #864) can reuse the same correlation infrastructure — see
-    // `crate::worker_request`.
+    // The generic correlation infrastructure lives in `crate::worker_request`
+    // so each new request/response route (`snapshot_pty`, `mode`, `pending`,
+    // `flush`, ...) costs about five lines of broker plumbing.
     let mut pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
     // Per-worker session-mode + pending-relay-message queue. Lives
     // parallel to `workers.workers` so we can swap modes / inspect /
     // drain without touching `WorkerHandle` (which holds OS-level
-    // process state). See #864 sub-PR 2 and `relay_broker::types::
-    // SessionState`. Entries are created lazily on first lookup and
-    // removed wherever workers exit (`Release` arm, `worker_exited`
-    // frame, `reap_exited` sweep).
+    // process state). See `relay_broker::types::SessionState`. Entries
+    // are created lazily on first lookup and removed wherever workers
+    // exit (`Release` arm, `worker_exited` frame, `reap_exited` sweep).
     let mut session_states: HashMap<String, SessionState> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
@@ -1945,9 +1943,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             );
 
                             for worker_name in targets {
-                                // Session-mode gate (#864 sub-PR 2): when the worker
-                                // is in human mode the broker parks the message in
-                                // the per-worker pending queue instead of injecting,
+                                // Session-mode gate: when the worker is in human
+                                // mode the broker parks the message in the
+                                // per-worker pending queue instead of injecting,
                                 // and counts it as delivered so the HTTP caller's
                                 // ack semantics are unchanged. We pass the FULL
                                 // routing context so the eventual drain reproduces
@@ -1992,8 +1990,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         continue;
                                     }
                                     GateOutcome::WorkerMissing => {
-                                        // Fall through to existing path so the
-                                        // pre-#864 not-found accounting runs.
+                                        // Fall through so the standard
+                                        // not-found accounting path runs.
                                     }
                                     GateOutcome::Inject => {}
                                 }
@@ -2267,12 +2265,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
                         ListenApiRequest::WorkerRequest { name, kind, payload, timeout, reply } => {
                             // Generic worker request/response: validate the
-                            // worker exists and supports a PTY (request/response
-                            // routes today all target the PTY side), then ship
-                            // the frame and park the `reply` oneshot in
-                            // `pending_requests`. The response is fulfilled
-                            // either by the `*_response` arm below or by the
-                            // deadline sweep in `reap_tick`.
+                            // worker exists and supports a PTY (all current
+                            // request/response routes target the PTY side),
+                            // then ship the frame and park the `reply`
+                            // oneshot in `pending_requests`. The response is
+                            // fulfilled either by the `*_response` arm below
+                            // or by the deadline sweep in `reap_tick`.
                             //
                             // Headless workers don't run a VT and don't handle
                             // PTY-oriented RPCs — short-circuit with a typed
@@ -3197,12 +3195,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
 
                         for worker_name in delivery_plan.targets {
-                            // Session-mode gate (#864 sub-PR 2): mirrors the
-                            // /api/send gate above. Human-mode workers see
-                            // inbound relaycast messages parked in the
-                            // pending queue rather than auto-injected; same
-                            // full-context capture so drains reproduce the
-                            // original delivery (channel/thread/workspace).
+                            // Session-mode gate: mirrors the /api/send gate
+                            // above. Human-mode workers see inbound relaycast
+                            // messages parked in the pending queue rather
+                            // than auto-injected; same full-context capture
+                            // so drains reproduce the original delivery
+                            // (channel/thread/workspace).
                             match gate_inbound_for_session_mode(
                                 &mut session_states,
                                 &workers,
@@ -4267,9 +4265,9 @@ enum GateOutcome {
 ///
 /// Pulled out so the broker has one obvious choke point for the two
 /// inbound paths (`/api/send` and the relaycast inbound feed) that the
-/// `drive` client needs to intercept. Internal broker-driven
-/// injections (`worker_ready` initial task, continuity restore) bypass
-/// the gate by not calling this helper.
+/// `drive` client needs to intercept. Internal broker-driven injections
+/// (`worker_ready` initial task, continuity restore) bypass the gate by
+/// not calling this helper.
 /// Bundle of routing context the gate captures into the pending queue
 /// when a message is held. Mirrors the args `queue_and_try_delivery_raw`
 /// expects so a drain reproduces the original delivery exactly — same

@@ -70,7 +70,7 @@ Flags:
 
 If the initial snapshot can't be served (broker hiccup, transient timeout) `view` prints a warning to stderr and falls through to the live stream — you may briefly see a blank screen until the agent next produces output. If the agent doesn't exist or has no PTY (headless worker), `view` aborts with an explanatory error.
 
-`view` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). It shares the snapshot-on-attach helper with the upcoming `drive` and `relay` verbs so all three open with a faithful redraw of the agent's current screen.
+`view` shares the snapshot-on-attach helper with the `drive` and `relay` verbs so all three open with a faithful redraw of the agent's current screen.
 
 ## `drive`
 
@@ -126,9 +126,9 @@ agent-relay drive reviewer
 # Ctrl+B D when you're done.
 ```
 
-`drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. Multi-driver coordination is tracked in a follow-up issue.
+`drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. There is no multi-driver coordination — the broker treats each client's keystrokes as independent input.
 
-`drive` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). The auto-inject sibling is `passthrough` (below).
+The auto-inject sibling is [`passthrough`](#passthrough) below.
 
 ## `passthrough`
 

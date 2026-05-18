@@ -7,9 +7,6 @@
  *
  * No keystrokes are forwarded — the broker keeps doing whatever it's doing.
  * Ctrl+C exits the client cleanly; the agent keeps running under the broker.
- *
- * See GitHub issue #864 for the broader vision (drive / relay / new / run).
- * This module ships only the `view` verb.
  */
 
 import fs from 'node:fs';

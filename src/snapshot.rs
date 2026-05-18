@@ -12,7 +12,7 @@
 //! Both are consumed by:
 //!
 //! * `GET /api/spawned/{name}/snapshot` — programmatic callers (dashboard,
-//!   integration tests, the future `view`/`drive` clients in #864).
+//!   integration tests, and the `view` / `drive` attach clients).
 //! * `agent-relay-broker dump-pty <name>` — interactive debugging.
 //!
 //! The snapshot is **self-contained**: `capture` walks the grid once, copies
