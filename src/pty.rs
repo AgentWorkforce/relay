@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::OsString,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -45,21 +45,10 @@ enum WriteMsg {
     /// caller's send is **blocking** so backpressure flows back through
     /// the worker; ordering is preserved relative to other UserInputs
     /// and to any Replies already queued.
-    UserInput(Vec<u8>),
-}
-
-impl WriteMsg {
-    /// Borrow the payload for the drainer's `write_all` call without
-    /// moving — keeps the variant in scope so the match arm can log it.
-    fn bytes(&self) -> &[u8] {
-        match self {
-            WriteMsg::Reply(b) | WriteMsg::UserInput(b) => b,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.bytes().is_empty()
-    }
+    UserInput {
+        bytes: Vec<u8>,
+        ack: std_mpsc::Sender<io::Result<()>>,
+    },
 }
 
 /// Forwards alacritty's terminal events back to the PTY's stdin so the
@@ -221,6 +210,39 @@ fn resolve_command_path(command: &str) -> String {
     command.to_string()
 }
 
+fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<WriteMsg>) {
+    while let Ok(msg) = write_rx.recv() {
+        match msg {
+            WriteMsg::Reply(bytes) => {
+                if bytes.is_empty() {
+                    continue;
+                }
+                if writer.write_all(&bytes).is_err() {
+                    break;
+                }
+                if writer.flush().is_err() {
+                    break;
+                }
+            }
+            WriteMsg::UserInput { bytes, ack } => {
+                if bytes.is_empty() {
+                    let _ = ack.send(Ok(()));
+                    continue;
+                }
+                match writer.write_all(&bytes).and_then(|_| writer.flush()) {
+                    Ok(()) => {
+                        let _ = ack.send(Ok(()));
+                    }
+                    Err(err) => {
+                        let _ = ack.send(Err(err));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl PtySession {
     pub fn spawn(
         command: &str,
@@ -281,20 +303,7 @@ impl PtySession {
         // every sender is dropped — i.e. when the listener inside
         // `term` is dropped (term goes away at PtySession drop) AND
         // the `write_tx` clone on the struct is dropped (same time).
-        thread::spawn(move || {
-            let mut writer = writer;
-            while let Ok(msg) = write_rx.recv() {
-                if msg.is_empty() {
-                    continue;
-                }
-                if writer.write_all(msg.bytes()).is_err() {
-                    break;
-                }
-                if writer.flush().is_err() {
-                    break;
-                }
-            }
-        });
+        thread::spawn(move || drain_write_queue(writer, write_rx));
 
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
@@ -349,14 +358,27 @@ impl PtySession {
     /// terminal-query replies — both go through the same FIFO.
     ///
     /// Blocks if the queue is full (drainer wedged behind a slow PTY
-    /// write); backpressure flows back to the caller. Returns `Err` if
-    /// the drainer has exited (PTY teardown) — callers should treat
-    /// that as fatal for this session, same as the prior synchronous
-    /// `write_all` error path.
+    /// write) and waits for the drainer to ack the write result. Returns
+    /// `Err` if the drainer has exited (PTY teardown) or if the underlying
+    /// PTY write/flush fails.
     pub fn write_all(&self, bytes: &[u8]) -> Result<()> {
+        let (ack_tx, ack_rx) = std_mpsc::channel::<io::Result<()>>();
         self.write_tx
-            .send(WriteMsg::UserInput(bytes.to_vec()))
-            .map_err(|_| anyhow::anyhow!("pty write queue is closed (drainer exited)"))
+            .send(WriteMsg::UserInput {
+                bytes: bytes.to_vec(),
+                ack: ack_tx,
+            })
+            .map_err(|_| {
+                anyhow::anyhow!("pty write queue is closed (drainer exited before enqueue)")
+            })?;
+
+        match ack_rx.recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err).context("failed to write queued input to pty"),
+            Err(_) => Err(anyhow::anyhow!(
+                "pty write drainer exited before acknowledging queued write"
+            )),
+        }
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
@@ -918,7 +940,7 @@ mod tests {
             // tests don't construct.
             match msg {
                 WriteMsg::Reply(bytes) => out.extend_from_slice(&bytes),
-                WriteMsg::UserInput(_) => unreachable!("listener never emits UserInput"),
+                WriteMsg::UserInput { .. } => unreachable!("listener never emits UserInput"),
             }
         }
         out
@@ -961,10 +983,19 @@ mod tests {
         // no Reply splicing between two UserInputs.
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
 
-        tx.send(WriteMsg::UserInput(b"injection-body".to_vec()))
-            .unwrap();
+        let (ack_tx_1, _ack_rx_1) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"injection-body".to_vec(),
+            ack: ack_tx_1,
+        })
+        .unwrap();
         tx.send(WriteMsg::Reply(b"\x1b[0n".to_vec())).unwrap();
-        tx.send(WriteMsg::UserInput(b"\r".to_vec())).unwrap();
+        let (ack_tx_2, _ack_rx_2) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\r".to_vec(),
+            ack: ack_tx_2,
+        })
+        .unwrap();
         tx.send(WriteMsg::Reply(b"\x1b[3;5R".to_vec())).unwrap();
 
         let observed: Vec<Vec<u8>> = (0..4)
@@ -973,7 +1004,7 @@ mod tests {
                     .recv_timeout(StdDuration::from_millis(50))
                     .expect("drainer receives in order");
                 match msg {
-                    WriteMsg::Reply(b) | WriteMsg::UserInput(b) => b,
+                    WriteMsg::Reply(bytes) | WriteMsg::UserInput { bytes, .. } => bytes,
                 }
             })
             .collect();
@@ -1010,5 +1041,39 @@ mod tests {
             writeback, b"\x1b[3;5R",
             "CPR ESC[6n must reflect real cursor position; got {writeback:?}"
         );
+    }
+
+    #[test]
+    fn user_input_ack_reports_write_failure() {
+        struct AlwaysFailWriter;
+        impl std::io::Write for AlwaysFailWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "forced failure",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
+
+        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"should-fail\n".to_vec(),
+            ack: ack_tx,
+        })
+        .expect("queue accepts user input");
+
+        let ack = ack_rx
+            .recv_timeout(StdDuration::from_millis(200))
+            .expect("drainer must ack user input writes");
+        assert!(ack.is_err(), "drainer write failure must be surfaced");
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
     }
 }
