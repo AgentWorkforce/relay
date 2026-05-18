@@ -406,7 +406,7 @@
     "workflows/cloud-connect/validate-cloud-connect-e2e.ts",
     "workflows/relay-e2e-meta-workflow.ts"
   ],
-  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "projectId": "relay",
   "tags": [],
   "_trace": {
     "startRef": "83ecfbca9cd87540629ae0a9b2f155cd2c3070cf",
