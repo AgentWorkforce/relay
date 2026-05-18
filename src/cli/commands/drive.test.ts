@@ -415,7 +415,7 @@ describe('KeybindParser', () => {
 
 describe('renderStatusLine', () => {
   it('includes agent name, mode, pending count, and detach hint', () => {
-    const out = renderStatusLine({ agentName: 'Alice', mode: 'human', pending: 3, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'human', pending: 3, showHelp: false });
     expect(out).toContain('drive Alice');
     expect(out).toContain('mode=human');
     expect(out).toContain('pending=3');
@@ -423,7 +423,7 @@ describe('renderStatusLine', () => {
   });
 
   it('uses save/restore cursor + reverse video so the agent screen is preserved', () => {
-    const out = renderStatusLine({ agentName: 'Alice', mode: 'human', pending: 0, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'human', pending: 0, showHelp: false });
     expect(out.startsWith('\x1b7')).toBe(true); // save cursor
     expect(out.endsWith('\x1b8')).toBe(true); // restore cursor
     expect(out).toContain('\x1b[7m'); // reverse video
@@ -432,7 +432,7 @@ describe('renderStatusLine', () => {
 
   it('positions at the given row', () => {
     const out = renderStatusLine({
-      agentName: 'A',
+      name: 'A',
       mode: 'human',
       pending: 0,
       showHelp: false,
@@ -442,7 +442,7 @@ describe('renderStatusLine', () => {
   });
 
   it('shows extra hint when help is toggled on', () => {
-    const out = renderStatusLine({ agentName: 'A', mode: 'human', pending: 0, showHelp: true });
+    const out = renderStatusLine({ name: 'A', mode: 'human', pending: 0, showHelp: true });
     expect(out).toContain('hide help');
   });
 });

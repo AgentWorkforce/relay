@@ -99,7 +99,12 @@ export async function runRm(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: RmDependencies
 ): Promise<number> {
-  if (!agentName.trim()) {
+  // Normalize once so lookups, error messages, and the success log all
+  // see the same trimmed name. Without this a stray space turns into a
+  // 404 (broker registers names verbatim) and the error message echoes
+  // the raw input, which makes debugging quoting issues painful.
+  const name = agentName.trim();
+  if (!name) {
     deps.error('Error: agent name is required');
     return 1;
   }
@@ -113,17 +118,17 @@ export async function runRm(
     return 1;
   }
 
-  const result = await releaseAgent(connection, agentName, deps.fetch);
+  const result = await releaseAgent(connection, name, deps.fetch);
   if (!result.ok) {
     if (result.status === 404) {
-      deps.error(`Error: no agent named '${agentName}'`);
+      deps.error(`Error: no agent named '${name}'`);
     } else {
-      deps.error(`Error: could not release '${agentName}': ${result.message ?? 'unknown error'}`);
+      deps.error(`Error: could not release '${name}': ${result.message ?? 'unknown error'}`);
     }
     return 1;
   }
 
-  deps.log(`Released agent: ${agentName}`);
+  deps.log(`Released agent: ${name}`);
   return 0;
 }
 

@@ -90,7 +90,7 @@ export interface PassthroughDependencies {
   fetch: typeof globalThis.fetch;
   captureAndRenderSnapshot: (
     connection: AttachSnapshotConnection,
-    agentName: string,
+    name: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   stdin: PassthroughStdin;
@@ -150,7 +150,7 @@ export type PassthroughWsEvent = { kind: 'worker_stream'; chunk: string } | { ki
  * agent we're following. Non-matching / malformed frames return
  * `{ kind: 'other' }` so the caller can ignore them cheaply.
  */
-export function classifyWsEvent(rawMessage: string, agentName: string): PassthroughWsEvent {
+export function classifyWsEvent(rawMessage: string, name: string): PassthroughWsEvent {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -158,7 +158,7 @@ export function classifyWsEvent(rawMessage: string, agentName: string): Passthro
     return { kind: 'other' };
   }
   if (!isStringObject(parsed)) return { kind: 'other' };
-  if (parsed.name !== agentName) return { kind: 'other' };
+  if (parsed.name !== name) return { kind: 'other' };
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
     if (typeof chunk !== 'string') return { kind: 'other' };
@@ -240,14 +240,14 @@ export class PassthroughKeybindParser {
  * isn't one in passthrough mode).
  */
 export function renderStatusLine(opts: {
-  agentName: string;
+  name: string;
   mode: SessionMode;
   showHelp: boolean;
   rows?: number;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
   const help = opts.showHelp ? ' | Ctrl+B D detach | Ctrl+B ? hide help' : ' | Ctrl+B D detach';
-  const text = `[passthrough ${opts.agentName} | mode=${opts.mode}${help}]`;
+  const text = `[passthrough ${opts.name} | mode=${opts.mode}${help}]`;
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
 }
 
@@ -263,7 +263,12 @@ export async function runPassthroughSession(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: PassthroughDependencies
 ): Promise<number> {
-  if (!agentName.trim()) {
+  // Normalize once so every downstream broker call, WS-event match,
+  // status-line label, and error message uses the same trimmed value.
+  // Without this a stray space in the raw input turns into a silent
+  // 404 (the broker stores names verbatim).
+  const name = agentName.trim();
+  if (!name) {
     deps.error('Error: agent name is required');
     return 1;
   }
@@ -281,7 +286,7 @@ export async function runPassthroughSession(
   // `null` means we couldn't read it (broker hiccup or worker missing);
   // we default the restore target to `passthrough` in that case (which
   // is also our preferred final state).
-  const previousMode = await getSessionMode(connection, agentName, deps.fetch);
+  const previousMode = await getSessionMode(connection, name, deps.fetch);
 
   // If the worker is in `human` mode (e.g. someone left a `drive`
   // session), flip it back to `passthrough` for the duration of our
@@ -290,13 +295,13 @@ export async function runPassthroughSession(
   // in `passthrough` we still issue the PUT — it's idempotent on the
   // broker and gives us an early hard-failure on missing-agent before
   // we touch the terminal.
-  const flip = await setSessionMode(connection, agentName, 'passthrough', deps.fetch);
+  const flip = await setSessionMode(connection, name, 'passthrough', deps.fetch);
   if (!flip.ok) {
     if (flip.status === 404) {
-      deps.error(`Error: no agent named '${agentName}'`);
+      deps.error(`Error: no agent named '${name}'`);
     } else {
       deps.error(
-        `Error: could not ensure '${agentName}' is in passthrough mode: ${flip.message ?? 'unknown error'}`
+        `Error: could not ensure '${name}' is in passthrough mode: ${flip.message ?? 'unknown error'}`
       );
     }
     return 1;
@@ -304,19 +309,19 @@ export async function runPassthroughSession(
 
   const snapshot = await deps.captureAndRenderSnapshot(
     { url: connection.url, apiKey: connection.apiKey },
-    agentName,
+    name,
     { fetch: deps.fetch, writeChunk: deps.writeChunk }
   );
   switch (snapshot.status) {
     case 'ok':
       break;
     case 'not_found':
-      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
+      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to attach to`}`);
+      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to attach to`}`);
       return 1;
     case 'unavailable':
     case 'transport_error':
@@ -334,14 +339,14 @@ export async function runPassthroughSession(
     (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
 
   const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ agentName, mode: 'passthrough', showHelp, rows: terminalRows }));
+    deps.writeChunk(renderStatusLine({ name, mode: 'passthrough', showHelp, rows: terminalRows }));
   };
   paintStatus();
 
   if (initialLocalSize) {
     const initialResize = await resizeWorker(
       connection,
-      agentName,
+      name,
       initialLocalSize.rows,
       initialLocalSize.cols,
       deps.fetch
@@ -369,7 +374,7 @@ export async function runPassthroughSession(
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
-      void resizeWorker(connection, agentName, size.rows, size.cols, deps.fetch).then((res) => {
+      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
           deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
@@ -380,7 +385,7 @@ export async function runPassthroughSession(
     const stdinDataHandler = (chunk: Buffer): void => {
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
-        void sendInput(connection, agentName, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
+        void sendInput(connection, name, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
           if (!res.ok) {
             deps.log(`[passthrough] input send failed: ${res.message ?? 'unknown error'}`);
           }
@@ -443,7 +448,7 @@ export async function runPassthroughSession(
       }
       // Restore the worker's previous mode (no-op if it was already
       // passthrough, which is the common case).
-      void setSessionMode(connection, agentName, previousMode ?? 'passthrough', deps.fetch).finally(() => {
+      void setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch).finally(() => {
         resolve(code);
       });
     };
@@ -454,7 +459,7 @@ export async function runPassthroughSession(
     deps.onSignal('SIGTERM', () => finish(0));
 
     socket.on('open', () => {
-      deps.log(`[passthrough] attached to ${agentName} via ${connection.url} (Ctrl+B D to detach)`);
+      deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
       try {
         if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
           deps.stdin.setRawMode(true);
@@ -473,7 +478,7 @@ export async function runPassthroughSession(
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const event = classifyWsEvent(text, agentName);
+      const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
           deps.writeChunk(event.chunk);

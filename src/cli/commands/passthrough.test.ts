@@ -335,7 +335,7 @@ describe('PassthroughKeybindParser', () => {
 
 describe('renderStatusLine', () => {
   it('shows [passthrough name | mode=passthrough] without a pending counter', () => {
-    const out = renderStatusLine({ agentName: 'Alice', mode: 'passthrough', showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'passthrough', showHelp: false });
     expect(out).toContain('passthrough Alice');
     expect(out).toContain('mode=passthrough');
     expect(out).toContain('Ctrl+B D detach');
@@ -343,7 +343,7 @@ describe('renderStatusLine', () => {
   });
 
   it('uses save/restore cursor + reverse video', () => {
-    const out = renderStatusLine({ agentName: 'A', mode: 'passthrough', showHelp: false });
+    const out = renderStatusLine({ name: 'A', mode: 'passthrough', showHelp: false });
     expect(out.startsWith('\x1b7')).toBe(true);
     expect(out.endsWith('\x1b8')).toBe(true);
     expect(out).toContain('\x1b[7m');

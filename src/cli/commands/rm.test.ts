@@ -122,6 +122,24 @@ describe('runRm', () => {
     expect(errors[0]?.[0]).toMatch(/agent name is required/);
   });
 
+  it('rejects a whitespace-only agent name', async () => {
+    const { deps, errors } = createHarness();
+    const code = await runRm('   ', {}, deps);
+    expect(code).toBe(1);
+    expect(errors[0]?.[0]).toMatch(/agent name is required/);
+  });
+
+  it('trims whitespace from the agent name before talking to the broker', async () => {
+    const { deps, fetchLog, logs } = createHarness();
+    const code = await runRm('  Alice  ', {}, deps);
+    expect(code).toBe(0);
+    // The URL must use the trimmed name — otherwise the broker
+    // (which stores names verbatim) would 404 on a stray space.
+    expect(fetchLog[0].url).toBe('http://localhost:3889/api/spawned/Alice');
+    // The success log echoes the trimmed name too.
+    expect(logs.some((args) => String(args[0]) === 'Released agent: Alice')).toBe(true);
+  });
+
   it('honours --broker-url over connection.json', async () => {
     const { deps, fetchLog } = createHarness();
     await runRm('Alice', { brokerUrl: 'http://other:9999' }, deps);
