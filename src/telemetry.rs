@@ -15,8 +15,21 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-const POSTHOG_API_KEY: &str = "phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr";
+/// PostHog write key, baked in at compile time from the
+/// `AGENT_RELAY_POSTHOG_KEY` env var. When unset (forks, local dev, CI tests),
+/// this is `None` and telemetry is a no-op — no events queued, no HTTP calls.
+/// Real releases inject the key from a GitHub Actions secret so shipped
+/// binaries report to the production PostHog project.
+const POSTHOG_API_KEY: Option<&str> = option_env!("AGENT_RELAY_POSTHOG_KEY");
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
+
+/// Returns the configured PostHog key iff it's non-empty. Empty strings are
+/// treated the same as "unset" so an accidentally-blank secret doesn't trip
+/// us into trying to talk to PostHog with an invalid key.
+fn posthog_api_key() -> Option<&'static str> {
+    POSTHOG_API_KEY.and_then(|k| if k.is_empty() { None } else { Some(k) })
+}
+
 const FIRST_RUN_NOTICE: &str = "\
 Agent Relay collects anonymous usage data to improve the product.
 Run `agent-relay telemetry disable` to opt out.";
@@ -347,6 +360,20 @@ impl Default for TelemetryClient {
 }
 
 impl TelemetryClient {
+    /// Build a fully-disabled client. Used for every no-op path (env opt-out,
+    /// prefs-file opt-out, missing build-time PostHog key) so they all behave
+    /// identically.
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            distinct_id: String::new(),
+            tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
+        }
+    }
+
     /// Create a new telemetry client.
     ///
     /// Checks opt-out preferences, loads/generates an anonymous machine ID,
@@ -354,14 +381,18 @@ impl TelemetryClient {
     pub fn new() -> Self {
         let enabled = Self::check_enabled();
         if !enabled {
-            return Self {
-                enabled: false,
-                distinct_id: String::new(),
-                tx: None,
-                cli_version: None,
-                sdk_version: None,
-                os_version: None,
-            };
+            return Self::disabled();
+        }
+
+        // No build-time PostHog key (forks, local dev, CI). Behave exactly
+        // like the user-opted-out path: no queue, no HTTP, no first-run
+        // notice. A debug log is left as a breadcrumb for operators trying
+        // to figure out why telemetry isn't reaching the dashboard.
+        if posthog_api_key().is_none() {
+            tracing::debug!(
+                "telemetry: AGENT_RELAY_POSTHOG_KEY not set at build time; running as no-op"
+            );
+            return Self::disabled();
         }
 
         let distinct_id = load_or_create_machine_id()
@@ -427,8 +458,14 @@ impl TelemetryClient {
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
         }
 
+        // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
+        // returns the disabled variant (which short-circuits above via the
+        // `enabled` check) when the build-time key is absent. Fall back to an
+        // empty string defensively rather than panicking if that invariant
+        // ever changes.
+        let api_key = posthog_api_key().unwrap_or("").to_string();
         let capture = PostHogCapture {
-            api_key: POSTHOG_API_KEY.to_string(),
+            api_key,
             event: event.name().to_string(),
             distinct_id: self.distinct_id.clone(),
             properties: props,
@@ -660,5 +697,21 @@ mod tests {
     #[test]
     fn hex_encode_works() {
         assert_eq!(hex::encode(&[0xab, 0xcd, 0x01, 0xff]), "abcd01ff");
+    }
+
+    #[test]
+    fn posthog_api_key_treats_empty_as_unset() {
+        // `posthog_api_key()` reads the build-time const, so we can't mutate
+        // it from a test. What we can guarantee is the wrapper's contract:
+        // a `Some("")` from `option_env!` must round-trip to `None` so the
+        // disabled path takes over. Verify that contract on a synthetic
+        // `Option<&str>` matching the same `and_then` shape.
+        let synthetic: Option<&str> = Some("");
+        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        assert!(normalized.is_none());
+
+        let synthetic: Option<&str> = Some("phc_abc");
+        let normalized = synthetic.and_then(|k| if k.is_empty() { None } else { Some(k) });
+        assert_eq!(normalized, Some("phc_abc"));
     }
 }

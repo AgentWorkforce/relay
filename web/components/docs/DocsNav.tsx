@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import {
   Activity,
+  BookOpen,
   Bot,
   Cloud,
   Clock3,
@@ -12,6 +13,7 @@ import {
   FolderOpen,
   Hash,
   Mail,
+  Network,
   Plug,
   PlayCircle,
   Power,
@@ -61,6 +63,8 @@ const navIcons: Record<string, NavIcon> = {
   'cli-workflows': Workflow,
   'cli-cloud-commands': Cloud,
   'cli-on-the-relay': Plug,
+  'reference-cli': BookOpen,
+  'reference-broker-api': Network,
   'typescript-sdk': SiTypescript,
   'react-sdk': FaReact,
   'python-sdk': SiPython,
