@@ -60,6 +60,11 @@ jobs:
         uses: taiki-e/install-action@cross
 
       - name: Build static binary
+        # AGENT_RELAY_POSTHOG_KEY is read by `option_env!` in src/telemetry.rs
+        # and baked into the binary. Leave it unset (no secret configured) to
+        # ship a broker with telemetry hard-disabled.
+        env:
+          AGENT_RELAY_POSTHOG_KEY: ${{ secrets.AGENT_RELAY_POSTHOG_KEY }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --target ${{ matrix.target }} --bin agent-relay-broker
