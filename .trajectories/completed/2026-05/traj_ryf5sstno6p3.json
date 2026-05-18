@@ -1,0 +1,57 @@
+{
+  "id": "traj_ryf5sstno6p3",
+  "version": 1,
+  "task": {
+    "title": "Telemetry key from env (P0.5 of #881)",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#881"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-18T02:56:55.314Z",
+  "completedAt": "2026-05-18T03:02:35.202Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-18T03:00:52.000Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kdpbof9jdq0q",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-18T03:00:52.000Z",
+      "endedAt": "2026-05-18T03:02:35.202Z",
+      "events": [
+        {
+          "ts": 1779073252002,
+          "type": "decision",
+          "content": "Use option_env! for Rust, runtime process.env for TS, bun --define for standalone: Use option_env! for Rust, runtime process.env for TS, bun --define for standalone",
+          "raw": {
+            "question": "Use option_env! for Rust, runtime process.env for TS, bun --define for standalone",
+            "chosen": "Use option_env! for Rust, runtime process.env for TS, bun --define for standalone",
+            "alternatives": [],
+            "reasoning": "tsc has no build-time define so TS runtime read is the natural fit; bun-compiled standalone binaries need --define since end users won't set the env var; Rust option_env! bakes the const at compile time matching shipped-binary semantics"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replaced hardcoded PostHog key with build-time env injection (option_env! in Rust, process.env in TS, bun --define for standalone bundles). Wired AGENT_RELAY_POSTHOG_KEY through publish.yml and build-broker-binary.yml. No-op telemetry when key absent.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-aff3649a00a0f36ab",
+  "tags": [],
+  "_trace": {
+    "startRef": "a30e5c89ae5b80bf733a407590643d51f4c998b4",
+    "endRef": "a30e5c89ae5b80bf733a407590643d51f4c998b4"
+  }
+}

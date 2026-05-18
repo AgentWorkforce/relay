@@ -1,2 +1,9 @@
+[build.env]
+# Forward the PostHog write key from the host into the cross-compile
+# container so `option_env!("AGENT_RELAY_POSTHOG_KEY")` in src/telemetry.rs
+# resolves the same way it does for native cargo builds. Unset on forks /
+# CI, set via secret on release pipelines.
+passthrough = ["AGENT_RELAY_POSTHOG_KEY"]
+
 [target.aarch64-unknown-linux-musl]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
