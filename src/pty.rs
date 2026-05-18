@@ -1076,4 +1076,38 @@ mod tests {
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
     }
+
+    #[test]
+    fn user_input_ack_reports_flush_failure() {
+        struct FlushFailWriter;
+        impl std::io::Write for FlushFailWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "forced flush failure",
+                ))
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
+
+        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"flush-should-fail\n".to_vec(),
+            ack: ack_tx,
+        })
+        .expect("queue accepts user input");
+
+        let ack = ack_rx
+            .recv_timeout(StdDuration::from_millis(200))
+            .expect("drainer must ack user input writes");
+        assert!(ack.is_err(), "drainer flush failure must be surfaced");
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+    }
 }
