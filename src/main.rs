@@ -1949,14 +1949,25 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 // is in human mode the broker parks the message in
                                 // the per-worker pending queue instead of injecting,
                                 // and counts it as delivered so the HTTP caller's
-                                // ack semantics are unchanged.
+                                // ack semantics are unchanged. We pass the FULL
+                                // routing context so the eventual drain reproduces
+                                // the original delivery (channel/thread/workspace
+                                // /priority/mode), not a stripped-down DM.
                                 match gate_inbound_for_session_mode(
                                     &mut session_states,
                                     &workers,
                                     &worker_name,
-                                    &delivery_from,
-                                    &text,
-                                    Some(&event_id),
+                                    InboundContext {
+                                        from: &delivery_from,
+                                        body: &text,
+                                        target: &normalized_to,
+                                        thread_id: thread_id.as_deref(),
+                                        workspace_id: Some(selected_workspace_id.as_str()),
+                                        workspace_alias: selected_workspace_alias.as_deref(),
+                                        priority,
+                                        mode: mode.clone(),
+                                        event_id: Some(&event_id),
+                                    },
                                 ) {
                                     GateOutcome::Queued => {
                                         delivered = delivered.saturating_add(1);
@@ -1967,6 +1978,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             worker = %worker_name,
                                             "queued local delivery (human session mode)"
                                         );
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({
+                                                "kind":"delivery_queued",
+                                                "name":&worker_name,
+                                                "event_id":&event_id,
+                                                "from":&delivery_from,
+                                                "target":&normalized_to,
+                                                "reason":"session_mode_human",
+                                            }),
+                                        ).await;
                                         continue;
                                     }
                                     GateOutcome::WorkerMissing => {
@@ -2441,6 +2463,28 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     flushed,
                                     "session mode updated"
                                 );
+                                if previous != mode {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_session_mode_changed",
+                                            "name":&name,
+                                            "previous_mode":previous.as_wire_str(),
+                                            "mode":mode.as_wire_str(),
+                                        }),
+                                    ).await;
+                                }
+                                if flushed > 0 {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_pending_drained",
+                                            "name":&name,
+                                            "count":flushed,
+                                            "reason":"mode_transition",
+                                        }),
+                                    ).await;
+                                }
                                 let _ = reply.send(Ok(SetSessionModeOk { mode, flushed }));
                             }
                         }
@@ -2481,6 +2525,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         delivery_retry_interval,
                                     )
                                     .await;
+                                }
+                                if flushed > 0 {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_pending_drained",
+                                            "name":&name,
+                                            "count":flushed,
+                                            "reason":"explicit_flush",
+                                        }),
+                                    ).await;
                                 }
                                 let _ = reply.send(Ok(flushed));
                             }
@@ -3144,14 +3199,24 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             // Session-mode gate (#864 sub-PR 2): mirrors the
                             // /api/send gate above. Human-mode workers see
                             // inbound relaycast messages parked in the
-                            // pending queue rather than auto-injected.
+                            // pending queue rather than auto-injected; same
+                            // full-context capture so drains reproduce the
+                            // original delivery (channel/thread/workspace).
                             match gate_inbound_for_session_mode(
                                 &mut session_states,
                                 &workers,
                                 &worker_name,
-                                &mapped.from,
-                                &mapped.text,
-                                Some(&mapped.event_id),
+                                InboundContext {
+                                    from: &mapped.from,
+                                    body: &mapped.text,
+                                    target: &mapped.target,
+                                    thread_id: mapped.thread_id.as_deref(),
+                                    workspace_id: Some(mapped.workspace_id.as_str()),
+                                    workspace_alias: mapped.workspace_alias.as_deref(),
+                                    priority: mapped.priority.as_u8(),
+                                    mode: MessageInjectionMode::Wait,
+                                    event_id: Some(&mapped.event_id),
+                                },
                             ) {
                                 GateOutcome::Queued => {
                                     tracing::info!(
@@ -3160,6 +3225,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         worker = %worker_name,
                                         "queued inbound relay message (human session mode)"
                                     );
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"delivery_queued",
+                                            "name":&worker_name,
+                                            "event_id":&mapped.event_id,
+                                            "from":&mapped.from,
+                                            "target":&mapped.target,
+                                            "reason":"session_mode_human",
+                                        }),
+                                    ).await;
                                     continue;
                                 }
                                 GateOutcome::WorkerMissing | GateOutcome::Inject => {}
@@ -4195,13 +4271,28 @@ enum GateOutcome {
 /// `drive` client (sub-PR 3) needs to intercept. Internal broker-driven
 /// injections (`worker_ready` initial task, continuity restore) bypass
 /// the gate by not calling this helper.
+/// Bundle of routing context the gate captures into the pending queue
+/// when a message is held. Mirrors the args `queue_and_try_delivery_raw`
+/// expects so a drain reproduces the original delivery exactly — same
+/// target (channel / DM / thread sentinel), thread, workspace,
+/// priority, and injection mode.
+struct InboundContext<'a> {
+    from: &'a str,
+    body: &'a str,
+    target: &'a str,
+    thread_id: Option<&'a str>,
+    workspace_id: Option<&'a str>,
+    workspace_alias: Option<&'a str>,
+    priority: u8,
+    mode: MessageInjectionMode,
+    event_id: Option<&'a str>,
+}
+
 fn gate_inbound_for_session_mode(
     session_states: &mut HashMap<String, SessionState>,
     workers: &WorkerRegistry,
     worker_name: &str,
-    from: &str,
-    body: &str,
-    event_id: Option<&str>,
+    ctx: InboundContext<'_>,
 ) -> GateOutcome {
     if !workers.has_worker(worker_name) {
         return GateOutcome::WorkerMissing;
@@ -4212,10 +4303,16 @@ fn gate_inbound_for_session_mode(
     }
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {
-        from: from.to_string(),
-        body: body.to_string(),
+        from: ctx.from.to_string(),
+        body: ctx.body.to_string(),
+        target: ctx.target.to_string(),
+        thread_id: ctx.thread_id.map(str::to_string),
+        workspace_id: ctx.workspace_id.map(str::to_string),
+        workspace_alias: ctx.workspace_alias.map(str::to_string),
+        priority: ctx.priority,
+        mode: ctx.mode,
         queued_at_ms,
-        event_id: event_id.map(str::to_string),
+        event_id: ctx.event_id.map(str::to_string),
     };
     match state.accept_inbound(msg) {
         SessionDispatch::Inject => GateOutcome::Inject,
@@ -4223,7 +4320,7 @@ fn gate_inbound_for_session_mode(
             tracing::debug!(
                 target = "agent_relay::broker",
                 worker = %worker_name,
-                from = %from,
+                from = %ctx.from,
                 queue_len,
                 "queued inbound relay message (human mode)"
             );
@@ -4236,7 +4333,7 @@ fn gate_inbound_for_session_mode(
             tracing::warn!(
                 target = "agent_relay::broker",
                 worker = %worker_name,
-                from = %from,
+                from = %ctx.from,
                 dropped_from = %dropped_from,
                 queue_len,
                 max_pending = relay_broker::types::MAX_PENDING_PER_WORKER,
@@ -4270,13 +4367,17 @@ async fn inject_pending_relay_message(
         worker_name,
         &event_id,
         &msg.from,
-        worker_name,
+        // Use the ORIGINAL routing target captured at queue time —
+        // `#general`, the DM recipient name, `"thread"`, etc. Falling
+        // back to `worker_name` here would silently reframe channel
+        // messages as direct-to-worker messages on drain.
+        &msg.target,
         &msg.body,
-        None,
-        None,
-        None,
-        2,
-        MessageInjectionMode::Wait,
+        msg.thread_id.clone(),
+        msg.workspace_id.clone(),
+        msg.workspace_alias.clone(),
+        msg.priority,
+        msg.mode.clone(),
         retry_interval,
     )
     .await

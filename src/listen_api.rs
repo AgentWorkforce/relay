@@ -1280,12 +1280,26 @@ async fn listen_api_get_pending(
                     let mut payload = json!({
                         "from": m.from,
                         "body": m.body,
+                        "target": m.target,
+                        "priority": m.priority,
+                        "mode": m.mode,
                         "queued_at_ms": m.queued_at_ms,
                     });
+                    let obj = payload.as_object_mut().expect("payload object built above");
+                    if let Some(thread_id) = m.thread_id {
+                        obj.insert("thread_id".to_string(), Value::String(thread_id));
+                    }
+                    if let Some(workspace_id) = m.workspace_id {
+                        obj.insert("workspace_id".to_string(), Value::String(workspace_id));
+                    }
+                    if let Some(workspace_alias) = m.workspace_alias {
+                        obj.insert(
+                            "workspace_alias".to_string(),
+                            Value::String(workspace_alias),
+                        );
+                    }
                     if let Some(event_id) = m.event_id {
-                        if let Some(obj) = payload.as_object_mut() {
-                            obj.insert("event_id".to_string(), Value::String(event_id));
-                        }
+                        obj.insert("event_id".to_string(), Value::String(event_id));
                     }
                     payload
                 })
@@ -1894,6 +1908,7 @@ mod auth_tests {
         SetSessionModeOk,
     };
     use crate::worker_request::RequestWorkerError;
+    use relay_broker::protocol::MessageInjectionMode;
     use relay_broker::types::{PendingRelayMessage, SessionMode};
 
     fn test_router(
@@ -3023,12 +3038,24 @@ mod auth_tests {
                         PendingRelayMessage {
                             from: "Alice".to_string(),
                             body: "one".to_string(),
+                            target: "#general".to_string(),
+                            thread_id: Some("thr_42".to_string()),
+                            workspace_id: Some("ws_demo".to_string()),
+                            workspace_alias: Some("Demo".to_string()),
+                            priority: 1,
+                            mode: MessageInjectionMode::Steer,
                             queued_at_ms: 100,
                             event_id: Some("evt_1".to_string()),
                         },
                         PendingRelayMessage {
                             from: "Bob".to_string(),
                             body: "two".to_string(),
+                            target: "worker-a".to_string(),
+                            thread_id: None,
+                            workspace_id: None,
+                            workspace_alias: None,
+                            priority: 2,
+                            mode: MessageInjectionMode::Wait,
                             queued_at_ms: 200,
                             event_id: None,
                         },
@@ -3053,11 +3080,28 @@ mod auth_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["pending"].as_array().expect("array").len(), 2);
+        // First entry: channel-targeted, threaded, full workspace
+        // context, custom priority + mode — all surface in the JSON
+        // and round-trip via the snapshot serializer.
         assert_eq!(body["pending"][0]["from"], json!("Alice"));
         assert_eq!(body["pending"][0]["body"], json!("one"));
+        assert_eq!(body["pending"][0]["target"], json!("#general"));
+        assert_eq!(body["pending"][0]["thread_id"], json!("thr_42"));
+        assert_eq!(body["pending"][0]["workspace_id"], json!("ws_demo"));
+        assert_eq!(body["pending"][0]["workspace_alias"], json!("Demo"));
+        assert_eq!(body["pending"][0]["priority"], json!(1));
+        assert_eq!(body["pending"][0]["mode"], json!("steer"));
         assert_eq!(body["pending"][0]["queued_at_ms"], json!(100));
         assert_eq!(body["pending"][0]["event_id"], json!("evt_1"));
+        // Second entry: minimal context — optional fields stay absent
+        // from the JSON, defaults surface as concrete numbers/strings.
         assert_eq!(body["pending"][1]["from"], json!("Bob"));
+        assert_eq!(body["pending"][1]["target"], json!("worker-a"));
+        assert_eq!(body["pending"][1]["priority"], json!(2));
+        assert_eq!(body["pending"][1]["mode"], json!("wait"));
+        assert_eq!(body["pending"][1].get("thread_id"), None);
+        assert_eq!(body["pending"][1].get("workspace_id"), None);
+        assert_eq!(body["pending"][1].get("workspace_alias"), None);
         assert_eq!(body["pending"][1].get("event_id"), None);
         replier.await.expect("replier should complete");
     }

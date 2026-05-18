@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::MessageInjectionMode;
+
 /// Per-worker session mode controlling how inbound relay messages are
 /// dispatched into the wrapped agent's PTY.
 ///
@@ -45,10 +47,42 @@ impl SessionMode {
 /// pending queue instead of being injected. Drained in FIFO order by
 /// `POST /api/spawned/{name}/flush` or the auto-drain on a
 /// `human → relay` mode transition.
+///
+/// The full delivery context is captured at queue time so a drain
+/// later produces a byte-for-byte equivalent of the original delivery
+/// — channel-targeted messages stay channel-targeted, threaded replies
+/// stay threaded, workspace attribution survives, and the original
+/// priority + injection mode are preserved. Without all of these a
+/// flushed `#general` message would be re-injected as a direct
+/// message to the worker (since `target` would fall back to the
+/// worker's name), which would change agent behaviour silently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingRelayMessage {
     pub from: String,
     pub body: String,
+    /// Original delivery target — channel (`#general`), DM recipient
+    /// name, or sentinel like `"thread"`. Used as the `target` arg to
+    /// `queue_and_try_delivery_raw` on drain so the re-injected
+    /// message matches the original routing.
+    pub target: String,
+    /// Original thread id, when the inbound was a thread reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Original workspace id, when known. Channel + DM routing both
+    /// depend on this; dropping it would attribute the flushed
+    /// message to the wrong workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Original workspace alias (display name), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
+    /// Original delivery priority. 0 = P0, …, 4 = P4. Defaults to 2
+    /// (P2) when the source didn't carry a priority.
+    #[serde(default = "default_priority")]
+    pub priority: u8,
+    /// Original `wait` vs `steer` injection mode.
+    #[serde(default)]
+    pub mode: MessageInjectionMode,
     /// Unix millis when the broker queued the message. Matches the
     /// existing timestamp style elsewhere in this module.
     pub queued_at_ms: u64,
@@ -56,6 +90,10 @@ pub struct PendingRelayMessage {
     /// telemetry / dedup parity with the auto-inject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+}
+
+fn default_priority() -> u8 {
+    2
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -268,9 +306,62 @@ mod session_tests {
         PendingRelayMessage {
             from: from.to_string(),
             body: body.to_string(),
+            // Target defaults to the sender's name in tests that don't
+            // care about routing — the gating logic only inspects mode
+            // / queue length, not the routing fields.
+            target: "worker".to_string(),
+            thread_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            priority: 2,
+            mode: MessageInjectionMode::Wait,
             queued_at_ms: 0,
             event_id: None,
         }
+    }
+
+    #[test]
+    fn session_mode_wire_format_matches_serde_round_trip() {
+        // Guard against `as_wire_str` / `parse` drifting from the
+        // `#[serde(rename_all = "snake_case")]` representation.
+        for variant in [SessionMode::Relay, SessionMode::Human] {
+            let serialized = serde_json::to_string(&variant)
+                .expect("SessionMode serializes")
+                .trim_matches('"')
+                .to_string();
+            assert_eq!(serialized, variant.as_wire_str());
+
+            let parsed = SessionMode::parse(&serialized).expect("wire form parses");
+            assert_eq!(parsed, variant);
+
+            let from_serde: SessionMode =
+                serde_json::from_str(&format!("\"{serialized}\"")).expect("serde round-trips");
+            assert_eq!(from_serde, variant);
+        }
+    }
+
+    #[test]
+    fn pending_message_preserves_full_routing_context() {
+        // Direct regression for the P1 review comment: a channel
+        // message queued and surfaced via the pending snapshot must
+        // round-trip its target / thread / workspace / priority / mode
+        // unchanged, so a drain re-injects with the original routing.
+        let queued = PendingRelayMessage {
+            from: "Bob".to_string(),
+            body: "ship it".to_string(),
+            target: "#general".to_string(),
+            thread_id: Some("thr_abc".to_string()),
+            workspace_id: Some("ws_demo".to_string()),
+            workspace_alias: Some("Demo".to_string()),
+            priority: 1,
+            mode: MessageInjectionMode::Steer,
+            queued_at_ms: 123_456,
+            event_id: Some("evt_xyz".to_string()),
+        };
+        let mut state = SessionState::new(SessionMode::Human);
+        state.accept_inbound(queued.clone());
+        let drained = state.drain_pending();
+        assert_eq!(drained, vec![queued]);
     }
 
     #[test]

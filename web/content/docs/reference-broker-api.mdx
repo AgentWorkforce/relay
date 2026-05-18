@@ -286,15 +286,39 @@ Returns the pending queue without modifying it.
 ```json
 {
   "pending": [
-    { "from": "Bob", "body": "please review #837", "queued_at_ms": 1715812345678, "event_id": "evt_abc" },
-    { "from": "Carol", "body": "ping", "queued_at_ms": 1715812360123 }
+    {
+      "from": "Bob",
+      "body": "please review #837",
+      "target": "#general",
+      "priority": 2,
+      "mode": "wait",
+      "thread_id": "thr_abc",
+      "workspace_id": "ws_demo",
+      "workspace_alias": "Demo",
+      "queued_at_ms": 1715812345678,
+      "event_id": "evt_abc"
+    },
+    {
+      "from": "Carol",
+      "body": "ping",
+      "target": "Alice",
+      "priority": 2,
+      "mode": "wait",
+      "queued_at_ms": 1715812360123
+    }
   ]
 }
 ```
 
-`event_id` is included when the inbound message carried one (it is
-omitted otherwise). The queue is bounded at 256 entries per worker —
-when full, the oldest entry is evicted with a broker-side warning.
+Each entry preserves the full routing metadata captured at queue time
+— `target` (`#channel`, DM recipient, or `"thread"`), `priority`,
+`mode` (`wait` / `steer`), and optional `thread_id` / `workspace_id`
+/ `workspace_alias` / `event_id` when the inbound carried them. A
+later drain reproduces the original delivery byte-for-byte; a
+channel-targeted message stays channel-targeted.
+
+The queue is bounded at 256 entries per worker — when full, the
+oldest entry is evicted with a broker-side warning.
 
 #### `POST /api/spawned/{name}/flush`
 
@@ -360,6 +384,9 @@ Durable (replayable via `?sinceSeq=...`):
 | `delivery_failed`                      | Message delivery failed.                               |
 | `delivery_dropped`                     | Delivery was dropped (e.g. agent gone).                |
 | `delivery_retry`                       | Delivery is being retried.                             |
+| `delivery_queued`                      | Inbound delivery parked in the per-worker pending queue because the worker is in `human` session mode. Payload carries `event_id`, `from`, `target`, and `reason: "session_mode_human"`. |
+| `agent_session_mode_changed`           | A worker's session mode flipped via `PUT /api/spawned/{name}/mode`. Payload carries `previous_mode` and `mode`. |
+| `agent_pending_drained`                | The per-worker pending queue was drained. Payload carries `count` and `reason` (`mode_transition` for the auto-drain on `human → relay`, `explicit_flush` for `POST .../flush`). |
 
 Ephemeral (broadcast only, no replay):
 
