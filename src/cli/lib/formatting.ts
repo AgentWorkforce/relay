@@ -43,6 +43,14 @@ export function parseSince(input?: string): number | undefined {
     return Date.now() - value * multipliers[unit];
   }
 
+  if (
+    !/^\d{4}-\d{2}-\d{2}(?:[Tt ][0-2]\d:[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:[Zz]|[+-][0-2]\d:?[0-5]\d)?)?$/.test(
+      trimmed
+    )
+  ) {
+    return undefined;
+  }
+
   const parsed = Date.parse(trimmed);
   if (Number.isNaN(parsed)) return undefined;
   return parsed;

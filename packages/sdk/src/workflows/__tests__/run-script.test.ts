@@ -8,6 +8,8 @@ import {
   formatWorkflowParseError,
   runScriptWorkflow,
   findLocalSdkWorkspace,
+  ensureLocalSdkWorkflowRuntime,
+  shouldSkipNodeStripTypesPreflight,
 } from '../run-script.js';
 
 describe('parseTsxStderr', () => {
@@ -148,6 +150,258 @@ if (ImportedStep.Done !== 'done') {
     }
   }, 30000);
 
+  it('falls back past Node strip-only mode for parameter properties and namespaces', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'parameter-property-workflow.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+class Box {
+  constructor(public value: string) {}
+}
+namespace WorkflowValues {
+  export const done = 'done';
+}
+if (new Box(WorkflowValues.done).value !== 'done') {
+  throw new Error('unsupported syntax did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(true);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('falls back past Node strip-only mode for unsupported syntax in static local imports', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const helperPath = path.join(tmpDir, 'helper.ts');
+    fs.writeFileSync(
+      helperPath,
+      `
+export class ImportedBox {
+  constructor(public value: string) {}
+}
+export namespace ImportedValues {
+  export const done = 'done';
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { ImportedBox, ImportedValues } from './helper.ts';
+if (new ImportedBox(ImportedValues.done).value !== 'done') {
+  throw new Error('imported unsupported syntax did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(true);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('falls back past Node strip-only mode for import-equals syntax', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'import-equals-workflow.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+import fs = require('node:fs');
+if (!fs.existsSync(${JSON.stringify(tmpDir)})) {
+  throw new Error('import-equals workflow did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(true);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('falls back past Node strip-only mode for import-equals syntax in static local imports', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const helperPath = path.join(tmpDir, 'helper.ts');
+    fs.writeFileSync(
+      helperPath,
+      `
+import path = require('node:path');
+export const basename = path.basename('done.txt', '.txt');
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { basename } from './helper.ts';
+if (basename !== 'done') {
+  throw new Error('imported import-equals syntax did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(true);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('does not treat enum text in comments or strings as unsupported strip-types syntax', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'enum-text.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+// enum CommentOnly { Value = 'value' }
+const message = "enum StringOnly { Value = 'value' }";
+const template = \`enum TemplateOnly { Value = 'value' }\`;
+if (!message || !template) {
+  throw new Error('missing values');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(false);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('falls back for NodeNext .js specifiers backed by TypeScript source', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const enumModulePath = path.join(tmpDir, 'enum-module.ts');
+    fs.writeFileSync(
+      enumModulePath,
+      `
+export enum ImportedStep {
+  Done = 'done',
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { ImportedStep } from './enum-module.js';
+if (ImportedStep.Done !== 'done') {
+  throw new Error('imported step did not execute');
+}
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('handles circular static imports during strip-types preflight', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const helperPath = path.join(tmpDir, 'helper.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { helperValue } from './helper.ts';
+if (helperValue !== 'ok') {
+  throw new Error('helper did not execute');
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      helperPath,
+      `
+import type {} from './main.ts';
+export enum HelperStep {
+  Done = 'done',
+}
+export const helperValue = HelperStep.Done === 'done' ? 'ok' : 'bad';
+`,
+      'utf8'
+    );
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('terminates strip-types preflight for circular imports without unsupported syntax', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const helperPath = path.join(tmpDir, 'helper.ts');
+    fs.writeFileSync(
+      workflowPath,
+      `
+import { helperReady } from './helper.ts';
+void helperReady;
+export function mainReady() {
+  return true;
+}
+`,
+      'utf8'
+    );
+    fs.writeFileSync(
+      helperPath,
+      `
+import { mainReady } from './main.ts';
+void mainReady;
+export const helperReady = true;
+`,
+      'utf8'
+    );
+
+    try {
+      expect(shouldSkipNodeStripTypesPreflight(workflowPath)).toBe(false);
+      await expect(runScriptWorkflow(workflowPath)).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('skips node strip-types when a transitive TypeScript import cannot be read', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
+    const workflowPath = path.join(tmpDir, 'main.ts');
+    const helperPath = path.join(tmpDir, 'helper.ts');
+    fs.writeFileSync(workflowPath, "import './helper.ts';\n", 'utf8');
+    fs.writeFileSync(helperPath, "export enum Hidden { Value = 'value' }\n", 'utf8');
+    fs.chmodSync(helperPath, 0);
+
+    try {
+      await expect(runScriptWorkflow(workflowPath)).rejects.toThrow(/tsx exited with code 1/);
+    } finally {
+      fs.chmodSync(helperPath, 0o600);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('does not mask ordinary runtime failures by falling back to another TypeScript runner', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-runner-'));
     const workflowPath = path.join(tmpDir, 'runtime-failure.ts');
@@ -225,5 +479,63 @@ await import(${JSON.stringify(enumModulePath)});
 describe('findLocalSdkWorkspace', () => {
   it('returns null when no agent-relay workspace is in the ancestor chain', () => {
     expect(findLocalSdkWorkspace('/tmp')).toBeNull();
+  });
+});
+
+describe('ensureLocalSdkWorkflowRuntime', () => {
+  function createTempWorkspace(): { rootDir: string; startDir: string; workflowsEntry: string } {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-workspace-'));
+    const sdkDir = path.join(rootDir, 'packages', 'sdk');
+    const startDir = path.join(sdkDir, 'src', 'workflows');
+    fs.mkdirSync(startDir, { recursive: true });
+    fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({ name: 'agent-relay' }), 'utf8');
+    fs.writeFileSync(path.join(sdkDir, 'package.json'), JSON.stringify({ name: '@agent-relay/sdk' }), 'utf8');
+    return {
+      rootDir,
+      startDir,
+      workflowsEntry: path.join(sdkDir, 'dist', 'workflows', 'index.js'),
+    };
+  }
+
+  it('runs local workflow runtime build commands in dependency order', () => {
+    const workspace = createTempWorkspace();
+    const calls: string[][] = [];
+    const expectedCommands = [
+      ['run', 'build:config'],
+      ['--prefix', 'packages/workflow-types', 'run', 'build'],
+      ['--prefix', 'packages/github-primitive', 'run', 'build'],
+      ['--prefix', 'packages/slack-primitive', 'run', 'build'],
+      ['--prefix', 'packages/cloud', 'run', 'build'],
+      ['run', 'build:sdk'],
+    ];
+
+    try {
+      const execRunner = ((_file: string, args?: readonly string[]) => {
+        calls.push([...(args ?? [])]);
+        if (calls.length === expectedCommands.length) {
+          fs.mkdirSync(path.dirname(workspace.workflowsEntry), { recursive: true });
+          fs.writeFileSync(workspace.workflowsEntry, '', 'utf8');
+        }
+        return Buffer.from('');
+      }) as any;
+
+      ensureLocalSdkWorkflowRuntime(workspace.startDir, execRunner);
+
+      expect(calls).toEqual(expectedCommands);
+    } finally {
+      fs.rmSync(workspace.rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when local workflow runtime is still missing after build commands', () => {
+    const workspace = createTempWorkspace();
+
+    try {
+      expect(() => ensureLocalSdkWorkflowRuntime(workspace.startDir, (() => Buffer.from('')) as any)).toThrow(
+        /Local SDK workflows runtime is still missing after build/
+      );
+    } finally {
+      fs.rmSync(workspace.rootDir, { recursive: true, force: true });
+    }
   });
 });

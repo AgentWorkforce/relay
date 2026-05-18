@@ -205,18 +205,28 @@ function resolveLocalTypeScriptImport(fromFile: string, specifier: string): stri
   const basePath = specifier.startsWith('/')
     ? path.resolve(specifier)
     : path.resolve(path.dirname(fromFile), specifier);
-  const candidates = path.extname(basePath)
-    ? [basePath]
-    : [
-        `${basePath}.ts`,
-        `${basePath}.tsx`,
-        `${basePath}.mts`,
-        `${basePath}.cts`,
-        path.join(basePath, 'index.ts'),
-        path.join(basePath, 'index.tsx'),
-        path.join(basePath, 'index.mts'),
-        path.join(basePath, 'index.cts'),
-      ];
+  const ext = path.extname(basePath);
+  const candidates =
+    ext === '.js' || ext === '.mjs' || ext === '.cjs'
+      ? [
+          `${basePath.slice(0, -ext.length)}.ts`,
+          `${basePath.slice(0, -ext.length)}.tsx`,
+          `${basePath.slice(0, -ext.length)}.mts`,
+          `${basePath.slice(0, -ext.length)}.cts`,
+          basePath,
+        ]
+      : ext
+        ? [basePath]
+        : [
+            `${basePath}.ts`,
+            `${basePath}.tsx`,
+            `${basePath}.mts`,
+            `${basePath}.cts`,
+            path.join(basePath, 'index.ts'),
+            path.join(basePath, 'index.tsx'),
+            path.join(basePath, 'index.mts'),
+            path.join(basePath, 'index.cts'),
+          ];
 
   for (const candidate of candidates) {
     if (/\.(?:ts|tsx|mts|cts)$/.test(candidate) && fs.existsSync(candidate)) {
@@ -239,7 +249,11 @@ function findStaticLocalTypeScriptImports(filePath: string, source: string): str
   return imports;
 }
 
-function shouldSkipNodeStripTypesPreflight(filePath: string, seen = new Set<string>()): boolean {
+export function shouldSkipNodeStripTypesPreflight(
+  filePath: string,
+  seen = new Set<string>(),
+  isEntry = true
+): boolean {
   const resolvedPath = path.resolve(filePath);
   if (seen.has(resolvedPath)) {
     return false;
@@ -250,17 +264,90 @@ function shouldSkipNodeStripTypesPreflight(filePath: string, seen = new Set<stri
   try {
     source = fs.readFileSync(resolvedPath, 'utf8');
   } catch {
-    return false;
+    return !isEntry;
   }
 
-  // Node's strip-only runner cannot parse enums. Detecting them before
-  // execution lets valid enum workflows go straight to tsx without risking
-  // a retry after user code has already run and dynamically imported one.
-  if (/\benum\s+[A-Za-z_$][\w$]*/.test(source)) {
+  // Node's strip-only runner cannot parse TypeScript constructs that require
+  // code generation. Detecting them before execution lets valid workflows go
+  // straight to tsx without retrying after user code may have already run.
+  if (containsNodeStripTypesUnsupportedSyntax(source)) {
     return true;
   }
   return findStaticLocalTypeScriptImports(resolvedPath, source).some((importPath) =>
-    shouldSkipNodeStripTypesPreflight(importPath, seen)
+    shouldSkipNodeStripTypesPreflight(importPath, seen, false)
+  );
+}
+
+function stripCommentsAndStringsForSyntaxScan(source: string): string {
+  let output = '';
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    const next = source[index + 1];
+
+    if (char === '/' && next === '/') {
+      output += '  ';
+      index += 1;
+      while (index + 1 < source.length && source[index + 1] !== '\n') {
+        output += ' ';
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 1;
+      while (index + 1 < source.length) {
+        index += 1;
+        const current = source[index]!;
+        output += current === '\n' ? '\n' : ' ';
+        if (current === '*' && source[index + 1] === '/') {
+          output += ' ';
+          index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      const quote = char;
+      output += ' ';
+      while (index + 1 < source.length) {
+        index += 1;
+        const current = source[index]!;
+        output += current === '\n' ? '\n' : ' ';
+        if (current === '\\') {
+          if (index + 1 < source.length) {
+            index += 1;
+            output += source[index] === '\n' ? '\n' : ' ';
+          }
+          continue;
+        }
+        if (current === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    output += char;
+  }
+  return output;
+}
+
+function containsNodeStripTypesUnsupportedSyntax(source: string): boolean {
+  const scanSource = stripCommentsAndStringsForSyntaxScan(source);
+  return (
+    /(?:^|[;\n{}])\s*(?:export\s+)?(?:const\s+)?enum\s+[A-Za-z_$][\w$]*/.test(scanSource) ||
+    /(?:^|[;\n{}])\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+[A-Za-z_$][\w$]*/.test(scanSource) ||
+    /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[A-Za-z_$][\w$]*/.test(
+      scanSource
+    ) ||
+    /(?:^|[;\n{}])\s*import\s+[A-Za-z_$][\w$]*\s*=\s*(?:require\s*\(|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.test(
+      scanSource
+    ) ||
+    /(?:^|[;\n{}])\s*export\s*=\s*/.test(scanSource)
   );
 }
 

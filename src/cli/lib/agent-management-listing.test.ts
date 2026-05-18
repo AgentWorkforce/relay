@@ -189,6 +189,51 @@ describe('agent-management-listing JSON output', () => {
     expect(lines.some((l) => l.includes('LAST SEEN'))).toBe(false);
   });
 
+  it('runAgentsCommand sanitizes agent-controlled table cells', async () => {
+    const ESC = '\u001b';
+    const { deps, log } = createDeps({
+      workers: [
+        {
+          name: `Worker${ESC}[2J${ESC}]52;c;AAAA${String.fromCharCode(7)}\rA`,
+          cli: `codex${ESC}[31m\r`,
+          model: `gpt${ESC}[0m`,
+          team: `core${String.fromCharCode(0x7f)}`,
+        },
+      ],
+    });
+
+    await runAgentsCommand({}, deps);
+
+    const output = log.mock.calls.map((call) => call[0] as string).join('');
+    // eslint-disable-next-line no-control-regex -- asserting output contains no raw control bytes
+    expect(output).not.toMatch(/[\x00-\x1F\x7F-\x9F]/);
+    expect(output).not.toContain(ESC);
+    expect(output).toContain('Worker A');
+    expect(output).toContain('codex');
+  });
+
+  it('runWhoCommand sanitizes agent-controlled table cells', async () => {
+    const ESC = '\u001b';
+    const { deps, log } = createDeps({
+      workers: [
+        {
+          name: `Who${ESC}[2J${ESC}]52;c;AAAA${String.fromCharCode(7)}\rA`,
+          cli: `claude${ESC}[31m\r`,
+          pid: 99,
+        },
+      ],
+    });
+
+    await runWhoCommand({}, deps);
+
+    const output = log.mock.calls.map((call) => call[0] as string).join('');
+    // eslint-disable-next-line no-control-regex -- asserting output contains no raw control bytes
+    expect(output).not.toMatch(/[\x00-\x1F\x7F-\x9F]/);
+    expect(output).not.toContain(ESC);
+    expect(output).toContain('Who A');
+    expect(output).toContain('claude');
+  });
+
   it('runAgentsCommand returns [] JSON when listAgents fails', async () => {
     const { deps, log, shutdown } = createDeps({
       listAgentsError: new Error('broker unavailable'),
@@ -283,13 +328,97 @@ describe('runAgentsLogsCommand --plain / --json', () => {
     expect(log.mock.calls[0][0] as string).not.toContain(ESC);
   });
 
-  it('default (no flags) preserves the raw header + content', async () => {
+  it('default (no flags) sanitizes the header and content', async () => {
     const { deps, log } = logsDeps();
 
     await runAgentsLogsCommand('WorkerA', {}, deps);
 
     const joined = log.mock.calls.map((c) => c[0] as string).join('\n');
     expect(joined).toContain('Logs for WorkerA');
-    expect(joined).toContain(ESC); // raw view keeps escapes
+    expect(joined).toContain('line one');
+    expect(joined).not.toContain(ESC);
+  });
+
+  it('rejects path traversal agent names before probing or reading files', async () => {
+    const { deps, error } = logsDeps();
+
+    await expect(runAgentsLogsCommand('../../secret', {}, deps)).rejects.toThrow('exit:1');
+
+    expect(error).toHaveBeenCalledWith('Invalid agent name for log lookup: "../../secret"');
+    expect(deps.fileExists).not.toHaveBeenCalled();
+    expect(deps.readFile).not.toHaveBeenCalled();
+  });
+
+  it('looks up valid agent names under worker-log directories', async () => {
+    const { deps, log } = logsDeps();
+
+    await runAgentsLogsCommand('WorkerA', { lines: '1' }, deps);
+
+    expect(deps.fileExists).toHaveBeenCalledWith('/tmp/project/.agent-relay/team/worker-logs/WorkerA.log');
+    expect(log.mock.calls.map((call) => call[0] as string).join('\n')).toContain('line two');
+  });
+
+  it('uses bounded tail reads for small snapshots', async () => {
+    const { deps, log } = logsDeps();
+    deps.readFile = vi.fn(() => {
+      throw new Error('full read should not be used');
+    });
+    deps.readFileTail = vi.fn(() => ({ text: 'tail one\ntail two\n', size: 10_000_000 }));
+
+    await runAgentsLogsCommand('WorkerA', { lines: '1', plain: true }, deps);
+
+    expect(deps.readFileTail).toHaveBeenCalledWith(
+      '/tmp/project/.agent-relay/team/worker-logs/WorkerA.log',
+      expect.any(Number),
+      'utf-8'
+    );
+    expect(deps.readFile).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('tail two');
+  });
+
+  it('rejects excessive --lines values', async () => {
+    const { deps, error } = logsDeps();
+
+    await expect(runAgentsLogsCommand('WorkerA', { lines: '999999' }, deps)).rejects.toThrow('exit:1');
+
+    expect(error).toHaveBeenCalledWith('Failed to read logs: Invalid --lines value: 999999 (must be 1-5000)');
+    expect(deps.readFile).not.toHaveBeenCalled();
+  });
+
+  it('--plain --follow carries dedupe state across the snapshot boundary', async () => {
+    vi.useFakeTimers();
+    const log = vi.fn(() => undefined);
+    const error = vi.fn(() => undefined);
+    const exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    }) as unknown as AgentManagementListingDependencies['exit'];
+    const initial = 'line one\n';
+    const followed = 'line one\nline one\nline two\n';
+    let readCount = 0;
+    const deps: AgentManagementListingDependencies = {
+      getProjectRoot: vi.fn(() => '/tmp/project'),
+      getDataDir: vi.fn(() => '/tmp/data'),
+      createClient: vi.fn(() => ({
+        listAgents: vi.fn(async () => []),
+        shutdown: vi.fn(async () => undefined),
+      })),
+      fileExists: vi.fn(() => true),
+      readFile: vi.fn(() => (readCount++ === 0 ? initial : followed)),
+      fetch: vi.fn(async () => {
+        throw new Error('not implemented');
+      }),
+      nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      log,
+      error,
+      exit,
+    };
+
+    void runAgentsLogsCommand('WorkerA', { plain: true, follow: true, lines: '1' }, deps);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(log.mock.calls.map((call) => call[0])).toEqual(['line one', 'line two']);
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 });
