@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { createProgram } from './bootstrap.js';
-import { parseVerblessAlias } from './commands/run.js';
+import { parseVerblessAlias } from './lib/spawn-and-attach.js';
 
 const expectedLeafCommands = [
   'up',
@@ -195,7 +195,7 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     expect(parseVerblessAlias(['-n', 'Alice', 'drive'], knownVerbs())).toBeNull();
     expect(parseVerblessAlias(['-n', 'Alice', 'view'], knownVerbs())).toBeNull();
     expect(parseVerblessAlias(['-n', 'Alice', 'relay'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'run'], knownVerbs())).toBeNull();
+    expect(parseVerblessAlias(['-n', 'Alice', 'new'], knownVerbs())).toBeNull();
   });
 
   it('returns null when help / version flags are present', () => {
@@ -205,24 +205,41 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-V'], knownVerbs())).toBeNull();
   });
 
-  it('byte-equivalence: alias parse matches what `run -n NAME CLI --mode relay --ephemeral` would dispatch', () => {
+  it('byte-equivalence: alias parse matches what `new -n NAME CLI --attach --mode relay --ephemeral` would dispatch', () => {
     // The alias dispatcher hardcodes `mode: 'relay'` and `ephemeral: true`
     // and feeds the parsed `name`, `cli`, `args` to `runSpawnAndAttach`.
-    // The `run -n` command path parses the same three positions out of
-    // commander and feeds them to the same function. The two paths are
-    // byte-equivalent iff the parser extracts the same triplet here.
+    // The `new --attach` command path parses the same three positions
+    // out of commander and feeds them to the same function. The two
+    // paths are byte-equivalent iff the parser extracts the same
+    // triplet here.
     const argvForAlias = ['-n', 'Alice', 'claude', '--say', 'hi'];
-    const argvForRun = ['run', '-n', 'Alice', 'claude', '--say', 'hi'];
+    // What `new -n Alice claude --attach --mode relay --ephemeral --say hi`
+    // would decompose into at the commander action layer: the `[cli]`
+    // positional ('claude'), the variadic `[args...]` (['--say', 'hi']),
+    // and the `--name` option ('Alice'). The `--attach` / `--mode` /
+    // `--ephemeral` flags don't affect the triplet — they're how the
+    // action knows to take the spawn-and-attach path with the alias's
+    // hardcoded preset.
+    const newAttachArgvBeforeFlags = [
+      'new',
+      '-n',
+      'Alice',
+      '--attach',
+      '--mode',
+      'relay',
+      '--ephemeral',
+      'claude',
+      '--say',
+      'hi',
+    ];
 
     const aliasParsed = parseVerblessAlias(argvForAlias, knownVerbs());
     expect(aliasParsed).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
 
-    // Simulate what the `run -n` action receives from commander: the
-    // first positional (`<file>`/cli), the variadic args, and the
-    // parsed `--name` option.
-    const runFile = argvForRun[3]; // 'claude'
-    const runVariadic = argvForRun.slice(4); // ['--say', 'hi']
-    const runName = argvForRun[2]; // 'Alice'
-    expect({ name: runName, cli: runFile, args: runVariadic }).toEqual(aliasParsed);
+    // Pull the same triplet out of the `new --attach` argv:
+    const newCli = newAttachArgvBeforeFlags[7]; // 'claude'
+    const newVariadic = newAttachArgvBeforeFlags.slice(8); // ['--say', 'hi']
+    const newName = newAttachArgvBeforeFlags[2]; // 'Alice'
+    expect({ name: newName, cli: newCli, args: newVariadic }).toEqual(aliasParsed);
   });
 });

@@ -31,7 +31,7 @@ import { registerDriveCommands } from './commands/drive.js';
 import { registerRelayCommands } from './commands/relay.js';
 import { registerNewCommands } from './commands/new.js';
 import { registerRmCommands } from './commands/rm.js';
-import { parseVerblessAlias, registerRunActionExtensions, runVerblessAliasDispatch } from './commands/run.js';
+import { parseVerblessAlias, runVerblessAliasDispatch } from './lib/spawn-and-attach.js';
 
 dotenvConfig({ quiet: true });
 
@@ -290,14 +290,11 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerViewCommands(program);
   registerDriveCommands(program);
   registerRelayCommands(program);
+  // The `run` command (registered by `registerSetupCommands` above) is the
+  // workflow-file runner and is intentionally untouched. The spawn-and-attach
+  // composition lives on `new --attach` — see `src/cli/commands/new.ts`.
   registerNewCommands(program);
   registerRmCommands(program);
-  // The `run` command itself is registered by `registerSetupCommands` (the
-  // workflow runner). `registerRunActionExtensions` slots the new
-  // spawn-and-attach flags onto that same `run` command and dispatches based
-  // on whether `-n` is provided — see `src/cli/commands/run.ts`. Must come
-  // AFTER `registerSetupCommands(program)` above.
-  registerRunActionExtensions(program);
 
   return program;
 }

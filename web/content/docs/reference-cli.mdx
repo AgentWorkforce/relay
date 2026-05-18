@@ -167,15 +167,26 @@ Keybinds:
 
 ## `new`
 
-Spawn a new agent under the broker and exit. No terminal attachment, no mode flip, no WebSocket subscription — the agent keeps running headless as a child of the broker, and you attach later with `view`, `drive`, or `relay`.
+Spawn a new agent under the broker. Headless by default — the agent keeps running as a child of the broker and you attach later with `view`, `drive`, or `relay`. Pass `--attach` to immediately open a session.
 
 ```bash
+# Spawn-only (headless): agent survives in the background.
 agent-relay new -n Alice claude
 agent-relay new -n Alice claude --task "review the auth changes"
 agent-relay new -n Alice claude --channels general,reviews --model opus
+
+# Spawn + attach in one shot.
+agent-relay new -n Alice claude --attach                    # default mode: drive
+agent-relay new -n Alice claude --attach --mode relay       # auto-inject + human types alongside
+agent-relay new -n Alice claude --attach --mode view        # read-only
+agent-relay new -n Alice claude --attach --ephemeral        # release on client exit
 ```
 
-`new` POSTs to `/api/spawn` with the supplied positional CLI (`claude`, `codex`, `gemini`, `opencode`, `aider`, …) and any trailing args, then prints the agent name and a one-line attach hint. It's the lightest spawn entry point in the CLI — the longer-form `spawn` command in [agent management](./reference-broker-api) does the same thing but autostarts a broker if there isn't one.
+`new` POSTs to `/api/spawn` with the supplied positional CLI (`claude`, `codex`, `gemini`, `opencode`, `aider`, …) and any trailing args, then either prints a one-line attach hint and exits (default), or composes the matching session verb (with `--attach`).
+
+It's the lightest spawn entry point in the CLI — the longer-form `spawn` command does the same thing but autostarts a broker if there isn't one.
+
+With `--attach --ephemeral`, the client registers a teardown that calls `DELETE /api/spawned/{name}` on clean detach, SIGINT, SIGTERM, or abnormal WebSocket close. Without `--ephemeral`, the agent keeps running after detach (the post-#864 default). `--mode` and `--ephemeral` are ignored without `--attach` (and produce a stderr warning if you try).
 
 Flags:
 
@@ -187,29 +198,12 @@ Flags:
 | `--cwd <path>` | no | Working directory for the agent's process. |
 | `--team <team>` | no | Team name for the agent. |
 | `--model <model>` | no | Model override (e.g. `opus`, `sonnet`, `gpt-4o`). |
+| `--attach` | no | After spawning, immediately open a session (default mode: `drive`). |
+| `--mode <mode>` | no | With `--attach`: session mode (`view`, `drive`, or `relay`). Defaults to `drive`. |
+| `--ephemeral` | no | With `--attach`: release the agent on client exit. |
 | `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
 | `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
 | `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
-
-## `run`
-
-Composition of `new` + the matching session verb. Spawns the agent and immediately opens an attach client. Useful for the common one-shot case of "spawn this and watch it".
-
-```bash
-agent-relay run -n Alice claude                   # spawn, then attach in drive mode (the default)
-agent-relay run -n Alice claude --mode relay      # spawn, then attach in relay mode
-agent-relay run -n Alice claude --mode view       # spawn, then attach read-only
-agent-relay run -n Alice claude --ephemeral       # release the agent on client exit
-```
-
-Default `--mode` is `drive` (the safer queue-and-flush default). With `--ephemeral`, `run` registers a teardown that calls `DELETE /api/spawned/{name}` on clean detach, SIGINT, SIGTERM, or abnormal WebSocket close — handy for ad-hoc experiments where you don't want the agent surviving the terminal. Without it, the agent keeps running after detach (the post-#864 default).
-
-Flags: everything from [`new`](#new) plus:
-
-| Flag | Required | Description |
-| ---- | -------- | ----------- |
-| `--mode <mode>` | no | `view`, `drive`, or `relay`. Defaults to `drive`. |
-| `--ephemeral` | no | Release the agent on client exit. |
 
 ### `-n NAME CLI` shorthand (non-breaking alias)
 
@@ -222,14 +216,14 @@ agent-relay -n Alice claude
 is a silent alias for:
 
 ```bash
-agent-relay run -n Alice claude --mode relay --ephemeral
+agent-relay new -n Alice claude --attach --mode relay --ephemeral
 ```
 
 Same byte-for-byte behaviour as today's `agent-relay -n` — spawn under the broker, attach in relay mode (broker auto-inject + human typing race), agent dies when the terminal closes. Scripts that use the old shorthand keep working without changes. The alias is recognised by a small pre-parse pass before Commander runs; no deprecation warning, no version bump.
 
 | Shape | Routes to |
 | ----- | --------- |
-| `agent-relay -n NAME CLI [args...]` | `agent-relay run -n NAME CLI [args...] --mode relay --ephemeral` |
+| `agent-relay -n NAME CLI [args...]` | `agent-relay new -n NAME CLI [args...] --attach --mode relay --ephemeral` |
 | `agent-relay --name NAME CLI [args...]` | (same) |
 | `agent-relay -nNAME CLI [args...]` | (same — joined short flag form) |
 | `agent-relay --name=NAME CLI [args...]` | (same — equals form) |
@@ -252,4 +246,4 @@ Flags:
 
 Returns 1 with a friendly error if the agent doesn't exist (`404`) or the broker is unreachable.
 
-The `new` / `run` / `relay` / `rm` verbs above complete the broker-owned agent model from [issue #864](https://github.com/AgentWorkforce/relay/issues/864). Together with `view` and `drive` they're the first-class client surface on the broker's existing HTTP/WS routes.
+The `new` / `relay` / `rm` verbs above complete the broker-owned agent model from [issue #864](https://github.com/AgentWorkforce/relay/issues/864). Together with `view` and `drive` they're the first-class client surface on the broker's existing HTTP/WS routes.

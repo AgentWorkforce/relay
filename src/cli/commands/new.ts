@@ -1,17 +1,29 @@
 /**
- * `agent-relay new -n NAME CLI [args...]` — spawn-only verb.
+ * `agent-relay new -n NAME CLI [args...] [--attach [--mode …] [--ephemeral]]`
+ * — spawn verb with optional session attach.
  *
- * Posts to the broker's `POST /api/spawn` route and exits. The agent
- * keeps running as a child of the broker; there's no terminal
- * attachment, no mode flip, no WS subscription. Use `view`, `drive`, or
- * `relay` to attach afterwards.
+ * Without `--attach`, this is spawn-only: POST `/api/spawn` and exit.
+ * The agent keeps running headless under the broker; the user attaches
+ * later with `view` / `drive` / `relay`.
+ *
+ * With `--attach`, the command composes spawn + a session verb in one
+ * shot. Defaults to `--mode drive` (the safer queue-and-flush default
+ * for the spawn-and-watch case). `--ephemeral` registers a teardown
+ * that calls `DELETE /api/spawned/{name}` on client exit (clean
+ * detach, SIGINT, SIGTERM, abnormal WS close) so the agent dies with
+ * the terminal — useful for ad-hoc experiments and what the pre-#864
+ * silent `-n NAME CLI` shorthand maps to (with `--mode relay`).
+ *
+ * The composition uses `runSpawnAndAttach` from
+ * `src/cli/lib/spawn-and-attach.ts`. That same helper is what the
+ * verbless `-n` alias dispatcher in `bootstrap.ts` calls — single code
+ * path, byte-equivalent alias.
  *
  * Part of issue #864 sub-PR 4. The longer-form `spawn` command in
- * `agent-management.ts` does the same thing through the SDK client
- * (with broker autostart and many shadow/team/model flags); `new` is
- * the lighter "I already have a broker, just spawn this" entry point
- * that the `-n NAME CLI` silent alias and `run -n NAME CLI` compose on
- * top of.
+ * `agent-management.ts` also wraps the broker's spawn route but goes
+ * through the SDK client (with broker autostart and many
+ * shadow/team/model flags); `new` is the lighter "I already have a
+ * broker, just spawn this" entry point.
  */
 
 import { Command } from 'commander';
@@ -23,6 +35,12 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
+import {
+  buildSpawnAndAttachDeps,
+  runSpawnAndAttach,
+  type AttachChildDependencies,
+  type AttachMode,
+} from '../lib/spawn-and-attach.js';
 
 type ExitFn = (code: number) => never;
 
@@ -65,7 +83,7 @@ export interface SpawnRequestBody {
   model?: string;
 }
 
-/** Outcome of `spawnAgent` — used by `new` and (via `run`) by the alias. */
+/** Outcome of `spawnAgent` — used by `new` and by the spawn-and-attach helper. */
 export interface SpawnResult {
   ok: boolean;
   status: number;
@@ -75,8 +93,8 @@ export interface SpawnResult {
 }
 
 /**
- * POST `/api/spawn` against the broker. Exported so `run` (and the
- * silent `-n` alias) can call it directly without re-implementing the
+ * POST `/api/spawn` against the broker. Exported so the
+ * spawn-and-attach helper (and any other caller) can use the same
  * fetch / error mapping.
  */
 export async function spawnAgent(
@@ -111,7 +129,7 @@ export async function spawnAgent(
   }
 }
 
-/** Options the `new` command (and `run` composition) accept on the CLI. */
+/** Options the `new` command accepts on the CLI. */
 export interface NewOptions {
   name?: string;
   brokerUrl?: string;
@@ -122,12 +140,15 @@ export interface NewOptions {
   cwd?: string;
   team?: string;
   model?: string;
+  // --attach extras
+  attach?: boolean;
+  mode?: string;
+  ephemeral?: boolean;
 }
 
 /**
- * Run the `new` verb. Resolves with the exit code the CLI should
- * propagate. The CLI-positional `cli` arg + variadic `args` are passed
- * through to the broker's spawn route as `{ cli, args }`.
+ * Run the headless-spawn path. Used when `--attach` is NOT set.
+ * Resolves with the exit code the CLI should propagate.
  */
 export async function runNew(
   cli: string | undefined,
@@ -182,13 +203,64 @@ export async function runNew(
   return 0;
 }
 
-/** Register `agent-relay new -n NAME CLI [args...]` on the supplied commander program. */
-export function registerNewCommands(program: Command, overrides: Partial<NewDependencies> = {}): void {
+/**
+ * Run the spawn-and-attach path. Used when `--attach` IS set.
+ * Validates `--mode` / `--ephemeral` and hands off to the shared
+ * `runSpawnAndAttach` helper. Resolves with the exit code the CLI
+ * should propagate.
+ *
+ * Separate function (rather than baking the branch into the action
+ * closure) so it can be tested in isolation and so the failure modes
+ * stay legible.
+ */
+export async function runNewWithAttach(
+  cli: string | undefined,
+  args: string[],
+  options: NewOptions,
+  childDeps: AttachChildDependencies
+): Promise<number> {
+  const mode = (options.mode ?? 'drive') as AttachMode;
+  return runSpawnAndAttach(
+    {
+      name: options.name ?? '',
+      cli: cli ?? '',
+      args,
+      mode,
+      ephemeral: options.ephemeral === true,
+      task: options.task,
+      channels: options.channels,
+      cwd: options.cwd,
+      team: options.team,
+      model: options.model,
+      brokerUrl: options.brokerUrl,
+      apiKey: options.apiKey,
+      stateDir: options.stateDir,
+    },
+    buildSpawnAndAttachDeps(childDeps)
+  );
+}
+
+/**
+ * Register `agent-relay new -n NAME CLI [args...]` on the supplied
+ * commander program. When `--attach` is set, the action composes spawn
+ * + session via `runSpawnAndAttach`; otherwise it's spawn-only.
+ *
+ * `attachChildDeps` is the bundle of child-module deps used in
+ * `--attach` mode; tests pass a stub bundle here while production
+ * lets `buildDefaultAttachChildDeps()` provide the real ones.
+ */
+export function registerNewCommands(
+  program: Command,
+  overrides: Partial<NewDependencies> = {},
+  attachChildDeps?: AttachChildDependencies
+): void {
   const deps = withDefaults(overrides);
 
   program
     .command('new')
-    .description('Spawn a new agent under the broker (headless — does not attach a terminal)')
+    .description(
+      'Spawn a new agent under the broker. Headless by default; pass --attach to immediately open a session.'
+    )
     .argument('[cli]', 'CLI to spawn (claude, codex, gemini, opencode, aider, …)')
     .argument('[args...]', 'Extra positional arguments passed through to the spawned CLI')
     .requiredOption('-n, --name <name>', 'Agent name (required)')
@@ -197,11 +269,38 @@ export function registerNewCommands(program: Command, overrides: Partial<NewDepe
     .option('--cwd <path>', "Working directory for the agent's process")
     .option('--team <team>', 'Team name for the agent')
     .option('--model <model>', 'Model override (e.g. opus, sonnet, gpt-4o)')
+    .option('--attach', 'After spawning, immediately open a session (default mode: drive)')
+    .option(
+      '--mode <mode>',
+      'With --attach: session mode to open (view | drive | relay). Ignored without --attach.'
+    )
+    .option('--ephemeral', 'With --attach: release the agent on client exit. Ignored without --attach.')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
     .action(async (cli: string | undefined, args: string[], options: NewOptions) => {
-      const code = await runNew(cli, args, options, deps);
+      // --mode / --ephemeral only do anything with --attach. Warn (don't
+      // error) when used without it so misuse is loud but recoverable.
+      if (!options.attach) {
+        if (options.mode !== undefined) {
+          deps.error('[new] --mode is ignored without --attach');
+        }
+        if (options.ephemeral === true) {
+          deps.error('[new] --ephemeral is ignored without --attach');
+        }
+        const code = await runNew(cli, args, options, deps);
+        if (code !== 0) {
+          deps.exit(code);
+        }
+        return;
+      }
+      // --attach: compose spawn + session via the shared helper. We
+      // lazy-build the child deps if the caller didn't inject any — keeps
+      // the spawn-only path off the WebSocket import in tests that don't
+      // need it.
+      const childDeps =
+        attachChildDeps ?? (await import('../lib/spawn-and-attach.js')).buildDefaultAttachChildDeps();
+      const code = await runNewWithAttach(cli, args, options, childDeps);
       if (code !== 0) {
         deps.exit(code);
       }

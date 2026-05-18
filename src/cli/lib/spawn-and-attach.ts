@@ -1,75 +1,60 @@
 /**
- * `agent-relay run -n NAME CLI [args...] [--mode view|drive|relay] [--ephemeral]`
- * — composition verb.
+ * Shared spawn-and-attach helper for issue #864.
  *
- * `run` is `new` immediately followed by the matching session verb. It
- * exists so the common "spawn this agent and watch it" case is one
- * command instead of two, and so the legacy `agent-relay -n NAME CLI`
- * shorthand from before issue #864 has somewhere clean to alias to
- * (silent, byte-equivalent — see `bootstrap.ts`).
+ * Two entry points compose `new` + a session verb:
  *
- * Default `--mode` is `drive` — the safer queue-and-flush default for
- * the spawn-and-watch case. `--mode relay` matches today's
- * shared-stdin-races behaviour; the `-n` silent alias uses that.
+ *   1. `agent-relay new -n NAME CLI --attach [--mode …] [--ephemeral]`
+ *      — the explicit, flag-driven path.
+ *   2. `agent-relay -n NAME CLI [args...]` — the silent backward-compat
+ *      alias for the pre-#864 shorthand, hardcoded to
+ *      `--mode relay --ephemeral`.
  *
- * `--ephemeral` registers a teardown that calls `DELETE /api/spawned/{name}`
- * on client exit (clean detach, SIGINT, SIGTERM, abnormal WS close).
- * Without it the agent survives detach — the post-#864 default. The
- * `-n` silent alias enables `--ephemeral` to preserve today's
- * close-terminal-kills-agent lifetime.
+ * Both call `runSpawnAndAttach()` here. Keeping a single code path is
+ * what makes the alias byte-equivalent: there is literally one function
+ * that does the work, and the only difference between the two entry
+ * points is which `SpawnAndAttachOptions` they construct.
  *
- * This module exports both:
- *   - `runSpawnAndAttach()`     — the one helper that both the `run`
- *                                  verb action and the verbless `-n`
- *                                  alias dispatcher in `bootstrap.ts`
- *                                  call. Keeping a single entry point
- *                                  is how we guarantee the alias is
- *                                  byte-equivalent: there is literally
- *                                  one code path.
- *   - `registerRunActionExtensions()` — slots the new spawn-mode flags
- *                                  onto the existing `run <file>`
- *                                  workflow-runner command in
- *                                  `setup.ts` and overrides its action
- *                                  to dispatch.
+ * This module lives in `src/cli/lib/` (not `src/cli/commands/`) because
+ * it's a helper consumed by multiple commands (`new --attach` action)
+ * and the bootstrap-layer alias dispatcher, not a verb registration in
+ * its own right.
  */
 
 import WebSocket from 'ws';
-
-import { Command } from 'commander';
 
 import {
   captureAndRenderSnapshot,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
-} from '../lib/attach.js';
+} from './attach.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
   resolveBrokerConnection,
   type BrokerConnection,
-} from '../lib/broker-connection.js';
-import { defaultExit, runSignalHandler } from '../lib/exit.js';
+} from './broker-connection.js';
+import { defaultExit, runSignalHandler } from './exit.js';
 
-import { spawnAgent, type NewDependencies, type SpawnRequestBody } from './new.js';
-import { releaseAgent } from './rm.js';
+import { spawnAgent, type NewDependencies, type SpawnRequestBody } from '../commands/new.js';
+import { releaseAgent } from '../commands/rm.js';
 import {
   runDriveSession,
   type DriveDependencies,
   type DriveStdin,
   type DriveTerminal,
   type DriveWebSocket,
-} from './drive.js';
-import { runRelaySession, type RelayDependencies } from './relay.js';
-import { runViewSession, type ViewDependencies, type ViewWebSocket } from './view.js';
+} from '../commands/drive.js';
+import { runRelaySession, type RelayDependencies } from '../commands/relay.js';
+import { runViewSession, type ViewDependencies, type ViewWebSocket } from '../commands/view.js';
 
-export type RunMode = 'view' | 'drive' | 'relay';
+export type AttachMode = 'view' | 'drive' | 'relay';
 
 /** Options the composition layer understands. */
 export interface SpawnAndAttachOptions {
   name: string;
   cli: string;
   args?: string[];
-  mode?: RunMode;
+  mode?: AttachMode;
   ephemeral?: boolean;
 
   // Spawn body extras
@@ -86,7 +71,7 @@ export interface SpawnAndAttachOptions {
 }
 
 /** Shared dependencies the composition needs. */
-export interface RunDependencies {
+export interface SpawnAndAttachDependencies {
   /** For the spawn step. */
   newDeps: NewDependencies;
   /** For `--mode drive` attach. */
@@ -107,32 +92,22 @@ export interface RunDependencies {
   error: (...args: unknown[]) => void;
 }
 
-function defaultRunDeps(
-  newDeps: NewDependencies,
-  driveDeps: DriveDependencies,
-  relayDeps: RelayDependencies,
-  viewDeps: ViewDependencies
-): RunDependencies {
-  return {
-    newDeps,
-    driveDeps,
-    relayDeps,
-    viewDeps,
-    releaseAgent: (conn, name, fetchFn) => releaseAgent(conn, name, fetchFn),
-    onSignal: driveDeps.onSignal,
-    log: driveDeps.log,
-    error: driveDeps.error,
-  };
+/** Bundle of child-module deps used by the production default factory. */
+export interface AttachChildDependencies {
+  newDeps: NewDependencies;
+  driveDeps: DriveDependencies;
+  relayDeps: RelayDependencies;
+  viewDeps: ViewDependencies;
 }
 
 /**
  * Build the default child-module deps (`new` / `drive` / `relay` /
  * `view`) using the production defaults — global `fetch`, real
  * WebSocket, real signal registration, real stdin/stdout. Exported so
- * `bootstrap.ts` and the alias dispatcher can wire production defaults
- * without re-encoding every detail.
+ * bootstrap-layer callers can wire production defaults without
+ * re-encoding every detail.
  */
-export function buildDefaultRunExtensionDeps(): RunExtensionDependencies {
+export function buildDefaultAttachChildDeps(): AttachChildDependencies {
   const sharedConnectionDeps = {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -222,6 +197,27 @@ export function buildDefaultRunExtensionDeps(): RunExtensionDependencies {
   return { newDeps, driveDeps, relayDeps, viewDeps };
 }
 
+/**
+ * Build the full `SpawnAndAttachDependencies` bundle from the child
+ * deps. Exposed so callers that already have child deps (e.g. tests)
+ * can opt into the default `releaseAgent` / `onSignal` wiring without
+ * re-implementing it.
+ */
+export function buildSpawnAndAttachDeps(
+  childDeps: AttachChildDependencies = buildDefaultAttachChildDeps()
+): SpawnAndAttachDependencies {
+  return {
+    newDeps: childDeps.newDeps,
+    driveDeps: childDeps.driveDeps,
+    relayDeps: childDeps.relayDeps,
+    viewDeps: childDeps.viewDeps,
+    releaseAgent: (conn, name, fetchFn) => releaseAgent(conn, name, fetchFn),
+    onSignal: childDeps.driveDeps.onSignal,
+    log: childDeps.driveDeps.log,
+    error: childDeps.driveDeps.error,
+  };
+}
+
 function buildSpawnBody(options: SpawnAndAttachOptions): SpawnRequestBody {
   const channels = options.channels
     ?.split(',')
@@ -240,15 +236,15 @@ function buildSpawnBody(options: SpawnAndAttachOptions): SpawnRequestBody {
 }
 
 /**
- * Run the spawn-and-attach composition. Single code path for both
- * `agent-relay run -n NAME CLI ...` and the verbless `agent-relay -n NAME CLI`
- * silent alias — that's how we keep the alias byte-equivalent.
+ * Spawn an agent and immediately attach to it via the chosen session
+ * verb. Single code path for both `new -n NAME CLI --attach …` and the
+ * verbless `-n NAME CLI` alias.
  *
  * Returns the exit code the CLI should propagate.
  */
 export async function runSpawnAndAttach(
   options: SpawnAndAttachOptions,
-  deps: RunDependencies
+  deps: SpawnAndAttachDependencies
 ): Promise<number> {
   const name = options.name?.trim();
   if (!name) {
@@ -257,10 +253,10 @@ export async function runSpawnAndAttach(
   }
   const cli = options.cli?.trim();
   if (!cli) {
-    deps.error(`Error: CLI is required, e.g. \`agent-relay run -n ${name} claude\``);
+    deps.error(`Error: CLI is required, e.g. \`agent-relay new -n ${name} claude --attach\``);
     return 1;
   }
-  const mode: RunMode = options.mode ?? 'drive';
+  const mode: AttachMode = options.mode ?? 'drive';
   if (mode !== 'view' && mode !== 'drive' && mode !== 'relay') {
     deps.error(`Error: --mode must be one of view|drive|relay (got '${String(options.mode)}')`);
     return 1;
@@ -281,7 +277,7 @@ export async function runSpawnAndAttach(
   // Step 1: spawn.
   const spawnResult = await spawnAgent(
     connection,
-    { ...buildSpawnBody({ ...options, name, cli }) },
+    buildSpawnBody({ ...options, name, cli }),
     deps.newDeps.fetch
   );
   if (!spawnResult.ok) {
@@ -294,24 +290,21 @@ export async function runSpawnAndAttach(
   // call blocks until detach, so signal handlers wired here are what
   // fire on Ctrl+C / SIGTERM mid-session. The handlers are idempotent
   // (best-effort releaseAgent → if it 404s, fine; the agent is gone).
-  let ephemeralTriggered = false;
   const fireEphemeralRelease = async (): Promise<void> => {
-    if (!ephemeralTriggered) return;
     try {
       const result = await deps.releaseAgent(connection, name, deps.newDeps.fetch);
       if (!result.ok && result.status !== 404) {
         deps.log(
-          `[run] ephemeral release of '${name}' returned ${result.status}: ${result.message ?? 'unknown'}`
+          `[attach] ephemeral release of '${name}' returned ${result.status}: ${result.message ?? 'unknown'}`
         );
       }
     } catch (err: unknown) {
       // Never let teardown noise drown out whatever the user is trying to read.
       const message = err instanceof Error ? err.message : String(err);
-      deps.log(`[run] ephemeral release of '${name}' threw: ${message}`);
+      deps.log(`[attach] ephemeral release of '${name}' threw: ${message}`);
     }
   };
   if (options.ephemeral) {
-    ephemeralTriggered = true;
     // Signal-based teardowns: in addition to the attach-runner's own
     // SIGINT handler (which detaches cleanly), we want the ephemeral
     // delete to also fire. The attach client closes the WS first and
@@ -348,7 +341,8 @@ export async function runSpawnAndAttach(
     // Step 4: ephemeral teardown after clean detach. The attach runner
     // returned (clean or otherwise); release the agent so the client's
     // exit also ends the agent. Signal-path teardowns above are
-    // additive — `fireEphemeralRelease` is idempotent.
+    // additive — `fireEphemeralRelease` is idempotent (broker returns
+    // 404 the second time, which we swallow).
     if (options.ephemeral) {
       await fireEphemeralRelease();
     }
@@ -357,136 +351,16 @@ export async function runSpawnAndAttach(
   return attachCode;
 }
 
-/** Bundle the deps needed by `registerRunActionExtensions` into one object. */
-export interface RunExtensionDependencies {
-  newDeps: NewDependencies;
-  driveDeps: DriveDependencies;
-  relayDeps: RelayDependencies;
-  viewDeps: ViewDependencies;
-}
-
-/**
- * Slot the spawn-and-attach flags onto the existing `run <file>`
- * workflow-runner command from `setup.ts`. When `-n` is present in the
- * args, the action shortcuts to `runSpawnAndAttach`; otherwise it
- * delegates to the original workflow-runner action (which we capture
- * and re-invoke).
- *
- * This is the lowest-blast-radius way to share the `run` verb between
- * two different jobs — Commander only allows one command per name, and
- * we'd rather not break the existing `run <file>` muscle memory.
- *
- * Must be called AFTER `setup.ts`'s `registerSetupCommands(program)`
- * has registered the original `run`.
- */
-export function registerRunActionExtensions(
-  program: Command,
-  extDeps: RunExtensionDependencies = buildDefaultRunExtensionDeps()
-): void {
-  const runCommand = program.commands.find((c) => c.name() === 'run');
-  if (!runCommand) {
-    // No existing `run` to extend — should never happen in production
-    // (setup.ts always registers it) but is fine to silently no-op for
-    // tests that build a minimal program.
-    return;
-  }
-
-  // Capture the existing workflow-runner action so we can fall through
-  // to it when `-n` is not provided. Commander stores the action on
-  // `_actionHandler` (no public getter as of 12.x).
-  const innerCommand = runCommand as unknown as {
-    _actionHandler?: (...args: unknown[]) => void | Promise<void>;
-  };
-  const originalAction = innerCommand._actionHandler;
-
-  // Make the original `<file>` positional optional so `-n NAME CLI`
-  // works without complaint, and accept a trailing variadic for the
-  // CLI's own args. Commander applies the new argument list verbatim,
-  // so workflow callers still get their `file` as the first positional.
-  // We do NOT remove the original required-ness in the help text on
-  // purpose — describing both modes in a single help blurb is uglier
-  // than describing them in the command description.
-  runCommand.arguments('[file] [args...]');
-  runCommand
-    .option('-n, --name <name>', 'Agent name to spawn and attach (alias-mode; turns this into spawn+attach)')
-    .option('--mode <mode>', 'Attach mode: view | drive | relay (default: drive)')
-    .option('--ephemeral', 'Release the agent on client exit (default: agent survives detach)')
-    .option('--task <task>', 'Initial task description for the spawned agent')
-    .option('--channels <list>', 'Comma-separated channel list for the spawned agent')
-    .option('--cwd <path>', "Working directory for the spawned agent's process")
-    .option('--team <team>', 'Team name for the spawned agent')
-    .option('--model <model>', 'Model override for the spawned agent (e.g. opus, sonnet)')
-    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
-    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)');
-
-  const deps = defaultRunDeps(extDeps.newDeps, extDeps.driveDeps, extDeps.relayDeps, extDeps.viewDeps);
-
-  runCommand.action(async (...actionArgs: unknown[]) => {
-    // commander invokes the action with (positional1, positional2, ..., options, command).
-    // With `[file] [args...]` that's (file?, args[], options, command).
-    const file = actionArgs[0] as string | undefined;
-    const variadicArgs = (actionArgs[1] as string[] | undefined) ?? [];
-    const opts = (actionArgs[2] as Record<string, unknown>) ?? {};
-    const name = typeof opts.name === 'string' ? opts.name.trim() : '';
-
-    if (name) {
-      // Spawn-and-attach path. The first positional (`file`) is the
-      // CLI; the variadic is the CLI's extra args.
-      const cli = (file ?? '').trim();
-      const code = await runSpawnAndAttach(
-        {
-          name,
-          cli,
-          args: variadicArgs,
-          mode: typeof opts.mode === 'string' ? (opts.mode as RunMode) : undefined,
-          ephemeral: opts.ephemeral === true,
-          task: typeof opts.task === 'string' ? opts.task : undefined,
-          channels: typeof opts.channels === 'string' ? opts.channels : undefined,
-          cwd: typeof opts.cwd === 'string' ? opts.cwd : undefined,
-          team: typeof opts.team === 'string' ? opts.team : undefined,
-          model: typeof opts.model === 'string' ? opts.model : undefined,
-          brokerUrl: typeof opts.brokerUrl === 'string' ? opts.brokerUrl : undefined,
-          apiKey: typeof opts.apiKey === 'string' ? opts.apiKey : undefined,
-          stateDir: typeof opts.stateDir === 'string' ? opts.stateDir : undefined,
-        },
-        deps
-      );
-      if (code !== 0) {
-        extDeps.newDeps.exit(code);
-      }
-      return;
-    }
-
-    // Workflow-file path. Fall through to whatever `setup.ts`
-    // originally registered. If the user typed `run` with no args at
-    // all we let commander's own missing-required-argument check fire
-    // via the original handler.
-    if (!originalAction) {
-      extDeps.newDeps.error('Error: run requires either -n NAME CLI ... or a workflow file');
-      extDeps.newDeps.exit(1);
-      return;
-    }
-    // Re-invoke the captured original handler. The original was
-    // installed via `.action((file: string, options: RunWorkflowOptions) => …)`,
-    // so commander's internal wrapper expects that arity; the wrapper
-    // we're inside (this lambda) gets the same `actionArgs` so we can
-    // simply forward.
-    await originalAction.apply(runCommand, actionArgs);
-  });
-}
-
 /**
  * Tiny standalone entry point for the verbless `-n NAME CLI` silent
- * alias dispatcher in `bootstrap.ts`. Just hands off to
+ * alias dispatcher in `bootstrap.ts`. Hands off to
  * `runSpawnAndAttach` with the post-#864 alias preset
  * (`--mode relay`, `--ephemeral`).
  */
 export async function runVerblessAliasDispatch(
   parsedArgs: { name: string; cli: string; args: string[] },
-  extDeps: RunExtensionDependencies = buildDefaultRunExtensionDeps()
+  childDeps: AttachChildDependencies = buildDefaultAttachChildDeps()
 ): Promise<number> {
-  const deps = defaultRunDeps(extDeps.newDeps, extDeps.driveDeps, extDeps.relayDeps, extDeps.viewDeps);
   return runSpawnAndAttach(
     {
       name: parsedArgs.name,
@@ -495,7 +369,7 @@ export async function runVerblessAliasDispatch(
       mode: 'relay',
       ephemeral: true,
     },
-    deps
+    buildSpawnAndAttachDeps(childDeps)
   );
 }
 
@@ -513,13 +387,13 @@ export async function runVerblessAliasDispatch(
  *   agent-relay --name=NAME CLI [args...]       (equals form)
  *
  * Rejected (returns null — fall through to Commander):
- *   - any of the registered subcommand names ('view', 'drive', etc.) appear
- *     as the first non-flag token, even after `-n`
+ *   - any of the registered subcommand names ('view', 'drive', etc.)
+ *     appears as the first non-flag token, even after `-n`
  *   - `-h`/`--help`/`-V`/`--version` present
  *   - `-n` without a CLI positional
  *
  * Exported for unit testing alongside the byte-equivalence test that
- * proves the alias parse matches `run -n NAME CLI --mode relay --ephemeral`.
+ * proves the alias parse matches `new -n NAME CLI --attach --mode relay --ephemeral`.
  */
 export function parseVerblessAlias(
   args: string[],
