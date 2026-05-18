@@ -597,7 +597,7 @@
       "status": "completed",
       "startedAt": "2026-05-18T01:56:18.236Z",
       "completedAt": "2026-05-18T02:01:49.991Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a496ab143c411ff7c/.trajectories/completed/2026-05/traj_piik8r6zu3i7.json"
+      "path": ".trajectories/completed/2026-05/traj_piik8r6zu3i7.json"
     }
   }
 }
