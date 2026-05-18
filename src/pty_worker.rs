@@ -207,7 +207,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     let (pty, mut pty_rx) =
         PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
-    let mut terminal_query_parser = TerminalQueryParser::default();
+    // Query responses (DSR/DA1/DA2/CPR) are answered by alacritty's
+    // `RelayEventListener` inside `PtySession` — no parser needed here.
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let writer_task = tokio::spawn(async move {
@@ -521,9 +522,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         reported_idle = false;
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
-                        for response in terminal_query_parser.feed(&chunk) {
-                            let _ = pty.write_all(response);
-                        }
                         let text = String::from_utf8_lossy(&chunk).to_string();
                         let clean_text = strip_ansi(&text);
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());

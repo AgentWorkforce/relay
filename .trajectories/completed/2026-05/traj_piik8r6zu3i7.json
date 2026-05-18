@@ -1,0 +1,89 @@
+{
+  "id": "traj_piik8r6zu3i7",
+  "version": 1,
+  "task": {
+    "title": "Issue 867: RelayEventListener"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-18T01:56:18.236Z",
+  "completedAt": "2026-05-18T02:01:49.991Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-18T01:58:24.265Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xnbleth5fk5g",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-18T01:58:24.265Z",
+      "endedAt": "2026-05-18T02:01:49.991Z",
+      "events": [
+        {
+          "ts": 1779069504266,
+          "type": "decision",
+          "content": "Drain writeback channel from a dedicated std::thread, not tokio task: Drain writeback channel from a dedicated std::thread, not tokio task",
+          "raw": {
+            "question": "Drain writeback channel from a dedicated std::thread, not tokio task",
+            "chosen": "Drain writeback channel from a dedicated std::thread, not tokio task",
+            "alternatives": [],
+            "reasoning": "The reader thread is a std::thread (not tokio) and it's the only place that calls processor.advance which fires send_event. Keeping the drainer as a std::thread that takes self.writer.lock() (parking_lot Mutex) avoids importing the tokio runtime into PtySession::spawn and matches the existing reader thread shape. Also avoids holding any async tasks at spawn time when no runtime is guaranteed."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069510157,
+          "type": "decision",
+          "content": "Use std::sync::mpsc::Sender (sync, unbounded-ish) for writeback channel: Use std::sync::mpsc::Sender (sync, unbounded-ish) for writeback channel",
+          "raw": {
+            "question": "Use std::sync::mpsc::Sender (sync, unbounded-ish) for writeback channel",
+            "chosen": "Use std::sync::mpsc::Sender (sync, unbounded-ish) for writeback channel",
+            "alternatives": [],
+            "reasoning": "send_event must be non-blocking (called while holding processor+term locks). std mpsc Sender::send never blocks. A dedicated std::thread drains the receiver and writes to the PTY writer, decoupling potential write_all blocking from the parser's hot path. Avoids tokio runtime requirement in PtySession::spawn."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069704857,
+          "type": "decision",
+          "content": "Made Snapshot::from_term generic over EventListener: Made Snapshot::from_term generic over EventListener",
+          "raw": {
+            "question": "Made Snapshot::from_term generic over EventListener",
+            "chosen": "Made Snapshot::from_term generic over EventListener",
+            "alternatives": [],
+            "reasoning": "Changing PtySession's term field from Term<VoidListener> to Term<RelayEventListener> broke Snapshot::capture which calls pty.with_term(Self::from_term). Generic over L: EventListener keeps offline tests on VoidListener and live capture on RelayEventListener without an extra wrapper."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069705573,
+          "type": "decision",
+          "content": "Also removed parser call sites in wrap.rs and main.rs (not just pty_worker.rs): Also removed parser call sites in wrap.rs and main.rs (not just pty_worker.rs)",
+          "raw": {
+            "question": "Also removed parser call sites in wrap.rs and main.rs (not just pty_worker.rs)",
+            "chosen": "Also removed parser call sites in wrap.rs and main.rs (not just pty_worker.rs)",
+            "alternatives": [],
+            "reasoning": "Issue scope said pty_worker.rs, but TerminalQueryParser was also used by run_wrap (wrap.rs) and exported via helpers + asserted in main.rs tests. Both used the same PtySession, so the listener now handles them. Leaving them would have broken the import-removal in main.rs."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replaced hand-rolled TerminalQueryParser with alacritty RelayEventListener. Listener owns a std::sync::mpsc::Sender; alacritty's send_event(Event::PtyWrite) pushes query responses (DSR/DA1/DA2/CPR) onto the channel, drained by a dedicated thread that writes to the PTY. CPR responses now reflect real cursor position instead of hardcoded 1;1. Deleted the parser and call sites in pty_worker.rs, wrap.rs, and main.rs; made Snapshot::from_term generic over EventListener. All 615 tests pass; clippy clean.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a496ab143c411ff7c",
+  "tags": [],
+  "_trace": {
+    "startRef": "5fc8a131561feedfe990fc265f224101f6f267c4",
+    "endRef": "5fc8a131561feedfe990fc265f224101f6f267c4"
+  }
+}
