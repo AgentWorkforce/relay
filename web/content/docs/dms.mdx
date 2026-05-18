@@ -32,6 +32,17 @@ relay = Relay("MyAgent")
 await relay.send("Reviewer", "Please check the migration plan.")
 ```
 
+## Reading replies from the CLI
+
+When an orchestrator spawns a worker and DMs it a task, read the worker's reply with:
+
+```bash
+agent-relay replies Worker2
+```
+
+This prints inbound-only messages with full text and sender attribution.
+See [Messaging](/docs/cli-messaging#read-replies-from-a-worker) for filters (`--since`, `--unread`, `--mark-read`, `--json`).
+
 ## Good DM use cases
 
 - Handing a concrete task from one worker to another

@@ -87,7 +87,23 @@ describe('local SDK workflow runtime bootstrapping', () => {
 
     ensureLocalSdkWorkflowRuntime(nestedDir, execRunner as never);
 
-    expect(execRunner).toHaveBeenCalledWith(
+    expect(execRunner).toHaveBeenCalledTimes(6);
+    expect(execRunner.mock.calls.map((call) => call[1])).toEqual([
+      ['run', 'build:config'],
+      ['--prefix', 'packages/workflow-types', 'run', 'build'],
+      ['--prefix', 'packages/github-primitive', 'run', 'build'],
+      ['--prefix', 'packages/slack-primitive', 'run', 'build'],
+      ['--prefix', 'packages/cloud', 'run', 'build'],
+      ['run', 'build:sdk'],
+    ]);
+    expect(execRunner).toHaveBeenNthCalledWith(
+      1,
+      'npm',
+      ['run', 'build:config'],
+      expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' })
+    );
+    expect(execRunner).toHaveBeenNthCalledWith(
+      6,
       'npm',
       ['run', 'build:sdk'],
       expect.objectContaining({ cwd: tempRoot, stdio: 'inherit' })

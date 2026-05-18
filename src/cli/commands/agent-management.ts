@@ -54,6 +54,17 @@ export interface AgentManagementDependencies {
   readTaskFromStdin: () => Promise<string | undefined>;
   fileExists: (filePath: string) => boolean;
   readFile: (filePath: string, encoding?: BufferEncoding) => string;
+  readFileTail: (
+    filePath: string,
+    maxBytes: number,
+    encoding?: BufferEncoding
+  ) => { text: string; size: number };
+  readFileFrom: (
+    filePath: string,
+    offset: number,
+    maxBytes: number,
+    encoding?: BufferEncoding
+  ) => { text: string; size: number };
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   nowIso: () => string;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
@@ -194,6 +205,40 @@ async function waitForBrokerClient(
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
+  const readFileTail = (filePath: string, maxBytes: number, encoding: BufferEncoding = 'utf-8') => {
+    const stats = fs.statSync(filePath);
+    const start = Math.max(0, stats.size - maxBytes);
+    const length = stats.size - start;
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return { text: buffer.toString(encoding), size: stats.size };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  const readFileFrom = (
+    filePath: string,
+    offset: number,
+    maxBytes: number,
+    encoding: BufferEncoding = 'utf-8'
+  ) => {
+    const stats = fs.statSync(filePath);
+    if (stats.size <= offset) {
+      return { text: '', size: stats.size };
+    }
+    const length = Math.min(maxBytes, stats.size - offset);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, offset);
+      return { text: buffer.toString(encoding), size: offset + length };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     getDataDir: () =>
@@ -203,6 +248,8 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     readTaskFromStdin,
     fileExists: fs.existsSync,
     readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
+    readFileTail,
+    readFileFrom,
     fetch: (url, init) => fetch(url, init),
     nowIso: () => new Date().toISOString(),
     killProcess: process.kill,
@@ -404,9 +451,16 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name')
     .option('-n, --lines <n>', 'Number of lines to show', '50')
     .option('-f, --follow', 'Follow log output (like tail -f)')
-    .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
-      await runAgentsLogsCommand(name, options, deps);
-    });
+    .option('--plain', 'ANSI-stripped, deduped, line-oriented (greppable)')
+    .option('--json', 'Structured JSON: { agent, file, lines[] } (sanitized; snapshot only)')
+    .action(
+      async (
+        name: string,
+        options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean }
+      ) => {
+        await runAgentsLogsCommand(name, options, deps);
+      }
+    );
 
   program
     .command('release')

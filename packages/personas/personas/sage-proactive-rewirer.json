@@ -1,9 +1,7 @@
 {
   "id": "sage-proactive-rewirer",
   "intent": "sage-proactive-rewire",
-  "tags": [
-    "implementation"
-  ],
+  "tags": ["implementation"],
   "description": "Rewires sage's proactive Slack paths (follow-up-checker, stale-thread-detector, context-watcher, pr-matcher) to resolve connectionId and providerConfigKey from stored state rather than guessing from team_id or environment defaults.",
   "harness": "opencode",
   "model": "opencode/gpt-5-nano",

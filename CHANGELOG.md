@@ -9,43 +9,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Task injection failures now return errors**: When spawning an agent with a task, if delivery fails after 3 retry attempts, spawn returns `success: false` and kills the agent. Previously, spawn would return `success: true` even if task injection silently failed, leaving zombie agents.
+- `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
+- `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
 
 ### Migration Guidance
 
-- Callers of `relay.spawn()` with a `task` parameter should handle `success: false` results (though automatic retries make failures rare).
-- Spawning without a task is unaffected and always succeeds.
-- See the updated [Worker Orchestration guide](/docs/guides/worker-orchestration) for retry patterns.
+- Pass `--from` to `agent-relay send` when a script requires a specific sender identity.
+- Handle `success: false` from `relay.spawn()` calls that pass `task`; spawns without a task are unchanged.
+- Set `POSTHOG_PROJECT_KEY` in GitHub Actions repository variables before publishing telemetry-enabled artifacts.
 
 ### Added
 
-- **`@agent-relay/cloud` provider connect SDK** (6.1.0): Exposes `connectProvider()`, `runInteractiveSession()`, and SSH runtime helpers (`loadSSH2`, `createAskpassScript`, `buildSystemSshArgs`) so other CLIs can drive the same Daytona-brokered provider auth flow that powers `agent-relay cloud connect`. `ssh2` is now an `optionalDependency` of the cloud package.
-- **`@agent-relay/sdk/workflows` script runner** (6.1.0): Exposes `runScriptWorkflow()`, `parseTsxStderr`, `formatWorkflowParseError`, `findLocalSdkWorkspace`, `ensureLocalSdkWorkflowRuntime`, plus `RunScriptWorkflowOptions` / `ParsedWorkflowError` types. The body of `agent-relay run <script>` now lives in the SDK, so other CLIs (ricky, future tools) can drive the same `.ts` / `.tsx` / `.py` execution flow in-process instead of shelling out. The relay CLI's `run` command is unchanged externally — it now delegates to the SDK function.
-- **CLI SSH Authentication**: New SSH-based authentication for CLI local auth workflows, enabling secure agent spawning and communication (#648e7782).
-- **Multi-Repository Spawning**: Agents can now be spawned across multiple repositories in a single operation, improving orchestration flexibility (#2d2bf610).
-- **Model Hotswap**: Runtime model switching for agents, allowing dynamic provider and model changes without restart (#5a80bdc0).
-- **Prerelease Publishing**: New prerelease script for staging environment, enabling faster iteration and testing cycles (#495428cd).
-- **`--api-bind` flag for broker HTTP API**: Configures the bind address for the broker's HTTP/WS server (default: `127.0.0.1`). Use `--api-bind 0.0.0.0` when running inside Daytona sandboxes to accept remote connections from the desktop app.
-- **`write_pty` PTY worker message**: New protocol message type that writes arbitrary data to the PTY. Used internally by the broker's `send_input` handler. The PTY worker responds with `ok` (including `bytes_written`) or `worker_error`.
+- `agent-relay view <name>` streams a running agent's PTY without taking control or stopping the agent.
+- `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
+- `agent-relay passthrough <name>` attaches interactively while inbound relay messages continue to auto-inject.
+- `agent-relay new NAME CLI [args...]` starts broker-owned agents, with `--attach`, `--ephemeral`, and `-n` / `--name` spawn-and-attach forms.
+- `agent-relay rm <name>` releases broker-owned agents.
+- Broker `/api/spawned/{name}/delivery-mode`, `/pending`, and `/flush` routes manage per-agent inbound queues.
+- TypeScript SDK clients can read snapshots, stream worker output, set delivery mode, inspect pending queues, and flush queued messages.
+- `agent-relay replies <agent>` reads worker DM replies with JSON, unread, mark-read, sender identity, and cursor options.
+- `agent-relay history` and `agent-relay replies` accept message-id `--since` cursors for incremental reads.
+- `agent-relay who --json` returns structured status, PID, uptime, and memory fields for scripts.
+- `agent-relay agents:logs --plain` and `--json` return sanitized agent logs for scripts.
+- `packages/personas` includes a `nextjs-web-steward` persona and workforce v3 persona schema.
+- Preview cleanup tooling removes stale preview environments before CloudFront quota failures.
+- Docs navigation shows icons for the CLI reference and Broker HTTP / WS API pages.
+- `@agent-relay/cloud` exposes provider auth helpers for Daytona-backed `agent-relay cloud connect` flows.
+- `@agent-relay/sdk/workflows` exposes `runScriptWorkflow()` for running workflow scripts in-process.
+- CLI local auth supports SSH-based authentication.
+- Agent spawning supports multiple repositories in one operation.
+- Agents can switch provider or model at runtime.
+- Prerelease publishing supports staging releases.
+- Broker `--api-bind` configures the HTTP/WS bind address.
+- PTY workers accept `write_pty` messages and report bytes written or worker errors.
+
+### Changed
+
+- Inbound delivery APIs use `/delivery-mode` with `auto_inject` and `manual_flush` names before their first release.
+- CLI attach commands share SDK-backed broker snapshots, delivery mode changes, streams, and flushes.
+- PTY terminal query replies use the live VT grid, so cursor-position responses reflect the actual screen.
+- PTY writes from user input and terminal query replies now pass through one FIFO writer.
+- Broker snapshot requests return consistent worker timeout and error-envelope responses.
+- Rust and TypeScript telemetry disable PostHog reporting when no `AGENT_RELAY_POSTHOG_KEY` is configured.
+- `agent-relay inbox` shows unread DM content and `direction` metadata, with terminal controls stripped from text summaries.
 
 ### Fixed
 
-- Task injection failures are no longer silent - spawn properly returns an error when delivery fails.
-- Zombie agents (spawned but never received their task) are now cleaned up automatically.
-- Automatic retry (3 attempts with 2s delays) for task injection improves reliability.
-- **Breaking cache removed**: Removed cache logic that caused agent initialization failures (#d1166cf9).
-- **Better-sqlite3 optional in tests**: Database dependency now properly marked as optional for test environments, improving CI reliability (#190611b7).
-- Doctor command now correctly validates test expectations for partial driver availability (#9b545ff9).
-- **`sendInput` now routes through PTY worker protocol**: Previously `sendInput` wrote raw bytes to the PTY worker's stdin, which the worker's JSON parser rejected silently. Input never reached the PTY. Now `sendInput` sends a proper `write_pty` protocol frame, and the PTY worker writes the data to the actual PTY.
+- CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
+- `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
+- `agent-relay replies --unread` prints nothing when there are no unread messages.
+- Messaging `--limit` values clamp invalid negative inputs.
+- Task delivery failures return an error, retry automatically, and clean up agents that never received their task.
+- Agent initialization no longer fails because of stale cache state.
+- Tests treat `better-sqlite3` as optional, improving CI reliability.
+- `agent-relay doctor` validates partial driver availability correctly.
+- SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
+
+## [6.2.1] - 2026-05-18
+
+### Technical Perspective
+#### Releases
+- v6.2.1
+
+---
+
+## [6.2.0] - 2026-05-18
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **`new` / `relay` / `run` / `rm` verbs + `-n` silent alias (#864 sub-4)** (#864)
+- **`agent-relay drive <name>` interactive take-over client (#864 sub-3)** (#864)
+- **Per-agent session mode + pending-queue routes (#864 sub-2)** (#864)
+- **`agent-relay view <name>` read-only PTY stream client (#864 sub-1)** (#864)
+
+#### User-Impacting Fixes
+- Defer spawn-and-attach import until --attach is set
+- Surface drainer write failures from pty write_all
+- Resolve #800 — broker: composable wait-conditions for CLI readiness (steal from ht) (#800)
+- Resolve #802 — broker: add VT grid via alacritty_terminal (steal from ht, don't use libghostty) (#802)
+- Resolve #802 — broker: add VT grid via alacritty_terminal (steal from ht, don't use libghostty) (#802)
+
+### Technical Perspective
+#### Architecture & API Changes
+- Rename session-mode `relay` → `passthrough` across all surfaces
+- `new` takes positional NAME (drop `-n` flag) + scrub PR refs (#864)
+- Drop `run` verb, fold spawn-and-attach into `new --attach` (#889)
+- Unify worker request/response correlation (#871) (#871)
+
+#### Performance & Reliability
+- Assert X-API-Key on every broker request
+- Actually assert on the API-key header in the harness
+- Cover drainer flush failure ack propagation
+- Alias slack-primitive / github-primitive / workflow-types in vitest
+- Add 'view' to expected leaf command list (#880)
+- Add stale preview environment cleanup
+
+#### Dependencies & Tooling
+- Drop PR references and legacy framing from code comments (#864)
+- Record `run` -> `new --attach` refactor decision
+- Record decisions for sub-PR 4 (#864) (#864)
+- Normalize projectId in merged trajectory
+- Source PostHog key from `vars.POSTHOG_PROJECT_KEY`
+- Inject PostHog key at build time (P0.5 of #881) (#881)
+
+#### Releases
+- v6.2.0
+
+---
 
 ## [6.0.22] - 2026-05-15
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Bump agent-relay-workflow writer timeouts (#857) (#857)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.0.22
 
 ---

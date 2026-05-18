@@ -1,9 +1,7 @@
 {
   "id": "agent-relay-e2e-conductor",
   "intent": "sage-cloud-e2e-conduction",
-  "tags": [
-    "testing"
-  ],
+  "tags": ["testing"],
   "description": "Conducts full sage ↔ cloud ↔ Slack end-to-end validation by standing up a docker-compose stack (postgres, mock-slack, mock-nango, cloud-web, miniflare-sage) and driving production-shaped Slack fixtures through it.",
   "harness": "opencode",
   "model": "opencode/gpt-5-nano",

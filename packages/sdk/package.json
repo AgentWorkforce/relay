@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "6.0.22",
+  "version": "6.2.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -116,6 +116,21 @@
       "types": "./dist/slack.d.ts",
       "import": "./dist/slack.js",
       "default": "./dist/slack.js"
+    },
+    "./provisioner/seeder": {
+      "types": "./dist/provisioner/seeder.d.ts",
+      "import": "./dist/provisioner/seeder.js",
+      "default": "./dist/provisioner/seeder.js"
+    },
+    "./provisioner/local-jwks": {
+      "types": "./dist/provisioner/local-jwks.d.ts",
+      "import": "./dist/provisioner/local-jwks.js",
+      "default": "./dist/provisioner/local-jwks.js"
+    },
+    "./provisioner/token": {
+      "types": "./dist/provisioner/token.d.ts",
+      "import": "./dist/provisioner/token.js",
+      "default": "./dist/provisioner/token.js"
     }
   },
   "files": [
@@ -135,7 +150,8 @@
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/__tests__/integration.test.js",
+    "test": "npm run build && node --test dist/__tests__/integration.test.js && npm run test:vitest",
+    "test:vitest": "vitest run --config vitest.config.ts src/workflows/__tests__/run-script.test.ts",
     "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
     "quickstart": "node dist/examples/quickstart.js",
     "demo": "node dist/examples/demo.js",
@@ -149,11 +165,11 @@
     "@types/ws": "^8.5.10"
   },
   "dependencies": {
-    "@agent-relay/cloud": "6.0.22",
-    "@agent-relay/config": "6.0.22",
-    "@agent-relay/github-primitive": "6.0.22",
-    "@agent-relay/slack-primitive": "6.0.22",
-    "@agent-relay/workflow-types": "6.0.22",
+    "@agent-relay/cloud": "6.2.1",
+    "@agent-relay/config": "6.2.1",
+    "@agent-relay/github-primitive": "6.2.1",
+    "@agent-relay/slack-primitive": "6.2.1",
+    "@agent-relay/workflow-types": "6.2.1",
     "@agentworkforce/harness-kit": "^0.11.0",
     "@agentworkforce/workload-router": "^0.11.0",
     "@relaycast/sdk": "^1.1.0",
@@ -168,14 +184,14 @@
     "yaml": "^2.7.0"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "6.0.22",
-    "@agent-relay/broker-darwin-x64": "6.0.22",
-    "@agent-relay/broker-linux-arm64": "6.0.22",
-    "@agent-relay/broker-linux-x64": "6.0.22",
-    "@agent-relay/broker-win32-x64": "6.0.22"
+    "@agent-relay/broker-darwin-arm64": "6.2.1",
+    "@agent-relay/broker-darwin-x64": "6.2.1",
+    "@agent-relay/broker-linux-arm64": "6.2.1",
+    "@agent-relay/broker-linux-x64": "6.2.1",
+    "@agent-relay/broker-win32-x64": "6.2.1"
   },
   "peerDependencies": {
-    "@agent-relay/credential-proxy": "6.0.22",
+    "@agent-relay/credential-proxy": "6.2.1",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",
