@@ -1,18 +1,18 @@
 /**
- * Shared spawn-and-attach helper for issue #864.
+ * Shared spawn-and-attach helper.
  *
  * Two entry points compose `new` + a session verb:
  *
- *   1. `agent-relay new -n NAME CLI --attach [--mode …] [--ephemeral]`
+ *   1. `agent-relay new NAME CLI --attach [--mode …] [--ephemeral]`
  *      — the explicit, flag-driven path.
- *   2. `agent-relay -n NAME CLI [args...]` — the silent backward-compat
- *      alias for the pre-#864 shorthand, hardcoded to
- *      `--mode relay --ephemeral`.
+ *   2. `agent-relay -n NAME CLI [args...]` — the bare `-n` shorthand,
+ *      hardcoded to `--mode relay --ephemeral`.
  *
- * Both call `runSpawnAndAttach()` here. Keeping a single code path is
- * what makes the alias byte-equivalent: there is literally one function
- * that does the work, and the only difference between the two entry
- * points is which `SpawnAndAttachOptions` they construct.
+ * Both call `runSpawnAndAttach()` here. There is one function that does
+ * the work, and the only difference between the two entry points is
+ * which `SpawnAndAttachOptions` they construct — so the shorthand and
+ * the explicit form produce identical broker calls and teardown
+ * behaviour by construction.
  *
  * This module lives in `src/cli/lib/` (not `src/cli/commands/`) because
  * it's a helper consumed by multiple commands (`new --attach` action)
@@ -352,10 +352,9 @@ export async function runSpawnAndAttach(
 }
 
 /**
- * Tiny standalone entry point for the verbless `-n NAME CLI` silent
- * alias dispatcher in `bootstrap.ts`. Hands off to
- * `runSpawnAndAttach` with the post-#864 alias preset
- * (`--mode relay`, `--ephemeral`).
+ * Tiny standalone entry point for the verbless `-n NAME CLI` shorthand
+ * dispatcher in `bootstrap.ts`. Hands off to `runSpawnAndAttach` with
+ * the shorthand's hardcoded preset (`--mode relay`, `--ephemeral`).
  */
 export async function runVerblessAliasDispatch(
   parsedArgs: { name: string; cli: string; args: string[] },
@@ -374,12 +373,11 @@ export async function runVerblessAliasDispatch(
 }
 
 /**
- * Pre-parse `argv.slice(2)` to detect the legacy `-n NAME CLI [args...]`
- * shorthand from before issue #864. Returns the parsed shape when the
- * arguments unambiguously fit the alias, or `null` to let Commander
- * parse normally.
+ * Pre-parse `argv.slice(2)` to detect the `-n NAME CLI [args...]`
+ * shorthand. Returns the parsed shape when the arguments unambiguously
+ * fit the shorthand, or `null` to let Commander parse normally.
  *
- * Recognised forms (the same shapes today's `agent-relay -n` accepts):
+ * Recognised forms:
  *
  *   agent-relay -n NAME CLI [args...]
  *   agent-relay --name NAME CLI [args...]
@@ -393,7 +391,8 @@ export async function runVerblessAliasDispatch(
  *   - `-n` without a CLI positional
  *
  * Exported for unit testing alongside the byte-equivalence test that
- * proves the alias parse matches `new -n NAME CLI --attach --mode relay --ephemeral`.
+ * proves the shorthand parse matches what `new NAME CLI --attach --mode relay --ephemeral`
+ * decomposes into at the action layer.
  */
 export function parseVerblessAlias(
   args: string[],

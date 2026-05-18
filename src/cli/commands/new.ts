@@ -1,6 +1,9 @@
 /**
- * `agent-relay new -n NAME CLI [args...] [--attach [--mode …] [--ephemeral]]`
+ * `agent-relay new NAME CLI [args...] [--attach [--mode …] [--ephemeral]]`
  * — spawn verb with optional session attach.
+ *
+ * Name is the first positional argument, matching every other verb in
+ * this taxonomy (`drive Alice`, `view Alice`, `relay Alice`, `rm Alice`).
  *
  * Without `--attach`, this is spawn-only: POST `/api/spawn` and exit.
  * The agent keeps running headless under the broker; the user attaches
@@ -11,19 +14,17 @@
  * for the spawn-and-watch case). `--ephemeral` registers a teardown
  * that calls `DELETE /api/spawned/{name}` on client exit (clean
  * detach, SIGINT, SIGTERM, abnormal WS close) so the agent dies with
- * the terminal — useful for ad-hoc experiments and what the pre-#864
- * silent `-n NAME CLI` shorthand maps to (with `--mode relay`).
+ * the terminal — useful for ad-hoc experiments.
  *
  * The composition uses `runSpawnAndAttach` from
  * `src/cli/lib/spawn-and-attach.ts`. That same helper is what the
  * verbless `-n` alias dispatcher in `bootstrap.ts` calls — single code
  * path, byte-equivalent alias.
  *
- * Part of issue #864 sub-PR 4. The longer-form `spawn` command in
- * `agent-management.ts` also wraps the broker's spawn route but goes
- * through the SDK client (with broker autostart and many
- * shadow/team/model flags); `new` is the lighter "I already have a
- * broker, just spawn this" entry point.
+ * The longer-form `spawn` command in `agent-management.ts` also wraps
+ * the broker's spawn route but goes through the SDK client (with
+ * broker autostart and many shadow/team/model flags); `new` is the
+ * lighter "I already have a broker, just spawn this" entry point.
  */
 
 import { Command } from 'commander';
@@ -131,7 +132,6 @@ export async function spawnAgent(
 
 /** Options the `new` command accepts on the CLI. */
 export interface NewOptions {
-  name?: string;
   brokerUrl?: string;
   apiKey?: string;
   stateDir?: string;
@@ -149,20 +149,24 @@ export interface NewOptions {
 /**
  * Run the headless-spawn path. Used when `--attach` is NOT set.
  * Resolves with the exit code the CLI should propagate.
+ *
+ * `name` and `cli` are positional commander arguments — both required,
+ * commander surfaces the missing-argument error before we run.
  */
 export async function runNew(
+  name: string | undefined,
   cli: string | undefined,
   args: string[],
   options: NewOptions,
   deps: NewDependencies
 ): Promise<number> {
-  const name = options.name?.trim();
-  if (!name) {
-    deps.error('Error: agent name is required (use -n NAME)');
+  const trimmedName = name?.trim();
+  if (!trimmedName) {
+    deps.error('Error: agent name is required (first positional argument)');
     return 1;
   }
   if (!cli || !cli.trim()) {
-    deps.error(`Error: CLI is required, e.g. \`agent-relay new -n ${name} claude\``);
+    deps.error(`Error: CLI is required, e.g. \`agent-relay new ${trimmedName} claude\``);
     return 1;
   }
 
@@ -182,7 +186,7 @@ export async function runNew(
       .filter((channel) => channel.length > 0) ?? undefined;
 
   const body: SpawnRequestBody = {
-    name,
+    name: trimmedName,
     cli: cli.trim(),
     ...(args.length > 0 ? { args } : {}),
     ...(options.task !== undefined ? { task: options.task } : {}),
@@ -194,12 +198,12 @@ export async function runNew(
 
   const result = await spawnAgent(connection, body, deps.fetch);
   if (!result.ok) {
-    deps.error(`Error: could not spawn '${name}': ${result.message ?? 'unknown error'}`);
+    deps.error(`Error: could not spawn '${trimmedName}': ${result.message ?? 'unknown error'}`);
     return 1;
   }
 
-  deps.log(`Spawned agent: ${name}`);
-  deps.log(`  -> attach with: agent-relay drive ${name} (or view / relay)`);
+  deps.log(`Spawned agent: ${trimmedName}`);
+  deps.log(`  -> attach with: agent-relay drive ${trimmedName} (or view / relay)`);
   return 0;
 }
 
@@ -214,6 +218,7 @@ export async function runNew(
  * stay legible.
  */
 export async function runNewWithAttach(
+  name: string | undefined,
   cli: string | undefined,
   args: string[],
   options: NewOptions,
@@ -222,7 +227,7 @@ export async function runNewWithAttach(
   const mode = (options.mode ?? 'drive') as AttachMode;
   return runSpawnAndAttach(
     {
-      name: options.name ?? '',
+      name: name ?? '',
       cli: cli ?? '',
       args,
       mode,
@@ -241,9 +246,11 @@ export async function runNewWithAttach(
 }
 
 /**
- * Register `agent-relay new -n NAME CLI [args...]` on the supplied
- * commander program. When `--attach` is set, the action composes spawn
- * + session via `runSpawnAndAttach`; otherwise it's spawn-only.
+ * Register `agent-relay new NAME CLI [args...]` on the supplied
+ * commander program. Name and CLI are positional, matching every other
+ * verb in the attach-style taxonomy (`drive`, `view`, `relay`, `rm`).
+ * When `--attach` is set, the action composes spawn + session via
+ * `runSpawnAndAttach`; otherwise it's spawn-only.
  *
  * `attachChildDeps` is the bundle of child-module deps used in
  * `--attach` mode; tests pass a stub bundle here while production
@@ -261,9 +268,9 @@ export function registerNewCommands(
     .description(
       'Spawn a new agent under the broker. Headless by default; pass --attach to immediately open a session.'
     )
-    .argument('[cli]', 'CLI to spawn (claude, codex, gemini, opencode, aider, …)')
+    .argument('<name>', 'Agent name')
+    .argument('<cli>', 'CLI to spawn (claude, codex, gemini, opencode, aider, …)')
     .argument('[args...]', 'Extra positional arguments passed through to the spawned CLI')
-    .requiredOption('-n, --name <name>', 'Agent name (required)')
     .option('--task <task>', 'Initial task description sent to the agent')
     .option('--channels <list>', 'Comma-separated list of channels for the agent to join')
     .option('--cwd <path>', "Working directory for the agent's process")
@@ -278,7 +285,7 @@ export function registerNewCommands(
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
-    .action(async (cli: string | undefined, args: string[], options: NewOptions) => {
+    .action(async (name: string, cli: string, args: string[], options: NewOptions) => {
       // --mode / --ephemeral only do anything with --attach. Warn (don't
       // error) when used without it so misuse is loud but recoverable.
       if (!options.attach) {
@@ -288,7 +295,7 @@ export function registerNewCommands(
         if (options.ephemeral === true) {
           deps.error('[new] --ephemeral is ignored without --attach');
         }
-        const code = await runNew(cli, args, options, deps);
+        const code = await runNew(name, cli, args, options, deps);
         if (code !== 0) {
           deps.exit(code);
         }
@@ -300,7 +307,7 @@ export function registerNewCommands(
       // need it.
       const childDeps =
         attachChildDeps ?? (await import('../lib/spawn-and-attach.js')).buildDefaultAttachChildDeps();
-      const code = await runNewWithAttach(cli, args, options, childDeps);
+      const code = await runNewWithAttach(name, cli, args, options, childDeps);
       if (code !== 0) {
         deps.exit(code);
       }

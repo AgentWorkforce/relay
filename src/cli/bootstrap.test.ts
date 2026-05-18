@@ -205,30 +205,27 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-V'], knownVerbs())).toBeNull();
   });
 
-  it('byte-equivalence: alias parse matches what `new -n NAME CLI --attach --mode relay --ephemeral` would dispatch', () => {
+  it('byte-equivalence: alias parse matches what `new NAME CLI --attach --mode relay --ephemeral` would dispatch', () => {
     // The alias dispatcher hardcodes `mode: 'relay'` and `ephemeral: true`
     // and feeds the parsed `name`, `cli`, `args` to `runSpawnAndAttach`.
-    // The `new --attach` command path parses the same three positions
-    // out of commander and feeds them to the same function. The two
-    // paths are byte-equivalent iff the parser extracts the same
-    // triplet here.
+    // The `new --attach` command path receives the same three positions
+    // from commander and feeds them to the same function. The two paths
+    // are byte-equivalent iff the parser extracts the same triplet here.
     const argvForAlias = ['-n', 'Alice', 'claude', '--say', 'hi'];
-    // What `new -n Alice claude --attach --mode relay --ephemeral --say hi`
-    // would decompose into at the commander action layer: the `[cli]`
-    // positional ('claude'), the variadic `[args...]` (['--say', 'hi']),
-    // and the `--name` option ('Alice'). The `--attach` / `--mode` /
-    // `--ephemeral` flags don't affect the triplet — they're how the
-    // action knows to take the spawn-and-attach path with the alias's
-    // hardcoded preset.
-    const newAttachArgvBeforeFlags = [
+    // What `new Alice claude --attach --mode relay --ephemeral --say hi`
+    // decomposes into at the commander action layer: positional
+    // `<name>` ('Alice'), positional `<cli>` ('claude'), variadic
+    // `[args...]` (['--say', 'hi']). `--attach` / `--mode` / `--ephemeral`
+    // are flags that tell the action to take the spawn-and-attach path
+    // with the alias's hardcoded preset.
+    const newAttachArgv = [
       'new',
-      '-n',
       'Alice',
+      'claude',
       '--attach',
       '--mode',
       'relay',
       '--ephemeral',
-      'claude',
       '--say',
       'hi',
     ];
@@ -237,9 +234,12 @@ describe('verbless `-n NAME CLI` silent alias', () => {
     expect(aliasParsed).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
 
     // Pull the same triplet out of the `new --attach` argv:
-    const newCli = newAttachArgvBeforeFlags[7]; // 'claude'
-    const newVariadic = newAttachArgvBeforeFlags.slice(8); // ['--say', 'hi']
-    const newName = newAttachArgvBeforeFlags[2]; // 'Alice'
+    const newName = newAttachArgv[1]; // 'Alice'
+    const newCli = newAttachArgv[2]; // 'claude'
+    // Commander strips known flags from the variadic; the user-passed
+    // `--say hi` survives as part of `[args...]`. Simulated here by
+    // taking everything after the trailing flag block.
+    const newVariadic = newAttachArgv.slice(7); // ['--say', 'hi']
     expect({ name: newName, cli: newCli, args: newVariadic }).toEqual(aliasParsed);
   });
 });

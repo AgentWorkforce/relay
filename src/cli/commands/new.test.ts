@@ -132,23 +132,23 @@ describe('spawnAgent', () => {
 describe('runNew', () => {
   it('spawns and prints the attach hint on success', async () => {
     const { deps, logs, fetchLog } = createHarness();
-    const code = await runNew('claude', ['--say', 'hi'], { name: 'Alice' }, deps);
+    const code = await runNew('Alice', 'claude', ['--say', 'hi'], {}, deps);
     expect(code).toBe(0);
     expect(fetchLog[0].body).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
     expect(logs.some((args) => String(args[0]).includes('Spawned agent: Alice'))).toBe(true);
     expect(logs.some((args) => String(args[0]).includes('attach with: agent-relay drive Alice'))).toBe(true);
   });
 
-  it('rejects when -n is missing', async () => {
+  it('rejects when the name positional is missing', async () => {
     const { deps, errors } = createHarness();
-    const code = await runNew('claude', [], {}, deps);
+    const code = await runNew(undefined, 'claude', [], {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/agent name is required/);
   });
 
   it('rejects when CLI positional is missing', async () => {
     const { deps, errors } = createHarness();
-    const code = await runNew(undefined, [], { name: 'Alice' }, deps);
+    const code = await runNew('Alice', undefined, [], {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/CLI is required/);
   });
@@ -156,7 +156,7 @@ describe('runNew', () => {
   it('returns 1 when no broker connection can be resolved', async () => {
     const { deps, errors } = createHarness();
     deps.readConnectionFile = () => null;
-    const code = await runNew('claude', [], { name: 'Alice' }, deps);
+    const code = await runNew('Alice', 'claude', [], {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
   });
@@ -164,10 +164,10 @@ describe('runNew', () => {
   it('passes --task, --team, --model, --cwd through to the spawn body', async () => {
     const { deps, fetchLog } = createHarness();
     await runNew(
+      'Alice',
       'claude',
       [],
       {
-        name: 'Alice',
         task: 'fix the bug',
         team: 'core',
         model: 'opus',
@@ -192,7 +192,7 @@ describe('runNew', () => {
       spawnStatus: 500,
       spawnBody: { error: 'agent already exists' },
     });
-    const code = await runNew('claude', [], { name: 'Alice' }, deps);
+    const code = await runNew('Alice', 'claude', [], {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/agent already exists/);
   });
@@ -209,14 +209,37 @@ describe('registerNewCommands', () => {
     expect(cmd?.description()).toMatch(/spawn a new agent under the broker/i);
   });
 
-  it('marks -n / --name as required', () => {
+  it('takes name and cli as required positional arguments (matches drive/view/relay/rm shape)', () => {
     const { deps } = createHarness();
     const program = new Command();
     program.exitOverride();
     registerNewCommands(program, deps);
     const cmd = program.commands.find((c) => c.name() === 'new');
-    const nameOpt = cmd?.options.find((o) => o.long === '--name');
-    expect(nameOpt?.required).toBe(true);
+    // commander stores registered positional arguments as
+    // `command.registeredArguments` (12.x). Reach into the shape and
+    // assert the first two are required, third is variadic optional.
+    const args = (
+      cmd as unknown as {
+        registeredArguments: Array<{ _name: string; required: boolean; variadic: boolean }>;
+      }
+    ).registeredArguments;
+    expect(args.map((a) => ({ name: a._name, required: a.required, variadic: a.variadic }))).toEqual([
+      { name: 'name', required: true, variadic: false },
+      { name: 'cli', required: true, variadic: false },
+      { name: 'args', required: false, variadic: true },
+    ]);
+  });
+
+  it('does NOT expose a -n / --name flag (name is positional)', () => {
+    const { deps } = createHarness();
+    const program = new Command();
+    program.exitOverride();
+    registerNewCommands(program, deps);
+    const cmd = program.commands.find((c) => c.name() === 'new');
+    const flagLongs = cmd?.options.map((o) => o.long).filter(Boolean) ?? [];
+    const flagShorts = cmd?.options.map((o) => o.short).filter(Boolean) ?? [];
+    expect(flagLongs).not.toContain('--name');
+    expect(flagShorts).not.toContain('-n');
   });
 
   it('description mentions both headless default and --attach mode', () => {
@@ -238,7 +261,6 @@ describe('registerNewCommands', () => {
     const flags = cmd?.options.map((opt) => opt.long).filter(Boolean) ?? [];
     expect(flags).toEqual(
       expect.arrayContaining([
-        '--name',
         '--task',
         '--channels',
         '--cwd',
@@ -495,7 +517,7 @@ describe('runSpawnAndAttach — byte-equivalence with the verbless `-n` alias', 
       mode: 'relay',
       ephemeral: true,
     };
-    // What `new -n Alice claude --attach --mode relay --ephemeral --say hi`
+    // What `new Alice claude --attach --mode relay --ephemeral --say hi`
     // feeds into the same helper after the action layer's destructuring:
     const newAttachOptions: SpawnAndAttachOptions = {
       name: 'Alice',
@@ -589,7 +611,7 @@ describe('registerNewCommands — --attach action integration', () => {
     // to fail (broker fetch is mocked to 500 for non-spawn URLs) and
     // dep.exit to throw an ExitSignal.
     await expect(
-      program.parseAsync(['node', 'agent-relay', 'new', '-n', 'Alice', 'claude', '--attach'], {
+      program.parseAsync(['node', 'agent-relay', 'new', 'Alice', 'claude', '--attach'], {
         from: 'node',
       })
     ).rejects.toBeInstanceOf(ExitSignal);

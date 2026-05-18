@@ -1,30 +1,26 @@
 /**
- * `agent-relay relay <name>` — read-write interactive attach in relay mode.
+ * `agent-relay relay <name>` — read-write attach in relay mode.
  *
- * Sibling of `drive`. Where `drive` flips the worker to `human` mode so
- * inbound relay messages get parked in a per-worker FIFO queue, `relay`
- * leaves the worker in `relay` mode (the broker default), which means
- * the broker auto-injects inbound relay messages into the agent's PTY
- * AS THE HUMAN IS ALSO TYPING. Both writers race — that's the whole
- * point of the verb: observe + occasionally nudge while the broker does
- * its coordination thing.
+ * The broker auto-injects inbound relay messages into the agent's PTY
+ * while the human also types; both writers race. That's the point —
+ * relay mode is for observe-and-occasionally-nudge sessions while the
+ * broker does its coordination thing. For exclusive deterministic
+ * control with no auto-inject, use `drive` instead.
  *
- * Structurally a trimmed copy of `drive.ts`:
- *   - No pending-queue UI / no `Ctrl+G` flush keybind (there's no queue
- *     in relay mode).
- *   - If the worker happens to be in `human` mode on attach (e.g.
- *     someone left a `drive` session), we flip it back to `relay` for
- *     the duration of our session and restore the prior mode on detach,
- *     matching the verb name's intent.
+ * On attach, ensures the worker is in `relay` mode (it's the broker
+ * default, but if someone left a `drive` session the worker may be in
+ * `human` mode — `relay` flips it back for the session's duration and
+ * restores the prior mode on detach). On detach, restores the prior
+ * mode and leaves the agent running.
  *
- * Everything else — snapshot-on-attach, raw stdin, resize forwarding,
- * detach keybind, Ctrl+C-as-detach safety alias — is identical to
- * drive. `drive.ts` is the canonical version of the shared bits; this
- * module duplicates rather than abstracts because the trimmed surface
- * is small enough that an extra layer of indirection would cost more
- * than it saves. If a third sibling lands, factor.
- *
- * See GitHub issue #864 for the full verb taxonomy.
+ * The session loop (snapshot-on-attach, raw stdin, resize forwarding,
+ * detach keybind, Ctrl+C-as-detach safety alias) mirrors the shape of
+ * `drive.ts` minus the pending-queue UI and `Ctrl+G` flush binding
+ * (there's no queue in relay mode). `drive.ts` is the more
+ * heavily-commented version of the shared shape; this module
+ * duplicates rather than abstracts because the trimmed surface is
+ * small enough that an extra layer of indirection would cost more
+ * clarity than it saves.
  */
 
 import { Buffer } from 'node:buffer';

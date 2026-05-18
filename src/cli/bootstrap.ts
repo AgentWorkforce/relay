@@ -340,10 +340,12 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   installTelemetryHooks(program);
   installExitHooks();
 
-  // Silent alias for the pre-#864 shorthand: `agent-relay -n NAME CLI [args...]`
-  // ≡ `agent-relay run -n NAME CLI --mode relay --ephemeral`. Detected here
-  // BEFORE commander parses so the user's existing scripts keep working
-  // byte-for-byte. See `parseVerblessAlias` in `commands/run.ts`.
+  // Bare `-n NAME CLI` shorthand. `agent-relay -n NAME CLI [args...]`
+  // dispatches to `runSpawnAndAttach` with mode='relay' and ephemeral=true,
+  // which is equivalent to `agent-relay new NAME CLI --attach --mode relay --ephemeral`.
+  // Detected here BEFORE commander parses so the shorthand routes
+  // identically to the verbose form. See `parseVerblessAlias` in
+  // `lib/spawn-and-attach.ts`.
   const knownVerbs = collectTopLevelVerbs(program);
   const aliasMatch = parseVerblessAlias(argv.slice(2), knownVerbs);
   if (aliasMatch) {

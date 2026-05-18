@@ -8,10 +8,9 @@
  * `RELAY_BROKER_URL` / `connection.json` chain works as for `view` /
  * `drive` / `relay`.
  *
- * Part of issue #864 sub-PR 4. The longer-form `release` command in
- * `agent-management.ts` does the same thing through the SDK client but
- * costs a broker autostart; `rm` is the lighter "I already have a
- * broker" entry point.
+ * The longer-form `release` command in `agent-management.ts` does the
+ * same thing through the SDK client but costs a broker autostart;
+ * `rm` is the lighter "I already have a broker" entry point.
  */
 
 import { Command } from 'commander';
