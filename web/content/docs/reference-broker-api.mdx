@@ -233,6 +233,81 @@ The command prints the screen to stdout and exits 0 on success. On
 error (unknown worker, broker unreachable, invalid format) it prints
 a diagnostic to stderr and exits non-zero.
 
+### Session mode
+
+Per-agent **session mode** controls how the broker dispatches inbound
+relay messages to a spawned worker. Two modes are supported:
+
+- **`relay`** (default) — inbound messages auto-inject into the worker's
+  PTY, exactly as the broker has always behaved. Use this for headless
+  agents that should react to incoming traffic on their own.
+- **`human`** — inbound messages are *queued* in a per-worker pending
+  buffer instead of being injected. A human operator (or the
+  `agent-relay drive` client) decides when to drain the queue. Useful
+  when you've taken over an agent's PTY interactively and don't want
+  background traffic racing your keystrokes.
+
+Mode is broker-side state only — the worker process never observes it.
+Mode resets to `relay` when the broker restarts and the pending queue
+is dropped (no on-disk persistence).
+
+| Method | Path                              | Purpose                                                                          |
+| ------ | --------------------------------- | -------------------------------------------------------------------------------- |
+| `GET`  | `/api/spawned/{name}/mode`        | Read the current session mode. Returns `{ "mode": "relay" \| "human" }`.         |
+| `PUT`  | `/api/spawned/{name}/mode`        | Set the session mode. Body `{ "mode": "relay" \| "human" }`.                     |
+| `GET`  | `/api/spawned/{name}/pending`     | Snapshot the per-worker pending queue (FIFO, head first).                        |
+| `POST` | `/api/spawned/{name}/flush`       | Drain the pending queue and inject every message into the worker. FIFO order.    |
+
+#### `PUT /api/spawned/{name}/mode`
+
+```json
+{ "mode": "human" }
+```
+
+On a `human → relay` transition the broker auto-drains the pending
+queue into the worker (via the normal inject path) **before** returning,
+so flipping back to `relay` never strands queued messages. The response
+reports how many messages were flushed:
+
+```json
+{ "mode": "relay", "flushed": 3 }
+```
+
+A `relay → human` flip or a same-mode noop returns `"flushed": 0`.
+
+Status codes: `200` on success, `400` on a body that isn't
+`{ "mode": "relay" }` or `{ "mode": "human" }`, `404` if the agent is
+not registered.
+
+#### `GET /api/spawned/{name}/pending`
+
+Returns the pending queue without modifying it.
+
+```json
+{
+  "pending": [
+    { "from": "Bob", "body": "please review #837", "queued_at_ms": 1715812345678, "event_id": "evt_abc" },
+    { "from": "Carol", "body": "ping", "queued_at_ms": 1715812360123 }
+  ]
+}
+```
+
+`event_id` is included when the inbound message carried one (it is
+omitted otherwise). The queue is bounded at 256 entries per worker —
+when full, the oldest entry is evicted with a broker-side warning.
+
+#### `POST /api/spawned/{name}/flush`
+
+Drains the queue and injects each message into the worker in FIFO order.
+The session mode is **not** changed; a caller still in `human` mode will
+continue queuing newly-arriving messages.
+
+```json
+{ "flushed": 7 }
+```
+
+Status: `200` on success, `404` if the agent is not registered.
+
 ### Event stream
 
 | Method | Path                 | Purpose                                              |
@@ -328,6 +403,44 @@ curl -s "localhost:3888/api/spawned/Alice/snapshot?format=plain" \
 # 7. Release her
 curl -sX DELETE localhost:3888/api/spawned/Alice \
   -H "X-API-Key: $KEY"
+```
+
+## Worked example: take over an agent with session mode
+
+The four session-mode routes back the upcoming `agent-relay drive`
+client. The typical drive-mode flow looks like this:
+
+```bash
+KEY="$RELAY_BROKER_API_KEY"
+
+# 1. Flip Alice into human mode. Now inbound relay traffic
+#    will queue instead of injecting.
+curl -sX PUT localhost:3888/api/spawned/Alice/mode \
+  -H "X-API-Key: $KEY" \
+  -d '{"mode":"human"}'
+
+# 2. Send some messages while Alice is in human mode —
+#    these land in her pending queue, not her PTY.
+curl -sX POST localhost:3888/api/send \
+  -H "X-API-Key: $KEY" \
+  -d '{"to":"Alice","from":"Bob","message":"please review #837"}'
+curl -sX POST localhost:3888/api/send \
+  -H "X-API-Key: $KEY" \
+  -d '{"to":"Alice","from":"Carol","message":"ping"}'
+
+# 3. Inspect what's queued.
+curl -s localhost:3888/api/spawned/Alice/pending \
+  -H "X-API-Key: $KEY"
+
+# 4. Drain the queue into Alice's PTY when ready.
+curl -sX POST localhost:3888/api/spawned/Alice/flush \
+  -H "X-API-Key: $KEY"
+
+# 5. Flip Alice back to relay mode. Any messages still in the
+#    queue are drained automatically before this call returns.
+curl -sX PUT localhost:3888/api/spawned/Alice/mode \
+  -H "X-API-Key: $KEY" \
+  -d '{"mode":"relay"}'
 ```
 
 ## Error envelope
