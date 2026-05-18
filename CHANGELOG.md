@@ -65,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay doctor` validates partial driver availability correctly.
 - SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
 
+## [6.2.1] - 2026-05-18
+
+### Technical Perspective
+#### Releases
+- v6.2.1
+
+---
+
 ## [6.2.0] - 2026-05-18
 
 ### Product Perspective

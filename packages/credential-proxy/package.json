@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/credential-proxy",
-  "version": "6.2.0",
+  "version": "6.2.1",
   "description": "JWT-authenticated credential proxy for upstream LLM providers",
   "type": "module",
   "main": "dist/index.js",
