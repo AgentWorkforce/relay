@@ -1,0 +1,180 @@
+---
+title: 'Workflows'
+description: 'Orchestrate multi-step, multi-agent execution across Relay workers. Write once, run locally or in the cloud.'
+---
+
+Workflows are how Relay runs real work. A workflow **composes the Relay primitives** — [channels](/docs/channels), [DMs](/docs/dms), [threads](/docs/threads), [file sharing](/docs/file-sharing), [scheduling](/docs/scheduling) — into a repeatable, multi-step, multi-agent execution plan. You write them in TypeScript, Python, or YAML; you run them with `agent-relay run`.
+
+## Why workflows (vs. just spawning an agent)
+
+Spawning a single agent is fine for a one-off. Workflows earn their weight when you need:
+
+- **Multiple agents coordinating** — a lead that plans, workers that implement, a reviewer that gates. Wired together over channels + DMs.
+- **Cross-repo changes** — edit two repos as part of one unit of work, open linked PRs.
+- **Verification gates** — tests must pass before the commit. Build must pass before the push. Regressions must be zero before the PR opens.
+- **Parallelism with barriers** — fan out independent work, wait at the right moments, move on.
+- **Repeatability** — this is the point. A workflow file is an artifact. Commit it, re-run it next week, share it with the team, let a scheduler fire it nightly, resume it from a partial failure. Same shape every time.
+
+Workflows turn ad-hoc "I typed prompts into three Claude windows" coordination into something you can automate, review, and repeat. That's the whole point.
+
+## How workflows use primitives
+
+A workflow doesn't replace the [primitives](/docs/sending-messages) — it composes them:
+
+- **[Channels](/docs/channels)** are where agents in a workflow coordinate. Each workflow opens a dedicated channel (`.channel('wf-my-feature')`) so the team has a clean, isolated room.
+- **[DMs](/docs/dms)** let a lead address a specific worker without broadcasting.
+- **[Threads](/docs/threads)** keep sub-conversations organized when a workflow step has its own back-and-forth.
+- **[File sharing](/docs/file-sharing)** is how agents hand artifacts to each other (diff payloads, review bundles, etc.) when they span processes.
+- **[Scheduling](/docs/scheduling)** turns a workflow into a cron job via RelayCron — the same workflow file runs on a schedule, unchanged.
+
+If a primitive gives you atomic agent-to-agent capabilities, a workflow gives you the orchestration that makes them useful at scale.
+
+Workflows also ship their own **workflow-specific primitives** — e.g. the [GitHub primitive](/docs/github-primitive) — integration steps shaped specifically for `workflow()`. Most production workflows use it for PR creation, file reads, issue updates.
+
+## Mental model
+
+A workflow is a named, typed orchestration of **steps** run by the Relay runner. Step types:
+
+- **Agent** — spawn a CLI (`claude`, `codex`, `gemini`, etc.) with a task prompt. Agent reads the prompt, edits files, writes tests, posts on channels.
+- **Deterministic** — a shell command. Reads, builds, tests, verifications, commits, pushes. No LLM.
+- **Worktree** — create or clean up a git worktree for isolated work.
+- **Integration** — call a registered external integration (e.g. a job runner) as a typed step.
+
+Steps declare dependencies (`dependsOn`). Steps with no shared dependency run in parallel up to `maxConcurrency`.
+
+### Patterns
+
+The default topology is a **DAG** (`.pattern('dag')`), but the SDK ships 25 swarm patterns. Pick the one that matches how work actually flows between agents:
+
+| Shape | Patterns |
+|---|---|
+| **DAG / trees** | `dag`, `pipeline`, `fan-out`, `scatter-gather`, `map-reduce`, `hierarchical`, `cascade` |
+| **Hub + workers** | `hub-spoke`, `supervisor`, `handoff` |
+| **Iterative loops** | `debate`, `reflection`, `review-loop`, `red-team`, `verifier` |
+| **Non-fixed topology** | `mesh`, `swarm`, `blackboard` |
+| **Selection / competition** | `auction`, `competitive`, `consensus` |
+| **Error handling** | `circuit-breaker`, `saga`, `escalation` |
+
+When you use a hub pattern (`supervisor`, `hub-spoke`, `fan-out`), the runner auto-hardens it — a supervisor gets spawned to monitor workers and issue `OWNER_DECISION` if they stall. Plain `dag` and `pipeline` don't auto-harden; you wire supervision yourself if you want it.
+
+See [Patterns](/docs/workflows-patterns) for the canonical shapes most workflows actually use.
+
+## A minimal example
+
+```typescript
+import { workflow } from '@agent-relay/sdk/workflows';
+
+async function main() {
+  const result = await workflow('add-tests-to-parser')
+    .description('Write tests for the parser and run them until green')
+    .pattern('dag')
+    .channel('wf-parser-tests')
+
+    .agent('impl', { cli: 'codex', preset: 'worker' })
+    .agent('tester', { cli: 'codex', preset: 'worker' })
+
+    .step('read-parser', {
+      type: 'deterministic',
+      command: 'cat src/parser.ts',
+      captureOutput: true,
+    })
+    .step('write-tests', {
+      agent: 'tester',
+      dependsOn: ['read-parser'],
+      task: `Write vitest tests for the parser. Current contents:
+
+{{steps.read-parser.output}}
+
+Create test/parser.test.ts.`,
+      verification: { type: 'file_exists', value: 'test/parser.test.ts' },
+    })
+    .step('run-tests', {
+      type: 'deterministic',
+      dependsOn: ['write-tests'],
+      command: 'npx vitest run test/parser.test.ts',
+      failOnError: true,
+    })
+
+    .run({ cwd: process.cwd() });
+
+  console.log('Status:', result.status);
+  if (result.status !== 'completed') process.exit(1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
+```
+
+Run it:
+
+```bash
+agent-relay run workflows/add-tests-to-parser.ts
+```
+
+See also:
+
+- [Quickstart](/docs/workflows-quickstart) — walks through a working example end-to-end.
+- [Builder API reference](/docs/reference-workflows) — every method on `workflow()`.
+- [Patterns](/docs/workflows-patterns) — 80-to-100, lead+workers, test-fix-rerun, cross-repo.
+- [Setup helpers](/docs/workflows-setup-helpers) — `applySageRepoSetup`, `applySiblingLinks`, repo-setup conventions.
+- [Common mistakes](/docs/workflows-common-mistakes) — the bugs every workflow author hits once.
+- [Run from CLI](/docs/cli-workflows) — the `agent-relay run` command, dry-runs, resumes.
+
+## Two-minute concept guide
+
+**Patterns.** `dag` (default), `fan-out`, `pipeline`, `hub-spoke`, `supervisor`, `debate`, and a dozen more. Pick based on how work flows between agents. See [Patterns](/docs/workflows-patterns).
+
+**Verification gates.** Every step can declare `verification: { type: 'exit_code' }` / `file_exists` / `output_contains`. The runner won't mark a step complete without the gate passing. Use `exit_code` for code-editing steps; use `file_exists` for creation steps.
+
+**Step output chaining.** `{{steps.<name>.output}}` in a downstream task injects the upstream step's stdout. Works great for deterministic steps; fragile for interactive agents (their output has ANSI/spinner noise).
+
+**Completion signals.** Steps complete through a multi-signal pipeline: verification gate → `OWNER_DECISION` → evidence + clean exit → marker fast-path → process-exit fallback. You describe the deliverable; you don't have to add sentinels.
+
+**Cloud execution.** Submit the same workflow file to `agent-relay cloud` to run it in a Daytona sandbox. Files get committed + pushed; PRs open automatically if your master workflow is set up for it.
+
+```bash
+# Almost always pass --sync-code — without it, the sandbox has NO
+# code at all (there's no fallback clone from origin). The tarball
+# is built from `git ls-files` + working-tree contents: tracked
+# files (including staged-but-uncommitted) are synced; untracked
+# files are NOT. `git add` is enough — commit is optional.
+git add workflows/my-workflow.ts
+agent-relay cloud run workflows/my-workflow.ts --sync-code
+```
+
+See [Cloud commands → `--sync-code`](/docs/cli-cloud-commands#-sync-code-uploading-your-local-repo) for the full sync semantics (what's in, what's out, edge cases).
+
+## Let an agent write your workflows
+
+If you want a host agent (Claude, Codex, etc.) to autonomously author workflow files — follow the canonical patterns, avoid the common pitfalls, get features to 100% instead of 80% — install the workflow-authoring skills. The agent reads them alongside your prompt and writes workflows that match repo conventions.
+
+<CodeGroup>
+```bash prpm (recommended)
+# Install for a specific host
+npx prpm install @agent-relay/writing-agent-relay-workflows --as claude
+npx prpm install @agent-relay/relay-80-100-workflow --as claude
+
+# Or install both for multiple hosts at once
+npx prpm install @agent-relay/writing-agent-relay-workflows @agent-relay/relay-80-100-workflow --as claude,codex
+```
+```bash skills
+npx skills add https://github.com/agentworkforce/skills --skill writing-agent-relay-workflows
+npx skills add https://github.com/agentworkforce/skills --skill relay-80-100-workflow
+```
+</CodeGroup>
+
+**The two skills:**
+
+- **`writing-agent-relay-workflows`** — the core authoring guide. Failure prevention rules, step sizing, pattern selection, parallelism/waves, common mistakes, multi-file edit patterns, DAG deadlock anti-patterns, lead+worker teams.
+- **`relay-80-100-workflow`** — the validation-gate layer. Test-fix-rerun loop, verify gates after every edit, PGlite for in-memory Postgres testing, regression-check patterns. Takes features from "compiles" to "tested and proven-working before commit."
+
+Once installed, prompts like these just work:
+
+> "Write a workflow that adds a `pending` status to `src/types.ts` and the service layer, with tests. Use the 80-to-100 pattern so the commit only lands if tests pass."
+
+> "Split the migration work into two parallel waves. Cross-repo: sage + cloud. Open linked PRs at the end."
+
+## Next
+
+- Start with the [Quickstart](/docs/workflows-quickstart) for a working example you can run in 5 minutes.
+- Already comfortable? Jump to [Patterns](/docs/workflows-patterns) for canonical multi-agent shapes.
+- Fighting a bug? [Common mistakes](/docs/workflows-common-mistakes) has the usual suspects.

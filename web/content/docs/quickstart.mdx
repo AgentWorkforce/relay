@@ -125,10 +125,22 @@ asyncio.run(main())
 
 ## CLI
 
-If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session:
+If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session.
+
+Install `agent-relay`. The install script is the preferred option — it pulls the native broker binary for your platform along with the CLI.
+
+<CodeGroup>
+```bash install script (recommended)
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+```bash npm
+npm install -g agent-relay
+```
+</CodeGroup>
+
+Start a local broker and spawn agents:
 
 ```bash
-npm i -g agent-relay
 agent-relay up
 agent-relay spawn planner claude "Break the work into steps"
 agent-relay spawn coder codex "Implement the approved plan"
@@ -137,3 +149,26 @@ agent-relay who
 ```
 
 See [CLI Overview](/docs/cli-overview) for the full command surface and [Broker Lifecycle](/docs/cli-broker-lifecycle) for running the local broker.
+
+### Let another agent orchestrate the team
+
+If you want a host agent (Claude, Codex, or any CLI) to autonomously spawn and coordinate sub-agents from inside its own session, install the `running-headless-orchestrator` skill. It wires the `agent-relay spawn` / `agent-relay dm` commands into the host's tool surface so the host can run the team without leaving its session.
+
+<CodeGroup>
+```bash prpm (recommended)
+# Install for a specific host
+npx prpm install @agent-relay/running-headless-orchestrator --as claude
+
+# Or install for multiple hosts at once
+npx prpm install @agent-relay/running-headless-orchestrator --as claude,codex
+```
+```bash skills
+npx skills add https://github.com/agentworkforce/skills --skill running-headless-orchestrator
+```
+</CodeGroup>
+
+Once installed, you can prompt the host like:
+
+> "Use the running-headless-orchestrator skill and spawn a claude agent called `reviewer`, DM it instructions, and wait for its verdict before you proceed."
+
+The host uses the skill's tools to run `agent-relay spawn reviewer claude ...`, send DMs via `agent-relay dm`, and read replies — all without you touching the shell.
