@@ -1,16 +1,16 @@
 use std::{
     env,
     ffi::OsString,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc as std_mpsc, Arc,
     },
     thread,
 };
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::{Config, Term};
@@ -19,6 +19,82 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
+
+/// Upper bound on queued PTY writes (both terminal-query replies from
+/// alacritty AND user/injection writes from `PtySession::write_all`).
+/// Bounded so a misbehaving child that floods query sequences while the
+/// drainer is stuck on `write_all` cannot grow the queue without limit
+/// and OOM the broker. 128 entries is well past any real burst — a
+/// healthy interaction sees fewer than a handful of pending writes at
+/// a time.
+const WRITE_QUEUE_DEPTH: usize = 128;
+
+/// Single FIFO command for the PTY write drainer. Both query-reply
+/// writebacks (from `RelayEventListener`) and user-input/injection
+/// writes (from `PtySession::write_all`) go through the same queue so
+/// the drainer thread is the **only** thing that touches the writer.
+/// That guarantees a global FIFO ordering across both producers — a
+/// terminal-query reply can no longer splice between two consecutive
+/// user writes (e.g. between an injection body and its trailing `\r`).
+enum WriteMsg {
+    /// Reply produced by alacritty's `EventListener` (DSR / DA1 / DA2 /
+    /// CPR). Best-effort: dropped if the queue is full because the
+    /// listener is invoked from the parser hot path and must not block.
+    Reply(Vec<u8>),
+    /// User/injection write from a `PtySession::write_all` caller. The
+    /// caller's send is **blocking** so backpressure flows back through
+    /// the worker; ordering is preserved relative to other UserInputs
+    /// and to any Replies already queued.
+    UserInput {
+        bytes: Vec<u8>,
+        ack: std_mpsc::Sender<io::Result<()>>,
+    },
+}
+
+/// Forwards alacritty's terminal events back to the PTY's stdin so the
+/// child process sees real responses to its query sequences (DSR, DA1,
+/// DA2, CPR, …). alacritty fills in the response payloads using the
+/// real grid state — so CPR replies carry the actual cursor position
+/// rather than the old hand-rolled `1;1` placeholder.
+///
+/// `send_event` is invoked from inside `Processor::advance` while the
+/// processor and term locks are held, so it must be non-blocking. We
+/// hand the bytes off to the shared write queue via `try_send`; the
+/// drainer thread is the single owner of the writer lock.
+#[derive(Clone)]
+pub struct RelayEventListener {
+    tx: std_mpsc::SyncSender<WriteMsg>,
+}
+
+impl RelayEventListener {
+    fn new(tx: std_mpsc::SyncSender<WriteMsg>) -> Self {
+        Self { tx }
+    }
+}
+
+impl EventListener for RelayEventListener {
+    fn send_event(&self, event: Event) {
+        // Only `PtyWrite` actually needs to round-trip to the child.
+        // Title/colour/clipboard/etc. events are intentionally dropped —
+        // the broker isn't a real UI, so there is nothing meaningful to
+        // do with them.
+        if let Event::PtyWrite(text) = event {
+            // Non-blocking try_send: if the queue is full (drainer
+            // backed up behind a blocked write_all) or the drainer has
+            // exited (PTY teardown), drop the reply. Telemetry must be
+            // infallible, but a queue overflow is worth flagging.
+            match self.tx.try_send(WriteMsg::Reply(text.into_bytes())) {
+                Ok(()) | Err(std_mpsc::TrySendError::Disconnected(_)) => {}
+                Err(std_mpsc::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        depth = WRITE_QUEUE_DEPTH,
+                        "pty write queue full; dropping terminal query response"
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Cell dimensions for a parsed VT grid. Implements
 /// `alacritty_terminal::grid::Dimensions` so `Term::new` / `Term::resize`
@@ -57,7 +133,11 @@ impl GridSize {
 
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Single producer side of the FIFO write queue. All PTY writes —
+    /// both query-reply writebacks from `RelayEventListener` and user
+    /// input from `write_all` — funnel through here. The drainer thread
+    /// is the only thing that ever locks the real writer.
+    write_tx: std_mpsc::SyncSender<WriteMsg>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     child_pid: Option<u32>,
     reaped: Arc<AtomicBool>,
@@ -68,7 +148,12 @@ pub struct PtySession {
     /// VT100 grid kept in sync with PTY output. The reader thread
     /// advances `processor` on every chunk; queries (`screen_text`,
     /// `cursor_position`, `cell_at`) read `term` under the same lock.
-    term: Arc<Mutex<Term<VoidListener>>>,
+    ///
+    /// The `RelayEventListener` is plumbed into `Term::new` so that
+    /// query responses (DSR/DA1/DA2/CPR) generated by alacritty are
+    /// written back to the PTY's stdin — giving the child accurate
+    /// responses based on the real grid state.
+    term: Arc<Mutex<Term<RelayEventListener>>>,
     /// Shared with the reader thread, which holds the actual lock most
     /// of the time. Kept on the struct so `resize()` can take the same
     /// lock the reader uses — preventing the child's post-resize
@@ -125,6 +210,39 @@ fn resolve_command_path(command: &str) -> String {
     command.to_string()
 }
 
+fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<WriteMsg>) {
+    while let Ok(msg) = write_rx.recv() {
+        match msg {
+            WriteMsg::Reply(bytes) => {
+                if bytes.is_empty() {
+                    continue;
+                }
+                if writer.write_all(&bytes).is_err() {
+                    break;
+                }
+                if writer.flush().is_err() {
+                    break;
+                }
+            }
+            WriteMsg::UserInput { bytes, ack } => {
+                if bytes.is_empty() {
+                    let _ = ack.send(Ok(()));
+                    continue;
+                }
+                match writer.write_all(&bytes).and_then(|_| writer.flush()) {
+                    Ok(()) => {
+                        let _ = ack.send(Ok(()));
+                    }
+                    Err(err) => {
+                        let _ = ack.send(Err(err));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl PtySession {
     pub fn spawn(
         command: &str,
@@ -168,12 +286,24 @@ impl PtySession {
             .context("failed to take pty writer")?;
 
         let size = GridSize::from_pty(rows, cols);
-        let term = Arc::new(Mutex::new(Term::new(
-            Config::default(),
-            &size,
-            VoidListener,
-        )));
+        // Shared write queue used by both producers: query-reply
+        // writebacks from alacritty's listener and user/injection
+        // writes from `PtySession::write_all`. Routing everything
+        // through one FIFO is what gives us global ordering — without
+        // it, the writer mutex provides per-call mutual exclusion but
+        // a reply can splice between two consecutive user writes.
+        let (write_tx, write_rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let listener = RelayEventListener::new(write_tx.clone());
+        let term = Arc::new(Mutex::new(Term::new(Config::default(), &size, listener)));
         let processor = Arc::new(Mutex::new(Processor::new()));
+
+        // Drainer: single owner of the writer. Receives `WriteMsg`s
+        // from the queue and pushes them to the PTY. Lives on a
+        // std::thread so it doesn't need a tokio runtime. Exits when
+        // every sender is dropped — i.e. when the listener inside
+        // `term` is dropped (term goes away at PtySession drop) AND
+        // the `write_tx` clone on the struct is dropped (same time).
+        thread::spawn(move || drain_write_queue(writer, write_rx));
 
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
@@ -189,6 +319,12 @@ impl PtySession {
                             // takes the same order; matching prevents
                             // deadlock and ensures bytes are never
                             // parsed against stale dimensions.
+                            //
+                            // The listener inside `term` may send bytes
+                            // onto the writeback channel while we hold
+                            // these locks — that send is non-blocking
+                            // (std::mpsc), so no deadlock with the
+                            // writer lock taken by the drainer thread.
                             let mut processor_guard = processor_clone.lock();
                             let mut term_guard = term_clone.lock();
                             processor_guard.advance(&mut *term_guard, &buf[..n]);
@@ -205,7 +341,7 @@ impl PtySession {
         Ok((
             Self {
                 master: pair.master,
-                writer: Arc::new(Mutex::new(writer)),
+                write_tx,
                 child: Arc::new(Mutex::new(child)),
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
@@ -217,11 +353,32 @@ impl PtySession {
         ))
     }
 
+    /// Queue bytes for the PTY drainer to write. Ordering is preserved
+    /// relative to other `write_all` calls and to any pending
+    /// terminal-query replies — both go through the same FIFO.
+    ///
+    /// Blocks if the queue is full (drainer wedged behind a slow PTY
+    /// write) and waits for the drainer to ack the write result. Returns
+    /// `Err` if the drainer has exited (PTY teardown) or if the underlying
+    /// PTY write/flush fails.
     pub fn write_all(&self, bytes: &[u8]) -> Result<()> {
-        let mut guard = self.writer.lock();
-        guard.write_all(bytes)?;
-        guard.flush()?;
-        Ok(())
+        let (ack_tx, ack_rx) = std_mpsc::channel::<io::Result<()>>();
+        self.write_tx
+            .send(WriteMsg::UserInput {
+                bytes: bytes.to_vec(),
+                ack: ack_tx,
+            })
+            .map_err(|_| {
+                anyhow::anyhow!("pty write queue is closed (drainer exited before enqueue)")
+            })?;
+
+        match ack_rx.recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err).context("failed to write queued input to pty"),
+            Err(_) => Err(anyhow::anyhow!(
+                "pty write drainer exited before acknowledging queued write"
+            )),
+        }
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
@@ -311,7 +468,7 @@ impl PtySession {
     ///
     /// Keep the closure short — it blocks the reader thread from advancing
     /// the VT parser while it runs.
-    pub fn with_term<R>(&self, f: impl FnOnce(&Term<VoidListener>) -> R) -> R {
+    pub fn with_term<R>(&self, f: impl FnOnce(&Term<RelayEventListener>) -> R) -> R {
         let term = self.term.lock();
         f(&term)
     }
@@ -741,5 +898,216 @@ mod tests {
         }
 
         assert_eq!(String::from_utf8_lossy(&collected), "xterm-256color");
+    }
+
+    // ---- RelayEventListener wiring tests ----
+    //
+    // These drive a free-standing `Term<RelayEventListener>` so we can
+    // assert that alacritty itself answers DSR/CPR query sequences with
+    // bytes that match real grid state — replacing the old hand-rolled
+    // `TerminalQueryParser` that hardcoded `1;1` for CPR.
+
+    use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use std::sync::mpsc as std_mpsc;
+    use std::time::Duration as StdDuration;
+
+    fn drive_listener(
+        rows: u16,
+        cols: u16,
+        chunks: &[&[u8]],
+    ) -> (std_mpsc::Receiver<WriteMsg>, Term<RelayEventListener>) {
+        let size = GridSize {
+            columns: cols as usize,
+            screen_lines: rows as usize,
+        };
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let listener = RelayEventListener::new(tx);
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut processor: Processor = Processor::new();
+        for chunk in chunks {
+            processor.advance(&mut term, chunk);
+        }
+        (rx, term)
+    }
+
+    fn drain_writeback(rx: &std_mpsc::Receiver<WriteMsg>) -> Vec<u8> {
+        let mut out = Vec::new();
+        // First reply is queued synchronously inside processor.advance,
+        // but recv_timeout is enough since send is non-blocking.
+        while let Ok(msg) = rx.recv_timeout(StdDuration::from_millis(50)) {
+            // Listener can only produce Reply variants; UserInput would
+            // come from a real PtySession::write_all caller, which these
+            // tests don't construct.
+            match msg {
+                WriteMsg::Reply(bytes) => out.extend_from_slice(&bytes),
+                WriteMsg::UserInput { .. } => unreachable!("listener never emits UserInput"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn listener_answers_dsr_with_terminal_ok() {
+        // ESC[5n is the Device Status Report query — alacritty must
+        // reply with ESC[0n ("terminal OK").
+        let (rx, _term) = drive_listener(24, 80, &[b"\x1b[5n"]);
+        let writeback = drain_writeback(&rx);
+        assert_eq!(
+            writeback, b"\x1b[0n",
+            "DSR ESC[5n must produce ESC[0n; got {writeback:?}"
+        );
+    }
+
+    #[test]
+    fn listener_answers_da1_with_vt102_ident() {
+        // ESC[c is the Primary Device Attributes query — alacritty
+        // identifies as a VT102 (ESC[?6c). This is startup-critical:
+        // many CLIs hang at boot if DA1 goes unanswered. The exact
+        // ident byte differs between terminals (xterm uses ?1;2c) —
+        // we just need *some* well-formed DA1 reply to come back.
+        let (rx, _term) = drive_listener(24, 80, &[b"\x1b[c"]);
+        let writeback = drain_writeback(&rx);
+        assert_eq!(
+            writeback, b"\x1b[?6c",
+            "DA1 ESC[c must produce a VT102 ident (ESC[?6c); got {writeback:?}"
+        );
+    }
+
+    #[test]
+    fn write_queue_preserves_fifo_across_user_and_reply() {
+        // Both producers (`PtySession::write_all` → UserInput and the
+        // alacritty listener → Reply) push onto the same channel. The
+        // drainer's `recv` order is the order the bytes hit the PTY.
+        // Interleave two of each kind in a known order and assert the
+        // receiver pulls them back in that same order — no reordering,
+        // no Reply splicing between two UserInputs.
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+
+        let (ack_tx_1, _ack_rx_1) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"injection-body".to_vec(),
+            ack: ack_tx_1,
+        })
+        .unwrap();
+        tx.send(WriteMsg::Reply(b"\x1b[0n".to_vec())).unwrap();
+        let (ack_tx_2, _ack_rx_2) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\r".to_vec(),
+            ack: ack_tx_2,
+        })
+        .unwrap();
+        tx.send(WriteMsg::Reply(b"\x1b[3;5R".to_vec())).unwrap();
+
+        let observed: Vec<Vec<u8>> = (0..4)
+            .map(|_| {
+                let msg = rx
+                    .recv_timeout(StdDuration::from_millis(50))
+                    .expect("drainer receives in order");
+                match msg {
+                    WriteMsg::Reply(bytes) | WriteMsg::UserInput { bytes, .. } => bytes,
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                b"injection-body".to_vec(),
+                b"\x1b[0n".to_vec(),
+                b"\r".to_vec(),
+                b"\x1b[3;5R".to_vec(),
+            ],
+            "FIFO order must be preserved across both message kinds",
+        );
+    }
+
+    #[test]
+    fn listener_answers_cpr_with_real_cursor_position() {
+        // Move the cursor to row 3, col 5 (1-indexed CUP), then issue
+        // a CPR query. alacritty should reply with the **real** cursor
+        // position — `ESC[3;5R` — not the old hardcoded `1;1`.
+        let (rx, term) = drive_listener(24, 80, &[b"\x1b[3;5H", b"\x1b[6n"]);
+
+        // Sanity-check the grid actually moved the cursor.
+        let point = term.grid().cursor.point;
+        assert_eq!(point.line.0, 2, "row 3 (1-indexed) = line 2 (0-indexed)");
+        assert_eq!(
+            point.column.0, 4,
+            "col 5 (1-indexed) = column 4 (0-indexed)"
+        );
+
+        let writeback = drain_writeback(&rx);
+        assert_eq!(
+            writeback, b"\x1b[3;5R",
+            "CPR ESC[6n must reflect real cursor position; got {writeback:?}"
+        );
+    }
+
+    #[test]
+    fn user_input_ack_reports_write_failure() {
+        struct AlwaysFailWriter;
+        impl std::io::Write for AlwaysFailWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "forced failure",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
+
+        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"should-fail\n".to_vec(),
+            ack: ack_tx,
+        })
+        .expect("queue accepts user input");
+
+        let ack = ack_rx
+            .recv_timeout(StdDuration::from_millis(200))
+            .expect("drainer must ack user input writes");
+        assert!(ack.is_err(), "drainer write failure must be surfaced");
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    #[test]
+    fn user_input_ack_reports_flush_failure() {
+        struct FlushFailWriter;
+        impl std::io::Write for FlushFailWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "forced flush failure",
+                ))
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
+
+        let (ack_tx, ack_rx) = std_mpsc::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"flush-should-fail\n".to_vec(),
+            ack: ack_tx,
+        })
+        .expect("queue accepts user input");
+
+        let ack = ack_rx
+            .recv_timeout(StdDuration::from_millis(200))
+            .expect("drainer must ack user input writes");
+        assert!(ack.is_err(), "drainer flush failure must be surfaced");
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
     }
 }

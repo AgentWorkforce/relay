@@ -629,7 +629,8 @@ pub(crate) async fn run_wrap(
         terminal_rows().unwrap_or(24),
         terminal_cols().unwrap_or(80),
     )?;
-    let mut terminal_query_parser = TerminalQueryParser::default();
+    // Query responses (DSR/DA1/DA2/CPR) are answered by alacritty's
+    // `RelayEventListener` inside `PtySession`.
 
     eprintln!("[agent-relay] ready");
 
@@ -753,11 +754,6 @@ pub(crate) async fn run_wrap(
             chunk = pty_rx.recv() => {
                 match chunk {
                     Some(chunk) => {
-                        // Terminal query responses (CSI 6n)
-                        for response in terminal_query_parser.feed(&chunk) {
-                            let _ = pty.write_all(response);
-                        }
-
                         // Passthrough to user's terminal
                         use tokio::io::AsyncWriteExt;
                         let _ = stdout.write_all(&chunk).await;
