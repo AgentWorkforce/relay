@@ -16,11 +16,16 @@ paths:
 ```typescript
 import { AgentRelayClient } from '@agent-relay/sdk';
 
-const client = new AgentRelayClient({
-  /* options */
-});
-// client.spawnPty(), client.release(), client.sendMessage()
-// client.system() — system-level messaging handle
+// Remote broker
+const client = new AgentRelayClient({ baseUrl, apiKey });
+
+// Connect to an already-running local broker (reads connection.json)
+const client = AgentRelayClient.connect({ cwd: '/my/project' });
+
+// Spawn a local broker and connect
+const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
+
+// client.spawnPty(), client.spawnProvider(), client.release(), client.sendMessage()
 ```
 
 ## Agent Class
@@ -41,7 +46,6 @@ Located in `packages/sdk/src/workflows/`:
 ## Communication Protocol
 
 - **Primary**: MCP tools (mcp__relaycast__message_dm_send, mcp__relaycast__message_inbox_check, mcp__relaycast__agent_list, mcp__relaycast__agent_add, mcp__relaycast__agent_remove)
-- **Removed**: File-based protocol, direct socket connections, inline trigger patterns
 
 ## Exports
 

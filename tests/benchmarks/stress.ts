@@ -278,7 +278,7 @@ async function main(): Promise<void> {
   // Each test gets its own broker instance to avoid interference
   console.log("--- Test A: Burst Overload ---");
   {
-    const client = await AgentRelayClient.start({
+    const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ["general"],
       env: process.env,
@@ -292,7 +292,7 @@ async function main(): Promise<void> {
 
   console.log("--- Test B: Multi-Agent Contention ---");
   {
-    const client = await AgentRelayClient.start({
+    const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ["general"],
       env: process.env,
@@ -306,7 +306,7 @@ async function main(): Promise<void> {
 
   console.log("--- Test C: Steady State ---");
   {
-    const client = await AgentRelayClient.start({
+    const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ["general"],
       env: process.env,
@@ -320,7 +320,7 @@ async function main(): Promise<void> {
 
   console.log("--- Test D: Spawn/Release Cycles ---");
   {
-    const client = await AgentRelayClient.start({
+    const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ["general"],
       env: process.env,

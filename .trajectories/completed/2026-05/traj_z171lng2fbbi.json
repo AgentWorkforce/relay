@@ -1,0 +1,53 @@
+{
+  "id": "traj_z171lng2fbbi",
+  "version": 1,
+  "task": {
+    "title": "Address PR 840 review feedback"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-11T08:06:37.977Z",
+  "completedAt": "2026-05-11T08:07:48.097Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-11T08:07:47.976Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_jdknonibobpa",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-11T08:07:47.976Z",
+      "endedAt": "2026-05-11T08:07:48.097Z",
+      "events": [
+        {
+          "ts": 1778486867976,
+          "type": "decision",
+          "content": "Included cloud in all SDK publish dependency paths: Included cloud in all SDK publish dependency paths",
+          "raw": {
+            "question": "Included cloud in all SDK publish dependency paths",
+            "chosen": "Included cloud in all SDK publish dependency paths",
+            "alternatives": [],
+            "reasoning": "Review feedback showed the negative smoke and SDK-only internal publish matrix must mirror the positive smoke path because @agent-relay/cloud is an exact-version runtime dependency of @agent-relay/sdk."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed PR 840 feedback by adding the cloud tarball to the negative optional-dep smoke install, adding cloud to the publish-sdk-internal-deps matrix, replacing the first trajectory projectId absolute path with AgentWorkforce/relay, and fixing wildcard text in the trajectory Markdown. Revalidated workflow YAML, trajectory JSON, and static internal-dependency coverage across pack, positive smoke, negative smoke, and publish matrix.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "fa2c7dcbd01bbc35b7ceb7a1b9cff032f73d624b",
+    "endRef": "fa2c7dcbd01bbc35b7ceb7a1b9cff032f73d624b"
+  }
+}

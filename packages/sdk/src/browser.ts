@@ -7,7 +7,7 @@
  *
  * @example
  * ```ts
- * import { PROTOCOL_VERSION, type BrokerEvent } from "agent-relay/broker/browser";
+ * import { PROTOCOL_VERSION, type BrokerEvent } from "@agent-relay/sdk/browser";
  * ```
  */
 

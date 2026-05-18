@@ -1,0 +1,19 @@
+{
+  "id": "traj_v87cyrs8dke9",
+  "version": 1,
+  "task": {
+    "title": "Upgrade .agentworkforce personas to latest 3.x shape"
+  },
+  "status": "active",
+  "startedAt": "2026-05-14T14:28:34.155Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "83ecfbca9cd87540629ae0a9b2f155cd2c3070cf",
+    "endRef": "83ecfbca9cd87540629ae0a9b2f155cd2c3070cf"
+  }
+}

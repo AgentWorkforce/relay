@@ -58,7 +58,7 @@ export async function runBridgeCommand(
 
   const relays = new Map<string, CoreRelay>();
   for (const project of valid) {
-    const relay = deps.createRelay(project.path);
+    const relay = await deps.createRelay(project.path);
     try {
       await relay.getStatus();
       relays.set(project.id, relay);

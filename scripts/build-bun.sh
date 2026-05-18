@@ -65,12 +65,15 @@ for target_spec in "${TARGETS[@]}"; do
         --external better-sqlite3 \
         --external cpu-features \
         --external node-pty \
-        --external ssh2 \
         ./dist/src/cli/index.js \
         --outfile "$output" 2>&1; then
 
         # Get file size
         if [ -f "$output" ]; then
+            if [[ "$(uname -s)" == "Darwin" && "$suffix" == darwin-* ]]; then
+                "$SCRIPT_DIR/sign-macos-binary.sh" "$output"
+            fi
+
             SIZE=$(du -h "$output" | cut -f1)
             success "Built $output ($SIZE)"
 
@@ -97,12 +100,15 @@ if bun build \
     --external better-sqlite3 \
     --external cpu-features \
     --external node-pty \
-    --external ssh2 \
     ./dist/src/cli/index.js \
     --outfile "$CURRENT_OUTPUT" 2>&1; then
 
     SIZE=$(du -h "$CURRENT_OUTPUT" | cut -f1)
     success "Built $CURRENT_OUTPUT ($SIZE)"
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        "$SCRIPT_DIR/sign-macos-binary.sh" "$CURRENT_OUTPUT"
+    fi
 
     # Test the binary
     if "$CURRENT_OUTPUT" --version 2>/dev/null; then

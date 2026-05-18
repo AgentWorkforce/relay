@@ -16,7 +16,7 @@ import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
 async function main(): Promise<void> {
   console.log("=== Parity Test: Orchestrator → Worker ===\n");
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

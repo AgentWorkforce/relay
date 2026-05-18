@@ -76,7 +76,7 @@ describeCli('CLI', () => {
       // Commander outputs help to stderr when no command is provided
       const output = stdout + stderr;
       expect(output).toContain('Usage:');
-    });
+    }, 15000);
   });
 
   describe('agents', () => {

@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: refactor
-description: "Blueprint-style refactor workflow with deterministic quality gates."
+description: 'Blueprint-style refactor workflow with deterministic quality gates.'
 swarm:
   pattern: hierarchical
   maxConcurrency: 2
@@ -13,28 +13,32 @@ swarm:
 agents:
   - name: lead
     cli: claude
-    role: "Owns scope, sequencing, and acceptance"
+    role: 'Owns scope, sequencing, and acceptance'
+    permissions: { access: full }
   - name: architect
     cli: codex
-    role: "Designs target architecture and migration plan"
+    role: 'Designs target architecture and migration plan'
+    permissions: { access: readwrite }
     interactive: false
   - name: refactorer
     cli: codex
-    role: "Executes scoped refactor changes"
+    role: 'Executes scoped refactor changes'
+    permissions: { access: readwrite }
     interactive: false
   - name: tester
     cli: claude
-    role: "Validates behavior parity and risk"
+    role: 'Validates behavior parity and risk'
+    permissions: { access: readonly }
 workflows:
   - name: refactor-execution
-    description: "Analyze current system, design approach, refactor, and validate."
+    description: 'Analyze current system, design approach, refactor, and validate.'
     onError: retry
     preflight:
       - command: git status --porcelain
         failIf: non-empty
-        description: "Ensure working directory is clean"
+        description: 'Ensure working directory is clean'
       - command: npm test 2>/dev/null || echo "baseline"
-        description: "Capture baseline test results"
+        description: 'Capture baseline test results'
     steps:
       # Agent: Analyze current design
       - name: analyze

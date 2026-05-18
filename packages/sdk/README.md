@@ -38,6 +38,9 @@ const relay = new AgentRelay();
 // Event hooks
 relay.onMessageReceived = (msg) => console.log(`${msg.from}: ${msg.text}`);
 relay.onAgentIdle = ({ name, idleSecs }) => console.log(`${name} idle for ${idleSecs}s`);
+relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
+  updateThinkingBadge(name, active ? `Thinking (${pendingDeliveries})` : 'Idle');
+};
 
 // Spawn agents using shorthand spawners
 const worker = await relay.claude.spawn({
@@ -80,10 +83,17 @@ For direct broker control:
 ```ts
 import { AgentRelayClient } from '@agent-relay/sdk';
 
-const client = await AgentRelayClient.start({
-  binaryPath: '/path/to/agent-relay-broker', // optional, auto-detected
+// Spawn a local broker and connect over HTTP/WS
+const client = await AgentRelayClient.spawn({
+  cwd: '/my/project',
   channels: ['general'],
 });
+
+// Or connect to an already-running broker (reads connection.json)
+// const client = AgentRelayClient.connect({ cwd: '/my/project' });
+
+// Or connect to a remote broker directly
+// const client = new AgentRelayClient({ baseUrl: 'http://...', apiKey: 'br_...' });
 
 await client.spawnPty({
   name: 'Worker1',
@@ -104,7 +114,7 @@ Use provider-first spawn helpers and set `transport` when you want headless mode
 ```ts
 import { AgentRelayClient } from '@agent-relay/sdk';
 
-const client = await AgentRelayClient.start({
+const client = await AgentRelayClient.spawn({
   channels: ['general'],
 });
 

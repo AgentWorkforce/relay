@@ -20,8 +20,8 @@ Spawn and control agents from your code:
 
 ```typescript TypeScript
 import { AgentRelayClient } from '@agent-relay/sdk';
-const client = new AgentRelayClient();
-const agent = await client.spawnPty({ cli: 'claude', task: 'Review the PR' });
+const client = await AgentRelayClient.spawn();
+const agent = await client.spawnPty({ name: 'reviewer', cli: 'claude', task: 'Review the PR' });
 ```
 
 ```python Python
@@ -105,9 +105,9 @@ These docs are also available as plain Markdown for LLMs, CLI tools, and program
   - [Communicate Mode](/docs/communicate)
     Put any framework agent on the relay with on_relay().
   
-  - [TypeScript SDK](/docs/reference-sdk)
+  - [TypeScript SDK](/docs/typescript-sdk)
     Full API reference for the TypeScript SDK.
   
-  - [Python SDK](/docs/reference-sdk-py)
+  - [Python SDK](/docs/python-sdk)
     Full API reference for the Python SDK.
   

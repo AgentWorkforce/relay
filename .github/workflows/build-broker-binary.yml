@@ -16,6 +16,9 @@ on:
         default: 'latest'
         type: string
 
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -41,6 +44,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-bin: false
 
       - name: Install musl tools (x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'

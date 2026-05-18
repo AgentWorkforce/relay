@@ -13,13 +13,9 @@ except ImportError:
 from .models import Models
 from .client import AgentRelayClient, AgentRelayProtocolError, AgentRelayProcessError
 from .protocol import (
-    PROTOCOL_VERSION,
     AgentRuntime,
-    AgentSpec,
     BrokerEvent,
     MessageInjectionMode,
-    ProtocolEnvelope,
-    RestartPolicy as ProtocolRestartPolicy,
 )
 
 # ── Secondary API: Workflow builder (backward compatibility) ──────────────────
@@ -89,13 +85,9 @@ __all__ = [
     "AgentRelayClient",
     "AgentRelayProtocolError",
     "AgentRelayProcessError",
-    "PROTOCOL_VERSION",
     "AgentRuntime",
-    "AgentSpec",
     "BrokerEvent",
     "MessageInjectionMode",
-    "ProtocolEnvelope",
-    "ProtocolRestartPolicy",
     # Workflow builder (backward compat)
     "workflow",
     "WorkflowBuilder",

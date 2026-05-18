@@ -1,0 +1,42 @@
+version: '1.0'
+name: permission-e2e-test
+swarm:
+  pattern: dag
+  channel: wf-perm-e2e
+agents:
+  - name: reader
+    cli: claude
+    preset: reviewer
+    permissions:
+      access: readonly
+  - name: writer
+    cli: codex
+    preset: worker
+    permissions:
+      access: readwrite
+      files:
+        write: ['src/tests/**']
+        deny: ['.env', 'secrets/**']
+  - name: admin-lead
+    cli: claude
+    preset: lead
+    permissions:
+      access: full
+workflows:
+  - name: test
+    steps:
+      - name: check-env
+        type: deterministic
+        command: 'echo "checking env"'
+      - name: read-step
+        agent: reader
+        dependsOn: [check-env]
+        task: 'Verify you have read access. Check RELAY_AGENT_TOKEN is set.'
+        verification:
+          type: exit_code
+      - name: write-step
+        agent: writer
+        dependsOn: [check-env]
+        task: 'Verify you can write to src/tests/. Check RELAY_AGENT_TOKEN is set.'
+        verification:
+          type: exit_code

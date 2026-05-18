@@ -49,7 +49,6 @@ npx esbuild "$DIST_DIR/src/cli/index.js" \
     --external:better-sqlite3 \
     --external:cpu-features \
     --external:node-pty \
-    --external:ssh2 \
     --define:process.env.AGENT_RELAY_VERSION="\"$VERSION\"" \
     --minify \
     2>&1
@@ -84,6 +83,10 @@ if bun build "$BUILD_DIR/standalone.mjs" \
     2>&1; then
 
     success "Compiled standalone binary"
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        "$SCRIPT_DIR/sign-macos-binary.sh" "$BIN_DIR/agent-relay-standalone"
+    fi
 
     # Test the binary
     if "$BIN_DIR/agent-relay-standalone" --version 2>/dev/null; then

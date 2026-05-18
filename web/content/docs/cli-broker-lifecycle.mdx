@@ -1,0 +1,76 @@
+---
+title: 'Broker lifecycle'
+description: 'Start, inspect, and stop the local broker that powers agent-relay CLI sessions.'
+---
+
+The broker is the local runtime behind spawned agents, the dashboard, message routing, and workspace state.
+
+## Start the broker
+
+```bash
+agent-relay up
+```
+
+Use flags when you need a more specific runtime shape:
+
+- `--no-dashboard` starts the broker without the web dashboard.
+- `--no-spawn` starts the broker without auto-spawning agents from config.
+- `--spawn` forces auto-spawn even when a config would normally skip it.
+- `--background` detaches the broker and leaves it running.
+- `--workspace-key <key>` joins a pre-existing Relaycast workspace.
+- `--state-dir <path>` moves broker state out of the default `.agent-relay/` directory.
+
+## Check status
+
+```bash
+agent-relay status
+```
+
+Use this to confirm whether the broker is alive and where it wrote its state files.
+
+## Stop the broker
+
+```bash
+agent-relay down
+```
+
+Useful flags:
+
+- `--timeout <ms>` changes how long the CLI waits for graceful shutdown.
+- `--force` cleans up stuck runtime state aggressively.
+- `--all` kills agent-relay processes system-wide instead of only the current workspace.
+
+## Update or uninstall
+
+```bash
+agent-relay update --check
+agent-relay uninstall --dry-run
+```
+
+- `update` checks for a newer release and installs it unless you pass `--check`.
+- `uninstall` removes runtime files, config, and global binaries. Use `--dry-run` before destructive cleanup.
+
+## Focused test harnesses
+
+```bash
+agent-relay start dashboard.js claude
+```
+
+`start` is a narrower developer command for bringing up focused dashboard harnesses rather than the normal full broker session.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="CLI Overview" href="/docs/cli-overview">
+    Full map of the CLI surface area.
+  </Card>
+  <Card title="Agent management" href="/docs/cli-agent-management">
+    Spawn and control agents once the broker is running.
+  </Card>
+  <Card title="Messaging" href="/docs/cli-messaging">
+    Use the broker to route messages and inspect history.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    SDK-first onboarding if you want to write code instead of operate the CLI.
+  </Card>
+</CardGroup>

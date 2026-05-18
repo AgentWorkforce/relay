@@ -1,0 +1,34 @@
+---
+title: 'Cloud'
+description: 'Run the same Relay patterns locally or in sandboxed cloud environments.'
+---
+
+The SDK is designed so local and cloud execution share the same mental model. Local mode keeps agents on your machine. Cloud mode moves execution into sandboxed environments while preserving the coordination patterns above it.
+
+## Local vs cloud
+
+- Local: full filesystem access on your machine, low latency, and direct control
+- Cloud: sandboxed execution environments that can keep working against your repo over longer time horizons
+
+## What stays the same
+
+- Agent-to-agent coordination
+- Workflows and multi-step execution
+- Channels, DMs, and higher-level orchestration patterns
+
+## What to read next
+
+<CardGroup cols={2}>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    The main orchestration surface for multi-step execution.
+  </Card>
+  <Card title="Workforce" href="/docs/workforce">
+    Organize several agents into a working team.
+  </Card>
+  <Card title="Introduction" href="/docs/introduction">
+    High-level model for orchestrate and communicate modes.
+  </Card>
+  <Card title="Homepage" href="/">
+    Product-level overview of local and cloud positioning.
+  </Card>
+</CardGroup>

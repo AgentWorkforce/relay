@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
-import { CLI_AUTH_CONFIG } from '@agent-relay/config/cli-auth-config';
+import { track } from '@agent-relay/telemetry';
 
 import {
   ensureAuthenticated,
@@ -13,15 +13,35 @@ import {
   AUTH_FILE_PATH,
   REFRESH_WINDOW_MS,
   runWorkflow,
+  scheduleWorkflow,
+  listWorkflowSchedules,
   getRunStatus,
   getRunLogs,
   syncWorkflowPatch,
+  cancelWorkflow,
+  connectProvider,
+  getProviderHelpText,
+  normalizeProvider,
   type WhoAmIResponse,
-  type AuthSessionResponse,
   type WorkflowFileType,
+  type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
-import { runInteractiveSession } from '../lib/ssh-interactive.js';
+import { defaultExit } from '../lib/exit.js';
+import { errorClassName } from '../lib/telemetry-helpers.js';
+
+const CLOUD_SYNC_PATCH_EXCLUDES = [
+  '.agent-bin/**',
+  '.relayfile.acl',
+  '.relayfile-mount-state.json',
+  '.relayfile-mount-state.json.tmp-*',
+  '.trajectories/**',
+  '.workflow-context/**',
+] as const;
+
+export function buildCloudSyncPatchExcludeArgs(): string {
+  return CLOUD_SYNC_PATCH_EXCLUDES.map((pattern) => `--exclude=${JSON.stringify(pattern)}`).join(' ');
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,18 +55,6 @@ export interface CloudDependencies {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const color = {
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-};
-
-function defaultExit(code: number): never {
-  process.exit(code);
-}
-
 function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependencies {
   return {
     log: (...args: unknown[]) => console.log(...args),
@@ -54,25 +62,6 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
     exit: defaultExit,
     ...overrides,
   };
-}
-
-const PROVIDER_ALIASES: Record<string, string> = {
-  claude: 'anthropic',
-  codex: 'openai',
-  gemini: 'google',
-};
-
-const PROVIDER_HELP_TEXT = Object.keys(CLI_AUTH_CONFIG)
-  .sort()
-  .map((id) => {
-    const alias = Object.entries(PROVIDER_ALIASES).find(([, target]) => target === id);
-    return alias ? `${id} (alias: ${alias[0]})` : id;
-  })
-  .join(', ');
-
-function normalizeProvider(providerArg: string): string {
-  const providerInput = providerArg.toLowerCase().trim();
-  return PROVIDER_ALIASES[providerInput] || providerInput;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -98,32 +87,83 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
   throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => void): void {
+  if (!isObject(patches)) {
+    return;
+  }
+
+  const entries = Object.entries(patches);
+  if (entries.length === 0) {
+    return;
+  }
+
+  log('Patches:');
+  for (const [name, rawEntry] of entries) {
+    if (!isObject(rawEntry)) {
+      log(`  ${name}: patch pending - run still active`);
+      continue;
+    }
+
+    const pushedTo = rawEntry.pushedTo;
+    if (isObject(pushedTo) && typeof pushedTo.prUrl === 'string') {
+      const branch = typeof pushedTo.branch === 'string' ? ` (${pushedTo.branch})` : '';
+      log(`  ${name}: ${pushedTo.prUrl}${branch}`);
+      continue;
+    }
+
+    const pushError = rawEntry.pushError;
+    if (isObject(pushError)) {
+      const code = typeof pushError.code === 'string' ? pushError.code : 'unknown';
+      const message = typeof pushError.message === 'string' ? pushError.message : 'push failed';
+      log(`  ${name}: push failed: ${code}: ${message}`);
+      continue;
+    }
+
+    log(`  ${name}: patch pending - run still active`);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function getErrorDetails(response: Response): Promise<string> {
-  let body: string;
-  try {
-    body = await response.text();
-  } catch {
-    return response.statusText;
+function formatScheduleCadence(schedule: WorkflowSchedule): string {
+  if (schedule.scheduleType === 'cron') {
+    return `${schedule.cronExpression ?? 'cron'} (${schedule.timezone})`;
   }
-  if (!body) return response.statusText;
-  try {
-    const json = JSON.parse(body) as { error?: string; message?: string };
-    return json.error || json.message || response.statusText;
-  } catch {
-    return body;
+  return schedule.scheduledAt
+    ? `${schedule.scheduledAt} (${schedule.timezone})`
+    : `once (${schedule.timezone})`;
+}
+
+function renderSchedule(schedule: WorkflowSchedule, log: (...args: unknown[]) => void): void {
+  log(`Schedule created: ${schedule.id}`);
+  log(`Name: ${schedule.name}`);
+  log(`Status: ${schedule.status}`);
+  log(`Cadence: ${formatScheduleCadence(schedule)}`);
+}
+
+function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknown[]) => void): void {
+  if (schedules.length === 0) {
+    log('No workflow schedules found.');
+    return;
+  }
+
+  for (const schedule of schedules) {
+    const lastRun = schedule.lastTriggeredRunId ? ` last run ${schedule.lastTriggeredRunId}` : ' no runs yet';
+    log(
+      `${schedule.id}  ${schedule.status}  ${formatScheduleCadence(schedule)}  ${schedule.name} (${lastRun})`
+    );
   }
 }
 
 // ── Command registration ─────────────────────────────────────────────────────
 
-export function registerCloudCommands(
-  program: Command,
-  overrides: Partial<CloudDependencies> = {}
-): void {
+export function registerCloudCommands(program: Command, overrides: Partial<CloudDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
   const cloudCommand = program
@@ -134,24 +174,41 @@ export function registerCloudCommands(
 
   cloudCommand
     .command('login')
-    .description('Authenticate with Agent Relay Cloud via browser')
+    .description('Authenticate with Agent Relay Cloud via browser (alias of `relay login`)')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
     .action(async (options: { apiUrl?: string; force?: boolean }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const apiUrl = options.apiUrl || defaultApiUrl();
 
-      if (!options.force) {
-        const existing = await readStoredAuth();
-        if (existing && existing.apiUrl === apiUrl) {
-          const expiresAt = Date.parse(existing.accessTokenExpiresAt);
-          if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
-            deps.log(`Already logged in to ${existing.apiUrl}`);
-            return;
+        if (!options.force) {
+          const existing = await readStoredAuth();
+          if (existing && existing.apiUrl === apiUrl) {
+            const expiresAt = Date.parse(existing.accessTokenExpiresAt);
+            if (!Number.isNaN(expiresAt) && expiresAt - Date.now() > REFRESH_WINDOW_MS) {
+              deps.log(`Already logged in to ${existing.apiUrl}`);
+              success = true;
+              return;
+            }
           }
         }
-      }
 
-      await ensureAuthenticated(apiUrl, { force: options.force });
+        await ensureAuthenticated(apiUrl, { force: options.force });
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'login',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 
   // ── logout ─────────────────────────────────────────────────────────────────
@@ -160,28 +217,45 @@ export function registerCloudCommands(
     .command('logout')
     .description('Clear stored cloud credentials')
     .action(async () => {
-      const auth = await readStoredAuth();
-      if (!auth) {
-        deps.log('Not logged in.');
-        return;
-      }
-
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
       try {
-        const revokeUrl = new URL(
-          'api/v1/auth/token/revoke',
-          auth.apiUrl.endsWith('/') ? auth.apiUrl : `${auth.apiUrl}/`
-        );
-        await fetch(revokeUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ token: auth.refreshToken }),
-        });
-      } catch {
-        // best-effort revoke
-      }
+        const auth = await readStoredAuth();
+        if (!auth) {
+          deps.log('Not logged in.');
+          success = true;
+          return;
+        }
 
-      await clearStoredAuth();
-      deps.log('Logged out.');
+        try {
+          const revokeUrl = new URL(
+            'api/v1/auth/token/revoke',
+            auth.apiUrl.endsWith('/') ? auth.apiUrl : `${auth.apiUrl}/`
+          );
+          await fetch(revokeUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ token: auth.refreshToken }),
+          });
+        } catch {
+          // best-effort revoke
+        }
+
+        await clearStoredAuth();
+        deps.log('Logged out.');
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'logout',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
+      }
     });
 
   // ── whoami ─────────────────────────────────────────────────────────────────
@@ -191,28 +265,46 @@ export function registerCloudCommands(
     .description('Show current authentication status')
     .option('--api-url <url>', 'Cloud API base URL')
     .action(async (options: { apiUrl?: string }) => {
-      const apiUrl = options.apiUrl || defaultApiUrl();
-      const auth = await ensureAuthenticated(apiUrl);
-      const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
-        method: 'GET',
-      });
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      try {
+        const apiUrl = options.apiUrl || defaultApiUrl();
+        const auth = await ensureAuthenticated(apiUrl);
+        const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
+          method: 'GET',
+        });
 
-      const payload = (await response.json().catch(() => null)) as
-        | (WhoAmIResponse & { error?: string })
-        | null;
+        const payload = (await response.json().catch(() => null)) as
+          | (WhoAmIResponse & { error?: string })
+          | null;
 
-      if (!response.ok || !payload?.authenticated) {
-        throw new Error(payload?.error || 'Failed to resolve auth status');
+        if (!response.ok || !payload?.authenticated) {
+          throw new Error(payload?.error || 'Failed to resolve auth status');
+        }
+
+        deps.log(`API URL: ${auth.apiUrl}`);
+        deps.log(`Auth source: ${payload.source}`);
+        deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
+        deps.log(
+          `User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`
+        );
+        deps.log(`Organization: ${payload.currentOrganization.name}`);
+        deps.log(`Workspace: ${payload.currentWorkspace.name}`);
+        deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
+        deps.log(`Token file: ${AUTH_FILE_PATH}`);
+        success = true;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'whoami',
+          success,
+          duration_ms: Date.now() - started,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
       }
-
-      deps.log(`API URL: ${auth.apiUrl}`);
-      deps.log(`Auth source: ${payload.source}`);
-      deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
-      deps.log(`User: ${payload.user.name || '(no name)'}${payload.user.email ? ` <${payload.user.email}>` : ''}`);
-      deps.log(`Organization: ${payload.currentOrganization.name}`);
-      deps.log(`Workspace: ${payload.currentWorkspace.name}`);
-      deps.log(`Scopes: ${payload.scopes.length > 0 ? payload.scopes.join(', ') : '(none)'}`);
-      deps.log(`Token file: ${AUTH_FILE_PATH}`);
     });
 
   // ── connect ────────────────────────────────────────────────────────────────
@@ -220,133 +312,36 @@ export function registerCloudCommands(
   cloudCommand
     .command('connect')
     .description('Connect a provider via interactive SSH session')
-    .argument('<provider>', `Provider to connect (${PROVIDER_HELP_TEXT})`)
+    .argument('<provider>', `Provider to connect (${getProviderHelpText()})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
     .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
     .action(async (providerArg: string, options: { apiUrl?: string; language: string; timeout: number }) => {
-      const timeoutMs = options.timeout * 1000;
-
-      if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        throw new Error('This command requires an interactive terminal (TTY).');
-      }
-
-      const provider = normalizeProvider(providerArg);
-      const providerConfig = CLI_AUTH_CONFIG[provider];
-      if (!providerConfig) {
-        const known = Object.keys(CLI_AUTH_CONFIG).sort();
-        throw new Error(`Unknown provider: ${providerArg}. Supported providers: ${known.join(', ')}`);
-      }
-
-      const apiUrl = options.apiUrl || defaultApiUrl();
-
-      const io = {
-        log: deps.log,
-        error: deps.error,
-      };
-
-      io.log('');
-      io.log(color.cyan('═══════════════════════════════════════════════════'));
-      io.log(color.cyan('      Provider Authentication (Daytona Connect)'));
-      io.log(color.cyan('═══════════════════════════════════════════════════'));
-      io.log('');
-      io.log(`Provider: ${providerConfig.displayName} (${provider})`);
-      io.log(`Language: ${color.dim(options.language)}`);
-      io.log(color.dim(`Cloud: ${apiUrl}`));
-      io.log('');
-      io.log('Requesting sandbox from cloud...');
-
-      let auth = await ensureAuthenticated(apiUrl);
-
-      const { response: createResponse, auth: refreshedAuth } = await authorizedApiFetch(
-        auth,
-        '/api/v1/cli/auth',
-        {
-          method: 'POST',
-          body: JSON.stringify({ provider, language: options.language }),
-        }
-      );
-      auth = refreshedAuth;
-
-      const start = (await createResponse.json().catch(() => null)) as
-        | (AuthSessionResponse & { error?: string; message?: string })
-        | null;
-
-      if (!createResponse.ok || !start?.sessionId) {
-        const detail = start?.error || start?.message || `${createResponse.status} ${createResponse.statusText}`;
-        throw new Error(detail);
-      }
-
-      const sshPort = typeof start.ssh?.port === 'string'
-        ? Number.parseInt(start.ssh.port as unknown as string, 10)
-        : start.ssh?.port;
-      if (!start.ssh?.host || !sshPort || !start.ssh.user || !start.ssh.password) {
-        throw new Error('Cloud returned invalid SSH session details.');
-      }
-
-      io.log(color.green('✓ Sandbox ready'));
-      io.log(color.dim(`  SSH: ${start.ssh.user}@${start.ssh.host}:${sshPort}`));
-      io.log('');
-      io.log(color.yellow('Connecting via SSH...'));
-      io.log(color.dim(`  Running: ${start.remoteCommand}`));
-      io.log('');
-
-      let sessionResult;
+      const started = Date.now();
+      let success = false;
+      let errorClass: string | undefined;
+      const trackedProvider = normalizeProvider(providerArg);
       try {
-        sessionResult = await runInteractiveSession({
-          ssh: {
-            host: start.ssh.host,
-            port: sshPort,
-            user: start.ssh.user,
-            password: start.ssh.password,
-          },
-          remoteCommand: start.remoteCommand,
-          successPatterns: providerConfig.successPatterns || [],
-          errorPatterns: providerConfig.errorPatterns || [],
-          timeoutMs,
-          io,
+        const result = await connectProvider({
+          provider: providerArg,
+          apiUrl: options.apiUrl,
+          language: options.language,
+          timeoutMs: options.timeout * 1000,
+          io: { log: deps.log, error: deps.error },
         });
-      } catch (error) {
-        throw new Error(`Failed to connect via SSH: ${error instanceof Error ? error.message : String(error)}`);
+        success = result.success;
+      } catch (err) {
+        errorClass = errorClassName(err);
+        throw err;
+      } finally {
+        track('cloud_auth', {
+          action: 'connect',
+          success,
+          duration_ms: Date.now() - started,
+          provider: trackedProvider,
+          ...(errorClass ? { error_class: errorClass } : {}),
+        });
       }
-
-      io.log('');
-      const success = sessionResult.authDetected;
-
-      io.log('Finalizing authentication with cloud...');
-      const { response: completeResponse } = await authorizedApiFetch(
-        auth,
-        '/api/v1/cli/auth/complete',
-        {
-          method: 'POST',
-          body: JSON.stringify({ sessionId: start.sessionId, success }),
-        }
-      );
-
-      if (!completeResponse.ok) {
-        throw new Error(await getErrorDetails(completeResponse));
-      }
-
-      if (!success) {
-        const exitCode = sessionResult.exitCode;
-        if (typeof exitCode === 'number' && exitCode !== 0) {
-          io.error(color.red(`Remote auth command exited with code ${exitCode}.`));
-        }
-        if (sessionResult.exitCode === 127) {
-          io.log(color.yellow(`The ${providerConfig.displayName} CLI ("${providerConfig.command}") is not installed on the sandbox.`));
-          io.log(color.dim('Check the sandbox snapshot includes the required CLI tools.'));
-        }
-        throw new Error(`Provider auth for ${provider} did not complete successfully`);
-      }
-
-      io.log('');
-      io.log(color.green('═══════════════════════════════════════════════════'));
-      io.log(color.green('          Authentication Complete!'));
-      io.log(color.green('═══════════════════════════════════════════════════'));
-      io.log('');
-      io.log(`${providerConfig.displayName} credentials are now stored and encrypted.`);
-      io.log(color.dim('Your workflows will automatically use these credentials.'));
-      io.log('');
     });
 
   // ── run ────────────────────────────────────────────────────────────────────
@@ -359,24 +354,128 @@ export function registerCloudCommands(
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
+    .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
+    .option('--start-from <step>', 'Start from a specific step in cloud and skip predecessor steps')
+    .option(
+      '--previous-run-id <runId>',
+      'Use cached outputs from a previous cloud run when starting from a step'
+    )
     .option('--json', 'Print raw JSON response', false)
-    .action(async (
-      workflow: string,
-      options: { apiUrl?: string; fileType?: WorkflowFileType; syncCode?: boolean; json?: boolean },
-    ) => {
-      const result = await runWorkflow(workflow, options);
+    .action(
+      async (
+        workflow: string,
+        options: {
+          apiUrl?: string;
+          fileType?: WorkflowFileType;
+          syncCode?: boolean;
+          resume?: string;
+          startFrom?: string;
+          previousRunId?: string;
+          json?: boolean;
+        }
+      ) => {
+        const started = Date.now();
+        let success = false;
+        let errorClass: string | undefined;
+        try {
+          const result = await runWorkflow(workflow, options);
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else {
+            deps.log(`Run created: ${result.runId}`);
+            if (typeof result.sandboxId === 'string') {
+              deps.log(`Sandbox: ${result.sandboxId}`);
+            }
+            deps.log(`Status: ${result.status}`);
+            renderPatchPushResults(result.patches, deps.log);
+            deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
+            deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
+          }
+          success = true;
+        } catch (err) {
+          errorClass = errorClassName(err);
+          throw err;
+        } finally {
+          track('cloud_workflow_run', {
+            has_explicit_file_type: Boolean(options.fileType),
+            sync_code: options.syncCode !== false,
+            json_output: Boolean(options.json),
+            success,
+            duration_ms: Date.now() - started,
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
+        }
+      }
+    );
+
+  // ── schedule ───────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('schedule')
+    .description('Schedule a repeatable workflow run')
+    .argument('<workflow>', 'Workflow file path or inline workflow content')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
+    .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
+    .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
+    .option('--name <name>', 'Schedule name')
+    .option('--description <description>', 'Schedule description')
+    .option('--json', 'Print raw JSON response', false)
+    .action(
+      async (
+        workflow: string,
+        options: {
+          apiUrl?: string;
+          fileType?: WorkflowFileType;
+          cron?: string;
+          at?: string;
+          timezone?: string;
+          name?: string;
+          description?: string;
+          json?: boolean;
+        }
+      ) => {
+        const started = Date.now();
+        let success = false;
+        let errorClass: string | undefined;
+        try {
+          const result = await scheduleWorkflow(workflow, options);
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else {
+            renderSchedule(result, deps.log);
+            deps.log('\nList schedules:  agent-relay cloud schedules');
+          }
+          success = true;
+        } catch (err) {
+          errorClass = errorClassName(err);
+          throw err;
+        } finally {
+          track('cloud_workflow_schedule', {
+            schedule_type: options.cron ? 'cron' : 'once',
+            has_explicit_file_type: Boolean(options.fileType),
+            json_output: Boolean(options.json),
+            success,
+            duration_ms: Date.now() - started,
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
+        }
+      }
+    );
+
+  cloudCommand
+    .command('schedules')
+    .description('List scheduled workflow runs')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (options: { apiUrl?: string; json?: boolean }) => {
+      const schedules = await listWorkflowSchedules(options);
       if (options.json) {
-        deps.log(JSON.stringify(result, null, 2));
+        deps.log(JSON.stringify({ schedules }, null, 2));
         return;
       }
-
-      deps.log(`Run created: ${result.runId}`);
-      if (typeof result.sandboxId === 'string') {
-        deps.log(`Sandbox: ${result.sandboxId}`);
-      }
-      deps.log(`Status: ${result.status}`);
-      deps.log(`\nView logs:  agent-relay cloud logs ${result.runId} --follow`);
-      deps.log(`Sync code:  agent-relay cloud sync ${result.runId}`);
+      renderScheduleList(schedules, deps.log);
     });
 
   // ── status ─────────────────────────────────────────────────────────────────
@@ -402,6 +501,7 @@ export function registerCloudCommands(
       if (typeof result.updatedAt === 'string') {
         deps.log(`Updated: ${result.updatedAt}`);
       }
+      renderPatchPushResults(result.patches, deps.log);
     });
 
   // ── logs ───────────────────────────────────────────────────────────────────
@@ -417,42 +517,44 @@ export function registerCloudCommands(
     .option('--agent <name>', 'Read logs for a specific agent')
     .option('--sandbox-id <sandboxId>', 'Read logs for a specific step sandbox')
     .option('--json', 'Print raw JSON responses', false)
-    .action(async (
-      runId: string,
-      options: {
-        apiUrl?: string;
-        follow?: boolean;
-        pollInterval?: number;
-        offset?: number;
-        agent?: string;
-        sandboxId?: string;
-        json?: boolean;
-      },
-    ) => {
-      let offset = options.offset ?? 0;
-      const sandboxId = options.agent ?? options.sandboxId;
-
-      while (true) {
-        const result = await getRunLogs(runId, {
-          apiUrl: options.apiUrl,
-          offset,
-          sandboxId,
-        });
-
-        if (options.json) {
-          deps.log(JSON.stringify(result, null, 2));
-        } else if (result.content) {
-          process.stdout.write(result.content);
+    .action(
+      async (
+        runId: string,
+        options: {
+          apiUrl?: string;
+          follow?: boolean;
+          pollInterval?: number;
+          offset?: number;
+          agent?: string;
+          sandboxId?: string;
+          json?: boolean;
         }
+      ) => {
+        let offset = options.offset ?? 0;
+        const sandboxId = options.agent ?? options.sandboxId;
 
-        offset = result.offset;
-        if (!options.follow || result.done) {
-          break;
+        while (true) {
+          const result = await getRunLogs(runId, {
+            apiUrl: options.apiUrl,
+            offset,
+            sandboxId,
+          });
+
+          if (options.json) {
+            deps.log(JSON.stringify(result, null, 2));
+          } else if (result.content) {
+            process.stdout.write(result.content);
+          }
+
+          offset = result.offset;
+          if (!options.follow || result.done) {
+            break;
+          }
+
+          await sleep((options.pollInterval ?? 2) * 1000);
         }
-
-        await sleep((options.pollInterval ?? 2) * 1000);
       }
-    });
+    );
 
   // ── sync ───────────────────────────────────────────────────────────────────
 
@@ -463,18 +565,46 @@ export function registerCloudCommands(
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--dir <path>', 'Local directory to apply the patch to', '.')
     .option('--dry-run', 'Download and display the patch without applying', false)
-    .action(async (
-      runId: string,
-      options: { apiUrl?: string; dir?: string; dryRun?: boolean },
-    ) => {
+    .action(async (runId: string, options: { apiUrl?: string; dir?: string; dryRun?: boolean }) => {
       const targetDir = path.resolve(options.dir ?? '.');
       deps.log(`Fetching patch for run ${runId}...`);
 
       const result = await syncWorkflowPatch(runId, { apiUrl: options.apiUrl });
 
-      if (!result.hasChanges) {
+      // Multi-path responses target different repos and can't be applied to a
+      // single --dir. Surface them in dry-run, otherwise direct the user to
+      // apply manually. Single-patch runs continue to apply automatically.
+      if (result.patches) {
+        const entries = Object.entries(result.patches);
+        const withChanges = entries.filter(([, p]) => p.hasChanges);
+        if (withChanges.length === 0) {
+          deps.log('No changes to sync — the workflow did not modify any files.');
+          return;
+        }
+        if (options.dryRun) {
+          for (const [name, p] of withChanges) {
+            deps.log(`\n--- Patch for "${name}" (dry run) ---`);
+            process.stdout.write(p.patch);
+            deps.log(`\n--- End patch for "${name}" ---`);
+          }
+          return;
+        }
+        deps.error(
+          `This run produced ${withChanges.length} per-path patch${withChanges.length === 1 ? '' : 'es'} ` +
+            `(${withChanges.map(([n]) => n).join(', ')}). "cloud sync" only applies single-patch runs. ` +
+            `Use --dry-run to inspect each patch, then apply manually in the correct repo.`
+        );
+        deps.exit(1);
+        return;
+      }
+
+      if (!result.hasChanges || !result.patch) {
         deps.log('No changes to sync — the workflow did not modify any files.');
         return;
+      }
+
+      if (typeof result.patch !== 'string' || !result.patch) {
+        throw new Error('Server reported changes but returned no patch data. The response may be malformed.');
       }
 
       if (options.dryRun) {
@@ -490,7 +620,8 @@ export function registerCloudCommands(
       fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
 
       try {
-        const stat = execSync(`git apply --stat "${tmpPatch}"`, {
+        const excludeArgs = buildCloudSyncPatchExcludeArgs();
+        const stat = execSync(`git apply ${excludeArgs} --stat "${tmpPatch}"`, {
           cwd: targetDir,
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -500,7 +631,7 @@ export function registerCloudCommands(
           deps.log(stat);
         }
 
-        execSync(`git apply "${tmpPatch}"`, {
+        execSync(`git apply ${excludeArgs} "${tmpPatch}"`, {
           cwd: targetDir,
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -512,5 +643,24 @@ export function registerCloudCommands(
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
       }
+    });
+
+  // ── cancel ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('cancel')
+    .description('Cancel a running workflow')
+    .argument('<runId>', 'Workflow run id')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (runId: string, options: { apiUrl?: string; json?: boolean }) => {
+      const result = await cancelWorkflow(runId, options);
+      if (options.json) {
+        deps.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      deps.log(`Run: ${result.runId ?? runId}`);
+      deps.log(`Status: ${result.status ?? 'unknown'}`);
     });
 }

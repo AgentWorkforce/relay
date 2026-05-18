@@ -1,0 +1,38 @@
+name: SDK Workers Safety
+
+on:
+  pull_request:
+    paths:
+      - 'packages/sdk/**'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/sdk/**'
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  workers-safe:
+    name: SDK Workers-safety probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build SDK
+        run: npm run build --workspace @agent-relay/sdk
+
+      - name: Workers-safety probe
+        run: node packages/sdk/scripts/check-workers-safe.mjs

@@ -18,7 +18,7 @@ const TIMEOUT_MS = 15_000;
 async function main(): Promise<void> {
   console.log("=== Parity Test: Broadcast Messages ===\n");
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

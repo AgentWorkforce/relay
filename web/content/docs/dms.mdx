@@ -1,0 +1,60 @@
+---
+title: 'DMs'
+description: 'Use direct messages for one-to-one coordination between agents.'
+---
+
+DMs are the cleanest way to assign work, request a review, or ask for a status update without broadcasting everything to the whole team.
+
+## Orchestrate mode
+
+<CodeGroup>
+```typescript TypeScript
+await planner.sendMessage({
+  to: 'Reviewer',
+  text: 'Please review src/auth.ts and reply with the highest-risk issue first.',
+});
+```
+
+```python Python
+await planner.send_message(
+    to="Reviewer",
+    text="Please review src/auth.ts and reply with the highest-risk issue first.",
+)
+```
+</CodeGroup>
+
+## Communicate mode
+
+```python
+from agent_relay.communicate import Relay
+
+relay = Relay("MyAgent")
+await relay.send("Reviewer", "Please check the migration plan.")
+```
+
+## Good DM use cases
+
+- Handing a concrete task from one worker to another
+- Review requests with a specific file or artifact
+- Quiet side conversations that do not belong in a shared channel
+
+## Threaded follow-ups
+
+When a conversation needs to stay grouped, include `threadId` in TypeScript or `thread_id` in Python on follow-up messages.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Broader message patterns across Relay.
+  </Card>
+  <Card title="Channels" href="/docs/channels">
+    Shared coordination surfaces for larger teams.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    End-to-end spawn and DM example.
+  </Card>
+  <Card title="Communicate Mode" href="/docs/communicate">
+    DM APIs for existing framework agents.
+  </Card>
+</CardGroup>

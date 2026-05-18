@@ -10,7 +10,8 @@ import path from 'node:path';
 
 import {
   AgentRelayClient,
-  type AgentRelayClientOptions,
+  type AgentRelayBrokerInitArgs,
+  type AgentRelaySpawnOptions,
   type ListAgent,
   type SendMessageInput,
   type BrokerEvent,
@@ -35,6 +36,9 @@ export async function ensureApiKey(): Promise<string> {
   }
   const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
   const apiKey = ws.apiKey;
+  if (!apiKey) {
+    throw new Error('Relaycast workspace did not return an API key');
+  }
   _cachedApiKey = apiKey;
   process.env.RELAY_API_KEY = apiKey;
   return apiKey;
@@ -45,8 +49,8 @@ export async function ensureApiKey(): Promise<string> {
 export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
-  /** Extra CLI args passed to the broker binary. */
-  binaryArgs?: string[];
+  /** Structured broker init options mapped to the Rust CLI flags. */
+  binaryArgs?: AgentRelayBrokerInitArgs;
   /** Unique broker name registered in Relaycast. Auto-generated if not set. */
   brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
@@ -85,7 +89,7 @@ export class BrokerHarness {
   constructor(options: BrokerHarnessOptions = {}) {
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
-      binaryArgs: options.binaryArgs ?? [],
+      binaryArgs: options.binaryArgs ?? {},
       brokerName:
         options.brokerName ??
         `test-harness-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -110,19 +114,17 @@ export class BrokerHarness {
     const apiKey = await ensureApiKey();
     this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
-    const clientOpts: AgentRelayClientOptions = {
+    const clientOpts: AgentRelaySpawnOptions = {
       binaryPath: this.opts.binaryPath,
       binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
       channels: this.opts.channels,
       cwd: this.opts.cwd,
-      requestTimeoutMs: this.opts.requestTimeoutMs,
-      shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await AgentRelayClient.start(clientOpts);
+    this.client = await AgentRelayClient.spawn(clientOpts);
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {
@@ -140,7 +142,6 @@ export class BrokerHarness {
       channels: this.opts.channels,
       cwd: this.opts.cwd,
       requestTimeoutMs: this.opts.requestTimeoutMs,
-      shutdownTimeoutMs: this.opts.shutdownTimeoutMs,
       env: this.opts.env,
     });
 

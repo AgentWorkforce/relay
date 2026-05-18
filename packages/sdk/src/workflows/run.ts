@@ -1,8 +1,9 @@
 import type { AgentRelayOptions } from '../relay.js';
 import type { DryRunReport, TrajectoryConfig, WorkflowRunRow } from './types.js';
-import { WorkflowRunner, type WorkflowEventListener, type VariableContext } from './runner.js';
+import { WorkflowRunner, type WorkflowEventListener } from './runner.js';
 import { createDefaultEventLogger } from './default-logger.js';
 import { formatDryRunReport } from './dry-run-format.js';
+import type { VariableContext } from './template-resolver.js';
 
 /**
  * Options for the `runWorkflow` convenience function.

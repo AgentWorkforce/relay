@@ -9,19 +9,27 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   issues: write
   pull-requests: write
 
 concurrency:
   group: sst-web-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # SST uses stage locks; queue updates for the same PR instead of interrupting
+  # an in-flight deploy and leaving the next run to clean up.
+  cancel-in-progress: false
 
 jobs:
   deploy-preview:
     name: Deploy Preview
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    environment: preview
     timeout-minutes: 30
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      SST_STAGE: pr-${{ github.event.pull_request.number }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,18 +44,22 @@ jobs:
         run: npm ci
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5.1.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-preview-pr-${{ github.run_id }}
+
+      - name: Assert AWS account
+        run: bash .github/scripts/assert-aws-account.sh "$AWS_ACCOUNT_ID" "$SST_STAGE" deploy
 
       - name: Deploy SST preview
         working-directory: web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ../node_modules/.bin/sst deploy --stage pr-${{ github.event.pull_request.number }}
+          CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+        run: ../node_modules/.bin/sst deploy --stage "$SST_STAGE"
 
       - name: Comment on PR
         continue-on-error: true
@@ -82,7 +94,12 @@ jobs:
     name: Cleanup Preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    environment: preview
     timeout-minutes: 15
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      SST_STAGE: pr-${{ github.event.pull_request.number }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -97,15 +114,19 @@ jobs:
         run: npm ci
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5.1.1
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-preview-cleanup-${{ github.run_id }}
+
+      - name: Assert AWS account
+        run: bash .github/scripts/assert-aws-account.sh "$AWS_ACCOUNT_ID" "$SST_STAGE" remove
 
       - name: Remove SST preview
         working-directory: web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ../node_modules/.bin/sst remove --stage pr-${{ github.event.pull_request.number }}
+          CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+        run: ../node_modules/.bin/sst remove --stage "$SST_STAGE"

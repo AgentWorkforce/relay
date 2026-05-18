@@ -74,7 +74,10 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
       }
     });
     readonly server: {
-      _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<{ tools?: Array<Record<string, unknown>> }>>;
+      _requestHandlers: Map<
+        string,
+        (req: unknown, extra: unknown) => Promise<{ tools?: Array<Record<string, unknown>> }>
+      >;
       setRequestHandler: ReturnType<typeof vi.fn>;
       sendResourceUpdated: ReturnType<typeof vi.fn>;
     };
@@ -99,9 +102,11 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
             })),
           ],
         ]),
-        setRequestHandler: vi.fn((_schema: unknown, handler: (req: unknown, extra: unknown) => Promise<any>) => {
-          this.listToolsHandler = handler;
-        }),
+        setRequestHandler: vi.fn(
+          (_schema: unknown, handler: (req: unknown, extra: unknown) => Promise<any>) => {
+            this.listToolsHandler = handler;
+          }
+        ),
         sendResourceUpdated: vi.fn(async (_payload: unknown) => undefined),
       };
       serverInstances.push(this);
@@ -116,19 +121,23 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
     }
   }
 
-  const createInternalRelayCast = vi.fn((config: Record<string, unknown>, origin: Record<string, unknown>) => {
-    const inbox = vi.fn(async (token?: string) => behavior.inboxImpl(String(token ?? '')));
-    const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) => behavior.registerImpl(input));
-    const as = vi.fn((token: string) => ({
-      inbox: vi.fn(async () => behavior.inboxImpl(token)),
-      token,
-    }));
-    relayInstances.push({ config, origin, inbox, registerOrRotate, as });
-    return {
-      agents: { registerOrRotate },
-      as,
-    };
-  });
+  const createInternalRelayCast = vi.fn(
+    (config: Record<string, unknown>, origin: Record<string, unknown>) => {
+      const inbox = vi.fn(async (token?: string) => behavior.inboxImpl(String(token ?? '')));
+      const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) =>
+        behavior.registerImpl(input)
+      );
+      const as = vi.fn((token: string) => ({
+        inbox: vi.fn(async () => behavior.inboxImpl(token)),
+        token,
+      }));
+      relayInstances.push({ config, origin, inbox, registerOrRotate, as });
+      return {
+        agents: { registerOrRotate },
+        as,
+      };
+    }
+  );
 
   const createInternalWsClient = vi.fn((config: Record<string, unknown>, origin: Record<string, unknown>) => {
     if (options.wsClientThrows) {
@@ -164,7 +173,9 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   vi.doMock('@relaycast/mcp', () => ({ MCP_VERSION: 'test-mcp-version' }));
   vi.doMock('@relaycast/mcp/dist/piggyback.js', () => ({ enablePiggyback }));
   vi.doMock('@relaycast/mcp/dist/resources/definitions.js', () => ({ registerResourceDefinitions }));
-  vi.doMock('@relaycast/mcp/dist/resources/subscriptions.js', () => ({ SubscriptionManager: FakeSubscriptionManager }));
+  vi.doMock('@relaycast/mcp/dist/resources/subscriptions.js', () => ({
+    SubscriptionManager: FakeSubscriptionManager,
+  }));
   vi.doMock('@relaycast/mcp/dist/tools/channels.js', () => ({ registerChannelTools }));
   vi.doMock('@relaycast/mcp/dist/tools/features.js', () => ({ registerFeatureTools }));
   vi.doMock('@relaycast/mcp/dist/tools/messaging.js', () => ({ registerMessagingTools }));
@@ -290,7 +301,9 @@ describe('createPatchedRelayMcpServer', () => {
       persona: 'Coverage tester',
       metadata: { model: 'gpt-5' },
     });
-    const workspaceRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'rk_live_created');
+    const workspaceRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_created'
+    );
     expect(workspaceRelay?.registerOrRotate).toHaveBeenCalledWith({
       name: 'WorkerA',
       type: 'human',
@@ -414,7 +427,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
     });
   });
 
-  it('reuses an existing agent token when inbox auth succeeds', async () => {
+  it('trusts an at_live_* agent token without probing or rotating', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
     const options = {
       apiKey: 'rk_live_workspace',
@@ -427,53 +440,59 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
     const result = await mod.resolvePatchedStdioBootstrapOptions(options);
 
     expect(result).toEqual(options);
-    expect(mocks.behavior.inboxImpl).toHaveBeenCalledWith('at_live_existing');
+    // No probe — D1 read-replica lag can spuriously 401 a fresh token, and
+    // rotating UPDATEs the tokenHash, permanently killing the original.
+    expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
     expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
   });
 
-  it('rotates the agent token when the previous token is unauthorized', async () => {
+  it('mints a relaycast token when the caller provides a non-relaycast token (e.g. JWT)', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
-    mocks.behavior.inboxImpl = vi.fn(async () => {
-      throw { statusCode: 401 };
-    });
     mocks.behavior.registerImpl = vi.fn(async () => ({
-      name: 'WorkerA-rebound',
-      token: 'at_live_rebound',
+      name: 'WorkerA',
+      token: 'at_live_minted',
     }));
 
     const result = await mod.resolvePatchedStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
-      agentToken: 'at_live_stale',
+      // A relayauth RS256 JWT, as `relay on start` plumbs into RELAY_AGENT_TOKEN.
+      agentToken: 'eyJhbGciOiJSUzI1NiJ9.payload.sig',
       agentType: 'human',
     });
 
+    expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
     expect(mocks.behavior.registerImpl).toHaveBeenCalledWith({
       name: 'WorkerA',
       type: 'human',
     });
     expect(result).toEqual({
       apiKey: 'rk_live_workspace',
-      agentName: 'WorkerA-rebound',
-      agentToken: 'at_live_rebound',
+      agentName: 'WorkerA',
+      agentToken: 'at_live_minted',
       agentType: 'human',
     });
   });
 
-  it('rethrows non-auth inbox failures instead of silently rebinding', async () => {
+  it('mints a relaycast token when no agentToken is provided', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
-    const failure = new Error('relay unavailable');
-    mocks.behavior.inboxImpl = vi.fn(async () => {
-      throw failure;
+    mocks.behavior.registerImpl = vi.fn(async () => ({
+      name: 'WorkerA',
+      token: 'at_live_minted',
+    }));
+
+    const result = await mod.resolvePatchedStdioBootstrapOptions({
+      apiKey: 'rk_live_workspace',
+      agentName: 'WorkerA',
+      agentType: 'agent',
     });
 
-    await expect(
-      mod.resolvePatchedStdioBootstrapOptions({
-        apiKey: 'rk_live_workspace',
-        agentName: 'WorkerA',
-        agentToken: 'at_live_existing',
-      })
-    ).rejects.toBe(failure);
+    expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
+    expect(mocks.behavior.registerImpl).toHaveBeenCalledWith({
+      name: 'WorkerA',
+      type: 'agent',
+    });
+    expect(result.agentToken).toBe('at_live_minted');
   });
 });
 

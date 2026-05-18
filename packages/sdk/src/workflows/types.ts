@@ -5,6 +5,33 @@
  * and database row representations.
  */
 
+export * from '@agent-relay/workflow-types';
+export type {
+  AccessPreset,
+  AgentCli,
+  AgentDefinition,
+  AgentPermissions,
+  AgentPreset,
+  NetworkPermission,
+  PermissionProfileDefinition,
+  RunnerStepExecutor,
+  SwarmPattern,
+  VerificationCheck,
+  WorkflowStep,
+  WorkflowStepType,
+} from '@agent-relay/workflow-types';
+
+import type {
+  AccessPreset,
+  AgentDefinition,
+  AgentPermissions,
+  NetworkPermission,
+  PermissionProfileDefinition,
+  SwarmPattern,
+  WorkflowStep,
+  WorkflowStepType,
+} from '@agent-relay/workflow-types';
+
 // ── relay.yaml top-level config ─────────────────────────────────────────────
 
 /** Top-level relay.yaml configuration file structure. */
@@ -12,6 +39,8 @@ export interface RelayYamlConfig {
   version: string;
   name: string;
   description?: string;
+  /** Reusable permission profiles that agents can reference via permissions.profile. */
+  permission_profiles?: Record<string, PermissionProfileDefinition>;
   /** Named paths to external directories used by this workflow.
    *  The primary working directory defaults to cwd and does not need to be declared.
    *  Use this to declare additional directories so the runner can validate them
@@ -68,12 +97,36 @@ export interface IdleNudgeConfig {
   maxNudges?: number;
 }
 
+/** Provider-specific credential settings for the credential proxy. */
+export interface CredentialProxyProviderConfig {
+  /** Reference to the credential in the credential store. */
+  credentialId: string;
+  /** Optional env var name to read the provider API key from as a fallback. */
+  apiKeyEnvVar?: string;
+}
+
+/** Swarm-level credential proxy configuration. */
+export interface CredentialProxyConfig {
+  /** Proxy endpoint URL. */
+  proxyUrl: string;
+  /** JWT signing secret. Defaults to env RELAY_PROXY_JWT_SECRET when omitted. */
+  jwtSecret?: string;
+  /** Default max-token budget per agent session. */
+  defaultBudget?: number;
+  /** Provider credential mappings keyed by provider name. */
+  providers: Record<string, CredentialProxyProviderConfig>;
+}
+
 /** Swarm-level settings controlling the overall pattern. */
 export interface SwarmConfig {
   pattern: SwarmPattern;
   maxConcurrency?: number;
   timeoutMs?: number;
+  /** Max total tokens across all steps in the workflow. */
+  tokenBudget?: number;
   channel?: string;
+  /** Optional credential proxy configuration for agent API access. */
+  credentialProxy?: CredentialProxyConfig;
   /** Idle agent detection and nudging configuration for interactive agents. */
   idleNudge?: IdleNudgeConfig;
   /**
@@ -85,80 +138,117 @@ export interface SwarmConfig {
   completionGracePeriodMs?: number;
 }
 
-export type SwarmPattern =
-  | 'fan-out'
-  | 'pipeline'
-  | 'hub-spoke'
-  | 'consensus'
-  | 'mesh'
-  | 'handoff'
-  | 'cascade'
-  | 'dag'
-  | 'debate'
-  | 'hierarchical'
-  // Additional patterns
-  | 'map-reduce'
-  | 'scatter-gather'
-  | 'supervisor'
-  | 'reflection'
-  | 'red-team'
-  | 'verifier'
-  | 'auction'
-  | 'escalation'
-  | 'saga'
-  | 'circuit-breaker'
-  | 'blackboard'
-  | 'swarm'
-  | 'competitive'
-  | 'review-loop';
+// ── Compiled / resolved permissions ─────────────────────────────────────────
 
-// ── Agent definitions ───────────────────────────────────────────────────────
+/**
+ * Fully resolved agent permissions after merging:
+ *   dotfile patterns + access preset + explicit YAML file rules + custom scopes
+ *
+ * Produced by the permission resolver at spawn time and used to:
+ *   1. Mint the agent's relayauth token (scopes)
+ *   2. Configure the relayfile mount (readonlyPaths, readwritePaths, deniedPaths)
+ *   3. Enforce runtime restrictions (network, exec allowlist)
+ */
+export interface CompiledAgentPermissions {
+  /** Agent this permission set applies to. */
+  agentName: string;
 
-export type AgentPreset = 'lead' | 'worker' | 'reviewer' | 'analyst';
+  /** Workspace the agent belongs to. */
+  workspace: string;
 
-/** Definition of an agent participating in a workflow. */
-export interface AgentDefinition {
-  name: string;
-  cli: AgentCli;
-  role?: string;
-  task?: string;
-  channels?: string[];
-  constraints?: AgentConstraints;
-  /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
-   *  It receives its task as a CLI prompt argument and returns stdout as output.
-   *  Default: true (interactive PTY mode). */
-  interactive?: boolean;
-  /** Working directory for this agent, resolved relative to the YAML file. */
-  cwd?: string;
-  /** Sets this agent's working directory to a named entry from the top-level `paths` array.
-   *  Mutually exclusive with `cwd`. If omitted, the agent runs in the runner's
-   *  working directory (the directory containing the workflow YAML file). */
-  workdir?: string;
-  /** Additional paths the agent needs read/write access to. */
-  additionalPaths?: string[];
-  /**
-   * Role preset that automatically configures interactive mode and injects
-   * appropriate task guardrails. Overrides are still accepted.
-   *   lead     → interactive PTY, relay-aware, coordinates workers via channels
-   *   worker   → interactive: false, produces structured output, no sub-agents
-   *   reviewer → interactive: false, reads artifacts, produces verdict, no sub-agents
-   *   analyst  → interactive: false, reads code/files, writes findings, no sub-agents
-   */
-  preset?: AgentPreset;
-  /** System prompt / skills for API-mode agents (cli: 'api'). */
-  skills?: string;
+  /** The effective access level after resolution. */
+  effectiveAccess: AccessPreset;
+
+  /** Whether dotfile patterns were inherited. */
+  inherited: boolean;
+
+  /** Source of each permission layer for audit/debug. */
+  sources: PermissionSource[];
+
+  // ── Resolved file paths ──────────────────────────────────────────────────
+
+  /** Glob patterns that resolved to read-only access. */
+  readonlyPatterns: string[];
+
+  /** Glob patterns that resolved to read-write access. */
+  readwritePatterns: string[];
+
+  /** Glob patterns explicitly denied (no access). */
+  deniedPatterns: string[];
+
+  /** Concrete file paths with read-only access (after walking the project). */
+  readonlyPaths: string[];
+
+  /** Concrete file paths with read-write access (after walking the project). */
+  readwritePaths: string[];
+
+  /** Concrete file paths denied to the agent. */
+  deniedPaths: string[];
+
+  // ── Token scopes ─────────────────────────────────────────────────────────
+
+  /** Merged relayauth scopes for the agent's token.
+   *  Combines auto-generated file scopes + explicit custom scopes. */
+  scopes: string[];
+
+  // ── Runtime restrictions ─────────────────────────────────────────────────
+
+  /** Network access control. Undefined means unrestricted. */
+  network?: NetworkPermission;
+
+  /** Allowed exec command prefixes. Undefined means unrestricted. */
+  exec?: string[];
+
+  // ── ACL (for relayfile mount) ────────────────────────────────────────────
+
+  /** Directory-level ACL rules for the relayfile mount.
+   *  Keys are normalized directory paths, values are rule arrays. */
+  acl: Record<string, string[]>;
+
+  /** Summary counts for quick inspection. */
+  summary: {
+    readonly: number;
+    readwrite: number;
+    denied: number;
+    customScopes: number;
+  };
 }
 
-export type AgentCli = 'claude' | 'codex' | 'gemini' | 'aider' | 'goose' | 'opencode' | 'droid' | 'cursor' | 'cursor-agent' | 'agent' | 'api';
+/** Identifies where a permission rule originated. */
+export interface PermissionSource {
+  /** Source type. */
+  type: 'dotfile' | 'preset' | 'yaml' | 'scope';
+  /** Human-readable description (e.g. '.agentignore', 'access: readonly'). */
+  label: string;
+  /** Number of rules contributed by this source. */
+  ruleCount: number;
+}
 
-/** Resource and behavioral constraints for an agent. */
-export interface AgentConstraints {
-  maxTokens?: number;
-  timeoutMs?: number;
-  retries?: number;
-  model?: string;
-  /** Silence duration in seconds before the agent is considered idle (0 = disabled, default: 30). */
-  idleThresholdSecs?: number;
+// ── Type guards ─────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the agent has restricted permissions —
+ * i.e., it has explicit permissions set AND those permissions limit access
+ * beyond the default readwrite+inherit behavior.
+ *
+ * An agent is considered restricted if any of the following are true:
+ *   - access is 'readonly' or 'restricted'
+ *   - files.deny has entries
+ *   - network is false or an allowlist/denylist object
+ *   - exec allowlist is set (any commands at all = restricted execution)
+ *   - inherit is explicitly false (opts out of dotfile protections)
+ */
+export function isRestrictedAgent(agent: AgentDefinition): boolean {
+  const perms = agent.permissions;
+  if (!perms) return false;
+
+  if (perms.access === 'readonly' || perms.access === 'restricted') return true;
+  if (perms.files?.deny && perms.files.deny.length > 0) return true;
+  if (perms.network === false || (typeof perms.network === 'object' && perms.network !== null)) return true;
+  if (perms.exec && perms.exec.length > 0) return true;
+  if (perms.inherit === false) return true;
+
+  return false;
 }
 
 // ── Workflow definitions ────────────────────────────────────────────────────
@@ -184,9 +274,6 @@ export interface WorkflowDefinition {
   steps: WorkflowStep[];
   onError?: 'fail' | 'skip' | 'retry';
 }
-
-/** Step type: agent (LLM-powered), deterministic (shell command), worktree (git worktree setup), or integration (external service). */
-export type WorkflowStepType = 'agent' | 'deterministic' | 'worktree' | 'integration';
 
 // ── Custom step definitions ─────────────────────────────────────────────────
 
@@ -234,104 +321,15 @@ export interface CustomStepsConfig {
   steps: Record<string, CustomStepDefinition>;
 }
 
-/**
- * A single step within a workflow.
- *
- * Steps can be either:
- * - Agent steps (type: undefined or "agent"): Spawn an LLM agent to execute a task
- * - Deterministic steps (type: "deterministic"): Execute a shell command
- */
-export interface WorkflowStep {
-  /** Unique step name within the workflow. */
-  name: string;
-  /** Step type: "agent" (default) or "deterministic". */
-  type?: WorkflowStepType;
-  /** Reference to a custom step definition from .relay/steps.yaml. */
-  use?: string;
-  /** Step names that must complete before this step runs. */
-  dependsOn?: string[];
-  /** Timeout in milliseconds. */
-  timeoutMs?: number;
-
-  // ── Agent step fields ──────────────────────────────────────────────────────
-  /** Name of the agent to execute this step (required for agent steps). */
-  agent?: string;
-  /** Task description for the agent (required for agent steps). */
-  task?: string;
-  /** Verification check to validate step output. */
-  verification?: VerificationCheck;
-  /** Number of retry attempts on failure. */
-  retries?: number;
-  /** Maximum iterations for steps that may need to retry (e.g., fix-failures). */
-  maxIterations?: number;
-  /** Explicit working directory for this step. */
-  cwd?: string;
-
-  // ── Deterministic step fields ──────────────────────────────────────────────
-  /** Shell command to execute (required for deterministic steps). */
-  command?: string;
-  /** Sets this step's working directory to a named entry from the top-level `paths` array.
-   *  If omitted, the step inherits the agent's workdir, or falls back to the runner's
-   *  working directory. */
-  workdir?: string;
-  /** Fail if command exit code is non-zero. Default: true. */
-  failOnError?: boolean;
-  /** Capture stdout as step output for downstream steps. Default: true. */
-  captureOutput?: boolean;
-
-  // ── Integration step fields ────────────────────────────────────────────────
-  /** Integration name: 'github', 'linear', 'slack' (required for integration steps). */
-  integration?: string;
-  /** Action within the integration, e.g. 'create-pr', 'create-branch' (required for integration steps). */
-  action?: string;
-  /** Action parameters, supports {{steps.X.output}} interpolation. */
-  params?: Record<string, string>;
-
-  // ── Worktree step fields ──────────────────────────────────────────────────
-  /** Branch name for the worktree (required for worktree steps). */
-  branch?: string;
-  /** Base branch to create the worktree from. Default: HEAD. */
-  baseBranch?: string;
-  /** Explicit path for the worktree. Default: .worktrees/<step-name>. */
-  path?: string;
-  /** Create the branch if it doesn't exist. Default: true. */
-  createBranch?: boolean;
-}
-
-/** Type guard: Check if a step is a deterministic (shell command) step. */
-export function isDeterministicStep(step: WorkflowStep): boolean {
-  return step.type === 'deterministic';
-}
-
-/** Type guard: Check if a step is a worktree (git worktree setup) step. */
-export function isWorktreeStep(step: WorkflowStep): boolean {
-  return step.type === 'worktree';
-}
-
-/** Type guard: Check if a step is an integration (external service) step. */
-export function isIntegrationStep(step: WorkflowStep): boolean {
-  return step.type === 'integration';
-}
-
-/** Type guard: Check if a step uses a custom step definition. */
-export function isCustomStep(step: WorkflowStep): boolean {
-  return step.use !== undefined;
-}
-
-/** Type guard: Check if a step is an agent (LLM-powered) step. */
-export function isAgentStep(step: WorkflowStep): boolean {
-  return step.type !== 'deterministic' && step.type !== 'worktree' && step.type !== 'integration';
-}
-
-// Legacy type aliases for backward compatibility
-export type AgentWorkflowStep = WorkflowStep;
-export type DeterministicWorkflowStep = WorkflowStep;
-
-/** Verification check to validate a step's output. */
-export interface VerificationCheck {
-  type: 'output_contains' | 'exit_code' | 'file_exists' | 'custom';
-  value: string;
-  description?: string;
+/** Diagnostic output captured after a verification failure analysis run. */
+export interface DiagnosticResult {
+  agentName: string;
+  analysis: string;
+  durationMs: number;
+  tokens?: {
+    input: number;
+    output: number;
+  };
 }
 
 // ── Completion evidence ─────────────────────────────────────────────────────
@@ -489,6 +487,10 @@ export interface ErrorHandlingConfig {
   maxRetries?: number;
   retryDelayMs?: number;
   notifyChannel?: string;
+  /** Agent to use when a deterministic gate fails and needs code/workflow repair. */
+  repairAgent?: string;
+  /** Retry budget for repair agents before terminal failure. Set 0 to disable repair agents. */
+  repairRetries?: number;
 }
 
 // ── Dry-run report types ────────────────────────────────────────────────
@@ -509,6 +511,15 @@ export interface DryRunReport {
   description?: string;
   pattern: string;
   agents: Array<{ name: string; cli: string; role?: string; cwd?: string; stepCount: number }>;
+  permissions?: Array<{
+    agent: string;
+    access: string;
+    readPaths: number;
+    writePaths: number;
+    denyPaths: number;
+    scopes: number;
+    source: 'yaml' | 'preset' | 'dotfiles' | 'none';
+  }>;
   waves: DryRunWave[];
   totalSteps: number;
   maxConcurrency?: number;
@@ -571,6 +582,7 @@ export type WorkflowStepCompletionReason =
   | 'completed_by_process_exit'
   | 'retry_requested_by_owner'
   | 'failed_verification'
+  | 'failed_verification_with_diagnostic'
   | 'failed_owner_decision'
   | 'failed_no_evidence';
 
@@ -595,4 +607,34 @@ export interface WorkflowStepRow {
   retryCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// ── ProcessBackend: cloud-injected execution environment ─────────────────────
+//
+// Relay owns command construction, auth env, cwd, timeout, and step lifecycle.
+// The backend owns execution environments (create VM, run command, destroy VM).
+// uploadFile is reserved for future file asset staging; current executors run
+// commands directly with env/cwd/timeout passed through exec options.
+
+/** Backend for creating isolated execution environments (e.g. Daytona sandboxes). */
+export interface ProcessBackend {
+  /** Create an isolated execution environment. */
+  createEnvironment(label: string): Promise<ProcessEnvironment>;
+}
+
+/** An isolated execution environment provisioned by a ProcessBackend. */
+export interface ProcessEnvironment {
+  /** Unique identifier for this environment. */
+  id: string;
+  /** Home directory inside the environment. */
+  homeDir: string;
+  /** Execute a shell command in the environment. */
+  exec(
+    command: string,
+    opts?: { cwd?: string; env?: Record<string, string>; timeoutSeconds?: number }
+  ): Promise<{ output: string; exitCode: number }>;
+  /** Upload a file into the environment. */
+  uploadFile(content: string | Buffer, remotePath: string): Promise<void>;
+  /** Tear down the environment and release resources. */
+  destroy(): Promise<void>;
 }

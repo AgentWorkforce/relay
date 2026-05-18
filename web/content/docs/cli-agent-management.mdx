@@ -1,0 +1,72 @@
+---
+title: 'Agent management'
+description: 'Spawn agents from the terminal, inspect active workers, tail logs, and release them.'
+---
+
+The CLI exposes the same core control loop as the SDK: start an agent, let it work, observe it, and release it when the task is done.
+
+## Spawn an agent
+
+```bash
+agent-relay spawn reviewer claude "Review the latest auth changes"
+```
+
+Useful options:
+
+- `--cwd <path>` runs the agent in a specific working directory.
+- `--team <team>` tags the agent with a team name.
+- `--model <model>` overrides the default model for that CLI.
+- `--continue` or `--continue-from <name>` resumes a previously released agent identity.
+- `--shadow-mode <mode>` and `--shadow-of <name>` configure shadow execution for advanced setups.
+
+You can also pipe the task through stdin:
+
+```bash
+printf '%s\n' "Review the auth diff and list regressions." | agent-relay spawn reviewer claude
+```
+
+## Inspect active agents
+
+```bash
+agent-relay who
+agent-relay agents:logs reviewer --follow
+```
+
+- `who` shows agents active in the last 30 seconds.
+- `agents:logs` tails stdout and stderr from a spawned worker.
+
+## Release or retarget an agent
+
+```bash
+agent-relay release reviewer
+agent-relay set-model reviewer sonnet
+```
+
+- `release` shuts down a spawned agent cleanly through the broker API.
+- `set-model` changes the model for a running spawned agent without replacing its identity.
+
+## Practical pattern
+
+```bash
+agent-relay up --background
+agent-relay spawn planner claude "Break the task into three steps"
+agent-relay spawn coder codex "Implement the approved plan"
+agent-relay send planner "Coordinate with coder and keep updates concise."
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Broker lifecycle" href="/docs/cli-broker-lifecycle">
+    Start the broker before spawning long-lived workers.
+  </Card>
+  <Card title="Messaging" href="/docs/cli-messaging">
+    Send follow-up instructions and inspect inbox state.
+  </Card>
+  <Card title="Spawning an agent" href="/docs/spawning-an-agent">
+    SDK version of the same operation.
+  </Card>
+  <Card title="Workforce" href="/docs/workforce">
+    Move from individual workers to repeatable team structure.
+  </Card>
+</CardGroup>

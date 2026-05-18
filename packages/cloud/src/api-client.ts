@@ -1,4 +1,4 @@
-import { REFRESH_WINDOW_MS } from "./types.js";
+import { REFRESH_WINDOW_MS } from './types.js';
 
 export type CloudApiClientOptions = {
   apiUrl: string;
@@ -16,12 +16,14 @@ export type CloudApiClientSnapshot = {
   refreshTokenExpiresAt?: string;
 };
 
+type HeaderInput = ConstructorParameters<typeof Headers>[0];
+
 function trimLeadingSlash(p: string): string {
-  return p.replace(/^\/+/, "");
+  return p.replace(/^\/+/, '');
 }
 
 function withTrailingSlash(p: string): string {
-  return p.endsWith("/") ? p : `${p}/`;
+  return p.endsWith('/') ? p : `${p}/`;
 }
 
 export function buildApiUrl(apiUrl: string, p: string): URL {
@@ -93,10 +95,10 @@ export class CloudApiClient {
   }
 
   async revoke(): Promise<void> {
-    const response = await fetch(buildApiUrl(this.options.apiUrl, "/api/v1/auth/token/revoke"), {
-      method: "POST",
+    const response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/revoke'), {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({ token: this.refreshToken }),
     });
@@ -123,10 +125,10 @@ export class CloudApiClient {
   }
 
   private async doRefresh(): Promise<void> {
-    const response = await fetch(buildApiUrl(this.options.apiUrl, "/api/v1/auth/token/refresh"), {
-      method: "POST",
+    const response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'), {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({ refreshToken: this.refreshToken }),
     });
@@ -143,7 +145,7 @@ export class CloudApiClient {
     };
 
     if (!payload.accessToken || !payload.accessTokenExpiresAt || !payload.refreshToken) {
-      throw new Error("Refresh response missing token fields");
+      throw new Error('Refresh response missing token fields');
     }
 
     this.accessToken = payload.accessToken;
@@ -152,9 +154,9 @@ export class CloudApiClient {
     this.refreshTokenExpiresAt = payload.refreshTokenExpiresAt;
   }
 
-  private buildHeaders(headers: HeadersInit | undefined): Headers {
+  private buildHeaders(headers: HeaderInput | undefined): Headers {
     const merged = new Headers(headers);
-    merged.set("Authorization", `Bearer ${this.accessToken}`);
+    merged.set('Authorization', `Bearer ${this.accessToken}`);
     return merged;
   }
 

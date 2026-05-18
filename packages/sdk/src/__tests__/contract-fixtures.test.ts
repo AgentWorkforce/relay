@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'vitest';
 import { fileURLToPath } from 'node:url';
 
-import { AgentRelayClient, AgentRelayProtocolError } from '../client.js';
+import { AgentRelayClient } from '../client.js';
 
 type RelayErrorFixture = {
   relay_errors: Array<{ code: string; message: string; retryable: boolean; statusCode?: number }>;
@@ -160,31 +161,42 @@ test('contracts: broker-sdk unsupported_operation fallback maps to shared RelayE
   const fixture = readFixture<RelayErrorFixture>('error-fixtures.json');
   const allowedCodes = new Set(fixture.relay_errors.map((entry) => entry.code));
 
-  const client = new AgentRelayClient();
-  (client as unknown as { start: () => Promise<void> }).start = async () => undefined;
-  (
-    client as unknown as {
-      requestOk: () => Promise<never>;
-    }
-  ).requestOk = async () => {
-    throw new AgentRelayProtocolError({
-      code: 'unsupported_operation',
-      message: 'send_message unsupported',
-      retryable: false,
-    });
-  };
-
-  const result = await client.sendMessage({
-    to: 'WorkerA',
-    text: 'contract-gate probe',
+  const server = createServer((_request, response) => {
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(
+      JSON.stringify({
+        code: 'unsupported_operation',
+        message: 'send_message unsupported',
+        retryable: false,
+      })
+    );
   });
 
-  assert.equal(result.event_id, 'unsupported_operation');
-  assert.equal(
-    result.event_id === 'unsupported_operation' || allowedCodes.has(result.event_id),
-    true,
-    `unsupported fallback code \"${result.event_id}\" is outside shared RelayErrorCode fixture set`
-  );
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+
+  try {
+    const client = new AgentRelayClient({ baseUrl: `http://127.0.0.1:${address.port}` });
+    const result = await client.sendMessage({
+      to: 'WorkerA',
+      text: 'contract-gate probe',
+    });
+
+    assert.equal(result.event_id, 'unsupported_operation');
+    assert.equal(
+      result.event_id === 'unsupported_operation' || allowedCodes.has(result.event_id),
+      true,
+      `unsupported fallback code \"${result.event_id}\" is outside shared RelayErrorCode fixture set`
+    );
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
 });
 
 test('contracts: broker-sdk event surface conforms to shared BrokerEvent fixture envelope', async () => {

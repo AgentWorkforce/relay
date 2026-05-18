@@ -4,6 +4,8 @@ import { useState, type FormEvent } from 'react';
 
 import s from './waitlist.module.css';
 
+const WAITLIST_ENDPOINT = process.env.NEXT_PUBLIC_WAITLIST_API_URL?.trim() || 'https://agentrelay.com/cloud/api/waitlist';
+
 export function WaitlistForm() {
   const [email, setEmail] = useState('');
   const [state, setState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -16,10 +18,10 @@ export function WaitlistForm() {
     setState('loading');
 
     try {
-      const res = await fetch('/api/waitlist', {
+      const res = await fetch(WAITLIST_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim() }),
+        body: JSON.stringify({ email: email.trim(), source: 'relay-web' }),
       });
 
       if (res.ok) {

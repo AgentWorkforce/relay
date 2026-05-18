@@ -24,15 +24,24 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { RelayCast } from '@relaycast/sdk';
+
+import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
 import {
-  AgentRelayClient,
-  AgentRelayProtocolError,
-  type AgentRelayClientOptions,
-  type SendMessageInput,
-  type SpawnPtyInput,
-} from './client.js';
+  buildPersonaSpawnSpec,
+  composePersonaTask,
+  loadPersona,
+  materializePersonaConfigFiles,
+  restorePersonaConfigFiles,
+  type PersonaLoadOptions,
+  type PersonaTier,
+  type ResolvedPersona,
+} from './personas.js';
+import { AgentRelayProtocolError } from './transport.js';
+import type { SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -75,6 +84,71 @@ function buildUnsupportedOperationMessage(
   };
 }
 
+interface WorkspaceRegistryEntry {
+  relaycastApiKey?: string;
+  relayfileUrl?: string;
+  createdAt?: string;
+  agents?: string[];
+}
+
+type WorkspaceRegistry = Record<string, WorkspaceRegistryEntry>;
+
+const WORKSPACE_ID_PREFIX = 'rw_';
+const WORKSPACE_ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function normalizeWorkspaceId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function generateWorkspaceId(): string {
+  const alphabetLength = WORKSPACE_ID_ALPHABET.length;
+  const maxUnbiasedValue = Math.floor(256 / alphabetLength) * alphabetLength;
+  let suffix = '';
+
+  while (suffix.length < 8) {
+    const bytes = randomBytes(8 - suffix.length);
+    for (const byte of bytes) {
+      if (byte >= maxUnbiasedValue) continue;
+      suffix += WORKSPACE_ID_ALPHABET[byte % alphabetLength];
+      if (suffix.length === 8) break;
+    }
+  }
+
+  return `${WORKSPACE_ID_PREFIX}${suffix}`;
+}
+
+function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const record = value as Record<string, unknown>;
+  const relaycastApiKey =
+    typeof record.relaycastApiKey === 'string' && record.relaycastApiKey.trim()
+      ? record.relaycastApiKey.trim()
+      : undefined;
+  const relayfileUrl =
+    typeof record.relayfileUrl === 'string' && record.relayfileUrl.trim()
+      ? record.relayfileUrl.trim()
+      : undefined;
+  const createdAt =
+    typeof record.createdAt === 'string' && record.createdAt.trim() ? record.createdAt.trim() : undefined;
+  const agents = Array.isArray(record.agents)
+    ? record.agents
+        .filter((agent): agent is string => typeof agent === 'string')
+        .map((agent) => agent.trim())
+        .filter((agent) => agent.length > 0)
+    : undefined;
+
+  return {
+    ...(relaycastApiKey ? { relaycastApiKey } : {}),
+    ...(relayfileUrl ? { relayfileUrl } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(agents && agents.length > 0 ? { agents } : {}),
+  };
+}
+
 // ── Public types ────────────────────────────────────────────────────────────
 
 export interface Message {
@@ -100,6 +174,25 @@ export interface DeliveryState {
   to: string;
   status: DeliveryStateStatus;
   updatedAt: number;
+}
+
+export type AgentActivityReason =
+  | 'delivery_queued'
+  | 'delivery_injected'
+  | 'delivery_active'
+  | 'delivery_ack'
+  | 'delivery_failed'
+  | 'relay_inbound'
+  | 'agent_idle'
+  | 'agent_exited'
+  | 'agent_released';
+
+export interface AgentActivityChange {
+  name: string;
+  active: boolean;
+  pendingDeliveries: number;
+  reason: AgentActivityReason;
+  eventId?: string;
 }
 
 export interface SpawnLifecycleContext {
@@ -152,6 +245,14 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
+  agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
@@ -160,6 +261,34 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
 export interface SpawnAndWaitOptions extends SpawnOptions {
   timeoutMs?: number;
   waitForMessage?: boolean;
+}
+
+export interface SpawnPersonaOptions extends SpawnOptions {
+  /** Override the spawned agent's name. Defaults to the persona id. */
+  name?: string;
+  /** Initial task / user prompt for the agent. */
+  task?: string;
+  /** Persona tier to resolve. Defaults to 'best'. */
+  tier?: PersonaTier;
+  /**
+   * Override the persona search-dir cascade. When set, the default
+   * directories (cwd/agentworkforce/personas, ~/.agentworkforce/...) are
+   * skipped and only `searchDirs` is consulted.
+   */
+  searchDirs?: string[];
+  /** Extra dirs appended after the default cascade (unioned with searchDirs override). */
+  extraDirs?: string[];
+  /**
+   * cwd to use when resolving relative search dirs. Defaults to the spawn
+   * cwd (`options.cwd`) when set, else `process.cwd()`. Independent of
+   * the spawn working directory passed to the broker.
+   */
+  personaCwd?: string;
+  /**
+   * Override the resolved persona before translation. Useful for callers
+   * that want to load+adjust+spawn in one step (e.g. tweak permissions).
+   */
+  persona?: ResolvedPersona;
 }
 
 type AgentOutputPayload = { stream: string; chunk: string };
@@ -201,7 +330,10 @@ export interface Agent {
    * @param options.stream — if provided, only invoke callback when the event stream matches (e.g. 'stdout', 'stderr')
    * @param options.mode — 'chunk' for raw string callbacks, 'structured' for { stream, chunk } callbacks. Auto-detected if omitted.
    */
-  onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void;
+  onOutput(
+    callback: AgentOutputCallback,
+    options?: { stream?: string; mode?: 'chunk' | 'structured' }
+  ): () => void;
 }
 
 export interface HumanHandle {
@@ -227,6 +359,15 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   task?: string;
   model?: string;
   cwd?: string;
+  idleThresholdSecs?: number;
+  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
+   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
+   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
+   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
+  agentToken?: string;
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
@@ -236,17 +377,29 @@ export type EventHook<T> = ((value: T) => void) | null;
 
 export interface AgentRelayOptions {
   binaryPath?: string;
-  binaryArgs?: string[];
+  binaryArgs?: AgentRelayBrokerInitArgs;
   brokerName?: string;
   channels?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
-  shutdownTimeoutMs?: number;
   /**
-   * Name for the auto-created Relaycast workspace.
-   * If omitted, a random name is generated.
-   * Ignored when RELAY_API_KEY is already set in env or process.env.
+   * Relaycast workspace ID. Auto-generated when omitted. This is the id used
+   * for relaycast key lookup and surfaced via `RELAY_WORKSPACE_ID` /
+   * `RELAY_DEFAULT_WORKSPACE` to spawned agents.
+   *
+   * NOTE: this is a relaycast id, not a relayfile workspace id. They are
+   * independent. If the caller wants spawned agents to talk to a specific
+   * relayfile workspace, set `env.RELAYFILE_WORKSPACE` on the constructor.
+   */
+  workspaceId?: string;
+  /**
+   * Display name for an auto-created Relaycast workspace.
+   * If omitted, the unified workspace ID is used.
+   *
+   * @deprecated Since v1.x this field falls back to workspaceId when omitted,
+   * changing prior behavior where it was required for workspace naming.
+   * Callers relying on distinct naming should set this explicitly.
    */
   workspaceName?: string;
   /**
@@ -254,6 +407,13 @@ export interface AgentRelayOptions {
    * Defaults to RELAYCAST_BASE_URL env var or https://api.relaycast.dev.
    */
   relaycastBaseUrl?: string;
+  /**
+   * Default persona search-dir cascade for {@link AgentRelay.spawnPersona}.
+   * When set, replaces the built-in cascade
+   * (`<cwd>/agentworkforce/personas`, `~/.agentworkforce/...`). Per-call
+   * `searchDirs` on `spawnPersona` still overrides this.
+   */
+  personaDirs?: string[];
 }
 
 type OutputListener = {
@@ -265,6 +425,11 @@ type OutputListener = {
 type InternalAgent = Agent & {
   _setChannels: (channels: string[]) => void;
 };
+
+interface AgentActivityState {
+  active: boolean;
+  pendingDeliveries: Map<string, string>;
+}
 
 // ── AgentRelay facade ───────────────────────────────────────────────────────
 
@@ -280,6 +445,7 @@ export class AgentRelay {
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
   onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
+  onAgentActivityChanged: EventHook<AgentActivityChange> = null;
   onChannelSubscribed: ((agent: string, channels: string[]) => void) | null = null;
   onChannelUnsubscribed: ((agent: string, channels: string[]) => void) | null = null;
 
@@ -293,7 +459,7 @@ export class AgentRelay {
   /** Observer URL for the auto-created workspace (available after first spawn). */
   get observerUrl(): string | undefined {
     if (!this.relayApiKey) return undefined;
-    return `https://agentrelay.dev/observer?key=${this.relayApiKey}`;
+    return `https://agentrelay.com/observer?key=${this.relayApiKey}`;
   }
 
   // Shorthand spawners
@@ -302,20 +468,25 @@ export class AgentRelay {
   readonly gemini: AgentSpawner;
   readonly opencode: AgentSpawner;
 
-  private readonly clientOptions: AgentRelayClientOptions;
+  private readonly clientOptions: AgentRelaySpawnOptions;
   private readonly defaultChannels: string[];
+  private readonly requestedWorkspaceId?: string;
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
+  private readonly defaultPersonaDirs?: string[];
   private relayApiKey?: string;
+  private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
   private startPromise?: Promise<AgentRelayClient>;
   private unsubEvent?: () => void;
+  private readonly stderrListeners = new Set<(line: string) => void>();
   private readonly knownAgents = new Map<string, Agent>();
   private readonly readyAgents = new Set<string>();
   private readonly messageReadyAgents = new Set<string>();
   private readonly exitedAgents = new Set<string>();
   private readonly idleAgents = new Set<string>();
   private readonly deliveryStates = new Map<string, DeliveryState>();
+  private readonly agentActivityStates = new Map<string, AgentActivityState>();
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
   private readonly exitResolvers = new Map<
     string,
@@ -329,18 +500,26 @@ export class AgentRelay {
   private idleResolverSeq = 0;
 
   constructor(options: AgentRelayOptions = {}) {
+    const requestedWorkspaceId = normalizeWorkspaceId(options.workspaceId);
     this.defaultChannels = options.channels ?? ['general'];
+    this.requestedWorkspaceId = requestedWorkspaceId;
     this.workspaceName = options.workspaceName;
+    if (options.workspaceName && !options.workspaceId) {
+      console.warn(
+        '[AgentRelay] workspaceName without workspaceId is deprecated and will be removed in a future major version. ' +
+          'Set workspaceId explicitly to avoid silent behavior changes.'
+      );
+    }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
+    if (options.personaDirs) this.defaultPersonaDirs = [...options.personaDirs];
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
-      brokerName: options.brokerName ?? options.workspaceName,
+      brokerName: options.brokerName ?? options.workspaceName ?? requestedWorkspaceId,
       channels: this.defaultChannels,
       cwd: options.cwd,
       env: options.env,
       requestTimeoutMs: options.requestTimeoutMs,
-      shutdownTimeoutMs: options.shutdownTimeoutMs,
     };
 
     this.codex = this.createSpawner('codex', 'Codex', 'pty');
@@ -349,28 +528,133 @@ export class AgentRelay {
     this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
   }
 
+  private getWorkspaceRegistryPath(): string {
+    return path.join(this.clientOptions.cwd ?? process.cwd(), '.relay', 'workspaces.json');
+  }
+
+  private readWorkspaceRegistry(): WorkspaceRegistry {
+    const registryPath = this.getWorkspaceRegistryPath();
+    if (!existsSync(registryPath)) {
+      return {};
+    }
+
+    let raw: string;
+    try {
+      raw = readFileSync(registryPath, 'utf8').trim();
+    } catch {
+      return {};
+    }
+    if (!raw) {
+      return {};
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Registry file is corrupted (partial write, disk full, concurrent access).
+      // Return empty registry so callers can re-create it.
+      return {};
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const registry: WorkspaceRegistry = {};
+    for (const [workspaceId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const normalizedId = normalizeWorkspaceId(workspaceId);
+      if (!normalizedId) continue;
+      registry[normalizedId] = toWorkspaceRegistryEntry(entry);
+    }
+    return registry;
+  }
+
+  private writeWorkspaceRegistry(registry: WorkspaceRegistry): void {
+    const registryPath = this.getWorkspaceRegistryPath();
+    mkdirSync(path.dirname(registryPath), { recursive: true });
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  }
+
+  private persistWorkspaceMapping(workspaceId: string, apiKey: string): void {
+    const registry = this.readWorkspaceRegistry();
+    const existing = registry[workspaceId] ?? {};
+    registry[workspaceId] = {
+      ...existing,
+      relaycastApiKey: apiKey,
+      relayfileUrl: existing.relayfileUrl,
+      createdAt: existing.createdAt ?? new Date().toISOString(),
+      agents: existing.agents ?? [],
+    };
+    this.writeWorkspaceRegistry(registry);
+  }
+
+  private findMappedWorkspaceIdByApiKey(apiKey: string): string | undefined {
+    const registry = this.readWorkspaceRegistry();
+    for (const [workspaceId, entry] of Object.entries(registry)) {
+      if (entry.relaycastApiKey === apiKey) {
+        return workspaceId;
+      }
+    }
+    return undefined;
+  }
+
+  private getResolvedWorkspaceId(): string | undefined {
+    return this.resolvedWorkspaceId ?? this.requestedWorkspaceId;
+  }
+
+  private getRelaycastBaseUrl(): string {
+    return (
+      this.relaycastBaseUrl ??
+      this.clientOptions.env?.RELAYCAST_BASE_URL ??
+      process.env.RELAYCAST_BASE_URL ??
+      'https://api.relaycast.dev'
+    );
+  }
+
+  private applyWorkspaceEnv(workspaceId: string, apiKey: string): void {
+    // `workspaceId` here is the **relaycast** workspace id resolved by this
+    // SDK (auto-created or caller-supplied via `new AgentRelay({ workspaceId })`).
+    // Do NOT write it into `RELAYFILE_WORKSPACE` — relayfile and relaycast
+    // workspaces are independent ids and a relayfile JWT scoped to a
+    // different workspace will 403 with "workspace mismatch". Callers that
+    // share an id across both services (e.g. the canonical `relay on start`
+    // flow) set `RELAYFILE_WORKSPACE` themselves.
+    const env: NodeJS.ProcessEnv = {
+      ...(this.clientOptions.env ?? process.env),
+      RELAY_API_KEY: apiKey,
+      RELAY_DEFAULT_WORKSPACE: workspaceId,
+      RELAY_WORKSPACE_ID: workspaceId,
+      RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: workspaceId, api_key: apiKey }]),
+    };
+    if (this.relaycastBaseUrl) {
+      env.RELAYCAST_BASE_URL = this.relaycastBaseUrl;
+    }
+    this.clientOptions.env = env;
+  }
+
+  private async createMappedRelaycastWorkspace(workspaceId: string): Promise<string> {
+    const created = await RelayCast.createWorkspace(
+      this.workspaceName ?? workspaceId,
+      this.getRelaycastBaseUrl()
+    );
+    const workspace = created as { apiKey?: string; api_key?: string };
+    const apiKey = workspace.apiKey ?? workspace.api_key;
+    if (!apiKey) {
+      throw new Error('RelayCast.createWorkspace() did not return an API key');
+    }
+    return apiKey;
+  }
+
   /**
    * Subscribe to broker stderr output. Listener is wired immediately if the
    * client is already started, otherwise it is attached when the client starts.
    * Returns an unsubscribe function.
    */
   onBrokerStderr(listener: (line: string) => void): () => void {
-    if (this.client) {
-      return this.client.onBrokerStderr(listener);
-    }
-    // Queue it: once ensureStarted completes, wire it up
-    let unsub: (() => void) | undefined;
-    const queuedUnsub = () => {
-      unsub?.();
+    this.stderrListeners.add(listener);
+    return () => {
+      this.stderrListeners.delete(listener);
     };
-    // Use the start promise if one is pending
-    const promise = this.startPromise ?? this.ensureStarted();
-    promise
-      .then((c) => {
-        unsub = c.onBrokerStderr(listener);
-      })
-      .catch(() => {});
-    return queuedUnsub;
   }
 
   // ── Spawning ────────────────────────────────────────────────────────────
@@ -402,6 +686,7 @@ export class AgentRelay {
         model: input.model,
         cwd: input.cwd,
         team: input.team,
+        agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
@@ -444,6 +729,7 @@ export class AgentRelay {
       model: options?.model,
       cwd: options?.cwd,
       team: options?.team,
+      agentToken: options?.agentToken,
       shadowOf: options?.shadowOf,
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
@@ -462,6 +748,84 @@ export class AgentRelay {
       return this.waitForAgentMessage(name, timeoutMs ?? 60_000);
     }
     return this.waitForAgentReady(name, timeoutMs ?? 60_000);
+  }
+
+  /**
+   * Spawn an agent from a named AgentWorkforce persona.
+   *
+   * Looks up the persona JSON in the search-dir cascade
+   * (`<cwd>/agentworkforce/personas`, `<cwd>/.agentworkforce/workforce/personas`,
+   * `~/.agentworkforce/workforce/personas`, plus `AGENT_WORKFORCE_HOME`),
+   * resolves the requested tier, and translates it to spawnPty args via
+   * `@agentworkforce/harness-kit#buildInteractiveSpec`.
+   *
+   * For opencode, an `opencode.json` is materialized in the spawn cwd and
+   * automatically restored when the agent exits. For codex, the persona's
+   * systemPrompt is folded into the initial task (codex has no
+   * system-prompt flag). Translation warnings are surfaced via console.warn.
+   *
+   * @param personaId — id of the persona to load
+   * @param options — overrides for tier, search dirs, name, task, and the
+   *   underlying spawn options
+   */
+  async spawnPersona(personaId: string, options: SpawnPersonaOptions = {}): Promise<Agent> {
+    const personaCwd = options.personaCwd ?? options.cwd ?? process.cwd();
+    const searchDirs = options.searchDirs ?? this.defaultPersonaDirs;
+    const loadOpts: PersonaLoadOptions = {
+      cwd: personaCwd,
+      ...(searchDirs ? { searchDirs } : {}),
+      ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
+      ...(options.tier ? { tier: options.tier } : {}),
+    };
+    const persona = options.persona ?? loadPersona(personaId, loadOpts);
+    const spec = buildPersonaSpawnSpec(persona);
+
+    for (const warning of spec.warnings) {
+      console.warn(`[AgentRelay] ${warning}`);
+    }
+
+    const spawnCwd = options.cwd ?? process.cwd();
+    const writes =
+      spec.configFiles.length > 0 ? materializePersonaConfigFiles(spawnCwd, spec.configFiles) : [];
+
+    const baseArgs = options.args ?? [];
+    const mergedArgs = [...spec.args, ...baseArgs];
+    const task = composePersonaTask(spec, options.task);
+    const spawnName = options.name ?? persona.id;
+
+    let agent: Agent;
+    try {
+      agent = await this.spawnPty({
+        name: spawnName,
+        cli: spec.cli,
+        args: mergedArgs,
+        ...(task !== undefined ? { task } : {}),
+        channels: options.channels,
+        model: spec.model,
+        cwd: spawnCwd,
+        team: options.team,
+        agentToken: options.agentToken,
+        shadowOf: options.shadowOf,
+        shadowMode: options.shadowMode,
+        idleThresholdSecs: options.idleThresholdSecs,
+        restartPolicy: options.restartPolicy,
+        skipRelayPrompt: options.skipRelayPrompt,
+        onStart: options.onStart,
+        onSuccess: options.onSuccess,
+        onError: options.onError,
+      });
+    } catch (err) {
+      restorePersonaConfigFiles(writes);
+      throw err;
+    }
+
+    if (writes.length > 0) {
+      void agent.waitForExit().finally(() => {
+        restorePersonaConfigFiles(writes);
+      });
+    }
+
+    return agent;
   }
 
   // ── Human source ────────────────────────────────────────────────────────
@@ -594,7 +958,7 @@ export class AgentRelay {
   /** Pre-register a batch of agents with Relaycast before steps execute. */
   async preflightAgents(agents: Array<{ name: string; cli: string }>): Promise<void> {
     const client = await this.ensureStarted();
-    await client.preflightAgents(agents);
+    await client.preflight(agents);
   }
 
   /** List agents with PIDs from the broker (for worker registration). */
@@ -848,6 +1212,7 @@ export class AgentRelay {
     this.exitedAgents.clear();
     this.idleAgents.clear();
     this.deliveryStates.clear();
+    this.agentActivityStates.clear();
     this.outputListeners.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve('released');
@@ -878,6 +1243,90 @@ export class AgentRelay {
     updatedAt: number
   ): void {
     this.deliveryStates.set(eventId, { eventId, to, status, updatedAt });
+  }
+
+  private ensureAgentActivityState(name: string): AgentActivityState {
+    const existing = this.agentActivityStates.get(name);
+    if (existing) {
+      return existing;
+    }
+    const state: AgentActivityState = {
+      active: false,
+      pendingDeliveries: new Map<string, string>(),
+    };
+    this.agentActivityStates.set(name, state);
+    return state;
+  }
+
+  private getDeliveryActivityKey(deliveryId: string, eventId: string): string {
+    return deliveryId || eventId;
+  }
+
+  private markAgentDeliveryPending(
+    name: string,
+    deliveryId: string,
+    eventId: string,
+    reason: AgentActivityReason
+  ): void {
+    const state = this.ensureAgentActivityState(name);
+    state.pendingDeliveries.set(this.getDeliveryActivityKey(deliveryId, eventId), eventId);
+    this.setAgentActivity(name, state, state.pendingDeliveries.size > 0, reason, eventId);
+  }
+
+  private closeAgentDelivery(
+    name: string,
+    reason: AgentActivityReason,
+    eventId?: string,
+    deliveryId?: string
+  ): void {
+    const state = this.agentActivityStates.get(name);
+    if (!state) return;
+
+    const key = deliveryId && eventId ? this.getDeliveryActivityKey(deliveryId, eventId) : undefined;
+    if (key) {
+      state.pendingDeliveries.delete(key);
+    } else if (eventId) {
+      const matchingEntry = Array.from(state.pendingDeliveries.entries()).find(([, pendingEventId]) => {
+        return pendingEventId === eventId;
+      });
+      if (matchingEntry) {
+        state.pendingDeliveries.delete(matchingEntry[0]);
+      } else {
+        const oldestKey = state.pendingDeliveries.keys().next().value as string | undefined;
+        if (oldestKey) {
+          state.pendingDeliveries.delete(oldestKey);
+        }
+      }
+    }
+
+    this.setAgentActivity(name, state, state.pendingDeliveries.size > 0, reason, eventId);
+  }
+
+  private clearAgentDeliveries(name: string, reason: AgentActivityReason, eventId?: string): void {
+    const state = this.agentActivityStates.get(name);
+    if (!state) return;
+    state.pendingDeliveries.clear();
+    this.setAgentActivity(name, state, false, reason, eventId);
+  }
+
+  private setAgentActivity(
+    name: string,
+    state: AgentActivityState,
+    active: boolean,
+    reason: AgentActivityReason,
+    eventId?: string
+  ): void {
+    if (state.active === active) {
+      return;
+    }
+    state.active = active;
+    this.onAgentActivityChanged?.({
+      name,
+      active,
+      pendingDeliveries: state.pendingDeliveries.size,
+      reason,
+      eventId,
+    });
   }
 
   private resolveEventTimestamp(candidate?: unknown): number {
@@ -939,36 +1388,51 @@ export class AgentRelay {
    */
   private async ensureRelaycastApiKey(): Promise<void> {
     if (this.relayApiKey) {
-      this.wireRelaycastBaseUrl();
+      const workspaceId = this.getResolvedWorkspaceId();
+      if (workspaceId) {
+        this.applyWorkspaceEnv(workspaceId, this.relayApiKey);
+        try {
+          this.persistWorkspaceMapping(workspaceId, this.relayApiKey);
+        } catch {
+          /* non-critical */
+        }
+      } else {
+        this.wireRelaycastBaseUrl();
+      }
       return;
     }
 
     const envKey = this.clientOptions.env?.RELAY_API_KEY ?? process.env.RELAY_API_KEY;
-    if (envKey) {
-      this.relayApiKey = envKey;
-      // Ensure the broker subprocess inherits the full process env + the key.
-      // Without this, spawning with an explicit binaryPath but no env option
-      // would cause the broker to start with an empty environment (no PATH,
-      // no RELAY_API_KEY), making connect_relay() hang and triggering the
-      // hello-handshake timeout.
-      if (!this.clientOptions.env) {
-        this.clientOptions.env = { ...process.env, RELAY_API_KEY: envKey };
-      } else if (!this.clientOptions.env.RELAY_API_KEY) {
-        this.clientOptions.env.RELAY_API_KEY = envKey;
+    const requestedWorkspaceId = this.requestedWorkspaceId;
+    if (requestedWorkspaceId) {
+      const registry = this.readWorkspaceRegistry();
+      const mappedKey = registry[requestedWorkspaceId]?.relaycastApiKey;
+      const resolvedKey =
+        mappedKey ?? envKey ?? (await this.createMappedRelaycastWorkspace(requestedWorkspaceId));
+      this.relayApiKey = resolvedKey;
+      this.resolvedWorkspaceId = requestedWorkspaceId;
+      this.applyWorkspaceEnv(requestedWorkspaceId, resolvedKey);
+      try {
+        this.persistWorkspaceMapping(requestedWorkspaceId, resolvedKey);
+      } catch {
+        /* non-critical */
       }
-      this.wireRelaycastBaseUrl();
       return;
     }
 
-    // No API key in env — broker will create/select its own workspace.
-    // Ensure the broker process inherits the full environment (PATH, etc.)
-    // so it can connect to Relaycast. The actual workspace key will be
-    // read from the broker's hello_ack response in ensureStarted().
-    if (!this.clientOptions.env) {
-      this.clientOptions.env = { ...process.env };
-    }
+    const resolvedWorkspaceId = envKey
+      ? (this.findMappedWorkspaceIdByApiKey(envKey) ?? generateWorkspaceId())
+      : generateWorkspaceId();
+    const resolvedKey = envKey ?? (await this.createMappedRelaycastWorkspace(resolvedWorkspaceId));
 
-    this.wireRelaycastBaseUrl();
+    this.relayApiKey = resolvedKey;
+    this.resolvedWorkspaceId = resolvedWorkspaceId;
+    this.applyWorkspaceEnv(resolvedWorkspaceId, resolvedKey);
+    try {
+      this.persistWorkspaceMapping(resolvedWorkspaceId, resolvedKey);
+    } catch {
+      /* non-critical */
+    }
   }
 
   /** Inject relaycastBaseUrl into broker env. Explicit option wins over inherited env. */
@@ -983,19 +1447,42 @@ export class AgentRelay {
     if (this.startPromise) return this.startPromise;
 
     this.startPromise = this.ensureRelaycastApiKey()
-      .then(() => AgentRelayClient.start(this.clientOptions))
+      .then(() =>
+        AgentRelayClient.spawn({
+          ...this.clientOptions,
+          onStderr: (line) => {
+            for (const listener of this.stderrListeners) {
+              try {
+                listener(line);
+              } catch {
+                /* ignore */
+              }
+            }
+          },
+        })
+      )
       .then((c) => {
-        this.client = c;
-        this.startPromise = undefined;
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
         if (c.workspaceKey) {
           this.relayApiKey = c.workspaceKey;
+          const workspaceId = this.getResolvedWorkspaceId();
+          if (workspaceId) {
+            this.applyWorkspaceEnv(workspaceId, c.workspaceKey);
+            try {
+              this.persistWorkspaceMapping(workspaceId, c.workspaceKey);
+            } catch {
+              /* non-critical */
+            }
+          }
         }
         this.wireEvents(c);
+        this.client = c;
+        this.startPromise = undefined;
         return c;
       })
       .catch((err) => {
+        this.client = undefined;
         this.startPromise = undefined;
         throw err;
       });
@@ -1008,10 +1495,12 @@ export class AgentRelay {
     this.unsubEvent = client.onEvent((event: BrokerEvent) => {
       switch (event.kind) {
         case 'relay_inbound': {
+          this.closeAgentDelivery(event.from, 'relay_inbound', event.event_id);
           if (this.knownAgents.has(event.from)) {
             this.messageReadyAgents.add(event.from);
             this.exitedAgents.delete(event.from);
           }
+          this.clearAgentDeliveries(event.from, 'relay_inbound', event.event_id);
           const msg: Message = {
             eventId: event.event_id,
             from: event.from,
@@ -1034,6 +1523,7 @@ export class AgentRelay {
         }
         case 'agent_released': {
           const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
+          this.clearAgentDeliveries(event.name, 'agent_released');
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
@@ -1049,6 +1539,7 @@ export class AgentRelay {
         }
         case 'agent_exited': {
           const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
+          this.clearAgentDeliveries(event.name, 'agent_exited');
           this.exitedAgents.add(event.name);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
@@ -1090,6 +1581,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_queued': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_queued');
           this.updateDeliveryState(
             event.event_id,
             event.name,
@@ -1099,6 +1591,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_injected': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_injected');
           this.updateDeliveryState(
             event.event_id,
             event.name,
@@ -1108,6 +1601,7 @@ export class AgentRelay {
           break;
         }
         case 'delivery_active': {
+          this.markAgentDeliveryPending(event.name, event.delivery_id, event.event_id, 'delivery_active');
           this.updateDeliveryState(event.event_id, event.name, 'active', this.resolveEventTimestamp());
           break;
         }
@@ -1115,7 +1609,14 @@ export class AgentRelay {
           this.updateDeliveryState(event.event_id, event.name, 'verified', this.resolveEventTimestamp());
           break;
         }
+        case 'delivery_ack': {
+          // No-op for activity tracking. delivery_ack can arrive late, after
+          // relay_inbound / idle / exit already cleared activity, so re-adding
+          // pending state here would incorrectly flip the agent back to active.
+          break;
+        }
         case 'delivery_failed': {
+          this.closeAgentDelivery(event.name, 'delivery_failed', event.event_id, event.delivery_id);
           this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
           break;
         }
@@ -1132,6 +1633,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_idle': {
+          this.clearAgentDeliveries(event.name, 'agent_idle');
           this.idleAgents.add(event.name);
           this.onAgentIdle?.({
             name: event.name,
@@ -1332,7 +1834,10 @@ export class AgentRelay {
       async unsubscribe(channelsToRemove: string[]) {
         await relay.unsubscribe({ agent: name, channels: channelsToRemove });
       },
-      onOutput(callback: AgentOutputCallback, options?: { stream?: string; mode?: 'chunk' | 'structured' }): () => void {
+      onOutput(
+        callback: AgentOutputCallback,
+        options?: { stream?: string; mode?: 'chunk' | 'structured' }
+      ): () => void {
         let listeners = relay.outputListeners.get(name);
         if (!listeners) {
           listeners = new Set();
@@ -1375,6 +1880,8 @@ export class AgentRelay {
             task,
             model: options?.model,
             cwd: options?.cwd,
+            idleThresholdSecs: options?.idleThresholdSecs,
+            agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
@@ -1399,6 +1906,10 @@ export class AgentRelay {
             args,
             channels,
             task,
+            model: options?.model,
+            cwd: options?.cwd,
+            idleThresholdSecs: options?.idleThresholdSecs,
+            agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
           });
         } catch (error) {
@@ -1450,6 +1961,7 @@ export class AgentRelay {
     this.messageReadyAgents.delete(name);
     this.exitedAgents.delete(name);
     this.idleAgents.delete(name);
+    this.agentActivityStates.delete(name);
   }
 
   private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {

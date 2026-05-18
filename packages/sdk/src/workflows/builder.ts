@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 
 import type { AgentRelayOptions } from '../relay.js';
@@ -10,6 +11,7 @@ import type {
   DryRunReport,
   ErrorHandlingConfig,
   IdleNudgeConfig,
+  PathDefinition,
   RelayYamlConfig,
   StateConfig,
   SwarmPattern,
@@ -20,10 +22,13 @@ import type {
   WorkflowRunRow,
   WorkflowStep,
 } from './types.js';
-import { WorkflowRunner, type WorkflowEventListener, type VariableContext, type StepExecutor } from './runner.js';
+import { JsonFileWorkflowDb } from './file-db.js';
+import { WorkflowRunner, type WorkflowEventListener } from './runner.js';
+import type { RunnerStepExecutor } from './types.js';
 import { formatDryRunReport } from './dry-run-format.js';
 import { createDefaultEventLogger, type LogLevel } from './default-logger.js';
 import { runInCloud, type CloudRunOptions } from './cloud-runner.js';
+import type { VariableContext } from './template-resolver.js';
 
 // ── Option types for the builder API ────────────────────────────────────────
 
@@ -89,7 +94,11 @@ export interface ErrorOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   notifyChannel?: string;
+  repairAgent?: string;
+  repairRetries?: number;
 }
+
+export type ReliabilityOptions = ErrorOptions;
 
 export interface WorkflowRunOptions {
   /** Run a specific workflow by name (default: first). */
@@ -105,7 +114,7 @@ export interface WorkflowRunOptions {
   /** Validate and print execution plan without spawning agents. */
   dryRun?: boolean;
   /** External step executor (e.g. Daytona sandbox backend). */
-  executor?: StepExecutor;
+  executor?: RunnerStepExecutor;
   /** Start from a specific step, skipping all predecessors. */
   startFrom?: string;
   /** Previous run ID whose cached outputs are used with startFrom. */
@@ -153,6 +162,7 @@ export class WorkflowBuilder {
   private _timeoutMs?: number;
   private _channel?: string;
   private _idleNudge?: IdleNudgeConfig;
+  private _paths?: PathDefinition[];
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
@@ -196,7 +206,7 @@ export class WorkflowBuilder {
     if (!CHANNEL_RE.test(ch)) {
       throw new Error(
         `Invalid channel name "${ch}". Channel names must be lowercase alphanumeric and hyphens, starting with a letter or number. ` +
-        `Fix: use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')`
+          `Fix: use .toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')`
       );
     }
     this._channel = ch;
@@ -236,6 +246,38 @@ export class WorkflowBuilder {
   /** Set the previous run ID whose cached step outputs should be used with startFrom. */
   previousRunId(id: string): this {
     this._previousRunId = id;
+    return this;
+  }
+
+  /**
+   * Declare named paths to additional directories the workflow needs.
+   *
+   * For multi-repo cloud workflows (relay#774, cloud#302), each entry is
+   * tarballed by the CLI at submit time and mounted at
+   * `/home/daytona/workspace/{name}/` in the sandbox. Locally, the runner
+   * resolves `path` relative to the workflow file's parent directory and
+   * agents reference each entry by its declared `name`.
+   *
+   * Calling this is a no-op for the runtime — the runner doesn't need
+   * `paths` to execute steps. The CLI and the cloud bootstrap consume
+   * it. Declaring via the builder keeps single-source-of-truth for tools
+   * that walk the built config (e.g. dashboards, dry-run reports).
+   */
+  paths(paths: PathDefinition[]): this {
+    if (!Array.isArray(paths)) {
+      throw new Error('.paths() expects an array of PathDefinition objects');
+    }
+    const seen = new Set<string>();
+    for (const p of paths) {
+      if (!p || typeof p.name !== 'string' || typeof p.path !== 'string') {
+        throw new Error('.paths() entries must each have string `name` and `path` fields');
+      }
+      if (seen.has(p.name)) {
+        throw new Error(`.paths() got duplicate entry name "${p.name}"`);
+      }
+      seen.add(p.name);
+    }
+    this._paths = paths.map((p) => ({ ...p }));
     return this;
   }
 
@@ -328,11 +370,31 @@ export class WorkflowBuilder {
     if (options?.maxRetries !== undefined) this._errorHandling.maxRetries = options.maxRetries;
     if (options?.retryDelayMs !== undefined) this._errorHandling.retryDelayMs = options.retryDelayMs;
     if (options?.notifyChannel !== undefined) this._errorHandling.notifyChannel = options.notifyChannel;
+    if (options?.repairAgent !== undefined) this._errorHandling.repairAgent = options.repairAgent;
+    if (options?.repairRetries !== undefined) this._errorHandling.repairRetries = options.repairRetries;
     return this;
   }
 
-  /** Build and return the RelayYamlConfig object. */
-  toConfig(): RelayYamlConfig {
+  /**
+   * Opt into the product reliability contract: repairable workflow failures get
+   * routed through an agent and retried before the workflow is allowed to fail.
+   */
+  repairable(options: ReliabilityOptions = {}): this {
+    return this.onError('retry', {
+      maxRetries: options.maxRetries ?? options.repairRetries ?? 2,
+      retryDelayMs: options.retryDelayMs ?? 1000,
+      notifyChannel: options.notifyChannel,
+      repairAgent: options.repairAgent,
+      repairRetries: options.repairRetries ?? options.maxRetries ?? 2,
+    });
+  }
+
+  /** Alias for `.repairable()` for workflow authors who think in product terms. */
+  reliable(options: ReliabilityOptions = {}): this {
+    return this.repairable(options);
+  }
+
+  private validateBuilderState(): void {
     const hasAgentSteps = this._steps.some((s) => s.type !== 'deterministic' && s.type !== 'worktree');
     if (hasAgentSteps && this._agents.length === 0) {
       throw new Error('Workflow must have at least one agent when using agent steps');
@@ -340,6 +402,27 @@ export class WorkflowBuilder {
     if (this._steps.length === 0) {
       throw new Error('Workflow must have at least one step');
     }
+
+    const agentNames = new Set(this._agents.map((agent) => agent.name));
+    for (const step of this._steps) {
+      const diagnosticAgent = step.verification?.diagnosticAgent;
+      if (!diagnosticAgent) continue;
+
+      if (!agentNames.has(diagnosticAgent)) {
+        throw new Error(`Step "${step.name}" references unknown diagnosticAgent "${diagnosticAgent}"`);
+      }
+
+      if (step.retries === undefined || step.retries === 0) {
+        console.warn(
+          `Step "${step.name}": diagnosticAgent configured but no retries — diagnostic will never run`
+        );
+      }
+    }
+  }
+
+  /** Build and return the RelayYamlConfig object. */
+  toConfig(): RelayYamlConfig {
+    this.validateBuilderState();
 
     const wfDef: WorkflowDefinition = {
       name: `${this._name}-workflow`,
@@ -357,6 +440,9 @@ export class WorkflowBuilder {
     };
 
     if (this._description !== undefined) config.description = this._description;
+    if (this._paths !== undefined && this._paths.length > 0) {
+      config.paths = this._paths.map((p) => ({ ...p }));
+    }
     if (this._maxConcurrency !== undefined) config.swarm.maxConcurrency = this._maxConcurrency;
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
@@ -364,7 +450,8 @@ export class WorkflowBuilder {
     config.errorHandling = this._errorHandling ?? {
       strategy: 'retry',
       maxRetries: 2,
-      retryDelayMs: 10_000,
+      retryDelayMs: 1000,
+      repairRetries: 2,
     };
     if (this._coordination !== undefined) config.coordination = this._coordination;
     if (this._state !== undefined) config.state = this._state;
@@ -383,12 +470,16 @@ export class WorkflowBuilder {
   async run(options?: WorkflowRunOptions): Promise<WorkflowRunRow>;
   async run(options: WorkflowRunOptions = {}): Promise<WorkflowRunRow | DryRunReport> {
     const config = this.toConfig();
+    const runnerCwd = options.cwd ?? process.cwd();
+    const dbPath = path.join(runnerCwd, '.agent-relay', 'workflow-runs.jsonl');
+    const db = new JsonFileWorkflowDb(dbPath);
 
     const runner = new WorkflowRunner({
       cwd: options.cwd,
       relay: options.relay,
       executor: options.executor,
       envSecrets: options.envSecrets,
+      db,
     });
 
     // Auto-detect DRY_RUN env var so existing scripts get dry-run for free
@@ -419,9 +510,8 @@ export class WorkflowBuilder {
     // Wire up default console logger unless explicitly disabled
     // renderer: "listr" owns the terminal — skip console logger to avoid garbled output
     // renderer: false implies no output at all
-    const logLevel = options.renderer === 'listr' || options.renderer === false
-      ? false
-      : (options.logLevel ?? 'normal');
+    const logLevel =
+      options.renderer === 'listr' || options.renderer === false ? false : (options.logLevel ?? 'normal');
     if (logLevel !== false) {
       runner.on(createDefaultEventLogger(logLevel));
     }
@@ -448,7 +538,7 @@ export class WorkflowBuilder {
       runner.on(renderer.onEvent);
 
       const runPromise = resumeRunId
-        ? runner.resume(resumeRunId, options.vars)
+        ? runner.resume(resumeRunId, options.vars, config)
         : runner.execute(config, options.workflow, options.vars, executeOptions);
 
       try {
@@ -460,7 +550,7 @@ export class WorkflowBuilder {
     }
 
     if (resumeRunId) {
-      return runner.resume(resumeRunId, options.vars);
+      return runner.resume(resumeRunId, options.vars, config);
     }
 
     return runner.execute(config, options.workflow, options.vars, executeOptions);

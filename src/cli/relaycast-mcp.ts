@@ -529,9 +529,28 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
   return mcpServer;
 }
 
+/** Relaycast agent tokens are opaque `at_live_<hex>` literals — see
+ * relaycast/packages/server/src/engine/agent.ts:38. Anything else (e.g. a
+ * relayauth RS256 JWT carried in RELAY_AGENT_TOKEN by `relay on start`) is not
+ * a valid relaycast credential and must be replaced. */
+function isRelaycastAgentToken(token: string | undefined): token is string {
+  return typeof token === 'string' && token.startsWith('at_live_');
+}
+
 export async function resolvePatchedStdioBootstrapOptions(
   options: PatchedMcpServerOptions
 ): Promise<PatchedMcpServerOptions> {
+  // Caller already minted a relaycast agent token — trust it. We must not
+  // probe-then-rotate here: rotation UPDATEs the agent's tokenHash, which
+  // permanently kills the original token, and on D1 read-replica lag a
+  // freshly-minted token can transiently fail an auth probe even though it is
+  // valid. The first real call will surface a 401 if the token is actually
+  // bad; that's a clearer failure mode than silently swapping the agent's
+  // identity behind the caller's back.
+  if (isRelaycastAgentToken(options.agentToken)) {
+    return options;
+  }
+
   if (!options.apiKey || !options.agentName) {
     return options;
   }
@@ -547,20 +566,6 @@ export async function resolvePatchedStdioBootstrapOptions(
       version: MCP_VERSION,
     }
   );
-
-  if (options.agentToken) {
-    try {
-      await relay.as(options.agentToken).inbox();
-      return options;
-    } catch (err) {
-      const relayErr = err as { code?: string; statusCode?: number } | undefined;
-      const unauthorized =
-        relayErr?.code === 'unauthorized' || relayErr?.statusCode === 401 || relayErr?.statusCode === 403;
-      if (!unauthorized) {
-        throw err;
-      }
-    }
-  }
 
   const registered = await relay.agents.registerOrRotate({
     name: options.agentName,

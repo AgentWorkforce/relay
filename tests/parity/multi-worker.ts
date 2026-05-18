@@ -17,7 +17,7 @@ const WORKER_COUNT = 3;
 async function main(): Promise<void> {
   console.log("=== Parity Test: Multiple Workers Communication ===\n");
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

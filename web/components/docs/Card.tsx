@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { ArrowRight } from 'lucide-react';
 
 import styles from './docs.module.css';
 
@@ -12,15 +13,17 @@ interface CardProps {
 export function Card({ title, href, children }: CardProps) {
   const inner = (
     <>
-      <h3 className={styles.cardTitle}>{title}</h3>
+      <div className={styles.cardHeader}>
+        <h3 className={styles.cardTitle}>{title}</h3>
+        {href && <ArrowRight className={styles.cardLinkIcon} aria-hidden="true" />}
+      </div>
       {children && <div className={styles.cardBody}>{children}</div>}
     </>
   );
 
   if (href) {
-    const resolvedHref = href.startsWith('/') ? `/docs${href}` : href;
     return (
-      <a href={resolvedHref} className={styles.card}>
+      <a href={href} className={styles.card}>
         {inner}
       </a>
     );

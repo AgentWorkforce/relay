@@ -1,47 +1,37 @@
-/**
- * WorkflowTrajectory — records a structured trajectory for each workflow run.
- *
- * Writes trajectory JSON files directly to `.trajectories/active/` in a format
- * compatible with `trail show`. No external CLI or package dependency required.
- *
- * Design principles:
- *   1. One trajectory per workflow run
- *   2. Chapters map to workflow phases, not individual steps
- *   3. Non-blocking — trajectory recording never fails the workflow
- *   4. Opt-in but default-on
- */
-
-import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdir, writeFile, rename } from 'node:fs/promises';
-import path from 'node:path';
-
+/** WorkflowTrajectory records canonical workflow trajectories via agent-trajectories. */
+import { dirname, join } from 'node:path';
+import {
+  FileStorage,
+  abandonTrajectory,
+  addChapter as appendChapter,
+  addEvent as appendEvent,
+  completeTrajectory,
+  createTrajectory,
+  type EventSignificance,
+  type Trajectory,
+  type TrajectoryEventType,
+} from 'agent-trajectories';
 import type { StepCompletionDecision, TrajectoryConfig, WorkflowStep } from './types.js';
 
-// ── Trajectory file format (compatible with trail CLI) ───────────────────────
+type WorkflowTrajectoryEventType =
+  | TrajectoryEventType
+  | 'review-completed'
+  | 'completion-marker'
+  | 'completion-evidence';
 
-interface TrajectoryEvent {
-  ts: number;
-  type: string;
-  content: string;
-  raw?: Record<string, unknown>;
-  significance?: 'low' | 'medium' | 'high';
-}
-
-interface TrajectoryChapter {
-  id: string;
-  title: string;
-  agentName: string;
-  startedAt: string;
-  endedAt?: string;
-  events: TrajectoryEvent[];
-}
-
-interface TrajectoryAgent {
+type WorkflowTrajectoryAgent = {
   name: string;
   role: string;
   joinedAt: string;
-}
+  leftAt?: string;
+};
+
+// agent-trajectories runtime accepts workflow metadata and open-ended roles,
+// while some published declaration aliases are narrower.
+type WorkflowTrajectoryData = Omit<Trajectory, 'agents'> & {
+  agents: WorkflowTrajectoryAgent[];
+  workflowId?: string;
+};
 
 interface StepParticipants {
   role?: string;
@@ -49,27 +39,6 @@ interface StepParticipants {
   specialist?: string;
   reviewer?: string;
 }
-
-interface TrajectoryFile {
-  id: string;
-  version: number;
-  task: { title: string; source?: { system: string; id: string } };
-  status: 'active' | 'completed' | 'abandoned';
-  startedAt: string;
-  completedAt?: string;
-  agents: TrajectoryAgent[];
-  chapters: TrajectoryChapter[];
-  retrospective?: {
-    summary: string;
-    approach: string;
-    confidence: number;
-    learnings?: string[];
-    challenges?: string[];
-  };
-}
-
-// ── Step state for synthesis ─────────────────────────────────────────────────
-
 export interface StepOutcome {
   name: string;
   agent: string;
@@ -78,17 +47,11 @@ export interface StepOutcome {
   output?: string;
   error?: string;
   verificationPassed?: boolean;
-  /** Sentinel value the step was verifying for, if any. */
   verificationValue?: string;
-  /** Whether this was a non-interactive (subprocess) step. */
   nonInteractive?: boolean;
-  /** Duration in ms. */
   durationMs?: number;
-  /** How the step completion was determined. */
   completionMode?: StepCompletionDecision['mode'];
 }
-
-// ── Failure root-cause categories ───────────────────────────────────────────
 
 type FailureCause =
   | 'timeout'
@@ -112,46 +75,113 @@ function classifyFailure(error: string): FailureCause {
 function diagnosisFor(cause: FailureCause, outcome: StepOutcome): string {
   switch (cause) {
     case 'timeout':
-      if (outcome.nonInteractive) {
-        return (
-          `Non-interactive agent timed out — the task is likely too large or complex for a single subprocess call. ` +
-          `Consider pre-reading large files in a deterministic step and injecting only the relevant excerpt via {{steps.X.output}}.`
-        );
-      }
-      return (
-        `Interactive agent timed out — it may have gone idle, failed to self-terminate, or the task scope was too broad. ` +
-        `Check if the agent was waiting for relay signals that never arrived.`
-      );
+      return outcome.nonInteractive
+        ? 'Non-interactive agent timed out — the task is likely too large or complex for a single subprocess call. Consider pre-reading large files in a deterministic step and injecting only the relevant excerpt via {{steps.X.output}}.'
+        : 'Interactive agent timed out — it may have gone idle, failed to self-terminate, or the task scope was too broad. Check if the agent was waiting for relay signals that never arrived.';
     case 'verification_mismatch':
-      return (
-        `Agent completed but did not output the expected sentinel "${outcome.verificationValue ?? '(unknown)'}". ` +
-        `The task prompt may not clearly specify the required output format, ` +
-        `or the agent produced correct work but did not emit the signal.`
-      );
+      return `Agent completed but did not output the expected sentinel "${outcome.verificationValue ?? '(unknown)'}". The task prompt may not clearly specify the required output format, or the agent produced correct work but did not emit the signal.`;
     case 'spawn_failed':
-      return `The agent process could not be started — the CLI binary may be missing from PATH or the working directory is incorrect.`;
+      return 'The agent process could not be started — the CLI binary may be missing from PATH or the working directory is incorrect.';
     case 'exit_nonzero':
-      return `The agent process exited with a non-zero exit code. Check stderr for the root cause.`;
+      return 'The agent process exited with a non-zero exit code. Check stderr for the root cause.';
     case 'aborted':
-      return `The step was cancelled (user interrupt or upstream abort).`;
+      return 'The step was cancelled (user interrupt or upstream abort).';
     default:
-      return `Unexpected failure. Review the error and step definition.`;
+      return 'Unexpected failure. Review the error and step definition.';
   }
 }
 
-// ── WorkflowTrajectory ──────────────────────────────────────────────────────
+function buildSynthesis(label: string, outcomes: StepOutcome[], unblocks?: string[]): string {
+  const completed = outcomes.filter((o) => o.status === 'completed');
+  const failed = outcomes.filter((o) => o.status === 'failed');
+  const retried = outcomes.filter((o) => o.attempts > 1 && o.status !== 'failed');
+  const parts: string[] = [`${label} resolved.`, `${completed.length}/${outcomes.length} steps completed.`];
+  if (failed.length > 0)
+    parts.push(`${failed.length} step(s) failed: ${failed.map((s) => s.name).join(', ')}.`);
+  if (retried.length > 0)
+    parts.push(`${retried.length} step(s) required retries: ${retried.map((s) => s.name).join(', ')}.`);
+  else if (failed.length === 0) parts.push('All steps completed on first attempt.');
+  if (unblocks?.length) parts.push(`Unblocking: ${unblocks.join(', ')}.`);
+  return parts.join(' ');
+}
+
+function computeConfidence(outcomes: StepOutcome[]): number {
+  if (outcomes.length === 0) return 0.7;
+  const total = outcomes.length;
+  const completed = outcomes.filter((o) => o.status === 'completed').length;
+  const firstAttempt = outcomes.filter((o) => o.attempts === 1 && o.status === 'completed').length;
+  const verified = outcomes.filter((o) => o.verificationPassed).length;
+  return Math.min(1, 0.5 * (completed / total) + 0.25 * (firstAttempt / total) + 0.25 * (verified / total));
+}
+
+function formatElapsed(elapsed: number, long: boolean): string {
+  return elapsed > 60_000
+    ? `${Math.round(elapsed / 60_000)}${long ? ' minutes' : 'min'}`
+    : `${Math.round(elapsed / 1_000)}${long ? ' seconds' : 's'}`;
+}
+
+function buildRunSummary(outcomes: StepOutcome[], startTime: number): string {
+  const completed = outcomes.filter((o) => o.status === 'completed');
+  const failed = outcomes.filter((o) => o.status === 'failed');
+  const skipped = outcomes.filter((o) => o.status === 'skipped');
+  const elapsedStr = formatElapsed(Date.now() - startTime, false);
+  if (failed.length === 0) {
+    const retried = completed.filter((o) => o.attempts > 1);
+    const base = `All ${completed.length} steps completed in ${elapsedStr}.`;
+    return retried.length > 0
+      ? `${base} ${retried.length} step(s) needed retries: ${retried.map((o) => o.name).join(', ')}.`
+      : base;
+  }
+  const firstFailure = failed[0];
+  const cause = classifyFailure(firstFailure.error ?? '');
+  const cascaded =
+    skipped.length > 0
+      ? ` Caused ${skipped.length} downstream step(s) to be skipped: ${skipped.map((o) => o.name).join(', ')}.`
+      : '';
+  return `Failed at "${firstFailure.name}" [${cause}] after ${elapsedStr}.${cascaded} ${completed.length}/${outcomes.length} steps completed before failure.`;
+}
+
+function extractLearnings(outcomes: StepOutcome[]): string[] {
+  const learnings: string[] = [];
+  const timeouts = outcomes.filter(
+    (o) => o.status === 'failed' && classifyFailure(o.error ?? '') === 'timeout'
+  );
+  if (timeouts.some((o) => o.nonInteractive))
+    learnings.push(
+      `Non-interactive agent timeouts detected (${timeouts.map((o) => o.name).join(', ')}). Use deterministic steps to pre-read files and inject content — non-interactive agents should not discover information via tools.`
+    );
+  const verifyFails = outcomes.filter(
+    (o) => o.status === 'failed' && classifyFailure(o.error ?? '') === 'verification_mismatch'
+  );
+  if (verifyFails.length > 0)
+    learnings.push(
+      `Verification mismatch on: ${verifyFails.map((o) => `"${o.name}" (expected "${o.verificationValue ?? '?'}")`).join(', ')}. Make the required output format more explicit in the task prompt.`
+    );
+  const retried = outcomes.filter((o) => o.attempts > 1 && o.status === 'completed');
+  if (retried.length > 0)
+    learnings.push(
+      `${retried.map((o) => `"${o.name}" (${o.attempts} attempts)`).join(', ')} succeeded after retries — consider adding clearer output instructions to reduce retries.`
+    );
+  return learnings;
+}
+
+const extractChallenges = (outcomes: StepOutcome[]): string[] =>
+  outcomes
+    .filter((o) => o.status === 'failed')
+    .map((step) => diagnosisFor(classifyFailure(step.error ?? ''), step));
 
 export class WorkflowTrajectory {
-  private trajectory: TrajectoryFile | null = null;
-  private currentChapterId: string | null = null;
+  private trajectory: WorkflowTrajectoryData | null = null;
+  private storage?: FileStorage;
+  private storageInit?: Promise<void>;
   private readonly enabled: boolean;
   private readonly reflectOnBarriers: boolean;
   private readonly reflectOnConverge: boolean;
   private readonly autoDecisions: boolean;
-  private readonly dataDir: string;
+  private readonly storageBaseDir: string;
   private readonly runId: string;
-  private startTime: number = 0;
-  private swarmPattern: string = 'dag';
+  private startTime = 0;
+  private swarmPattern = 'dag';
 
   constructor(config: TrajectoryConfig | false | undefined, runId: string, cwd: string) {
     const cfg = config === false ? { enabled: false } : (config ?? {});
@@ -159,14 +189,11 @@ export class WorkflowTrajectory {
     this.reflectOnBarriers = cfg.reflectOnBarriers !== false;
     this.reflectOnConverge = cfg.reflectOnConverge !== false;
     this.autoDecisions = cfg.autoDecisions !== false;
-
     this.runId = runId;
-    this.dataDir = process.env.TRAJECTORIES_DATA_DIR ?? path.join(cwd, '.trajectories');
+    const dataDir = process.env.TRAJECTORIES_DATA_DIR ?? join(cwd, '.trajectories');
+    this.storageBaseDir = process.env.TRAJECTORIES_DATA_DIR ? dirname(dataDir) : cwd;
   }
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
-
-  /** Start the trajectory (called at run:started). */
   async start(
     workflowName: string,
     stepCount: number,
@@ -175,88 +202,51 @@ export class WorkflowTrajectory {
     pattern?: string
   ): Promise<void> {
     if (!this.enabled) return;
-
     this.startTime = Date.now();
     this.swarmPattern = pattern ?? 'dag';
-    const id = `traj_${Date.now()}_${randomBytes(4).toString('hex')}`;
-
-    this.trajectory = {
-      id,
-      version: 1,
-      task: {
-        title: workflowName,
-        source: { system: 'workflow-runner', id: this.runId },
-      },
-      status: 'active',
-      startedAt: new Date().toISOString(),
-      agents: [{ name: 'orchestrator', role: 'workflow-runner', joinedAt: new Date().toISOString() }],
-      chapters: [],
-    };
-
-    // Open Planning chapter — record intent, not just mechanics
+    const trajectory = createTrajectory({
+      title: workflowName,
+      description,
+      source: { system: 'workflow-runner', id: this.runId },
+    }) as WorkflowTrajectoryData;
+    const workflowId = process.env.TRAJECTORIES_WORKFLOW_ID?.trim();
+    if (workflowId) trajectory.workflowId = workflowId;
+    this.trajectory = trajectory;
+    this.trajectory.agents.push({
+      name: 'orchestrator',
+      role: 'workflow-runner',
+      joinedAt: new Date().toISOString(),
+    });
     this.openChapter('Planning', 'orchestrator');
-
-    if (description) {
-      // Record why this workflow exists
-      this.addEvent('note', `Purpose: ${description.trim()}`);
-    }
-
+    if (description) this.addEvent('note', `Purpose: ${description.trim()}`);
     this.addEvent(
       'note',
       `Approach: ${stepCount}-step ${this.swarmPattern} workflow${trackInfo ? ` — ${trackInfo}` : ''}`
     );
-
     await this.flush();
   }
 
-  // ── Chapters ───────────────────────────────────────────────────────────────
-
-  /** Begin a new parallel track chapter. */
   async beginTrack(trackName: string): Promise<void> {
-    if (!this.enabled || !this.trajectory) return;
-
-    this.closeCurrentChapter();
-    this.openChapter(`Execution: ${trackName}`, 'orchestrator');
-    await this.flush();
+    if (this.enabled && this.trajectory) {
+      this.openChapter(`Execution: ${trackName}`, 'orchestrator');
+      await this.flush();
+    }
   }
-
-  /** Begin a convergence chapter (after barrier/parallel completion). */
   async beginConvergence(label: string): Promise<void> {
-    if (!this.enabled || !this.trajectory) return;
-
-    this.closeCurrentChapter();
-    this.openChapter(`Convergence: ${label}`, 'orchestrator');
-    await this.flush();
+    if (this.enabled && this.trajectory) {
+      this.openChapter(`Convergence: ${label}`, 'orchestrator');
+      await this.flush();
+    }
   }
 
-  /** Begin the retrospective chapter. */
-  private openRetrospective(): void {
-    if (!this.trajectory) return;
-    this.closeCurrentChapter();
-    this.openChapter('Retrospective', 'orchestrator');
-  }
-
-  // ── Step events ────────────────────────────────────────────────────────────
-
-  /** Record step started — captures intent, not just assignment. */
   async stepStarted(step: WorkflowStep, agent: string, participants?: StepParticipants): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     await this.registerAgent(agent, participants?.role ?? step.agent ?? 'deterministic');
-    if (participants?.owner && participants.owner !== agent) {
+    if (participants?.owner && participants.owner !== agent)
       await this.registerAgent(participants.owner, 'owner');
-    }
-    if (participants?.specialist) {
-      await this.registerAgent(participants.specialist, 'specialist');
-    }
-    if (participants?.reviewer) {
-      await this.registerAgent(participants.reviewer, 'reviewer');
-    }
-
-    this.closeCurrentChapter();
+    if (participants?.specialist) await this.registerAgent(participants.specialist, 'specialist');
+    if (participants?.reviewer) await this.registerAgent(participants.reviewer, 'reviewer');
     this.openChapter(`Execution: ${step.name}`, agent);
-
-    // Capture the step's purpose: first non-empty sentence of the task
     const intent = step.task
       ? step.task
           .trim()
@@ -264,21 +254,15 @@ export class WorkflowTrajectory {
           .trim()
           .slice(0, 120)
       : `${step.type ?? 'deterministic'} step`;
-
     this.addEvent('note', `"${step.name}": ${intent}`, undefined, { agent });
     await this.flush();
   }
 
   async registerAgent(name: string, role: string): Promise<void> {
-    if (!this.enabled || !this.trajectory) return;
-    if (!this.trajectory.agents.some((a) => a.name === name)) {
-      this.trajectory.agents.push({
-        name,
-        role,
-        joinedAt: new Date().toISOString(),
-      });
-      await this.flush();
-    }
+    if (!this.enabled || !this.trajectory || this.trajectory.agents.some((agent) => agent.name === name))
+      return;
+    this.trajectory.agents.push({ name, role, joinedAt: new Date().toISOString() });
+    await this.flush();
   }
 
   async stepSupervisionAssigned(
@@ -286,13 +270,9 @@ export class WorkflowTrajectory {
     supervised: { owner: { name: string }; specialist: { name: string }; reviewer?: { name: string } }
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     await this.registerAgent(supervised.owner.name, 'owner');
     await this.registerAgent(supervised.specialist.name, 'specialist');
-    if (supervised.reviewer?.name) {
-      await this.registerAgent(supervised.reviewer.name, 'reviewer');
-    }
-
+    if (supervised.reviewer?.name) await this.registerAgent(supervised.reviewer.name, 'reviewer');
     const reviewerNote = supervised.reviewer?.name ? `, reviewer=${supervised.reviewer.name}` : '';
     this.addEvent(
       'decision',
@@ -314,7 +294,6 @@ export class WorkflowTrajectory {
     raw?: Record<string, unknown>
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     this.addEvent(
       'note',
       `"${stepName}" owner ${owner}: ${detail}`,
@@ -331,7 +310,6 @@ export class WorkflowTrajectory {
     reason?: string
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     this.addEvent('review-completed', `"${stepName}" review ${decision} by ${reviewerName}`, 'medium', {
       stepName,
       reviewer: reviewerName,
@@ -343,27 +321,18 @@ export class WorkflowTrajectory {
 
   async stepCompletionDecision(stepName: string, decision: StepCompletionDecision): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     const modeLabel = decision.mode === 'marker' ? 'marker-based' : `${decision.mode}-based`;
     const reason = decision.reason ? ` — ${decision.reason}` : '';
     const evidence = this.formatCompletionEvidenceSummary(decision.evidence);
-    const evidenceSuffix = evidence ? ` (${evidence})` : '';
-
     this.addEvent(
       decision.mode === 'marker' ? 'completion-marker' : 'completion-evidence',
-      `"${stepName}" ${modeLabel} completion${reason}${evidenceSuffix}`,
+      `"${stepName}" ${modeLabel} completion${reason}${evidence ? ` (${evidence})` : ''}`,
       'medium',
-      {
-        stepName,
-        completionMode: decision.mode,
-        reason: decision.reason,
-        evidence: decision.evidence,
-      }
+      { stepName, completionMode: decision.mode, reason: decision.reason, evidence: decision.evidence }
     );
     await this.flush();
   }
 
-  /** Record step completed — captures what was accomplished. */
   async stepCompleted(
     step: WorkflowStep,
     output: string,
@@ -371,31 +340,24 @@ export class WorkflowTrajectory {
     decision?: StepCompletionDecision
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
-    const suffix = attempt > 1 ? ` (after ${attempt} attempts)` : '';
-
-    // Prefer the last non-empty line of output as the completion signal —
-    // agents conventionally output their sentinel last (e.g. "ANALYSIS_DONE")
+    if (decision) await this.stepCompletionDecision(step.name, decision);
     const lines = output
       .split('\n')
-      .map((l) => l.trim())
+      .map((line) => line.trim())
       .filter(Boolean);
     const lastMeaningful = lines.at(-1) ?? '';
     const completion =
       lastMeaningful.length > 0 && lastMeaningful.length < 100
         ? lastMeaningful
         : output.trim().slice(0, 120) || '(no output)';
-
-    if (decision) {
-      await this.stepCompletionDecision(step.name, decision);
-    }
-
-    const modeSuffix = decision ? ` [${decision.mode}]` : '';
-    this.addEvent('finding', `"${step.name}" completed${suffix}${modeSuffix} → ${completion}`, 'medium');
+    this.addEvent(
+      'finding',
+      `"${step.name}" completed${attempt > 1 ? ` (after ${attempt} attempts)` : ''}${decision ? ` [${decision.mode}]` : ''} → ${completion}`,
+      'medium'
+    );
     await this.flush();
   }
 
-  /** Record step failed — categorizes root cause for actionable diagnosis. */
   async stepFailed(
     step: WorkflowStep,
     error: string,
@@ -404,7 +366,6 @@ export class WorkflowTrajectory {
     outcome?: Partial<StepOutcome>
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
     const cause = classifyFailure(error);
     const diagnosis = diagnosisFor(cause, {
       name: step.name,
@@ -415,7 +376,6 @@ export class WorkflowTrajectory {
       verificationValue: outcome?.verificationValue,
       nonInteractive: outcome?.nonInteractive,
     });
-
     this.addEvent('error', `"${step.name}" failed [${cause}]: ${diagnosis}`, 'high', {
       cause,
       rawError: error,
@@ -425,55 +385,42 @@ export class WorkflowTrajectory {
     await this.flush();
   }
 
-  /** Record step skipped — note the cascade impact. */
   async stepSkipped(step: WorkflowStep, reason: string): Promise<void> {
-    if (!this.enabled || !this.trajectory) return;
-
-    this.addEvent('note', `"${step.name}" skipped — ${reason}`);
-    await this.flush();
+    if (this.enabled && this.trajectory) {
+      this.addEvent('note', `"${step.name}" skipped — ${reason}`);
+      await this.flush();
+    }
   }
-
-  /** Record step retrying. */
   async stepRetrying(step: WorkflowStep, attempt: number, maxRetries: number): Promise<void> {
-    if (!this.enabled || !this.trajectory) return;
-
-    this.addEvent('note', `"${step.name}" retrying (attempt ${attempt}/${maxRetries + 1})`);
-    await this.flush();
+    if (this.enabled && this.trajectory) {
+      this.addEvent('note', `"${step.name}" retrying (attempt ${attempt}/${maxRetries + 1})`);
+      await this.flush();
+    }
   }
 
-  // ── Reflections ────────────────────────────────────────────────────────────
-
-  /** Record a reflection at a convergence point. */
   async reflect(synthesis: string, confidence: number, focalPoints?: string[]): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
-    const raw: Record<string, unknown> = { confidence };
-    if (focalPoints?.length) {
-      raw.focalPoints = focalPoints;
-    }
-
-    this.addEvent('reflection', synthesis, 'high', raw);
+    this.addEvent(
+      'reflection',
+      synthesis,
+      'high',
+      focalPoints?.length ? { confidence, focalPoints } : { confidence }
+    );
     await this.flush();
   }
 
-  /** Synthesize and reflect after a set of steps complete (barrier or parallel convergence). */
   async synthesizeAndReflect(label: string, outcomes: StepOutcome[], unblocks?: string[]): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
-    const synthesis = this.buildSynthesis(label, outcomes, unblocks);
-    const confidence = this.computeConfidence(outcomes);
-    const focalPoints = outcomes.map((o) => `${o.name}: ${o.status}`);
-
     await this.beginConvergence(label);
-    await this.reflect(synthesis, confidence, focalPoints);
+    await this.reflect(
+      buildSynthesis(label, outcomes, unblocks),
+      computeConfidence(outcomes),
+      outcomes.map((o) => `${o.name}: ${o.status}`)
+    );
   }
 
-  // ── Decisions ──────────────────────────────────────────────────────────────
-
-  /** Record an orchestrator decision. */
   async decide(question: string, chosen: string, reasoning: string): Promise<void> {
     if (!this.enabled || !this.trajectory || !this.autoDecisions) return;
-
     this.addEvent('decision', `${question} → ${chosen}: ${reasoning}`, 'medium', {
       question,
       chosen,
@@ -482,300 +429,135 @@ export class WorkflowTrajectory {
     await this.flush();
   }
 
-  // ── Completion ─────────────────────────────────────────────────────────────
-
-  /** Complete the trajectory with a summary. */
   async complete(
     summary: string,
     confidence: number,
     meta?: { learnings?: string[]; challenges?: string[] }
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
-    this.openRetrospective();
-
-    const elapsed = Date.now() - this.startTime;
-    const elapsedStr =
-      elapsed > 60_000 ? `${Math.round(elapsed / 60_000)} minutes` : `${Math.round(elapsed / 1_000)} seconds`;
-
-    this.addEvent('reflection', `${summary} (completed in ${elapsedStr})`, 'high');
-
-    this.trajectory.status = 'completed';
-    this.trajectory.completedAt = new Date().toISOString();
-    this.trajectory.retrospective = {
+    this.openChapter('Retrospective', 'orchestrator');
+    this.addEvent(
+      'reflection',
+      `${summary} (completed in ${formatElapsed(Date.now() - this.startTime, true)})`,
+      'high'
+    );
+    this.trajectory = completeTrajectory(this.trajectory as Trajectory, {
       summary,
-      approach: `${this.swarmPattern} workflow (${this.trajectory.agents.filter((a) => a.role !== 'workflow-runner').length} agents)`,
+      approach: this.buildApproach(),
       confidence,
       learnings: meta?.learnings,
       challenges: meta?.challenges,
-    };
-
-    this.closeCurrentChapter();
+    }) as WorkflowTrajectoryData;
     await this.flush();
-    await this.moveToCompleted();
   }
 
-  /** Abandon the trajectory. */
   async abandon(
     reason: string,
     meta?: { summary?: string; confidence?: number; learnings?: string[]; challenges?: string[] }
   ): Promise<void> {
     if (!this.enabled || !this.trajectory) return;
-
-    const elapsed = Date.now() - this.startTime;
-    const elapsedStr =
-      elapsed > 60_000 ? `${Math.round(elapsed / 60_000)} minutes` : `${Math.round(elapsed / 1_000)} seconds`;
     const summary = meta?.summary ?? `Workflow abandoned: ${reason}`;
-
-    this.openRetrospective();
-    this.addEvent('reflection', `${summary} (abandoned after ${elapsedStr})`, 'high');
+    this.openChapter('Retrospective', 'orchestrator');
+    this.addEvent(
+      'reflection',
+      `${summary} (abandoned after ${formatElapsed(Date.now() - this.startTime, true)})`,
+      'high'
+    );
     this.addEvent('error', `Workflow abandoned: ${reason}`, 'high');
-    this.trajectory.status = 'abandoned';
-    this.trajectory.completedAt = new Date().toISOString();
-    this.trajectory.retrospective = {
-      summary,
-      approach: `${this.swarmPattern} workflow (${this.trajectory.agents.filter((a) => a.role !== 'workflow-runner').length} agents)`,
-      confidence: meta?.confidence ?? 0,
-      learnings: meta?.learnings,
-      challenges: meta?.challenges,
-    };
-
-    this.closeCurrentChapter();
+    this.trajectory = {
+      ...abandonTrajectory(this.trajectory as Trajectory),
+      retrospective: {
+        summary,
+        approach: this.buildApproach(),
+        confidence: meta?.confidence ?? 0,
+        learnings: meta?.learnings,
+        challenges: meta?.challenges,
+      },
+    } as WorkflowTrajectoryData;
     await this.flush();
-    await this.moveToCompleted();
   }
-
-  // ── Getters ────────────────────────────────────────────────────────────────
 
   isEnabled(): boolean {
     return this.enabled;
   }
-
   shouldReflectOnConverge(): boolean {
     return this.enabled && this.reflectOnConverge;
   }
-
   shouldReflectOnBarriers(): boolean {
     return this.enabled && this.reflectOnBarriers;
   }
-
   getTrajectoryId(): string | null {
     return this.trajectory?.id ?? null;
   }
-
-  // ── Synthesis helpers ──────────────────────────────────────────────────────
-
   buildSynthesis(label: string, outcomes: StepOutcome[], unblocks?: string[]): string {
-    const completed = outcomes.filter((o) => o.status === 'completed');
-    const failed = outcomes.filter((o) => o.status === 'failed');
-    const retried = outcomes.filter((o) => o.attempts > 1 && o.status !== 'failed');
-
-    const parts: string[] = [`${label} resolved.`, `${completed.length}/${outcomes.length} steps completed.`];
-
-    if (failed.length > 0) {
-      parts.push(`${failed.length} step(s) failed: ${failed.map((s) => s.name).join(', ')}.`);
-    }
-
-    if (retried.length > 0) {
-      parts.push(`${retried.length} step(s) required retries: ${retried.map((s) => s.name).join(', ')}.`);
-    } else if (failed.length === 0) {
-      parts.push('All steps completed on first attempt.');
-    }
-
-    if (unblocks?.length) {
-      parts.push(`Unblocking: ${unblocks.join(', ')}.`);
-    }
-
-    return parts.join(' ');
+    return buildSynthesis(label, outcomes, unblocks);
   }
-
   computeConfidence(outcomes: StepOutcome[]): number {
-    if (outcomes.length === 0) return 0.7;
-
-    const total = outcomes.length;
-    const completed = outcomes.filter((o) => o.status === 'completed').length;
-    const firstAttempt = outcomes.filter((o) => o.attempts === 1 && o.status === 'completed').length;
-    const verified = outcomes.filter((o) => o.verificationPassed).length;
-
-    // Base: 0.5 scaled by completion rate, +0.25 for first-attempt, +0.25 for verified
-    const completionRate = completed / total;
-    return Math.min(1.0, 0.5 * completionRate + (firstAttempt / total) * 0.25 + (verified / total) * 0.25);
+    return computeConfidence(outcomes);
   }
-
   buildRunSummary(outcomes: StepOutcome[]): string {
-    const completed = outcomes.filter((o) => o.status === 'completed');
-    const failed = outcomes.filter((o) => o.status === 'failed');
-    const skipped = outcomes.filter((o) => o.status === 'skipped');
-
-    const elapsed = Date.now() - this.startTime;
-    const elapsedStr =
-      elapsed > 60_000 ? `${Math.round(elapsed / 60_000)}min` : `${Math.round(elapsed / 1_000)}s`;
-
-    if (failed.length === 0) {
-      const retried = completed.filter((o) => o.attempts > 1);
-      const base = `All ${completed.length} steps completed in ${elapsedStr}.`;
-      return retried.length > 0
-        ? `${base} ${retried.length} step(s) needed retries: ${retried.map((o) => o.name).join(', ')}.`
-        : base;
-    }
-
-    // Failure narrative — focus on root cause of the first failure
-    const firstFailure = failed[0];
-    const cause = classifyFailure(firstFailure.error ?? '');
-    const cascaded =
-      skipped.length > 0
-        ? ` Caused ${skipped.length} downstream step(s) to be skipped: ${skipped.map((o) => o.name).join(', ')}.`
-        : '';
-
-    return (
-      `Failed at "${firstFailure.name}" [${cause}] after ${elapsedStr}.${cascaded} ` +
-      `${completed.length}/${outcomes.length} steps completed before failure.`
-    );
+    return buildRunSummary(outcomes, this.startTime);
   }
-
   extractLearnings(outcomes: StepOutcome[]): string[] {
-    const learnings: string[] = [];
-
-    const timeouts = outcomes.filter(
-      (o) => o.status === 'failed' && classifyFailure(o.error ?? '') === 'timeout'
-    );
-    if (timeouts.some((o) => o.nonInteractive)) {
-      learnings.push(
-        `Non-interactive agent timeouts detected (${timeouts.map((o) => o.name).join(', ')}). ` +
-          `Use deterministic steps to pre-read files and inject content — non-interactive agents should not discover information via tools.`
-      );
-    }
-
-    const verifyFails = outcomes.filter(
-      (o) => o.status === 'failed' && classifyFailure(o.error ?? '') === 'verification_mismatch'
-    );
-    if (verifyFails.length > 0) {
-      learnings.push(
-        `Verification mismatch on: ${verifyFails.map((o) => `"${o.name}" (expected "${o.verificationValue ?? '?'}")`).join(', ')}. ` +
-          `Make the required output format more explicit in the task prompt.`
-      );
-    }
-
-    const retried = outcomes.filter((o) => o.attempts > 1 && o.status === 'completed');
-    if (retried.length > 0) {
-      learnings.push(
-        `${retried.map((o) => `"${o.name}" (${o.attempts} attempts)`).join(', ')} succeeded after retries — ` +
-          `consider adding clearer output instructions to reduce retries.`
-      );
-    }
-
-    return learnings;
+    return extractLearnings(outcomes);
   }
-
   extractChallenges(outcomes: StepOutcome[]): string[] {
-    const challenges: string[] = [];
-    const failed = outcomes.filter((o) => o.status === 'failed');
-    for (const step of failed) {
-      const cause = classifyFailure(step.error ?? '');
-      challenges.push(diagnosisFor(cause, step));
-    }
-    return challenges;
+    return extractChallenges(outcomes);
   }
-
-  // ── Internal helpers ───────────────────────────────────────────────────────
 
   private openChapter(title: string, agentName: string): void {
     if (!this.trajectory) return;
-
-    const chapter: TrajectoryChapter = {
-      id: `ch_${randomBytes(4).toString('hex')}`,
+    this.trajectory = appendChapter(this.trajectory as Trajectory, {
       title,
       agentName,
-      startedAt: new Date().toISOString(),
-      events: [],
-    };
-
-    this.trajectory.chapters.push(chapter);
-    this.currentChapterId = chapter.id;
-  }
-
-  private closeCurrentChapter(): void {
-    if (!this.trajectory || !this.currentChapterId) return;
-
-    const chapter = this.trajectory.chapters.find((c) => c.id === this.currentChapterId);
-    if (chapter && !chapter.endedAt) {
-      chapter.endedAt = new Date().toISOString();
-    }
-    this.currentChapterId = null;
+    }) as WorkflowTrajectoryData;
   }
 
   private addEvent(
-    type: string,
+    type: WorkflowTrajectoryEventType,
     content: string,
-    significance?: 'low' | 'medium' | 'high',
+    significance?: EventSignificance,
     raw?: Record<string, unknown>
   ): void {
     if (!this.trajectory) return;
-
-    // Find current chapter or create a default one
-    let chapter = this.trajectory.chapters.find((c) => c.id === this.currentChapterId);
-    if (!chapter) {
-      this.openChapter('Execution', 'orchestrator');
-      chapter = this.trajectory.chapters[this.trajectory.chapters.length - 1];
-    }
-
-    const event: TrajectoryEvent = {
-      ts: Date.now(),
-      type,
+    this.trajectory = appendEvent(this.trajectory as Trajectory, {
+      type: type as TrajectoryEventType,
       content,
-    };
+      significance,
+      raw,
+    }) as WorkflowTrajectoryData;
+  }
 
-    if (significance) event.significance = significance;
-    if (raw) event.raw = raw;
-
-    chapter.events.push(event);
+  private buildApproach(): string {
+    return `${this.swarmPattern} workflow (${this.trajectory?.agents.filter((a) => a.role !== 'workflow-runner').length ?? 0} agents)`;
   }
 
   private formatCompletionEvidenceSummary(
     evidence: StepCompletionDecision['evidence'] | undefined
   ): string | undefined {
     if (!evidence) return undefined;
-
     const parts: string[] = [];
     if (evidence.summary) parts.push(evidence.summary);
     if (evidence.signals?.length) parts.push(`signals=${evidence.signals.join(', ')}`);
     if (evidence.channelPosts?.length) parts.push(`channel=${evidence.channelPosts.join(' | ')}`);
     if (evidence.files?.length) parts.push(`files=${evidence.files.join(', ')}`);
     if (evidence.exitCode !== undefined) parts.push(`exit=${evidence.exitCode}`);
-
     return parts.length > 0 ? parts.join('; ') : undefined;
+  }
+
+  private async ensureStorage(): Promise<void> {
+    this.storage ??= new FileStorage(this.storageBaseDir);
+    this.storageInit ??= this.storage.initialize();
+    await this.storageInit;
   }
 
   private async flush(): Promise<void> {
     if (!this.trajectory) return;
-
     try {
-      const activeDir = path.join(this.dataDir, 'active');
-      await mkdir(activeDir, { recursive: true });
-
-      const filePath = path.join(activeDir, `${this.trajectory.id}.json`);
-      await writeFile(filePath, JSON.stringify(this.trajectory, null, 2), 'utf-8');
+      await this.ensureStorage();
+      await this.storage?.save(this.trajectory as Trajectory);
     } catch {
-      // Non-blocking: trajectory recording failure should never break the workflow
-    }
-  }
-
-  private async moveToCompleted(): Promise<void> {
-    if (!this.trajectory) return;
-
-    try {
-      const activeDir = path.join(this.dataDir, 'active');
-      const completedDir = path.join(this.dataDir, 'completed');
-      await mkdir(completedDir, { recursive: true });
-
-      const activePath = path.join(activeDir, `${this.trajectory.id}.json`);
-      const completedPath = path.join(completedDir, `${this.trajectory.id}.json`);
-
-      if (existsSync(activePath)) {
-        await rename(activePath, completedPath);
-      }
-    } catch {
-      // Non-blocking
+      // non-blocking: flush failures must never break the workflow
     }
   }
 }

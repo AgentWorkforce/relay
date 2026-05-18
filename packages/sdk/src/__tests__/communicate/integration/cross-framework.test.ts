@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -181,12 +181,14 @@ class MockRelayServer {
       if (recipientAgentId) {
         const ws = this.websockets.get(recipientAgentId);
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'message',
-            sender: json.from,
-            text: json.text,
-            message_id: messageId,
-          }));
+          ws.send(
+            JSON.stringify({
+              type: 'message',
+              sender: json.from,
+              text: json.text,
+              message_id: messageId,
+            })
+          );
         }
       }
       sendJson(response, 200, { message_id: messageId });

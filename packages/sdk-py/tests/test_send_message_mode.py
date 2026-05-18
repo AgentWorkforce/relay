@@ -10,17 +10,15 @@ from agent_relay.relay import AgentRelay, HumanHandle
 
 @pytest.mark.asyncio
 async def test_client_send_message_includes_mode_in_payload():
-    client = AgentRelayClient(binary_path="agent-relay-broker")
-    client.start_client = AsyncMock()
+    client = AgentRelayClient(base_url="http://broker.test")
 
-    payloads: list[dict] = []
+    calls: list[tuple[str, str, dict]] = []
 
-    async def fake_request_ok(type_: str, payload: dict):
-        assert type_ == "send_message"
-        payloads.append(payload)
+    async def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs.get("json", {})))
         return {"event_id": "evt-1", "targets": ["Worker"]}
 
-    client._request_ok = fake_request_ok  # type: ignore[method-assign]
+    client._request = fake_request  # type: ignore[method-assign]
 
     result = await client.send_message(
         to="Worker",
@@ -33,16 +31,20 @@ async def test_client_send_message_includes_mode_in_payload():
     )
 
     assert result["event_id"] == "evt-1"
-    assert payloads == [
-        {
-            "to": "Worker",
-            "text": "hello",
-            "from": "system",
-            "thread_id": "thread-1",
-            "priority": 5,
-            "data": {"k": "v"},
-            "mode": "steer",
-        }
+    assert calls == [
+        (
+            "POST",
+            "/api/send",
+            {
+                "to": "Worker",
+                "text": "hello",
+                "from": "system",
+                "threadId": "thread-1",
+                "priority": 5,
+                "data": {"k": "v"},
+                "mode": "steer",
+            },
+        )
     ]
 
 

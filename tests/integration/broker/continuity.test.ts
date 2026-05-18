@@ -62,7 +62,7 @@ test('continuity: release writes continuity JSON file', async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-write-${suffix}`;
@@ -104,7 +104,7 @@ test('continuity: continuity file includes cli and summary', async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-fields-${suffix}`;
@@ -142,7 +142,7 @@ test('continuity: spawn with continueFrom injects context', async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const originalName = `continuity-original-${suffix}`;
@@ -189,7 +189,7 @@ test('continuity: spawn with continueFrom for same name', async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-samename-${suffix}`;
@@ -233,7 +233,7 @@ test('continuity: spawn with continueFrom for nonexistent agent still spawns', a
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-nofile-${suffix}`;
@@ -258,7 +258,7 @@ test('continuity: re-release overwrites continuity file', async (t) => {
   if (skipIfMissing(t)) return;
 
   const cwd = makeTempCwd();
-  const harness = new BrokerHarness({ cwd, binaryArgs: ['--persist'] });
+  const harness = new BrokerHarness({ cwd, binaryArgs: { persist: true } });
   await harness.start();
   const suffix = uniqueSuffix();
   const name = `continuity-overwrite-${suffix}`;

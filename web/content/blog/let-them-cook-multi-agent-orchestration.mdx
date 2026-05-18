@@ -1,9 +1,13 @@
 ---
-title: "Let Them Cook: Lessons from 6 Weeks of Multi-Agent Orchestration"
+title: 'Let Them Cook: Lessons from 6 Weeks of Multi-Agent Orchestration'
 description: "Multi-agent orchestration is a step change in how tasks get done. After 6 weeks of building with agent swarms, here's what works, what breaks, and why the planning phase becomes everything."
-date: "2026-02-04"
-author: "Khaliq Gant"
-category: "Engineering"
+date: '2026-02-04'
+author: 'Khaliq Gant'
+category: 'Engineering'
+tags:
+  - Multi-agent orchestration
+  - Engineering playbook
+  - Swarm patterns
 ---
 
 _What I learned watching AI agents coordinate, communicate, and occasionally fall apart_
@@ -46,7 +50,7 @@ The method that has worked well for me is creating a detailed spec upfront and t
 
 Using this workflow, I've seen that not only does code quality increase, but the speed at which agents can pump out complex features is at least a **4-5X improvement**.
 
-I have been using Agent Relay to build itself on the cloud environment at agent-relay.com and the pace of delivery has been mind-blowing.
+I have been using Agent Relay to build itself on the cloud environment at agentrelay.com and the pace of delivery has been mind-blowing.
 
 It hasn't been all good though...
 
@@ -114,15 +118,15 @@ Agent Relay has a `continuity` concept, largely borrowed from the Continuous Cla
 
 If you want more granular control or access to agent lifecycle events, Agent Relay has an extensive hooks system with 7 different events:
 
-| Hook | Description |
-|------|-------------|
-| `onSessionStart` | Agent starts |
-| `onSessionEnd` | Agent stops |
-| `onOutput` | Agent produces output |
+| Hook                | Description            |
+| ------------------- | ---------------------- |
+| `onSessionStart`    | Agent starts           |
+| `onSessionEnd`      | Agent stops            |
+| `onOutput`          | Agent produces output  |
 | `onMessageReceived` | Receives relay message |
-| `onMessageSent` | Sends relay message |
-| `onIdle` | Agent inactive |
-| `onError` | Error occurs |
+| `onMessageSent`     | Sends relay message    |
+| `onIdle`            | Agent inactive         |
+| `onError`           | Error occurs           |
 
 ### Trajectories: Preserving Context
 
@@ -173,4 +177,4 @@ curl -s https://raw.githubusercontent.com/AgentWorkforce/relay/main/docs/guide/a
 
 The agent will read the setup guide and configure everything, then let it cook.
 
-Check out the [docs](https://docs.agent-relay.com/) for more details, or hit me on X with any thoughts or questions. I'm all for a discussion: [@khaliqgant](https://x.com/khaliqgant)
+Check out the [docs](/docs) for more details, or hit me on X with any thoughts or questions. I'm all for a discussion: [@khaliqgant](https://x.com/khaliqgant)

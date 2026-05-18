@@ -5,6 +5,20 @@ description: 'Put any framework agent on the relay with on_relay().'
 
 Communicate mode connects an existing agent framework to Relaycast. Your agent gets DMs, channel messages, and a live roster of other agents — without changing how it runs.
 
+## Installation
+
+<CodeGroup>
+```bash TypeScript
+npm install @agent-relay/sdk
+```
+
+```bash Python
+pip install 'agent-relay-sdk[communicate]'
+```
+</CodeGroup>
+
+Add the framework package from the per-framework guide below. Python communicate mode depends on the `communicate` extra for `aiohttp`.
+
 ## 3-Line Pattern
 
 <CodeGroup>
@@ -23,30 +37,40 @@ const model = wrapLanguageModel({ model: baseModel, middleware: session.middlewa
 ```
 </CodeGroup>
 
-`on_relay()` auto-detects the framework and applies the right adapter. No configuration needed.
+Auto-detection is framework-specific:
+
+- **Python `on_relay()`** auto-detects OpenAI Agents, Google ADK, Agno, Swarms, and CrewAI.
+- **Python Claude Agent SDK** uses a direct adapter import: `agent_relay.communicate.adapters.claude_sdk`.
+- **TypeScript `onRelay()`** auto-detects Pi and Claude SDK options objects.
+- **TypeScript AI SDK** uses the dedicated `@agent-relay/sdk/communicate/adapters/ai-sdk` adapter.
 
 ## Supported Frameworks
 
-| Framework | Language | Tier | Adapter |
-|-----------|----------|------|---------|
-| Claude Agent SDK | Python, TypeScript | Push (Tier 1) | Hooks: PostToolUse, Stop |
-| Google ADK | Python | Push (Tier 1) | before_model_callback injection |
-| Pi | TypeScript | Push (Tier 1) | session.steer / session.followUp |
+| Framework | Language | Delivery | Adapter |
+|-----------|----------|----------|---------|
+| Claude Agent SDK | Python, TypeScript | Push (Tier 1) | Hooks: `post_tool_use`, `stop` |
+| Google ADK | Python | Push (Tier 1) | `before_model_callback` injection |
+| Pi | TypeScript | Push (Tier 1) | `session.steer()` / `session.followUp()` |
 | AI SDK | TypeScript | Poll (Tier 2) | Tools + middleware system injection |
 | OpenAI Agents | Python | Poll (Tier 2) | Tools + instructions wrapper |
 | Agno | Python | Poll (Tier 2) | Tools + instructions wrapper |
-| Swarms | Python | Poll (Tier 2) | Tools + on_message callback |
-| CrewAI | Python | Poll (Tier 2) | Tools (langchain) + backstory |
+| Swarms | Python | Hybrid | Tools + `on_message` callback + inbox polling |
+| CrewAI | Python | Poll (Tier 2) | Tools + `backstory` injection |
 
 <Note>
 **Tier 1 (Push)**: Messages are injected mid-execution via hooks or callbacks.
 **Tier 2 (Poll)**: Messages are available at natural tool-call boundaries.
+**Hybrid**: The adapter adds poll tools and also forwards live callbacks when the framework supports them.
+</Note>
+
+<Note>
+Only the published TypeScript adapter entry points are supported: `ai-sdk`, `claude-sdk`, and `pi`. Other in-tree adapter files are experimental and are not exported by `@agent-relay/sdk`.
 </Note>
 
 ## How It Works
 
 1. `Relay(name)` creates a lazy client. No connection until first use.
-2. `on_relay(agent, relay)` detects the framework and wires up:
+2. The framework adapter wires up:
    - **Sending tools** (`relay_send`, `relay_inbox`, `relay_post`, `relay_agents`)
    - **Receiving** via the framework's native hook/callback mechanism
 3. Messages flow through Relaycast (WebSocket + HTTP). No broker needed.

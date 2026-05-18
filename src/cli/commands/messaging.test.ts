@@ -14,9 +14,7 @@ class ExitSignal extends Error {
   }
 }
 
-function createBrokerClientMock(
-  overrides: Partial<MessagingBrokerClient> = {}
-): MessagingBrokerClient {
+function createBrokerClientMock(overrides: Partial<MessagingBrokerClient> = {}): MessagingBrokerClient {
   return {
     sendMessage: vi.fn(async () => ({ event_id: 'evt_1', targets: [] })),
     shutdown: vi.fn(async () => undefined),
@@ -39,7 +37,14 @@ function createRelaycastClientMock(
       unread_channels: [],
       mentions: [],
       unread_dms: [],
+      recent_reactions: [],
     })),
+    dm: vi.fn(async () => undefined),
+    post: vi.fn(async () => undefined),
+    dms: {
+      conversations: vi.fn(async () => []),
+      messages: vi.fn(async () => []),
+    },
     ...overrides,
   };
 }
@@ -74,6 +79,10 @@ function createHarness(options?: {
   };
 
   const program = new Command();
+  program.configureOutput({
+    writeOut: () => undefined,
+    writeErr: () => undefined,
+  });
   program.exitOverride();
   registerMessagingCommands(program, deps);
 
@@ -103,29 +112,68 @@ describe('registerMessagingCommands', () => {
     expect(commandNames).toEqual(expect.arrayContaining(['send', 'read', 'history', 'inbox']));
   });
 
-  it('sends a message to the correct target', async () => {
-    const brokerClient = createBrokerClientMock();
-    const { program, deps } = createHarness({ brokerClient });
+  it('sends a DM via relaycast SDK registered as the --from identity', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
 
-    const exitCode = await runCommand(program, [
-      'send',
-      'WorkerA',
-      'Ship this today',
-      '--from',
-      'Alice',
-      '--thread',
-      'thread-1',
-    ]);
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today', '--from', 'Alice']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createClient).toHaveBeenCalledWith('/tmp/project');
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'Alice',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.dm).toHaveBeenCalledWith('WorkerA', 'Ship this today');
+    expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
+    // broker path not used
+    expect(deps.createClient).not.toHaveBeenCalled();
+  });
+
+  it('defaults sender to "relay" when --from is not provided', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'Ship this today']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'relay',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.dm).toHaveBeenCalledWith('WorkerA', 'Ship this today');
+  });
+
+  it('sends to a channel via relaycast post when agent starts with #', async () => {
+    const relaycastClient = createRelaycastClientMock();
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['send', '#general', 'Hello team']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'relay',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.post).toHaveBeenCalledWith('general', 'Hello team');
+    expect(relaycastClient.dm).not.toHaveBeenCalled();
+  });
+
+  it('falls back to broker when relaycast is unavailable', async () => {
+    const brokerClient = createBrokerClientMock();
+    const { program, deps } = createHarness({
+      brokerClient,
+      createRelaycastError: new Error('no api key'),
+    });
+
+    const exitCode = await runCommand(program, ['send', 'WorkerA', 'fallback msg', '--from', 'Alice']);
+
+    expect(exitCode).toBeUndefined();
     expect(brokerClient.sendMessage).toHaveBeenCalledWith({
       to: 'WorkerA',
-      text: 'Ship this today',
+      text: 'fallback msg',
       from: 'Alice',
-      threadId: 'thread-1',
+      threadId: undefined,
     });
-    expect(brokerClient.shutdown).toHaveBeenCalledTimes(1);
     expect(deps.log).toHaveBeenCalledWith('Message sent to WorkerA');
   });
 
@@ -143,7 +191,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['read', 'msg_123']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_read__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_read__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.message).toHaveBeenCalledWith('msg_123');
     expect(deps.log).toHaveBeenNthCalledWith(1, 'From: Lead');
     expect(deps.log).toHaveBeenNthCalledWith(2, 'To: #channel');
@@ -180,7 +231,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['history', '--limit', '2']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_history__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:03.000Z] Three -> #general: third');
     expect(deps.log).toHaveBeenCalledWith('[2026-02-20T11:00:02.000Z] Two -> #general: second');
@@ -203,7 +257,10 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['history', '--json', '--limit', '1']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_history__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_history__',
+      cwd: '/tmp/project',
+    });
     expect(relaycastClient.messages).toHaveBeenCalledWith('general', { limit: 100 });
     expect(deps.log).toHaveBeenCalledTimes(1);
     expect(JSON.parse((deps.log as ReturnType<typeof vi.fn>).mock.calls[0][0] as string)).toEqual([
@@ -234,6 +291,7 @@ describe('registerMessagingCommands', () => {
           },
         ],
         unread_dms: [{ conversation_id: 'dm_1', from: 'Teammate', unread_count: 1, last_message: null }],
+        recent_reactions: [],
       })),
     });
     const { program, deps } = createHarness({ relaycastClient });
@@ -241,24 +299,329 @@ describe('registerMessagingCommands', () => {
     const exitCode = await runCommand(program, ['inbox']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelaycastClient).toHaveBeenCalledWith({ agentName: '__cli_inbox__' });
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: '__cli_inbox__',
+      cwd: '/tmp/project',
+    });
     expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
     expect(deps.log).toHaveBeenCalledWith('  #general: 2');
     expect(deps.log).toHaveBeenCalledWith('Mentions:');
-    expect(deps.log).toHaveBeenCalledWith(
-      '  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.'
-    );
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.');
     expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
     expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
   });
 
+  it('normalizes camelCase inbox payloads from the Relaycast SDK', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadChannels: [{ channelName: 'general', unreadCount: 2 }],
+        mentions: [
+          {
+            id: 'mention_1',
+            channelName: 'general',
+            agentName: 'Lead',
+            text: 'Please review this.',
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ],
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Teammate',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hello',
+              createdAt: '2026-02-20T12:01:00.000Z',
+            },
+          },
+        ],
+        recentReactions: [
+          {
+            messageId: 'msg_2',
+            channelName: 'general',
+            emoji: 'eyes',
+            agentName: 'Reviewer',
+            createdAt: '2026-02-20T12:02:00.000Z',
+          },
+        ],
+      })),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Unread Channels:');
+    expect(deps.log).toHaveBeenCalledWith('  #general: 2');
+    expect(deps.log).toHaveBeenCalledWith('Mentions:');
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:00:00.000Z] #general @Lead: Please review this.');
+    expect(deps.log).toHaveBeenCalledWith('Unread DMs:');
+    expect(deps.log).toHaveBeenCalledWith('  Teammate: 1');
+    expect(deps.log).toHaveBeenCalledWith('Recent Reactions:');
+    expect(deps.log).toHaveBeenCalledWith('  [2026-02-20T12:02:00.000Z] #general eyes by @Reviewer');
+  });
+
+  it('emits snake_case inbox --json payload even when SDK returns camelCase', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({
+        unreadChannels: [{ channelName: 'general', unreadCount: 2 }],
+        mentions: [
+          {
+            id: 'mention_1',
+            channelName: 'general',
+            agentName: 'Lead',
+            text: 'Please review this.',
+            createdAt: '2026-02-20T12:00:00.000Z',
+          },
+        ],
+        unreadDms: [
+          {
+            conversationId: 'dm_1',
+            from: 'Teammate',
+            unreadCount: 1,
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hello',
+              createdAt: '2026-02-20T12:01:00.000Z',
+            },
+          },
+        ],
+        recentReactions: [
+          {
+            messageId: 'msg_2',
+            channelName: 'general',
+            emoji: 'eyes',
+            agentName: 'Reviewer',
+            createdAt: '2026-02-20T12:02:00.000Z',
+          },
+        ],
+      })),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox', '--json']);
+
+    expect(exitCode).toBeUndefined();
+    const jsonCall = (deps.log as any).mock.calls.find(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).trimStart().startsWith('{')
+    );
+    expect(jsonCall).toBeDefined();
+    const parsed = JSON.parse(jsonCall![0] as string);
+    expect(parsed).toEqual({
+      unread_channels: [{ channel_name: 'general', unread_count: 2 }],
+      mentions: [
+        {
+          id: 'mention_1',
+          channel_name: 'general',
+          agent_name: 'Lead',
+          text: 'Please review this.',
+          created_at: '2026-02-20T12:00:00.000Z',
+        },
+      ],
+      unread_dms: [
+        {
+          conversation_id: 'dm_1',
+          from: 'Teammate',
+          unread_count: 1,
+          last_message: {
+            id: 'msg_1',
+            text: 'hello',
+            created_at: '2026-02-20T12:01:00.000Z',
+          },
+        },
+      ],
+      recent_reactions: [
+        {
+          message_id: 'msg_2',
+          channel_name: 'general',
+          emoji: 'eyes',
+          agent_name: 'Reviewer',
+          created_at: '2026-02-20T12:02:00.000Z',
+        },
+      ],
+    });
+  });
+
+  it('treats partial inbox payloads as empty instead of crashing', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      inbox: vi.fn(async () => ({}) as any),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['inbox']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Inbox is clear.');
+    expect(deps.error).not.toHaveBeenCalled();
+  });
+
+  it('inbox --agent registers as the specified agent name', async () => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['inbox', '--agent', 'my-worker']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'my-worker',
+      cwd: '/tmp/project',
+    });
+  });
+
+  it('history --to agent lists DM conversations for that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'alice' }, { agentName: 'bob' }],
+            lastMessage: {
+              id: 'msg_1',
+              text: 'hey there',
+              agentName: 'bob',
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+            unreadCount: 1,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'alice']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'alice',
+      cwd: '/tmp/project',
+    });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('DM conversations for alice'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hey there'));
+  });
+
+  it('history --to agent --from other shows message thread', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'alice' }, { agentName: 'bob' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_1',
+            agentName: 'bob',
+            text: 'hello from bob',
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--to', 'alice', '--from', 'bob']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith({
+      agentName: 'alice',
+      cwd: '/tmp/project',
+    });
+    expect(relaycastClient.dms.messages).toHaveBeenCalledWith('conv_1', { limit: 50 });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hello from bob'));
+  });
+
+  it('history --to agent --from other logs clear message when no conversation exists', async () => {
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['history', '--to', 'alice', '--from', 'nobody']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringContaining('No DM conversation found between alice and nobody')
+    );
+  });
+
+  it('history --from agent shows channel messages from that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => [
+        {
+          id: 'msg_1',
+          agent_name: 'relay',
+          text: 'hello from relay',
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      ]),
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hello from relay'));
+  });
+
+  it('history --from agent shows DM messages sent by that agent', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => [
+          {
+            id: 'conv_1',
+            participants: [{ agentName: 'relay' }, { agentName: 'architect' }],
+            lastMessage: null,
+            unreadCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+        messages: vi.fn(async () => [
+          {
+            id: 'msg_dm_1',
+            agentName: 'relay',
+            text: 'hey architect',
+            createdAt: '2026-01-01T01:00:00.000Z',
+          },
+        ]),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelaycastClient).toHaveBeenCalledWith(expect.objectContaining({ agentName: 'relay' }));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('hey architect'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('(DM)'));
+  });
+
+  it('history --from agent with no messages shows no messages found', async () => {
+    const relaycastClient = createRelaycastClientMock({
+      messages: vi.fn(async () => []),
+      dms: {
+        conversations: vi.fn(async () => []),
+        messages: vi.fn(async () => []),
+      },
+    });
+    const { program, deps } = createHarness({ relaycastClient });
+
+    const exitCode = await runCommand(program, ['history', '--from', 'relay']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('No messages found.');
+  });
+
   it('returns non-zero for missing required args', async () => {
-    const { program, brokerClient } = createHarness();
+    const { program, relaycastClient } = createHarness();
 
     const exitCode = await runCommand(program, ['send', 'WorkerOnly']);
 
     expect(exitCode).toBe(1);
-    expect(brokerClient.sendMessage).not.toHaveBeenCalled();
+    expect(relaycastClient.dm).not.toHaveBeenCalled();
   });
 
   it('handles broker unavailable errors', async () => {
@@ -270,6 +633,5 @@ describe('registerMessagingCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith('Failed to initialize relaycast client: broker unavailable');
-    expect(deps.error).toHaveBeenCalledWith('Start the broker with `agent-relay up` and try again.');
   });
 });

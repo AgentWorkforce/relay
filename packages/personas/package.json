@@ -1,0 +1,36 @@
+{
+  "name": "@agent-relay/personas",
+  "version": "6.0.22",
+  "description": "Relay-maintained AgentWorkforce personas for use with `agentworkforce install`.",
+  "type": "module",
+  "private": false,
+  "files": [
+    "personas",
+    "README.md"
+  ],
+  "keywords": [
+    "agentworkforce-personas",
+    "agent-relay",
+    "personas"
+  ],
+  "agentworkforce": {
+    "personas": "personas"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/personas"
+  },
+  "homepage": "https://github.com/AgentWorkforce/relay/tree/main/packages/personas",
+  "bugs": {
+    "url": "https://github.com/AgentWorkforce/relay/issues"
+  },
+  "license": "MIT",
+  "scripts": {
+    "validate": "node scripts/validate-personas.mjs",
+    "test": "node scripts/validate-personas.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

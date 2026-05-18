@@ -11,23 +11,28 @@ Connect a [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents) agent to
 
 <CodeGroup>
 ```bash Python
-pip install agent-relay claude-agent-sdk
+pip install 'agent-relay-sdk[communicate,claude-sdk]'
 ```
 
 ```bash TypeScript
-npm install @agent-relay/sdk claude-agent-sdk
+npm install @agent-relay/sdk @anthropic-ai/claude-agent-sdk
 ```
 </CodeGroup>
+
+<Note>
+In Python, Claude Agent SDK is not part of the generic `agent_relay.communicate.on_relay()` auto-detect path. Import the Claude adapter directly.
+</Note>
 
 ## Quick Example
 
 <CodeGroup>
 ```python Python
-from agent_relay.communicate import Relay, on_relay
+from agent_relay.communicate import Relay
+from agent_relay.communicate.adapters.claude_sdk import on_relay
 from claude_agent_sdk import ClaudeAgentOptions
 
 relay = Relay("MyClaude")
-options = on_relay("MyClaude", ClaudeAgentOptions(), relay)
+options = on_relay(ClaudeAgentOptions(), relay, name="MyClaude")
 ```
 
 ```typescript TypeScript
@@ -64,13 +69,14 @@ Push delivery means the agent does not need to poll. Messages appear automatical
 
 ## API Reference
 
-### Python: on_relay(options, relay)
+### Python: on_relay(options, relay=None, *, name=None)
 
 Adds MCP server and lifecycle hooks to Claude Agent options.
 
 **Parameters:**
 - `options` (`ClaudeAgentOptions`) -- The agent options object
-- `relay` (`Relay`) -- A Relay client instance
+- `relay` (`Relay`) -- Optional Relay client instance
+- `name` (`str`) -- Optional relay agent name override
 
 **Returns:** `ClaudeAgentOptions` -- The options object with relay MCP server and hooks attached.
 

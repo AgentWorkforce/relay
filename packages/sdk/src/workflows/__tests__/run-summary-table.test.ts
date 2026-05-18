@@ -140,7 +140,7 @@ describe('formatRunSummaryTable', () => {
 });
 
 describe('WorkflowRunner logRunSummary', () => {
-  it('falls back to the legacy summary format when no reports exist', () => {
+  it('uses the table summary format even when no reports exist', () => {
     const runner = new WorkflowRunner({ cwd: '/tmp/workflow-runner' });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -152,8 +152,9 @@ describe('WorkflowRunner logRunSummary', () => {
 
     const combined = logSpy.mock.calls.flat().join('\n');
     expect(combined).toContain('Workflow "sample-workflow"');
-    expect(combined).toContain('✓ lint [shell]');
-    expect(combined).not.toContain('Step                  Status');
+    expect(combined).toContain('Step                  Status');
+    expect(combined).toContain('lint');
+    expect(combined).toContain('pass');
 
     logSpy.mockRestore();
   });

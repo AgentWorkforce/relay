@@ -1,0 +1,168 @@
+---
+title: 'File sharing'
+description: 'Use Relayfile when agents need shared state, artifacts, and coordinated file access.'
+---
+
+Messaging handles coordination. Relayfile handles shared state. When several agents need to read, write, watch, and
+coordinate the same files, Relayfile gives them one coherent filesystem abstraction instead of a pile of custom sync code.
+
+## When file sharing matters
+
+- Multiple agents collaborate on the same repo or output directory
+- A workflow produces artifacts that later steps need to read
+- You need file watching, shared volumes, or explicit write coordination
+
+## Relayfile at a glance
+
+- Mount provider-backed data as files: Linear, GitHub, Notion, Slack, HubSpot, Salesforce, and custom APIs
+- Read, grep, and summarize through normal file tools instead of loading a provider-specific tool surface
+- Write provider records by saving JSON or Markdown files to canonical paths
+- Watch paths for realtime changes and trigger follow-up work
+- Share the same workspace across several agents, sandboxes, and humans
+- Control read, write, watch, and admin access per path
+
+## Quick start
+
+Use hosted setup when you want Agent Relay to handle OAuth, initial sync, writeback workers, and the local mount daemon.
+
+```bash
+npx relayfile setup \
+  --provider notion \
+  --workspace research-room \
+  --local-dir ./relayfile-mount
+```
+
+The mounted directory is intentionally boring:
+
+```bash
+ls ./relayfile-mount
+cat ./relayfile-mount/LAYOUT.md
+cat ./relayfile-mount/digests/yesterday.md
+find ./relayfile-mount/notion/pages/by-edited/2026-05-12 -maxdepth 1 -type f
+```
+
+To write back to a provider, save a file in the provider tree. The adapter validates the payload, queues writeback, and records the operation.
+
+```bash
+cat > ./relayfile-mount/linear/issues/drafts/follow-up-from-digest.json <<'JSON'
+{
+  "title": "Follow up from yesterday's digest",
+  "description": "Check the customer note linked from /digests/yesterday.md.",
+  "state": "Todo"
+}
+JSON
+```
+
+## Programmatic usage
+
+Relayfile can be a mounted directory for terminal-native agents, or a small tool inside an SDK-owned agent loop.
+
+### Mount from a sandbox
+
+```ts
+import { RelayfileSetup } from '@relayfile/sdk';
+
+const setup = new RelayfileSetup({
+  accessToken: process.env.RELAYFILE_ACCESS_TOKEN!,
+});
+
+const handle = await setup.ensureMountedWorkspace({
+  workspaceId: 'rw_123',
+  provider: 'notion',
+  verifyProvider: true,
+  localDir: '/workspace/relayfile',
+});
+
+console.log(handle.env().RELAYFILE_LOCAL_DIR);
+```
+
+### Vercel AI SDK
+
+```ts
+import { generateText, tool } from 'ai';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
+
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
+
+const { text } = await generateText({
+  model: process.env.AI_MODEL!,
+  prompt: 'What changed yesterday across GitHub, Linear, and Notion?',
+  tools: {
+    readRelayfile: tool({
+      description: 'Read a file from the Relayfile workspace',
+      inputSchema: z.object({ path: z.string() }),
+      execute: ({ path }) => files.readFile('rw_123', path),
+    }),
+  },
+});
+```
+
+### Claude Agent SDK
+
+```ts
+import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
+
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
+
+const relayfileServer = createSdkMcpServer({
+  name: 'relayfile',
+  tools: [
+    tool('readRelayfile', 'Read workspace files', { path: z.string() }, async ({ path }) => ({
+      content: [{ type: 'text', text: JSON.stringify(await files.readFile('rw_123', path)) }],
+    })),
+  ],
+});
+
+for await (const message of query({
+  prompt: 'Summarize /digests/yesterday.md, then draft Linear follow-ups.',
+  options: { mcpServers: { relayfile: relayfileServer } },
+})) {
+  console.log(message);
+}
+```
+
+### OpenAI Agents SDK
+
+```ts
+import { Agent, run, tool } from '@openai/agents';
+import { z } from 'zod';
+import { RelayFileClient } from '@relayfile/sdk';
+
+const files = new RelayFileClient({ token: process.env.RELAYFILE_TOKEN! });
+
+const reviewer = new Agent({
+  name: 'workspace-reviewer',
+  instructions: 'Use Relayfile paths before asking for provider-specific tools.',
+  tools: [
+    tool({
+      name: 'read_relayfile',
+      parameters: z.object({ path: z.string() }),
+      execute: ({ path }) => files.readFile('rw_123', path),
+    }),
+  ],
+});
+
+await run(reviewer, 'Review /digests/yesterday.md and file Linear follow-ups.');
+```
+
+For write access, add a separate `writeRelayfile` tool and mint a token scoped to the exact paths that agent owns, such as `relayfile:fs:write:/linear/issues/*`.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Relayfile Product Page" href="/file">
+    Overview, examples, and platform positioning for shared agent storage.
+  </Card>
+  <Card title="Primitives" href="/primitives#file">
+    See how file sharing fits beside auth, messaging, and scheduling.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Combine shared artifacts with multi-step orchestration.
+  </Card>
+  <Card title="Relayfile GitHub" href="https://github.com/agentworkforce/relayfile">
+    Source, package details, and the latest implementation surface.
+  </Card>
+</CardGroup>

@@ -2,7 +2,7 @@
 name: agent-relay-orchestrator
 version: 1.0.0
 description: Run headless multi-agent orchestration sessions via Agent Relay. Use when spawning teams of agents, creating channels for coordination, managing agent lifecycle, and running parallel workloads across Claude/Codex/Gemini/Pi/Droid agents.
-homepage: https://agentrelay.dev/openclaw
+homepage: https://agentrelay.com/openclaw
 metadata: { 'category': 'orchestration', 'requires': 'agent-relay' }
 ---
 
@@ -13,24 +13,24 @@ Run headless multi-agent sessions: start infrastructure, join a workspace, creat
 ## Prerequisites
 
 - `agent-relay` CLI installed (`npm i -g agent-relay`)
-- Relaycast workspace key (`rk_live_...`) — get one at https://agentrelay.dev/openclaw or run `agent-relay up` to auto-create
+- Relaycast workspace key (`rk_live_...`) — get one at https://agentrelay.com/openclaw or run `agent-relay up` to auto-create
 - For Claude agents: `ANTHROPIC_API_KEY` or `claude auth login`
 
 ## Quick Reference
 
-| Action | Command |
-|--------|---------|
-| Start broker | `agent-relay up --workspace-key rk_live_KEY --no-spawn` |
+| Action                    | Command                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| Start broker              | `agent-relay up --workspace-key rk_live_KEY --no-spawn`              |
 | Start broker (background) | `agent-relay up --workspace-key rk_live_KEY --background --no-spawn` |
-| Check status | `agent-relay status` |
-| Spawn agent | `agent-relay spawn NAME CLI "task"` |
-| Spawn with team | `agent-relay spawn NAME CLI --team TEAM "task"` |
-| List agents | `agent-relay agents` |
-| View logs | `agent-relay agents:logs NAME` |
-| Send to channel | `agent-relay send '#channel' 'message'` |
-| Send DM | `agent-relay send AGENT 'message'` |
-| Kill agent | `agent-relay agents:kill NAME` |
-| Stop broker | `agent-relay down` |
+| Check status              | `agent-relay status`                                                 |
+| Spawn agent               | `agent-relay spawn NAME CLI "task"`                                  |
+| Spawn with team           | `agent-relay spawn NAME CLI --team TEAM "task"`                      |
+| List agents               | `agent-relay agents`                                                 |
+| View logs                 | `agent-relay agents:logs NAME`                                       |
+| Send to channel           | `agent-relay send '#channel' 'message'`                              |
+| Send DM                   | `agent-relay send AGENT 'message'`                                   |
+| Kill agent                | `agent-relay agents:kill NAME`                                       |
+| Stop broker               | `agent-relay down`                                                   |
 
 ## Setup Flow
 
@@ -70,11 +70,12 @@ agent-relay spawn tester claude --team my-team "Your task..."
 Spawned agents communicate through the broker's workspace connection.
 
 ### From spawned agents (in their task prompt)
+
 ```
 # Post to channel
 agent-relay send '#channel-name' 'your message'
 
-# DM another agent  
+# DM another agent
 agent-relay send agent-name 'your message'
 
 # Check inbox
@@ -82,6 +83,7 @@ agent-relay inbox
 ```
 
 ### From orchestrator (via mcporter)
+
 ```bash
 mcporter call relaycast post_message channel=my-project text="Status update"
 mcporter call relaycast get_messages channel=my-project limit=20
@@ -90,12 +92,12 @@ mcporter call relaycast send_dm to=architect text="Review the design"
 
 ## Agent Types
 
-| CLI | Use For | Notes |
-|-----|---------|-------|
-| `claude` | Most reliable for coding tasks | `--print --permission-mode bypassPermissions` under the hood |
-| `droid` | OpenCode-based, needs PTY | Don't use `--cwd` flag (broker can't auto-accept permission prompts — see PR #570) |
-| `gemini` | Google models | Use `gemini-2.5-pro` (not preview) for stability |
-| `codex` | OpenAI Codex | Requires PTY |
+| CLI      | Use For                        | Notes                                                                              |
+| -------- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| `claude` | Most reliable for coding tasks | `--print --permission-mode bypassPermissions` under the hood                       |
+| `droid`  | OpenCode-based, needs PTY      | Don't use `--cwd` flag (broker can't auto-accept permission prompts — see PR #570) |
+| `gemini` | Google models                  | Use `gemini-2.5-pro` (not preview) for stability                                   |
+| `codex`  | OpenAI Codex                   | Requires PTY                                                                       |
 
 ## Task Prompt Template
 
@@ -157,12 +159,15 @@ agent-relay down
 ## Common Patterns
 
 ### Sequential pipeline
+
 Spawn agent A → wait for completion → spawn agent B with A's output.
 
 ### Parallel fan-out
+
 Spawn N agents simultaneously, each on a subtask. Monitor via channel. Collect results.
 
 ### Architect → Builder → Tester
+
 1. Spawn architect to design
 2. Architect posts to channel when done
 3. Spawn builder to implement architect's design
@@ -170,16 +175,17 @@ Spawn N agents simultaneously, each on a subtask. Monitor via channel. Collect r
 5. Spawn tester to validate
 
 ### Team with shared channel
+
 All agents join same channel, post updates, read each other's work on a shared git branch.
 
 ## Gotchas
 
-| Issue | Fix |
-|-------|-----|
-| Agents can't message | Broker must have `--workspace-key` |
-| Droid stuck at approval | Don't use `--cwd` with droid agents |
-| Agent name conflict (409) | Use unique names or let SDK `registerOrRotate` handle it |
-| Channel not found | Create it first via `mcporter call relaycast create_channel` |
-| Agent idle but no output | Check `agent-relay agents:logs NAME` for errors |
-| npx setup fails in spawned agent | Agents inherit broker's workspace — no setup needed |
-| `agent-relay send` fails for DM | Spawned agents can broadcast to channels but DMs may not work for non-Relaycast-registered agents |
+| Issue                            | Fix                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Agents can't message             | Broker must have `--workspace-key`                                                                |
+| Droid stuck at approval          | Don't use `--cwd` with droid agents                                                               |
+| Agent name conflict (409)        | Use unique names or let SDK `registerOrRotate` handle it                                          |
+| Channel not found                | Create it first via `mcporter call relaycast create_channel`                                      |
+| Agent idle but no output         | Check `agent-relay agents:logs NAME` for errors                                                   |
+| npx setup fails in spawned agent | Agents inherit broker's workspace — no setup needed                                               |
+| `agent-relay send` fails for DM  | Spawned agents can broadcast to channels but DMs may not work for non-Relaycast-registered agents |

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 import { onRelay } from '../../../communicate/adapters/openai-agents.js';
@@ -27,7 +27,7 @@ class LiveRelay {
       headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: this.name, type: 'agent' }),
     });
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     if (!body.ok) throw new Error(`register failed: ${JSON.stringify(body)}`);
     this.agentId = body.data.id;
     this.agentToken = body.data.token;
@@ -39,7 +39,7 @@ class LiveRelay {
       headers: { Authorization: `Bearer ${this.agentToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ to, text }),
     });
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     if (!body.ok) throw new Error(`send failed: ${JSON.stringify(body)}`);
   }
 
@@ -49,7 +49,7 @@ class LiveRelay {
       headers: { Authorization: `Bearer ${this.agentToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     if (!body.ok) throw new Error(`post failed: ${JSON.stringify(body)}`);
   }
 
@@ -63,14 +63,16 @@ class LiveRelay {
     const res = await fetch(`${BASE_URL}/v1/agents`, {
       headers: { Authorization: `Bearer ${API_KEY}` },
     });
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
     if (!body.ok) throw new Error(`agents failed: ${JSON.stringify(body)}`);
     return (body.data as any[]).map((a) => a.name);
   }
 
   onMessage(callback: MessageCallback): () => void {
     this.callbacks.add(callback);
-    return () => { this.callbacks.delete(callback); };
+    return () => {
+      this.callbacks.delete(callback);
+    };
   }
 
   async cleanup(): Promise<void> {
@@ -91,47 +93,50 @@ function createAgent(name: string) {
   };
 }
 
-test('OpenAI Agents adapter e2e against live Relaycast', async (t) => {
-  const relay = new LiveRelay(AGENT_NAME);
-  await relay.register();
+// TODO(sdk-test-fix): live Relaycast integration. Requires RELAY_API_KEY env var
+// to run against a real backend. Skipped in CI / clean-env probes.
+test.skipIf(!process.env.RELAY_API_KEY)(
+  'OpenAI Agents adapter e2e against live Relaycast',
+  async () => {
+    const relay = new LiveRelay(AGENT_NAME);
+    await relay.register();
 
-  const agent = createAgent(AGENT_NAME);
-  const { agent: augmented, cleanup } = onRelay(agent, relay);
+    const agent = createAgent(AGENT_NAME);
+    const { agent: augmented, cleanup } = onRelay(agent, relay);
 
-  await t.test('onRelay injects 4 relay tools', () => {
     const names = augmented.tools.map((tool: any) => tool.name);
     assert.deepEqual(names, ['relay_send', 'relay_inbox', 'relay_post', 'relay_agents']);
-  });
 
-  await t.test('relay_agents returns live agent list including ours', async () => {
-    const tool = augmented.tools.find((t: any) => t.name === 'relay_agents')!;
-    const result: string = await tool.invoke(null, '{}');
-    assert.ok(result.includes(AGENT_NAME), `Expected agent list to contain "${AGENT_NAME}", got: ${result.slice(0, 200)}`);
-  });
+    const agentsTool = augmented.tools.find((tool: any) => tool.name === 'relay_agents')!;
+    const agentsResult: string = await agentsTool.invoke(null, '{}');
+    assert.ok(
+      agentsResult.includes(AGENT_NAME),
+      `Expected agent list to contain "${AGENT_NAME}", got: ${agentsResult.slice(0, 200)}`
+    );
 
-  await t.test('relay_send delivers a DM without error', async () => {
-    const tool = augmented.tools.find((t: any) => t.name === 'relay_send')!;
-    const result: string = await tool.invoke(null, JSON.stringify({ to: AGENT_NAME, text: 'e2e self-ping' }));
-    assert.match(result, /Sent relay message to/);
-  });
+    const sendTool = augmented.tools.find((tool: any) => tool.name === 'relay_send')!;
+    const sendResult: string = await sendTool.invoke(
+      null,
+      JSON.stringify({ to: AGENT_NAME, text: 'e2e self-ping' })
+    );
+    assert.match(sendResult, /Sent relay message to/);
 
-  await t.test('relay_post posts to channel without error', async () => {
-    const tool = augmented.tools.find((t: any) => t.name === 'relay_post')!;
-    const result: string = await tool.invoke(null, JSON.stringify({ channel: 'general', text: `e2e from ${AGENT_NAME}` }));
-    assert.match(result, /Posted relay message to #general/);
-  });
+    const postTool = augmented.tools.find((tool: any) => tool.name === 'relay_post')!;
+    const postResult: string = await postTool.invoke(
+      null,
+      JSON.stringify({ channel: 'general', text: `e2e from ${AGENT_NAME}` })
+    );
+    assert.match(postResult, /Posted relay message to #general/);
 
-  await t.test('relay_inbox returns string result', async () => {
-    const tool = augmented.tools.find((t: any) => t.name === 'relay_inbox')!;
-    const result: string = await tool.invoke(null, '{}');
-    assert.ok(typeof result === 'string');
-  });
+    const inboxTool = augmented.tools.find((tool: any) => tool.name === 'relay_inbox')!;
+    const inboxResult: string = await inboxTool.invoke(null, '{}');
+    assert.ok(typeof inboxResult === 'string');
 
-  await t.test('cleanup restores agent and removes tools', () => {
     cleanup();
     assert.equal(augmented.tools.length, 0);
     assert.equal(augmented.instructions, 'You are an e2e test agent.');
-  });
 
-  await relay.cleanup();
-});
+    await relay.cleanup();
+  },
+  20_000
+);

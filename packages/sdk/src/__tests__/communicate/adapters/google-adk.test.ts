@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 
 const adkAdapterModulePath = '../../../communicate/adapters/google-adk.js';
 
@@ -65,13 +65,7 @@ test('Google ADK onRelay appends relay tools to agent.tools', async () => {
   const result = onRelay('AdkTester', { agent }, relay);
 
   const toolNames = result.agent.tools.map((tool: any) => tool.name);
-  assert.deepEqual(toolNames, [
-    'existing-tool',
-    'relay_send',
-    'relay_inbox',
-    'relay_post',
-    'relay_agents',
-  ]);
+  assert.deepEqual(toolNames, ['existing-tool', 'relay_send', 'relay_inbox', 'relay_post', 'relay_agents']);
 });
 
 test('Google ADK onRelay tools have correct structure', async () => {
@@ -159,11 +153,7 @@ test('Google ADK onRelay uses custom userId and sessionId', async () => {
   const agent = createMockAgent();
   const runner = createMockRunner();
 
-  onRelay(
-    'AdkTester',
-    { agent, runner, userId: 'custom-user', sessionId: 'custom-session' },
-    relay,
-  );
+  onRelay('AdkTester', { agent, runner, userId: 'custom-user', sessionId: 'custom-session' }, relay);
 
   await relay.emit({ sender: 'Peer', text: 'ping', messageId: 'msg-2' });
 

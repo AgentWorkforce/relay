@@ -1,5 +1,5 @@
-import os from "node:os";
-import path from "node:path";
+import os from 'node:os';
+import path from 'node:path';
 
 export type StoredAuth = {
   accessToken: string;
@@ -10,7 +10,7 @@ export type StoredAuth = {
 
 export type WhoAmIResponse = {
   authenticated: boolean;
-  source: "session" | "token";
+  source: 'session' | 'token';
   subjectType: string | null;
   scopes: string[];
   user: {
@@ -47,19 +47,142 @@ export type AuthSessionResponse = {
   expiresAt: string;
 };
 
-export type WorkflowFileType = "yaml" | "ts" | "py";
+export type WorkspaceCreateResponse = {
+  workspaceId: string;
+  name?: string;
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  joinCommand?: string;
+  createdAt?: string;
+};
+
+export type WorkspaceTokenRecord = {
+  workspaceId: string;
+  kind: string;
+  prefix?: string;
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type WorkspaceTokenIssueResponse = {
+  key: string;
+  workspaceToken?: WorkspaceTokenRecord;
+};
+
+export type ProactiveDeploymentResponse = {
+  deploymentId?: string;
+  agentId?: string;
+  workspaceId?: string;
+  status?: string;
+  dashboardUrl?: string;
+  logsUrl?: string;
+  [key: string]: unknown;
+};
+
+export type ProactiveAgentRecord = {
+  id: string;
+  name?: string;
+  displayName?: string;
+  harness?: string;
+  defaultModel?: string;
+  status?: string;
+  credentialStoredAt?: string | null;
+  lastAuthenticatedAt?: string | null;
+  lastUsedAt?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type WorkspaceSecretRecord = {
+  name: string;
+  value?: string;
+  maskedValue?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+
+export type PathSubmission = {
+  name: string;
+  s3CodeKey: string;
+  repoOwner?: string;
+  repoName?: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
+};
 
 export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   syncCode?: boolean;
+  resume?: string;
+  startFrom?: string;
+  previousRunId?: string;
 };
 
 export type RunWorkflowResponse = {
   runId: string;
   sandboxId?: string;
   status: string;
+  patches?: Record<
+    string,
+    {
+      s3Key: string;
+      hasChanges?: boolean;
+      pushedTo?: {
+        branch: string;
+        prUrl: string;
+        sha: string;
+        base: { branch: string; sha: string };
+        strategy?: 'contents_api' | 'git_db';
+      };
+      pushError?: {
+        code: string;
+        message: string;
+        observedBaseSha?: string;
+        base?: { branch: string; sha: string };
+      };
+    }
+  >;
   [key: string]: unknown;
+};
+
+export type WorkflowSchedule = {
+  id: string;
+  relaycronScheduleId: string;
+  userId: string;
+  workspaceId: string;
+  organizationId: string;
+  name: string;
+  description: string | null;
+  scheduleType: 'once' | 'cron';
+  cronExpression: string | null;
+  scheduledAt: string | null;
+  timezone: string;
+  status: string;
+  lastTriggeredRunId: string | null;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduleWorkflowOptions = {
+  apiUrl?: string;
+  fileType?: WorkflowFileType;
+  name?: string;
+  description?: string;
+  cron?: string;
+  at?: string;
+  timezone?: string;
 };
 
 export type WorkflowLogsResponse = {
@@ -71,25 +194,23 @@ export type WorkflowLogsResponse = {
 };
 
 export type SyncPatchResponse = {
-  patch: string;
-  hasChanges: boolean;
+  patch?: string;
+  hasChanges?: boolean;
+  patches?: Record<string, { patch: string; hasChanges: boolean }>;
   [key: string]: unknown;
 };
 
-export const SUPPORTED_PROVIDERS = [
-  "anthropic",
-  "openai",
-  "google",
-  "cursor",
-  "opencode",
-  "droid",
-] as const;
+export type GetPatchesResponse = {
+  patches: Record<string, { patch: string; hasChanges: boolean }>;
+};
+
+export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
-export const AUTH_FILE_PATH = path.join(os.homedir(), ".agent-relay", "cloud-auth.json");
+export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || "https://agentrelay.dev";
+  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
 }
 
 export function isSupportedProvider(provider: string): boolean {

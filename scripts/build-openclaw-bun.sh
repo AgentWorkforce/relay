@@ -67,6 +67,10 @@ for target_spec in "${TARGETS[@]}"; do
         --outfile "$output" 2>&1; then
 
         if [ -f "$output" ]; then
+            if [[ "$(uname -s)" == "Darwin" && "$suffix" == darwin-* ]]; then
+                "$SCRIPT_DIR/sign-macos-binary.sh" "$output"
+            fi
+
             SIZE=$(du -h "$output" | cut -f1)
             success "Built $output ($SIZE)"
 
@@ -96,6 +100,10 @@ if bun build \
 
     SIZE=$(du -h "$CURRENT_OUTPUT" | cut -f1)
     success "Built $CURRENT_OUTPUT ($SIZE)"
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        "$SCRIPT_DIR/sign-macos-binary.sh" "$CURRENT_OUTPUT"
+    fi
 
     # Test the binary
     if "$CURRENT_OUTPUT" --version 2>/dev/null; then

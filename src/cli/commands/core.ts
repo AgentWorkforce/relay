@@ -13,12 +13,15 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
+import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
+import { track } from '@agent-relay/telemetry';
 
 import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
 const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
@@ -68,12 +71,8 @@ export interface CoreRelay {
     shadowOf?: string;
     shadowMode?: 'subagent' | 'process';
   }) => Promise<unknown>;
-  getStatus: () => Promise<{
-    agent_count?: number;
-    pending_delivery_count?: number;
-  }>;
+  getStatus: () => Promise<unknown>;
   shutdown: () => Promise<unknown>;
-  onBrokerStderr?: (listener: (line: string) => void) => () => void;
   /** Relaycast workspace API key, available after the hello handshake. */
   workspaceKey?: string;
   /** PID of the underlying broker process, when available. */
@@ -106,7 +105,7 @@ export interface CoreDependencies {
     missing: BridgeProject[];
   };
   getAgentOutboxTemplate: () => string;
-  createRelay: (cwd: string, apiPort?: number) => CoreRelay;
+  createRelay: (cwd: string, apiPort?: number) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
@@ -131,10 +130,6 @@ export interface CoreDependencies {
   error: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   exit: ExitFn;
-}
-
-function defaultExit(code: number): never {
-  process.exit(code);
 }
 
 function findPackageJson(startDir: string, fileSystem: CoreFileSystem): string {
@@ -175,17 +170,21 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   }
 
   // In local multi-repo workspaces, prefer a sibling relay-dashboard build when available.
-  const siblingWorkspaceBuild = path.resolve(
-    process.cwd(),
-    '..',
-    'relay-dashboard',
-    'packages',
-    'dashboard-server',
-    'dist',
-    'start.js'
-  );
-  if (fileSystem.existsSync(siblingWorkspaceBuild)) {
-    return siblingWorkspaceBuild;
+  // Only when RELAY_LOCAL_DEV is set — otherwise the installed binary should win so
+  // users don't accidentally run a stale dev build.
+  if (process.env.RELAY_LOCAL_DEV === '1') {
+    const siblingWorkspaceBuild = path.resolve(
+      process.cwd(),
+      '..',
+      'relay-dashboard',
+      'packages',
+      'dashboard-server',
+      'dist',
+      'start.js'
+    );
+    if (fileSystem.existsSync(siblingWorkspaceBuild)) {
+      return siblingWorkspaceBuild;
+    }
   }
 
   // In workspace / local dev mode, try resolving the dashboard-server package directly
@@ -246,23 +245,38 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   return null;
 }
 
-function createDefaultRelay(cwd: string, apiPort = 0): CoreRelay {
-  const configuredTimeout = Number.parseInt(process.env.AGENT_RELAY_REQUEST_TIMEOUT_MS ?? '', 10);
-  const requestTimeoutMs =
-    Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 30_000;
-  const client = createAgentRelayClient({
+async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
+  const binaryArgs: AgentRelayBrokerInitArgs = {};
+  if (apiPort > 0) {
+    binaryArgs.persist = true;
+    binaryArgs.apiPort = apiPort;
+  }
+  const stateDir = process.env.AGENT_RELAY_STATE_DIR;
+  if (stateDir) {
+    binaryArgs.stateDir = stateDir;
+  }
+  const client = await createAgentRelayClient({
     cwd,
-    binaryArgs: apiPort > 0 ? ['--persist', '--api-port', String(apiPort)] : [],
-    requestTimeoutMs,
+    binaryArgs,
+    preferConnect: apiPort > 0,
   });
 
   const relay: CoreRelay = {
     spawn: (input) => spawnAgentWithClient(client, input),
-    getStatus: () => client.getStatus(),
+    getStatus: async () => {
+      const status = await client.getStatus();
+      if (!client.workspaceKey) {
+        await client.getSession().catch(() => undefined);
+      }
+      return status;
+    },
     shutdown: () => client.shutdown(),
-    onBrokerStderr: (listener: (line: string) => void) => client.onBrokerStderr(listener),
-    get workspaceKey() { return client.workspaceKey; },
-    get brokerPid() { return client.brokerPid; },
+    get workspaceKey() {
+      return client.workspaceKey;
+    },
+    get brokerPid() {
+      return client.brokerPid;
+    },
   };
   return relay;
 }
@@ -333,9 +347,10 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => {
-      process.on(signal, () => {
-        void handler();
-      });
+      // See `runSignalHandler` — wraps the handler so `CliExit` thrown by
+      // `deps.exit(code)` becomes a flush-then-real-exit, not an unhandled
+      // async rejection (which would override the intended exit code).
+      process.on(signal, () => runSignalHandler(handler));
     },
     holdOpen: () => new Promise(() => undefined),
     resolveTemplatesDir: () => {
@@ -396,16 +411,20 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--spawn', 'Force spawn all agents from teams.json')
     .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
     .option('--background', 'Run broker in the background (detached)')
+    .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
+    .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
     .action(
       async (options: {
         dashboard?: boolean;
         port?: string;
         spawn?: boolean;
         background?: boolean;
+        foreground?: boolean;
         verbose?: boolean;
         workspaceKey?: string;
+        stateDir?: string;
       }) => {
         await runUpCommand(options, deps);
       }
@@ -445,15 +464,18 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--force', 'Force cleanup even if process is stuck')
     .option('--all', 'Kill all agent-relay processes system-wide')
     .option('--timeout <ms>', 'Timeout waiting for graceful shutdown', '5000')
-    .action(async (options: { force?: boolean; all?: boolean; timeout?: string }) => {
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .action(async (options: { force?: boolean; all?: boolean; timeout?: string; stateDir?: string }) => {
       await runDownCommand(options, deps);
     });
 
   program
     .command('status')
     .description('Check broker status')
-    .action(async () => {
-      await runStatusCommand(deps);
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
+    .action(async (options: { stateDir?: string; waitFor?: string }) => {
+      await runStatusCommand(deps, options);
     });
 
   program
@@ -500,6 +522,11 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--cli <tool>', 'CLI tool override for all projects')
     .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
     .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
+      track('bridge_spawn', {
+        project_count: projectPaths.length,
+        cli: options.cli ?? 'default',
+        has_architect: options.architect !== undefined && options.architect !== false,
+      });
       await runBridgeCommand(projectPaths, options, deps);
     });
 

@@ -1,0 +1,43 @@
+---
+title: 'Workforce'
+description: 'Treat a set of agents as a coordinated team with shared communication and execution patterns.'
+---
+
+A workforce is the practical unit above individual agents: several workers, one coordination model, and enough shared context to make progress without constant manual steering.
+
+## Typical workforce building blocks
+
+- Spawn specialized agents with stable names and roles
+- Use channels for shared visibility and DMs for handoffs
+- Run workflows when the job has clear multi-step structure
+- Add file sharing, auth, and scheduling when the team needs them
+
+## A reasonable progression
+
+1. Start with one or two spawned agents and simple messages.
+2. Add channels so humans and agents can observe the same status stream.
+3. Move repeatable work into workflows.
+4. Add shared files, auth, and scheduling as the team becomes more autonomous.
+
+## Related docs
+
+<CardGroup cols={2}>
+  <Card title="Spawning an agent" href="/docs/spawning-an-agent">
+    Start with individual workers.
+  </Card>
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Coordinate handoffs and feedback loops.
+  </Card>
+  <Card title="Workflows" href="/docs/reference-workflows">
+    Formalize repeated multi-step execution.
+  </Card>
+  <Card title="File sharing" href="/docs/file-sharing">
+    Give the team shared state and artifacts.
+  </Card>
+  <Card title="Authentication" href="/docs/authentication">
+    Control access as the team touches real systems.
+  </Card>
+  <Card title="Scheduling" href="/docs/scheduling">
+    Wake the workforce up on a clock.
+  </Card>
+</CardGroup>

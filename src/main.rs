@@ -2,16 +2,23 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
+mod broker;
+mod cli_mcp_args;
 mod helpers;
 mod listen_api;
 mod pty_worker;
+mod readiness;
 mod routing;
 mod spawner;
 mod swarm;
 mod swarm_tui;
+mod wait;
+mod worker;
+mod worker_request;
 mod wrap;
 
 use helpers::{
@@ -19,9 +26,9 @@ use helpers::{
     detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
     detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    normalize_cli_name, parse_cli_command, strip_ansi,
 };
-use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiRequest};
+use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest};
 use routing::display_target_for_dashboard;
 
 use anyhow::{Context, Result};
@@ -30,9 +37,8 @@ use relaycast::WsEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, Command},
-    sync::{broadcast, mpsc},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    sync::{broadcast, mpsc, Notify, RwLock},
     time::{timeout, MissedTickBehavior},
 };
 use uuid::Uuid;
@@ -49,17 +55,17 @@ use relay_broker::{
     },
     pty::PtySession,
     relaycast_ws::{
-        format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, retry_agent_registration, RegRetryOutcome,
-        RelaycastHttpClient, WsControl,
+        format_worker_preregistration_error, registration_retry_after_secs,
+        retry_agent_registration, RegRetryOutcome, RelaycastHttpClient, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
-    snippets::{configure_relaycast_mcp_with_token, ensure_relaycast_mcp_config},
-    telemetry::{TelemetryClient, TelemetryEvent},
+    snippets::ensure_relaycast_mcp_config,
+    telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
 };
 
-use spawner::{spawn_env_vars, terminate_child, Spawner};
+use spawner::{spawn_env_vars, Spawner};
+use worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
 const MAX_DELIVERY_RETRIES: u32 = 10;
@@ -69,6 +75,26 @@ const THREAD_HISTORY_LIMIT: usize = 1_000;
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
+static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+
+fn startup_debug_enabled() -> bool {
+    std::env::var("AGENT_RELAY_STARTUP_DEBUG")
+        .map(|value| {
+            let trimmed = value.trim();
+            !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn log_startup_phase(enabled: bool, started_at: Instant, message: impl AsRef<str>) {
+    if enabled {
+        eprintln!(
+            "[agent-relay][startup +{}ms] {}",
+            started_at.elapsed().as_millis(),
+            message.as_ref()
+        );
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
@@ -83,8 +109,14 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
+    /// Compute MCP injection args and side-effect config file paths for a CLI
+    /// without spawning it. Outputs JSON to stdout.
+    McpArgs(McpArgsCommand),
     /// Run ad-hoc swarm execution via the relay broker
     Swarm(swarm::SwarmArgs),
+    /// Capture the current visible PTY screen of a running worker and print
+    /// it. Talks to the broker over its listen API.
+    DumpPty(DumpPtyCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -96,6 +128,91 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct DumpPtyCommand {
+    /// Worker name to snapshot.
+    pub(crate) name: String,
+
+    /// Snapshot format. `plain` is one-line-per-row UTF-8; `ansi` is the
+    /// reproduction byte stream (control characters + SGR + cursor commands)
+    /// suitable for piping into a terminal.
+    #[arg(long, default_value = "plain")]
+    pub(crate) format: DumpPtyFormat,
+
+    /// Override the broker base URL. Falls back to RELAY_BROKER_URL, then to
+    /// reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) broker_url: Option<String>,
+
+    /// Override the broker API key. Falls back to RELAY_BROKER_API_KEY, then
+    /// to reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) api_key: Option<String>,
+
+    /// Override the directory containing `.agent-relay/connection.json` when
+    /// auto-discovering the broker.
+    #[arg(long)]
+    pub(crate) state_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum DumpPtyFormat {
+    Plain,
+    Ansi,
+}
+
+impl DumpPtyFormat {
+    fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ansi => "ansi",
+        }
+    }
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct McpArgsCommand {
+    /// CLI name or command to compute MCP args for.
+    #[arg(long)]
+    cli: String,
+
+    /// Relaycast agent name to inject into the MCP configuration.
+    #[arg(long)]
+    agent_name: String,
+
+    /// Relaycast API key. Falls back to RELAY_API_KEY when omitted.
+    #[arg(long)]
+    api_key: Option<String>,
+
+    /// Relaycast base URL. Falls back to RELAY_BASE_URL when omitted.
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// Pre-registered agent token to pass to the child MCP server.
+    #[arg(long)]
+    agent_token: Option<String>,
+
+    /// Register a fresh Relaycast agent token and inject it into the child MCP server.
+    #[arg(long)]
+    register: bool,
+
+    /// Multi-workspace context JSON to pass to the child MCP server.
+    #[arg(long)]
+    workspaces_json: Option<String>,
+
+    /// Default workspace ID/name to pass to the child MCP server.
+    #[arg(long)]
+    default_workspace: Option<String>,
+
+    /// Working directory used by CLIs that need local MCP config files.
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+
+    /// Existing CLI args as a JSON string array, e.g. '["--foo","--bar"]'.
+    #[arg(long)]
+    existing_args: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -110,6 +227,12 @@ struct InitCommand {
     #[arg(long, default_value = "0")]
     api_port: u16,
 
+    /// Bind address for the HTTP API (default: 127.0.0.1).
+    /// Use 0.0.0.0 to accept connections from outside the host (e.g. in
+    /// Daytona sandboxes where a remote client connects via preview URL).
+    #[arg(long, default_value = "127.0.0.1")]
+    api_bind: String,
+
     /// Enable persistence: write state, pending-deliveries, lock, PID, and MCP
     /// config to `.agent-relay/` in the working directory. When omitted (the
     /// default), runtime files are written to a deterministic temp directory and
@@ -117,6 +240,12 @@ struct InitCommand {
     /// stale-name collisions across short-lived sessions.
     #[arg(long, default_value_t = false)]
     persist: bool,
+
+    /// Override the directory used for broker state files (connection.json,
+    /// locks, state, pending-deliveries). Defaults to `.agent-relay/` in the
+    /// working directory when `--persist` is set, or a temp directory otherwise.
+    #[arg(long)]
+    state_dir: Option<String>,
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -171,26 +300,103 @@ fn headless_provider_cli_name(provider: &ProtocolHeadlessProvider) -> &'static s
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct BrokerState {
-    agents: HashMap<String, PersistedAgent>,
+fn headless_provider_command(
+    provider: &ProtocolHeadlessProvider,
+    task: &str,
+    extra_args: &[String],
+) -> (String, Vec<String>) {
+    match provider {
+        ProtocolHeadlessProvider::Claude => {
+            let mut args = vec![
+                "-p".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ];
+            args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
+            ("claude".to_string(), args)
+        }
+        ProtocolHeadlessProvider::Opencode => {
+            let mut args = vec!["run".to_string()];
+            args.extend(extra_args.iter().cloned());
+            args.push(task.to_string());
+            ("opencode".to_string(), args)
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedAgent {
-    runtime: AgentRuntime,
-    parent: Option<String>,
+fn headless_provider_from_cli(value: &str) -> Option<ProtocolHeadlessProvider> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "claude" => Some(ProtocolHeadlessProvider::Claude),
+        "opencode" => Some(ProtocolHeadlessProvider::Opencode),
+        _ => None,
+    }
+}
+
+fn runtime_label(runtime: &AgentRuntime) -> &'static str {
+    match runtime {
+        AgentRuntime::Pty => "pty",
+        AgentRuntime::Headless => "headless",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_http_api_spawn_spec(
+    name: String,
+    cli: String,
+    transport: Option<String>,
+    model: Option<String>,
+    args: Vec<String>,
     channels: Vec<String>,
-    #[serde(default)]
-    pid: Option<u32>,
-    #[serde(default)]
-    started_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    spec: Option<AgentSpec>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    restart_policy: Option<relay_broker::supervisor::RestartPolicy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    initial_task: Option<String>,
+    cwd: Option<String>,
+    team: Option<String>,
+    shadow_of: Option<String>,
+    shadow_mode: Option<String>,
+    restart_policy: Option<Value>,
+) -> Result<AgentSpec> {
+    let runtime = match transport
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        None => AgentRuntime::Pty,
+        Some(value) if value == "pty" => AgentRuntime::Pty,
+        Some(value) if value == "headless" => AgentRuntime::Headless,
+        Some(other) => {
+            anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
+        }
+    };
+    let parsed_restart_policy = match restart_policy {
+        Some(v) => Some(serde_json::from_value(v).context("invalid restart_policy")?),
+        None => None,
+    };
+
+    let (provider, cli_command, model) = match runtime {
+        AgentRuntime::Pty => (None, Some(cli), model),
+        AgentRuntime::Headless => {
+            let provider = headless_provider_from_cli(&cli).with_context(|| {
+                format!(
+                    "provider '{cli}' does not support headless transport (supported: claude, opencode)"
+                )
+            })?;
+            (Some(provider), None, model)
+        }
+    };
+
+    Ok(AgentSpec {
+        name,
+        runtime,
+        provider,
+        cli: cli_command,
+        model,
+        cwd,
+        team,
+        shadow_of,
+        shadow_mode,
+        args,
+        channels,
+        restart_policy: parsed_restart_policy,
+    })
 }
 
 #[derive(Debug)]
@@ -198,7 +404,6 @@ struct RuntimePaths {
     persist: bool,
     state: PathBuf,
     pending: PathBuf,
-    pid: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     _lock: Option<std::fs::File>,
@@ -225,72 +430,73 @@ struct RelaySession {
     ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
 }
 
-#[allow(dead_code)]
-impl RelaySession {
-    fn is_multi_workspace(&self) -> bool {
-        self.workspaces.len() > 1
-    }
+#[derive(Clone)]
+struct RelayReadyState {
+    workspace_key: String,
+    memberships: Vec<WorkspaceMembershipSummary>,
+    default_workspace_id: Option<String>,
+}
 
-    fn membership_summaries(&self) -> Vec<WorkspaceMembershipSummary> {
-        self.workspaces
-            .iter()
-            .map(|workspace| WorkspaceMembershipSummary {
-                workspace_id: workspace.workspace_id.clone(),
-                workspace_alias: workspace.workspace_alias.clone(),
-                is_default: self
-                    .default_workspace_id
-                    .as_deref()
-                    .is_some_and(|workspace_id| workspace_id == workspace.workspace_id),
-            })
-            .collect()
-    }
-
-    fn default_workspace(&self) -> Option<&RelayWorkspace> {
-        if let Some(default_workspace_id) = self.default_workspace_id.as_deref() {
-            self.workspaces
-                .iter()
-                .find(|workspace| workspace.workspace_id == default_workspace_id)
-        } else if self.workspaces.len() == 1 {
-            self.workspaces.first()
-        } else {
-            None
+async fn serve_startup_api_until_ready(
+    listener: tokio::net::TcpListener,
+    relay_ready: Arc<Notify>,
+) -> tokio::net::TcpListener {
+    loop {
+        tokio::select! {
+            _ = relay_ready.notified() => {
+                return listener;
+            }
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, _addr)) => {
+                        tokio::spawn(handle_startup_api_connection(stream));
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "startup API accept failed");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            }
         }
     }
+}
 
-    fn workspace_by_selector(
-        &self,
-        workspace_id: Option<&str>,
-        workspace_alias: Option<&str>,
-    ) -> Result<&RelayWorkspace> {
-        if let Some(workspace_id) = workspace_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return self
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.workspace_id == workspace_id)
-                .with_context(|| format!("workspace '{}' is not attached", workspace_id));
+async fn handle_startup_api_connection(mut stream: tokio::net::TcpStream) {
+    let mut buffer = [0_u8; 1024];
+    let read = match timeout(Duration::from_secs(5), stream.read(&mut buffer)).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(error)) => {
+            tracing::debug!(error = %error, "failed reading startup API request");
+            return;
         }
+        Err(_) => return,
+    };
 
-        if let Some(workspace_alias) = workspace_alias
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return self
-                .workspaces
-                .iter()
-                .find(|workspace| {
-                    workspace
-                        .workspace_alias
-                        .as_deref()
-                        .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
-                })
-                .with_context(|| format!("workspace alias '{}' is not attached", workspace_alias));
-        }
-
-        self.default_workspace()
-            .context("workspace selection is ambiguous; provide workspaceId or workspaceAlias")
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let path = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+    let (status, content_type, body) = if path == "/health" {
+        (
+            "200 OK",
+            "application/json",
+            listen_api::listen_api_health_payload(None, vec![]).to_string(),
+        )
+    } else {
+        (
+            "503 Service Unavailable",
+            "text/plain; charset=utf-8",
+            "Broker is starting, please retry".to_string(),
+        )
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if let Err(error) = stream.write_all(response.as_bytes()).await {
+        tracing::debug!(error = %error, "failed writing startup API response");
     }
 }
 
@@ -319,6 +525,8 @@ struct RelaySessionOptions<'a> {
 }
 
 async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
+    let startup_debug = startup_debug_enabled();
+    let connect_started = Instant::now();
     let http_base = std::env::var("RELAYCAST_BASE_URL")
         .ok()
         .or_else(|| std::env::var("RELAY_BASE_URL").ok())
@@ -326,6 +534,15 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let ws_base = std::env::var("RELAYCAST_WS_URL")
         .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
 
+    log_startup_phase(
+        startup_debug,
+        connect_started,
+        format!(
+            "connect_relay begin requested_name='{}' channels={}",
+            opts.requested_name,
+            opts.channels.join(",")
+        ),
+    );
     let auth = AuthClient::new(http_base.clone());
     let sessions = auth
         .startup_session_set_with_options(
@@ -335,6 +552,14 @@ async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
         )
         .await
         .context("failed to initialize relaycast session")?;
+    log_startup_phase(
+        startup_debug,
+        connect_started,
+        format!(
+            "startup_session_set_with_options complete memberships={}",
+            sessions.memberships.len()
+        ),
+    );
 
     let default_session = sessions
         .default_session()
@@ -397,6 +622,11 @@ timestamp='{}'
         }
     }
 
+    log_startup_phase(
+        startup_debug,
+        connect_started,
+        "MultiWorkspaceSession::new begin",
+    );
     let mut multi = MultiWorkspaceSession::new(
         http_base.clone(),
         ws_base,
@@ -406,6 +636,15 @@ timestamp='{}'
         opts.read_mcp_identity,
         opts.runtime_cwd,
         relay_broker::events::EventEmitter::new(false),
+    );
+    log_startup_phase(
+        startup_debug,
+        connect_started,
+        format!(
+            "MultiWorkspaceSession::new complete handles={} default_workspace={:?}",
+            multi.handles.len(),
+            multi.default_workspace_id
+        ),
     );
 
     let default_workspace_id = multi.default_workspace_id.clone();
@@ -431,16 +670,6 @@ timestamp='{}'
         workspaces,
         ws_inbound_rx: multi.inbound_rx,
     })
-}
-
-#[derive(Debug)]
-struct WorkerHandle {
-    spec: AgentSpec,
-    parent: Option<String>,
-    workspace_id: Option<String>,
-    child: Child,
-    stdin: ChildStdin,
-    spawned_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -507,80 +736,7 @@ fn load_pending_deliveries(path: &Path) -> HashMap<String, PendingDelivery> {
         .collect()
 }
 
-#[derive(Debug, Clone)]
-enum WorkerEvent {
-    Message { name: String, value: Value },
-}
-
-#[derive(Debug, Deserialize)]
-struct SpawnPayload {
-    agent: AgentSpec,
-    #[serde(default)]
-    initial_task: Option<String>,
-    /// Silence duration in seconds before emitting agent_idle (0 = disabled).
-    #[serde(default)]
-    idle_threshold_secs: Option<u64>,
-    /// Name of a previously released agent whose continuity context should be injected.
-    #[serde(default)]
-    continue_from: Option<String>,
-    /// When true, skip injecting the relay MCP configuration into the spawned agent.
-    /// Useful for minor tasks where relay messaging is not needed, saving tokens.
-    #[serde(default)]
-    skip_relay_prompt: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReleasePayload {
-    name: String,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SendMessagePayload {
-    to: String,
-    text: String,
-    #[serde(default)]
-    from: Option<String>,
-    #[serde(default)]
-    thread_id: Option<String>,
-    #[serde(default)]
-    workspace_id: Option<String>,
-    #[serde(default)]
-    workspace_alias: Option<String>,
-    #[serde(default)]
-    priority: Option<u8>,
-    #[serde(default)]
-    mode: MessageInjectionMode,
-}
-
-#[derive(Debug, Deserialize)]
-struct SendInputPayload {
-    name: String,
-    data: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResizePtyPayload {
-    name: String,
-    rows: u16,
-    cols: u16,
-}
-
-#[derive(Debug, Deserialize)]
-struct SetModelPayload {
-    name: String,
-    model: String,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GetMetricsPayload {
-    #[serde(default)]
-    agent: Option<String>,
-}
-
+// These payload structs were used by the stdio protocol handler (handle_sdk_frame).
 #[derive(Debug, Serialize)]
 struct AgentMetrics {
     name: String,
@@ -613,10 +769,6 @@ struct ThreadAccumulator {
     sort_key: i64,
 }
 
-fn is_system_sender(sender: &str) -> bool {
-    sender == "system" || sender == "human:orchestrator" || sender.starts_with("human:")
-}
-
 fn normalize_sender(sender: Option<String>) -> String {
     let raw = sender
         .unwrap_or_else(|| "human:orchestrator".to_string())
@@ -643,696 +795,6 @@ fn sender_is_dashboard_label(sender: &str, self_name: &str) -> bool {
         || trimmed.eq_ignore_ascii_case(self_name)
 }
 
-struct WorkerRegistry {
-    workers: HashMap<String, WorkerHandle>,
-    event_tx: mpsc::Sender<WorkerEvent>,
-    worker_env: Vec<(String, String)>,
-    worker_logs_dir: PathBuf,
-    initial_tasks: HashMap<String, String>,
-    supervisor: relay_broker::supervisor::Supervisor,
-    metrics: relay_broker::metrics::MetricsCollector,
-}
-
-impl WorkerRegistry {
-    fn new(
-        event_tx: mpsc::Sender<WorkerEvent>,
-        worker_env: Vec<(String, String)>,
-        worker_logs_dir: PathBuf,
-        broker_start: Instant,
-    ) -> Self {
-        if let Err(error) = std::fs::create_dir_all(&worker_logs_dir) {
-            tracing::warn!(
-                path = %worker_logs_dir.display(),
-                error = %error,
-                "failed to create worker log directory"
-            );
-        }
-
-        Self {
-            workers: HashMap::new(),
-            event_tx,
-            worker_env,
-            worker_logs_dir,
-            initial_tasks: HashMap::new(),
-            supervisor: relay_broker::supervisor::Supervisor::new(),
-            metrics: relay_broker::metrics::MetricsCollector::new(broker_start),
-        }
-    }
-
-    fn worker_log_path(&self, worker_name: &str) -> Option<PathBuf> {
-        if worker_name.contains('/') || worker_name.contains('\\') || worker_name.contains('\0') {
-            tracing::warn!(
-                worker = %worker_name,
-                "skipping worker log file creation due to invalid worker name"
-            );
-            return None;
-        }
-        Some(self.worker_logs_dir.join(format!("{worker_name}.log")))
-    }
-
-    fn list(&self) -> Vec<Value> {
-        self.workers
-            .iter()
-            .map(|(name, handle)| {
-                json!({
-                    "name": name,
-                    "runtime": handle.spec.runtime,
-                    "provider": handle.spec.provider.clone(),
-                    "cli": handle.spec.cli,
-                    "model": handle.spec.model,
-                    "team": handle.spec.team,
-                    "channels": handle.spec.channels,
-                    "parent": handle.parent,
-                    "pid": handle.child.id(),
-                })
-            })
-            .collect()
-    }
-
-    /// Look up an env-var value from the worker env list.
-    fn env_value(&self, key: &str) -> Option<&str> {
-        self.worker_env
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    }
-
-    fn has_worker(&self, name: &str) -> bool {
-        self.workers.contains_key(name)
-    }
-
-    fn worker_pid(&self, name: &str) -> Option<u32> {
-        self.workers.get(name).and_then(|h| h.child.id())
-    }
-
-    async fn spawn(
-        &mut self,
-        spec: AgentSpec,
-        parent: Option<String>,
-        idle_threshold_secs: Option<u64>,
-        worker_relay_api_key: Option<String>,
-        skip_relay_prompt: bool,
-        workspace_id: Option<String>,
-    ) -> Result<()> {
-        if self.workers.contains_key(&spec.name) {
-            anyhow::bail!("agent '{}' already exists", spec.name);
-        }
-
-        tracing::info!(
-            target = "broker::spawn",
-            name = %spec.name,
-            cli = ?spec.cli,
-            runtime = ?spec.runtime,
-            parent = ?parent,
-            cwd = ?spec.cwd,
-            "spawning worker"
-        );
-
-        let mut command =
-            Command::new(std::env::current_exe().context("failed to locate current executable")?);
-
-        match spec.runtime {
-            AgentRuntime::Pty => {
-                let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
-                let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
-                    .with_context(|| format!("invalid CLI command '{cli}'"))?;
-                let normalized_cli = normalize_cli_name(&resolved_cli);
-                let mut effective_args = inline_cli_args;
-                effective_args.extend(spec.args.clone());
-
-                command.arg("pty");
-                command.arg("--agent-name").arg(&spec.name);
-                if let Some(secs) = idle_threshold_secs {
-                    command.arg("--idle-threshold-secs").arg(secs.to_string());
-                }
-                command.arg(&resolved_cli);
-
-                // Auto-add bypass flags for CLIs that need them to run non-interactively.
-                // Each CLI has its own flag; we only add it if the user didn't already.
-                let cli_lower = normalized_cli.to_lowercase();
-                let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
-                let is_codex = cli_lower == "codex";
-
-                let is_gemini = cli_lower == "gemini";
-                let bypass_flag: Option<&str> = if is_claude
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-skip-permissions"))
-                {
-                    Some("--dangerously-skip-permissions")
-                } else if is_codex
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
-                {
-                    Some("--dangerously-bypass-approvals-and-sandbox")
-                } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
-                    Some("--yolo")
-                } else {
-                    None
-                };
-
-                // Build MCP config args for CLIs that support dynamic MCP configuration.
-                // When skip_relay_prompt is true, skip MCP config injection so the
-                // spawned agent does not receive relay protocol context (saves tokens
-                // for minor tasks where messaging is not needed).
-                let mcp_args = if skip_relay_prompt {
-                    vec![]
-                } else {
-                    let cwd = spec.cwd.as_deref().unwrap_or(".");
-                    // Pass the original CLI name (e.g. "cursor") so cursor-specific
-                    // MCP config logic is triggered. `resolved_cli` may differ
-                    // (parse_cli_command maps "cursor" → "agent").
-                    configure_relaycast_mcp_with_token(
-                        cli,
-                        &spec.name,
-                        self.env_value("RELAY_API_KEY"),
-                        self.env_value("RELAY_BASE_URL"),
-                        &effective_args,
-                        Path::new(cwd),
-                        worker_relay_api_key.as_deref(),
-                        self.env_value("RELAY_WORKSPACES_JSON"),
-                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
-                    )
-                    .await?
-                };
-
-                // Inject --model flag when spec.model is set and not already in args.
-                let model_flag = spec.model.as_deref().and_then(|m| {
-                    if m.is_empty()
-                        || effective_args
-                            .iter()
-                            .any(|a| a == "--model" || a.starts_with("--model=") || a == "-m")
-                    {
-                        None
-                    } else {
-                        Some(m.to_string())
-                    }
-                });
-
-                let has_extra = bypass_flag.is_some()
-                    || model_flag.is_some()
-                    || !effective_args.is_empty()
-                    || !mcp_args.is_empty();
-                if has_extra {
-                    command.arg("--");
-                    if let Some(flag) = bypass_flag {
-                        command.arg(flag);
-                    }
-                    if let Some(ref model) = model_flag {
-                        command.arg("--model");
-                        command.arg(model);
-                    }
-                    for arg in &mcp_args {
-                        command.arg(arg);
-                    }
-                    for arg in &effective_args {
-                        command.arg(arg);
-                    }
-                }
-            }
-            AgentRuntime::Headless => {
-                let provider = spec
-                    .provider
-                    .as_ref()
-                    .context("headless runtime requires `provider`")?;
-                command.arg("headless");
-                command.arg("--agent-name").arg(&spec.name);
-                command.arg(headless_provider_cli_name(provider));
-
-                // Build MCP config for headless provider agents.
-                let mcp_args = if skip_relay_prompt {
-                    vec![]
-                } else {
-                    configure_relaycast_mcp_with_token(
-                        headless_provider_cli_name(provider),
-                        &spec.name,
-                        self.env_value("RELAY_API_KEY"),
-                        self.env_value("RELAY_BASE_URL"),
-                        &spec.args,
-                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
-                        worker_relay_api_key.as_deref(),
-                        self.env_value("RELAY_WORKSPACES_JSON"),
-                        self.env_value("RELAY_DEFAULT_WORKSPACE"),
-                    )
-                    .await?
-                };
-
-                if !spec.args.is_empty() || !mcp_args.is_empty() {
-                    command.arg("--");
-                    for arg in &mcp_args {
-                        command.arg(arg);
-                    }
-                    for arg in &spec.args {
-                        command.arg(arg);
-                    }
-                }
-            }
-        }
-
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, value) in &self.worker_env {
-            command.env(key, value);
-        }
-        if !skip_relay_prompt {
-            if let Some(relay_key) = worker_relay_api_key {
-                // Keep RELAY_API_KEY as the workspace key and pass the
-                // pre-registered agent token separately for MCP servers that
-                // support session bootstrap.
-                command.env("RELAY_AGENT_TOKEN", relay_key);
-            }
-            command.env("RELAY_AGENT_NAME", &spec.name);
-            command.env("RELAY_AGENT_TYPE", "agent");
-            command.env("RELAY_STRICT_AGENT_NAME", "1");
-        }
-        // Remove CLAUDECODE env var to prevent "nested session" detection
-        // when spawning Claude Code agents from within a Claude Code session.
-        command.env_remove("CLAUDECODE");
-        if let Some(cwd) = spec.cwd.as_ref() {
-            command.current_dir(cwd);
-        }
-
-        let mut child = command.spawn().context("failed to spawn worker")?;
-        let stdin = child.stdin.take().context("worker missing stdin pipe")?;
-        let stdout = child.stdout.take().context("worker missing stdout pipe")?;
-        let stderr = child.stderr.take().context("worker missing stderr pipe")?;
-        let log_file = self.worker_log_path(&spec.name);
-
-        spawn_worker_reader(
-            self.event_tx.clone(),
-            spec.name.clone(),
-            "stdout",
-            stdout,
-            true,
-            log_file.clone(),
-        );
-        spawn_worker_reader(
-            self.event_tx.clone(),
-            spec.name.clone(),
-            "stderr",
-            stderr,
-            false,
-            log_file,
-        );
-
-        let handle = WorkerHandle {
-            spec: spec.clone(),
-            parent,
-            workspace_id,
-            child,
-            stdin,
-            spawned_at: Instant::now(),
-        };
-        self.workers.insert(spec.name.clone(), handle);
-
-        self.send_to_worker(
-            &spec.name,
-            "init_worker",
-            None,
-            json!({
-                "agent": spec,
-            }),
-        )
-        .await?;
-
-        tracing::info!(
-            target = "broker::spawn",
-            name = %spec.name,
-            "worker spawned and initialised"
-        );
-
-        Ok(())
-    }
-
-    async fn send_to_worker(
-        &mut self,
-        name: &str,
-        msg_type: &str,
-        request_id: Option<String>,
-        payload: Value,
-    ) -> Result<()> {
-        let handle = self
-            .workers
-            .get_mut(name)
-            .with_context(|| format!("unknown worker '{name}'"))?;
-
-        let frame = ProtocolEnvelope {
-            v: PROTOCOL_VERSION,
-            msg_type: msg_type.to_string(),
-            request_id,
-            payload,
-        };
-
-        let encoded = serde_json::to_string(&frame)?;
-        handle
-            .stdin
-            .write_all(encoded.as_bytes())
-            .await
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?;
-        handle
-            .stdin
-            .write_all(b"\n")
-            .await
-            .with_context(|| format!("failed writing newline to worker '{name}'"))?;
-        handle
-            .stdin
-            .flush()
-            .await
-            .with_context(|| format!("failed flushing worker '{name}' stdin"))?;
-
-        Ok(())
-    }
-
-    async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
-        tracing::debug!(
-            target = "broker::deliver",
-            worker = %name,
-            from = %delivery.from,
-            target = %delivery.target,
-            event_id = %delivery.event_id,
-            "delivering event to worker"
-        );
-        self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
-            .await
-    }
-
-    async fn release(&mut self, name: &str) -> Result<()> {
-        tracing::info!(target = "broker::release", name = %name, "releasing worker");
-        self.initial_tasks.remove(name);
-        let mut handle = self
-            .workers
-            .remove(name)
-            .with_context(|| format!("unknown worker '{name}'"))?;
-
-        let shutdown_frame = ProtocolEnvelope {
-            v: PROTOCOL_VERSION,
-            msg_type: "shutdown_worker".to_string(),
-            request_id: None,
-            payload: json!({"reason":"release","grace_ms":2000}),
-        };
-        let encoded = serde_json::to_string(&shutdown_frame)?;
-        let _ = handle.stdin.write_all(encoded.as_bytes()).await;
-        let _ = handle.stdin.write_all(b"\n").await;
-        let _ = handle.stdin.flush().await;
-
-        let result = terminate_child(&mut handle.child, Duration::from_secs(2)).await;
-        match &result {
-            Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
-            Err(error) => {
-                tracing::warn!(target = "broker::release", name = %name, error = %error, "worker release failed")
-            }
-        }
-        result
-    }
-
-    async fn shutdown_all(&mut self) -> Result<()> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
-        for name in names {
-            if let Err(error) = self.release(&name).await {
-                tracing::warn!(target = "agent_relay::broker", name = %name, error = %error, "worker shutdown failed");
-            }
-        }
-        Ok(())
-    }
-
-    async fn reap_exited(&mut self) -> Result<Vec<(String, Option<i32>, Option<String>)>> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
-        let mut exited = Vec::new();
-        for name in names {
-            let (status, gone_via_kill0) = if let Some(handle) = self.workers.get_mut(&name) {
-                match handle.child.try_wait() {
-                    Ok(status) => {
-                        // try_wait returned Ok — check if process is gone via kill(0)
-                        // even when try_wait says None (still running).
-                        if status.is_none() {
-                            #[cfg(unix)]
-                            {
-                                if let Some(pid) = handle.child.id() {
-                                    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-                                    if ret == -1 {
-                                        let errno = std::io::Error::last_os_error()
-                                            .raw_os_error()
-                                            .unwrap_or(0);
-                                        if errno == libc::ESRCH {
-                                            tracing::info!(
-                                                worker = %name,
-                                                pid = pid,
-                                                "reap_exited: kill(0) says ESRCH — process gone"
-                                            );
-                                            (None, true)
-                                        } else {
-                                            (None, false)
-                                        }
-                                    } else {
-                                        (None, false)
-                                    }
-                                } else {
-                                    // No PID available — process was already reaped
-                                    (None, true)
-                                }
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                (status, false)
-                            }
-                        } else {
-                            (status, false)
-                        }
-                    }
-                    Err(e) => {
-                        // ECHILD or similar — child already reaped elsewhere
-                        tracing::info!(
-                            worker = %name,
-                            error = %e,
-                            "reap_exited: try_wait error — treating as exited"
-                        );
-                        (None, true)
-                    }
-                }
-            } else {
-                (None, false)
-            };
-            if let Some(status) = status {
-                let code = status.code();
-                #[cfg(unix)]
-                let signal = {
-                    use std::os::unix::process::ExitStatusExt;
-                    status.signal().map(|s| s.to_string())
-                };
-                #[cfg(not(unix))]
-                let signal: Option<String> = None;
-                self.workers.remove(&name);
-                self.initial_tasks.remove(&name);
-                exited.push((name, code, signal));
-            } else if gone_via_kill0 {
-                // Process is gone but try_wait didn't report it.
-                // Treat as exited with unknown exit code.
-                self.workers.remove(&name);
-                self.initial_tasks.remove(&name);
-                exited.push((name, None, None));
-            }
-        }
-        Ok(exited)
-    }
-
-    fn routing_workers(&self) -> Vec<routing::RoutingWorker<'_>> {
-        self.workers
-            .iter()
-            .map(|(name, handle)| routing::RoutingWorker {
-                name,
-                channels: &handle.spec.channels,
-                workspace_id: handle.workspace_id.as_deref(),
-            })
-            .collect()
-    }
-
-    fn worker_names_for_channel_delivery(
-        &self,
-        channel: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_channel_delivery(&workers, channel, from, workspace_id)
-    }
-
-    fn worker_names_for_direct_target(
-        &self,
-        target: &str,
-        from: &str,
-        workspace_id: Option<&str>,
-    ) -> Vec<String> {
-        let workers = self.routing_workers();
-        routing::worker_names_for_direct_target(&workers, target, from, workspace_id)
-    }
-
-    fn has_any_worker(&self) -> bool {
-        !self.workers.is_empty()
-    }
-
-    fn has_worker_by_name_ignoring_case(&self, target: &str) -> bool {
-        let trimmed = target.trim();
-        self.workers.iter().any(|(worker_name, _)| {
-            trimmed.eq_ignore_ascii_case(worker_name)
-                || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
-        })
-    }
-}
-
-fn spawn_worker_reader<R>(
-    tx: mpsc::Sender<WorkerEvent>,
-    name: String,
-    stream_name: &'static str,
-    reader: R,
-    parse_json: bool,
-    log_file_path: Option<PathBuf>,
-) where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    async fn append_log_chunk(
-        log_file: &mut Option<tokio::fs::File>,
-        log_file_path: &Option<PathBuf>,
-        disable_log_file: &mut bool,
-        worker_name: &str,
-        chunk: &str,
-        append_newline_if_missing: bool,
-    ) {
-        if *disable_log_file {
-            return;
-        }
-        let Some(file) = log_file.as_mut() else {
-            return;
-        };
-
-        if let Err(error) = file.write_all(chunk.as_bytes()).await {
-            if let Some(path) = log_file_path.as_ref() {
-                tracing::warn!(
-                    worker = %worker_name,
-                    path = %path.display(),
-                    error = %error,
-                    "failed writing worker log chunk"
-                );
-            }
-            *disable_log_file = true;
-            *log_file = None;
-            return;
-        }
-
-        if append_newline_if_missing && !chunk.ends_with('\n') {
-            if let Err(error) = file.write_all(b"\n").await {
-                if let Some(path) = log_file_path.as_ref() {
-                    tracing::warn!(
-                        worker = %worker_name,
-                        path = %path.display(),
-                        error = %error,
-                        "failed writing newline to worker log"
-                    );
-                }
-                *disable_log_file = true;
-                *log_file = None;
-            }
-        }
-    }
-
-    tokio::spawn(async move {
-        let mut log_file = match log_file_path.as_ref() {
-            Some(path) => match tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .await
-            {
-                Ok(file) => Some(file),
-                Err(error) => {
-                    tracing::warn!(
-                        worker = %name,
-                        path = %path.display(),
-                        error = %error,
-                        "failed to open worker log file"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
-        let mut disable_log_file = false;
-
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if parse_json {
-                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                    if value
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|msg_type| msg_type == "worker_stream")
-                    {
-                        if let Some(chunk) = value
-                            .get("payload")
-                            .and_then(|payload| payload.get("chunk"))
-                            .and_then(Value::as_str)
-                        {
-                            append_log_chunk(
-                                &mut log_file,
-                                &log_file_path,
-                                &mut disable_log_file,
-                                &name,
-                                chunk,
-                                false,
-                            )
-                            .await;
-                        }
-                    }
-                    if tx
-                        .send(WorkerEvent::Message {
-                            name: name.clone(),
-                            value,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                    continue;
-                }
-            }
-
-            append_log_chunk(
-                &mut log_file,
-                &log_file_path,
-                &mut disable_log_file,
-                &name,
-                &line,
-                true,
-            )
-            .await;
-
-            let fallback = json!({
-                "v": PROTOCOL_VERSION,
-                "type": "worker_stream",
-                "payload": {
-                    "stream": stream_name,
-                    "chunk": line,
-                }
-            });
-
-            if tx
-                .send(WorkerEvent::Message {
-                    name: name.clone(),
-                    value: fallback,
-                })
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -1344,7 +806,9 @@ async fn main() -> Result<()> {
         Commands::Init(_) => "init",
         Commands::Pty(_) => "pty",
         Commands::Headless(_) => "headless",
+        Commands::McpArgs(_) => "mcp_args",
         Commands::Swarm(_) => "swarm",
+        Commands::DumpPty(_) => "dump_pty",
         Commands::Wrap { .. } => "wrap",
     };
     telemetry.track(TelemetryEvent::CliCommandRun {
@@ -1355,13 +819,208 @@ async fn main() -> Result<()> {
         Commands::Init(cmd) => run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
+        Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
+        Commands::DumpPty(cmd) => run_dump_pty(cmd).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
 }
 
+/// Connection metadata discovered from a running broker — typically by
+/// reading `<state-dir>/connection.json` or from explicit CLI flags / env.
+struct BrokerConnection {
+    base_url: String,
+    api_key: Option<String>,
+}
+
+/// Resolve the broker connection by checking, in order:
+///
+/// 1. Explicit CLI args (`--broker-url`, `--api-key`). When `--broker-url`
+///    is supplied without an API key, we still attempt to fall back to the
+///    API key from env / `.agent-relay/connection.json` so users don't have
+///    to repeat `--api-key` for every dump-pty invocation.
+/// 2. Env vars `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+/// 3. `connection.json` in the supplied state dir, otherwise
+///    `.agent-relay/connection.json` directly under the current working
+///    directory. The bare `cwd` is intentionally NOT probed — an unrelated
+///    `connection.json` sitting in the user's repo root must not silently
+///    redirect the snapshot request (and its broker API key) elsewhere.
+fn discover_broker_connection(
+    explicit_url: Option<&str>,
+    explicit_api_key: Option<&str>,
+    state_dir: Option<&Path>,
+) -> Result<BrokerConnection> {
+    // Walk the same search roots used for the URL fallback, but only to
+    // pull out a stored `api_key`. Lets `--broker-url` reuse the broker's
+    // saved key when the env var and `--api-key` are both unset.
+    let api_key_from_connection_file = || -> Option<String> {
+        let cwd = std::env::current_dir().ok()?;
+        let roots: Vec<PathBuf> = match state_dir {
+            Some(dir) => vec![dir.to_path_buf()],
+            None => vec![cwd.join(".agent-relay")],
+        };
+        for root in roots {
+            let path = root.join("connection.json");
+            if !path.is_file() {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).ok()?;
+            let value: Value = serde_json::from_str(&body).ok()?;
+            if let Some(key) = value.get("api_key").and_then(Value::as_str) {
+                if !key.trim().is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+        None
+    };
+
+    let resolve_api_key = |explicit: Option<&str>| -> Option<String> {
+        explicit
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(api_key_from_connection_file)
+            .filter(|value| !value.trim().is_empty())
+    };
+
+    if let Some(url) = explicit_url {
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key: resolve_api_key(explicit_api_key),
+        });
+    }
+
+    if let Ok(url) = std::env::var("RELAY_BROKER_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(BrokerConnection {
+                base_url: trimmed.trim_end_matches('/').to_string(),
+                api_key: resolve_api_key(explicit_api_key),
+            });
+        }
+    }
+
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let search_roots: Vec<PathBuf> = match state_dir {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => vec![cwd.join(".agent-relay")],
+    };
+
+    for root in &search_roots {
+        let path = root.join("connection.json");
+        if !path.is_file() {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed reading {}", path.display()))?;
+        let value: Value = serde_json::from_str(&body)
+            .with_context(|| format!("failed parsing {}", path.display()))?;
+        let url = value
+            .get("url")
+            .and_then(Value::as_str)
+            .with_context(|| format!("connection file missing 'url': {}", path.display()))?
+            .to_string();
+        let api_key = explicit_api_key
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(|| {
+                value
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .filter(|value| !value.trim().is_empty());
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key,
+        });
+    }
+
+    anyhow::bail!(
+        "could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, \
+         or run from a directory containing .agent-relay/connection.json"
+    );
+}
+
+/// `agent-relay-broker dump-pty <name>` — capture and print a worker's
+/// current visible screen by hitting the broker's snapshot route.
+async fn run_dump_pty(cmd: DumpPtyCommand) -> Result<()> {
+    use base64::Engine;
+
+    let connection = discover_broker_connection(
+        cmd.broker_url.as_deref(),
+        cmd.api_key.as_deref(),
+        cmd.state_dir.as_deref(),
+    )?;
+
+    let url = format!(
+        "{}/api/spawned/{}/snapshot?format={}",
+        connection.base_url,
+        urlencoding::encode(&cmd.name),
+        cmd.format.as_wire_str(),
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build http client")?;
+
+    let mut request = client.get(&url);
+    if let Some(key) = connection.api_key.as_deref() {
+        request = request.header("X-API-Key", key);
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed reaching broker at {url}"))?;
+    let status = response.status();
+    let body_bytes = response
+        .bytes()
+        .await
+        .context("failed reading broker response body")?;
+
+    if !status.is_success() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        anyhow::bail!("broker returned {status}: {body_str}");
+    }
+
+    let body: Value =
+        serde_json::from_slice(&body_bytes).context("broker response was not valid JSON")?;
+    let screen = body
+        .get("screen")
+        .and_then(Value::as_str)
+        .context("broker response missing 'screen' field")?;
+
+    match cmd.format {
+        DumpPtyFormat::Plain => {
+            // The plain payload already includes the trailing newline per row.
+            // Print as-is so pipelines see a stable terminator.
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(screen.as_bytes())
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+        DumpPtyFormat::Ansi => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(screen)
+                .context("broker returned non-base64 ansi screen")?;
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&bytes)
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
+    let startup_debug = startup_debug_enabled();
     let mut agent_spawn_count: u32 = 0;
     telemetry.track(TelemetryEvent::BrokerStart);
 
@@ -1376,8 +1035,20 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     } else {
         cmd.name.trim().to_string()
     };
-    let paths = if cmd.persist {
-        ensure_runtime_paths(&runtime_cwd, &resolved_name)?
+    let custom_state_dir = cmd.state_dir.as_ref().map(PathBuf::from);
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!(
+            "run_init begin name='{}' cwd='{}' persist={} channels='{}'",
+            resolved_name,
+            runtime_cwd.display(),
+            cmd.persist,
+            cmd.channels
+        ),
+    );
+    let paths = if cmd.persist || custom_state_dir.is_some() {
+        ensure_runtime_paths(&runtime_cwd, &resolved_name, custom_state_dir.as_deref())?
     } else {
         // Warn if a stale .agent-relay/ dir exists from a previous persist run.
         // Agents can read files from it directly (logs, state) and get confused.
@@ -1394,10 +1065,15 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
     };
-    let mut state = if cmd.persist {
-        BrokerState::load(&paths.state).unwrap_or_default()
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!("runtime paths ready state='{}'", paths.state.display()),
+    );
+    let mut state = if cmd.persist || custom_state_dir.is_some() {
+        broker::BrokerState::load(&paths.state).unwrap_or_default()
     } else {
-        BrokerState::default()
+        broker::BrokerState::default()
     };
 
     // Clean up agents from previous sessions whose processes have died
@@ -1426,6 +1102,72 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let agent_type_env = std::env::var("RELAY_AGENT_TYPE").ok();
     let agent_type_ref = agent_type_env.as_deref().unwrap_or("human");
 
+    // HTTP/WS API — always started. This is the primary transport for SDK
+    // consumers, dashboards, and remote clients. When no explicit API key
+    // is configured, generate a random one so control endpoints are always
+    // authenticated (the key is written to the runtime metadata file for
+    // SDK discovery).
+    let api_key = std::env::var("RELAY_BROKER_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| format!("br_{}", Uuid::new_v4().simple()));
+
+    // Set the env var so listen_api's configured_broker_api_key() picks it up.
+    std::env::set_var("RELAY_BROKER_API_KEY", &api_key);
+
+    let relay_ready = Arc::new(Notify::new());
+    let relay_ready_state: Arc<RwLock<Option<RelayReadyState>>> = Arc::new(RwLock::new(None));
+    let (api_tx, mut api_rx) = mpsc::channel::<ListenApiRequest>(32);
+    let bind_addr = format!("{}:{}", cmd.api_bind, cmd.api_port);
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!("binding API listener on {}", bind_addr),
+    );
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .with_context(|| format!("failed to bind API on {}", bind_addr))?;
+    let actual_port = listener.local_addr()?.port();
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!("API listener bound on {}:{}", cmd.api_bind, actual_port),
+    );
+    // Machine-readable on stdout (SDK parses this to discover the port).
+    // Diagnostic logs stay on stderr via tracing/eprintln.
+    println!(
+        "[agent-relay] API listening on http://{}:{}",
+        cmd.api_bind, actual_port
+    );
+
+    // Write connection file so CLI commands can find this broker.
+    let connection_dir = paths.state.parent().unwrap();
+    let connection_path = connection_dir.join("connection.json");
+    let connection = json!({
+        "url": format!("http://{}:{}", cmd.api_bind, actual_port),
+        "port": actual_port,
+        "api_key": &api_key,
+        "pid": std::process::id(),
+    });
+    if let Ok(json_str) = serde_json::to_string_pretty(&connection) {
+        if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(connection_dir) {
+            use std::io::Write;
+            if tmp.write_all(json_str.as_bytes()).is_ok() {
+                let _ = tmp.persist(&connection_path);
+                tracing::info!(path = %connection_path.display(), "wrote connection file");
+            }
+        }
+    }
+
+    let (startup_listener_tx, startup_listener_rx) =
+        tokio::sync::oneshot::channel::<tokio::net::TcpListener>();
+    let relay_ready_for_startup = relay_ready.clone();
+    tokio::spawn(async move {
+        let listener = serve_startup_api_until_ready(listener, relay_ready_for_startup).await;
+        let _ = startup_listener_tx.send(listener);
+    });
+
+    log_startup_phase(startup_debug, broker_start, "calling connect_relay");
     let relay = connect_relay(RelaySessionOptions {
         paths: &paths,
         requested_name: &resolved_name,
@@ -1440,6 +1182,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         runtime_cwd: &runtime_cwd,
     })
     .await?;
+    log_startup_phase(startup_debug, broker_start, "connect_relay completed");
 
     let RelaySession {
         http_base,
@@ -1489,13 +1232,72 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             .collect::<Vec<_>>(),
     )?;
 
+    // Broadcast channel for streaming dashboard-relevant events to WS clients.
+    // Created before publishing the ready router so replay and WS endpoints are
+    // available as soon as Relaycast workspace data is known.
+    let (events_tx, _events_rx) = broadcast::channel::<String>(512);
+    let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
+
+    let ready_router = listen_api_router(ListenApiConfig {
+        tx: api_tx.clone(),
+        events_tx: events_tx.clone(),
+        replay_buffer: replay_buffer.clone(),
+        workspace_key: Some(relay_workspace_key.clone()),
+        memberships: workspace_memberships.clone(),
+        default_workspace_id: default_workspace_id.clone(),
+        persist: cmd.persist,
+    });
+    {
+        let mut ready = relay_ready_state.write().await;
+        *ready = Some(RelayReadyState {
+            workspace_key: relay_workspace_key.clone(),
+            memberships: workspace_memberships.clone(),
+            default_workspace_id: default_workspace_id.clone(),
+        });
+    }
+    if let Some(ready) = relay_ready_state.read().await.as_ref() {
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            format!(
+                "relay ready workspace_key_set={} memberships={} default_workspace={:?}",
+                !ready.workspace_key.is_empty(),
+                ready.memberships.len(),
+                ready.default_workspace_id
+            ),
+        );
+    }
+    relay_ready.notify_one();
+    let listener = startup_listener_rx
+        .await
+        .context("startup API listener task stopped before Relaycast readiness handoff")?;
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, ready_router).await {
+            tracing::error!(error = %e, "HTTP API server error");
+        }
+    });
+
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!(
+            "ensuring default channels for {} workspaces",
+            workspaces.len()
+        ),
+    );
     for workspace in &workspaces {
         if let Err(error) = workspace.http_client.ensure_default_channels().await {
             tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure default channels");
         }
     }
+    log_startup_phase(startup_debug, broker_start, "default channels ensured");
 
     let extra_channels = channels_from_csv(&cmd.channels);
+    log_startup_phase(
+        startup_debug,
+        broker_start,
+        format!("ensuring extra channels count={}", extra_channels.len()),
+    );
     for workspace in &workspaces {
         if let Err(error) = workspace
             .http_client
@@ -1505,14 +1307,25 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure extra channels");
         }
     }
+    log_startup_phase(startup_debug, broker_start, "extra channels ensured");
 
     if !extra_channels.is_empty() {
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            "subscribing websocket control channels",
+        );
         for workspace in &workspaces {
             let _ = workspace
                 .ws_control_tx
                 .send(WsControl::Subscribe(extra_channels.clone()))
                 .await;
         }
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            "websocket subscriptions updated",
+        );
     }
 
     let mut worker_env = vec![
@@ -1524,6 +1337,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         ),
     ];
     if let Some(default_workspace_id) = default_workspace_id.clone() {
+        // Do NOT stamp RELAYFILE_WORKSPACE from default_workspace_id. The
+        // relaycast workspace id and the relayfile workspace id are
+        // independent — a relayfile JWT scoped to a different workspace will
+        // 403 with "workspace mismatch" when the relayfile MCP sends the
+        // wrong id. Callers that share an id across both services (e.g. the
+        // canonical `relay on start` flow) set RELAYFILE_WORKSPACE
+        // themselves through per-spawn env_vars.
         worker_env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
             default_workspace_id.clone(),
@@ -1531,17 +1351,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         worker_env.push(("RELAY_WORKSPACE_ID".to_string(), default_workspace_id));
     }
 
-    // Broadcast channel for streaming dashboard-relevant events to WS clients.
-    // Created early so the stdout writer task can also broadcast events.
-    let (events_tx, _events_rx) = broadcast::channel::<String>(512);
-    let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
-
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let events_tx_for_stdout = events_tx.clone();
     let replay_buffer_for_stdout = replay_buffer.clone();
     tokio::spawn(async move {
         while let Some(frame) = sdk_out_rx.recv().await {
-            // Broadcast dashboard-relevant events to WS clients
+            // Broadcast events to WS clients (the primary SDK transport)
             if frame.msg_type == "event" {
                 broadcast_if_relevant(
                     &events_tx_for_stdout,
@@ -1550,13 +1365,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                 )
                 .await;
             }
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-            }
+            // Note: stdout writing is removed. The HTTP/WS API is the
+            // only SDK transport. Events flow through broadcast_if_relevant
+            // → events_tx → WS clients.
         }
     });
 
@@ -1576,12 +1387,24 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
         relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
 
     let mut sdk_lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
     let mut reap_tick = tokio::time::interval(Duration::from_millis(500));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
     let mut terminal_failed_deliveries: HashSet<String> = HashSet::new();
+    // Outstanding worker-bound RPC requests waiting on a `*_response`
+    // frame from the wrapped worker. Keyed by the `request_id` we put on
+    // the outbound request frame; the reply `oneshot` is consumed when
+    // the worker echoes the same `request_id` back, or the entry expires
+    // via the deadline sweep in the `reap_tick` arm below.
+    //
+    // Introduced for `snapshot_pty` (#870) and generalised in #871 so
+    // future request/response routes (`mode`, `pending`, `flush` from
+    // #864) can reuse the same correlation infrastructure — see
+    // `crate::worker_request`.
+    let mut pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -1594,42 +1417,43 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
     let mut shutdown = false;
 
-    // Optional HTTP API (for dashboard proxy)
-    let (api_tx, mut api_rx) = if cmd.api_port > 0 {
-        let (tx, rx) = mpsc::channel::<ListenApiRequest>(32);
-        let router = listen_api_router(
-            tx.clone(),
-            events_tx.clone(),
-            replay_buffer.clone(),
-            Some(relay_workspace_key.clone()),
-            workspace_memberships.clone(),
-            default_workspace_id.clone(),
-        );
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", cmd.api_port))
-            .await
-            .with_context(|| format!("failed to bind API on port {}", cmd.api_port))?;
-        eprintln!(
-            "[agent-relay] API listening on http://127.0.0.1:{}",
-            cmd.api_port
-        );
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
-                tracing::error!(error = %e, "HTTP API server error");
-            }
-        });
-        (Some(tx), Some(rx))
+    // Owner lease: in ephemeral mode, the broker shuts down if the SDK
+    // doesn't renew the lease within this duration. Replaces stdin EOF
+    // detection. Disabled in persist mode.
+    let lease_duration = if cmd.persist {
+        None
     } else {
-        (None, None)
+        Some(Duration::from_secs(120))
     };
-    // Suppress unused-variable warning when api_tx is created but only used for its lifetime
-    let _ = &api_tx;
+    let mut last_lease_renewal = Instant::now();
+    let mut lease_check = tokio::time::interval(Duration::from_secs(10));
+    lease_check.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    // Graceful-shutdown signal: SIGTERM on unix, Ctrl+Break/Close on Windows.
+    // `tokio::signal::ctrl_c()` is handled in its own select! arm below and
+    // works on both platforms.
+    #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(windows)]
+    let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
     while !shutdown {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 shutdown = true;
+            }
+
+            _ = lease_check.tick() => {
+                if let Some(duration) = lease_duration {
+                    if last_lease_renewal.elapsed() > duration {
+                        tracing::info!(
+                            elapsed_secs = last_lease_renewal.elapsed().as_secs(),
+                            lease_secs = duration.as_secs(),
+                            "owner lease expired — shutting down"
+                        );
+                        shutdown = true;
+                    }
+                }
             }
 
             _ = sigterm.recv() => {
@@ -1638,12 +1462,13 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
             }
 
             // HTTP API requests (when --api-port is active)
-            result = async { api_rx.as_mut().unwrap().recv().await }, if api_rx.is_some() => {
+            result = api_rx.recv() => {
                 if let Some(req) = result {
                     match req {
                         ListenApiRequest::Spawn {
                             name,
                             cli,
+                            transport,
                             model,
                             args,
                             task,
@@ -1653,6 +1478,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             shadow_of,
                             shadow_mode,
                             continue_from,
+                            idle_threshold_secs,
+                            skip_relay_prompt,
+                            restart_policy,
+                            agent_token,
                             reply,
                         } => {
                             let effective_channels = if channels.is_empty() {
@@ -1660,21 +1489,25 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             } else {
                                 channels.clone()
                             };
-                            let spec = AgentSpec {
-                                name: name.clone(),
-                                runtime: AgentRuntime::Pty,
-                                provider: None,
-                                cli: Some(cli.clone()),
-                                model: model.clone(),
+                            let spec = match build_http_api_spawn_spec(
+                                name.clone(),
+                                cli.clone(),
+                                transport,
+                                model.clone(),
+                                args,
+                                effective_channels.clone(),
                                 cwd,
                                 team,
                                 shadow_of,
                                 shadow_mode,
-                                args,
-                                channels: effective_channels.clone(),
-                                restart_policy: None,
+                                *restart_policy,
+                            ) {
+                                Ok(spec) => spec,
+                                Err(error) => {
+                                    let _ = reply.send(Err(error.to_string()));
+                                    continue;
+                                }
                             };
-                            let spec_for_state = spec.clone();
                             let mut preregistration_warning: Option<String> = None;
                             let registration_result = retry_agent_registration(
                                 &relaycast_http, &name, Some(&cli),
@@ -1696,6 +1529,9 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     continue;
                                 }
                             };
+
+                            // Caller-supplied agent_token overrides auto-registration
+                            let worker_relay_key = agent_token.or(worker_relay_key);
 
                             let mut effective_task = normalize_initial_task(task);
                             if let Some(ref continue_from) = continue_from {
@@ -1792,25 +1628,29 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 Some("Dashboard".to_string()),
                                 None,
                                 worker_relay_key.clone(),
-                                false,
-                                None,
+                                skip_relay_prompt,
+                                idle_threshold_secs.map(|s| s.to_string()),
                             ).await {
-                                Ok(()) => {
+                                Ok(effective_spec) => {
                                     if let Some(ref task_text) = effective_task {
                                         workers.initial_tasks.insert(name.clone(), task_text.clone());
                                     }
                                     agent_spawn_count += 1;
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
-                                        runtime: "pty".to_string(),
+                                        runtime: runtime_label(&effective_spec.runtime).to_string(),
+                                        spawn_source: ActionSource::HumanDashboard,
+                                        has_task: effective_task.is_some(),
+                                        is_shadow: effective_spec.shadow_of.is_some()
+                                            || effective_spec.shadow_mode.is_some(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
                                         name.clone(),
-                                        PersistedAgent {
-                                            runtime: AgentRuntime::Pty,
+                                        broker::PersistedAgent {
+                                            runtime: effective_spec.runtime.clone(),
                                             parent: Some("Dashboard".to_string()),
-                                            channels: spec_for_state.channels.clone(),
+                                            channels: effective_spec.channels.clone(),
                                             pid: workers.worker_pid(&name),
                                             started_at: Some(
                                                 std::time::SystemTime::now()
@@ -1818,7 +1658,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     .unwrap_or_default()
                                                     .as_secs(),
                                             ),
-                                            spec: Some(spec_for_state),
+                                            spec: Some(effective_spec.clone()),
                                             restart_policy: None,
                                             initial_task: effective_task,
 
@@ -1838,9 +1678,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         json!({
                                             "kind":"agent_spawned",
                                             "name":&name,
-                                            "runtime":"pty",
-                                            "cli":&cli,
-                                            "model":&model,
+                                            "runtime":runtime_label(&effective_spec.runtime),
+                                            "provider": effective_spec.provider.clone(),
+                                            "cli": effective_spec.cli.clone(),
+                                            "model": effective_spec.model.clone(),
                                             "pid":pid,
                                             "source":"http_api",
                                             "pre_registered": worker_relay_key.is_some(),
@@ -1857,6 +1698,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = reply.send(Ok(json!({
                                         "success": true,
                                         "name": name,
+                                        "runtime": runtime_label(&effective_spec.runtime),
+                                        "model": effective_spec.model.clone(),
                                         "pid": pid,
                                         "pre_registered": worker_relay_key.is_some(),
                                         "warning": preregistration_warning,
@@ -1938,6 +1781,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             json!({"kind":"delivery_dropped","name":&name,"count":dropped,"reason":"agent_released"}),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "agent_released");
                                     state.agents.remove(&name);
                                     if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
@@ -2325,47 +2169,204 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             let threads = build_thread_infos(&messages, &self_names);
                             let _ = reply.send(Ok(json!({ "threads": threads })));
                         }
+                        ListenApiRequest::SendInput { name, data, reply } => {
+                            if let Err(err) = workers.send_to_worker(
+                                &name, "write_pty", Some(format!("api_{}", Uuid::new_v4().simple())),
+                                json!({ "data": data }),
+                            ).await {
+                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            } else {
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "bytes_written": data.len(),
+                                })));
+                            }
+                        }
+                        ListenApiRequest::ResizePty { name, rows, cols, reply } => {
+                            if rows == 0 || cols == 0 {
+                                let _ = reply.send(Err("invalid_dimensions: rows and cols must be >= 1".into()));
+                            } else if let Err(err) = workers.send_to_worker(
+                                &name, "resize_pty", Some(format!("api_{}", Uuid::new_v4().simple())),
+                                json!({ "rows": rows, "cols": cols }),
+                            ).await {
+                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            } else {
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "rows": rows,
+                                    "cols": cols,
+                                })));
+                            }
+                        }
+                        ListenApiRequest::WorkerRequest { name, kind, payload, timeout, reply } => {
+                            // Generic worker request/response: validate the
+                            // worker exists and supports a PTY (request/response
+                            // routes today all target the PTY side), then ship
+                            // the frame and park the `reply` oneshot in
+                            // `pending_requests`. The response is fulfilled
+                            // either by the `*_response` arm below or by the
+                            // deadline sweep in `reap_tick`.
+                            //
+                            // Headless workers don't run a VT and don't handle
+                            // PTY-oriented RPCs — short-circuit with a typed
+                            // error rather than letting the request sit until
+                            // the timeout sweep returns a misleading
+                            // `worker_timeout`.
+                            let runtime = workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime.clone());
+                            match runtime {
+                                None => {
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::WorkerNotFound(
+                                            format!("no worker named '{name}'"),
+                                        ),
+                                    ));
+                                }
+                                Some(AgentRuntime::Headless) => {
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::UnsupportedRuntime(
+                                            format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
+                                        ),
+                                    ));
+                                }
+                                Some(AgentRuntime::Pty) => {
+                                    let request_id = format!("req_{}", Uuid::new_v4().simple());
+                                    if let Err(err) = workers.send_to_worker(
+                                        &name,
+                                        &kind,
+                                        Some(request_id.clone()),
+                                        payload,
+                                    ).await {
+                                        let _ = reply.send(Err(
+                                            worker_request::RequestWorkerError::SendFailed(
+                                                err.to_string(),
+                                            ),
+                                        ));
+                                    } else {
+                                        pending_requests.insert(
+                                            request_id,
+                                            worker_request::PendingRequest {
+                                                kind,
+                                                worker_name: name,
+                                                reply,
+                                                deadline: Instant::now() + timeout,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        ListenApiRequest::GetMetrics { agent, reply } => {
+                            if let Some(ref agent_name) = agent {
+                                if let Some(handle) = workers.workers.get(agent_name) {
+                                    let m = build_agent_metrics(handle);
+                                    let _ = reply.send(Ok(json!({ "agents": [m], "broker": workers.metrics.snapshot(workers.workers.len()) })));
+                                } else {
+                                    let _ = reply.send(Err(format!("unknown worker '{}'", agent_name)));
+                                }
+                            } else {
+                                let mut agent_metrics: Vec<AgentMetrics> = workers.workers.values()
+                                    .map(build_agent_metrics)
+                                    .collect();
+                                agent_metrics.sort_by(|a, b| a.name.cmp(&b.name));
+                                let _ = reply.send(Ok(json!({
+                                    "agents": agent_metrics,
+                                    "broker": workers.metrics.snapshot(workers.workers.len()),
+                                })));
+                            }
+                        }
+                        ListenApiRequest::GetStatus { reply } => {
+                            let pending: Vec<Value> = pending_deliveries.values().map(|pd| {
+                                json!({
+                                    "delivery_id": pd.delivery.delivery_id,
+                                    "worker_name": pd.worker_name,
+                                    "event_id": pd.delivery.event_id,
+                                    "attempts": pd.attempts,
+                                })
+                            }).collect();
+                            let _ = reply.send(Ok(json!({
+                                "agent_count": workers.workers.len(),
+                                "agents": workers.list(),
+                                "pending_delivery_count": pending.len(),
+                                "pending_deliveries": pending,
+                            })));
+                        }
+                        ListenApiRequest::GetCrashInsights { reply } => {
+                            let _ = reply.send(Ok(crash_insights.to_json()));
+                        }
+                        ListenApiRequest::Preflight { agents, reply } => {
+                            let count = agents.len();
+                            let _ = reply.send(Ok(json!({ "queued": count })));
+                            // Background preflight — same as stdio handler
+                            for entry in agents {
+                                let http = relaycast_http.clone();
+                                tokio::spawn(async move {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(30),
+                                        http.register_agent_token(&entry.name, Some(&entry.cli)),
+                                    ).await;
+                                });
+                            }
+                        }
+                        ListenApiRequest::SubscribeChannels { name, channels, reply } => {
+                            let Some(handle) = workers.workers.get_mut(&name) else {
+                                let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                                continue;
+                            };
+                            let mut added = Vec::new();
+                            for ch in &channels {
+                                let exists = handle.spec.channels.iter()
+                                    .any(|c| c.eq_ignore_ascii_case(ch));
+                                if !exists {
+                                    handle.spec.channels.push(ch.clone());
+                                    added.push(ch.clone());
+                                }
+                            }
+                            let all_channels = handle.spec.channels.clone();
+                            let _ = reply.send(Ok(json!({
+                                "name": name,
+                                "channels": all_channels,
+                            })));
+                        }
+                        ListenApiRequest::UnsubscribeChannels { name, channels, reply } => {
+                            let Some(handle) = workers.workers.get_mut(&name) else {
+                                let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                                continue;
+                            };
+                            handle.spec.channels.retain(|c| {
+                                !channels.iter().any(|rem| rem.eq_ignore_ascii_case(c))
+                            });
+                            let remaining = handle.spec.channels.clone();
+                            let _ = reply.send(Ok(json!({
+                                "name": name,
+                                "channels": remaining,
+                            })));
+                        }
+                        ListenApiRequest::Shutdown { reply } => {
+                            let _ = reply.send(Ok(json!({ "status": "shutting_down" })));
+                            shutdown = true;
+                        }
+                        ListenApiRequest::RenewLease { reply } => {
+                            last_lease_renewal = Instant::now();
+                            let expires_in = lease_duration.map(|d| d.as_secs()).unwrap_or(0);
+                            let _ = reply.send(Ok(json!({
+                                "renewed": true,
+                                "expires_in_secs": expires_in,
+                                "persist": cmd.persist,
+                            })));
+                        }
                     }
                 }
             }
 
-            line = sdk_lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        match handle_sdk_frame(
-                            &line,
-                            &sdk_out_tx,
-                                &mut workers,
-                                &mut state,
-                                &paths.state,
-                                &mut pending_deliveries,
-                                &mut dedup,
-                                &telemetry,
-                                &mut agent_spawn_count,
-                                Some(&relaycast_http),
-                                Some(&ws_control_tx),
-                                &relay_workspace_key,
-                                &workspaces,
-                                default_workspace_id.as_deref(),
-                                &crash_insights,
-                            ).await {
-                            Ok(should_shutdown) => {
-                                if should_shutdown {
-                                    shutdown = true;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = send_error(&sdk_out_tx, None, "invalid_request", error.to_string(), false, None).await;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        shutdown = true;
-                    }
-                    Err(error) => {
-                        let _ = send_error(&sdk_out_tx, None, "io_error", error.to_string(), true, None).await;
-                        shutdown = true;
-                    }
+            // Stdin is no longer used for SDK communication — all control
+            // goes through the HTTP/WS API. We drain stdin to avoid
+            // blocking if anything writes to it, and stop polling after EOF.
+            result = sdk_lines.next_line(), if stdin_open => {
+                if matches!(result, Ok(None) | Err(_)) {
+                    stdin_open = false;
                 }
             }
 
@@ -2450,10 +2451,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 json!({"kind":"delivery_dropped","name":name,"count":dropped,"reason":"agent_released"}),
                                             ).await;
                                         }
+                                        fail_pending_requests_for_worker(&mut pending_requests, &name, "relaycast_release");
                                         telemetry.track(TelemetryEvent::AgentRelease {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
                                             lifetime_seconds: 0,
+                                            release_source: ActionSource::Protocol,
                                         });
                                         state.agents.remove(&name);
                                         if paths.persist {
@@ -2560,7 +2563,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     channels: channels.clone(),
                                     restart_policy: None,
                                 };
-                                let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
                                 // Pre-register agent token. Claude doesn't need this — it
@@ -2617,19 +2619,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     false,
                                     Some(workspace_id.clone()),
                                 ).await {
-                                    Ok(()) => {
+                                    Ok(effective_spec) => {
                                         if let Some(ref task_text) = effective_task {
                                             workers.initial_tasks.insert(name.clone(), task_text.clone());
                                         }
                                         agent_spawn_count += 1;
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: cli.clone(),
-                                            runtime: "pty".to_string(),
+                                            runtime: runtime_label(&effective_spec.runtime).to_string(),
+                                            spawn_source: ActionSource::Protocol,
+                                            has_task: effective_task.is_some(),
+                                            is_shadow: false,
                                         });
                                         let pid = workers.worker_pid(&name).unwrap_or(0);
                                         state.agents.insert(
                                             name.clone(),
-                                            PersistedAgent {
+                                            broker::PersistedAgent {
                                                 runtime: AgentRuntime::Pty,
                                                 parent: Some("Relaycast".to_string()),
                                                 channels,
@@ -2640,7 +2645,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                         .unwrap_or_default()
                                                         .as_secs(),
                                                 ),
-                                                spec: Some(spec_for_state),
+                                                spec: Some(effective_spec.clone()),
                                                 restart_policy: None,
                                                 initial_task: effective_task,
 
@@ -2654,6 +2659,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "name": name,
                                                 "runtime": "pty",
                                                 "cli": cli,
+                                                "model": effective_spec.model.clone(),
                                                 "pid": pid,
                                                 "source": "relaycast_ws",
                                                 "pre_registered": worker_relay_key.is_some(),
@@ -2753,7 +2759,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         channels: channels.clone(),
                                         restart_policy: None,
                                     };
-                                    let spec_for_state = spec.clone();
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
@@ -2798,19 +2803,22 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         false,
                                         Some(workspace_id.clone()),
                                     ).await {
-                                        Ok(()) => {
+                                        Ok(effective_spec) => {
                                             if let Some(ref task_text) = effective_task {
                                                 workers.initial_tasks.insert(name.clone(), task_text.clone());
                                             }
                                             agent_spawn_count += 1;
                                             telemetry.track(TelemetryEvent::AgentSpawn {
                                                 cli: cli.clone(),
-                                                runtime: "pty".to_string(),
+                                                runtime: runtime_label(&effective_spec.runtime).to_string(),
+                                                spawn_source: ActionSource::Protocol,
+                                                has_task: effective_task.is_some(),
+                                                is_shadow: false,
                                             });
                                             let pid = workers.worker_pid(&name).unwrap_or(0);
                                             state.agents.insert(
                                                 name.clone(),
-                                                PersistedAgent {
+                                                broker::PersistedAgent {
                                                     runtime: AgentRuntime::Pty,
                                                     parent: Some("Relaycast".to_string()),
                                                     channels,
@@ -2821,7 +2829,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                             .unwrap_or_default()
                                                             .as_secs(),
                                                     ),
-                                                    spec: Some(spec_for_state),
+                                                    spec: Some(effective_spec.clone()),
                                                     restart_policy: None,
                                                     initial_task: effective_task,
 
@@ -2835,6 +2843,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     "name": name,
                                                     "runtime": "pty",
                                                     "cli": cli,
+                                                    "model": effective_spec.model.clone(),
                                                     "pid": pid,
                                                     "source": "relaycast_ws_fallback",
                                                     "pre_registered": worker_relay_key.is_some(),
@@ -3202,6 +3211,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "error": value.get("payload").cloned().unwrap_or(Value::Null)
                                     })).await;
+                                } else if msg_type.ends_with("_response") {
+                                    // Generic worker request/response dispatch.
+                                    // Any frame whose `type` ends in
+                                    // `_response` is routed by `request_id`
+                                    // into the matching parked `oneshot` in
+                                    // `pending_requests`. The pending entry
+                                    // owns the format/error decoding logic
+                                    // via `worker_request::fulfil_response_frame`.
+                                    let routed = worker_request::fulfil_response_frame(
+                                        &mut pending_requests,
+                                        &value,
+                                    );
+                                    if !routed {
+                                        let req_id = value
+                                            .get("request_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("<missing>");
+                                        tracing::debug!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            msg_type = %msg_type,
+                                            request_id = %req_id,
+                                            "worker response with no pending caller — dropping"
+                                        );
+                                    }
                                 } else if msg_type == "worker_stream" {
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_stream",
@@ -3461,6 +3495,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             }),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "worker_exited");
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -3503,6 +3538,23 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             _ = reap_tick.tick() => {
                 let now = Instant::now();
+
+                // Time out worker request/response calls whose worker never
+                // responded. Common cause: worker crashed between us sending
+                // the request frame and it parsing the frame. Without this
+                // sweep the HTTP handler would hang forever on its oneshot.
+                for (req_id, worker_name, kind) in
+                    worker_request::reap_expired(&mut pending_requests, now)
+                {
+                    tracing::warn!(
+                        target = "agent_relay::broker",
+                        request_id = %req_id,
+                        worker = %worker_name,
+                        kind = %kind,
+                        "worker request timed out before worker responded"
+                    );
+                }
+
                 let due_ids: Vec<String> = pending_deliveries
                     .iter()
                     .filter_map(|(delivery_id, pending)| {
@@ -3643,6 +3695,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_permanently_dead");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
@@ -3682,6 +3735,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_exited");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
@@ -3766,7 +3820,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             )
                             .await
                         {
-                            Ok(()) => {
+                            Ok(_) => {
                                 workers.supervisor.on_restarted(&name);
                                 workers.metrics.on_restart(&name);
                                 if let Some(task) = rst.initial_task {
@@ -3845,11 +3899,12 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     }
     workers.shutdown_all().await?;
 
-    // Clean up PID file and state file on graceful shutdown
+    // Clean up state and connection files on graceful shutdown
     if paths.persist {
-        let _ = std::fs::remove_file(&paths.pid);
         let _ = std::fs::remove_file(&paths.state);
     }
+    let connection_path = paths.state.parent().unwrap().join("connection.json");
+    let _ = std::fs::remove_file(&connection_path);
 
     Ok(())
 }
@@ -3944,1176 +3999,6 @@ fn build_agent_metrics(handle: &WorkerHandle) -> AgentMetrics {
             memory_bytes_for_pid(pid)
         },
         uptime_secs: handle.spawned_at.elapsed().as_secs(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_sdk_frame(
-    line: &str,
-    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
-    workers: &mut WorkerRegistry,
-    state: &mut BrokerState,
-    state_path: &Path,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
-    dedup: &mut DedupCache,
-    telemetry: &TelemetryClient,
-    agent_spawn_count: &mut u32,
-    relaycast_http: Option<&RelaycastHttpClient>,
-    ws_control_tx: Option<&mpsc::Sender<WsControl>>,
-    workspace_key: &str,
-    workspaces: &[RelayWorkspace],
-    default_workspace_id: Option<&str>,
-    crash_insights: &relay_broker::crash_insights::CrashInsights,
-) -> Result<bool> {
-    let frame: ProtocolEnvelope<Value> =
-        serde_json::from_str(line).context("request is not a valid protocol envelope")?;
-
-    if frame.v != PROTOCOL_VERSION {
-        send_error(
-            out_tx,
-            frame.request_id,
-            "unsupported_version",
-            format!(
-                "expected protocol version {}, got {}",
-                PROTOCOL_VERSION, frame.v
-            ),
-            false,
-            None,
-        )
-        .await?;
-        return Ok(false);
-    }
-
-    match frame.msg_type.as_str() {
-        "hello" => {
-            send_frame(
-                out_tx,
-                "hello_ack",
-                frame.request_id,
-                json!({
-                    "broker_version": env!("CARGO_PKG_VERSION"),
-                    "protocol_version": PROTOCOL_VERSION,
-                    "workspace_key": workspace_key,
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "spawn_agent" => {
-            let payload: SpawnPayload = serde_json::from_value(frame.payload)
-                .context("spawn_agent payload must contain `agent`")?;
-            let runtime = payload.agent.runtime.clone();
-            let name = payload.agent.name.clone();
-
-            // Build the effective initial_task, injecting continuity context if continue_from is set.
-            let mut effective_task = normalize_initial_task(payload.initial_task.clone());
-            if let Some(ref continue_from) = payload.continue_from {
-                let continuity_dir = continuity_dir(state_path);
-                let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
-                if continuity_file.exists() {
-                    match std::fs::read_to_string(&continuity_file) {
-                        Ok(contents) => {
-                            if let Ok(ctx) = serde_json::from_str::<Value>(&contents) {
-                                let prev_task = ctx
-                                    .get("initial_task")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("unknown");
-                                let summary = ctx
-                                    .get("summary")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("no summary available");
-                                let messages = ctx
-                                    .get("message_history")
-                                    .and_then(Value::as_array)
-                                    .map(|msgs| {
-                                        msgs.iter()
-                                            .filter_map(|m| {
-                                                let from = m
-                                                    .get("from")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("?");
-                                                let text = m
-                                                    .get("text")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("");
-                                                if text.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(format!("  {}: {}", from, text))
-                                                }
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    })
-                                    .unwrap_or_default();
-
-                                let continuity_block = format!(
-                                    "## Continuity Context (from previous session as '{}')\n\
-                                     Previous task: {}\n\
-                                     Session summary: {}\n{}",
-                                    continue_from,
-                                    prev_task,
-                                    summary,
-                                    if messages.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("Recent messages:\n{}\n", messages)
-                                    }
-                                );
-
-                                effective_task = Some(match effective_task {
-                                    Some(new_task) => {
-                                        format!(
-                                            "{}\n\n## Current Task\n{}",
-                                            continuity_block, new_task
-                                        )
-                                    }
-                                    None => continuity_block,
-                                });
-                                tracing::info!(
-                                    agent = %name,
-                                    continue_from = %continue_from,
-                                    "injected continuity context from previous session"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                agent = %name,
-                                continue_from = %continue_from,
-                                error = %e,
-                                "failed to read continuity file"
-                            );
-                        }
-                    }
-                } else {
-                    tracing::warn!(
-                        agent = %name,
-                        continue_from = %continue_from,
-                        "no continuity file found at {}",
-                        continuity_file.display()
-                    );
-                }
-            }
-
-            // Pre-registration with a 15s timeout so a slow Relaycast API never
-            // blocks the SDK's spawn_agent call (SDK timeout = 60s). If the cache
-            // was warmed by preflight_agents, this is an instant cache hit (<1ms).
-            // If registration times out or fails retryably, we proceed without a
-            // token — the agent self-registers via MCP on first connect.
-            // Skip pre-registration when skip_relay_prompt is true — the agent
-            // won't use relay messaging so there is no need to register it, and
-            // a registration failure should not abort the spawn.
-            let mut preregistration_warning: Option<String> = None;
-            let worker_relay_key = if payload.skip_relay_prompt {
-                None
-            } else if let Some(http) = relaycast_http {
-                const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(15);
-                match tokio::time::timeout(
-                    REGISTRATION_TIMEOUT,
-                    http.register_agent_token(&name, payload.agent.cli.as_deref()),
-                )
-                .await
-                {
-                    Ok(Ok(token)) => Some(token),
-                    Ok(Err(error)) => {
-                        if registration_is_retryable(&error) {
-                            preregistration_warning =
-                                Some(format_worker_preregistration_error(&name, &error));
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "continuing spawn without pre-registration due to retryable relaycast error"
-                            );
-                            None
-                        } else {
-                            let retry_after_secs = registration_retry_after_secs(&error);
-                            let mut details = json!({
-                                "agent": name,
-                                "registration_error": error.to_string(),
-                            });
-                            if let Some(retry_after) = retry_after_secs {
-                                details["retry_after_secs"] = json!(retry_after);
-                            }
-                            send_error(
-                                out_tx,
-                                frame.request_id,
-                                "worker_registration_failed",
-                                format_worker_preregistration_error(&name, &error),
-                                registration_is_retryable(&error),
-                                Some(details),
-                            )
-                            .await?;
-                            return Ok(false);
-                        }
-                    }
-                    Err(_timeout) => {
-                        // Registration timed out — spawn without token.
-                        // Agent will self-register with Relaycast on MCP connect.
-                        tracing::warn!(
-                            worker = %name,
-                            timeout_secs = REGISTRATION_TIMEOUT.as_secs(),
-                            "Relaycast pre-registration timed out; spawning without token"
-                        );
-                        preregistration_warning = Some(format!(
-                            "pre-registration for '{name}' timed out after {}s; agent will self-register",
-                            REGISTRATION_TIMEOUT.as_secs()
-                        ));
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Seed the dedup cache BEFORE spawning so that a Relaycast WS echo
-            // arriving while the spawn is in progress is correctly deduplicated.
-            // If spawn fails we remove the entry so retries are not blocked.
-            note_local_spawn_control_dedup(
-                dedup,
-                default_workspace_id.or_else(|| {
-                    workspaces
-                        .first()
-                        .map(|workspace| workspace.workspace_id.as_str())
-                }),
-                &name,
-                worker_relay_key.as_deref(),
-            );
-
-            if let Err(err) = workers
-                .spawn(
-                    payload.agent.clone(),
-                    None,
-                    payload.idle_threshold_secs,
-                    worker_relay_key.clone(),
-                    payload.skip_relay_prompt,
-                    None,
-                )
-                .await
-            {
-                let err_msg = format!("{err:#}");
-                // Only clean up dedup if this was a genuinely new spawn attempt
-                // that failed, not a duplicate request for an already-running
-                // agent.  When the error is "already exists" the dedup entry
-                // belongs to the prior successful spawn and must be preserved.
-                if !err_msg.contains("already exists") {
-                    remove_local_spawn_control_dedup(
-                        dedup,
-                        default_workspace_id.or_else(|| {
-                            workspaces
-                                .first()
-                                .map(|workspace| workspace.workspace_id.as_str())
-                        }),
-                        &name,
-                        worker_relay_key.as_deref(),
-                    );
-                }
-                return Err(err);
-            }
-
-            // Subscribe the broker's WebSocket to any custom channels the
-            // spawned agent needs so cloud-routed messages reach the broker.
-            if !payload.agent.channels.is_empty() {
-                let spawn_channels = payload.agent.channels.clone();
-                for workspace in workspaces {
-                    if let Err(error) = workspace
-                        .http_client
-                        .ensure_extra_channels(&spawn_channels)
-                        .await
-                    {
-                        tracing::warn!(
-                            workspace_id = %workspace.workspace_id,
-                            error = %error,
-                            "failed to ensure extra channels for spawned agent"
-                        );
-                    }
-                    let _ = workspace
-                        .ws_control_tx
-                        .send(WsControl::Subscribe(spawn_channels.clone()))
-                        .await;
-                }
-            }
-            if let Some(task) = effective_task.clone() {
-                workers.initial_tasks.insert(name.clone(), task);
-            }
-            let worker_pid = workers.worker_pid(&name);
-            state.agents.insert(
-                name.clone(),
-                PersistedAgent {
-                    runtime: runtime.clone(),
-                    parent: None,
-                    channels: payload.agent.channels.clone(),
-                    pid: worker_pid,
-                    started_at: Some(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    ),
-                    spec: Some(payload.agent.clone()),
-                    restart_policy: payload.agent.restart_policy.clone(),
-                    initial_task: effective_task.clone(),
-                },
-            );
-            state.save(state_path)?;
-
-            // Register with supervisor for auto-restart
-            let restart_policy = payload.agent.restart_policy.clone().unwrap_or_default();
-            let initial_task_for_supervisor = workers.initial_tasks.get(&name).cloned();
-            workers.supervisor.register(
-                &name,
-                payload.agent.clone(),
-                None,
-                initial_task_for_supervisor,
-                payload.skip_relay_prompt,
-                restart_policy,
-            );
-            workers.metrics.on_spawn(&name);
-
-            *agent_spawn_count += 1;
-            telemetry.track(TelemetryEvent::AgentSpawn {
-                cli: payload.agent.cli.clone().unwrap_or_default(),
-                runtime: format!("{:?}", runtime),
-            });
-
-            let spawned_provider = payload.agent.provider.clone();
-            let spawned_cli = payload.agent.cli.clone();
-            let spawned_model = payload.agent.model.clone();
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "name": name,
-                    "runtime": runtime,
-                    "provider": spawned_provider.clone(),
-                    "pre_registered": worker_relay_key.is_some(),
-                    "warning": preregistration_warning.clone(),
-                }),
-            )
-            .await?;
-            send_event(
-                out_tx,
-                json!({
-                    "kind": "agent_spawned",
-                    "name": name,
-                    "runtime": runtime,
-                    "provider": spawned_provider,
-                    "cli": spawned_cli,
-                    "model": spawned_model,
-                    "parent": Value::Null,
-                    "pre_registered": worker_relay_key.is_some(),
-                    "registration_warning": preregistration_warning,
-                }),
-            )
-            .await?;
-            if let Some(ws_control_tx) = ws_control_tx {
-                publish_agent_state_transition(ws_control_tx, &name, "spawned", Some("sdk_spawn"))
-                    .await;
-            }
-            Ok(false)
-        }
-        "send_message" => {
-            let payload: SendMessagePayload = serde_json::from_value(frame.payload)
-                .context("send_message payload must contain `to` and `text`")?;
-            let mut from = normalize_sender(payload.from);
-            if !is_system_sender(&from) && !workers.has_worker(&from) && !from.contains(':') {
-                from = format!("human:{from}");
-            }
-
-            if !is_system_sender(&from) && !workers.has_worker(&from) {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "sender_not_found",
-                    format!("Sender '{}' is not a registered agent", from),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            }
-            let priority = payload.priority.unwrap_or(2);
-            let event_id = format!("sdk_{}", Uuid::new_v4().simple());
-            let selected_workspace = if let Some(workspace_id) = payload.workspace_id.as_deref() {
-                let Some(workspace) = workspaces
-                    .iter()
-                    .find(|workspace| workspace.workspace_id == workspace_id)
-                    .cloned()
-                else {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "workspace_not_found",
-                        format!("workspace '{}' is not attached", workspace_id),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                };
-                workspace
-            } else if let Some(workspace_alias) = payload.workspace_alias.as_deref() {
-                let Some(workspace) = workspaces
-                    .iter()
-                    .find(|workspace| {
-                        workspace
-                            .workspace_alias
-                            .as_deref()
-                            .is_some_and(|alias| alias.eq_ignore_ascii_case(workspace_alias))
-                    })
-                    .cloned()
-                else {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "workspace_not_found",
-                        format!("workspace alias '{}' is not attached", workspace_alias),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                };
-                workspace
-            } else if workspaces.len() == 1 {
-                workspaces[0].clone()
-            } else if let Some(default_workspace_id) = default_workspace_id {
-                let Some(workspace) = workspaces
-                    .iter()
-                    .find(|workspace| workspace.workspace_id == default_workspace_id)
-                    .cloned()
-                else {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "workspace_not_found",
-                        format!("default workspace '{}' not found", default_workspace_id),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                };
-                workspace
-            } else {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "ambiguous_workspace",
-                    "workspaceId or workspaceAlias is required when multiple workspaces are attached".to_string(),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            };
-
-            if workers.has_worker(&payload.to) {
-                queue_and_try_delivery_raw(
-                    workers,
-                    pending_deliveries,
-                    &payload.to,
-                    &event_id,
-                    &from,
-                    &payload.to,
-                    &payload.text,
-                    payload.thread_id,
-                    Some(selected_workspace.workspace_id.clone()),
-                    selected_workspace.workspace_alias.clone(),
-                    priority,
-                    payload.mode,
-                    delivery_retry_interval(),
-                )
-                .await?;
-
-                send_ok(
-                    out_tx,
-                    frame.request_id,
-                    json!({
-                        "delivered": true,
-                        "to": payload.to,
-                        "event_id": event_id,
-                        "targets": [payload.to],
-                        "workspace_id": selected_workspace.workspace_id,
-                        "workspace_alias": selected_workspace.workspace_alias,
-                    }),
-                )
-                .await?;
-            } else if let Some(_http) = relaycast_http {
-                let to = payload.to.clone();
-                let eid = event_id.clone();
-                match selected_workspace
-                    .http_client
-                    .send_with_mode(&to, &payload.text, payload.mode)
-                    .await
-                {
-                    Ok(()) => {
-                        tracing::info!(to = %to, event_id = %eid, "relaycast publish succeeded");
-                        send_ok(
-                            out_tx,
-                            frame.request_id,
-                            json!({
-                                "delivered": false,
-                                "relaycast_published": true,
-                                "to": to,
-                                "event_id": eid,
-                                "targets": [to],
-                                "workspace_id": selected_workspace.workspace_id,
-                                "workspace_alias": selected_workspace.workspace_alias,
-                            }),
-                        )
-                        .await?;
-                        send_event(
-                            out_tx,
-                            json!({
-                                "kind": "relaycast_published",
-                                "event_id": eid,
-                                "to": to,
-                                "target_type": if to.starts_with('#') { "channel" } else { "dm" },
-                            }),
-                        )
-                        .await?;
-                    }
-                    Err(e) => {
-                        tracing::warn!(to = %to, event_id = %eid, err = %e, "relaycast publish failed");
-                        send_error(
-                            out_tx,
-                            frame.request_id,
-                            "relaycast_publish_failed",
-                            format!("failed to publish to Relaycast: {e}"),
-                            true,
-                            None,
-                        )
-                        .await?;
-                        send_event(
-                            out_tx,
-                            json!({
-                                "kind": "relaycast_publish_failed",
-                                "event_id": eid,
-                                "to": to,
-                                "reason": e.to_string(),
-                            }),
-                        )
-                        .await?;
-                    }
-                }
-            } else {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "agent_not_found",
-                    format!(
-                        "no local worker named '{}' and no Relaycast connection",
-                        payload.to
-                    ),
-                    false,
-                    None,
-                )
-                .await?;
-            }
-            Ok(false)
-        }
-        "send_input" => {
-            let payload: SendInputPayload = serde_json::from_value(frame.payload)
-                .context("send_input payload must contain `name` and `data`")?;
-
-            let Some(handle) = workers.workers.get_mut(&payload.name) else {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "agent_not_found",
-                    format!("unknown worker '{}'", payload.name),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            };
-
-            let bytes = payload.data.as_bytes();
-            handle
-                .stdin
-                .write_all(bytes)
-                .await
-                .with_context(|| format!("failed writing input to worker '{}'", payload.name))?;
-            handle
-                .stdin
-                .flush()
-                .await
-                .with_context(|| format!("failed flushing worker '{}' stdin", payload.name))?;
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "name": payload.name,
-                    "bytes_written": bytes.len(),
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "resize_pty" => {
-            let payload: ResizePtyPayload = serde_json::from_value(frame.payload)
-                .context("resize_pty payload must contain `name`, `rows`, and `cols`")?;
-
-            if payload.rows == 0 || payload.cols == 0 {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "invalid_dimensions",
-                    "rows and cols must be >= 1".to_string(),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            }
-
-            let Some(handle) = workers.workers.get(&payload.name) else {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "agent_not_found",
-                    format!("unknown worker '{}'", payload.name),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            };
-
-            if handle.spec.runtime != AgentRuntime::Pty {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "unsupported_operation",
-                    format!(
-                        "resize_pty is only supported for PTY agents, '{}' is {:?}",
-                        payload.name, handle.spec.runtime
-                    ),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            }
-
-            workers
-                .send_to_worker(
-                    &payload.name,
-                    "resize_pty",
-                    None,
-                    json!({
-                        "rows": payload.rows,
-                        "cols": payload.cols,
-                    }),
-                )
-                .await?;
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "name": payload.name,
-                    "rows": payload.rows,
-                    "cols": payload.cols,
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "set_model" => {
-            let payload: SetModelPayload = serde_json::from_value(frame.payload)
-                .context("set_model payload must contain `name` and `model`")?;
-            let timeout_ms = payload.timeout_ms;
-
-            let Some(handle) = workers.workers.get_mut(&payload.name) else {
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "agent_not_found",
-                    format!("unknown worker '{}'", payload.name),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            };
-
-            let model_command = format!("/model {}\n", payload.model);
-            handle
-                .stdin
-                .write_all(model_command.as_bytes())
-                .await
-                .with_context(|| {
-                    format!("failed writing model command to worker '{}'", payload.name)
-                })?;
-            handle
-                .stdin
-                .flush()
-                .await
-                .with_context(|| format!("failed flushing worker '{}' stdin", payload.name))?;
-            if let Some(timeout_ms) = timeout_ms {
-                tracing::info!(
-                    name = %payload.name,
-                    timeout_ms,
-                    "set_model timeout_ms is currently advisory only"
-                );
-            }
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "name": payload.name,
-                    "model": payload.model,
-                    "success": true,
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "get_metrics" => {
-            let payload: GetMetricsPayload = serde_json::from_value(frame.payload)
-                .context("get_metrics payload must be an object")?;
-
-            let mut agents: Vec<AgentMetrics> = if let Some(agent_name) = payload.agent {
-                let Some(handle) = workers.workers.get(&agent_name) else {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "agent_not_found",
-                        format!("unknown worker '{}'", agent_name),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                };
-                vec![build_agent_metrics(handle)]
-            } else {
-                workers
-                    .workers
-                    .values()
-                    .map(build_agent_metrics)
-                    .collect::<Vec<_>>()
-            };
-            agents.sort_by(|a, b| a.name.cmp(&b.name));
-
-            let broker_stats = workers.metrics.snapshot(workers.workers.len());
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "agents": agents,
-                    "broker": broker_stats,
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "get_crash_insights" => {
-            send_ok(out_tx, frame.request_id, crash_insights.to_json()).await?;
-            Ok(false)
-        }
-        "release_agent" => {
-            let payload: ReleasePayload = serde_json::from_value(frame.payload)
-                .context("release_agent payload must contain `name`")?;
-
-            // Check agent exists before attempting release.
-            // If the agent recently crashed and was reaped from workers but is
-            // still in the supervisor's pending-restart state, unregister it so
-            // it doesn't get re-spawned, then return success.
-            if !workers.workers.contains_key(&payload.name) {
-                if workers.supervisor.is_supervised(&payload.name) {
-                    workers.supervisor.unregister(&payload.name);
-                    tracing::info!(
-                        name = %payload.name,
-                        "released agent from supervisor pending-restart state"
-                    );
-                    state.agents.remove(&payload.name);
-                    state.save(state_path)?;
-                    send_ok(out_tx, frame.request_id, json!({"name": payload.name})).await?;
-                    send_event(out_tx, json!({"kind":"agent_released","name":payload.name}))
-                        .await?;
-                    return Ok(false);
-                }
-                if let Some(http) = relaycast_http {
-                    http.forget_agent_registration(&payload.name);
-                }
-                state.agents.remove(&payload.name);
-                state.save(state_path)?;
-                send_error(
-                    out_tx,
-                    frame.request_id,
-                    "agent_not_found",
-                    format!("unknown worker '{}'", payload.name),
-                    false,
-                    None,
-                )
-                .await?;
-                return Ok(false);
-            }
-
-            tracing::info!(
-                name = %payload.name,
-                reason = ?payload.reason,
-                "releasing worker from sdk request"
-            );
-
-            let lifetime_seconds = workers
-                .workers
-                .get(&payload.name)
-                .map(|h| h.spawned_at.elapsed().as_secs())
-                .unwrap_or(0);
-
-            // Capture continuity data before releasing the agent.
-            let persisted = state.agents.get(&payload.name).cloned();
-            if let Some(ref agent_data) = persisted {
-                let continuity_dir = continuity_dir(state_path);
-                if let Err(e) = std::fs::create_dir_all(&continuity_dir) {
-                    tracing::warn!(error = %e, "failed to create continuity dir");
-                } else {
-                    // Fetch recent DMs from relaycast if available.
-                    let message_history = if let Some(http) = relaycast_http {
-                        match http.get_dms(&payload.name, 50).await {
-                            Ok(msgs) => msgs,
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to fetch DMs for continuity"
-                                );
-                                vec![]
-                            }
-                        }
-                    } else {
-                        vec![]
-                    };
-
-                    let released_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-
-                    let reason_str = payload
-                        .reason
-                        .as_deref()
-                        .unwrap_or("released via SDK request");
-
-                    let cli = agent_data.spec.as_ref().and_then(|s| s.cli.clone());
-                    let cwd = agent_data.spec.as_ref().and_then(|s| s.cwd.clone());
-
-                    let continuity = json!({
-                        "agent_name": payload.name,
-                        "cli": cli,
-                        "initial_task": agent_data.initial_task,
-                        "cwd": cwd,
-                        "released_at": released_at,
-                        "lifetime_seconds": lifetime_seconds,
-                        "message_history": message_history,
-                        "summary": reason_str,
-                    });
-
-                    let continuity_file = continuity_dir.join(format!("{}.json", payload.name));
-                    match std::fs::write(
-                        &continuity_file,
-                        serde_json::to_string_pretty(&continuity).unwrap_or_default(),
-                    ) {
-                        Ok(()) => {
-                            tracing::info!(
-                                agent = %payload.name,
-                                path = %continuity_file.display(),
-                                "saved continuity data"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "failed to write continuity file"
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Unregister from supervisor (intentional release — no restart)
-            workers.supervisor.unregister(&payload.name);
-            workers.metrics.on_release(&payload.name);
-
-            workers.release(&payload.name).await?;
-            if let Some(http) = relaycast_http {
-                if let Err(error) = http.mark_agent_offline(&payload.name).await {
-                    tracing::warn!(
-                        worker = %payload.name,
-                        error = %error,
-                        "failed to mark released worker offline in relaycast"
-                    );
-                }
-            }
-            let dropped = drop_pending_for_worker(pending_deliveries, &payload.name);
-            state.agents.remove(&payload.name);
-            state.save(state_path)?;
-
-            telemetry.track(TelemetryEvent::AgentRelease {
-                cli: String::new(),
-                release_reason: payload.reason.unwrap_or_else(|| "sdk_request".to_string()),
-                lifetime_seconds,
-            });
-
-            send_ok(out_tx, frame.request_id, json!({"name": payload.name})).await?;
-            send_event(out_tx, json!({"kind":"agent_released","name":payload.name})).await?;
-            if let Some(ws_control_tx) = ws_control_tx {
-                publish_agent_state_transition(
-                    ws_control_tx,
-                    &payload.name,
-                    "exited",
-                    Some("sdk_release"),
-                )
-                .await;
-            }
-            if dropped > 0 {
-                send_event(
-                    out_tx,
-                    json!({
-                        "kind":"delivery_dropped",
-                        "name": payload.name,
-                        "count": dropped,
-                        "reason":"released",
-                    }),
-                )
-                .await?;
-            }
-            Ok(false)
-        }
-        "list_agents" => {
-            send_ok(out_tx, frame.request_id, json!({"agents": workers.list()})).await?;
-            Ok(false)
-        }
-        "get_status" => {
-            let agents: Vec<Value> = workers.list();
-            let pending: Vec<Value> = pending_deliveries
-                .values()
-                .map(|pd| {
-                    json!({
-                        "delivery_id": pd.delivery.delivery_id,
-                        "worker_name": pd.worker_name,
-                        "event_id": pd.delivery.event_id,
-                        "attempts": pd.attempts,
-                    })
-                })
-                .collect();
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({
-                    "agent_count": agents.len(),
-                    "agents": agents,
-                    "pending_delivery_count": pending.len(),
-                    "pending_deliveries": pending,
-                }),
-            )
-            .await?;
-            Ok(false)
-        }
-        "preflight_agents" => {
-            // Pre-register a batch of agents with Relaycast in parallel background tasks.
-            // Warms the token cache so subsequent spawn_agent calls are instant cache hits.
-            // Responds immediately — registration happens concurrently in the background.
-            #[derive(serde::Deserialize)]
-            struct PreflightAgentsPayload {
-                agents: Vec<PreflightAgentEntry>,
-            }
-            #[derive(serde::Deserialize)]
-            struct PreflightAgentEntry {
-                name: String,
-                cli: String,
-            }
-
-            let payload: PreflightAgentsPayload = serde_json::from_value(frame.payload)
-                .context("preflight_agents payload must contain `agents` array")?;
-
-            let count = payload.agents.len();
-            send_ok(out_tx, frame.request_id, json!({ "queued": count })).await?;
-
-            if let Some(http) = relaycast_http {
-                for entry in payload.agents {
-                    let http_clone = http.clone();
-                    tokio::spawn(async move {
-                        match tokio::time::timeout(
-                            Duration::from_secs(30),
-                            http_clone.register_agent_token(&entry.name, Some(entry.cli.as_str())),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => tracing::debug!(
-                                name = %entry.name,
-                                "preflight: agent pre-registered"
-                            ),
-                            Ok(Err(e)) => tracing::warn!(
-                                name = %entry.name,
-                                error = %e,
-                                "preflight: agent pre-registration failed"
-                            ),
-                            Err(_) => tracing::warn!(
-                                name = %entry.name,
-                                "preflight: agent pre-registration timed out (30s)"
-                            ),
-                        }
-                    });
-                }
-            }
-
-            Ok(false)
-        }
-        "subscribe_channels" => {
-            #[derive(serde::Deserialize)]
-            struct SubscribePayload {
-                name: String,
-                channels: Vec<String>,
-            }
-            let payload: SubscribePayload = serde_json::from_value(frame.payload)
-                .context("subscribe_channels payload must contain `name` and `channels`")?;
-
-            let handle = match workers.workers.get_mut(&payload.name) {
-                Some(h) => h,
-                None => {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "agent_not_found",
-                        format!("unknown worker '{}'", payload.name),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                }
-            };
-
-            let mut added = Vec::new();
-            for ch in &payload.channels {
-                if !handle
-                    .spec
-                    .channels
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(ch))
-                {
-                    handle.spec.channels.push(ch.clone());
-                    added.push(ch.clone());
-                }
-            }
-
-            // Update persisted state
-            if let Some(persisted) = state.agents.get_mut(&payload.name) {
-                persisted.channels = handle.spec.channels.clone();
-            }
-            state.save(state_path)?;
-
-            // Subscribe the WS to newly added channels
-            if !added.is_empty() {
-                if let Some(ws_tx) = ws_control_tx {
-                    let _ = ws_tx.send(WsControl::Subscribe(added.clone())).await;
-                }
-            }
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({"name": payload.name, "channels": handle.spec.channels}),
-            )
-            .await?;
-            send_event(
-                out_tx,
-                json!({"kind":"channel_subscribed","name":payload.name,"channels":added}),
-            )
-            .await?;
-            Ok(false)
-        }
-        "unsubscribe_channels" => {
-            #[derive(serde::Deserialize)]
-            struct UnsubscribePayload {
-                name: String,
-                channels: Vec<String>,
-            }
-            let payload: UnsubscribePayload = serde_json::from_value(frame.payload)
-                .context("unsubscribe_channels payload must contain `name` and `channels`")?;
-
-            let handle = match workers.workers.get_mut(&payload.name) {
-                Some(h) => h,
-                None => {
-                    send_error(
-                        out_tx,
-                        frame.request_id,
-                        "agent_not_found",
-                        format!("unknown worker '{}'", payload.name),
-                        false,
-                        None,
-                    )
-                    .await?;
-                    return Ok(false);
-                }
-            };
-
-            let mut removed = Vec::new();
-            let before: Vec<String> = handle.spec.channels.clone();
-            handle
-                .spec
-                .channels
-                .retain(|c| !payload.channels.iter().any(|uc| uc.eq_ignore_ascii_case(c)));
-            for ch in &before {
-                if !handle
-                    .spec
-                    .channels
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(ch))
-                {
-                    removed.push(ch.clone());
-                }
-            }
-
-            if let Some(persisted) = state.agents.get_mut(&payload.name) {
-                persisted.channels = handle.spec.channels.clone();
-            }
-            state.save(state_path)?;
-
-            // Unsubscribe the WS from removed channels
-            if !removed.is_empty() {
-                if let Some(ws_tx) = ws_control_tx {
-                    let _ = ws_tx.send(WsControl::Unsubscribe(removed.clone())).await;
-                }
-            }
-
-            send_ok(
-                out_tx,
-                frame.request_id,
-                json!({"name": payload.name, "channels": handle.spec.channels}),
-            )
-            .await?;
-            send_event(
-                out_tx,
-                json!({"kind":"channel_unsubscribed","name":payload.name,"channels":removed}),
-            )
-            .await?;
-            Ok(false)
-        }
-        "shutdown" => {
-            send_ok(out_tx, frame.request_id, json!({"status":"shutting_down"})).await?;
-            Ok(true)
-        }
-        other => {
-            send_error(
-                out_tx,
-                frame.request_id,
-                "unknown_type",
-                format!("unsupported message type '{other}'"),
-                false,
-                None,
-            )
-            .await?;
-            Ok(false)
-        }
     }
 }
 
@@ -5241,6 +4126,31 @@ fn drop_pending_for_worker(
     before.saturating_sub(pending_deliveries.len())
 }
 
+/// Drain every in-flight worker request targeting `worker_name` and
+/// notify each awaiter with [`worker_request::RequestWorkerError::WorkerDisappeared`].
+/// Called from every worker-teardown path (explicit release,
+/// `worker_exited` frame, `reap_exited` periodic sweep) so HTTP callers
+/// don't have to wait out the request deadline when the worker has
+/// clearly gone. Logs one structured warning per drained request.
+fn fail_pending_requests_for_worker(
+    pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
+    worker_name: &str,
+    reason: &'static str,
+) -> usize {
+    let failed = worker_request::fail_for_worker(pending_requests, worker_name);
+    for (req_id, kind) in &failed {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            request_id = %req_id,
+            worker = %worker_name,
+            kind = %kind,
+            reason = reason,
+            "failed pending worker request because worker is gone"
+        );
+    }
+    failed.len()
+}
+
 fn should_clear_pending_delivery_for_event(
     pending: Option<&PendingDelivery>,
     event_id: Option<&str>,
@@ -5288,16 +4198,21 @@ fn clear_pending_delivery_if_event_matches(
 async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
     let provider: ProtocolHeadlessProvider = cmd.provider.into();
     let provider_name = headless_provider_cli_name(&provider);
+    let provider_args = cmd.args.clone();
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
+        // Keep one async stdout handle for this process. Tokio's `write_all`
+        // is not cancel-safe if the task is aborted mid-write, so shutdown
+        // below drops `out_tx` and awaits this task before returning.
+        let mut stdout = tokio::io::stdout();
         while let Some(frame) = out_rx.recv().await {
-            if let Ok(line) = serde_json::to_string(&frame) {
-                use std::io::Write;
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(line.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+            if let Ok(mut line) = serde_json::to_string(&frame) {
+                line.push('\n');
+                if stdout.write_all(line.as_bytes()).await.is_err() || stdout.flush().await.is_err()
+                {
+                    break;
+                }
             }
         }
     });
@@ -5307,6 +4222,9 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
         .agent_name
         .clone()
         .unwrap_or_else(|| format!("headless-{provider_name}"));
+    let mut final_exit_code: Option<i32> = None;
+    let mut final_exit_signal: Option<String> = None;
+
     while let Ok(Some(line)) = lines.next_line().await {
         let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
             Ok(frame) => frame,
@@ -5353,13 +4271,14 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 .await;
             }
             "deliver_relay" => {
+                let request_id = frame.request_id.clone();
                 let delivery: RelayDelivery = match serde_json::from_value(frame.payload) {
                     Ok(d) => d,
                     Err(error) => {
                         let _ = send_frame(
                             &out_tx,
                             "worker_error",
-                            frame.request_id,
+                            request_id,
                             json!({
                                 "code":"invalid_delivery",
                                 "message": error.to_string(),
@@ -5413,10 +4332,59 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 )
                 .await;
 
+                let task_text = delivery.body.clone();
+                let (binary, args) =
+                    headless_provider_command(&provider, &task_text, &provider_args);
+
+                let mut child_cmd = tokio::process::Command::new(&binary);
+                child_cmd
+                    .args(&args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+
+                // Auto-approve tool permissions for opencode in headless mode.
+                if matches!(provider, ProtocolHeadlessProvider::Opencode) {
+                    child_cmd.env(
+                        "OPENCODE_PERMISSION",
+                        r#"{"*":"allow","external_directory":{"*":"allow"}}"#,
+                    );
+                }
+
+                let mut child = match child_cmd.spawn() {
+                    Ok(child) => child,
+                    Err(error) => {
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_failed",
+                            None,
+                            json!({
+                                "delivery_id": delivery_id,
+                                "event_id": event_id,
+                                "reason": format!("failed to spawn {}: {}", binary, error),
+                            }),
+                        )
+                        .await;
+                        let _ = send_frame(
+                            &out_tx,
+                            "worker_error",
+                            request_id,
+                            json!({
+                                "code":"spawn_failed",
+                                "message": format!("failed to spawn {}: {}", binary, error),
+                                "retryable": false,
+                            }),
+                        )
+                        .await;
+                        final_exit_code = Some(1);
+                        break;
+                    }
+                };
+
                 let _ = send_frame(
                     &out_tx,
-                    "delivery_verified",
-                    None,
+                    "delivery_ack",
+                    request_id.clone(),
                     json!({
                         "delivery_id": delivery_id,
                         "event_id": event_id,
@@ -5424,16 +4392,115 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                 )
                 .await;
 
-                let _ = send_frame(
-                    &out_tx,
-                    "delivery_ack",
-                    frame.request_id,
-                    json!({
-                        "delivery_id": delivery_id,
-                        "event_id": event_id,
-                    }),
-                )
-                .await;
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                let stream_stdout = {
+                    let out_tx = out_tx.clone();
+                    async move {
+                        if let Some(stdout) = stdout {
+                            let mut lines = BufReader::new(stdout).lines();
+                            while let Ok(Some(chunk)) = lines.next_line().await {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "worker_stream",
+                                    None,
+                                    json!({
+                                        "stream": "stdout",
+                                        "chunk": chunk,
+                                    }),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                };
+
+                let stream_stderr = {
+                    let out_tx = out_tx.clone();
+                    async move {
+                        if let Some(stderr) = stderr {
+                            let mut lines = BufReader::new(stderr).lines();
+                            while let Ok(Some(chunk)) = lines.next_line().await {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "worker_stream",
+                                    None,
+                                    json!({
+                                        "stream": "stderr",
+                                        "chunk": chunk,
+                                    }),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                };
+
+                let (status, _, _) = tokio::join!(child.wait(), stream_stdout, stream_stderr);
+
+                match status {
+                    Ok(exit_status) => {
+                        final_exit_code = exit_status.code();
+                        final_exit_signal = None;
+                        if exit_status.success() {
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_verified",
+                                None,
+                                json!({
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                }),
+                            )
+                            .await;
+                        } else {
+                            let reason = match exit_status.code() {
+                                Some(code) => format!("{} exited with code {}", binary, code),
+                                None => format!("{} exited without an exit code", binary),
+                            };
+                            let _ = send_frame(
+                                &out_tx,
+                                "delivery_failed",
+                                None,
+                                json!({
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "reason": reason,
+                                }),
+                            )
+                            .await;
+                        }
+                    }
+                    Err(error) => {
+                        let reason = format!("failed waiting for {}: {}", binary, error);
+                        let _ = send_frame(
+                            &out_tx,
+                            "delivery_failed",
+                            None,
+                            json!({
+                                "delivery_id": delivery_id,
+                                "event_id": event_id,
+                                "reason": reason,
+                            }),
+                        )
+                        .await;
+                        let _ = send_frame(
+                            &out_tx,
+                            "worker_error",
+                            request_id,
+                            json!({
+                                "code":"wait_failed",
+                                "message": format!("failed waiting for {}: {}", binary, error),
+                                "retryable": false,
+                            }),
+                        )
+                        .await;
+                        final_exit_code = Some(1);
+                    }
+                }
+
+                break;
             }
             "ping" => {
                 let ts = frame
@@ -5466,19 +4533,13 @@ async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
         &out_tx,
         "worker_exited",
         None,
-        json!({"code": Value::Null, "signal": Value::Null}),
+        json!({"code": final_exit_code, "signal": final_exit_signal}),
     )
     .await;
+    drop(out_tx);
+    let _ = writer_task.await;
 
     Ok(())
-}
-
-async fn send_ok(
-    tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
-    request_id: Option<String>,
-    result: Value,
-) -> Result<()> {
-    send_frame(tx, "ok", request_id, json!({"result": result})).await
 }
 
 async fn send_error(
@@ -5548,14 +4609,18 @@ async fn send_frame(
 }
 
 fn init_tracing() {
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(true)
+        .with_writer(writer)
         .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    if tracing::subscriber::set_global_default(subscriber).is_ok() {
+        let _ = TRACING_GUARD.set(guard);
+    }
 }
 
 fn channels_from_csv(raw: &str) -> Vec<String> {
@@ -5800,26 +4865,6 @@ fn note_local_spawn_control_dedup(
     if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
         let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
         dedup.insert_if_new(&key, Instant::now());
-    }
-}
-
-fn remove_local_spawn_control_dedup(
-    dedup: &mut DedupCache,
-    workspace_id: Option<&str>,
-    agent_name: &str,
-    relay_key: Option<&str>,
-) {
-    let Some(workspace_id) = workspace_id else {
-        return;
-    };
-    let agent_name = agent_name.trim();
-    if !agent_name.is_empty() {
-        let key = relaycast_spawn_control_dedup_key(workspace_id, agent_name);
-        dedup.remove(&key);
-    }
-    if let Some(relay_key) = relay_key.map(str::trim).filter(|value| !value.is_empty()) {
-        let key = relaycast_spawn_control_dedup_key(workspace_id, relay_key);
-        dedup.remove(&key);
     }
 }
 
@@ -6213,26 +5258,14 @@ fn record_thread_history_event(history: &mut VecDeque<Value>, event: Value) {
     history.push_back(event);
 }
 
-/// Get current terminal size via ioctl.
-#[cfg(unix)]
+/// Get current terminal size. Returns (rows, cols).
+///
+/// Uses `crossterm::terminal::size()`, which is cross-platform:
+/// TIOCGWINSZ on unix, GetConsoleScreenBufferInfo on Windows.
 fn get_terminal_size() -> Option<(u16, u16)> {
-    use nix::libc;
-    use nix::pty::Winsize;
-
-    let mut winsize = Winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    unsafe {
-        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut winsize) == 0 {
-            Some((winsize.ws_row, winsize.ws_col))
-        } else {
-            None
-        }
-    }
+    crossterm::terminal::size()
+        .ok()
+        .map(|(cols, rows)| (rows, cols))
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
@@ -6282,19 +5315,6 @@ fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
     ids
 }
 
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-fn is_pid_alive(pid: u32) -> bool {
-    // kill(pid, 0) checks existence without sending a signal
-    let rc = unsafe { nix::libc::kill(pid as i32, 0) };
-    if rc == 0 {
-        return true;
-    }
-    // EPERM means the process exists but we can't signal it (different user)
-    let err = std::io::Error::last_os_error();
-    err.raw_os_error() == Some(nix::libc::EPERM)
-}
-
 /// Returns the continuity directory path derived from the state file path.
 /// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
 fn continuity_dir(state_path: &Path) -> PathBuf {
@@ -6330,13 +5350,18 @@ fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePath
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
-        pid: PathBuf::new(),
         _lock: None,
     })
 }
 
-fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let root = cwd.join(".agent-relay");
+fn ensure_runtime_paths(
+    cwd: &Path,
+    broker_name: &str,
+    state_dir: Option<&Path>,
+) -> Result<RuntimePaths> {
+    let root = state_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.join(".agent-relay"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
@@ -6354,7 +5379,6 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
     let lock_path = root.join(format!("broker-{safe_name}.lock"));
-    let pid_path = root.join(format!("broker-{safe_name}.pid"));
     let lock_file = std::fs::File::create(&lock_path)
         .with_context(|| format!("failed to create lock file {}", lock_path.display()))?;
 
@@ -6365,49 +5389,51 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
         let rc = unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
         if rc != 0 {
             // Lock acquisition failed — check if the holder is still alive
-            if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-                if let Ok(old_pid) = contents.trim().parse::<u32>() {
-                    if !is_pid_alive(old_pid) {
-                        tracing::warn!(
-                            old_pid = old_pid,
-                            "stale broker lock detected (PID {} is dead), recovering",
-                            old_pid
-                        );
-                        // The old process is dead — remove stale PID file and retry lock.
-                        // We drop and re-create the lock file to clear the stale flock.
-                        drop(lock_file);
-                        let lock_file = std::fs::File::create(&lock_path).with_context(|| {
-                            format!(
-                                "failed to re-create lock file after stale recovery {}",
-                                lock_path.display()
-                            )
-                        })?;
-                        let fd = lock_file.as_raw_fd();
-                        let rc = unsafe {
-                            nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB)
-                        };
-                        if rc != 0 {
-                            anyhow::bail!(
-                                "another broker instance is already running in this directory ({})",
-                                root.display()
-                            );
-                        }
-                        // Successfully recovered — write our PID and return
-                        write_pid_file(&pid_path)?;
-                        return Ok(RuntimePaths {
-                            persist: true,
-                            state: root.join(format!("state-{safe_name}.json")),
-                            pending: root.join(format!("pending-{safe_name}.json")),
-                            pid: pid_path,
-                            _lock: Some(lock_file),
-                        });
-                    } else {
+            // by reading the PID from connection.json.
+            let connection_path = root.join("connection.json");
+            let old_pid = std::fs::read_to_string(&connection_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|v| v.get("pid").and_then(|p| p.as_u64()))
+                .map(|p| p as u32);
+            if let Some(old_pid) = old_pid {
+                if !broker::is_pid_alive(old_pid) {
+                    tracing::warn!(
+                        old_pid = old_pid,
+                        "stale broker lock detected (PID {} is dead), recovering",
+                        old_pid
+                    );
+                    // The old process is dead — remove stale PID file and retry lock.
+                    // We drop and re-create the lock file to clear the stale flock.
+                    drop(lock_file);
+                    let lock_file = std::fs::File::create(&lock_path).with_context(|| {
+                        format!(
+                            "failed to re-create lock file after stale recovery {}",
+                            lock_path.display()
+                        )
+                    })?;
+                    let fd = lock_file.as_raw_fd();
+                    let rc =
+                        unsafe { nix::libc::flock(fd, nix::libc::LOCK_EX | nix::libc::LOCK_NB) };
+                    if rc != 0 {
                         anyhow::bail!(
+                            "another broker instance is already running in this directory ({})",
+                            root.display()
+                        );
+                    }
+                    // Successfully recovered — PID is written via connection.json at API start
+                    return Ok(RuntimePaths {
+                        persist: true,
+                        state: root.join(format!("state-{safe_name}.json")),
+                        pending: root.join(format!("pending-{safe_name}.json")),
+                        _lock: Some(lock_file),
+                    });
+                } else {
+                    anyhow::bail!(
                             "another broker instance is already running in this directory (pid: {}, {})",
                             old_pid,
                             root.display()
                         );
-                    }
                 }
             }
             // PID file missing or unreadable while lock is held — treat as stale.
@@ -6432,43 +5458,23 @@ fn ensure_runtime_paths(cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
                     root.display()
                 );
             }
-            write_pid_file(&pid_path)?;
             return Ok(RuntimePaths {
                 persist: true,
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
-                pid: pid_path,
                 _lock: Some(lock_file),
             });
         }
     }
 
-    // Write our PID for crash recovery
-    write_pid_file(&pid_path)?;
+    // PID is written via connection.json at API start
 
     Ok(RuntimePaths {
         persist: true,
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
-        pid: pid_path,
         _lock: Some(lock_file),
     })
-}
-
-/// Write the current process PID to the given path atomically.
-fn write_pid_file(path: &Path) -> Result<()> {
-    let pid = std::process::id();
-    let dir = path
-        .parent()
-        .with_context(|| format!("pid path has no parent: {}", path.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed creating temp pid file in {}", dir.display()))?;
-    use std::io::Write;
-    write!(tmp, "{}", pid)?;
-    tmp.persist(path)
-        .with_context(|| format!("failed persisting pid file to {}", path.display()))?;
-    tracing::info!(pid = pid, path = %path.display(), "wrote broker PID file");
-    Ok(())
 }
 
 fn derive_ws_base_url_from_http(http_base: &str) -> String {
@@ -6482,68 +5488,10 @@ fn derive_ws_base_url_from_http(http_base: &str) -> String {
     }
 }
 
-impl BrokerState {
-    fn load(path: &Path) -> Result<Self> {
-        let body = std::fs::read_to_string(path)
-            .with_context(|| format!("failed reading state file {}", path.display()))?;
-        let state = serde_json::from_str::<Self>(&body)
-            .with_context(|| format!("failed parsing state file {}", path.display()))?;
-        Ok(state)
-    }
-
-    fn save(&self, path: &Path) -> Result<()> {
-        let body = serde_json::to_vec_pretty(self)?;
-        let dir = path
-            .parent()
-            .with_context(|| format!("state path has no parent: {}", path.display()))?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dir)
-            .with_context(|| format!("failed creating temp file in {}", dir.display()))?;
-        std::io::Write::write_all(&mut tmp, &body)
-            .with_context(|| "failed writing to temp state file")?;
-        tmp.persist(path)
-            .with_context(|| format!("failed persisting state file to {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Remove persisted agents whose PIDs are no longer alive.
-    /// Returns the names of agents that were cleaned up.
-    #[cfg(unix)]
-    fn reap_dead_agents(&mut self) -> Vec<String> {
-        let dead: Vec<String> = self
-            .agents
-            .iter()
-            .filter(|(_, agent)| {
-                if let Some(pid) = agent.pid {
-                    !is_pid_alive(pid)
-                } else {
-                    // No PID recorded — stale entry from before PID tracking, remove it
-                    true
-                }
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        for name in &dead {
-            self.agents.remove(name);
-        }
-        dead
-    }
-
-    #[cfg(not(unix))]
-    fn reap_dead_agents(&mut self) -> Vec<String> {
-        // On non-Unix platforms, clear all agents without PID info
-        let dead: Vec<String> = self
-            .agents
-            .iter()
-            .filter(|(_, agent)| agent.pid.is_none())
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in &dead {
-            self.agents.remove(name);
-        }
-        dead
-    }
-}
+#[cfg(test)]
+mod broker_tests;
+#[cfg(test)]
+mod worker_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6552,22 +5500,22 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::helpers::{format_injection, terminal_query_responses};
+    use crate::helpers::format_injection;
     use relay_broker::protocol::{MessageInjectionMode, RelayDelivery};
     use serde_json::{json, Value};
 
     use super::{
-        build_agent_state_transition_event, build_thread_infos, channels_from_csv, continuity_dir,
-        delivery_retry_interval, derive_ws_base_url_from_http, detect_bypass_permissions_prompt,
-        detect_claude_trust_prompt, display_target_for_dashboard, drop_pending_for_worker,
-        extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
-        http_api_relaycast_send_timeout, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode, is_relaycast_self_control_target, is_unknown_worker_error_message,
-        normalize_channel, normalize_initial_task, normalize_sender,
-        relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
+        build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
+        channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
+        detect_bypass_permissions_prompt, detect_claude_trust_prompt, display_target_for_dashboard,
+        drop_pending_for_worker, extract_mcp_message_ids, http_api_event_emit_timeout,
+        http_api_local_delivery_timeout, http_api_relaycast_send_timeout, is_auto_suggestion,
+        is_bypass_selection_menu, is_in_editor_mode, is_relaycast_self_control_target,
+        is_unknown_worker_error_message, normalize_channel, normalize_initial_task,
+        normalize_sender, relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
         relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
         sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        PendingDelivery, TerminalQueryParser,
+        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::dedup::DedupCache;
@@ -7401,29 +6349,6 @@ mod tests {
         assert!(should_clear_pending_delivery_for_event(None, Some("evt_1")));
     }
 
-    #[test]
-    fn terminal_query_responses_standard_cpr() {
-        let responses = terminal_query_responses(b"\x1b[6n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_split_sequences() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[").is_empty());
-        assert!(parser.feed(b"6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_private_cpr() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[?6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[?1;1R".as_slice()]);
-    }
-
     // ==================== strip_ansi tests ====================
 
     #[test]
@@ -7881,7 +6806,7 @@ mod tests {
     fn is_pid_alive_returns_true_for_self() {
         let pid = std::process::id();
         assert!(
-            super::is_pid_alive(pid),
+            crate::broker::is_pid_alive(pid),
             "current process PID should be alive"
         );
     }
@@ -7897,7 +6822,10 @@ mod tests {
         child.wait().expect("failed to wait on child");
         // After the child exits, its PID should not be alive
         // (the PID may be recycled, but on macOS/Linux it won't be immediately)
-        assert!(!super::is_pid_alive(pid), "exited child PID should be dead");
+        assert!(
+            !crate::broker::is_pid_alive(pid),
+            "exited child PID should be dead"
+        );
     }
 
     #[test]
@@ -7907,7 +6835,7 @@ mod tests {
         // On macOS pid_max is ~99999; on Linux it's typically 32768 or 4194304.
         // 4_000_000 is unlikely to be in use.
         assert!(
-            !super::is_pid_alive(4_000_000),
+            !crate::broker::is_pid_alive(4_000_000),
             "bogus PID 4_000_000 should not be alive (ESRCH)"
         );
     }
@@ -7924,25 +6852,12 @@ mod tests {
             return;
         }
         assert!(
-            super::is_pid_alive(1),
+            crate::broker::is_pid_alive(1),
             "PID 1 (init/launchd) should report alive via EPERM"
         );
     }
 
     // ==================== write_pid_file ====================
-
-    #[test]
-    fn write_pid_file_is_atomic() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let pid_path = dir.path().join("broker.pid");
-        super::write_pid_file(&pid_path).expect("write_pid_file failed");
-        let contents = std::fs::read_to_string(&pid_path).expect("failed to read pid file");
-        let pid: u32 = contents
-            .trim()
-            .parse()
-            .expect("pid file should contain a number");
-        assert_eq!(pid, std::process::id());
-    }
 
     // ==================== continuity_dir ====================
 
@@ -7971,6 +6886,114 @@ mod tests {
         let state_path = std::path::Path::new(".agent-relay/state.json");
         let result = continuity_dir(state_path);
         assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    }
+
+    #[test]
+    fn http_api_spawn_spec_defaults_to_pty_runtime() {
+        let spec = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "codex".to_string(),
+            None,
+            Some("o3".to_string()),
+            vec!["--fast".to_string()],
+            vec!["general".to_string()],
+            Some("/tmp/project".to_string()),
+            Some("core".to_string()),
+            Some("Lead".to_string()),
+            Some("subagent".to_string()),
+            None,
+        )
+        .expect("spec should build");
+
+        assert!(matches!(spec.runtime, AgentRuntime::Pty));
+        assert!(spec.provider.is_none());
+        assert_eq!(spec.cli.as_deref(), Some("codex"));
+        assert_eq!(spec.model.as_deref(), Some("o3"));
+    }
+
+    #[test]
+    fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
+        let spec = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "opencode".to_string(),
+            Some("headless".to_string()),
+            Some("ignored".to_string()),
+            vec![],
+            vec!["general".to_string()],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("headless spec should build");
+
+        assert!(matches!(spec.runtime, AgentRuntime::Headless));
+        assert!(matches!(
+            spec.provider,
+            Some(ProtocolHeadlessProvider::Opencode)
+        ));
+        assert!(spec.cli.is_none());
+        assert_eq!(spec.model.as_deref(), Some("ignored"));
+    }
+
+    #[test]
+    fn headless_provider_command_claude_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Claude,
+            "hello world",
+            &[
+                "--mcp-config".to_string(),
+                "{\"mcpServers\":{}}".to_string(),
+            ],
+        );
+
+        assert_eq!(bin, "claude");
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let mcp_pos = args.iter().position(|a| a == "--mcp-config").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(mcp_pos < task_pos, "--mcp-config must precede task");
+    }
+
+    #[test]
+    fn headless_provider_command_opencode_places_flags_before_task() {
+        let (bin, args) = super::headless_provider_command(
+            &ProtocolHeadlessProvider::Opencode,
+            "hello world",
+            &["--agent".to_string(), "relaycast".to_string()],
+        );
+
+        assert_eq!(bin, "opencode");
+        assert_eq!(args.first().map(String::as_str), Some("run"));
+        assert_eq!(args.last().map(String::as_str), Some("hello world"));
+        let agent_pos = args.iter().position(|a| a == "--agent").unwrap();
+        let task_pos = args.iter().position(|a| a == "hello world").unwrap();
+        assert!(agent_pos < task_pos, "--agent must precede task");
+    }
+
+    #[test]
+    fn http_api_spawn_spec_rejects_unknown_headless_providers() {
+        let error = build_http_api_spawn_spec(
+            "worker-a".to_string(),
+            "codex".to_string(),
+            Some("headless".to_string()),
+            None,
+            vec![],
+            vec!["general".to_string()],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("unsupported headless provider should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not support headless transport"),
+            "unexpected error: {error}"
+        );
     }
 
     // ==================== model flag injection tests ====================

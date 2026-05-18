@@ -486,20 +486,6 @@ function drawReactionEmoji(ctx: CanvasRenderingContext2D, x: number, y: number, 
 
 function drawMessageIcon(ctx: CanvasRenderingContext2D, x: number, y: number, kind: MessageKind) {
   const color = TRAIL_COLORS[kind];
-  const grad = ctx.createRadialGradient(x, y, 0, x, y, 32);
-  grad.addColorStop(0, `${color} 0.35)`);
-  grad.addColorStop(0.5, `${color} 0.08)`);
-  grad.addColorStop(1, `${color} 0)`);
-
-  ctx.beginPath();
-  ctx.arc(x, y, 32, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(x, y, 16, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(15, 27, 41, 0.7)';
-  ctx.fill();
 
   if (kind === 'channel') {
     drawSpeechBubble(ctx, x, y, color);
@@ -519,13 +505,25 @@ function drawMessageIcon(ctx: CanvasRenderingContext2D, x: number, y: number, ki
   drawReactionEmoji(ctx, x, y, color);
 }
 
+function isDarkMode() {
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
 function drawLandingToasts(ctx: CanvasRenderingContext2D, toasts: LandingToast[]) {
-  const toastColors: Record<MessageKind, { border: string; text: string }> = {
-    channel: { border: 'rgba(74, 144, 194, 0.35)', text: 'rgba(116, 184, 226, 0.95)' },
-    dm: { border: 'rgba(99, 209, 139, 0.35)', text: 'rgba(99, 209, 139, 0.95)' },
-    thread: { border: 'rgba(193, 103, 75, 0.35)', text: 'rgba(193, 103, 75, 0.95)' },
-    reaction: { border: 'rgba(254, 188, 46, 0.35)', text: 'rgba(254, 188, 46, 0.95)' },
-  };
+  const dark = isDarkMode();
+  const toastColors: Record<MessageKind, { border: string; text: string }> = dark
+    ? {
+        channel: { border: 'rgba(74, 144, 194, 0.35)', text: 'rgba(116, 184, 226, 0.95)' },
+        dm: { border: 'rgba(99, 209, 139, 0.35)', text: 'rgba(99, 209, 139, 0.95)' },
+        thread: { border: 'rgba(193, 103, 75, 0.35)', text: 'rgba(193, 103, 75, 0.95)' },
+        reaction: { border: 'rgba(254, 188, 46, 0.35)', text: 'rgba(254, 188, 46, 0.95)' },
+      }
+    : {
+        channel: { border: 'rgba(74, 144, 194, 0.3)', text: 'rgba(40, 100, 150, 0.95)' },
+        dm: { border: 'rgba(60, 170, 100, 0.3)', text: 'rgba(30, 120, 70, 0.95)' },
+        thread: { border: 'rgba(193, 103, 75, 0.3)', text: 'rgba(150, 70, 45, 0.95)' },
+        reaction: { border: 'rgba(220, 160, 30, 0.3)', text: 'rgba(160, 110, 10, 0.95)' },
+      };
 
   for (let i = toasts.length - 1; i >= 0; i--) {
     const toast = toasts[i];
@@ -570,7 +568,7 @@ function drawLandingToasts(ctx: CanvasRenderingContext2D, toasts: LandingToast[]
     ctx.arcTo(pillX, pillY + pillH, pillX, pillY + pillR, pillR);
     ctx.arcTo(pillX, pillY, pillX + pillR, pillY, pillR);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(15, 27, 41, 0.9)';
+    ctx.fillStyle = dark ? 'rgba(15, 27, 41, 0.9)' : 'rgba(255, 255, 255, 0.92)';
     ctx.fill();
     ctx.strokeStyle = colors.border;
     ctx.lineWidth = 1;

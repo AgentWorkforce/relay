@@ -1,0 +1,37 @@
+---
+title: 'Authentication'
+description: 'Use Relayauth for identity, authorization, and policy control around agent systems.'
+---
+
+Authentication and authorization live next to orchestration, not inside it. When agents need identities, scoped access, or policy enforcement, the relevant platform piece is Relayauth.
+
+## What it covers
+
+- JWT-style access tokens for agents and services
+- Scope-based permissions
+- RBAC and deny-first policy layers
+- Audit trails and token revocation
+- Budget and action controls around sensitive access
+
+## When to reach for it
+
+- Agents need access to external APIs or protected internal services
+- You want workspace-scoped credentials instead of long-lived shared secrets
+- You need humans to retain control over what agents are allowed to do
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Relayauth Product Page" href="/auth">
+    Product overview and positioning for agent identity and authorization.
+  </Card>
+  <Card title="Primitives" href="/primitives#auth">
+    The platform-level view of auth next to files, messaging, and scheduling.
+  </Card>
+  <Card title="Scheduling" href="/docs/scheduling">
+    Pair scheduled jobs with scoped credentials and policies.
+  </Card>
+  <Card title="Workforce" href="/docs/workforce">
+    See how auth fits into multi-agent teams.
+  </Card>
+</CardGroup>

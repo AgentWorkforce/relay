@@ -2,7 +2,23 @@ export * from './types.js';
 export * from './runner.js';
 export * from './custom-steps.js';
 export * from './cli-session-collector.js';
+export * from './channel-messenger.js';
+export * from './process-spawner.js';
+export {
+  createProcessBackendExecutor,
+  type ProcessBackendExecutorOptions,
+} from './process-backend-executor.js';
 export * from './run-summary-table.js';
+export * from './template-resolver.js';
+export * from './verification.js';
+export {
+  StepExecutor,
+  /** @deprecated Use {@link StepExecutor} instead. */
+  StepExecutor as WorkflowStepLifecycleExecutor,
+  type StepExecutorDeps,
+  type StepResult,
+  type StepSchedule,
+} from './step-executor.js';
 export {
   Models,
   ClaudeModels,
@@ -17,6 +33,7 @@ export {
 export * from './memory-db.js';
 export * from './file-db.js';
 export * from './run.js';
+export * from './cloud-schedules.js';
 export * from './builder.js';
 export * from './coordinator.js';
 export * from './barrier.js';
@@ -28,3 +45,20 @@ export { createWorkflowRenderer, type WorkflowRenderer } from './listr-renderer.
 export { createDefaultEventLogger } from './default-logger.js';
 export { executeApiStep, type ApiExecutorOptions } from './api-executor.js';
 export type { CloudRunOptions } from './cloud-runner.js';
+export * from './proxy-env.js';
+export * from './budget-tracker.js';
+export { applySiblingLinks, buildSiblingLinkScript } from './sibling-links.js';
+export type { SiblingLink, SiblingLinkOptions } from './sibling-links.js';
+export {
+  runScriptWorkflow,
+  parseTsxStderr,
+  formatWorkflowParseError,
+  findLocalSdkWorkspace,
+  ensureLocalSdkWorkflowRuntime,
+} from './run-script.js';
+export type {
+  RunScriptWorkflowOptions,
+  ParsedWorkflowError,
+  LocalSdkWorkspace,
+  ExecFileSyncLike,
+} from './run-script.js';

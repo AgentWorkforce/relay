@@ -1,6 +1,6 @@
-version: "1.0"
+version: '1.0'
 name: review-loop
-description: "Implement a task with automated multi-perspective code review loop. Inspired by claude-review-loop pattern."
+description: 'Implement a task with automated multi-perspective code review loop. Inspired by claude-review-loop pattern.'
 swarm:
   pattern: review-loop
   maxConcurrency: 4
@@ -13,22 +13,26 @@ swarm:
 agents:
   - name: implementer
     cli: claude
-    role: "Senior developer implementing the task and addressing review feedback"
+    role: 'Senior developer implementing the task and addressing review feedback'
+    permissions: { access: full }
   - name: reviewer-diff
     cli: codex
-    role: "Code quality reviewer focusing on git diff, tests, and potential bugs"
+    role: 'Code quality reviewer focusing on git diff, tests, and potential bugs'
+    permissions: { access: readonly }
     interactive: false
   - name: reviewer-architecture
     cli: claude
-    role: "Architecture and design reviewer assessing structure and maintainability"
+    role: 'Architecture and design reviewer assessing structure and maintainability'
+    permissions: { access: readonly }
     interactive: false
   - name: reviewer-security
     cli: codex
-    role: "Security reviewer checking for OWASP Top 10 vulnerabilities"
+    role: 'Security reviewer checking for OWASP Top 10 vulnerabilities'
+    permissions: { access: readonly }
     interactive: false
 workflows:
   - name: review-loop-workflow
-    description: "Implement task, run parallel reviews, consolidate feedback, and address issues."
+    description: 'Implement task, run parallel reviews, consolidate feedback, and address issues.'
     onError: fail
     steps:
       # Phase 1: Implementation
@@ -82,7 +86,7 @@ workflows:
           - If issues found: REVIEW:ISSUES followed by numbered list of issues
         verification:
           type: output_contains
-          value: "REVIEW:"
+          value: 'REVIEW:'
 
       - name: review-architecture
         type: agent
@@ -107,7 +111,7 @@ workflows:
           - If issues found: REVIEW:ISSUES followed by numbered list of issues
         verification:
           type: output_contains
-          value: "REVIEW:"
+          value: 'REVIEW:'
 
       - name: review-security
         type: agent
@@ -133,7 +137,7 @@ workflows:
           - If vulnerabilities found: REVIEW:ISSUES followed by numbered list with severity
         verification:
           type: output_contains
-          value: "REVIEW:"
+          value: 'REVIEW:'
 
       # Phase 3: Consolidate reviews
       - name: consolidate

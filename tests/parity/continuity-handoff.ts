@@ -16,7 +16,7 @@ import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
 async function main(): Promise<void> {
   console.log("=== Parity Test: Continuity Handoff (Spawn/Release Cycle) ===\n");
 
-  const client = await AgentRelayClient.start({
+  const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,
