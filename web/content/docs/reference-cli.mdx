@@ -49,3 +49,25 @@ Flags:
 `agentToken` is `null` unless `--register` successfully minted and injected a fresh Relaycast agent token.
 
 `mcp-args` writes side-effect files synchronously when the target CLI requires a config file. For `opencode`, it may write `<cwd>/opencode.json`; for `cursor`, `cursor-agent`, and `agent`, it may write `<cwd>/.cursor/mcp.json`; for `gemini`, it may write `<HOME>/.gemini/trustedFolders.json`. Treat the command as compute plus configure for those CLIs, not as a side-effect-free dry run.
+
+## `view`
+
+Stream a running agent's PTY output to your terminal in real time. `view` is read-only: keystrokes are not forwarded to the agent, and the broker keeps doing whatever it was doing. Multiple `view` clients can attach to the same agent simultaneously. Exit with `Ctrl+C` — the agent keeps running under the broker.
+
+```bash
+agent-relay view reviewer
+```
+
+The client auto-discovers the running broker by reading `.agent-relay/connection.json` in the current directory. On attach, it first captures the agent's current visible screen via `GET /api/spawned/{name}/snapshot?format=ansi` and writes the reproduction bytes to your terminal — so you immediately see whatever the agent is looking at, not a blank window. It then opens a WebSocket to the broker and filters for `worker_stream` events matching the named agent for live deltas. ANSI escape sequences are preserved byte-for-byte so colors and cursor moves render correctly.
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json` to use for auto-discovery. Defaults to `.agent-relay/` under the project root. |
+
+If the initial snapshot can't be served (broker hiccup, transient timeout) `view` prints a warning to stderr and falls through to the live stream — you may briefly see a blank screen until the agent next produces output. If the agent doesn't exist or has no PTY (headless worker), `view` aborts with an explanatory error.
+
+`view` is part of the broker-owned agent model described in [issue #864](https://github.com/AgentWorkforce/relay/issues/864). It shares the snapshot-on-attach helper with the upcoming `drive` and `relay` verbs so all three open with a faithful redraw of the agent's current screen.
