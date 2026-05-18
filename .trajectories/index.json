@@ -387,14 +387,14 @@
       "status": "completed",
       "startedAt": "2026-05-11T18:43:20.429Z",
       "completedAt": "2026-05-11T18:43:20.733Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_dpgn0am1jq1c.json"
+      "path": ".trajectories/completed/2026-05/traj_dpgn0am1jq1c.json"
     },
     "traj_mi9eqd4rjfea": {
       "title": "Address stdio fresh review findings",
       "status": "abandoned",
       "startedAt": "2026-05-11T18:25:24.626Z",
       "completedAt": "2026-05-11T18:37:05.318Z",
-      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_mi9eqd4rjfea.json"
+      "path": ".trajectories/completed/2026-05/traj_mi9eqd4rjfea.json"
     },
     "traj_wx00tjvpptvg": {
       "title": "Investigate agent-relay spawn persistence",
@@ -603,7 +603,7 @@
       "status": "completed",
       "startedAt": "2026-05-18T02:02:07.524Z",
       "completedAt": "2026-05-18T02:05:41.120Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a65b9343cd7dbadb3/.trajectories/completed/2026-05/traj_ybcrij9wg8m1.json"
+      "path": ".trajectories/completed/2026-05/traj_ybcrij9wg8m1.json"
     },
     "traj_piik8r6zu3i7": {
       "title": "Issue 867: RelayEventListener",
@@ -617,7 +617,7 @@
       "status": "completed",
       "startedAt": "2026-05-18T02:56:55.314Z",
       "completedAt": "2026-05-18T03:02:35.202Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-aff3649a00a0f36ab/.trajectories/completed/2026-05/traj_ryf5sstno6p3.json"
+      "path": ".trajectories/completed/2026-05/traj_ryf5sstno6p3.json"
     }
   }
 }
