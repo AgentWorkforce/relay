@@ -28,7 +28,10 @@ use helpers::{
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
     normalize_cli_name, parse_cli_command, strip_ansi,
 };
-use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest};
+use listen_api::{
+    broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest, SessionRouteError,
+    SetSessionModeOk,
+};
 use routing::display_target_for_dashboard;
 
 use anyhow::{Context, Result};
@@ -61,7 +64,10 @@ use relay_broker::{
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     snippets::ensure_relaycast_mcp_config,
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
-    types::{BrokerCommandEvent, BrokerCommandPayload, InboundKind, SenderKind},
+    types::{
+        BrokerCommandEvent, BrokerCommandPayload, InboundKind, PendingRelayMessage, SenderKind,
+        SessionDispatch, SessionMode, SessionState,
+    },
 };
 
 use spawner::{spawn_env_vars, Spawner};
@@ -1405,6 +1411,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     // #864) can reuse the same correlation infrastructure — see
     // `crate::worker_request`.
     let mut pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
+    // Per-worker session-mode + pending-relay-message queue. Lives
+    // parallel to `workers.workers` so we can swap modes / inspect /
+    // drain without touching `WorkerHandle` (which holds OS-level
+    // process state). See #864 sub-PR 2 and `relay_broker::types::
+    // SessionState`. Entries are created lazily on first lookup and
+    // removed wherever workers exit (`Release` arm, `worker_exited`
+    // frame, `reap_exited` sweep).
+    let mut session_states: HashMap<String, SessionState> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -1782,6 +1796,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ).await;
                                     }
                                     fail_pending_requests_for_worker(&mut pending_requests, &name, "agent_released");
+                                    session_states.remove(&name);
                                     state.agents.remove(&name);
                                     if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
@@ -1930,6 +1945,58 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             );
 
                             for worker_name in targets {
+                                // Session-mode gate (#864 sub-PR 2): when the worker
+                                // is in human mode the broker parks the message in
+                                // the per-worker pending queue instead of injecting,
+                                // and counts it as delivered so the HTTP caller's
+                                // ack semantics are unchanged. We pass the FULL
+                                // routing context so the eventual drain reproduces
+                                // the original delivery (channel/thread/workspace
+                                // /priority/mode), not a stripped-down DM.
+                                match gate_inbound_for_session_mode(
+                                    &mut session_states,
+                                    &workers,
+                                    &worker_name,
+                                    InboundContext {
+                                        from: &delivery_from,
+                                        body: &text,
+                                        target: &normalized_to,
+                                        thread_id: thread_id.as_deref(),
+                                        workspace_id: Some(selected_workspace_id.as_str()),
+                                        workspace_alias: selected_workspace_alias.as_deref(),
+                                        priority,
+                                        mode: mode.clone(),
+                                        event_id: Some(&event_id),
+                                    },
+                                ) {
+                                    GateOutcome::Queued => {
+                                        delivered = delivered.saturating_add(1);
+                                        tracing::info!(
+                                            target = "relay_broker::http_api",
+                                            event_id = %event_id,
+                                            to = %normalized_to,
+                                            worker = %worker_name,
+                                            "queued local delivery (human session mode)"
+                                        );
+                                        let _ = send_event(
+                                            &sdk_out_tx,
+                                            json!({
+                                                "kind":"delivery_queued",
+                                                "name":&worker_name,
+                                                "event_id":&event_id,
+                                                "from":&delivery_from,
+                                                "target":&normalized_to,
+                                                "reason":"session_mode_human",
+                                            }),
+                                        ).await;
+                                        continue;
+                                    }
+                                    GateOutcome::WorkerMissing => {
+                                        // Fall through to existing path so the
+                                        // pre-#864 not-found accounting runs.
+                                    }
+                                    GateOutcome::Inject => {}
+                                }
                                 match timeout(
                                     local_delivery_timeout,
                                     queue_and_try_delivery_raw(
@@ -2344,6 +2411,135 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 "channels": remaining,
                             })));
                         }
+                        ListenApiRequest::GetSessionMode { name, reply } => {
+                            if !workers.has_worker(&name) {
+                                let _ = reply.send(Err(SessionRouteError::WorkerNotFound(name)));
+                            } else {
+                                let mode = session_states
+                                    .get(&name)
+                                    .map(|s| s.mode)
+                                    .unwrap_or_default();
+                                let _ = reply.send(Ok(mode));
+                            }
+                        }
+                        ListenApiRequest::SetSessionMode { name, mode, reply } => {
+                            if !workers.has_worker(&name) {
+                                let _ = reply.send(Err(SessionRouteError::WorkerNotFound(name)));
+                            } else {
+                                let entry = session_states.entry(name.clone()).or_default();
+                                let previous = entry.mode;
+                                entry.mode = mode;
+                                let to_flush: Vec<PendingRelayMessage> =
+                                    if previous == SessionMode::Human && mode == SessionMode::Relay
+                                    {
+                                        entry.drain_pending()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                let flushed = to_flush.len();
+                                if !to_flush.is_empty() {
+                                    tracing::info!(
+                                        target = "agent_relay::broker",
+                                        worker = %name,
+                                        drained = flushed,
+                                        "draining pending queue on human → relay transition"
+                                    );
+                                }
+                                for queued in to_flush {
+                                    inject_pending_relay_message(
+                                        &mut workers,
+                                        &mut pending_deliveries,
+                                        &name,
+                                        &queued,
+                                        delivery_retry_interval,
+                                    )
+                                    .await;
+                                }
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    previous_mode = previous.as_wire_str(),
+                                    mode = mode.as_wire_str(),
+                                    flushed,
+                                    "session mode updated"
+                                );
+                                if previous != mode {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_session_mode_changed",
+                                            "name":&name,
+                                            "previous_mode":previous.as_wire_str(),
+                                            "mode":mode.as_wire_str(),
+                                        }),
+                                    ).await;
+                                }
+                                if flushed > 0 {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_pending_drained",
+                                            "name":&name,
+                                            "count":flushed,
+                                            "reason":"mode_transition",
+                                        }),
+                                    ).await;
+                                }
+                                let _ = reply.send(Ok(SetSessionModeOk { mode, flushed }));
+                            }
+                        }
+                        ListenApiRequest::GetPending { name, reply } => {
+                            if !workers.has_worker(&name) {
+                                let _ = reply.send(Err(SessionRouteError::WorkerNotFound(name)));
+                            } else {
+                                let snapshot = session_states
+                                    .get(&name)
+                                    .map(|s| s.pending_snapshot())
+                                    .unwrap_or_default();
+                                let _ = reply.send(Ok(snapshot));
+                            }
+                        }
+                        ListenApiRequest::FlushPending { name, reply } => {
+                            if !workers.has_worker(&name) {
+                                let _ = reply.send(Err(SessionRouteError::WorkerNotFound(name)));
+                            } else {
+                                let to_flush: Vec<PendingRelayMessage> = session_states
+                                    .get_mut(&name)
+                                    .map(|state| state.drain_pending())
+                                    .unwrap_or_default();
+                                let flushed = to_flush.len();
+                                if flushed > 0 {
+                                    tracing::info!(
+                                        target = "agent_relay::broker",
+                                        worker = %name,
+                                        drained = flushed,
+                                        "flushing pending queue on explicit /flush"
+                                    );
+                                }
+                                for queued in to_flush {
+                                    inject_pending_relay_message(
+                                        &mut workers,
+                                        &mut pending_deliveries,
+                                        &name,
+                                        &queued,
+                                        delivery_retry_interval,
+                                    )
+                                    .await;
+                                }
+                                if flushed > 0 {
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"agent_pending_drained",
+                                            "name":&name,
+                                            "count":flushed,
+                                            "reason":"explicit_flush",
+                                        }),
+                                    ).await;
+                                }
+                                let _ = reply.send(Ok(flushed));
+                            }
+                        }
                         ListenApiRequest::Shutdown { reply } => {
                             let _ = reply.send(Ok(json!({ "status": "shutting_down" })));
                             shutdown = true;
@@ -2452,6 +2648,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             ).await;
                                         }
                                         fail_pending_requests_for_worker(&mut pending_requests, &name, "relaycast_release");
+                                        session_states.remove(&name);
                                         telemetry.track(TelemetryEvent::AgentRelease {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
@@ -2999,6 +3196,50 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                         }
 
                         for worker_name in delivery_plan.targets {
+                            // Session-mode gate (#864 sub-PR 2): mirrors the
+                            // /api/send gate above. Human-mode workers see
+                            // inbound relaycast messages parked in the
+                            // pending queue rather than auto-injected; same
+                            // full-context capture so drains reproduce the
+                            // original delivery (channel/thread/workspace).
+                            match gate_inbound_for_session_mode(
+                                &mut session_states,
+                                &workers,
+                                &worker_name,
+                                InboundContext {
+                                    from: &mapped.from,
+                                    body: &mapped.text,
+                                    target: &mapped.target,
+                                    thread_id: mapped.thread_id.as_deref(),
+                                    workspace_id: Some(mapped.workspace_id.as_str()),
+                                    workspace_alias: mapped.workspace_alias.as_deref(),
+                                    priority: mapped.priority.as_u8(),
+                                    mode: MessageInjectionMode::Wait,
+                                    event_id: Some(&mapped.event_id),
+                                },
+                            ) {
+                                GateOutcome::Queued => {
+                                    tracing::info!(
+                                        target = "agent_relay::broker",
+                                        event_id = %mapped.event_id,
+                                        worker = %worker_name,
+                                        "queued inbound relay message (human session mode)"
+                                    );
+                                    let _ = send_event(
+                                        &sdk_out_tx,
+                                        json!({
+                                            "kind":"delivery_queued",
+                                            "name":&worker_name,
+                                            "event_id":&mapped.event_id,
+                                            "from":&mapped.from,
+                                            "target":&mapped.target,
+                                            "reason":"session_mode_human",
+                                        }),
+                                    ).await;
+                                    continue;
+                                }
+                                GateOutcome::WorkerMissing | GateOutcome::Inject => {}
+                            }
                             if let Err(error) = queue_and_try_delivery(
                                 &mut workers,
                                 &mut pending_deliveries,
@@ -3496,6 +3737,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         ).await;
                                     }
                                     fail_pending_requests_for_worker(&mut pending_requests, &name, "worker_exited");
+                                    session_states.remove(&name);
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -3696,6 +3938,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 ).await;
                             }
                             fail_pending_requests_for_worker(&mut pending_requests, name, "worker_permanently_dead");
+                            session_states.remove(name);
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
@@ -3736,6 +3979,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 ).await;
                             }
                             fail_pending_requests_for_worker(&mut pending_requests, name, "worker_exited");
+                            session_states.remove(name);
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
@@ -3999,6 +4243,153 @@ fn build_agent_metrics(handle: &WorkerHandle) -> AgentMetrics {
             memory_bytes_for_pid(pid)
         },
         uptime_secs: handle.spawned_at.elapsed().as_secs(),
+    }
+}
+
+/// Outcome of [`gate_inbound_for_session_mode`]. Distinguishes the
+/// three cases broker call sites care about: continue with the existing
+/// inject path, the message was queued (success — caller acks the
+/// sender), or there's no worker (caller skips this target). All three
+/// already match the pre-#864 behaviour for `relay` mode; only
+/// `Queued` is new.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GateOutcome {
+    Inject,
+    Queued,
+    WorkerMissing,
+}
+
+/// Gate an inbound relay message through the per-worker [`SessionMode`].
+///
+/// When the target worker is in [`SessionMode::Human`] the message is
+/// appended to the per-worker pending queue and the broker returns
+/// [`GateOutcome::Queued`], signalling the caller to skip the existing
+/// inject path. Otherwise the caller proceeds normally.
+///
+/// Pulled out so the broker has one obvious choke point for the two
+/// inbound paths (`/api/send` and the relaycast inbound feed) that the
+/// `drive` client (sub-PR 3) needs to intercept. Internal broker-driven
+/// injections (`worker_ready` initial task, continuity restore) bypass
+/// the gate by not calling this helper.
+/// Bundle of routing context the gate captures into the pending queue
+/// when a message is held. Mirrors the args `queue_and_try_delivery_raw`
+/// expects so a drain reproduces the original delivery exactly — same
+/// target (channel / DM / thread sentinel), thread, workspace,
+/// priority, and injection mode.
+struct InboundContext<'a> {
+    from: &'a str,
+    body: &'a str,
+    target: &'a str,
+    thread_id: Option<&'a str>,
+    workspace_id: Option<&'a str>,
+    workspace_alias: Option<&'a str>,
+    priority: u8,
+    mode: MessageInjectionMode,
+    event_id: Option<&'a str>,
+}
+
+fn gate_inbound_for_session_mode(
+    session_states: &mut HashMap<String, SessionState>,
+    workers: &WorkerRegistry,
+    worker_name: &str,
+    ctx: InboundContext<'_>,
+) -> GateOutcome {
+    if !workers.has_worker(worker_name) {
+        return GateOutcome::WorkerMissing;
+    }
+    let state = session_states.entry(worker_name.to_string()).or_default();
+    if state.mode == SessionMode::Relay {
+        return GateOutcome::Inject;
+    }
+    let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let msg = PendingRelayMessage {
+        from: ctx.from.to_string(),
+        body: ctx.body.to_string(),
+        target: ctx.target.to_string(),
+        thread_id: ctx.thread_id.map(str::to_string),
+        workspace_id: ctx.workspace_id.map(str::to_string),
+        workspace_alias: ctx.workspace_alias.map(str::to_string),
+        priority: ctx.priority,
+        mode: ctx.mode,
+        queued_at_ms,
+        event_id: ctx.event_id.map(str::to_string),
+    };
+    match state.accept_inbound(msg) {
+        SessionDispatch::Inject => GateOutcome::Inject,
+        SessionDispatch::Queued { queue_len } => {
+            tracing::debug!(
+                target = "agent_relay::broker",
+                worker = %worker_name,
+                from = %ctx.from,
+                queue_len,
+                "queued inbound relay message (human mode)"
+            );
+            GateOutcome::Queued
+        }
+        SessionDispatch::QueuedEvicted {
+            queue_len,
+            dropped_from,
+        } => {
+            tracing::warn!(
+                target = "agent_relay::broker",
+                worker = %worker_name,
+                from = %ctx.from,
+                dropped_from = %dropped_from,
+                queue_len,
+                max_pending = relay_broker::types::MAX_PENDING_PER_WORKER,
+                "pending queue full — evicting oldest message"
+            );
+            GateOutcome::Queued
+        }
+    }
+}
+
+/// Inject a previously-queued pending relay message into the worker via
+/// the existing `queue_and_try_delivery_raw` path. Used by the
+/// `/api/spawned/{name}/flush` handler and by the auto-drain on a
+/// `human → relay` transition. Failures are logged but not propagated —
+/// the broker treats `flush` as best-effort fire-and-forget the same
+/// way `/api/send` does for individual targets.
+async fn inject_pending_relay_message(
+    workers: &mut WorkerRegistry,
+    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    worker_name: &str,
+    msg: &PendingRelayMessage,
+    retry_interval: Duration,
+) {
+    let event_id = msg
+        .event_id
+        .clone()
+        .unwrap_or_else(|| format!("flush_{}", Uuid::new_v4().simple()));
+    if let Err(error) = queue_and_try_delivery_raw(
+        workers,
+        pending_deliveries,
+        worker_name,
+        &event_id,
+        &msg.from,
+        // Use the ORIGINAL routing target captured at queue time —
+        // `#general`, the DM recipient name, `"thread"`, etc. Falling
+        // back to `worker_name` here would silently reframe channel
+        // messages as direct-to-worker messages on drain.
+        &msg.target,
+        &msg.body,
+        msg.thread_id.clone(),
+        msg.workspace_id.clone(),
+        msg.workspace_alias.clone(),
+        msg.priority,
+        msg.mode.clone(),
+        retry_interval,
+    )
+    .await
+    {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            from = %msg.from,
+            event_id = %event_id,
+            error = %error,
+            "failed to inject pending relay message during flush"
+        );
     }
 }
 
