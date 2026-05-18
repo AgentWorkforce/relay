@@ -2,7 +2,7 @@
   "id": "traj_v87cyrs8dke9",
   "version": 1,
   "task": {
-    "title": "Upgrade .agentworkforce personas to latest 3.x shape"
+    "title": "Refactor runDriveSession below complexity 15 (#897)"
   },
   "status": "completed",
   "startedAt": "2026-05-14T14:28:34.155Z",
