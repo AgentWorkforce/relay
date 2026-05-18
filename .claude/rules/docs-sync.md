@@ -1,21 +1,30 @@
-# Documentation Sync Rule
+# Documentation Rule
 
-The docs exist in two locations that **must stay in sync**:
+## Public docs live in `web/content/docs/*.mdx`
 
-- `web/content/docs/*.mdx` — MDX source (used by the Next.js web app)
-- `docs/*.md` — Plain markdown mirror (for LLMs, CLI users, GitHub readers)
+This is the single source of truth — the Next.js web app under
+`web/` reads this directory directly to build the published docs
+site. New pages go here, period.
 
-## Rules
+When you add a new page:
 
-1. **Any change to an `.mdx` file must be mirrored to the corresponding `.md` file**, and vice versa.
-2. The markdown files should have the same content but with MDX components converted to plain markdown:
-   - `<CodeGroup>` / `</CodeGroup>` → remove (just keep the code blocks)
-   - `<Note>` → `> **Note:**`
-   - `<Warning>` → `> **Warning:**`
-   - `<Tabs>` / `<Tab>` → use headers or separate code blocks
-   - Frontmatter (`---` YAML block) → remove from `.md` files
-3. **File mapping** (flat structure, no subdirectories):
-   - `web/content/docs/{slug}.mdx` ↔ `docs/{slug}.md`
-   - e.g. `web/content/docs/reference-sdk.mdx` ↔ `docs/reference-sdk.md`
-4. If you add a new `.mdx` doc, create the corresponding `.md` mirror.
-5. If you update default values, API signatures, or examples — update **both** files.
+- Create `web/content/docs/{slug}.mdx` with the standard frontmatter
+  (`title:` and `description:`).
+- Add an entry to the navigation in `web/lib/docs-nav.ts` under the
+  appropriate group, OR to the `ALL_SLUGS` "hidden but routable"
+  list if it shouldn't appear in the sidebar.
+
+That's it. Don't create or update files in the top-level `docs/`
+directory.
+
+## The top-level `docs/` directory is legacy
+
+It contains a partial mirror of a handful of MDX pages converted to
+plain markdown. It was originally maintained as an "LLMs / CLI users
+/ GitHub readers" alternate, but it drifted out of sync long ago
+(5 pages survive vs 40+ in `web/content/docs/`) and is no longer
+authoritative. Do not add new files to it, and do not "mirror" your
+MDX changes into it.
+
+Existing pages there will be cleaned up separately. Treat the
+directory as read-only legacy until that happens.

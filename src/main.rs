@@ -11,11 +11,14 @@ mod cli_mcp_args;
 mod helpers;
 mod listen_api;
 mod pty_worker;
+mod readiness;
 mod routing;
 mod spawner;
 mod swarm;
 mod swarm_tui;
+mod wait;
 mod worker;
+mod worker_request;
 mod wrap;
 
 use helpers::{
@@ -23,7 +26,7 @@ use helpers::{
     detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
     detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    normalize_cli_name, parse_cli_command, strip_ansi,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -111,6 +114,9 @@ enum Commands {
     McpArgs(McpArgsCommand),
     /// Run ad-hoc swarm execution via the relay broker
     Swarm(swarm::SwarmArgs),
+    /// Capture the current visible PTY screen of a running worker and print
+    /// it. Talks to the broker over its listen API.
+    DumpPty(DumpPtyCommand),
     /// Internal: wraps a CLI in a PTY with interactive passthrough.
     /// Used by the SDK — not for direct user invocation.
     /// Usage: agent-relay-broker wrap codex -- --full-auto
@@ -122,6 +128,48 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct DumpPtyCommand {
+    /// Worker name to snapshot.
+    pub(crate) name: String,
+
+    /// Snapshot format. `plain` is one-line-per-row UTF-8; `ansi` is the
+    /// reproduction byte stream (control characters + SGR + cursor commands)
+    /// suitable for piping into a terminal.
+    #[arg(long, default_value = "plain")]
+    pub(crate) format: DumpPtyFormat,
+
+    /// Override the broker base URL. Falls back to RELAY_BROKER_URL, then to
+    /// reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) broker_url: Option<String>,
+
+    /// Override the broker API key. Falls back to RELAY_BROKER_API_KEY, then
+    /// to reading `.agent-relay/connection.json` in the current directory.
+    #[arg(long)]
+    pub(crate) api_key: Option<String>,
+
+    /// Override the directory containing `.agent-relay/connection.json` when
+    /// auto-discovering the broker.
+    #[arg(long)]
+    pub(crate) state_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum DumpPtyFormat {
+    Plain,
+    Ansi,
+}
+
+impl DumpPtyFormat {
+    fn as_wire_str(&self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ansi => "ansi",
+        }
+    }
 }
 
 #[derive(Debug, clap::Args, Clone)]
@@ -760,6 +808,7 @@ async fn main() -> Result<()> {
         Commands::Headless(_) => "headless",
         Commands::McpArgs(_) => "mcp_args",
         Commands::Swarm(_) => "swarm",
+        Commands::DumpPty(_) => "dump_pty",
         Commands::Wrap { .. } => "wrap",
     };
     telemetry.track(TelemetryEvent::CliCommandRun {
@@ -772,8 +821,201 @@ async fn main() -> Result<()> {
         Commands::Headless(cmd) => run_headless_worker(cmd).await,
         Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
+        Commands::DumpPty(cmd) => run_dump_pty(cmd).await,
         Commands::Wrap { cli, args } => wrap::run_wrap(cli, args, false, telemetry).await,
     }
+}
+
+/// Connection metadata discovered from a running broker — typically by
+/// reading `<state-dir>/connection.json` or from explicit CLI flags / env.
+struct BrokerConnection {
+    base_url: String,
+    api_key: Option<String>,
+}
+
+/// Resolve the broker connection by checking, in order:
+///
+/// 1. Explicit CLI args (`--broker-url`, `--api-key`). When `--broker-url`
+///    is supplied without an API key, we still attempt to fall back to the
+///    API key from env / `.agent-relay/connection.json` so users don't have
+///    to repeat `--api-key` for every dump-pty invocation.
+/// 2. Env vars `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+/// 3. `connection.json` in the supplied state dir, otherwise
+///    `.agent-relay/connection.json` directly under the current working
+///    directory. The bare `cwd` is intentionally NOT probed — an unrelated
+///    `connection.json` sitting in the user's repo root must not silently
+///    redirect the snapshot request (and its broker API key) elsewhere.
+fn discover_broker_connection(
+    explicit_url: Option<&str>,
+    explicit_api_key: Option<&str>,
+    state_dir: Option<&Path>,
+) -> Result<BrokerConnection> {
+    // Walk the same search roots used for the URL fallback, but only to
+    // pull out a stored `api_key`. Lets `--broker-url` reuse the broker's
+    // saved key when the env var and `--api-key` are both unset.
+    let api_key_from_connection_file = || -> Option<String> {
+        let cwd = std::env::current_dir().ok()?;
+        let roots: Vec<PathBuf> = match state_dir {
+            Some(dir) => vec![dir.to_path_buf()],
+            None => vec![cwd.join(".agent-relay")],
+        };
+        for root in roots {
+            let path = root.join("connection.json");
+            if !path.is_file() {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).ok()?;
+            let value: Value = serde_json::from_str(&body).ok()?;
+            if let Some(key) = value.get("api_key").and_then(Value::as_str) {
+                if !key.trim().is_empty() {
+                    return Some(key.to_string());
+                }
+            }
+        }
+        None
+    };
+
+    let resolve_api_key = |explicit: Option<&str>| -> Option<String> {
+        explicit
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(api_key_from_connection_file)
+            .filter(|value| !value.trim().is_empty())
+    };
+
+    if let Some(url) = explicit_url {
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key: resolve_api_key(explicit_api_key),
+        });
+    }
+
+    if let Ok(url) = std::env::var("RELAY_BROKER_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(BrokerConnection {
+                base_url: trimmed.trim_end_matches('/').to_string(),
+                api_key: resolve_api_key(explicit_api_key),
+            });
+        }
+    }
+
+    let cwd = std::env::current_dir().context("failed to read current directory")?;
+    let search_roots: Vec<PathBuf> = match state_dir {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => vec![cwd.join(".agent-relay")],
+    };
+
+    for root in &search_roots {
+        let path = root.join("connection.json");
+        if !path.is_file() {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed reading {}", path.display()))?;
+        let value: Value = serde_json::from_str(&body)
+            .with_context(|| format!("failed parsing {}", path.display()))?;
+        let url = value
+            .get("url")
+            .and_then(Value::as_str)
+            .with_context(|| format!("connection file missing 'url': {}", path.display()))?
+            .to_string();
+        let api_key = explicit_api_key
+            .map(ToString::to_string)
+            .or_else(|| std::env::var("RELAY_BROKER_API_KEY").ok())
+            .or_else(|| {
+                value
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .filter(|value| !value.trim().is_empty());
+        return Ok(BrokerConnection {
+            base_url: url.trim_end_matches('/').to_string(),
+            api_key,
+        });
+    }
+
+    anyhow::bail!(
+        "could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, \
+         or run from a directory containing .agent-relay/connection.json"
+    );
+}
+
+/// `agent-relay-broker dump-pty <name>` — capture and print a worker's
+/// current visible screen by hitting the broker's snapshot route.
+async fn run_dump_pty(cmd: DumpPtyCommand) -> Result<()> {
+    use base64::Engine;
+
+    let connection = discover_broker_connection(
+        cmd.broker_url.as_deref(),
+        cmd.api_key.as_deref(),
+        cmd.state_dir.as_deref(),
+    )?;
+
+    let url = format!(
+        "{}/api/spawned/{}/snapshot?format={}",
+        connection.base_url,
+        urlencoding::encode(&cmd.name),
+        cmd.format.as_wire_str(),
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build http client")?;
+
+    let mut request = client.get(&url);
+    if let Some(key) = connection.api_key.as_deref() {
+        request = request.header("X-API-Key", key);
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed reaching broker at {url}"))?;
+    let status = response.status();
+    let body_bytes = response
+        .bytes()
+        .await
+        .context("failed reading broker response body")?;
+
+    if !status.is_success() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        anyhow::bail!("broker returned {status}: {body_str}");
+    }
+
+    let body: Value =
+        serde_json::from_slice(&body_bytes).context("broker response was not valid JSON")?;
+    let screen = body
+        .get("screen")
+        .and_then(Value::as_str)
+        .context("broker response missing 'screen' field")?;
+
+    match cmd.format {
+        DumpPtyFormat::Plain => {
+            // The plain payload already includes the trailing newline per row.
+            // Print as-is so pipelines see a stable terminator.
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(screen.as_bytes())
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+        DumpPtyFormat::Ansi => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(screen)
+                .context("broker returned non-base64 ansi screen")?;
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&bytes)
+                .context("failed writing snapshot to stdout")?;
+            stdout.flush().ok();
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
@@ -1152,6 +1394,17 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let delivery_retry_interval = delivery_retry_interval();
     let mut pending_deliveries = load_pending_deliveries(&paths.pending);
     let mut terminal_failed_deliveries: HashSet<String> = HashSet::new();
+    // Outstanding worker-bound RPC requests waiting on a `*_response`
+    // frame from the wrapped worker. Keyed by the `request_id` we put on
+    // the outbound request frame; the reply `oneshot` is consumed when
+    // the worker echoes the same `request_id` back, or the entry expires
+    // via the deadline sweep in the `reap_tick` arm below.
+    //
+    // Introduced for `snapshot_pty` (#870) and generalised in #871 so
+    // future request/response routes (`mode`, `pending`, `flush` from
+    // #864) can reuse the same correlation infrastructure — see
+    // `crate::worker_request`.
+    let mut pending_requests: HashMap<String, worker_request::PendingRequest> = HashMap::new();
     let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let mut recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -1255,7 +1508,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     continue;
                                 }
                             };
-                            let spec_for_state = spec.clone();
                             let mut preregistration_warning: Option<String> = None;
                             let registration_result = retry_agent_registration(
                                 &relaycast_http, &name, Some(&cli),
@@ -1379,26 +1631,26 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 skip_relay_prompt,
                                 idle_threshold_secs.map(|s| s.to_string()),
                             ).await {
-                                Ok(()) => {
+                                Ok(effective_spec) => {
                                     if let Some(ref task_text) = effective_task {
                                         workers.initial_tasks.insert(name.clone(), task_text.clone());
                                     }
                                     agent_spawn_count += 1;
                                     telemetry.track(TelemetryEvent::AgentSpawn {
                                         cli: cli.clone(),
-                                        runtime: runtime_label(&spec_for_state.runtime).to_string(),
+                                        runtime: runtime_label(&effective_spec.runtime).to_string(),
                                         spawn_source: ActionSource::HumanDashboard,
                                         has_task: effective_task.is_some(),
-                                        is_shadow: spec_for_state.shadow_of.is_some()
-                                            || spec_for_state.shadow_mode.is_some(),
+                                        is_shadow: effective_spec.shadow_of.is_some()
+                                            || effective_spec.shadow_mode.is_some(),
                                     });
                                     let pid = workers.worker_pid(&name).unwrap_or(0);
                                     state.agents.insert(
                                         name.clone(),
                                         broker::PersistedAgent {
-                                            runtime: spec_for_state.runtime.clone(),
+                                            runtime: effective_spec.runtime.clone(),
                                             parent: Some("Dashboard".to_string()),
-                                            channels: spec_for_state.channels.clone(),
+                                            channels: effective_spec.channels.clone(),
                                             pid: workers.worker_pid(&name),
                                             started_at: Some(
                                                 std::time::SystemTime::now()
@@ -1406,7 +1658,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     .unwrap_or_default()
                                                     .as_secs(),
                                             ),
-                                            spec: Some(spec_for_state.clone()),
+                                            spec: Some(effective_spec.clone()),
                                             restart_policy: None,
                                             initial_task: effective_task,
 
@@ -1426,10 +1678,10 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         json!({
                                             "kind":"agent_spawned",
                                             "name":&name,
-                                            "runtime":runtime_label(&spec_for_state.runtime),
-                                            "provider": spec_for_state.provider.clone(),
-                                            "cli": spec_for_state.cli.clone(),
-                                            "model": spec_for_state.model.clone(),
+                                            "runtime":runtime_label(&effective_spec.runtime),
+                                            "provider": effective_spec.provider.clone(),
+                                            "cli": effective_spec.cli.clone(),
+                                            "model": effective_spec.model.clone(),
                                             "pid":pid,
                                             "source":"http_api",
                                             "pre_registered": worker_relay_key.is_some(),
@@ -1446,7 +1698,8 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     let _ = reply.send(Ok(json!({
                                         "success": true,
                                         "name": name,
-                                        "runtime": runtime_label(&spec_for_state.runtime),
+                                        "runtime": runtime_label(&effective_spec.runtime),
+                                        "model": effective_spec.model.clone(),
                                         "pid": pid,
                                         "pre_registered": worker_relay_key.is_some(),
                                         "warning": preregistration_warning,
@@ -1528,6 +1781,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             json!({"kind":"delivery_dropped","name":&name,"count":dropped,"reason":"agent_released"}),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "agent_released");
                                     state.agents.remove(&name);
                                     if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
@@ -1944,6 +2198,66 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 })));
                             }
                         }
+                        ListenApiRequest::WorkerRequest { name, kind, payload, timeout, reply } => {
+                            // Generic worker request/response: validate the
+                            // worker exists and supports a PTY (request/response
+                            // routes today all target the PTY side), then ship
+                            // the frame and park the `reply` oneshot in
+                            // `pending_requests`. The response is fulfilled
+                            // either by the `*_response` arm below or by the
+                            // deadline sweep in `reap_tick`.
+                            //
+                            // Headless workers don't run a VT and don't handle
+                            // PTY-oriented RPCs — short-circuit with a typed
+                            // error rather than letting the request sit until
+                            // the timeout sweep returns a misleading
+                            // `worker_timeout`.
+                            let runtime = workers
+                                .workers
+                                .get(&name)
+                                .map(|handle| handle.spec.runtime.clone());
+                            match runtime {
+                                None => {
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::WorkerNotFound(
+                                            format!("no worker named '{name}'"),
+                                        ),
+                                    ));
+                                }
+                                Some(AgentRuntime::Headless) => {
+                                    let _ = reply.send(Err(
+                                        worker_request::RequestWorkerError::UnsupportedRuntime(
+                                            format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
+                                        ),
+                                    ));
+                                }
+                                Some(AgentRuntime::Pty) => {
+                                    let request_id = format!("req_{}", Uuid::new_v4().simple());
+                                    if let Err(err) = workers.send_to_worker(
+                                        &name,
+                                        &kind,
+                                        Some(request_id.clone()),
+                                        payload,
+                                    ).await {
+                                        let _ = reply.send(Err(
+                                            worker_request::RequestWorkerError::SendFailed(
+                                                err.to_string(),
+                                            ),
+                                        ));
+                                    } else {
+                                        pending_requests.insert(
+                                            request_id,
+                                            worker_request::PendingRequest {
+                                                kind,
+                                                worker_name: name,
+                                                reply,
+                                                deadline: Instant::now() + timeout,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         ListenApiRequest::GetMetrics { agent, reply } => {
                             if let Some(ref agent_name) = agent {
                                 if let Some(handle) = workers.workers.get(agent_name) {
@@ -2137,6 +2451,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 json!({"kind":"delivery_dropped","name":name,"count":dropped,"reason":"agent_released"}),
                                             ).await;
                                         }
+                                        fail_pending_requests_for_worker(&mut pending_requests, &name, "relaycast_release");
                                         telemetry.track(TelemetryEvent::AgentRelease {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
@@ -2248,7 +2563,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     channels: channels.clone(),
                                     restart_policy: None,
                                 };
-                                let spec_for_state = spec.clone();
                                 let effective_task = normalize_initial_task(task.clone());
 
                                 // Pre-register agent token. Claude doesn't need this — it
@@ -2305,14 +2619,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     false,
                                     Some(workspace_id.clone()),
                                 ).await {
-                                    Ok(()) => {
+                                    Ok(effective_spec) => {
                                         if let Some(ref task_text) = effective_task {
                                             workers.initial_tasks.insert(name.clone(), task_text.clone());
                                         }
                                         agent_spawn_count += 1;
                                         telemetry.track(TelemetryEvent::AgentSpawn {
                                             cli: cli.clone(),
-                                            runtime: "pty".to_string(),
+                                            runtime: runtime_label(&effective_spec.runtime).to_string(),
                                             spawn_source: ActionSource::Protocol,
                                             has_task: effective_task.is_some(),
                                             is_shadow: false,
@@ -2331,7 +2645,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                         .unwrap_or_default()
                                                         .as_secs(),
                                                 ),
-                                                spec: Some(spec_for_state),
+                                                spec: Some(effective_spec.clone()),
                                                 restart_policy: None,
                                                 initial_task: effective_task,
 
@@ -2345,6 +2659,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 "name": name,
                                                 "runtime": "pty",
                                                 "cli": cli,
+                                                "model": effective_spec.model.clone(),
                                                 "pid": pid,
                                                 "source": "relaycast_ws",
                                                 "pre_registered": worker_relay_key.is_some(),
@@ -2444,7 +2759,6 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         channels: channels.clone(),
                                         restart_policy: None,
                                     };
-                                    let spec_for_state = spec.clone();
                                     let task_opt = Some(task).filter(|v| !v.trim().is_empty());
                                     let effective_task = normalize_initial_task(task_opt.clone());
 
@@ -2489,14 +2803,14 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         false,
                                         Some(workspace_id.clone()),
                                     ).await {
-                                        Ok(()) => {
+                                        Ok(effective_spec) => {
                                             if let Some(ref task_text) = effective_task {
                                                 workers.initial_tasks.insert(name.clone(), task_text.clone());
                                             }
                                             agent_spawn_count += 1;
                                             telemetry.track(TelemetryEvent::AgentSpawn {
                                                 cli: cli.clone(),
-                                                runtime: "pty".to_string(),
+                                                runtime: runtime_label(&effective_spec.runtime).to_string(),
                                                 spawn_source: ActionSource::Protocol,
                                                 has_task: effective_task.is_some(),
                                                 is_shadow: false,
@@ -2515,7 +2829,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                             .unwrap_or_default()
                                                             .as_secs(),
                                                     ),
-                                                    spec: Some(spec_for_state),
+                                                    spec: Some(effective_spec.clone()),
                                                     restart_policy: None,
                                                     initial_task: effective_task,
 
@@ -2529,6 +2843,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                     "name": name,
                                                     "runtime": "pty",
                                                     "cli": cli,
+                                                    "model": effective_spec.model.clone(),
                                                     "pid": pid,
                                                     "source": "relaycast_ws_fallback",
                                                     "pre_registered": worker_relay_key.is_some(),
@@ -2896,6 +3211,31 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                         "name": name,
                                         "error": value.get("payload").cloned().unwrap_or(Value::Null)
                                     })).await;
+                                } else if msg_type.ends_with("_response") {
+                                    // Generic worker request/response dispatch.
+                                    // Any frame whose `type` ends in
+                                    // `_response` is routed by `request_id`
+                                    // into the matching parked `oneshot` in
+                                    // `pending_requests`. The pending entry
+                                    // owns the format/error decoding logic
+                                    // via `worker_request::fulfil_response_frame`.
+                                    let routed = worker_request::fulfil_response_frame(
+                                        &mut pending_requests,
+                                        &value,
+                                    );
+                                    if !routed {
+                                        let req_id = value
+                                            .get("request_id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("<missing>");
+                                        tracing::debug!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            msg_type = %msg_type,
+                                            request_id = %req_id,
+                                            "worker response with no pending caller — dropping"
+                                        );
+                                    }
                                 } else if msg_type == "worker_stream" {
                                     let _ = send_event(&sdk_out_tx, json!({
                                         "kind": "worker_stream",
@@ -3155,6 +3495,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             }),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "worker_exited");
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -3197,6 +3538,23 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
 
             _ = reap_tick.tick() => {
                 let now = Instant::now();
+
+                // Time out worker request/response calls whose worker never
+                // responded. Common cause: worker crashed between us sending
+                // the request frame and it parsing the frame. Without this
+                // sweep the HTTP handler would hang forever on its oneshot.
+                for (req_id, worker_name, kind) in
+                    worker_request::reap_expired(&mut pending_requests, now)
+                {
+                    tracing::warn!(
+                        target = "agent_relay::broker",
+                        request_id = %req_id,
+                        worker = %worker_name,
+                        kind = %kind,
+                        "worker request timed out before worker responded"
+                    );
+                }
+
                 let due_ids: Vec<String> = pending_deliveries
                     .iter()
                     .filter_map(|(delivery_id, pending)| {
@@ -3337,6 +3695,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_permanently_dead");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
@@ -3376,6 +3735,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_exited");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
@@ -3460,7 +3820,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                             )
                             .await
                         {
-                            Ok(()) => {
+                            Ok(_) => {
                                 workers.supervisor.on_restarted(&name);
                                 workers.metrics.on_restart(&name);
                                 if let Some(task) = rst.initial_task {
@@ -3764,6 +4124,31 @@ fn drop_pending_for_worker(
     let before = pending_deliveries.len();
     pending_deliveries.retain(|_, pending| pending.worker_name != worker_name);
     before.saturating_sub(pending_deliveries.len())
+}
+
+/// Drain every in-flight worker request targeting `worker_name` and
+/// notify each awaiter with [`worker_request::RequestWorkerError::WorkerDisappeared`].
+/// Called from every worker-teardown path (explicit release,
+/// `worker_exited` frame, `reap_exited` periodic sweep) so HTTP callers
+/// don't have to wait out the request deadline when the worker has
+/// clearly gone. Logs one structured warning per drained request.
+fn fail_pending_requests_for_worker(
+    pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
+    worker_name: &str,
+    reason: &'static str,
+) -> usize {
+    let failed = worker_request::fail_for_worker(pending_requests, worker_name);
+    for (req_id, kind) in &failed {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            request_id = %req_id,
+            worker = %worker_name,
+            kind = %kind,
+            reason = reason,
+            "failed pending worker request because worker is gone"
+        );
+    }
+    failed.len()
 }
 
 fn should_clear_pending_delivery_for_event(
@@ -5115,7 +5500,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::helpers::{format_injection, terminal_query_responses};
+    use crate::helpers::format_injection;
     use relay_broker::protocol::{MessageInjectionMode, RelayDelivery};
     use serde_json::{json, Value};
 
@@ -5130,7 +5515,7 @@ mod tests {
         normalize_sender, relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
         relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
         sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider, TerminalQueryParser,
+        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::dedup::DedupCache;
@@ -5962,29 +6347,6 @@ mod tests {
             Some("")
         ));
         assert!(should_clear_pending_delivery_for_event(None, Some("evt_1")));
-    }
-
-    #[test]
-    fn terminal_query_responses_standard_cpr() {
-        let responses = terminal_query_responses(b"\x1b[6n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_split_sequences() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[").is_empty());
-        assert!(parser.feed(b"6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_private_cpr() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[?6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[?1;1R".as_slice()]);
     }
 
     // ==================== strip_ansi tests ====================

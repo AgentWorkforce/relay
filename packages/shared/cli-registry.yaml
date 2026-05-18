@@ -30,13 +30,18 @@ clis:
     name: 'Codex CLI'
     package: '@openai/codex'
     npm_link: 'https://www.npmjs.com/package/@openai/codex'
-    version: '0.124.0'
+    version: '0.130.0'
     install: 'npm install -g @openai/codex'
     models:
+      gpt_5_5:
+        id: 'gpt-5.5'
+        label: 'GPT-5.5 — Frontier model for complex coding, research, and real-world work.'
+        default: true
+        reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
+        default_reasoning_effort: 'medium'
       gpt_5_4:
         id: 'gpt-5.4'
-        label: 'GPT-5.4 — Frontier model for complex coding, research, and real-world work.'
-        default: true
+        label: 'GPT-5.4 — More affordable model for complex coding and professional work.'
         reasoning_efforts: ['low', 'medium', 'high', 'xhigh']
         default_reasoning_effort: 'xhigh'
       gpt_5_3_codex:
@@ -526,6 +531,9 @@ clis:
       openai_gpt_5_4_pro:
         id: 'openai/gpt-5.4-pro'
         label: 'GPT-5.4 Pro'
+      openai_gpt_5_5:
+        id: 'openai/gpt-5.5'
+        label: 'GPT-5.5'
       openai_o1:
         id: 'openai/o1'
         label: 'O1'

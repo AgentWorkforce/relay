@@ -100,21 +100,21 @@ async function main() {
 
     .agent('impl', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Refactors ssh-interactive.ts shell callback and exports formatShellInvocation',
       retries: 2,
     })
     .agent('tester', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Writes unit tests for formatShellInvocation and the handler-order regression',
       retries: 2,
     })
     .agent('fixer', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Fixes type errors, test failures, and regressions',
       retries: 2,

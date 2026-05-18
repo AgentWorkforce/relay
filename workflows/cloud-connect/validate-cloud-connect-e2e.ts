@@ -117,21 +117,21 @@ async function main() {
 
     .agent('impl', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Edits scripts/build-bun.sh and writes the live ssh2 integration test',
       retries: 2,
     })
     .agent('tester', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Writes and iterates on the ssh2 live integration test until green',
       retries: 2,
     })
     .agent('fixer', {
       cli: 'codex',
-      model: CodexModels.GPT_5_4,
+      model: CodexModels.GPT_5_5,
       preset: 'worker',
       role: 'Fixes unit-test, typecheck, and regression failures',
       retries: 2,

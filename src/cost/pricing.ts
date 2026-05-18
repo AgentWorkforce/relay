@@ -12,7 +12,7 @@ export interface TokenEstimate {
 
 // Per-1M token pricing. Model IDs match @agent-relay/config cli-registry.
 // Pricing is approximate and should be updated as providers change rates.
-// Last verified: 2026-04-01
+// Last verified: 2026-05-15
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // ── Anthropic (Claude Code, Cursor, Droid) ──────────────────────
   sonnet: { inputPer1M: 3, outputPer1M: 15 },
@@ -30,7 +30,8 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'haiku-4.5': { inputPer1M: 0.8, outputPer1M: 4 },
 
   // ── OpenAI (Codex, Cursor, OpenCode) ────────────────────────────
-  'gpt-5.4': { inputPer1M: 2.5, outputPer1M: 10 },
+  'gpt-5.5': { inputPer1M: 5, outputPer1M: 30 },
+  'gpt-5.4': { inputPer1M: 2.5, outputPer1M: 15 },
   'gpt-5.3-codex': { inputPer1M: 2.5, outputPer1M: 10 },
   'gpt-5.3-codex-spark': { inputPer1M: 1.5, outputPer1M: 6 },
   'gpt-5.2-codex': { inputPer1M: 2.5, outputPer1M: 10 },
@@ -38,7 +39,8 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'gpt-5.1-codex-max': { inputPer1M: 2.5, outputPer1M: 10 },
   'gpt-5.1-codex-mini': { inputPer1M: 0.75, outputPer1M: 3 },
   'openai/gpt-5.2': { inputPer1M: 2.5, outputPer1M: 10 },
-  'openai/gpt-5.4': { inputPer1M: 2.5, outputPer1M: 10 },
+  'openai/gpt-5.4': { inputPer1M: 2.5, outputPer1M: 15 },
+  'openai/gpt-5.5': { inputPer1M: 5, outputPer1M: 30 },
   'openai/o3': { inputPer1M: 1, outputPer1M: 4 },
   'openai/o3-mini': { inputPer1M: 0.55, outputPer1M: 2.2 },
   'openai/o4-mini': { inputPer1M: 0.55, outputPer1M: 2.2 },

@@ -121,6 +121,7 @@ describe('registerAgentManagementCommands', () => {
       shadowOf: undefined,
       shadowMode: undefined,
       continueFrom: undefined,
+      skipRelayPrompt: undefined,
     });
     expect(client.listAgents).toHaveBeenCalledTimes(1);
     expect(client.shutdown).toHaveBeenCalledTimes(1);
@@ -166,6 +167,28 @@ describe('registerAgentManagementCommands', () => {
         name: 'WorkerB',
         cli: 'claude',
         task: 'Task from stdin',
+      })
+    );
+  });
+
+  it('passes --skip-relay-prompt through for local harness spawns', async () => {
+    const client = createClientMock();
+    const { program } = createHarness({ client });
+
+    const exitCode = await runCommand(program, [
+      'spawn',
+      'WorkerNoRelay',
+      'codex',
+      '--skip-relay-prompt',
+      'Smoke test',
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerNoRelay',
+        cli: 'codex',
+        skipRelayPrompt: true,
       })
     );
   });

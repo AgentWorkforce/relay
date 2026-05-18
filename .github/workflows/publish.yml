@@ -130,6 +130,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: broker-${{ matrix.target }}
+          cache-bin: false
 
       - name: Build broker binary (unix)
         if: runner.os != 'Windows'

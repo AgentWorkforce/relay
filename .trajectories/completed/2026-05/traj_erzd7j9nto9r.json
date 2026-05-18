@@ -1,0 +1,69 @@
+{
+  "id": "traj_erzd7j9nto9r",
+  "version": 1,
+  "task": {
+    "title": "Strict review and PR prep for headless broker readiness"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T10:02:10.164Z",
+  "completedAt": "2026-05-15T10:06:38.127Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T10:03:26.093Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5g2lfephd4w2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T10:03:26.093Z",
+      "endedAt": "2026-05-15T10:06:38.127Z",
+      "events": [
+        {
+          "ts": 1778839406094,
+          "type": "decision",
+          "content": "Report broker PID on detached readiness timeout: Report broker PID on detached readiness timeout",
+          "raw": {
+            "question": "Report broker PID on detached readiness timeout",
+            "chosen": "Report broker PID on detached readiness timeout",
+            "alternatives": [],
+            "reasoning": "When wrapper and broker PIDs differ, diagnostics must point operators at the process represented by connection.json, especially for live-but-API-unready failures."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1778839598021,
+          "type": "reflection",
+          "content": "Strict pass completed: removed the standalone reliability doc, moved skill guidance to the skills repo, and tightened timeout diagnostics to report the broker PID rather than the wrapper PID.",
+          "raw": {
+            "focalPoints": ["relay branch scope", "skill repo split", "diagnostics"],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:relay branch scope",
+            "focal:skill repo split",
+            "focal:diagnostics",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Strict PR prep removed local doc and skill edits from relay, retained trajectory records, added broker-PID timeout diagnostics, and moved the orchestrator guidance update to the sibling skills repo.",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc",
+  "tags": [],
+  "_trace": {
+    "startRef": "9b017e2de113a019e9563f8cfd6ab0de77b14b16",
+    "endRef": "9b017e2de113a019e9563f8cfd6ab0de77b14b16"
+  }
+}

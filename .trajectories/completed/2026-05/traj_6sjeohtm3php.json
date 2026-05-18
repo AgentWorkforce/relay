@@ -1,0 +1,53 @@
+{
+  "id": "traj_6sjeohtm3php",
+  "version": 1,
+  "task": {
+    "title": "Address broker headless reliability review findings"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-15T09:30:56.316Z",
+  "completedAt": "2026-05-15T09:32:47.870Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-15T09:32:34.860Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_nc9dfosyefib",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-15T09:32:34.860Z",
+      "endedAt": "2026-05-15T09:32:47.870Z",
+      "events": [
+        {
+          "ts": 1778837554861,
+          "type": "decision",
+          "content": "Require broker API readiness for status --wait-for: Require broker API readiness for status --wait-for",
+          "raw": {
+            "question": "Require broker API readiness for status --wait-for",
+            "chosen": "Require broker API readiness for status --wait-for",
+            "alternatives": [],
+            "reasoning": "connection.json is written before Relaycast handshake and ready router setup, so PID-only polling can report RUNNING before spawn/control endpoints are usable."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed review findings: status --wait-for now waits for broker HTTP API readiness instead of PID-only readiness, added a regression test for live PID with 503 startup API, verified TypeScript and focused CLI tests, and prepared trajectory records for commit with index.json.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-broker-headless-reliability-doc",
+  "tags": [],
+  "_trace": {
+    "startRef": "a7ef2fccd2cb971474f193edaba910a944545c3a",
+    "endRef": "a7ef2fccd2cb971474f193edaba910a944545c3a"
+  }
+}
