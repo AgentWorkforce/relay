@@ -1119,6 +1119,11 @@ fn worker_request_error_to_response(
         RequestWorkerError::SendFailed(_) => {
             api_error(StatusCode::NOT_FOUND, "agent_not_found", err.to_string())
         }
+        RequestWorkerError::WorkerDisappeared(_) => api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "worker_disappeared",
+            err.to_string(),
+        ),
         RequestWorkerError::ChannelClosed => internal_error(),
     }
 }

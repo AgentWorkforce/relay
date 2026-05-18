@@ -1781,6 +1781,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             json!({"kind":"delivery_dropped","name":&name,"count":dropped,"reason":"agent_released"}),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "agent_released");
                                     state.agents.remove(&name);
                                     if paths.persist { let _ = state.save(&paths.state); }
                                     let _ = send_event(
@@ -2450,6 +2451,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                                 json!({"kind":"delivery_dropped","name":name,"count":dropped,"reason":"agent_released"}),
                                             ).await;
                                         }
+                                        fail_pending_requests_for_worker(&mut pending_requests, &name, "relaycast_release");
                                         telemetry.track(TelemetryEvent::AgentRelease {
                                             cli: String::new(),
                                             release_reason: "relaycast_release".to_string(),
@@ -3493,6 +3495,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                             }),
                                         ).await;
                                     }
+                                    fail_pending_requests_for_worker(&mut pending_requests, &name, "worker_exited");
                                     let _ = send_event(
                                         &sdk_out_tx,
                                         json!({
@@ -3692,6 +3695,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_permanently_dead");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
@@ -3731,6 +3735,7 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                     }),
                                 ).await;
                             }
+                            fail_pending_requests_for_worker(&mut pending_requests, name, "worker_exited");
                             let _ = send_event(
                                 &sdk_out_tx,
                                 json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
@@ -4119,6 +4124,31 @@ fn drop_pending_for_worker(
     let before = pending_deliveries.len();
     pending_deliveries.retain(|_, pending| pending.worker_name != worker_name);
     before.saturating_sub(pending_deliveries.len())
+}
+
+/// Drain every in-flight worker request targeting `worker_name` and
+/// notify each awaiter with [`worker_request::RequestWorkerError::WorkerDisappeared`].
+/// Called from every worker-teardown path (explicit release,
+/// `worker_exited` frame, `reap_exited` periodic sweep) so HTTP callers
+/// don't have to wait out the request deadline when the worker has
+/// clearly gone. Logs one structured warning per drained request.
+fn fail_pending_requests_for_worker(
+    pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
+    worker_name: &str,
+    reason: &'static str,
+) -> usize {
+    let failed = worker_request::fail_for_worker(pending_requests, worker_name);
+    for (req_id, kind) in &failed {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            request_id = %req_id,
+            worker = %worker_name,
+            kind = %kind,
+            reason = reason,
+            "failed pending worker request because worker is gone"
+        );
+    }
+    failed.len()
 }
 
 fn should_clear_pending_delivery_for_event(

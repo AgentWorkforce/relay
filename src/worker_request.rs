@@ -61,6 +61,14 @@ pub(crate) enum RequestWorkerError {
     #[error("{code}: {message}")]
     WorkerError { code: String, message: String },
 
+    /// The worker exited (cleanly or otherwise) while the broker was
+    /// waiting for its response. The carried `String` is the worker
+    /// name, for diagnostics. Mapped to HTTP 503 Service Unavailable
+    /// in [`listen_api::classify_error`] — the agent existed when the
+    /// request was sent but is no longer there to fulfil it.
+    #[error("worker_disappeared: worker '{0}' exited before responding")]
+    WorkerDisappeared(String),
+
     /// The broker dropped the awaiter's `oneshot` before responding
     /// (shutdown race). Reserved for future use; today the API layer
     /// treats `oneshot::error::RecvError` from the broker channel as
@@ -180,6 +188,42 @@ pub(crate) fn reap_expired(
     reaped
 }
 
+/// Fail every pending request targeting `worker_name` immediately with
+/// [`RequestWorkerError::WorkerDisappeared`]. Called from the broker's
+/// worker-teardown paths (explicit release, `worker_exited` frame,
+/// `reap_exited` sweep) so that in-flight HTTP callers don't have to
+/// wait out the full request deadline when a worker has clearly gone.
+///
+/// Returns the `(request_id, kind)` pairs that were drained, for the
+/// caller to emit structured logs.
+pub(crate) fn fail_for_worker(
+    pending: &mut HashMap<String, PendingRequest>,
+    worker_name: &str,
+) -> Vec<(String, String)> {
+    let doomed: Vec<String> = pending
+        .iter()
+        .filter_map(|(req_id, entry)| {
+            if entry.worker_name == worker_name {
+                Some(req_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut failed = Vec::with_capacity(doomed.len());
+    for req_id in doomed {
+        if let Some(entry) = pending.remove(&req_id) {
+            let kind = entry.kind.clone();
+            let _ = entry.reply.send(Err(RequestWorkerError::WorkerDisappeared(
+                worker_name.to_string(),
+            )));
+            failed.push((req_id, kind));
+        }
+    }
+    failed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +247,50 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[tokio::test]
+    async fn fail_for_worker_drains_only_matching_entries() {
+        let mut pending: HashMap<String, PendingRequest> = HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+
+        let (entry_a, rx_a) = make_entry("snapshot_pty", "alice", deadline);
+        let (entry_b1, rx_b1) = make_entry("mode_get", "bob", deadline);
+        let (entry_b2, rx_b2) = make_entry("snapshot_pty", "bob", deadline);
+        let (entry_c, rx_c) = make_entry("snapshot_pty", "carol", deadline);
+        pending.insert("req-a".to_string(), entry_a);
+        pending.insert("req-b1".to_string(), entry_b1);
+        pending.insert("req-b2".to_string(), entry_b2);
+        pending.insert("req-c".to_string(), entry_c);
+
+        let failed = fail_for_worker(&mut pending, "bob");
+
+        // Both of bob's entries were drained — neither alice nor carol.
+        assert_eq!(failed.len(), 2);
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains_key("req-a"));
+        assert!(pending.contains_key("req-c"));
+        assert!(!pending.contains_key("req-b1"));
+        assert!(!pending.contains_key("req-b2"));
+
+        // Each drained awaiter received WorkerDisappeared carrying the name.
+        let err_b1 = rx_b1.await.expect("awaiter receives").expect_err("error");
+        let err_b2 = rx_b2.await.expect("awaiter receives").expect_err("error");
+        match (&err_b1, &err_b2) {
+            (
+                RequestWorkerError::WorkerDisappeared(n1),
+                RequestWorkerError::WorkerDisappeared(n2),
+            ) => {
+                assert_eq!(n1, "bob");
+                assert_eq!(n2, "bob");
+            }
+            other => panic!("expected WorkerDisappeared on both, got {other:?}"),
+        }
+
+        // Untouched awaiters' oneshots stay open (we already asserted
+        // the map still contains their entries above).
+        drop(rx_a);
+        drop(rx_c);
     }
 
     #[tokio::test]
