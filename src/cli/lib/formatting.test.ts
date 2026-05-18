@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { formatRelativeTime, formatTableRow, parseSince } from './formatting';
+import { formatRelativeTime, formatTableRow, formatUptimeSecs, parseSince } from './formatting';
 
 describe('formatting helpers', () => {
   beforeEach(() => {
@@ -42,11 +42,22 @@ describe('formatting helpers', () => {
 
   it('formats padded table rows', () => {
     expect(
-      formatTableRow([
-        { value: 'name', width: 8 },
-        { value: 'status', width: 10 },
-        { value: 'online' },
-      ]),
+      formatTableRow([{ value: 'name', width: 8 }, { value: 'status', width: 10 }, { value: 'online' }])
     ).toBe('name     status     online');
+  });
+
+  it('formats uptime seconds compactly', () => {
+    expect(formatUptimeSecs(0)).toBe('0s');
+    expect(formatUptimeSecs(45)).toBe('45s');
+    expect(formatUptimeSecs(125)).toBe('2m 05s');
+    expect(formatUptimeSecs(3661)).toBe('1h 01m 01s');
+    expect(formatUptimeSecs(421)).toBe('7m 01s');
+    expect(formatUptimeSecs(7.9)).toBe('7s'); // floors fractional seconds
+  });
+
+  it('formats invalid uptime as a dash', () => {
+    expect(formatUptimeSecs(-1)).toBe('-');
+    expect(formatUptimeSecs(Number.NaN)).toBe('-');
+    expect(formatUptimeSecs(Number.POSITIVE_INFINITY)).toBe('-');
   });
 });

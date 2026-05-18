@@ -120,6 +120,24 @@ describe('agent-management-listing JSON output', () => {
     ]);
   });
 
+  it('runWhoCommand renders the human table with real PID and UPTIME columns', async () => {
+    const { deps, log } = createDeps({
+      workers: [{ name: 'WorkerWho', cli: 'claude' }],
+      metrics: [{ name: 'WorkerWho', pid: 4321, memory_bytes: 1048576, uptime_secs: 421 }],
+    });
+
+    await runWhoCommand({}, deps);
+
+    const lines = log.mock.calls.map((c) => c[0] as string);
+    expect(lines.some((l) => l.includes('PID') && l.includes('UPTIME'))).toBe(true);
+    // Real pid and formatted uptime (421s -> "7m 01s"), not "ONLINE / now".
+    const row = lines.find((l) => l.startsWith('WorkerWho'));
+    expect(row).toContain('online');
+    expect(row).toContain('4321');
+    expect(row).toContain('7m 01s');
+    expect(lines.some((l) => l.includes('LAST SEEN'))).toBe(false);
+  });
+
   it('runAgentsCommand returns [] JSON when listAgents fails', async () => {
     const { deps, log, shutdown } = createDeps({
       listAgentsError: new Error('broker unavailable'),
