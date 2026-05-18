@@ -861,8 +861,7 @@ mod tests {
         let (rx, _term) = drive_listener(24, 80, &[b"\x1b[5n"]);
         let writeback = drain_writeback(&rx);
         assert_eq!(
-            writeback,
-            b"\x1b[0n",
+            writeback, b"\x1b[0n",
             "DSR ESC[5n must produce ESC[0n; got {writeback:?}"
         );
     }
@@ -877,12 +876,14 @@ mod tests {
         // Sanity-check the grid actually moved the cursor.
         let point = term.grid().cursor.point;
         assert_eq!(point.line.0, 2, "row 3 (1-indexed) = line 2 (0-indexed)");
-        assert_eq!(point.column.0, 4, "col 5 (1-indexed) = column 4 (0-indexed)");
+        assert_eq!(
+            point.column.0, 4,
+            "col 5 (1-indexed) = column 4 (0-indexed)"
+        );
 
         let writeback = drain_writeback(&rx);
         assert_eq!(
-            writeback,
-            b"\x1b[3;5R",
+            writeback, b"\x1b[3;5R",
             "CPR ESC[6n must reflect real cursor position; got {writeback:?}"
         );
     }
