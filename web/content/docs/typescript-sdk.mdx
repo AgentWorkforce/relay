@@ -127,6 +127,103 @@ interface Agent {
 
 ---
 
+## Low-Level Broker Client
+
+`AgentRelay` is the high-level orchestration API. Use `AgentRelayClient`
+when you need direct broker control over spawned workers, PTYs, session
+mode, or the broker event stream.
+
+```typescript
+import { AgentRelayClient } from '@agent-relay/sdk';
+
+// Spawn a broker and connect to it.
+const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
+
+// Or connect to an already-running broker by reading .agent-relay/connection.json.
+// const client = AgentRelayClient.connect({ cwd: '/my/project' });
+
+// Or connect directly when you already know the broker URL and API key.
+// const client = new AgentRelayClient({
+//   baseUrl: 'http://127.0.0.1:3888',
+//   apiKey: process.env.RELAY_BROKER_API_KEY,
+// });
+```
+
+### Client Options
+
+| Property           | Type                   | Description                                      | Default |
+| ------------------ | ---------------------- | ------------------------------------------------ | ------- |
+| `baseUrl`          | `string`               | Broker listen API base URL.                      | Required |
+| `apiKey`           | `string`               | API key sent as `X-API-Key`.                     | None |
+| `fetch`            | `typeof globalThis.fetch` | Custom fetch implementation for tests/runtimes. | `globalThis.fetch` |
+| `requestTimeoutMs` | `number`               | HTTP request timeout in milliseconds.            | `30000` |
+
+### Lifecycle and Messaging
+
+| Method | Broker route | Description |
+| ------ | ------------ | ----------- |
+| `client.spawnPty(input)` | `POST /api/spawn` | Spawn a PTY-backed worker. |
+| `client.spawnProvider(input)` | `POST /api/spawn` | Spawn by provider and transport. |
+| `client.spawnClaude(input)` | `POST /api/spawn` | Spawn a Claude worker. |
+| `client.spawnOpencode(input)` | `POST /api/spawn` | Spawn an OpenCode worker. |
+| `client.release(name, reason?)` | `DELETE /api/spawned/{name}` | Release a worker. |
+| `client.listAgents()` | `GET /api/spawned` | List running workers. |
+| `client.sendMessage(input)` | `POST /api/send` | Inject a relay message. |
+| `client.subscribeChannels(name, channels)` | `POST /api/spawned/{name}/subscribe` | Subscribe a worker to channels. |
+| `client.unsubscribeChannels(name, channels)` | `POST /api/spawned/{name}/unsubscribe` | Unsubscribe a worker from channels. |
+
+### PTY and Session Control
+
+These methods are the programmatic primitives behind CLI attach flows such
+as `drive`, `view`, and `passthrough`.
+
+| Method | Broker route | Description |
+| ------ | ------------ | ----------- |
+| `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
+| `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
+| `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
+| `client.getSessionMode(name)` | `GET /api/spawned/{name}/mode` | Read `human` or `passthrough` mode. |
+| `client.setSessionMode(name, mode)` | `PUT /api/spawned/{name}/mode` | Set session mode and return `{ mode, flushed }`. |
+| `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `human` mode. |
+| `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
+| `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
+
+```typescript
+import { AgentRelayClient, type SessionMode } from '@agent-relay/sdk';
+
+const client = AgentRelayClient.connect({ cwd: '/my/project' });
+const name = 'Reviewer';
+
+const previousMode: SessionMode = await client.getSessionMode(name);
+await client.setSessionMode(name, 'human');
+
+try {
+  const snapshot = await client.snapshot(name, 'plain');
+  console.log(snapshot.screen);
+
+  const pending = await client.getPending(name);
+  console.log(`Queued messages: ${pending.length}`);
+
+  await client.sendInput(name, 'please continue\n');
+  await client.resizePty(name, 40, 120);
+  await client.flushPending(name);
+} finally {
+  await client.setSessionMode(name, previousMode);
+}
+```
+
+```typescript
+for await (const chunk of client.subscribeWorkerStream('Reviewer', { stream: 'stdout' })) {
+  process.stdout.write(chunk);
+}
+```
+
+`drive`, `view`, and `passthrough` stay in the CLI because they manage raw
+terminal mode, keybindings, status lines, signals, and teardown. The SDK
+exposes the composable broker primitives those interactive surfaces use.
+
+---
+
 ## Human Handles
 
 Send messages from a named human or system identity (not a spawned CLI agent):

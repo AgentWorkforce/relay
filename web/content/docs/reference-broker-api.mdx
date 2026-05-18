@@ -107,6 +107,9 @@ status on failure.
 | `POST` | `/api/resize/{name}` | Resize an agent's PTY. Body `{ "rows": <u16>, "cols": <u16> }`.   |
 | `POST` | `/api/send`          | Inject a relay message into an agent.                             |
 
+TypeScript SDK equivalents: `client.sendInput(name, data)`,
+`client.resizePty(name, rows, cols)`, and `client.sendMessage(input)`.
+
 #### `POST /api/input/{name}`
 
 This is the keystroke channel. The `data` string is written to the
@@ -205,6 +208,12 @@ curl -s \
   "http://127.0.0.1:3888/api/spawned/reviewer/snapshot?format=plain"
 ```
 
+TypeScript SDK equivalent:
+
+```typescript
+const snapshot = await client.snapshot('reviewer', 'plain');
+```
+
 #### `agent-relay-broker dump-pty <name>`
 
 Admin CLI that wraps the snapshot route — useful for "what does this
@@ -258,6 +267,10 @@ is dropped (no on-disk persistence).
 | `PUT`  | `/api/spawned/{name}/mode`        | Set the session mode. Body `{ "mode": "passthrough" \| "human" }`.                     |
 | `GET`  | `/api/spawned/{name}/pending`     | Snapshot the per-worker pending queue (FIFO, head first).                        |
 | `POST` | `/api/spawned/{name}/flush`       | Drain the pending queue and inject every message into the worker. FIFO order.    |
+
+TypeScript SDK equivalents: `client.getSessionMode(name)`,
+`client.setSessionMode(name, mode)`, `client.getPending(name)`, and
+`client.flushPending(name)`.
 
 #### `PUT /api/spawned/{name}/mode`
 
@@ -395,6 +408,14 @@ Ephemeral (broadcast only, no replay):
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `worker_stream`   | A chunk of stdout from a wrapped CLI. Payload contains `stream` (`"stdout"`) and `chunk` (the raw bytes — typically still ANSI-escaped). |
 | `delivery_active` | High-frequency progress events for in-flight deliveries.                                                                       |
+
+TypeScript SDK equivalent for one worker's PTY output:
+
+```typescript
+for await (const chunk of client.subscribeWorkerStream('Alice')) {
+  process.stdout.write(chunk);
+}
+```
 
 ## Worked example: control a spawned agent end-to-end
 
