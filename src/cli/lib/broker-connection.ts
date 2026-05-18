@@ -65,6 +65,19 @@ function readString(obj: unknown, key: string): string | undefined {
 }
 
 /**
+ * Trim a possibly-undefined string and treat empty results as
+ * `undefined` so `??` chains correctly fall through to lower-priority
+ * sources. Plain `value?.trim()` would yield `""` for blank inputs,
+ * which is not nullish — that would let an empty `--broker-url` flag
+ * silently override a real `RELAY_BROKER_URL` env var, etc.
+ */
+function trimOrUndefined(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/**
  * Resolve the broker connection in priority order. Returns `null` when no
  * source provides a URL — the caller decides how to surface that.
  */
@@ -72,8 +85,8 @@ export function resolveBrokerConnection(
   options: BrokerConnectionOptions,
   deps: BrokerConnectionDeps
 ): BrokerConnection | null {
-  const explicitUrl = options.brokerUrl?.trim();
-  const envUrl = deps.env.RELAY_BROKER_URL?.trim();
+  const explicitUrl = trimOrUndefined(options.brokerUrl);
+  const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
   const stateDir = options.stateDir ? path.resolve(options.stateDir) : deps.getDefaultStateDir();
   const connectionFile = deps.readConnectionFile(stateDir);
   const fileUrl = readString(connectionFile, 'url');
@@ -81,8 +94,8 @@ export function resolveBrokerConnection(
   const url = explicitUrl ?? envUrl ?? fileUrl;
   if (!url) return null;
 
-  const explicitKey = options.apiKey?.trim();
-  const envKey = deps.env.RELAY_BROKER_API_KEY?.trim();
+  const explicitKey = trimOrUndefined(options.apiKey);
+  const envKey = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
   const fileKey = readString(connectionFile, 'api_key');
   const apiKey = explicitKey ?? envKey ?? fileKey;
 

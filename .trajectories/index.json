@@ -414,7 +414,7 @@
       "title": "Upgrade .agentworkforce personas to latest 3.x shape",
       "status": "active",
       "startedAt": "2026-05-14T14:28:34.155Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a6a4c81d0cc7bc544/.trajectories/active/traj_v87cyrs8dke9.json"
+      "path": ".trajectories/active/traj_v87cyrs8dke9.json"
     },
     "traj_v1wexlfur5zr": {
       "title": "Fix broker headless reliability doc",

@@ -23,7 +23,7 @@
         {
           "ts": 1779076919335,
           "type": "decision",
-          "content": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts: Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
+          "content": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
           "raw": {
             "question": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
             "chosen": "Factored broker-connection discovery into src/cli/lib/broker-connection.ts",
@@ -35,7 +35,7 @@
         {
           "ts": 1779076919835,
           "type": "decision",
-          "content": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents: Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
+          "content": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
           "raw": {
             "question": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",
             "chosen": "Hand-rolled keybind state machine in drive.ts instead of pulling in readline.emitKeypressEvents",

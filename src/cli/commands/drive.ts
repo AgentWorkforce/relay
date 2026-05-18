@@ -650,7 +650,12 @@ export async function runDriveSession(
       if (outcome.forward.length > 0) {
         // Fire-and-forget; surface errors via log but don't block the
         // event loop on every keystroke.
-        void sendInput(connection, agentName, outcome.forward.toString('binary'), deps.fetch).then((res) => {
+        // UTF-8, not latin1 — the broker deserializes /api/input's
+        // `data` as a Rust `String` and forwards the bytes verbatim.
+        // 'binary' would map bytes ≥ 0x80 to Latin-1 code points,
+        // which then get UTF-8 re-encoded on the wire, doubling
+        // multi-byte characters (e.g. `é` → `Ã©` on the agent's side).
+        void sendInput(connection, agentName, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
           if (!res.ok) {
             deps.log(`[drive] input send failed: ${res.message ?? 'unknown error'}`);
           }

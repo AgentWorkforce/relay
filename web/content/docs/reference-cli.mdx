@@ -105,7 +105,7 @@ Keybinds:
 | Keys | Action |
 | ---- | ------ |
 | `Ctrl+G` | Flush the pending queue (`POST /api/spawned/{name}/flush`). The broker injects each queued message in FIFO order and emits `agent_pending_drained`. |
-| `Ctrl+B` then `D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. |
+| `Ctrl+B` then `D` / `d` / `Ctrl+D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. The parser accepts uppercase, lowercase, or `Ctrl+D` after the `Ctrl+B` prefix. |
 | `Ctrl+B` then `?` | Toggle a small help hint inside the status line. |
 | `Ctrl+C` | Safety alias for detach. `drive` never kills the agent — use `agent-relay agents:kill` for that. |
 | `Ctrl+B` then any other key | Forwarded to the agent unchanged so TUI apps that use `Ctrl+B` themselves aren't deprived. |
