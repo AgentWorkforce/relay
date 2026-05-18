@@ -11,6 +11,7 @@ import {
   runDriveSession,
   type DriveDependencies,
   type DriveStdin,
+  type DriveTerminal,
   type DriveWebSocket,
 } from './drive.js';
 
@@ -90,6 +91,47 @@ class FakeStdin implements DriveStdin {
   }
 }
 
+/**
+ * Fake terminal size source. Tests control the current `(rows, cols)`
+ * via `setSize` and synthesize a resize event via `triggerResize`.
+ * `null` size simulates "not a TTY" so the resize-forwarding path can
+ * be exercised in both modes.
+ */
+class FakeTerminal implements DriveTerminal {
+  private currentSize: { rows: number; cols: number } | null;
+  private handlers: Array<() => void> = [];
+  /** Records every `(rows, cols)` reported via `getSize` *after* it
+   *  was called by the system under test. Useful for assertions. */
+  readonly sizeReadCount = { value: 0 };
+
+  constructor(initial: { rows: number; cols: number } | null = { rows: 30, cols: 100 }) {
+    this.currentSize = initial;
+  }
+
+  getSize(): { rows: number; cols: number } | null {
+    this.sizeReadCount.value += 1;
+    return this.currentSize;
+  }
+
+  onResize(handler: () => void): () => void {
+    this.handlers.push(handler);
+    return () => {
+      this.handlers = this.handlers.filter((h) => h !== handler);
+    };
+  }
+
+  /** Update the reported size *and* fire a resize event. */
+  setSize(size: { rows: number; cols: number } | null): void {
+    this.currentSize = size;
+    for (const h of this.handlers) h();
+  }
+
+  /** Returns the number of currently-subscribed resize listeners. */
+  listenerCount(): number {
+    return this.handlers.length;
+  }
+}
+
 /** Routed fetch — keyed on `${method} ${pathSuffix}`. */
 type FetchRoute = (init?: RequestInit) => Promise<Response>;
 
@@ -104,11 +146,16 @@ interface FetchScript {
   modeFlipFailure?: { status: number; error?: string };
   /** Make `captureAndRenderSnapshot` return this status. */
   snapshotResult?: Awaited<ReturnType<DriveDependencies['captureAndRenderSnapshot']>>;
+  /** Initial local terminal size. Defaults to `{ rows: 30, cols: 100 }`;
+   *  pass `null` to simulate "not a TTY" so the resize-forwarding path
+   *  short-circuits. */
+  terminalSize?: { rows: number; cols: number } | null;
 }
 
 function createHarness(opts: FetchScript = {}): {
   deps: DriveDependencies;
   stdin: FakeStdin;
+  terminal: FakeTerminal;
   sockets: FakeWebSocket[];
   writes: string[];
   errors: unknown[][];
@@ -123,11 +170,19 @@ function createHarness(opts: FetchScript = {}): {
   const sockets: FakeWebSocket[] = [];
   const fetchLog: Array<{ url: string; method: string; body?: unknown }> = [];
   const stdin = new FakeStdin();
+  const terminal = new FakeTerminal(
+    opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
+  );
 
   const initialMode = opts.initialMode ?? 'relay';
   const initialPending = opts.initialPending ?? 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
+    'POST /resize': async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
     'GET /mode': async () =>
       new Response(JSON.stringify({ mode: initialMode }), {
         status: 200,
@@ -190,6 +245,8 @@ function createHarness(opts: FetchScript = {}): {
       key = `${method} /flush`;
     } else if (/\/api\/input\/[^/]+$/.test(url)) {
       key = `${method} /input`;
+    } else if (/\/api\/resize\/[^/]+$/.test(url)) {
+      key = `${method} /resize`;
     }
     if (key && routes[key]) {
       return routes[key](init);
@@ -229,9 +286,10 @@ function createHarness(opts: FetchScript = {}): {
       return opts.snapshotResult ?? { status: 'ok' };
     }) as DriveDependencies['captureAndRenderSnapshot'],
     stdin,
+    terminal,
   };
 
-  return { deps, stdin, sockets, writes, errors, logs, signals, fetchLog };
+  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog };
 }
 
 afterEach(() => {
@@ -576,6 +634,94 @@ describe('runDriveSession', () => {
     const code = await runDriveSession('Alice', {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+  });
+
+  // ---- resize forwarding (table-stakes for a take-over UX) ----
+
+  it('forwards the local terminal size to the broker on attach', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 60, cols: 200 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    const resizeCalls = fetchLog.filter((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    expect(resizeCalls).toHaveLength(1);
+    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('forwards subsequent SIGWINCH resize events to the broker', async () => {
+    const { deps, sockets, signals, terminal, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // Simulate the user dragging their terminal larger, then smaller.
+    terminal.setSize({ rows: 50, cols: 150 });
+    await new Promise((resolve) => setImmediate(resolve));
+    terminal.setSize({ rows: 24, cols: 80 });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const resizeBodies = fetchLog
+      .filter((call) => call.method === 'POST' && call.url.includes('/resize/'))
+      .map((call) => call.body);
+    // First the on-attach sync, then each user-driven resize.
+    expect(resizeBodies).toEqual([
+      { rows: 30, cols: 100 },
+      { rows: 50, cols: 150 },
+      { rows: 24, cols: 80 },
+    ]);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('unsubscribes the resize listener on detach', async () => {
+    const { deps, sockets, signals, terminal } = createHarness();
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    expect(terminal.listenerCount()).toBe(1);
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+    expect(terminal.listenerCount()).toBe(0);
+  });
+
+  it('skips resize forwarding when stdout is not a TTY', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({ terminalSize: null });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    const resizeCalls = fetchLog.filter((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    expect(resizeCalls).toHaveLength(0);
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('logs but continues when the initial resize sync fails', async () => {
+    const { deps, sockets, signals, logs } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      routes: {
+        'POST /resize': async () =>
+          new Response('boom', { status: 500, headers: { 'Content-Type': 'text/plain' } }),
+      },
+    });
+
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    // Should still open the WS even though resize failed — UX-annoying
+    // not fatal; the human can still type into an unsync'd-size agent.
+    const socket = await openSocket(sockets);
+
+    expect(logs.some((args) => String(args[0]).includes('could not sync agent PTY size'))).toBe(true);
+    expect(socket).toBeDefined();
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
   });
 });
 

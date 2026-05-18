@@ -75,6 +75,21 @@ export interface DriveStdin {
   removeListener?(event: 'data', listener: (chunk: Buffer) => void): unknown;
 }
 
+/**
+ * Local terminal-size source. Wraps `process.stdout` in production so
+ * the resize wiring reads the user's actual terminal dimensions and
+ * gets a SIGWINCH-equivalent `'resize'` event for free. Tests inject a
+ * controllable fake.
+ */
+export interface DriveTerminal {
+  /** Current `(rows, cols)`. Returns `null` when stdout is not a TTY,
+   *  in which case resize forwarding is skipped entirely. */
+  getSize(): { rows: number; cols: number } | null;
+  /** Subscribe to local-terminal resize events. Returns an unsubscribe
+   *  function the client calls during teardown. */
+  onResize(handler: () => void): () => void;
+}
+
 export interface DriveDependencies {
   /** Reads `<state-dir>/connection.json` and returns parsed JSON, or null. */
   readConnectionFile: (stateDir: string) => unknown;
@@ -101,6 +116,8 @@ export interface DriveDependencies {
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   /** Stdin handle — defaults to `process.stdin`. */
   stdin: DriveStdin;
+  /** Local terminal size source — defaults to `process.stdout`. */
+  terminal: DriveTerminal;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
@@ -121,6 +138,24 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
     fetch: (input, init) => fetch(input, init),
     captureAndRenderSnapshot,
     stdin: process.stdin as DriveStdin,
+    terminal: {
+      getSize: () => {
+        // process.stdout.isTTY is `true | undefined`; reading
+        // rows/columns on a non-TTY returns `undefined`.
+        const stdout = process.stdout;
+        if (!stdout.isTTY) return null;
+        const rows = stdout.rows;
+        const cols = stdout.columns;
+        if (typeof rows !== 'number' || typeof cols !== 'number') return null;
+        return { rows, cols };
+      },
+      onResize: (handler) => {
+        // Node automatically translates SIGWINCH into a `'resize'`
+        // event on `process.stdout` when stdout is a TTY.
+        process.stdout.on('resize', handler);
+        return () => process.stdout.off('resize', handler);
+      },
+    },
     ...overrides,
   };
 }
@@ -252,6 +287,36 @@ export async function sendInput(
       method: 'POST',
       headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
       body: JSON.stringify({ data }),
+    });
+    if (!res.ok) {
+      return { ok: false, message: `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, message };
+  }
+}
+
+/**
+ * `POST /api/resize/{name}` body `{ rows, cols }`. Forwards the
+ * driver's local terminal dimensions so the agent's PTY (and any TUI
+ * running in it) sees the size the human is actually looking at.
+ * Called once on attach and again on every local-terminal resize.
+ */
+export async function resizeWorker(
+  connection: BrokerConnection,
+  agentName: string,
+  rows: number,
+  cols: number,
+  fetchFn: typeof globalThis.fetch
+): Promise<{ ok: boolean; message?: string }> {
+  const url = `${connection.url}/api/resize/${encodeURIComponent(agentName)}`;
+  try {
+    const res = await fetchFn(url, {
+      method: 'POST',
+      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows, cols }),
     });
     if (!res.ok) {
       return { ok: false, message: `HTTP ${res.status}` };
@@ -502,7 +567,16 @@ export async function runDriveSession(
   // first paint.
   let pending = await getPendingCount(connection, agentName, deps.fetch);
   let showHelp = false;
-  const terminalRows = typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined;
+
+  // Status-line row tracks the LOCAL terminal's bottom row, not the
+  // agent's PTY rows from the snapshot — those can differ before we
+  // forward our size to the broker, and the status line needs to land
+  // where the human is looking. Falls back to the snapshot rows, then
+  // the renderer's own 24-row default.
+  const initialLocalSize = deps.terminal.getSize();
+  let terminalRows: number | undefined =
+    initialLocalSize?.rows ??
+    (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
 
   const paintStatus = (): void => {
     deps.writeChunk(
@@ -517,6 +591,27 @@ export async function runDriveSession(
   };
   paintStatus();
 
+  // Sync the agent's PTY to the driver's local terminal size. tmux /
+  // screen / ssh all do this — without it, a TUI in the agent renders
+  // into whatever 24×80 box the PTY was spawned with, ignoring the
+  // human's actual viewport. Best-effort: a failure here is annoying
+  // but not fatal (the human can still type, output just renders into
+  // the old size). Skipped entirely when stdout isn't a TTY.
+  if (initialLocalSize) {
+    const initialResize = await resizeWorker(
+      connection,
+      agentName,
+      initialLocalSize.rows,
+      initialLocalSize.cols,
+      deps.fetch
+    );
+    if (!initialResize.ok) {
+      deps.log(
+        `[drive] could not sync agent PTY size to local terminal (${initialResize.message ?? 'unknown'}); continuing`
+      );
+    }
+  }
+
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
   if (connection.apiKey) {
@@ -526,7 +621,28 @@ export async function runDriveSession(
   return new Promise<number>((resolve) => {
     let settled = false;
     let rawModeWasSet = false;
+    let unsubscribeResize: (() => void) | null = null;
     const parser = new KeybindParser();
+
+    // Local-terminal resize handler. Forwards to the broker and
+    // repaints the status line at the new bottom-row index. Registered
+    // on `socket.on('open')` (same point we take over stdin) so a
+    // failed connection doesn't leave a dangling listener; unregistered
+    // in `teardownStdin` so detach is clean.
+    const resizeHandler = (): void => {
+      const size = deps.terminal.getSize();
+      if (!size) return;
+      terminalRows = size.rows;
+      void resizeWorker(connection, agentName, size.rows, size.cols, deps.fetch).then((res) => {
+        if (!res.ok) {
+          deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
+        }
+      });
+      // Repaint regardless of fetch outcome — the local terminal has
+      // already moved, so the status line position needs to move with
+      // it whether or not the broker accepted the resize.
+      paintStatus();
+    };
 
     // ---- stdin handling ----
     const stdinDataHandler = (chunk: Buffer): void => {
@@ -582,6 +698,14 @@ export async function runDriveSession(
       } catch {
         // best effort
       }
+      try {
+        if (unsubscribeResize) {
+          unsubscribeResize();
+          unsubscribeResize = null;
+        }
+      } catch {
+        // best effort
+      }
       rawModeWasSet = false;
     };
 
@@ -618,6 +742,10 @@ export async function runDriveSession(
         }
         deps.stdin.resume();
         deps.stdin.on('data', stdinDataHandler);
+        // Subscribe to local-terminal resize events at the same point
+        // we take over stdin so the lifecycles match — both go away in
+        // `teardownStdin` on any exit path.
+        unsubscribeResize = deps.terminal.onResize(resizeHandler);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         deps.error(`[drive] could not enable raw input mode: ${message}`);

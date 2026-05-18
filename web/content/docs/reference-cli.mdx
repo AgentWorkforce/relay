@@ -88,6 +88,7 @@ The client auto-discovers the running broker the same way `view` does (`--broker
 4. Calls `GET /api/spawned/{name}/pending` once to seed the status-line counter.
 5. Opens a WebSocket to `/ws` and subscribes to `worker_stream`, `delivery_queued`, and `agent_pending_drained` events for this agent.
 6. Switches local stdin to raw mode and forwards keystrokes to `POST /api/input/{name}`.
+7. Syncs the agent's PTY dimensions to your local terminal via `POST /api/resize/{name}` and forwards every subsequent `SIGWINCH`. Without this, a TUI in the agent would render into whatever 24×80 box the PTY was spawned with regardless of how big your terminal actually is. Skipped entirely when stdout isn't a TTY.
 
 On detach (clean or abnormal), `drive` best-effort restores the worker's previous session mode so the queue doesn't fill up indefinitely, and leaves the agent running under the broker.
 
