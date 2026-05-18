@@ -2427,20 +2427,21 @@ async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
                                 let entry = session_states.entry(name.clone()).or_default();
                                 let previous = entry.mode;
                                 entry.mode = mode;
-                                let to_flush: Vec<PendingRelayMessage> =
-                                    if previous == SessionMode::Human && mode == SessionMode::Relay
-                                    {
-                                        entry.drain_pending()
-                                    } else {
-                                        Vec::new()
-                                    };
+                                let to_flush: Vec<PendingRelayMessage> = if previous
+                                    == SessionMode::Human
+                                    && mode == SessionMode::Passthrough
+                                {
+                                    entry.drain_pending()
+                                } else {
+                                    Vec::new()
+                                };
                                 let flushed = to_flush.len();
                                 if !to_flush.is_empty() {
                                     tracing::info!(
                                         target = "agent_relay::broker",
                                         worker = %name,
                                         drained = flushed,
-                                        "draining pending queue on human → relay transition"
+                                        "draining pending queue on human → passthrough transition"
                                     );
                                 }
                                 for queued in to_flush {
@@ -4247,9 +4248,7 @@ fn build_agent_metrics(handle: &WorkerHandle) -> AgentMetrics {
 /// Outcome of [`gate_inbound_for_session_mode`]. Distinguishes the
 /// three cases broker call sites care about: continue with the existing
 /// inject path, the message was queued (success — caller acks the
-/// sender), or there's no worker (caller skips this target). `Inject`
-/// and `WorkerMissing` reproduce the default broker behaviour for
-/// `relay`-mode workers; `Queued` is the human-mode-only outcome.
+/// sender), or there's no worker (caller skips this target).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GateOutcome {
     Inject,
@@ -4296,7 +4295,7 @@ fn gate_inbound_for_session_mode(
         return GateOutcome::WorkerMissing;
     }
     let state = session_states.entry(worker_name.to_string()).or_default();
-    if state.mode == SessionMode::Relay {
+    if state.mode == SessionMode::Passthrough {
         return GateOutcome::Inject;
     }
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
@@ -4345,9 +4344,9 @@ fn gate_inbound_for_session_mode(
 /// Inject a previously-queued pending relay message into the worker via
 /// the existing `queue_and_try_delivery_raw` path. Used by the
 /// `/api/spawned/{name}/flush` handler and by the auto-drain on a
-/// `human → relay` transition. Failures are logged but not propagated —
-/// the broker treats `flush` as best-effort fire-and-forget the same
-/// way `/api/send` does for individual targets.
+/// `human → passthrough` transition. Failures are logged but not
+/// propagated — the broker treats `flush` as best-effort fire-and-forget
+/// the same way `/api/send` does for individual targets.
 async fn inject_pending_relay_message(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<String, PendingDelivery>,

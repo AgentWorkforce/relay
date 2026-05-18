@@ -5,21 +5,22 @@ use crate::protocol::MessageInjectionMode;
 /// Per-worker session mode controlling how inbound relay messages are
 /// dispatched into the wrapped agent's PTY.
 ///
-/// - [`SessionMode::Relay`] (default) injects inbound messages directly
-///   into the worker.
-/// - [`SessionMode::Human`] holds inbound messages in a per-worker pending
-///   queue so a human-driven client (the `agent-relay drive` verb) can
-///   decide when to flush them.
+/// - [`SessionMode::Passthrough`] (default) injects inbound messages
+///   directly into the worker. The user's own keystrokes also pass
+///   through alongside the broker's auto-injections; both writers race.
+/// - [`SessionMode::Human`] holds inbound messages in a per-worker
+///   pending queue so a human-driven client can decide when to flush
+///   them.
 ///
 /// Mode is broker-side state only; the worker process does not observe it.
-/// It resets to [`SessionMode::Relay`] on broker restart — there is no
-/// disk persistence.
+/// It resets to [`SessionMode::Passthrough`] on broker restart — there
+/// is no disk persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
     /// Inbound messages auto-inject into the worker's PTY.
     #[default]
-    Relay,
+    Passthrough,
     /// Inbound messages append to the per-worker pending queue and wait
     /// for an explicit flush.
     Human,
@@ -28,14 +29,14 @@ pub enum SessionMode {
 impl SessionMode {
     pub fn as_wire_str(&self) -> &'static str {
         match self {
-            SessionMode::Relay => "relay",
+            SessionMode::Passthrough => "passthrough",
             SessionMode::Human => "human",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "relay" => Some(SessionMode::Relay),
+            "passthrough" => Some(SessionMode::Passthrough),
             "human" => Some(SessionMode::Human),
             _ => None,
         }
@@ -46,7 +47,7 @@ impl SessionMode {
 /// [`SessionMode::Human`] and therefore got parked in the per-worker
 /// pending queue instead of being injected. Drained in FIFO order by
 /// `POST /api/spawned/{name}/flush` or the auto-drain on a
-/// `human → relay` mode transition.
+/// `human → passthrough` mode transition.
 ///
 /// The full delivery context is captured at queue time so a drain
 /// later produces a byte-for-byte equivalent of the original delivery
@@ -226,8 +227,8 @@ pub const MAX_PENDING_PER_WORKER: usize = 256;
 /// log + telemetry consistently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionDispatch {
-    /// Worker is in [`SessionMode::Relay`]; the broker should run the
-    /// existing inject path.
+    /// Worker is in [`SessionMode::Passthrough`]; the broker should run
+    /// the existing inject path.
     Inject,
     /// Worker is in [`SessionMode::Human`]; the message was queued.
     /// `queue_len` is the queue size *after* the push.
@@ -265,13 +266,13 @@ impl SessionState {
 
     /// Gate an inbound relay message through the current session mode.
     ///
-    /// In [`SessionMode::Relay`] the message is *not* enqueued; the
-    /// caller runs the existing inject path. In [`SessionMode::Human`]
+    /// In [`SessionMode::Passthrough`] the message is *not* enqueued;
+    /// the caller runs the existing inject path. In [`SessionMode::Human`]
     /// the message is appended (with FIFO eviction at the cap) and the
     /// caller acks the sender without touching the worker's PTY.
     pub fn accept_inbound(&mut self, msg: PendingRelayMessage) -> SessionDispatch {
         match self.mode {
-            SessionMode::Relay => SessionDispatch::Inject,
+            SessionMode::Passthrough => SessionDispatch::Inject,
             SessionMode::Human => {
                 let evicted = self.push_pending(msg);
                 let queue_len = self.pending.len();
@@ -287,7 +288,7 @@ impl SessionState {
     }
 
     /// Drain the pending queue in FIFO order. Used by `POST /api/flush`
-    /// and by the auto-drain that runs on a `human → relay` transition.
+    /// and by the auto-drain that runs on a `human → passthrough` transition.
     pub fn drain_pending(&mut self) -> Vec<PendingRelayMessage> {
         self.pending.drain(..).collect()
     }
@@ -324,7 +325,7 @@ mod session_tests {
     fn session_mode_wire_format_matches_serde_round_trip() {
         // Guard against `as_wire_str` / `parse` drifting from the
         // `#[serde(rename_all = "snake_case")]` representation.
-        for variant in [SessionMode::Relay, SessionMode::Human] {
+        for variant in [SessionMode::Passthrough, SessionMode::Human] {
             let serialized = serde_json::to_string(&variant)
                 .expect("SessionMode serializes")
                 .trim_matches('"')
@@ -365,15 +366,15 @@ mod session_tests {
     }
 
     #[test]
-    fn default_mode_is_relay() {
+    fn default_mode_is_passthrough() {
         let state = SessionState::default();
-        assert_eq!(state.mode, SessionMode::Relay);
+        assert_eq!(state.mode, SessionMode::Passthrough);
         assert!(state.pending.is_empty());
     }
 
     #[test]
-    fn relay_mode_does_not_queue() {
-        let mut state = SessionState::new(SessionMode::Relay);
+    fn passthrough_mode_does_not_queue() {
+        let mut state = SessionState::new(SessionMode::Passthrough);
         let outcome = state.accept_inbound(msg("Alice", "hi"));
         assert_eq!(outcome, SessionDispatch::Inject);
         assert!(state.pending.is_empty());
@@ -437,11 +438,16 @@ mod session_tests {
 
     #[test]
     fn parse_round_trips_wire_strings() {
-        assert_eq!(SessionMode::parse("relay"), Some(SessionMode::Relay));
+        assert_eq!(
+            SessionMode::parse("passthrough"),
+            Some(SessionMode::Passthrough)
+        );
         assert_eq!(SessionMode::parse("HUMAN"), Some(SessionMode::Human));
         assert_eq!(SessionMode::parse(" human "), Some(SessionMode::Human));
         assert_eq!(SessionMode::parse("drive"), None);
-        assert_eq!(SessionMode::Relay.as_wire_str(), "relay");
+        // No back-compat alias: the prior "relay" wire form must not parse.
+        assert_eq!(SessionMode::parse("relay"), None);
+        assert_eq!(SessionMode::Passthrough.as_wire_str(), "passthrough");
         assert_eq!(SessionMode::Human.as_wire_str(), "human");
     }
 }

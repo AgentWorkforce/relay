@@ -205,7 +205,11 @@ export async function runViewSession(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: ViewDependencies
 ): Promise<number> {
-  if (!agentName.trim()) {
+  // Normalize once so every downstream lookup, WS-event match, and
+  // error message uses the same value. A stray space in the raw input
+  // otherwise turns into a silent 404 (broker stores names verbatim).
+  const name = agentName.trim();
+  if (!name) {
     deps.error('Error: agent name is required');
     return 1;
   }
@@ -228,17 +232,17 @@ export async function runViewSession(
   // still produce useful output even if the snapshot couldn't be served.
   const snapshot = await deps.captureAndRenderSnapshot(
     { url: connection.url, apiKey: connection.apiKey },
-    agentName,
+    name,
     { fetch: deps.fetch, writeChunk: deps.writeChunk }
   );
   switch (snapshot.status) {
     case 'ok':
       break;
     case 'not_found':
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
+      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
       return 1;
     case 'no_pty':
-      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to view`}`);
+      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to view`}`);
       return 1;
     case 'unavailable':
     case 'transport_error':
@@ -273,13 +277,13 @@ export async function runViewSession(
     deps.onSignal('SIGTERM', () => finish(0));
 
     socket.on('open', () => {
-      deps.log(`[view] streaming ${agentName} from ${connection.url} (Ctrl+C to exit)`);
+      deps.log(`[view] streaming ${name} from ${connection.url} (Ctrl+C to exit)`);
     });
 
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const chunk = extractMatchingChunk(text, agentName);
+      const chunk = extractMatchingChunk(text, name);
       if (chunk !== null) {
         deps.writeChunk(chunk);
       }

@@ -238,9 +238,10 @@ a diagnostic to stderr and exits non-zero.
 Per-agent **session mode** controls how the broker dispatches inbound
 relay messages to a spawned worker. Two modes are supported:
 
-- **`relay`** (default) — inbound messages auto-inject into the worker's
-  PTY, exactly as the broker has always behaved. Use this for headless
-  agents that should react to incoming traffic on their own.
+- **`passthrough`** (default) — inbound messages auto-inject into the
+  worker's PTY. Use this for headless agents that should react to
+  incoming traffic on their own, or for a `passthrough` client session
+  where the human types alongside the broker.
 - **`human`** — inbound messages are *queued* in a per-worker pending
   buffer instead of being injected. A human operator (or the
   `agent-relay drive` client) decides when to drain the queue. Useful
@@ -248,13 +249,13 @@ relay messages to a spawned worker. Two modes are supported:
   background traffic racing your keystrokes.
 
 Mode is broker-side state only — the worker process never observes it.
-Mode resets to `relay` when the broker restarts and the pending queue
+Mode resets to `passthrough` when the broker restarts and the pending queue
 is dropped (no on-disk persistence).
 
 | Method | Path                              | Purpose                                                                          |
 | ------ | --------------------------------- | -------------------------------------------------------------------------------- |
-| `GET`  | `/api/spawned/{name}/mode`        | Read the current session mode. Returns `{ "mode": "relay" \| "human" }`.         |
-| `PUT`  | `/api/spawned/{name}/mode`        | Set the session mode. Body `{ "mode": "relay" \| "human" }`.                     |
+| `GET`  | `/api/spawned/{name}/mode`        | Read the current session mode. Returns `{ "mode": "passthrough" \| "human" }`.         |
+| `PUT`  | `/api/spawned/{name}/mode`        | Set the session mode. Body `{ "mode": "passthrough" \| "human" }`.                     |
 | `GET`  | `/api/spawned/{name}/pending`     | Snapshot the per-worker pending queue (FIFO, head first).                        |
 | `POST` | `/api/spawned/{name}/flush`       | Drain the pending queue and inject every message into the worker. FIFO order.    |
 
@@ -264,19 +265,19 @@ is dropped (no on-disk persistence).
 { "mode": "human" }
 ```
 
-On a `human → relay` transition the broker auto-drains the pending
+On a `human → passthrough` transition the broker auto-drains the pending
 queue into the worker (via the normal inject path) **before** returning,
-so flipping back to `relay` never strands queued messages. The response
+so flipping back to `passthrough` never strands queued messages. The response
 reports how many messages were flushed:
 
 ```json
-{ "mode": "relay", "flushed": 3 }
+{ "mode": "passthrough", "flushed": 3 }
 ```
 
-A `relay → human` flip or a same-mode noop returns `"flushed": 0`.
+A `passthrough → human` flip or a same-mode noop returns `"flushed": 0`.
 
 Status codes: `200` on success, `400` on a body that isn't
-`{ "mode": "relay" }` or `{ "mode": "human" }`, `404` if the agent is
+`{ "mode": "passthrough" }` or `{ "mode": "human" }`, `404` if the agent is
 not registered.
 
 #### `GET /api/spawned/{name}/pending`
@@ -386,7 +387,7 @@ Durable (replayable via `?sinceSeq=...`):
 | `delivery_retry`                       | Delivery is being retried.                             |
 | `delivery_queued`                      | Inbound delivery parked in the per-worker pending queue because the worker is in `human` session mode. Payload carries `event_id`, `from`, `target`, and `reason: "session_mode_human"`. |
 | `agent_session_mode_changed`           | A worker's session mode flipped via `PUT /api/spawned/{name}/mode`. Payload carries `previous_mode` and `mode`. |
-| `agent_pending_drained`                | The per-worker pending queue was drained. Payload carries `count` and `reason` (`mode_transition` for the auto-drain on `human → relay`, `explicit_flush` for `POST .../flush`). |
+| `agent_pending_drained`                | The per-worker pending queue was drained. Payload carries `count` and `reason` (`mode_transition` for the auto-drain on `human → passthrough`, `explicit_flush` for `POST .../flush`). |
 
 Ephemeral (broadcast only, no replay):
 
@@ -463,11 +464,11 @@ curl -s localhost:3888/api/spawned/Alice/pending \
 curl -sX POST localhost:3888/api/spawned/Alice/flush \
   -H "X-API-Key: $KEY"
 
-# 5. Flip Alice back to relay mode. Any messages still in the
+# 5. Flip Alice back to passthrough mode. Any messages still in the
 #    queue are drained automatically before this call returns.
 curl -sX PUT localhost:3888/api/spawned/Alice/mode \
   -H "X-API-Key: $KEY" \
-  -d '{"mode":"relay"}'
+  -d '{"mode":"passthrough"}'
 ```
 
 ## Error envelope

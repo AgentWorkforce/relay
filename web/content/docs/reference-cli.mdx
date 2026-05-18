@@ -127,3 +127,130 @@ agent-relay drive reviewer
 ```
 
 `drive` is single-driver-assumed: if two `drive` clients attach to the same worker, last writer wins on keystrokes and they both see the same WebSocket stream. There is no multi-driver coordination — the broker treats each client's keystrokes as independent input.
+
+The auto-inject sibling is [`passthrough`](#passthrough) below.
+
+## `passthrough`
+
+Watch a running agent in passthrough mode. Where [`drive`](#drive) flips the worker into `human` mode and parks inbound relay messages in a queue, `passthrough` leaves the worker in `passthrough` mode (the broker default) so the broker auto-injects inbound relay messages into the agent's PTY *while you also type*. Both streams race — that's the verb's whole point. Use `passthrough` when you want to observe and occasionally nudge while the broker does its coordination thing; use `drive` when you want exclusive deterministic control.
+
+```bash
+agent-relay passthrough reviewer
+```
+
+Connection discovery, snapshot-on-attach, resize forwarding, and detach semantics are identical to `drive`. On attach, `passthrough` issues an idempotent `PUT /api/spawned/{name}/mode` with `{ "mode": "passthrough" }` so a worker that someone left in `human` mode is moved back to passthrough for the duration of your session, and the prior mode is restored on detach.
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+Keybinds:
+
+| Keys | Action |
+| ---- | ------ |
+| `Ctrl+B` then `D` / `d` / `Ctrl+D` | Detach cleanly. Restores the worker's prior session mode, closes the WebSocket, exits 0. |
+| `Ctrl+B` then `?` | Toggle the inline help hint in the status line. |
+| `Ctrl+C` | Safety alias for detach — `passthrough` never kills the agent. |
+| `Ctrl+B` then any other key | Forwarded to the agent unchanged. |
+
+`passthrough` does *not* bind `Ctrl+G` (there's no queue to flush in passthrough mode — that's a `drive` concept). The status line is similar to `drive`'s but without the pending counter:
+
+```
+[passthrough reviewer | mode=passthrough | Ctrl+B D detach]
+```
+
+`passthrough` is single-driver-assumed in the same way `drive` is — last writer wins on keystrokes between the broker's auto-inject and your typing.
+
+## `new`
+
+Spawn a new agent under the broker. Headless by default — the agent keeps running as a child of the broker and you attach later with `view`, `drive`, or `passthrough`. Pass `--attach` to immediately open a session.
+
+```bash
+# Spawn-only (headless): agent survives in the background.
+agent-relay new Alice claude
+agent-relay new Alice claude --task "review the auth changes"
+agent-relay new Alice claude --channels general,reviews --model opus
+
+# Spawn + attach in one shot.
+agent-relay new Alice claude --attach                       # default mode: drive
+agent-relay new Alice claude --attach --mode passthrough    # auto-inject + human types alongside
+agent-relay new Alice claude --attach --mode view           # read-only
+agent-relay new Alice claude --attach --ephemeral           # release on client exit
+```
+
+`new` POSTs to `/api/spawn` with the supplied positional CLI (`claude`, `codex`, `gemini`, `opencode`, `aider`, …) and any trailing args, then either prints a one-line attach hint and exits (default), or composes the matching session verb (with `--attach`).
+
+It's the lightest spawn entry point in the CLI — the longer-form `spawn` command does the same thing but autostarts a broker if there isn't one.
+
+With `--attach --ephemeral`, the client registers a teardown that calls `DELETE /api/spawned/{name}` on clean detach, SIGINT, SIGTERM, or abnormal WebSocket close. Without `--ephemeral`, the agent keeps running after detach. `--mode` and `--ephemeral` are ignored without `--attach` (and produce a stderr warning if you try).
+
+Positional arguments:
+
+| Position | Required | Description |
+| -------- | -------- | ----------- |
+| `<name>` | yes | Agent name. Matches the positional shape of `drive`, `view`, `passthrough`, and `rm`. |
+| `<cli>` | yes | CLI to spawn (`claude`, `codex`, `gemini`, `opencode`, `aider`, …). |
+| `[args...]` | no | Extra positional arguments passed through to the spawned CLI. |
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--task <task>` | no | Initial task description sent to the agent on spawn. |
+| `--channels <list>` | no | Comma-separated channel names for the agent to join. |
+| `--cwd <path>` | no | Working directory for the agent's process. |
+| `--team <team>` | no | Team name for the agent. |
+| `--model <model>` | no | Model override (e.g. `opus`, `sonnet`, `gpt-4o`). |
+| `--attach` | no | After spawning, immediately open a session (default mode: `drive`). |
+| `--mode <mode>` | no | With `--attach`: session mode (`view`, `drive`, or `passthrough`). Defaults to `drive`. |
+| `--ephemeral` | no | With `--attach`: release the agent on client exit. |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+### `-n NAME CLI` shorthand
+
+A bare `-n NAME CLI` invocation is also recognised — it routes to the spawn-and-attach composition in passthrough mode with `--ephemeral` on:
+
+```bash
+agent-relay -n Alice claude
+```
+
+is equivalent to:
+
+```bash
+agent-relay new Alice claude --attach --mode passthrough --ephemeral
+```
+
+The shorthand is detected by a small pre-parse pass before Commander runs.
+
+| Shape | Routes to |
+| ----- | --------- |
+| `agent-relay -n NAME CLI [args...]` | `agent-relay new NAME CLI [args...] --attach --mode passthrough --ephemeral` |
+| `agent-relay --name NAME CLI [args...]` | (same) |
+| `agent-relay -nNAME CLI [args...]` | (same — joined short flag form) |
+| `agent-relay --name=NAME CLI [args...]` | (same — equals form) |
+
+## `rm`
+
+Release a running agent via the broker. Wraps `DELETE /api/spawned/{name}` — the lightweight counterpart to the longer-form `release` command, useful when you already have a broker running and don't want the SDK-client autostart.
+
+```bash
+agent-relay rm Alice
+```
+
+Flags:
+
+| Flag | Required | Description |
+| ---- | -------- | ----------- |
+| `--broker-url <url>` | no | Broker base URL. Falls back to `RELAY_BROKER_URL`, then `.agent-relay/connection.json`. |
+| `--api-key <key>` | no | Broker API key. Falls back to `RELAY_BROKER_API_KEY`, then the `api_key` field in `connection.json`. |
+| `--state-dir <dir>` | no | Directory containing `connection.json`. Defaults to `.agent-relay/`. |
+
+Returns 1 with a friendly error if the agent doesn't exist (`404`) or the broker is unreachable.
+
+The `new`, `passthrough`, and `rm` verbs above round out the attach-style client surface alongside `view` and `drive`. Together they're the first-class client interface on the broker's HTTP and WebSocket routes.
