@@ -853,9 +853,9 @@ pub(crate) fn is_auto_suggestion(output: &str) -> bool {
 /// Case-insensitive comparison for agent names.
 ///
 /// Agent names may have inconsistent casing across registration, WebSocket
-/// events, and API responses.  Centralising the comparison here prevents
-/// recurrences of the case-sensitivity routing bugs seen in commits 64bcb2f7
-/// and PR #641.
+/// events, and API responses. Centralising the comparison here prevents
+/// recurrences of the case-sensitivity routing bugs that the codebase has
+/// hit when each call site rolled its own comparison.
 pub(crate) fn agent_name_eq(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }

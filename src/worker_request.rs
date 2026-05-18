@@ -3,9 +3,9 @@
 //! Several broker → worker operations follow the same shape: the broker
 //! sends a typed request frame to a wrapped worker over its
 //! JSON-over-stdio pipe, then waits for a typed response frame back so it
-//! can fulfil an HTTP / CLI caller's `oneshot`. Today only `snapshot_pty`
-//! uses the pattern (introduced in #870), but several routes from #864
-//! (`mode` / `pending` / `flush`) will follow shortly.
+//! can fulfil an HTTP / CLI caller's `oneshot`. `snapshot_pty` and the
+//! session-mode routes (`mode` / `pending` / `flush`) all ride this
+//! pattern, and new request/response routes are expected to as well.
 //!
 //! This module factors out the bookkeeping so each new route costs ~5
 //! lines instead of ~80:
@@ -70,11 +70,11 @@ pub(crate) enum RequestWorkerError {
     WorkerDisappeared(String),
 
     /// The broker dropped the awaiter's `oneshot` before responding
-    /// (shutdown race). Reserved for future use; today the API layer
-    /// treats `oneshot::error::RecvError` from the broker channel as
-    /// an internal-server-error response directly, but new call sites
-    /// will need this variant once `request_worker` is wrapped in a
-    /// fully async helper.
+    /// (shutdown race). Reserved for future use: the API layer currently
+    /// maps `oneshot::error::RecvError` from the broker channel directly
+    /// to an internal-server-error response, but new call sites will
+    /// need this variant once `request_worker` is wrapped in a fully
+    /// async helper.
     #[allow(dead_code)]
     #[error("channel_closed: broker shut down before responding")]
     ChannelClosed,

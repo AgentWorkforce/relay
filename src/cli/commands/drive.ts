@@ -20,9 +20,6 @@
  *
  * On detach (clean or abnormal), best-effort `PUT .../mode` restores the
  * previous mode so the queue doesn't fill up indefinitely.
- *
- * See GitHub issue #864 for the full verb taxonomy. This module ships only
- * the `drive` verb — `relay` and `new`/`run` come in sub-PR 4.
  */
 
 import { Buffer } from 'node:buffer';
