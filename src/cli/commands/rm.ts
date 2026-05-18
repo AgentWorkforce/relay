@@ -8,9 +8,9 @@
  * `RELAY_BROKER_URL` / `connection.json` chain works as for `view` /
  * `drive` / `relay`.
  *
- * The longer-form `release` command in `agent-management.ts` does the
- * same thing through the SDK client but costs a broker autostart;
- * `rm` is the lighter "I already have a broker" entry point.
+ * The longer-form `release` command in `agent-management.ts` layers
+ * broker autostart on top of the same SDK client; `rm` is the lighter
+ * "I already have a broker" entry point.
  */
 
 import { Command } from 'commander';
@@ -22,6 +22,7 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
+import { createBrokerClient, mapBrokerSdkFailure } from '../lib/sdk-client.js';
 
 type ExitFn = (code: number) => never;
 
@@ -48,10 +49,6 @@ function withDefaults(overrides: Partial<RmDependencies> = {}): RmDependencies {
   };
 }
 
-function authHeaders(connection: BrokerConnection): Record<string, string> {
-  return connection.apiKey ? { 'X-API-Key': connection.apiKey } : {};
-}
-
 /** Outcome of `releaseAgent`. Useful for the `--ephemeral` teardown in `run`. */
 export interface ReleaseResult {
   ok: boolean;
@@ -60,7 +57,7 @@ export interface ReleaseResult {
 }
 
 /**
- * Issue `DELETE /api/spawned/{name}` against the broker. Returns a
+ * Release through the SDK client against the resolved broker. Returns a
  * structured outcome the caller can decide how to surface — `rm` prints
  * a one-liner, the `--ephemeral` teardown in `run` swallows failures
  * because the client is already on its way out.
@@ -70,23 +67,12 @@ export async function releaseAgent(
   agentName: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<ReleaseResult> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}`;
   try {
-    const res = await fetchFn(url, { method: 'DELETE', headers: authHeaders(connection) });
-    if (!res.ok) {
-      let message = `HTTP ${res.status}`;
-      try {
-        const body = (await res.json()) as { error?: unknown };
-        if (typeof body.error === 'string') message = body.error;
-      } catch {
-        // not JSON — keep the HTTP status
-      }
-      return { ok: false, status: res.status, message };
-    }
-    return { ok: true, status: res.status };
+    await createBrokerClient(connection, fetchFn).release(agentName);
+    return { ok: true, status: 200 };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, status: failure.status, message: failure.message };
   }
 }
 

@@ -9,6 +9,8 @@
  * of code.
  */
 
+import { createBrokerClient, mapBrokerSdkFailure } from './sdk-client.js';
+
 /** Connection metadata used to call the broker's snapshot endpoint. */
 export interface AttachSnapshotConnection {
   /** Broker base URL (no trailing slash). */
@@ -61,40 +63,26 @@ export async function captureAndRenderSnapshot(
   agentName: string,
   deps: AttachSnapshotDeps
 ): Promise<AttachSnapshotResult> {
-  const baseUrl = connection.url.replace(/\/+$/, '');
-  const target = `${baseUrl}/api/spawned/${encodeURIComponent(agentName)}/snapshot?format=ansi`;
-  const headers: Record<string, string> = {};
-  if (connection.apiKey) {
-    headers['X-API-Key'] = connection.apiKey;
-  }
-
-  let res: Response;
-  try {
-    res = await deps.fetch(target, { headers });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { status: 'transport_error', message };
-  }
-
-  if (res.status === 404) {
-    return { status: 'not_found', message: `no agent named '${agentName}'` };
-  }
-  if (res.status === 409) {
-    return {
-      status: 'no_pty',
-      message: `agent '${agentName}' has no PTY (headless worker — nothing to view)`,
-    };
-  }
-  if (!res.ok) {
-    return { status: 'unavailable', message: `snapshot returned HTTP ${res.status}` };
-  }
-
   let body: unknown;
   try {
-    body = await res.json();
-  } catch {
-    return { status: 'transport_error', message: 'snapshot response was not JSON' };
+    body = await createBrokerClient(connection, deps.fetch).snapshot(agentName, 'ansi');
+  } catch (err: unknown) {
+    const failure = mapBrokerSdkFailure(err);
+    if (failure.status === 404) {
+      return { status: 'not_found', message: `no agent named '${agentName}'` };
+    }
+    if (failure.status === 409) {
+      return {
+        status: 'no_pty',
+        message: `agent '${agentName}' has no PTY (headless worker — nothing to view)`,
+      };
+    }
+    if (failure.status === 0 || failure.status === 200) {
+      return { status: 'transport_error', message: failure.message };
+    }
+    return { status: 'unavailable', message: `snapshot returned HTTP ${failure.status}` };
   }
+
   if (typeof body !== 'object' || body === null) {
     return { status: 'transport_error', message: 'snapshot response was not an object' };
   }

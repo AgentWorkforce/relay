@@ -260,6 +260,123 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
+  it('exposes session mode and pending queue HTTP routes', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValueOnce({ mode: 'human' })
+      .mockResolvedValueOnce({ mode: 'passthrough', flushed: 2 })
+      .mockResolvedValueOnce({
+        pending: [
+          {
+            from: 'Alice',
+            body: 'one',
+            target: '#general',
+            priority: 1,
+            mode: 'steer',
+            queued_at_ms: 100,
+            event_id: 'evt_1',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ flushed: 1 });
+
+    await expect(client.getSessionMode('worker a')).resolves.toBe('human');
+    await expect(client.setSessionMode('worker a', 'passthrough')).resolves.toEqual({
+      mode: 'passthrough',
+      flushed: 2,
+    });
+    await expect(client.getPending('worker a')).resolves.toHaveLength(1);
+    await expect(client.flushPending('worker a')).resolves.toEqual({ flushed: 1 });
+
+    expect(request).toHaveBeenNthCalledWith(1, '/api/spawned/worker%20a/mode');
+    expect(request).toHaveBeenNthCalledWith(2, '/api/spawned/worker%20a/mode', {
+      method: 'PUT',
+      body: JSON.stringify({ mode: 'passthrough' }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker%20a/pending');
+    expect(request).toHaveBeenNthCalledWith(4, '/api/spawned/worker%20a/flush', { method: 'POST' });
+  });
+
+  it('exposes input, resize, and snapshot PTY routes', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValueOnce({ name: 'worker', bytes_written: 5 })
+      .mockResolvedValueOnce({ name: 'worker', rows: 40, cols: 120 })
+      .mockResolvedValueOnce({
+        format: 'ansi',
+        rows: 40,
+        cols: 120,
+        cursor: [2, 3],
+        screen: 'YW5zaQ==',
+      });
+
+    await expect(client.sendInput('worker', 'hello')).resolves.toEqual({
+      name: 'worker',
+      bytes_written: 5,
+    });
+    await expect(client.resizePty('worker', 40, 120)).resolves.toEqual({
+      name: 'worker',
+      rows: 40,
+      cols: 120,
+    });
+    await expect(client.snapshot('worker', 'ansi')).resolves.toMatchObject({
+      format: 'ansi',
+      rows: 40,
+      cols: 120,
+      screen: 'YW5zaQ==',
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, '/api/input/worker', {
+      method: 'POST',
+      body: JSON.stringify({ data: 'hello' }),
+    });
+    expect(request).toHaveBeenNthCalledWith(2, '/api/resize/worker', {
+      method: 'POST',
+      body: JSON.stringify({ rows: 40, cols: 120 }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker/snapshot?format=ansi');
+  });
+
+  it('subscribeWorkerStream yields only matching stream chunks', async () => {
+    const client = createProtocolClient();
+    const connect = vi.spyOn((client as any).transport, 'connect').mockImplementation(() => undefined);
+    const stream = client.subscribeWorkerStream('worker', { stream: 'stdout', sinceSeq: 7 });
+    const iterator = stream[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    emitClientEvent(client, { kind: 'worker_stream', name: 'other', stream: 'stdout', chunk: 'skip-other' });
+    emitClientEvent(client, {
+      kind: 'worker_stream',
+      name: 'worker',
+      stream: 'stderr',
+      chunk: 'skip-stderr',
+    });
+    emitClientEvent(client, { kind: 'worker_stream', name: 'worker', stream: 'stdout', chunk: 'first' });
+
+    await expect(next).resolves.toEqual({ done: false, value: 'first' });
+    await iterator.return?.();
+    expect(connect).toHaveBeenCalledWith(7);
+  });
+
+  it('HTTP protocol errors include response status for CLI adapters', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 'agent_not_found', message: "no agent named 'ghost'" }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    const client = new AgentRelayClient({ baseUrl: TEST_BASE_URL, fetch: fetchMock as typeof fetch });
+
+    await expect(client.getSessionMode('ghost')).rejects.toMatchObject({
+      code: 'agent_not_found',
+      status: 404,
+      message: "no agent named 'ghost'",
+    });
+  });
+
   it('buffers broker events and supports query/getLast helpers', () => {
     const client = createProtocolClient();
 

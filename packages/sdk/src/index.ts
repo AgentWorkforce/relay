@@ -6,7 +6,9 @@ export {
   type AgentRelayBrokerInitArgs,
   type AgentRelayClientOptions,
   type AgentRelaySpawnOptions,
+  type SetSessionModeResult,
   type SessionInfo,
+  type WorkerStreamSubscriptionOptions,
 } from './client.js';
 export * from './models.js';
 export { RelayCast, RelayError, AgentClient } from '@relaycast/sdk';

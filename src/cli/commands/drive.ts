@@ -24,6 +24,7 @@
 
 import { Buffer } from 'node:buffer';
 
+import type { SessionMode } from '@agent-relay/sdk';
 import { Command } from 'commander';
 import WebSocket from 'ws';
 
@@ -40,11 +41,12 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
+import { createBrokerClient, mapBrokerSdkFailure } from '../lib/sdk-client.js';
 
 type ExitFn = (code: number) => never;
 
 /** Wire string for the broker's `SessionMode` enum. */
-export type SessionMode = 'human' | 'passthrough';
+export type { SessionMode };
 
 /** Minimal WebSocket surface we depend on — same shape as `view`'s. */
 export interface DriveWebSocket {
@@ -157,11 +159,6 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
   };
 }
 
-/** Build the `X-API-Key` header set, or an empty object when no key. */
-function authHeaders(connection: BrokerConnection): Record<string, string> {
-  return connection.apiKey ? { 'X-API-Key': connection.apiKey } : {};
-}
-
 /** ----- HTTP helpers ----- */
 
 /** `GET /api/spawned/{name}/mode` → `'human' | 'passthrough'` or `null` on failure. */
@@ -170,13 +167,8 @@ export async function getSessionMode(
   name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<SessionMode | null> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/mode`;
   try {
-    const res = await fetchFn(url, { headers: authHeaders(connection) });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { mode?: unknown };
-    if (body.mode === 'human' || body.mode === 'passthrough') return body.mode;
-    return null;
+    return await createBrokerClient(connection, fetchFn).getSessionMode(name);
   } catch {
     return null;
   }
@@ -198,34 +190,13 @@ export async function setSessionMode(
   mode: SessionMode,
   fetchFn: typeof globalThis.fetch
 ): Promise<SetSessionModeResult> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/mode`;
   try {
-    const res = await fetchFn(url, {
-      method: 'PUT',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
-    });
-    if (!res.ok) {
-      let message = `HTTP ${res.status}`;
-      try {
-        const body = (await res.json()) as { error?: unknown };
-        if (typeof body.error === 'string') message = body.error;
-      } catch {
-        // body wasn't JSON; stick with HTTP status
-      }
-      return { ok: false, status: res.status, message };
-    }
-    let flushed: number | undefined;
-    try {
-      const body = (await res.json()) as { flushed?: unknown };
-      if (typeof body.flushed === 'number') flushed = body.flushed;
-    } catch {
-      // missing body is fine — mode flip still succeeded
-    }
-    return { ok: true, status: res.status, flushed };
+    const body = await createBrokerClient(connection, fetchFn).setSessionMode(name, mode);
+    const flushed = body.flushed;
+    return { ok: true, status: 200, flushed };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, status: failure.status, message: failure.message };
   }
 }
 
@@ -235,12 +206,8 @@ export async function getPendingCount(
   name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<number> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/pending`;
   try {
-    const res = await fetchFn(url, { headers: authHeaders(connection) });
-    if (!res.ok) return 0;
-    const body = (await res.json()) as { pending?: unknown };
-    return Array.isArray(body.pending) ? body.pending.length : 0;
+    return (await createBrokerClient(connection, fetchFn).getPending(name)).length;
   } catch {
     return 0;
   }
@@ -252,22 +219,12 @@ export async function flushPending(
   name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; flushed?: number; message?: string }> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(name)}/flush`;
   try {
-    const res = await fetchFn(url, { method: 'POST', headers: authHeaders(connection) });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
-    try {
-      const body = (await res.json()) as { flushed?: unknown };
-      const flushed = typeof body.flushed === 'number' ? body.flushed : undefined;
-      return { ok: true, flushed };
-    } catch {
-      return { ok: true };
-    }
+    const body = await createBrokerClient(connection, fetchFn).flushPending(name);
+    return { ok: true, flushed: body.flushed };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
@@ -278,20 +235,12 @@ export async function sendInput(
   data: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/input/${encodeURIComponent(name)}`;
   try {
-    const res = await fetchFn(url, {
-      method: 'POST',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
+    await createBrokerClient(connection, fetchFn).sendInput(name, data);
     return { ok: true };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
@@ -308,20 +257,12 @@ export async function resizeWorker(
   cols: number,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/resize/${encodeURIComponent(name)}`;
   try {
-    const res = await fetchFn(url, {
-      method: 'POST',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, cols }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
+    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols);
     return { ok: true };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
