@@ -116,6 +116,21 @@
       "types": "./dist/slack.d.ts",
       "import": "./dist/slack.js",
       "default": "./dist/slack.js"
+    },
+    "./provisioner/seeder": {
+      "types": "./dist/provisioner/seeder.d.ts",
+      "import": "./dist/provisioner/seeder.js",
+      "default": "./dist/provisioner/seeder.js"
+    },
+    "./provisioner/local-jwks": {
+      "types": "./dist/provisioner/local-jwks.d.ts",
+      "import": "./dist/provisioner/local-jwks.js",
+      "default": "./dist/provisioner/local-jwks.js"
+    },
+    "./provisioner/token": {
+      "types": "./dist/provisioner/token.d.ts",
+      "import": "./dist/provisioner/token.js",
+      "default": "./dist/provisioner/token.js"
     }
   },
   "files": [

@@ -41,6 +41,7 @@ function createHarness(options?: {
   const dataDir = options?.dataDir ?? '/tmp/data';
   const stdinTask = options?.stdinTask;
   const files = new Map(Object.entries(options?.files ?? {}));
+  const readFileFromMap = (filePath: string) => files.get(filePath) ?? '';
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -53,7 +54,26 @@ function createHarness(options?: {
     createAutostartClient: vi.fn(() => client),
     readTaskFromStdin: vi.fn(async () => stdinTask),
     fileExists: vi.fn((filePath: string) => files.has(filePath)),
-    readFile: vi.fn((filePath: string) => files.get(filePath) ?? ''),
+    readFile: vi.fn(readFileFromMap),
+    readFileTail: vi.fn((filePath: string, maxBytes: number) => {
+      const text = readFileFromMap(filePath);
+      const buffer = Buffer.from(text, 'utf-8');
+      const start = Math.max(0, buffer.length - maxBytes);
+      return {
+        text: buffer.subarray(start).toString('utf-8'),
+        size: buffer.length,
+      };
+    }),
+    readFileFrom: vi.fn((filePath: string, offset: number, maxBytes: number) => {
+      const text = readFileFromMap(filePath);
+      const buffer = Buffer.from(text, 'utf-8');
+      const start = Math.max(0, Math.min(offset, buffer.length));
+      const end = Math.min(buffer.length, start + maxBytes);
+      return {
+        text: buffer.subarray(start, end).toString('utf-8'),
+        size: end,
+      };
+    }),
     fetch: vi.fn(async () => new Response(JSON.stringify(options?.fetchResponse ?? { allAgents: [] }))),
     nowIso: vi.fn(() => options?.nowIso ?? '2026-02-20T12:00:00.000Z'),
     killProcess: vi.fn(() => undefined),
