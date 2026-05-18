@@ -2,6 +2,8 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
+export type SessionMode = 'passthrough' | 'human';
+export type SnapshotFormat = 'plain' | 'ansi';
 
 export interface RestartPolicy {
   enabled?: boolean;
@@ -38,6 +40,28 @@ export interface RelayDelivery {
   thread_id?: string;
   priority?: number;
   injection_mode?: MessageInjectionMode;
+}
+
+export interface PendingRelayMessage {
+  from: string;
+  body: string;
+  target: string;
+  thread_id?: string;
+  workspace_id?: string;
+  workspace_alias?: string;
+  priority: number;
+  mode: MessageInjectionMode;
+  queued_at_ms: number;
+  event_id?: string;
+}
+
+export interface PtySnapshot {
+  format: SnapshotFormat;
+  rows: number;
+  cols: number;
+  cursor: [number, number];
+  /** Plain text for `format=plain`; base64-encoded ANSI bytes for `format=ansi`. */
+  screen: string;
 }
 
 export interface ProtocolEnvelope<TPayload> {
@@ -261,6 +285,12 @@ export type BrokerEvent =
       delivery_id: string;
       event_id: string;
       timestamp?: unknown;
+    }
+  | {
+      kind: 'agent_pending_drained';
+      name: string;
+      count: number;
+      reason?: string;
     }
   | {
       kind: 'delivery_injected';

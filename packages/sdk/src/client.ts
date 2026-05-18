@@ -23,6 +23,10 @@ import type {
   BrokerStatus,
   CrashInsightsResponse,
   HeadlessProvider,
+  PendingRelayMessage,
+  PtySnapshot,
+  SessionMode,
+  SnapshotFormat,
 } from './protocol.js';
 import type {
   AgentTransport,
@@ -38,6 +42,8 @@ import type {
 export interface AgentRelayClientOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Fetch implementation. Defaults to globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
   /** Timeout in ms for HTTP requests. Default: 30000. */
   requestTimeoutMs?: number;
 }
@@ -81,6 +87,18 @@ export interface SessionInfo {
   default_workspace_id?: string;
   mode: string;
   uptime_secs: number;
+}
+
+export interface SetSessionModeResult {
+  mode: SessionMode;
+  flushed: number;
+}
+
+export interface WorkerStreamSubscriptionOptions {
+  /** Filter by stream name, for example `stdout` or `stderr`. Defaults to all streams. */
+  stream?: string;
+  /** Sequence offset to pass to the broker event stream when connecting. */
+  sinceSeq?: number;
 }
 
 interface BrokerStartupDebugContext {
@@ -151,6 +169,7 @@ export class AgentRelayClient {
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
+      fetch: options.fetch,
       requestTimeoutMs: options.requestTimeoutMs,
     });
   }
@@ -379,19 +398,19 @@ export class AgentRelayClient {
       body: JSON.stringify({
         name: input.name,
         cli: input.cli,
-        model: input.model,
-        args: input.args ?? [],
-        task: input.task,
-        channels: input.channels ?? [],
-        cwd: input.cwd,
-        team: input.team,
-        agentToken: input.agentToken,
-        shadowOf: input.shadowOf,
-        shadowMode: input.shadowMode,
-        continueFrom: input.continueFrom,
-        idleThresholdSecs: input.idleThresholdSecs,
-        restartPolicy: input.restartPolicy,
-        skipRelayPrompt: input.skipRelayPrompt,
+        ...(input.model !== undefined ? { model: input.model } : {}),
+        ...(input.args !== undefined ? { args: input.args } : {}),
+        ...(input.task !== undefined ? { task: input.task } : {}),
+        ...(input.channels !== undefined ? { channels: input.channels } : {}),
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+        ...(input.team !== undefined ? { team: input.team } : {}),
+        ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+        ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+        ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+        ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+        ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+        ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
       }),
     });
   }
@@ -409,19 +428,19 @@ export class AgentRelayClient {
       body: JSON.stringify({
         name: input.name,
         cli: input.provider,
-        model: input.model,
+        ...(input.model !== undefined ? { model: input.model } : {}),
         args: input.args ?? [],
-        task: input.task,
+        ...(input.task !== undefined ? { task: input.task } : {}),
         channels: input.channels ?? [],
-        cwd: input.cwd,
-        team: input.team,
-        agentToken: input.agentToken,
-        shadowOf: input.shadowOf,
-        shadowMode: input.shadowMode,
-        continueFrom: input.continueFrom,
-        idleThresholdSecs: input.idleThresholdSecs,
-        restartPolicy: input.restartPolicy,
-        skipRelayPrompt: input.skipRelayPrompt,
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+        ...(input.team !== undefined ? { team: input.team } : {}),
+        ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+        ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+        ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+        ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+        ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+        ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+        ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
         transport,
       }),
     });
@@ -473,6 +492,135 @@ export class AgentRelayClient {
       method: 'POST',
       body: JSON.stringify({ rows, cols }),
     });
+  }
+
+  async getSessionMode(name: string): Promise<SessionMode> {
+    const result = await this.transport.request<{ mode?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/mode`
+    );
+    if (result.mode !== 'human' && result.mode !== 'passthrough') {
+      throw new AgentRelayProtocolError({
+        code: 'invalid_response',
+        message: "session mode response missing valid 'mode'",
+      });
+    }
+    return result.mode;
+  }
+
+  async setSessionMode(name: string, mode: SessionMode): Promise<SetSessionModeResult> {
+    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/mode`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ mode }),
+      }
+    );
+    if (result.mode !== 'human' && result.mode !== 'passthrough') {
+      throw new AgentRelayProtocolError({
+        code: 'invalid_response',
+        message: "set session mode response missing valid 'mode'",
+      });
+    }
+    return {
+      mode: result.mode,
+      flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+    };
+  }
+
+  async getPending(name: string): Promise<PendingRelayMessage[]> {
+    const result = await this.transport.request<{ pending?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/pending`
+    );
+    return Array.isArray(result.pending) ? (result.pending as PendingRelayMessage[]) : [];
+  }
+
+  async flushPending(name: string): Promise<{ flushed: number }> {
+    const result = await this.transport.request<{ flushed?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/flush`,
+      { method: 'POST' }
+    );
+    return { flushed: typeof result.flushed === 'number' ? result.flushed : 0 };
+  }
+
+  async snapshot(name: string, format: SnapshotFormat = 'plain'): Promise<PtySnapshot> {
+    return this.transport.request<PtySnapshot>(
+      `/api/spawned/${encodeURIComponent(name)}/snapshot?format=${encodeURIComponent(format)}`
+    );
+  }
+
+  subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
+    this.connectEvents(options.sinceSeq);
+
+    return {
+      [Symbol.asyncIterator]: () => {
+        const queue: string[] = [];
+        let pending:
+          | {
+              resolve: (result: IteratorResult<string>) => void;
+              reject: (error: unknown) => void;
+            }
+          | undefined;
+        let done = false;
+
+        const unsubscribe = this.onEvent((event) => {
+          if (
+            event.kind !== 'worker_stream' ||
+            event.name !== name ||
+            (options.stream !== undefined && event.stream !== options.stream)
+          ) {
+            return;
+          }
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: false, value: event.chunk });
+            return;
+          }
+          queue.push(event.chunk);
+        });
+
+        const close = (): IteratorResult<string> => {
+          done = true;
+          unsubscribe();
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: true, value: undefined as never });
+          }
+          return { done: true, value: undefined as never };
+        };
+
+        return {
+          next(): Promise<IteratorResult<string>> {
+            if (queue.length > 0) {
+              return Promise.resolve({ done: false, value: queue.shift() as string });
+            }
+            if (done) {
+              return Promise.resolve({ done: true, value: undefined as never });
+            }
+            return new Promise<IteratorResult<string>>((resolve, reject) => {
+              pending = { resolve, reject };
+            });
+          },
+          return(): Promise<IteratorResult<string>> {
+            return Promise.resolve(close());
+          },
+          throw(error?: unknown): Promise<IteratorResult<string>> {
+            done = true;
+            unsubscribe();
+            if (pending) {
+              const { reject } = pending;
+              pending = undefined;
+              reject(error);
+            }
+            return Promise.reject(error);
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+      },
+    };
   }
 
   // ── Messaging ──────────────────────────────────────────────────────

@@ -21,9 +21,8 @@
  * verbless `-n` alias dispatcher in `bootstrap.ts` calls — single code
  * path, byte-equivalent alias.
  *
- * The longer-form `spawn` command in `agent-management.ts` also wraps
- * the broker's spawn route but goes through the SDK client (with
- * broker autostart and many shadow/team/model flags); `new` is the
+ * The longer-form `spawn` command in `agent-management.ts` layers broker
+ * autostart and more flags on top of the same SDK client; `new` is the
  * lighter "I already have a broker, just spawn this" entry point.
  */
 
@@ -36,6 +35,7 @@ import {
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
+import { createBrokerClient, mapBrokerSdkFailure } from '../lib/sdk-client.js';
 import {
   buildDefaultAttachChildDeps,
   buildSpawnAndAttachDeps,
@@ -69,10 +69,6 @@ function withDefaults(overrides: Partial<NewDependencies> = {}): NewDependencies
   };
 }
 
-function authHeaders(connection: BrokerConnection): Record<string, string> {
-  return connection.apiKey ? { 'X-API-Key': connection.apiKey } : {};
-}
-
 /** Body shape for `POST /api/spawn`. Mirrors the Rust broker's `listen_api_spawn`. */
 export interface SpawnRequestBody {
   name: string;
@@ -95,39 +91,24 @@ export interface SpawnResult {
 }
 
 /**
- * POST `/api/spawn` against the broker. Exported so the
- * spawn-and-attach helper (and any other caller) can use the same
- * fetch / error mapping.
+ * Spawn through the SDK client against the resolved broker. Exported so
+ * the spawn-and-attach helper (and any other caller) can use the same
+ * transport / error mapping.
  */
 export async function spawnAgent(
   connection: BrokerConnection,
   body: SpawnRequestBody,
   fetchFn: typeof globalThis.fetch
 ): Promise<SpawnResult> {
-  const url = `${connection.url}/api/spawn`;
   try {
-    const res = await fetchFn(url, {
-      method: 'POST',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    let parsed: Record<string, unknown> | undefined;
-    try {
-      const json = (await res.json()) as unknown;
-      if (json && typeof json === 'object' && !Array.isArray(json)) {
-        parsed = json as Record<string, unknown>;
-      }
-    } catch {
-      // empty / non-JSON body — fine
-    }
-    if (!res.ok) {
-      const errMsg = parsed && typeof parsed.error === 'string' ? parsed.error : `HTTP ${res.status}`;
-      return { ok: false, status: res.status, message: errMsg, body: parsed };
-    }
-    return { ok: true, status: res.status, body: parsed };
+    const parsed = (await createBrokerClient(connection, fetchFn).spawnPty(body)) as unknown as Record<
+      string,
+      unknown
+    >;
+    return { ok: true, status: 200, body: parsed };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, status: failure.status, message: failure.message };
   }
 }
 
