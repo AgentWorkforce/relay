@@ -4,16 +4,16 @@ import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  RelayKeybindParser,
+  PassthroughKeybindParser,
   classifyWsEvent,
-  registerRelayCommands,
+  registerPassthroughCommands,
   renderStatusLine,
-  runRelaySession,
-  type RelayDependencies,
-  type RelayStdin,
-  type RelayTerminal,
-  type RelayWebSocket,
-} from './relay.js';
+  runPassthroughSession,
+  type PassthroughDependencies,
+  type PassthroughStdin,
+  type PassthroughTerminal,
+  type PassthroughWebSocket,
+} from './passthrough.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -23,7 +23,7 @@ class ExitSignal extends Error {
 
 type WsListener = (...args: unknown[]) => void;
 
-class FakeWebSocket implements RelayWebSocket {
+class FakeWebSocket implements PassthroughWebSocket {
   readonly url: string;
   readonly headers: Record<string, string>;
   readonly listeners = new Map<string, WsListener[]>();
@@ -56,7 +56,7 @@ class FakeWebSocket implements RelayWebSocket {
   }
 }
 
-class FakeStdin implements RelayStdin {
+class FakeStdin implements PassthroughStdin {
   isTTY = true;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
@@ -90,7 +90,7 @@ class FakeStdin implements RelayStdin {
   }
 }
 
-class FakeTerminal implements RelayTerminal {
+class FakeTerminal implements PassthroughTerminal {
   private currentSize: { rows: number; cols: number } | null;
   private handlers: Array<() => void> = [];
 
@@ -125,12 +125,12 @@ interface FetchScript {
   routes?: Record<string, FetchRoute>;
   initialMode?: 'manual_flush' | 'auto_inject';
   modeFlipFailure?: { status: number; error?: string };
-  snapshotResult?: Awaited<ReturnType<RelayDependencies['captureAndRenderSnapshot']>>;
+  snapshotResult?: Awaited<ReturnType<PassthroughDependencies['captureAndRenderSnapshot']>>;
   terminalSize?: { rows: number; cols: number } | null;
 }
 
 function createHarness(opts: FetchScript = {}): {
-  deps: RelayDependencies;
+  deps: PassthroughDependencies;
   stdin: FakeStdin;
   terminal: FakeTerminal;
   sockets: FakeWebSocket[];
@@ -233,7 +233,7 @@ function createHarness(opts: FetchScript = {}): {
     return new Response('not mocked', { status: 500 });
   }) as unknown as typeof globalThis.fetch;
 
-  const deps: RelayDependencies = {
+  const deps: PassthroughDependencies = {
     readConnectionFile: vi.fn(() => ({ url: 'http://localhost:3889', api_key: 'k' })),
     getDefaultStateDir: vi.fn(() => '/tmp/fake/.agent-relay'),
     env: {},
@@ -256,12 +256,12 @@ function createHarness(opts: FetchScript = {}): {
     },
     exit: vi.fn((code: number) => {
       throw new ExitSignal(code);
-    }) as unknown as RelayDependencies['exit'],
+    }) as unknown as PassthroughDependencies['exit'],
     fetch: fetchFn,
     captureAndRenderSnapshot: vi.fn(async (_conn, _name, snapshotDeps) => {
       void snapshotDeps;
       return opts.snapshotResult ?? { status: 'ok' };
-    }) as RelayDependencies['captureAndRenderSnapshot'],
+    }) as PassthroughDependencies['captureAndRenderSnapshot'],
     stdin,
     terminal,
   };
@@ -301,7 +301,7 @@ describe('classifyWsEvent', () => {
     ).toEqual({ kind: 'other' });
   });
 
-  it('returns other for delivery_queued (no queue in relay session)', () => {
+  it('returns other for delivery_queued (no queue in passthrough session)', () => {
     expect(classifyWsEvent(JSON.stringify({ kind: 'delivery_queued', name: 'Alice' }), 'Alice')).toEqual({
       kind: 'other',
     });
@@ -312,41 +312,41 @@ describe('classifyWsEvent', () => {
   });
 });
 
-describe('RelayKeybindParser', () => {
+describe('PassthroughKeybindParser', () => {
   it('forwards ordinary keystrokes unchanged', () => {
-    const p = new RelayKeybindParser();
+    const p = new PassthroughKeybindParser();
     const out = p.feed(Buffer.from('hello'));
     expect(out.forward.toString()).toBe('hello');
     expect(out.actions).toEqual([]);
   });
 
   it('intercepts Ctrl+C as detach', () => {
-    const p = new RelayKeybindParser();
+    const p = new PassthroughKeybindParser();
     const out = p.feed(Buffer.from([0x03]));
     expect(out.forward.length).toBe(0);
     expect(out.actions).toEqual(['detach']);
   });
 
   it('recognises Ctrl+B D as detach across chunks', () => {
-    const p = new RelayKeybindParser();
+    const p = new PassthroughKeybindParser();
     expect(p.feed(Buffer.from([0x02])).actions).toEqual([]);
     expect(p.feed(Buffer.from([0x44])).actions).toEqual(['detach']);
   });
 
   it('recognises Ctrl+B ? as toggle_help', () => {
-    const p = new RelayKeybindParser();
+    const p = new PassthroughKeybindParser();
     expect(p.feed(Buffer.from([0x02, 0x3f])).actions).toEqual(['toggle_help']);
   });
 
   it('forwards Ctrl+B + unknown byte verbatim', () => {
-    const p = new RelayKeybindParser();
+    const p = new PassthroughKeybindParser();
     const out = p.feed(Buffer.from([0x02, 0x78]));
     expect(Array.from(out.forward)).toEqual([0x02, 0x78]);
     expect(out.actions).toEqual([]);
   });
 
-  it('does NOT recognise Ctrl+G (no flush keybind in relay mode)', () => {
-    const p = new RelayKeybindParser();
+  it('does NOT recognise Ctrl+G (no flush keybind in passthrough mode)', () => {
+    const p = new PassthroughKeybindParser();
     const out = p.feed(Buffer.from([0x07]));
     // Ctrl+G is forwarded verbatim instead of being intercepted as flush.
     expect(Array.from(out.forward)).toEqual([0x07]);
@@ -355,9 +355,9 @@ describe('RelayKeybindParser', () => {
 });
 
 describe('renderStatusLine', () => {
-  it('shows [relay name | delivery=auto_inject] without a pending counter', () => {
+  it('shows [passthrough name | delivery=auto_inject] without a pending counter', () => {
     const out = renderStatusLine({ name: 'Alice', mode: 'auto_inject', showHelp: false });
-    expect(out).toContain('relay Alice');
+    expect(out).toContain('passthrough Alice');
     expect(out).toContain('delivery=auto_inject');
     expect(out).toContain('Ctrl+B D detach');
     expect(out).not.toContain('pending=');
@@ -372,16 +372,16 @@ describe('renderStatusLine', () => {
   });
 });
 
-describe('runRelaySession', () => {
-  it('ensures relay mode on attach, opens WS, then restores prior mode on detach', async () => {
+describe('runPassthroughSession', () => {
+  it('ensures passthrough mode on attach, opens WS, then restores prior mode on detach', async () => {
     const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'auto_inject' });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
 
     // After attach (before detach), exactly one PUT /delivery-mode should have fired:
-    // the "ensure relay" call. The restore PUT only fires after detach.
+    // the "ensure passthrough" call. The restore PUT only fires after detach.
     const afterAttach = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(afterAttach.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }]);
     expect(stdin.rawModeCalls).toEqual([true]);
@@ -390,7 +390,7 @@ describe('runRelaySession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
 
-    // After detach, the restore PUT to the prior mode ('relay') should
+    // After detach, the restore PUT to the prior mode should
     // have fired, and raw mode should be off.
     const afterDetach = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(afterDetach.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }, { mode: 'auto_inject' }]);
@@ -399,7 +399,7 @@ describe('runRelaySession', () => {
 
   it('flips to auto_inject even when the worker was in manual_flush mode on attach, then restores on detach', async () => {
     const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'manual_flush' });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
 
     stdin.type(Buffer.from([0x03])); // Ctrl+C
@@ -415,7 +415,7 @@ describe('runRelaySession', () => {
     const { deps, sockets, errors } = createHarness({
       modeFlipFailure: { status: 404, error: "no agent named 'Ghost'" },
     });
-    const code = await runRelaySession('Ghost', {}, deps);
+    const code = await runPassthroughSession('Ghost', {}, deps);
     expect(code).toBe(1);
     expect(sockets).toHaveLength(0);
     expect(errors.some((args) => String(args[0]).includes("no agent named 'Ghost'"))).toBe(true);
@@ -425,7 +425,7 @@ describe('runRelaySession', () => {
     const { deps, sockets, errors, fetchLog } = createHarness({
       snapshotResult: { status: 'not_found', message: "no agent named 'Ghost'" },
     });
-    const code = await runRelaySession('Ghost', {}, deps);
+    const code = await runPassthroughSession('Ghost', {}, deps);
     expect(code).toBe(1);
     expect(sockets).toHaveLength(0);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
@@ -438,7 +438,7 @@ describe('runRelaySession', () => {
     const { deps, sockets, logs } = createHarness({
       snapshotResult: { status: 'unavailable', message: 'HTTP 504' },
     });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(logs.some((args) => String(args[0]).includes('could not capture initial screen'))).toBe(true);
     socket.emit('close', 1000, Buffer.from(''));
@@ -447,12 +447,12 @@ describe('runRelaySession', () => {
 
   it('writes worker_stream chunks to stdout and repaints the status line', async () => {
     const { deps, sockets, writes, stdin } = createHarness();
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live output' }));
     expect(writes.includes('live output')).toBe(true);
     const liveIdx = writes.indexOf('live output');
-    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('relay Alice'));
+    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('passthrough Alice'));
     expect(repaintAfter).toBe(true);
 
     stdin.type(Buffer.from([0x03]));
@@ -461,7 +461,7 @@ describe('runRelaySession', () => {
 
   it('forwards stdin keystrokes via POST /api/input/{name}', async () => {
     const { deps, sockets, stdin, fetchLog } = createHarness();
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
 
     stdin.type(Buffer.from('hello'));
@@ -475,7 +475,7 @@ describe('runRelaySession', () => {
 
   it('restores the prior mode even on abnormal WebSocket close', async () => {
     const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'manual_flush' });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
     socket.emit('close', 1006, Buffer.from('abnormal'));
@@ -491,7 +491,7 @@ describe('runRelaySession', () => {
 
   it('exits cleanly on SIGINT', async () => {
     const { deps, sockets, signals, stdin } = createHarness();
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
 
     const sigint = signals.get('SIGINT');
@@ -506,7 +506,7 @@ describe('runRelaySession', () => {
   it('returns 1 when no broker connection can be resolved', async () => {
     const { deps, errors } = createHarness();
     deps.readConnectionFile = vi.fn(() => null);
-    const code = await runRelaySession('Alice', {}, deps);
+    const code = await runPassthroughSession('Alice', {}, deps);
     expect(code).toBe(1);
     expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
   });
@@ -515,7 +515,7 @@ describe('runRelaySession', () => {
 
   it('sends X-API-Key on every broker request when configured', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness();
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -532,7 +532,7 @@ describe('runRelaySession', () => {
   it('omits X-API-Key on every broker request when no key is configured', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness();
     deps.readConnectionFile = vi.fn(() => ({ url: 'http://localhost:3889' })); // no api_key
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
     await signals.get('SIGINT')?.();
     await sessionPromise;
@@ -547,7 +547,7 @@ describe('runRelaySession', () => {
     const { deps, sockets, signals, fetchLog } = createHarness({
       terminalSize: { rows: 60, cols: 200 },
     });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
 
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
@@ -560,7 +560,7 @@ describe('runRelaySession', () => {
 
   it('skips resize forwarding when stdout is not a TTY', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness({ terminalSize: null });
-    const sessionPromise = runRelaySession('Alice', {}, deps);
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
     await openSocket(sockets);
 
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
@@ -571,23 +571,25 @@ describe('runRelaySession', () => {
   });
 });
 
-describe('registerRelayCommands', () => {
-  it('registers a `relay` command on the program', () => {
+describe('registerPassthroughCommands', () => {
+  it('registers a `passthrough` command on the program', () => {
     const { deps } = createHarness();
     const program = new Command();
     program.exitOverride();
-    registerRelayCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'relay');
+    registerPassthroughCommands(program, deps);
+    const cmd = program.commands.find((c) => c.name() === 'passthrough');
     expect(cmd).toBeDefined();
-    expect(cmd?.description()).toMatch(/relay/i);
+    expect(cmd?.description()).toMatch(/passthrough/i);
+    expect(program.commands.find((c) => c.name() === 'relay')).toBeUndefined();
+    expect(cmd?.aliases()).not.toContain('relay');
   });
 
   it('wires --broker-url, --api-key, and --state-dir', () => {
     const { deps } = createHarness();
     const program = new Command();
     program.exitOverride();
-    registerRelayCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'relay');
+    registerPassthroughCommands(program, deps);
+    const cmd = program.commands.find((c) => c.name() === 'passthrough');
     const flags = cmd?.options.map((opt) => opt.long).filter(Boolean) ?? [];
     expect(flags).toEqual(expect.arrayContaining(['--broker-url', '--api-key', '--state-dir']));
   });

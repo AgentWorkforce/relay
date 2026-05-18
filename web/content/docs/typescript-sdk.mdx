@@ -175,7 +175,7 @@ const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
 ### PTY and Delivery Control
 
 These methods are the programmatic primitives behind CLI attach flows such
-as `drive`, `view`, and `relay`.
+as `drive`, `view`, and `passthrough`.
 
 | Method | Broker route | Description |
 | ------ | ------------ | ----------- |
@@ -218,7 +218,7 @@ for await (const chunk of client.subscribeWorkerStream('Reviewer', { stream: 'st
 }
 ```
 
-`drive`, `view`, and `relay` stay in the CLI because they manage raw
+`drive`, `view`, and `passthrough` stay in the CLI because they manage raw
 terminal mode, keybindings, status lines, signals, and teardown. The SDK
 exposes the composable broker primitives those interactive surfaces use.
 

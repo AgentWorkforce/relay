@@ -249,7 +249,7 @@ relay messages to a spawned worker. Two modes are supported:
 
 - **`auto_inject`** (default) — inbound messages auto-inject into the
   worker's PTY. Use this for headless agents that should react to incoming
-  traffic on their own, or for an `agent-relay relay` client session where
+  traffic on their own, or for an `agent-relay passthrough` client session where
   the human types alongside the broker.
 - **`manual_flush`** — inbound messages are *queued* in a per-worker pending
   buffer instead of being injected. A human operator, SDK client, or
@@ -456,8 +456,8 @@ curl -sX DELETE localhost:3888/api/spawned/Alice \
 
 ## Worked example: take over an agent with inbound delivery mode
 
-The four inbound-delivery-mode routes back the upcoming `agent-relay drive`
-client. The typical drive-mode flow looks like this:
+The four inbound-delivery-mode routes back the `agent-relay drive` and
+`agent-relay passthrough` clients. The typical drive-mode flow looks like this:
 
 ```bash
 KEY="$RELAY_BROKER_API_KEY"

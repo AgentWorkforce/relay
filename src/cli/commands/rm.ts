@@ -6,7 +6,7 @@
  * one-line explanatory error on failure. Connection discovery uses the
  * shared `resolveBrokerConnection` helper so the same `--broker-url` /
  * `RELAY_BROKER_URL` / `connection.json` chain works as for `view` /
- * `drive` / `relay`.
+ * `drive` / `passthrough`.
  *
  * The longer-form `release` command in `agent-management.ts` layers
  * broker autostart on top of the same SDK client; `rm` is the lighter
