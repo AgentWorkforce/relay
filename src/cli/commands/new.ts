@@ -37,6 +37,7 @@ import {
 } from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
 import {
+  buildDefaultAttachChildDeps,
   buildSpawnAndAttachDeps,
   runSpawnAndAttach,
   type AttachChildDependencies,
@@ -301,12 +302,10 @@ export function registerNewCommands(
         }
         return;
       }
-      // --attach: compose spawn + session via the shared helper. We
-      // lazy-build the child deps if the caller didn't inject any — keeps
-      // the spawn-only path off the WebSocket import in tests that don't
-      // need it.
-      const childDeps =
-        attachChildDeps ?? (await import('../lib/spawn-and-attach.js')).buildDefaultAttachChildDeps();
+      // --attach: compose spawn + session via the shared helper.
+      // Use injected child deps when present (tests), fall back to
+      // the real WebSocket-backed implementation.
+      const childDeps = attachChildDeps ?? buildDefaultAttachChildDeps();
       const code = await runNewWithAttach(name, cli, args, options, childDeps);
       if (code !== 0) {
         deps.exit(code);
