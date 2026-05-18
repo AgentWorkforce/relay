@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-18T05:52:06.915Z",
+  "lastUpdated": "2026-05-18T05:58:37.619Z",
   "trajectories": {
     "traj_9gq96irkj00s": {
       "title": "Update relay to use published relaycast Rust reclaim fix",

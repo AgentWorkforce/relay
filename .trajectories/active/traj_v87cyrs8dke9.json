@@ -79,6 +79,18 @@
             "reasoning": "Pre-parser (parseVerblessAlias) catches the four canonical shapes (-n NAME, --name NAME, -nNAME, --name=NAME), refuses ambiguous (-n NAME <known-verb>) and help/version, then hands off to runSpawnAndAttach with mode='relay' and ephemeral=true. Single code path with run -n NAME CLI guarantees byte-equivalence; bootstrap.test.ts asserts the triplet extraction matches what commander's run -n action sees."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1779083917618,
+          "type": "decision",
+          "content": "Drop the 'run' verb, fold spawn-and-attach into 'new --attach': Drop the 'run' verb, fold spawn-and-attach into 'new --attach'",
+          "raw": {
+            "question": "Drop the 'run' verb, fold spawn-and-attach into 'new --attach'",
+            "chosen": "Drop the 'run' verb, fold spawn-and-attach into 'new --attach'",
+            "alternatives": [],
+            "reasoning": "Reviewer pushback: the _actionHandler.apply() hack to overload commander's run was a code smell signaling the verb naming was wrong. Moving the composition to 'new --attach' eliminates the workflow-runner name conflict cleanly, keeps the verb taxonomy simple (new spawns, view/drive/relay sessions), and the alias retargets transparently — both -n alias and new --attach call the same runSpawnAndAttach helper, byte-equivalence preserved."
+          },
+          "significance": "high"
         }
       ]
     }
