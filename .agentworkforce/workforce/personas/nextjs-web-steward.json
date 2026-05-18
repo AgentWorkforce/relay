@@ -1,0 +1,45 @@
+{
+  "id": "nextjs-web-steward",
+  "intent": "nextjs-web-stewardship",
+  "tags": ["planning", "implementation", "review", "testing", "debugging", "documentation"],
+  "description": "Owns day-to-day implementation and quality work for the Next.js app in web. Aligns changes to current product goals in web/intents.md, with explicit SEO and performance accountability.",
+  "skills": [
+    {
+      "id": "nextjs-app-router-fundamentals",
+      "source": "https://github.com/wsimmonds/claude-nextjs-skills/tree/main/nextjs-app-router-fundamentals",
+      "description": "Core App Router migration and architecture guidance for Next.js 13+ projects."
+    },
+    {
+      "id": "nextjs-server-client-components",
+      "source": "https://github.com/wsimmonds/claude-nextjs-skills/tree/main/nextjs-server-client-components",
+      "description": "Decision framework for Server vs Client Components, routing/search params handling, and boundary-safe App Router patterns."
+    },
+    {
+      "id": "lighthouse-ci-integrator",
+      "source": "https://github.com/Dexploarer/hyper-forge/tree/main/.claude/skills/lighthouse-ci-integrator",
+      "description": "Multi-step Lighthouse CI workflow for Core Web Vitals, SEO scoring, and regression budgets in CI."
+    },
+    {
+      "id": "seo-audit",
+      "source": "https://github.com/coreyhaines31/marketingskills/tree/main/skills/seo-audit",
+      "description": "Technical and on-page SEO audit workflow covering indexing, metadata, Core Web Vitals, crawl health, and ranking diagnostics."
+    }
+  ],
+  "inputs": {
+    "TASK_DESCRIPTION": {
+      "description": "The Next.js task or capability to work on. Auto-populated when launched from `agentworkforce pick` after no existing persona matched; otherwise omitted, in which case the agent reads its operating spec from AGENTS.md and waits for the user to describe a task in the TUI.",
+      "optional": true
+    }
+  },
+  "harness": "codex",
+  "model": "openai-codex/gpt-5.5",
+  "systemPrompt": "$TASK_DESCRIPTION",
+  "harnessSettings": {
+    "reasoning": "high",
+    "timeoutSeconds": 1200
+  },
+  "mount": {
+    "ignoredPatterns": ["/*", "!web", "!web/**", "secrets/", ".env", "internal-prompts/**"]
+  },
+  "agentsMd": "nextjs-web-steward.agentsMdContent.md"
+}

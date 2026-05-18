@@ -97,7 +97,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`}>{content}</body>
+      <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`} suppressHydrationWarning>
+        {content}
+      </body>
     </html>
   );
 }
