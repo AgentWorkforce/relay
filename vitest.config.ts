@@ -1,22 +1,34 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
+// Workspace packages that vitest should resolve via their `src/index.ts`
+// instead of falling through to Node's resolver (which requires `dist/`
+// to be built first). Every workspace package under `packages/` that
+// ships TypeScript and is imported as `@agent-relay/<name>` from any
+// test or source file MUST be listed here — otherwise tests will pass
+// in CI (because CI runs `npm run build` first) but fail in fresh
+// local checkouts that haven't been built yet.
+//
+// When you add a new workspace package, add it here too.
 const workspacePackages = [
   'acp-bridge',
-  'events',
   'agent',
   'cloud',
   'config',
+  'events',
   'gateway',
+  'github-primitive',
   'hooks',
   'memory',
   'openclaw',
   'policy',
   'sdk',
+  'slack-primitive',
   'telemetry',
   'trajectory',
   'user-directory',
   'utils',
+  'workflow-types',
 ] as const;
 
 const workspaceAliases = workspacePackages.flatMap((packageName) => {

@@ -1,7 +1,14 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-15T13:00:15.473Z",
+  "lastUpdated": "2026-05-18T02:05:41.270Z",
   "trajectories": {
+    "traj_9gq96irkj00s": {
+      "title": "Update relay to use published relaycast Rust reclaim fix",
+      "status": "completed",
+      "startedAt": "2026-05-10T18:45:02.118Z",
+      "completedAt": "2026-05-10T18:48:11.532Z",
+      "path": ".trajectories/completed/2026-05/traj_9gq96irkj00s.json"
+    },
     "traj_1775914133873_35667beb": {
       "title": "fix-sdk-build-resolution-workflow",
       "status": "completed",
@@ -403,6 +410,12 @@
       "completedAt": "2026-05-13T11:00:43.100Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_whd40oxptlhn.json"
     },
+    "traj_v87cyrs8dke9": {
+      "title": "Upgrade .agentworkforce personas to latest 3.x shape",
+      "status": "active",
+      "startedAt": "2026-05-14T14:28:34.155Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/active/traj_v87cyrs8dke9.json"
+    },
     "traj_v1wexlfur5zr": {
       "title": "Fix broker headless reliability doc",
       "status": "completed",
@@ -577,6 +590,27 @@
       "startedAt": "2026-05-15T12:56:14.439Z",
       "completedAt": "2026-05-15T13:00:15.366Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hfkww5z7trxn.json"
+    },
+    "traj_cbmwd07phhm2": {
+      "title": "Implement #869 snapshot module + dump-pty command",
+      "status": "completed",
+      "startedAt": "2026-05-17T14:19:10.603Z",
+      "completedAt": "2026-05-17T14:33:32.293Z",
+      "path": ".trajectories/completed/2026-05/traj_cbmwd07phhm2.json"
+    },
+    "traj_ybcrij9wg8m1": {
+      "title": "Implement agent-relay view <name> read-only stream client (#864 sub-1)",
+      "status": "completed",
+      "startedAt": "2026-05-18T02:02:07.524Z",
+      "completedAt": "2026-05-18T02:05:41.120Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a65b9343cd7dbadb3/.trajectories/completed/2026-05/traj_ybcrij9wg8m1.json"
+    },
+    "traj_piik8r6zu3i7": {
+      "title": "Issue 867: RelayEventListener",
+      "status": "completed",
+      "startedAt": "2026-05-18T01:56:18.236Z",
+      "completedAt": "2026-05-18T02:01:49.991Z",
+      "path": ".trajectories/completed/2026-05/traj_piik8r6zu3i7.json"
     }
   }
 }
