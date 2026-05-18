@@ -5,15 +5,15 @@ use crate::protocol::MessageInjectionMode;
 /// Per-worker session mode controlling how inbound relay messages are
 /// dispatched into the wrapped agent's PTY.
 ///
-/// - [`SessionMode::Relay`] (default) preserves the broker's pre-#864
-///   behaviour: inbound messages are injected directly into the worker.
+/// - [`SessionMode::Relay`] (default) injects inbound messages directly
+///   into the worker.
 /// - [`SessionMode::Human`] holds inbound messages in a per-worker pending
-///   queue so a human-driven client (the `agent-relay drive` verb landing
-///   in sub-PR 3 of #864) can decide when to flush them.
+///   queue so a human-driven client (the `agent-relay drive` verb) can
+///   decide when to flush them.
 ///
 /// Mode is broker-side state only; the worker process does not observe it.
 /// It resets to [`SessionMode::Relay`] on broker restart — there is no
-/// disk persistence in this PR.
+/// disk persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {

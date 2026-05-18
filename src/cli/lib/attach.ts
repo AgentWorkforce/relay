@@ -1,12 +1,12 @@
 /**
  * Shared helpers for attach-style CLI commands.
  *
- * `view` (read-only), and future `drive` / `relay` from issue #864, all need
- * to render the agent's *current* visible screen before they start streaming
- * live updates — otherwise the user attaches to a quiet agent and stares at
- * a blank terminal until the agent happens to produce more output. This
- * module wraps the broker's snapshot endpoint so each verb gets that for one
- * line of code.
+ * Every attach verb (`view`, `drive`, `relay`) needs to render the agent's
+ * *current* visible screen before it starts streaming live updates —
+ * otherwise the user attaches to a quiet agent and stares at a blank
+ * terminal until the agent happens to produce more output. This module
+ * wraps the broker's snapshot endpoint so each verb gets that for one line
+ * of code.
  */
 
 /** Connection metadata used to call the broker's snapshot endpoint. */
@@ -49,8 +49,9 @@ export interface AttachSnapshotResult {
  * There is a tiny window between the snapshot capture and the live stream
  * starting in which the agent's output could be missed (≤10ms in practice).
  * Most TUI agents repaint heavily so the next update overwrites anything
- * lost; if that becomes a problem we can switch to subscribe-first +
- * buffer + drain, but it's not worth the complexity today.
+ * lost; subscribe-first + buffer + drain would close the gap at the cost
+ * of risking double-application of bytes that arrive in both the snapshot
+ * and the buffered stream, which is the worse failure mode for TUIs.
  *
  * @returns A status describing the outcome. `ok` means the screen was
  * rendered; other variants carry a message the caller can surface.
