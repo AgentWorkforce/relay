@@ -1,0 +1,93 @@
+{
+  "id": "traj_ybcrij9wg8m1",
+  "version": 1,
+  "task": {
+    "title": "Implement agent-relay view <name> read-only stream client (#864 sub-1)",
+    "source": {
+      "system": "plain",
+      "id": "ENG-864"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-18T02:02:07.524Z",
+  "completedAt": "2026-05-18T02:05:41.120Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-18T02:05:33.493Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_t9njxz16mexd",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-18T02:05:33.493Z",
+      "endedAt": "2026-05-18T02:05:41.120Z",
+      "events": [
+        {
+          "ts": 1779069933494,
+          "type": "decision",
+          "content": "Reuse 'ws' npm package — already a dep: Reuse 'ws' npm package — already a dep",
+          "raw": {
+            "question": "Reuse 'ws' npm package — already a dep",
+            "chosen": "Reuse 'ws' npm package — already a dep",
+            "alternatives": [],
+            "reasoning": "The SDK already uses 'ws' v8.18.3 for the broker WebSocket transport. No new deps needed."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069934149,
+          "type": "decision",
+          "content": "DI-style command module with onSignal-based teardown: DI-style command module with onSignal-based teardown",
+          "raw": {
+            "question": "DI-style command module with onSignal-based teardown",
+            "chosen": "DI-style command module with onSignal-based teardown",
+            "alternatives": [],
+            "reasoning": "Matches the project's testing.md convention; ExitSignal pattern lets us cleanly drive SIGINT in tests without actually exiting."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069934808,
+          "type": "decision",
+          "content": "Pure-function chunk filter (extractMatchingChunk) exported separately: Pure-function chunk filter (extractMatchingChunk) exported separately",
+          "raw": {
+            "question": "Pure-function chunk filter (extractMatchingChunk) exported separately",
+            "chosen": "Pure-function chunk filter (extractMatchingChunk) exported separately",
+            "alternatives": [],
+            "reasoning": "Allows unit-testing the worker_stream filter without standing up a WebSocket or any I/O."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779069935286,
+          "type": "decision",
+          "content": "Skip fresh-attach snapshot rendering: Skip fresh-attach snapshot rendering",
+          "raw": {
+            "question": "Skip fresh-attach snapshot rendering",
+            "chosen": "Skip fresh-attach snapshot rendering",
+            "alternatives": [],
+            "reasoning": "Issue says nice-to-have; ship in follow-up. dump-pty already covers the use case manually."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added agent-relay view <name> read-only PTY stream CLI. WS-based with worker_stream filter, ANSI preserved, Ctrl+C clean exit. 24 unit tests. Reused 'ws' SDK dep.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a65b9343cd7dbadb3",
+  "tags": [],
+  "_trace": {
+    "startRef": "5fc8a131561feedfe990fc265f224101f6f267c4",
+    "endRef": "5fc8a131561feedfe990fc265f224101f6f267c4"
+  }
+}
