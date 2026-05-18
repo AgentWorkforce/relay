@@ -1,14 +1,24 @@
 /**
- * Shared helpers for attach-style CLI commands.
+ * Shared helpers for attach-style CLI commands (`view`, `drive`,
+ * `passthrough`).
  *
- * Every attach verb (`view`, `drive`, `relay`) needs to render the agent's
- * *current* visible screen before it starts streaming live updates —
- * otherwise the user attaches to a quiet agent and stares at a blank
- * terminal until the agent happens to produce more output. This module
- * wraps the broker's snapshot endpoint so each verb gets that for one line
- * of code.
+ * - `captureAndRenderSnapshot` renders the agent's current visible screen
+ *   so the user doesn't attach to a quiet agent and stare at a blank
+ *   terminal until the next output.
+ * - `prepareAttachTarget` / `pickInitialTerminalRows` / `syncInitialPtySize`
+ *   / `switchInboundDeliveryModeOrAbort` / `captureInitialSnapshot` are
+ *   the take-over prep steps that `drive` and `passthrough` both run on
+ *   attach; centralised here so the two verbs stay in lockstep.
  */
 
+import type { InboundDeliveryMode } from '@agent-relay/sdk';
+
+import {
+  resolveBrokerConnection,
+  type BrokerConnection,
+  type BrokerConnectionDeps,
+  type BrokerConnectionOptions,
+} from './broker-connection.js';
 import { createBrokerClient, mapBrokerSdkFailure } from './sdk-client.js';
 
 /** Connection metadata used to call the broker's snapshot endpoint. */
@@ -110,4 +120,186 @@ export async function captureAndRenderSnapshot(
       : undefined;
 
   return { status: 'ok', rows, cols, cursor };
+}
+
+/** ----- Interactive attach prep helpers ----- */
+
+/** Validated attach target: trimmed agent name + resolved broker connection. */
+export interface AttachTarget {
+  name: string;
+  connection: BrokerConnection;
+}
+
+/** Dependencies for `prepareAttachTarget` — connection lookup + error sink. */
+export interface PrepareAttachTargetDeps extends BrokerConnectionDeps {
+  error: (...args: unknown[]) => void;
+}
+
+/**
+ * Trim the agent name and resolve the broker connection (flag → env →
+ * `connection.json`). Writes the appropriate error and returns `null` on
+ * either failure so every interactive attach verb rejects empty or
+ * unreachable targets consistently.
+ */
+export function prepareAttachTarget(
+  agentName: string,
+  options: BrokerConnectionOptions,
+  deps: PrepareAttachTargetDeps
+): AttachTarget | null {
+  const name = agentName.trim();
+  if (!name) {
+    deps.error('Error: agent name is required');
+    return null;
+  }
+  const connection = resolveBrokerConnection(options, deps);
+  if (!connection) {
+    deps.error(
+      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
+        'or run from a directory containing .agent-relay/connection.json.'
+    );
+    return null;
+  }
+  return { name, connection };
+}
+
+/**
+ * Pick the status-line row. Prefers the LOCAL terminal's height (the
+ * status line must land where the human is looking) and falls back to
+ * the snapshot's PTY rows, then `undefined` so the renderer applies its
+ * own default.
+ */
+export function pickInitialTerminalRows(
+  localSize: { rows: number; cols: number } | null,
+  snapshotRows: number | undefined
+): number | undefined {
+  if (localSize) return localSize.rows;
+  if (typeof snapshotRows === 'number' && snapshotRows > 0) return snapshotRows;
+  return undefined;
+}
+
+/**
+ * Sync the agent's PTY to the driver's local terminal size. tmux /
+ * screen / ssh all do this — without it a TUI in the agent renders into
+ * the size the PTY was spawned with, ignoring the human's viewport.
+ * Best-effort: a failure is annoying but not fatal. Skipped entirely
+ * when `localSize` is `null` (stdout isn't a TTY).
+ */
+export async function syncInitialPtySize(
+  connection: BrokerConnection,
+  name: string,
+  localSize: { rows: number; cols: number } | null,
+  verb: string,
+  deps: { fetch: typeof globalThis.fetch; log: (...args: unknown[]) => void }
+): Promise<void> {
+  if (!localSize) return;
+  try {
+    await createBrokerClient(connection, deps.fetch).resizePty(name, localSize.rows, localSize.cols);
+  } catch (err: unknown) {
+    const failure = mapBrokerSdkFailure(err);
+    deps.log(
+      `[${verb}] could not sync agent PTY size to local terminal (${failure.message ?? 'unknown'}); continuing`
+    );
+  }
+}
+
+/**
+ * Read the worker's prior inbound delivery mode and flip it to
+ * `targetMode`. Returns the previous mode on success so the caller can
+ * restore it on detach; returns `null` (and writes an error) when the
+ * flip fails so the caller bails before touching the terminal.
+ *
+ * Non-404 errors are surfaced as `Error: could not ${actionPhrase}:
+ * ${message}` so callers pass verb-appropriate wording (e.g. "switch to
+ * manual_flush mode" or "ensure passthrough session"). 404s get a
+ * uniform "no agent named X" message.
+ */
+export async function switchInboundDeliveryModeOrAbort(
+  connection: BrokerConnection,
+  name: string,
+  targetMode: InboundDeliveryMode,
+  actionPhrase: string,
+  deps: { fetch: typeof globalThis.fetch; error: (...args: unknown[]) => void }
+): Promise<{ previousMode: InboundDeliveryMode | null } | null> {
+  let previousMode: InboundDeliveryMode | null = null;
+  try {
+    previousMode = await createBrokerClient(connection, deps.fetch).getInboundDeliveryMode(name);
+  } catch {
+    // Best-effort — fall through with null; the caller restores to
+    // `auto_inject` in that case so the queue can't grow indefinitely.
+  }
+  try {
+    await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(name, targetMode);
+    return { previousMode };
+  } catch (err: unknown) {
+    const failure = mapBrokerSdkFailure(err);
+    if (failure.status === 404) {
+      deps.error(`Error: no agent named '${name}'`);
+    } else {
+      deps.error(`Error: could not ${actionPhrase}: ${failure.message ?? 'unknown error'}`);
+    }
+    return null;
+  }
+}
+
+/** Dependencies for `captureInitialSnapshot`. `captureAndRenderSnapshot`
+ *  is injectable so tests can substitute a stub. */
+export interface CaptureInitialSnapshotDeps extends AttachSnapshotDeps {
+  log: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+  captureAndRenderSnapshot?: typeof captureAndRenderSnapshot;
+}
+
+/**
+ * Render the agent's current visible screen, then dispatch on the
+ * outcome. Hard errors (`not_found`, `no_pty`) abort: this helper
+ * best-effort restores the prior delivery mode and writes the
+ * appropriate error before returning `null` so the caller bails.
+ * Transient errors warn and proceed. Returns `{ snapshotRows }` on the
+ * happy path so the caller can seed the status-line row fallback.
+ *
+ * `noPtyAction` is the verb phrase used in the no-PTY message
+ * (`agent 'X' has no PTY to ${noPtyAction}`) — e.g. "drive" or
+ * "attach to".
+ */
+export async function captureInitialSnapshot(
+  connection: BrokerConnection,
+  name: string,
+  previousMode: InboundDeliveryMode | null,
+  verb: string,
+  noPtyAction: string,
+  deps: CaptureInitialSnapshotDeps
+): Promise<{ snapshotRows?: number } | null> {
+  const render = deps.captureAndRenderSnapshot ?? captureAndRenderSnapshot;
+  const snapshot = await render(
+    { url: connection.url, apiKey: connection.apiKey },
+    name,
+    { fetch: deps.fetch, writeChunk: deps.writeChunk }
+  );
+  switch (snapshot.status) {
+    case 'ok':
+      return { snapshotRows: snapshot.rows };
+    case 'not_found':
+    case 'no_pty': {
+      try {
+        await createBrokerClient(connection, deps.fetch).setInboundDeliveryMode(
+          name,
+          previousMode ?? 'auto_inject'
+        );
+      } catch {
+        // best-effort restore
+      }
+      const fallback =
+        snapshot.status === 'not_found'
+          ? `no agent named '${name}'`
+          : `agent '${name}' has no PTY to ${noPtyAction}`;
+      deps.error(`Error: ${snapshot.message ?? fallback}`);
+      return null;
+    }
+    case 'unavailable':
+    case 'transport_error':
+      deps.log(
+        `[${verb}] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
+      );
+      return { snapshotRows: snapshot.rows };
+  }
 }

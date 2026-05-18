@@ -30,23 +30,21 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  captureInitialSnapshot,
+  pickInitialTerminalRows,
+  prepareAttachTarget,
+  switchInboundDeliveryModeOrAbort,
+  syncInitialPtySize,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
-  resolveBrokerConnection,
   toWsUrl,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
-import {
-  getInboundDeliveryMode,
-  resizeWorker,
-  sendInput,
-  setInboundDeliveryMode,
-  type InboundDeliveryMode,
-} from './drive.js';
+import { resizeWorker, sendInput, setInboundDeliveryMode, type InboundDeliveryMode } from './drive.js';
 
 type ExitFn = (code: number) => never;
 
@@ -269,100 +267,50 @@ export async function runPassthroughSession(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: PassthroughDependencies
 ): Promise<number> {
-  // Normalize once so every downstream broker call, WS-event match,
-  // status-line label, and error message uses the same trimmed value.
-  // Without this a stray space in the raw input turns into a silent
-  // 404 (the broker stores names verbatim).
-  const name = agentName.trim();
-  if (!name) {
-    deps.error('Error: agent name is required');
-    return 1;
-  }
+  const target = prepareAttachTarget(agentName, options, deps);
+  if (!target) return 1;
+  const { name, connection } = target;
 
-  const connection = resolveBrokerConnection(options, deps);
-  if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agent-relay/connection.json.'
-    );
-    return 1;
-  }
-
-  // Remember the worker's prior mode so we can restore on detach.
-  // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `auto_inject` in that case (which
-  // is also our preferred final state).
-  const previousMode = await getInboundDeliveryMode(connection, name, deps.fetch);
-
-  // If the worker is in `manual_flush` mode (e.g. someone left a `drive`
-  // session), flip it back to `auto_inject` for the duration of our
-  // session. This matches the verb's intent: `agent-relay passthrough alice`
-  // means "watch alice with auto-inject on". If the worker is already
-  // in `auto_inject` we still issue the PUT — it's idempotent on the
-  // broker and gives us an early hard-failure on missing-agent before
-  // we touch the terminal.
-  const flip = await setInboundDeliveryMode(connection, name, 'auto_inject', deps.fetch);
-  if (!flip.ok) {
-    if (flip.status === 404) {
-      deps.error(`Error: no agent named '${name}'`);
-    } else {
-      deps.error(
-        `Error: could not ensure '${name}' is in passthrough session: ${flip.message ?? 'unknown error'}`
-      );
-    }
-    return 1;
-  }
-
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
+  // Even when the worker is already in `auto_inject` we still issue the
+  // PUT — it's idempotent on the broker and gives us an early hard
+  // failure on missing-agent before we touch the terminal.
+  const flipResult = await switchInboundDeliveryModeOrAbort(
+    connection,
     name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
+    'auto_inject',
+    `ensure '${name}' is in passthrough session`,
+    deps
   );
-  switch (snapshot.status) {
-    case 'ok':
-      break;
-    case 'not_found':
-      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
-      return 1;
-    case 'no_pty':
-      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to attach to`}`);
-      return 1;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[passthrough] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      break;
-  }
+  if (!flipResult) return 1;
+  const { previousMode } = flipResult;
+
+  const snapshotResult = await captureInitialSnapshot(
+    connection,
+    name,
+    previousMode,
+    'passthrough',
+    'attach to',
+    {
+      fetch: deps.fetch,
+      writeChunk: deps.writeChunk,
+      log: deps.log,
+      error: deps.error,
+      captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
+    }
+  );
+  if (!snapshotResult) return 1;
 
   let showHelp = false;
 
   const initialLocalSize = deps.terminal.getSize();
-  let terminalRows: number | undefined =
-    initialLocalSize?.rows ??
-    (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
+  let terminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
 
   const paintStatus = (): void => {
     deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', showHelp, rows: terminalRows }));
   };
   paintStatus();
 
-  if (initialLocalSize) {
-    const initialResize = await resizeWorker(
-      connection,
-      name,
-      initialLocalSize.rows,
-      initialLocalSize.cols,
-      deps.fetch
-    );
-    if (!initialResize.ok) {
-      deps.log(
-        `[passthrough] could not sync agent PTY size to local terminal (${initialResize.message ?? 'unknown'}); continuing`
-      );
-    }
-  }
+  await syncInitialPtySize(connection, name, initialLocalSize, 'passthrough', deps);
 
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};

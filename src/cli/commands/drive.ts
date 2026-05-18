@@ -30,13 +30,17 @@ import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  captureInitialSnapshot,
+  pickInitialTerminalRows,
+  prepareAttachTarget,
+  switchInboundDeliveryModeOrAbort,
+  syncInitialPtySize,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
-  resolveBrokerConnection,
   toWsUrl,
   type BrokerConnection,
 } from '../lib/broker-connection.js';
@@ -430,130 +434,6 @@ export function renderStatusLine(opts: {
 
 /** ----- Main session runner ----- */
 
-/** Validated attach target — normalized agent name + resolved broker connection. */
-interface DriveAttachTarget {
-  name: string;
-  connection: BrokerConnection;
-}
-
-/**
- * Trim the agent name and resolve the broker connection. Returns
- * `null` (and writes the appropriate error) when either is missing —
- * collapses two top-level CLI bail-out branches into one helper.
- */
-function prepareDriveAttachTarget(
-  agentName: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
-  deps: DriveDependencies
-): DriveAttachTarget | null {
-  // Normalize once so every downstream broker call, WS-event match,
-  // status-line label, and error message uses the same trimmed value.
-  // Without this a stray space in the raw input turns into a silent
-  // 404 (the broker stores names verbatim).
-  const name = agentName.trim();
-  if (!name) {
-    deps.error('Error: agent name is required');
-    return null;
-  }
-  const connection = resolveBrokerConnection(options, deps);
-  if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agent-relay/connection.json.'
-    );
-    return null;
-  }
-  return { name, connection };
-}
-
-/**
- * Read the worker's current inbound delivery mode (so we can restore
- * it on detach) and flip the worker into `manual_flush`. Returns the
- * previous mode on success, or `null` (and writes the appropriate
- * error) when the flip fails — drive aborts before touching the
- * terminal in that case, so we don't redraw the screen and then
- * silently keep auto-injecting into the agent.
- */
-async function switchWorkerToManualFlush(
-  connection: BrokerConnection,
-  name: string,
-  deps: DriveDependencies
-): Promise<{ previousMode: InboundDeliveryMode | null } | null> {
-  const previousMode = await getInboundDeliveryMode(connection, name, deps.fetch);
-  const flip = await setInboundDeliveryMode(connection, name, 'manual_flush', deps.fetch);
-  if (flip.ok) return { previousMode };
-  if (flip.status === 404) {
-    deps.error(`Error: no agent named '${name}'`);
-  } else {
-    deps.error(
-      `Error: could not switch '${name}' to manual_flush mode: ${flip.message ?? 'unknown error'}`
-    );
-  }
-  return null;
-}
-
-/**
- * Render the agent's current visible screen before the live stream
- * begins. Hard errors (`not_found`, `no_pty`) abort and best-effort
- * restore the prior mode so the worker's queue doesn't keep growing.
- * Transient errors warn and proceed. Returns the snapshot rows for
- * status-line fallback, or `null` when the caller should abort.
- */
-async function captureSnapshotForDrive(
-  connection: BrokerConnection,
-  name: string,
-  previousMode: InboundDeliveryMode | null,
-  deps: DriveDependencies
-): Promise<{ snapshotRows?: number } | null> {
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
-    name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
-  switch (snapshot.status) {
-    case 'ok':
-      return { snapshotRows: snapshot.rows };
-    case 'not_found':
-      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
-      return null;
-    case 'no_pty':
-      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to drive`}`);
-      return null;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[drive] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      return { snapshotRows: snapshot.rows };
-  }
-}
-
-/**
- * Sync the agent's PTY to the driver's local terminal size. tmux /
- * screen / ssh all do this — without it, a TUI in the agent renders
- * into whatever 24×80 box the PTY was spawned with, ignoring the
- * human's actual viewport. Best-effort: a failure here is annoying
- * but not fatal (the human can still type, output just renders into
- * the old size). Skipped entirely when `localSize` is `null` (stdout
- * isn't a TTY).
- */
-async function syncInitialPtySize(
-  connection: BrokerConnection,
-  name: string,
-  localSize: { rows: number; cols: number } | null,
-  deps: DriveDependencies
-): Promise<void> {
-  if (!localSize) return;
-  const res = await resizeWorker(connection, name, localSize.rows, localSize.cols, deps.fetch);
-  if (!res.ok) {
-    deps.log(
-      `[drive] could not sync agent PTY size to local terminal (${res.message ?? 'unknown'}); continuing`
-    );
-  }
-}
-
 /** Initial state handed off to the interactive session loop. */
 interface DriveSessionState {
   connection: BrokerConnection;
@@ -776,21 +656,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
 }
 
 /**
- * Pick the status-line row. Prefers the LOCAL terminal's height (the
- * status line needs to land where the human is looking) and falls back
- * to the snapshot's PTY rows, then the renderer's own 24-row default
- * via `undefined`.
- */
-function pickInitialTerminalRows(
-  localSize: { rows: number; cols: number } | null,
-  snapshotRows: number | undefined
-): number | undefined {
-  if (localSize) return localSize.rows;
-  if (typeof snapshotRows === 'number' && snapshotRows > 0) return snapshotRows;
-  return undefined;
-}
-
-/**
  * Open a `drive` session. Resolves with the exit code the CLI should
  * propagate. Cleans up its own stdin raw-mode and best-effort restores
  * the worker's previous inbound delivery mode on any exit path.
@@ -800,22 +665,34 @@ export async function runDriveSession(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: DriveDependencies
 ): Promise<number> {
-  const target = prepareDriveAttachTarget(agentName, options, deps);
+  const target = prepareAttachTarget(agentName, options, deps);
   if (!target) return 1;
   const { name, connection } = target;
 
-  const flipResult = await switchWorkerToManualFlush(connection, name, deps);
+  const flipResult = await switchInboundDeliveryModeOrAbort(
+    connection,
+    name,
+    'manual_flush',
+    `switch '${name}' to manual_flush mode`,
+    deps
+  );
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
-  const snapshotResult = await captureSnapshotForDrive(connection, name, previousMode, deps);
+  const snapshotResult = await captureInitialSnapshot(connection, name, previousMode, 'drive', 'drive', {
+    fetch: deps.fetch,
+    writeChunk: deps.writeChunk,
+    log: deps.log,
+    error: deps.error,
+    captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
+  });
   if (!snapshotResult) return 1;
 
   const initialPending = await getPendingCount(connection, name, deps.fetch);
   const initialLocalSize = deps.terminal.getSize();
   const initialTerminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
 
-  await syncInitialPtySize(connection, name, initialLocalSize, deps);
+  await syncInitialPtySize(connection, name, initialLocalSize, 'drive', deps);
 
   return runDriveSessionLoop(
     {
