@@ -233,8 +233,7 @@ impl PtySession {
         // drainer thread below takes the writer lock and pushes the
         // bytes down the PTY. Bounded to prevent unbounded growth if
         // the drainer is stuck behind a blocked `write_all`.
-        let (writeback_tx, writeback_rx) =
-            std_mpsc::sync_channel::<Vec<u8>>(WRITEBACK_QUEUE_DEPTH);
+        let (writeback_tx, writeback_rx) = std_mpsc::sync_channel::<Vec<u8>>(WRITEBACK_QUEUE_DEPTH);
         let listener = RelayEventListener::new(writeback_tx);
         let term = Arc::new(Mutex::new(Term::new(Config::default(), &size, listener)));
         let processor = Arc::new(Mutex::new(Processor::new()));
@@ -896,8 +895,7 @@ mod tests {
         let (rx, _term) = drive_listener(24, 80, &[b"\x1b[c"]);
         let writeback = drain_writeback(&rx);
         assert_eq!(
-            writeback,
-            b"\x1b[?6c",
+            writeback, b"\x1b[?6c",
             "DA1 ESC[c must produce a VT102 ident (ESC[?6c); got {writeback:?}"
         );
     }
