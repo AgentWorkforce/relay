@@ -20,7 +20,7 @@
 //! the captured data, so they neither block the PTY reader thread nor race
 //! with subsequent grid mutations.
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
@@ -84,7 +84,11 @@ impl Snapshot {
 
     /// Capture from a free-standing `Term` (used by tests and by the future
     /// `view`/`drive` clients that drive their own VT instances).
-    pub fn from_term(term: &Term<VoidListener>) -> Self {
+    ///
+    /// Generic over `EventListener` so this accepts both the live
+    /// `Term<RelayEventListener>` from `PtySession` and the
+    /// `Term<VoidListener>` used in offline tests.
+    pub fn from_term<L: EventListener>(term: &Term<L>) -> Self {
         let grid = term.grid();
         let rows = grid.screen_lines() as u16;
         let cols = grid.columns() as u16;

@@ -26,7 +26,7 @@ use helpers::{
     detect_codex_model_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
     detect_gemini_untrusted_banner, detect_opencode_permission_prompt, floor_char_boundary,
     is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, is_self_name,
-    normalize_cli_name, parse_cli_command, strip_ansi, TerminalQueryParser,
+    normalize_cli_name, parse_cli_command, strip_ansi,
 };
 use listen_api::{broadcast_if_relevant, listen_api_router, ListenApiConfig, ListenApiRequest};
 use routing::display_target_for_dashboard;
@@ -5500,7 +5500,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::helpers::{format_injection, terminal_query_responses};
+    use crate::helpers::format_injection;
     use relay_broker::protocol::{MessageInjectionMode, RelayDelivery};
     use serde_json::{json, Value};
 
@@ -5515,7 +5515,7 @@ mod tests {
         normalize_sender, relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
         relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
         sender_is_dashboard_label, should_clear_pending_delivery_for_event, strip_ansi,
-        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider, TerminalQueryParser,
+        AgentRuntime, PendingDelivery, ProtocolHeadlessProvider,
     };
     use crate::helpers::floor_char_boundary;
     use relay_broker::dedup::DedupCache;
@@ -6347,29 +6347,6 @@ mod tests {
             Some("")
         ));
         assert!(should_clear_pending_delivery_for_event(None, Some("evt_1")));
-    }
-
-    #[test]
-    fn terminal_query_responses_standard_cpr() {
-        let responses = terminal_query_responses(b"\x1b[6n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_split_sequences() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[").is_empty());
-        assert!(parser.feed(b"6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[1;1R".as_slice()]);
-    }
-
-    #[test]
-    fn terminal_query_parser_handles_private_cpr() {
-        let mut parser = TerminalQueryParser::default();
-        assert!(parser.feed(b"\x1b[?6").is_empty());
-        let responses = parser.feed(b"n");
-        assert_eq!(responses, vec![b"\x1b[?1;1R".as_slice()]);
     }
 
     // ==================== strip_ansi tests ====================

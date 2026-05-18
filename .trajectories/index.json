@@ -598,6 +598,13 @@
       "startedAt": "2026-05-18T02:02:07.524Z",
       "completedAt": "2026-05-18T02:05:41.120Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a65b9343cd7dbadb3/.trajectories/completed/2026-05/traj_ybcrij9wg8m1.json"
+    },
+    "traj_piik8r6zu3i7": {
+      "title": "Issue 867: RelayEventListener",
+      "status": "completed",
+      "startedAt": "2026-05-18T01:56:18.236Z",
+      "completedAt": "2026-05-18T02:01:49.991Z",
+      "path": ".trajectories/completed/2026-05/traj_piik8r6zu3i7.json"
     }
   }
 }
