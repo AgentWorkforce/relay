@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { formatTableRow, formatUptimeSecs } from './formatting.js';
+import { formatTableRow, formatUptimeSecs, sanitizeForTerminal } from './formatting.js';
 import { getWorkerLogsDir } from './paths.js';
 
 type ExitFn = (code: number) => never;
@@ -342,9 +342,35 @@ export async function runWhoCommand(
   });
 }
 
+/**
+ * Convert a raw PTY/TTY log capture into greppable, line-oriented plain text:
+ * strip ANSI/cursor/control escapes, drop lines that were pure escape noise,
+ * and collapse consecutive identical lines (spinner/redraw frames like
+ * `⠙ Working(18m 07s)` re-printed every tick).
+ */
+export function toPlainLogLines(raw: string): string[] {
+  const out: string[] = [];
+  let prev: string | undefined;
+  // Drop the single file-terminating newline (its trailing '' element) so a
+  // normal log file doesn't yield a spurious blank last line — same trim the
+  // default view does. Interior blank lines are preserved.
+  const body = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+  for (const rawLine of body.split('\n')) {
+    const clean = sanitizeForTerminal(rawLine).replace(/\s+$/, '');
+    // A non-empty source line that sanitizes to nothing was pure escape
+    // noise (cursor moves, color resets) — drop it entirely.
+    if (clean === '' && rawLine.trim() !== '') continue;
+    // Collapse consecutive identical lines (redraw frames / repeated blanks).
+    if (clean === prev) continue;
+    out.push(clean);
+    prev = clean;
+  }
+  return out;
+}
+
 export async function runAgentsLogsCommand(
   name: string,
-  options: { lines?: string; follow?: boolean },
+  options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
   const logFileCandidates = getWorkerLogsDirCandidates(deps.getProjectRoot()).map((logsDir) =>
@@ -366,19 +392,36 @@ export async function runAgentsLogsCommand(
   try {
     const lineCount = Math.max(1, Number.parseInt(options.lines || '50', 10) || 50);
     const text = deps.readFile(logFile, 'utf-8');
-    const lines = text.length > 0 ? text.split('\n') : [];
-    if (lines.length > 0 && lines[lines.length - 1] === '') {
-      lines.pop();
-    }
-    const tail = lines.slice(-lineCount).join('\n');
 
-    deps.log(`Logs for ${name} (last ${lineCount} lines):`);
-    deps.log('─'.repeat(50));
-    deps.log(tail || '(empty)');
+    // --json: machine-readable snapshot of sanitized, line-oriented output.
+    // (Snapshot only — combine with the SDK event stream for live tailing.)
+    if (options.json) {
+      const plainLines = toPlainLogLines(text).slice(-lineCount);
+      deps.log(JSON.stringify({ agent: name, file: logFile, lines: plainLines }, null, 2));
+      return;
+    }
+
+    // --plain: ANSI-stripped, deduped, greppable. No decorative header so the
+    // output is pure log content for piping into grep/awk.
+    if (options.plain) {
+      const plainLines = toPlainLogLines(text).slice(-lineCount);
+      deps.log(plainLines.join('\n'));
+    } else {
+      const lines = text.length > 0 ? text.split('\n') : [];
+      if (lines.length > 0 && lines[lines.length - 1] === '') {
+        lines.pop();
+      }
+      const tail = lines.slice(-lineCount).join('\n');
+
+      deps.log(`Logs for ${name} (last ${lineCount} lines):`);
+      deps.log('─'.repeat(50));
+      deps.log(tail || '(empty)');
+    }
 
     if (options.follow) {
       let lastSize = text.length;
       let remainder = '';
+      let prevStreamLine: string | undefined;
 
       // Poll the log file for new content every 500ms
       await new Promise<void>(() => {
@@ -395,7 +438,15 @@ export async function runAgentsLogsCommand(
               // Keep the last element as remainder (may be incomplete line)
               remainder = newLines.pop() ?? '';
               for (const line of newLines) {
-                deps.log(line);
+                if (options.plain) {
+                  const clean = sanitizeForTerminal(line).replace(/\s+$/, '');
+                  if (clean === '' && line.trim() !== '') continue;
+                  if (clean === prevStreamLine) continue;
+                  prevStreamLine = clean;
+                  deps.log(clean);
+                } else {
+                  deps.log(line);
+                }
               }
             } else if (currentText.length < lastSize) {
               // File was truncated/rotated, reset

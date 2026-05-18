@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   runAgentsCommand,
+  runAgentsLogsCommand,
   runWhoCommand,
+  toPlainLogLines,
   type AgentManagementListingDependencies,
   type ListingWorkerInfo,
 } from './agent-management-listing.js';
@@ -197,5 +199,97 @@ describe('agent-management-listing JSON output', () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.parse(log.mock.calls[0][0] as string)).toEqual([]);
+  });
+});
+
+describe('toPlainLogLines', () => {
+  it('strips ANSI/cursor escapes, drops escape-only lines, collapses redraw frames', () => {
+    const ESC = '\u001b';
+    const raw = [
+      `${ESC}[2J${ESC}[H`, // pure cursor/clear noise -> dropped
+      `${ESC}[31mERROR${ESC}[0m: boom`, // color codes stripped
+      `${ESC}[?25l⠙ Working(18m 06s)`,
+      `${ESC}[?25l⠙ Working(18m 06s)`, // identical redraw frame -> collapsed
+      `${ESC}[?25l⠙ Working(18m 07s)`,
+      'done   ', // trailing whitespace trimmed
+    ].join('\n');
+
+    expect(toPlainLogLines(raw)).toEqual(['ERROR: boom', '⠙ Working(18m 06s)', '⠙ Working(18m 07s)', 'done']);
+  });
+
+  it('preserves a single genuine blank line but collapses runs', () => {
+    expect(toPlainLogLines('a\n\n\n b ')).toEqual(['a', '', ' b']);
+  });
+});
+
+describe('runAgentsLogsCommand --plain / --json', () => {
+  const ESC = '\u001b';
+  const rawLog = [
+    `${ESC}[2J${ESC}[H`,
+    `${ESC}[32mline one${ESC}[0m`,
+    `${ESC}[?25l⠙ spin`,
+    `${ESC}[?25l⠙ spin`,
+    'line two',
+    '',
+  ].join('\n');
+
+  function logsDeps() {
+    const log = vi.fn(() => undefined);
+    const error = vi.fn(() => undefined);
+    const exit = vi.fn((code: number) => {
+      throw new Error(`exit:${code}`);
+    }) as unknown as AgentManagementListingDependencies['exit'];
+    const deps: AgentManagementListingDependencies = {
+      getProjectRoot: vi.fn(() => '/tmp/project'),
+      getDataDir: vi.fn(() => '/tmp/data'),
+      createClient: vi.fn(() => ({
+        listAgents: vi.fn(async () => []),
+        shutdown: vi.fn(async () => undefined),
+      })),
+      fileExists: vi.fn(() => true),
+      readFile: vi.fn(() => rawLog),
+      fetch: vi.fn(async () => {
+        throw new Error('not implemented');
+      }),
+      nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      log,
+      error,
+      exit,
+    };
+    return { deps, log, error };
+  }
+
+  it('--plain emits sanitized, deduped lines with no decorative header', async () => {
+    const { deps, log } = logsDeps();
+
+    await runAgentsLogsCommand('WorkerA', { plain: true }, deps);
+
+    expect(log).toHaveBeenCalledTimes(1);
+    const out = log.mock.calls[0][0] as string;
+    expect(out).toBe(['line one', '⠙ spin', 'line two'].join('\n'));
+    expect(out).not.toContain(ESC);
+    expect(out).not.toContain('Logs for WorkerA');
+  });
+
+  it('--json emits structured sanitized snapshot', async () => {
+    const { deps, log } = logsDeps();
+
+    await runAgentsLogsCommand('WorkerA', { json: true }, deps);
+
+    expect(log).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(log.mock.calls[0][0] as string);
+    expect(parsed.agent).toBe('WorkerA');
+    expect(parsed.lines).toEqual(['line one', '⠙ spin', 'line two']);
+    expect(log.mock.calls[0][0] as string).not.toContain(ESC);
+  });
+
+  it('default (no flags) preserves the raw header + content', async () => {
+    const { deps, log } = logsDeps();
+
+    await runAgentsLogsCommand('WorkerA', {}, deps);
+
+    const joined = log.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(joined).toContain('Logs for WorkerA');
+    expect(joined).toContain(ESC); // raw view keeps escapes
   });
 });

@@ -404,9 +404,16 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name')
     .option('-n, --lines <n>', 'Number of lines to show', '50')
     .option('-f, --follow', 'Follow log output (like tail -f)')
-    .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
-      await runAgentsLogsCommand(name, options, deps);
-    });
+    .option('--plain', 'ANSI-stripped, deduped, line-oriented (greppable)')
+    .option('--json', 'Structured JSON: { agent, file, lines[] } (sanitized; snapshot only)')
+    .action(
+      async (
+        name: string,
+        options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean }
+      ) => {
+        await runAgentsLogsCommand(name, options, deps);
+      }
+    );
 
   program
     .command('release')
