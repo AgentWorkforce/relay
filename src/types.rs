@@ -2,52 +2,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::MessageInjectionMode;
 
-/// Per-worker session mode controlling how inbound relay messages are
+/// Per-worker inbound delivery mode controlling how inbound relay messages are
 /// dispatched into the wrapped agent's PTY.
 ///
-/// - [`SessionMode::Passthrough`] (default) injects inbound messages
-///   directly into the worker. The user's own keystrokes also pass
-///   through alongside the broker's auto-injections; both writers race.
-/// - [`SessionMode::Human`] holds inbound messages in a per-worker
-///   pending queue so a human-driven client can decide when to flush
-///   them.
+/// - [`InboundDeliveryMode::AutoInject`] (default) injects inbound messages
+///   directly into the worker. The user's own keystrokes may also arrive
+///   through an attached relay session, so both writers can race.
+/// - [`InboundDeliveryMode::ManualFlush`] holds inbound messages in a
+///   per-worker pending queue so a client can decide when to flush them.
 ///
 /// Mode is broker-side state only; the worker process does not observe it.
-/// It resets to [`SessionMode::Passthrough`] on broker restart — there
+/// It resets to [`InboundDeliveryMode::AutoInject`] on broker restart — there
 /// is no disk persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionMode {
+pub enum InboundDeliveryMode {
     /// Inbound messages auto-inject into the worker's PTY.
     #[default]
-    Passthrough,
+    AutoInject,
     /// Inbound messages append to the per-worker pending queue and wait
     /// for an explicit flush.
-    Human,
+    ManualFlush,
 }
 
-impl SessionMode {
+impl InboundDeliveryMode {
     pub fn as_wire_str(&self) -> &'static str {
         match self {
-            SessionMode::Passthrough => "passthrough",
-            SessionMode::Human => "human",
+            InboundDeliveryMode::AutoInject => "auto_inject",
+            InboundDeliveryMode::ManualFlush => "manual_flush",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "passthrough" => Some(SessionMode::Passthrough),
-            "human" => Some(SessionMode::Human),
+            "auto_inject" => Some(InboundDeliveryMode::AutoInject),
+            "manual_flush" => Some(InboundDeliveryMode::ManualFlush),
             _ => None,
         }
     }
 }
 
 /// A relay message that arrived while a worker was in
-/// [`SessionMode::Human`] and therefore got parked in the per-worker
-/// pending queue instead of being injected. Drained in FIFO order by
-/// `POST /api/spawned/{name}/flush` or the auto-drain on a
-/// `human → passthrough` mode transition.
+/// [`InboundDeliveryMode::ManualFlush`] and therefore got parked in the
+/// per-worker pending queue instead of being injected. Drained in FIFO order
+/// by `POST /api/spawned/{name}/flush` or the auto-drain on a
+/// `manual_flush → auto_inject` mode transition.
 ///
 /// The full delivery context is captured at queue time so a drain
 /// later produces a byte-for-byte equivalent of the original delivery
@@ -205,35 +204,35 @@ pub struct InjectRequest {
     pub attempts: u32,
 }
 
-/// Per-worker session bookkeeping owned by the broker. Tracks the
-/// current [`SessionMode`] plus the FIFO pending queue for messages
-/// captured while in [`SessionMode::Human`]. The broker keeps one of
-/// these per spawned worker in a parallel `HashMap<String, SessionState>`
+/// Per-worker inbound delivery bookkeeping owned by the broker. Tracks the
+/// current [`InboundDeliveryMode`] plus the FIFO pending queue for messages
+/// captured while in [`InboundDeliveryMode::ManualFlush`]. The broker keeps one of
+/// these per spawned worker in a parallel `HashMap<String, InboundDeliveryState>`
 /// so the existing `WorkerHandle` (which holds OS-level process state)
 /// doesn't have to grow.
 #[derive(Debug, Default)]
-pub struct SessionState {
-    pub mode: SessionMode,
+pub struct InboundDeliveryState {
+    pub mode: InboundDeliveryMode,
     pub pending: std::collections::VecDeque<PendingRelayMessage>,
 }
 
 /// Per-worker cap on the pending queue. Prevents unbounded growth when a
-/// human-mode session is left open for hours; oldest message is evicted
-/// with a `tracing::warn!` (see [`SessionState::push_pending`]).
+/// `manual_flush` delivery mode is left open for hours; oldest message is evicted
+/// with a `tracing::warn!` (see [`InboundDeliveryState::push_pending`]).
 pub const MAX_PENDING_PER_WORKER: usize = 256;
 
-/// Outcome of dispatching one inbound relay message through the session
-/// gate. Returned by [`SessionState::accept_inbound`] so the broker can
+/// Outcome of dispatching one inbound relay message through the delivery
+/// gate. Returned by [`InboundDeliveryState::accept_inbound`] so the broker can
 /// log + telemetry consistently.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionDispatch {
-    /// Worker is in [`SessionMode::Passthrough`]; the broker should run
+pub enum InboundDeliveryDispatch {
+    /// Worker is in [`InboundDeliveryMode::AutoInject`]; the broker should run
     /// the existing inject path.
     Inject,
-    /// Worker is in [`SessionMode::Human`]; the message was queued.
+    /// Worker is in [`InboundDeliveryMode::ManualFlush`]; the message was queued.
     /// `queue_len` is the queue size *after* the push.
     Queued { queue_len: usize },
-    /// Worker is in [`SessionMode::Human`] but the queue was full, so
+    /// Worker is in [`InboundDeliveryMode::ManualFlush`] but the queue was full, so
     /// the oldest entry was evicted to make room. `queue_len` is the
     /// queue size *after* the eviction + push (always equal to the cap).
     QueuedEvicted {
@@ -242,8 +241,8 @@ pub enum SessionDispatch {
     },
 }
 
-impl SessionState {
-    pub fn new(mode: SessionMode) -> Self {
+impl InboundDeliveryState {
+    pub fn new(mode: InboundDeliveryMode) -> Self {
         Self {
             mode,
             pending: std::collections::VecDeque::new(),
@@ -264,31 +263,33 @@ impl SessionState {
         evicted_from
     }
 
-    /// Gate an inbound relay message through the current session mode.
+    /// Gate an inbound relay message through the current inbound delivery mode.
     ///
-    /// In [`SessionMode::Passthrough`] the message is *not* enqueued;
-    /// the caller runs the existing inject path. In [`SessionMode::Human`]
-    /// the message is appended (with FIFO eviction at the cap) and the
-    /// caller acks the sender without touching the worker's PTY.
-    pub fn accept_inbound(&mut self, msg: PendingRelayMessage) -> SessionDispatch {
+    /// In [`InboundDeliveryMode::AutoInject`] the message is *not* enqueued;
+    /// the caller runs the existing inject path. In
+    /// [`InboundDeliveryMode::ManualFlush`] the message is appended (with FIFO
+    /// eviction at the cap) and the caller acks the sender without touching the
+    /// worker's PTY.
+    pub fn accept_inbound(&mut self, msg: PendingRelayMessage) -> InboundDeliveryDispatch {
         match self.mode {
-            SessionMode::Passthrough => SessionDispatch::Inject,
-            SessionMode::Human => {
+            InboundDeliveryMode::AutoInject => InboundDeliveryDispatch::Inject,
+            InboundDeliveryMode::ManualFlush => {
                 let evicted = self.push_pending(msg);
                 let queue_len = self.pending.len();
                 match evicted {
-                    Some(dropped_from) => SessionDispatch::QueuedEvicted {
+                    Some(dropped_from) => InboundDeliveryDispatch::QueuedEvicted {
                         queue_len,
                         dropped_from,
                     },
-                    None => SessionDispatch::Queued { queue_len },
+                    None => InboundDeliveryDispatch::Queued { queue_len },
                 }
             }
         }
     }
 
     /// Drain the pending queue in FIFO order. Used by `POST /api/flush`
-    /// and by the auto-drain that runs on a `human → passthrough` transition.
+    /// and by the auto-drain that runs on a `manual_flush → auto_inject`
+    /// transition.
     pub fn drain_pending(&mut self) -> Vec<PendingRelayMessage> {
         self.pending.drain(..).collect()
     }
@@ -300,7 +301,7 @@ impl SessionState {
 }
 
 #[cfg(test)]
-mod session_tests {
+mod inbound_delivery_tests {
     use super::*;
 
     fn msg(from: &str, body: &str) -> PendingRelayMessage {
@@ -322,20 +323,23 @@ mod session_tests {
     }
 
     #[test]
-    fn session_mode_wire_format_matches_serde_round_trip() {
+    fn inbound_delivery_mode_wire_format_matches_serde_round_trip() {
         // Guard against `as_wire_str` / `parse` drifting from the
         // `#[serde(rename_all = "snake_case")]` representation.
-        for variant in [SessionMode::Passthrough, SessionMode::Human] {
+        for variant in [
+            InboundDeliveryMode::AutoInject,
+            InboundDeliveryMode::ManualFlush,
+        ] {
             let serialized = serde_json::to_string(&variant)
-                .expect("SessionMode serializes")
+                .expect("InboundDeliveryMode serializes")
                 .trim_matches('"')
                 .to_string();
             assert_eq!(serialized, variant.as_wire_str());
 
-            let parsed = SessionMode::parse(&serialized).expect("wire form parses");
+            let parsed = InboundDeliveryMode::parse(&serialized).expect("wire form parses");
             assert_eq!(parsed, variant);
 
-            let from_serde: SessionMode =
+            let from_serde: InboundDeliveryMode =
                 serde_json::from_str(&format!("\"{serialized}\"")).expect("serde round-trips");
             assert_eq!(from_serde, variant);
         }
@@ -359,37 +363,37 @@ mod session_tests {
             queued_at_ms: 123_456,
             event_id: Some("evt_xyz".to_string()),
         };
-        let mut state = SessionState::new(SessionMode::Human);
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         state.accept_inbound(queued.clone());
         let drained = state.drain_pending();
         assert_eq!(drained, vec![queued]);
     }
 
     #[test]
-    fn default_mode_is_passthrough() {
-        let state = SessionState::default();
-        assert_eq!(state.mode, SessionMode::Passthrough);
+    fn default_mode_is_auto_inject() {
+        let state = InboundDeliveryState::default();
+        assert_eq!(state.mode, InboundDeliveryMode::AutoInject);
         assert!(state.pending.is_empty());
     }
 
     #[test]
-    fn passthrough_mode_does_not_queue() {
-        let mut state = SessionState::new(SessionMode::Passthrough);
+    fn auto_inject_mode_does_not_queue() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::AutoInject);
         let outcome = state.accept_inbound(msg("Alice", "hi"));
-        assert_eq!(outcome, SessionDispatch::Inject);
+        assert_eq!(outcome, InboundDeliveryDispatch::Inject);
         assert!(state.pending.is_empty());
     }
 
     #[test]
-    fn human_mode_queues_in_fifo_order() {
-        let mut state = SessionState::new(SessionMode::Human);
+    fn manual_flush_mode_queues_in_fifo_order() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         assert_eq!(
             state.accept_inbound(msg("Alice", "one")),
-            SessionDispatch::Queued { queue_len: 1 }
+            InboundDeliveryDispatch::Queued { queue_len: 1 }
         );
         assert_eq!(
             state.accept_inbound(msg("Bob", "two")),
-            SessionDispatch::Queued { queue_len: 2 }
+            InboundDeliveryDispatch::Queued { queue_len: 2 }
         );
         let drained = state.drain_pending();
         assert_eq!(drained.len(), 2);
@@ -400,18 +404,18 @@ mod session_tests {
     }
 
     #[test]
-    fn human_mode_caps_queue_with_fifo_eviction() {
-        let mut state = SessionState::new(SessionMode::Human);
+    fn manual_flush_mode_caps_queue_with_fifo_eviction() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         for i in 0..MAX_PENDING_PER_WORKER {
             assert!(matches!(
                 state.accept_inbound(msg(&format!("u{i}"), "x")),
-                SessionDispatch::Queued { .. }
+                InboundDeliveryDispatch::Queued { .. }
             ));
         }
         // Cap reached — next push evicts the oldest ("u0").
         let outcome = state.accept_inbound(msg("overflow", "y"));
         match outcome {
-            SessionDispatch::QueuedEvicted {
+            InboundDeliveryDispatch::QueuedEvicted {
                 queue_len,
                 dropped_from,
             } => {
@@ -429,7 +433,7 @@ mod session_tests {
 
     #[test]
     fn pending_snapshot_does_not_mutate() {
-        let mut state = SessionState::new(SessionMode::Human);
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         state.accept_inbound(msg("Alice", "hi"));
         let snap = state.pending_snapshot();
         assert_eq!(snap.len(), 1);
@@ -439,15 +443,26 @@ mod session_tests {
     #[test]
     fn parse_round_trips_wire_strings() {
         assert_eq!(
-            SessionMode::parse("passthrough"),
-            Some(SessionMode::Passthrough)
+            InboundDeliveryMode::parse("auto_inject"),
+            Some(InboundDeliveryMode::AutoInject)
         );
-        assert_eq!(SessionMode::parse("HUMAN"), Some(SessionMode::Human));
-        assert_eq!(SessionMode::parse(" human "), Some(SessionMode::Human));
-        assert_eq!(SessionMode::parse("drive"), None);
-        // No back-compat alias: the prior "relay" wire form must not parse.
-        assert_eq!(SessionMode::parse("relay"), None);
-        assert_eq!(SessionMode::Passthrough.as_wire_str(), "passthrough");
-        assert_eq!(SessionMode::Human.as_wire_str(), "human");
+        assert_eq!(
+            InboundDeliveryMode::parse("MANUAL_FLUSH"),
+            Some(InboundDeliveryMode::ManualFlush)
+        );
+        assert_eq!(
+            InboundDeliveryMode::parse(" manual_flush "),
+            Some(InboundDeliveryMode::ManualFlush)
+        );
+        assert_eq!(InboundDeliveryMode::parse("drive"), None);
+        assert_eq!(InboundDeliveryMode::parse("passthrough"), None);
+        assert_eq!(InboundDeliveryMode::parse("human"), None);
+        // CLI verbs are not inbound delivery mode wire values.
+        assert_eq!(InboundDeliveryMode::parse("relay"), None);
+        assert_eq!(InboundDeliveryMode::AutoInject.as_wire_str(), "auto_inject");
+        assert_eq!(
+            InboundDeliveryMode::ManualFlush.as_wire_str(),
+            "manual_flush"
+        );
     }
 }

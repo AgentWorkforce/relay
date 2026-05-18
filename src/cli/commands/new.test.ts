@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DriveDependencies } from './drive.js';
 import { registerNewCommands, runNew, spawnAgent, type NewDependencies } from './new.js';
-import type { PassthroughDependencies } from './passthrough.js';
+import type { RelayDependencies } from './relay.js';
 import type { ViewDependencies } from './view.js';
 
 import {
@@ -134,7 +134,12 @@ describe('runNew', () => {
     const { deps, logs, fetchLog } = createHarness();
     const code = await runNew('Alice', 'claude', ['--say', 'hi'], {}, deps);
     expect(code).toBe(0);
-    expect(fetchLog[0].body).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
+    expect(fetchLog[0].body).toEqual({
+      name: 'Alice',
+      cli: 'claude',
+      args: ['--say', 'hi'],
+      channels: [],
+    });
     expect(logs.some((args) => String(args[0]).includes('Spawned agent: Alice'))).toBe(true);
     expect(logs.some((args) => String(args[0]).includes('attach with: agent-relay drive Alice'))).toBe(true);
   });
@@ -179,6 +184,7 @@ describe('runNew', () => {
     expect(fetchLog[0].body).toEqual({
       name: 'Alice',
       cli: 'claude',
+      args: [],
       task: 'fix the bug',
       team: 'core',
       model: 'opus',
@@ -209,7 +215,7 @@ describe('registerNewCommands', () => {
     expect(cmd?.description()).toMatch(/spawn a new agent under the broker/i);
   });
 
-  it('takes name and cli as required positional arguments (matches drive/view/passthrough/rm shape)', () => {
+  it('takes name and cli as required positional arguments (matches drive/view/relay/rm shape)', () => {
     const { deps } = createHarness();
     const program = new Command();
     program.exitOverride();
@@ -296,7 +302,7 @@ interface AttachHarnessOptions {
 /**
  * Harness for `runSpawnAndAttach`. Stubs out the child attach runners
  * (they each have their own test suites — drive.test.ts,
- * passthrough.test.ts, view.test.ts — so we don't re-exercise them
+ * relay.test.ts, view.test.ts — so we don't re-exercise them
  * here) and records the composition's spawn + release + signal
  * interactions.
  */
@@ -380,7 +386,7 @@ function createAttachHarness(opts: AttachHarnessOptions = {}): {
     terminal: { getSize: () => null, onResize: () => () => undefined },
   };
   const driveDeps = stubChildDep as unknown as DriveDependencies;
-  const passthroughDeps = stubChildDep as unknown as PassthroughDependencies;
+  const relayDeps = stubChildDep as unknown as RelayDependencies;
   const viewDeps = stubChildDep as unknown as ViewDependencies;
 
   const onSignal = (signal: NodeJS.Signals, handler: () => void | Promise<void>): void => {
@@ -392,7 +398,7 @@ function createAttachHarness(opts: AttachHarnessOptions = {}): {
   const deps: SpawnAndAttachDependencies = {
     newDeps,
     driveDeps,
-    passthroughDeps,
+    relayDeps,
     viewDeps,
     releaseAgent: vi.fn(async (_conn, name) => {
       captures.releaseCalls.push({ name });
@@ -508,23 +514,23 @@ describe('runSpawnAndAttach — --ephemeral teardown', () => {
 });
 
 describe('runSpawnAndAttach — byte-equivalence with the verbless `-n` alias', () => {
-  it('alias preset (mode=passthrough, ephemeral=true) produces the same spawn body + teardown footprint as an explicit --mode passthrough --ephemeral call', async () => {
+  it('alias preset (mode=relay, ephemeral=true) produces the same spawn body + teardown footprint as an explicit --mode relay --ephemeral call', async () => {
     const argv = ['-n', 'Alice', 'claude', '--say', 'hi']; // hypothetical user input
     // What the alias dispatcher feeds into runSpawnAndAttach:
     const aliasOptions: SpawnAndAttachOptions = {
       name: 'Alice',
       cli: 'claude',
       args: ['--say', 'hi'],
-      mode: 'passthrough',
+      mode: 'relay',
       ephemeral: true,
     };
-    // What `new Alice claude --attach --mode passthrough --ephemeral --say hi`
+    // What `new Alice claude --attach --mode relay --ephemeral --say hi`
     // feeds into the same helper after the action layer's destructuring:
     const newAttachOptions: SpawnAndAttachOptions = {
       name: 'Alice',
       cli: 'claude',
       args: ['--say', 'hi'],
-      mode: 'passthrough',
+      mode: 'relay',
       ephemeral: true,
     };
     expect(aliasOptions).toEqual(newAttachOptions);
@@ -602,7 +608,7 @@ describe('registerNewCommands — --attach action integration', () => {
     const attachChildDeps: AttachChildDependencies = {
       newDeps: newDeps2,
       driveDeps: stubChild as unknown as DriveDependencies,
-      passthroughDeps: stubChild as unknown as PassthroughDependencies,
+      relayDeps: stubChild as unknown as RelayDependencies,
       viewDeps: stubChild as unknown as ViewDependencies,
     };
 

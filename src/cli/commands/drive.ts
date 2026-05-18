@@ -1,30 +1,30 @@
 /**
  * `agent-relay drive <name>` — interactive read-write take-over client.
  *
- * Attaches to a running agent, flips it into `human` session mode so the
+ * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
  * broker parks new relay messages in a per-worker queue, and forwards your
  * keystrokes to the worker's PTY. You can drain the queue on demand with
  * `Ctrl+G` and detach with `Ctrl+B D` (or `Ctrl+C` as a safety alias).
- * Detaching restores the worker's previous session mode and leaves the
+ * Detaching restores the worker's previous inbound delivery mode and leaves the
  * agent running under the broker — `drive` never kills the worker.
  *
  * Sequence of operations on attach:
  *
  *   1. Discover broker connection (CLI flag → env → connection.json).
- *   2. `GET  /api/spawned/{name}/mode`  → remember the previous mode.
- *   3. `PUT  /api/spawned/{name}/mode`  → switch to `human`.
+ *   2. `GET  /api/spawned/{name}/delivery-mode`  → remember the previous mode.
+ *   3. `PUT  /api/spawned/{name}/delivery-mode`  → switch to `manual_flush`.
  *   4. `captureAndRenderSnapshot`       → repaint the agent's current screen.
  *   5. `GET  /api/spawned/{name}/pending` → seed the status-line counter.
  *   6. Open `/ws`, subscribe to events for this worker.
  *   7. Switch local stdin to raw mode; forward bytes to `POST /api/input/{name}`.
  *
- * On detach (clean or abnormal), best-effort `PUT .../mode` restores the
+ * On detach (clean or abnormal), best-effort `PUT .../delivery-mode` restores the
  * previous mode so the queue doesn't fill up indefinitely.
  */
 
 import { Buffer } from 'node:buffer';
 
-import type { SessionMode } from '@agent-relay/sdk';
+import type { InboundDeliveryMode } from '@agent-relay/sdk';
 import { Command } from 'commander';
 import WebSocket from 'ws';
 
@@ -45,8 +45,8 @@ import { createBrokerClient, mapBrokerSdkFailure } from '../lib/sdk-client.js';
 
 type ExitFn = (code: number) => never;
 
-/** Wire string for the broker's `SessionMode` enum. */
-export type { SessionMode };
+/** Wire string for the broker's `InboundDeliveryMode` enum. */
+export type { InboundDeliveryMode };
 
 /** Minimal WebSocket surface we depend on — same shape as `view`'s. */
 export interface DriveWebSocket {
@@ -161,37 +161,37 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
 
 /** ----- HTTP helpers ----- */
 
-/** `GET /api/spawned/{name}/mode` → `'human' | 'passthrough'` or `null` on failure. */
-export async function getSessionMode(
+/** `GET /api/spawned/{name}/delivery-mode` → `'manual_flush' | 'auto_inject'` or `null` on failure. */
+export async function getInboundDeliveryMode(
   connection: BrokerConnection,
   name: string,
   fetchFn: typeof globalThis.fetch
-): Promise<SessionMode | null> {
+): Promise<InboundDeliveryMode | null> {
   try {
-    return await createBrokerClient(connection, fetchFn).getSessionMode(name);
+    return await createBrokerClient(connection, fetchFn).getInboundDeliveryMode(name);
   } catch {
     return null;
   }
 }
 
-/** Outcome of a `PUT /api/spawned/{name}/mode` call. */
-export interface SetSessionModeResult {
+/** Outcome of a `PUT /api/spawned/{name}/delivery-mode` call. */
+export interface SetInboundDeliveryModeResult {
   ok: boolean;
   status: number;
-  /** Server-reported number of pending messages drained on a `human→passthrough` flip. */
+  /** Server-reported number of pending messages drained on a `manual_flush→auto_inject` flip. */
   flushed?: number;
   /** Human-readable error message when `ok` is false. */
   message?: string;
 }
 
-export async function setSessionMode(
+export async function setInboundDeliveryMode(
   connection: BrokerConnection,
   name: string,
-  mode: SessionMode,
+  mode: InboundDeliveryMode,
   fetchFn: typeof globalThis.fetch
-): Promise<SetSessionModeResult> {
+): Promise<SetInboundDeliveryModeResult> {
   try {
-    const body = await createBrokerClient(connection, fetchFn).setSessionMode(name, mode);
+    const body = await createBrokerClient(connection, fetchFn).setInboundDeliveryMode(name, mode);
     const flushed = body.flushed;
     return { ok: true, status: 200, flushed };
   } catch (err: unknown) {
@@ -412,7 +412,7 @@ export class KeybindParser {
  */
 export function renderStatusLine(opts: {
   name: string;
-  mode: SessionMode;
+  mode: InboundDeliveryMode;
   pending: number;
   showHelp: boolean;
   /** Terminal rows — defaults to 24 if unknown. The status line lands on row N. */
@@ -422,7 +422,7 @@ export function renderStatusLine(opts: {
   const help = opts.showHelp
     ? ' | Ctrl+G flush | Ctrl+B D detach | Ctrl+B ? hide help'
     : ' | Ctrl+G flush | Ctrl+B D detach';
-  const text = `[drive ${opts.name} | mode=${opts.mode} | pending=${opts.pending}${help}]`;
+  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending}${help}]`;
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -433,7 +433,7 @@ export function renderStatusLine(opts: {
 /**
  * Open a `drive` session. Resolves with the exit code the CLI should
  * propagate. Cleans up its own stdin raw-mode and best-effort restores
- * the worker's previous session mode on any exit path.
+ * the worker's previous inbound delivery mode on any exit path.
  */
 export async function runDriveSession(
   agentName: string,
@@ -461,19 +461,21 @@ export async function runDriveSession(
 
   // Remember the worker's prior mode so we can restore it on detach.
   // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `passthrough` in that case so the
+  // we default the restore target to `auto_inject` in that case so the
   // queue doesn't keep growing.
-  const previousMode = await getSessionMode(connection, name, deps.fetch);
+  const previousMode = await getInboundDeliveryMode(connection, name, deps.fetch);
 
-  // Flip the worker into human mode. If this fails outright, abort
+  // Flip the worker into manual_flush mode. If this fails outright, abort
   // before doing anything else — we don't want to redraw the screen
   // and then silently keep auto-injecting into the agent.
-  const flip = await setSessionMode(connection, name, 'human', deps.fetch);
+  const flip = await setInboundDeliveryMode(connection, name, 'manual_flush', deps.fetch);
   if (!flip.ok) {
     if (flip.status === 404) {
       deps.error(`Error: no agent named '${name}'`);
     } else {
-      deps.error(`Error: could not switch '${name}' to human mode: ${flip.message ?? 'unknown error'}`);
+      deps.error(
+        `Error: could not switch '${name}' to manual_flush mode: ${flip.message ?? 'unknown error'}`
+      );
     }
     return 1;
   }
@@ -491,11 +493,11 @@ export async function runDriveSession(
       break;
     case 'not_found':
       // Best-effort restore — we did flip the mode above.
-      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `no agent named '${name}'`}`);
       return 1;
     case 'no_pty':
-      await setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch);
+      await setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch);
       deps.error(`Error: ${snapshot.message ?? `agent '${name}' has no PTY to drive`}`);
       return 1;
     case 'unavailable':
@@ -525,7 +527,7 @@ export async function runDriveSession(
     deps.writeChunk(
       renderStatusLine({
         name,
-        mode: 'human',
+        mode: 'manual_flush',
         pending,
         showHelp,
         rows: terminalRows,
@@ -667,8 +669,8 @@ export async function runDriveSession(
         // best effort
       }
       // Best-effort: restore the worker's previous mode so we don't
-      // leave it stuck in human and silently piling up queued messages.
-      void setSessionMode(connection, name, previousMode ?? 'passthrough', deps.fetch).finally(() => {
+      // leave it stuck in manual_flush and silently piling up queued messages.
+      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
         resolve(code);
       });
     };

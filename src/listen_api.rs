@@ -10,7 +10,7 @@ use relay_broker::{
     multi_workspace::WorkspaceMembershipSummary,
     protocol::MessageInjectionMode,
     replay_buffer::ReplayBuffer,
-    types::{PendingRelayMessage, SessionMode},
+    types::{InboundDeliveryMode, PendingRelayMessage},
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -136,64 +136,65 @@ pub enum ListenApiRequest {
     RenewLease {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
-    /// `GET /api/spawned/{name}/mode` — read the current session mode.
-    GetSessionMode {
+    /// `GET /api/spawned/{name}/delivery-mode` — read the current inbound
+    /// delivery mode.
+    GetInboundDeliveryMode {
         name: String,
-        reply: tokio::sync::oneshot::Sender<Result<SessionMode, SessionRouteError>>,
+        reply: tokio::sync::oneshot::Sender<Result<InboundDeliveryMode, DeliveryRouteError>>,
     },
-    /// `PUT /api/spawned/{name}/mode` — set the session mode. On a
-    /// `human → passthrough` transition the broker drains the pending
+    /// `PUT /api/spawned/{name}/delivery-mode` — set the inbound delivery mode.
+    /// On a `manual_flush → auto_inject` transition the broker drains the pending
     /// queue into the worker (via the existing inject path) before
     /// replying; `flushed` reports how many messages were injected.
-    SetSessionMode {
+    SetInboundDeliveryMode {
         name: String,
-        mode: SessionMode,
-        reply: tokio::sync::oneshot::Sender<Result<SetSessionModeOk, SessionRouteError>>,
+        mode: InboundDeliveryMode,
+        reply: tokio::sync::oneshot::Sender<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>,
     },
     /// `GET /api/spawned/{name}/pending` — snapshot the per-worker
     /// pending-message queue (FIFO, head first).
     GetPending {
         name: String,
-        reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, SessionRouteError>>,
+        reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, DeliveryRouteError>>,
     },
     /// `POST /api/spawned/{name}/flush` — drain the pending queue and
     /// inject every message into the worker via the existing
     /// fire-and-forget inject path. Does *not* change the mode.
     FlushPending {
         name: String,
-        reply: tokio::sync::oneshot::Sender<Result<usize, SessionRouteError>>,
+        reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
     },
 }
 
-/// Typed errors for the session-mode HTTP routes. Keeps the broker arm's
+/// Typed errors for the inbound-delivery-mode HTTP routes. Keeps the broker arm's
 /// reply payload structured so the HTTP handler can map cleanly to 404
 /// without parsing strings. The "broker channel closed" / "reply dropped"
 /// failure modes are handled at the HTTP boundary via [`internal_error`],
 /// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionRouteError {
+pub enum DeliveryRouteError {
     /// No worker with that name is currently registered with the broker.
     WorkerNotFound(String),
 }
 
-impl std::fmt::Display for SessionRouteError {
+impl std::fmt::Display for DeliveryRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionRouteError::WorkerNotFound(name) => {
+            DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
         }
     }
 }
 
-impl std::error::Error for SessionRouteError {}
+impl std::error::Error for DeliveryRouteError {}
 
-/// Reply payload for [`ListenApiRequest::SetSessionMode`]. `flushed`
+/// Reply payload for [`ListenApiRequest::SetInboundDeliveryMode`]. `flushed`
 /// is the number of pending messages drained during the transition
-/// (always `0` unless we transitioned `human → passthrough`).
+/// (always `0` unless we transitioned `manual_flush → auto_inject`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetSessionModeOk {
-    pub mode: SessionMode,
+pub struct SetInboundDeliveryModeOk {
+    pub mode: InboundDeliveryMode,
     pub flushed: usize,
 }
 
@@ -336,8 +337,17 @@ fn listen_api_router_with_auth(
             routing::get(listen_api_snapshot),
         )
         .route(
+            "/api/spawned/{name}/delivery-mode",
+            routing::get(listen_api_get_inbound_delivery_mode)
+                .put(listen_api_set_inbound_delivery_mode),
+        )
+        // Back-compat alias for the first cut of the attach API. New
+        // callers should use `/delivery-mode`, but keeping `/mode` avoids
+        // stranding older clients while the feature settles.
+        .route(
             "/api/spawned/{name}/mode",
-            routing::get(listen_api_get_session_mode).put(listen_api_set_session_mode),
+            routing::get(listen_api_get_inbound_delivery_mode)
+                .put(listen_api_set_inbound_delivery_mode),
         )
         .route(
             "/api/spawned/{name}/pending",
@@ -1163,23 +1173,24 @@ async fn listen_api_snapshot(
 }
 
 // ---------------------------------------------------------------------------
-// Session mode (per-agent inject vs. queue, plus pending-queue inspection)
+// Inbound delivery mode (per-agent inject vs. queue, plus pending-queue inspection)
 //
-// The broker keeps a `SessionMode` per worker; `Human` mode parks inbound
-// relay messages in a FIFO `pending` queue instead of injecting them.
+// The broker keeps an `InboundDeliveryMode` per worker; `manual_flush`
+// mode parks inbound relay messages in a FIFO `pending` queue instead
+// of injecting them.
 // These four routes are the server-side surface the `agent-relay drive`
 // client calls to flip modes, inspect the queue, and drain it.
 // ---------------------------------------------------------------------------
 
-/// `GET /api/spawned/{name}/mode` → `{ "mode": "passthrough" | "human" }`.
-async fn listen_api_get_session_mode(
+/// `GET /api/spawned/{name}/delivery-mode` → `{ "mode": "auto_inject" | "manual_flush" }`.
+async fn listen_api_get_inbound_delivery_mode(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
-        .send(ListenApiRequest::GetSessionMode {
+        .send(ListenApiRequest::GetInboundDeliveryMode {
             name: name.clone(),
             reply: reply_tx,
         })
@@ -1193,33 +1204,34 @@ async fn listen_api_get_session_mode(
             axum::http::StatusCode::OK,
             axum::Json(json!({ "mode": mode.as_wire_str() })),
         ),
-        Ok(Err(err)) => session_route_error_to_response(&err),
+        Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct SetSessionModePayload {
+struct SetInboundDeliveryModePayload {
     mode: String,
 }
 
-/// `PUT /api/spawned/{name}/mode` — body `{ "mode": "passthrough" | "human" }`.
+/// `PUT /api/spawned/{name}/delivery-mode` — body
+/// `{ "mode": "auto_inject" | "manual_flush" }`.
 ///
-/// On a `human → passthrough` transition the broker drains the pending
+/// On a `manual_flush → auto_inject` transition the broker drains the pending
 /// queue into the worker via the existing inject path *before* replying,
-/// so a caller flipping back to passthrough never strands messages. The
+/// so a caller flipping back to auto-inject never strands messages. The
 /// response reports `flushed` (always `0` unless we drained).
-async fn listen_api_set_session_mode(
+async fn listen_api_set_inbound_delivery_mode(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    axum::Json(body): axum::Json<SetSessionModePayload>,
+    axum::Json(body): axum::Json<SetInboundDeliveryModePayload>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let Some(mode) = SessionMode::parse(&body.mode) else {
+    let Some(mode) = InboundDeliveryMode::parse(&body.mode) else {
         return api_error(
             axum::http::StatusCode::BAD_REQUEST,
             "invalid_mode",
             format!(
-                "unsupported session mode '{}' (expected 'passthrough' or 'human')",
+                "unsupported inbound delivery mode '{}' (expected 'auto_inject' or 'manual_flush')",
                 body.mode
             ),
         );
@@ -1228,7 +1240,7 @@ async fn listen_api_set_session_mode(
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
-        .send(ListenApiRequest::SetSessionMode {
+        .send(ListenApiRequest::SetInboundDeliveryMode {
             name: name.clone(),
             mode,
             reply: reply_tx,
@@ -1246,14 +1258,14 @@ async fn listen_api_set_session_mode(
                 "flushed": ok.flushed,
             })),
         ),
-        Ok(Err(err)) => session_route_error_to_response(&err),
+        Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
     }
 }
 
 /// `GET /api/spawned/{name}/pending` → `{ "pending": [ ... ] }`, FIFO
-/// (head of queue first). Empty array when the worker is in relay mode
-/// or simply has no pending messages.
+/// (head of queue first). Empty array when the worker is not in
+/// `manual_flush` delivery mode or simply has no pending messages.
 async fn listen_api_get_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1307,7 +1319,7 @@ async fn listen_api_get_pending(
                 axum::Json(json!({ "pending": pending })),
             )
         }
-        Ok(Err(err)) => session_route_error_to_response(&err),
+        Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
     }
 }
@@ -1315,9 +1327,9 @@ async fn listen_api_get_pending(
 /// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
 ///
 /// Drains the queue and injects each message into the worker in order
-/// using the existing fire-and-forget inject path. The session mode is
-/// *not* changed — a caller still in human mode will continue to queue
-/// newly-arriving messages.
+/// using the existing fire-and-forget inject path. The inbound delivery mode is
+/// *not* changed — a caller still in `manual_flush` delivery mode will continue
+/// to queue newly-arriving messages.
 async fn listen_api_flush_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1339,19 +1351,19 @@ async fn listen_api_flush_pending(
             axum::http::StatusCode::OK,
             axum::Json(json!({ "flushed": flushed })),
         ),
-        Ok(Err(err)) => session_route_error_to_response(&err),
+        Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
     }
 }
 
-/// Centralised mapping from [`SessionRouteError`] to HTTP responses for
-/// the four session-mode routes. Mirrors
+/// Centralised mapping from [`DeliveryRouteError`] to HTTP responses for
+/// the four inbound-delivery-mode routes. Mirrors
 /// [`worker_request_error_to_response`] in shape.
-fn session_route_error_to_response(
-    err: &SessionRouteError,
+fn delivery_route_error_to_response(
+    err: &DeliveryRouteError,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     match err {
-        SessionRouteError::WorkerNotFound(_) => api_error(
+        DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
             err.to_string(),
@@ -1902,12 +1914,12 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, ListenApiConfig, ListenApiRequest, SessionRouteError,
-        SetSessionModeOk,
+        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
+        SetInboundDeliveryModeOk,
     };
     use crate::worker_request::RequestWorkerError;
     use relay_broker::protocol::MessageInjectionMode;
-    use relay_broker::types::{PendingRelayMessage, SessionMode};
+    use relay_broker::types::{InboundDeliveryMode, PendingRelayMessage};
 
     fn test_router(
         broker_api_key: Option<&str>,
@@ -2870,7 +2882,7 @@ mod auth_tests {
     }
 
     // -----------------------------------------------------------------
-    // Session mode: four routes that back the `agent-relay drive`
+    // Inbound delivery mode: four routes that back the `agent-relay drive`
     // client. The HTTP layer only forwards typed requests over the
     // broker channel — these tests cover the request shaping and
     // response mapping, not the broker arms (those live in main.rs and
@@ -2878,13 +2890,13 @@ mod auth_tests {
     // -----------------------------------------------------------------
 
     #[tokio::test]
-    async fn get_session_mode_route_returns_mode_string() {
+    async fn get_inbound_delivery_mode_route_returns_mode_string() {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::GetSessionMode { name, reply }) => {
+                Some(ListenApiRequest::GetInboundDeliveryMode { name, reply }) => {
                     assert_eq!(name, "worker-a");
-                    let _ = reply.send(Ok(SessionMode::Human));
+                    let _ = reply.send(Ok(InboundDeliveryMode::ManualFlush));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
             }
@@ -2893,7 +2905,7 @@ mod auth_tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/mode")
+                    .uri("/api/spawned/worker-a/delivery-mode")
                     .method("GET")
                     .header("x-api-key", "secret")
                     .body(Body::empty())
@@ -2904,23 +2916,23 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "mode": "human" }));
+        assert_eq!(body, json!({ "mode": "manual_flush" }));
         replier.await.expect("replier should complete");
     }
 
     #[tokio::test]
-    async fn get_session_mode_route_returns_404_when_worker_missing() {
+    async fn get_inbound_delivery_mode_route_returns_404_when_worker_missing() {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
-            if let Some(ListenApiRequest::GetSessionMode { reply, .. }) = rx.recv().await {
-                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            if let Some(ListenApiRequest::GetInboundDeliveryMode { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound("ghost".into())));
             }
         });
 
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/ghost/mode")
+                    .uri("/api/spawned/ghost/delivery-mode")
                     .method("GET")
                     .header("x-api-key", "secret")
                     .body(Body::empty())
@@ -2936,15 +2948,15 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn set_session_mode_route_forwards_parsed_mode_and_returns_flushed() {
+    async fn set_inbound_delivery_mode_route_forwards_parsed_mode_and_returns_flushed() {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::SetSessionMode { name, mode, reply }) => {
+                Some(ListenApiRequest::SetInboundDeliveryMode { name, mode, reply }) => {
                     assert_eq!(name, "worker-a");
-                    assert_eq!(mode, SessionMode::Passthrough);
-                    let _ = reply.send(Ok(SetSessionModeOk {
-                        mode: SessionMode::Passthrough,
+                    assert_eq!(mode, InboundDeliveryMode::AutoInject);
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: InboundDeliveryMode::AutoInject,
                         flushed: 3,
                     }));
                 }
@@ -2955,11 +2967,11 @@ mod auth_tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/mode")
+                    .uri("/api/spawned/worker-a/delivery-mode")
                     .method("PUT")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "mode": "passthrough" }).to_string()))
+                    .body(Body::from(json!({ "mode": "auto_inject" }).to_string()))
                     .expect("request should build"),
             )
             .await
@@ -2967,18 +2979,18 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "mode": "passthrough", "flushed": 3 }));
+        assert_eq!(body, json!({ "mode": "auto_inject", "flushed": 3 }));
         replier.await.expect("replier should complete");
     }
 
     #[tokio::test]
-    async fn set_session_mode_route_rejects_invalid_mode_without_calling_broker() {
+    async fn set_inbound_delivery_mode_route_rejects_invalid_mode_without_calling_broker() {
         let (router, mut rx) = test_router(Some("secret"));
 
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/mode")
+                    .uri("/api/spawned/worker-a/delivery-mode")
                     .method("PUT")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
@@ -2998,22 +3010,22 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn set_session_mode_route_returns_404_when_worker_missing() {
+    async fn set_inbound_delivery_mode_route_returns_404_when_worker_missing() {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
-            if let Some(ListenApiRequest::SetSessionMode { reply, .. }) = rx.recv().await {
-                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+            if let Some(ListenApiRequest::SetInboundDeliveryMode { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound("ghost".into())));
             }
         });
 
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/ghost/mode")
+                    .uri("/api/spawned/ghost/delivery-mode")
                     .method("PUT")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
-                    .body(Body::from(json!({ "mode": "human" }).to_string()))
+                    .body(Body::from(json!({ "mode": "manual_flush" }).to_string()))
                     .expect("request should build"),
             )
             .await
@@ -3109,7 +3121,7 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             if let Some(ListenApiRequest::GetPending { reply, .. }) = rx.recv().await {
-                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+                let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound("ghost".into())));
             }
         });
 
@@ -3167,7 +3179,7 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             if let Some(ListenApiRequest::FlushPending { reply, .. }) = rx.recv().await {
-                let _ = reply.send(Err(SessionRouteError::WorkerNotFound("ghost".into())));
+                let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound("ghost".into())));
             }
         });
 
@@ -3190,11 +3202,11 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn session_mode_routes_require_auth() {
+    async fn inbound_delivery_routes_require_auth() {
         let (router, _rx) = test_router(Some("secret"));
         for (method, path) in [
-            ("GET", "/api/spawned/worker-a/mode"),
-            ("PUT", "/api/spawned/worker-a/mode"),
+            ("GET", "/api/spawned/worker-a/delivery-mode"),
+            ("PUT", "/api/spawned/worker-a/delivery-mode"),
             ("GET", "/api/spawned/worker-a/pending"),
             ("POST", "/api/spawned/worker-a/flush"),
         ] {
@@ -3205,7 +3217,7 @@ mod auth_tests {
                         .uri(path)
                         .method(method)
                         .header("content-type", "application/json")
-                        .body(Body::from(json!({ "mode": "passthrough" }).to_string()))
+                        .body(Body::from(json!({ "mode": "auto_inject" }).to_string()))
                         .expect("request should build"),
                 )
                 .await

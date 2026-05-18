@@ -3,11 +3,11 @@
  * — spawn verb with optional session attach.
  *
  * Name is the first positional argument, matching every other verb in
- * this taxonomy (`drive Alice`, `view Alice`, `passthrough Alice`, `rm Alice`).
+ * this taxonomy (`drive Alice`, `view Alice`, `relay Alice`, `rm Alice`).
  *
  * Without `--attach`, this is spawn-only: POST `/api/spawn` and exit.
  * The agent keeps running headless under the broker; the user attaches
- * later with `view` / `drive` / `passthrough`.
+ * later with `view` / `drive` / `relay`.
  *
  * With `--attach`, the command composes spawn + a session verb in one
  * shot. Defaults to `--mode drive` (the safer queue-and-flush default
@@ -185,7 +185,7 @@ export async function runNew(
   }
 
   deps.log(`Spawned agent: ${trimmedName}`);
-  deps.log(`  -> attach with: agent-relay drive ${trimmedName} (or view / passthrough)`);
+  deps.log(`  -> attach with: agent-relay drive ${trimmedName} (or view / relay)`);
   return 0;
 }
 
@@ -230,7 +230,7 @@ export async function runNewWithAttach(
 /**
  * Register `agent-relay new NAME CLI [args...]` on the supplied
  * commander program. Name and CLI are positional, matching every other
- * verb in the attach-style taxonomy (`drive`, `view`, `passthrough`, `rm`).
+ * verb in the attach-style taxonomy (`drive`, `view`, `relay`, `rm`).
  * When `--attach` is set, the action composes spawn + session via
  * `runSpawnAndAttach`; otherwise it's spawn-only.
  *
@@ -261,7 +261,7 @@ export function registerNewCommands(
     .option('--attach', 'After spawning, immediately open a session (default mode: drive)')
     .option(
       '--mode <mode>',
-      'With --attach: session mode to open (view | drive | passthrough). Ignored without --attach.'
+      'With --attach: session to open (view | drive | relay). Ignored without --attach.'
     )
     .option('--ephemeral', 'With --attach: release the agent on client exit. Ignored without --attach.')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')

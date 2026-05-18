@@ -138,11 +138,11 @@ type FetchRoute = (init?: RequestInit) => Promise<Response>;
 interface FetchScript {
   /** Map of route key → handler. Default behaviour returns 200 + sensible body. */
   routes?: Record<string, FetchRoute>;
-  /** Default mode reported by `GET …/mode`. */
-  initialMode?: 'human' | 'passthrough';
+  /** Default mode reported by `GET …/delivery-mode`. */
+  initialMode?: 'manual_flush' | 'auto_inject';
   /** Default pending count reported by `GET …/pending`. */
   initialPending?: number;
-  /** Make `PUT …/mode` to `human` fail with this status / body. */
+  /** Make `PUT …/delivery-mode` to `manual_flush` fail with this status / body. */
   modeFlipFailure?: { status: number; error?: string };
   /** Make `captureAndRenderSnapshot` return this status. */
   snapshotResult?: Awaited<ReturnType<DriveDependencies['captureAndRenderSnapshot']>>;
@@ -179,7 +179,7 @@ function createHarness(opts: FetchScript = {}): {
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
   );
 
-  const initialMode = opts.initialMode ?? 'passthrough';
+  const initialMode = opts.initialMode ?? 'auto_inject';
   const initialPending = opts.initialPending ?? 0;
 
   const defaultRoutes: Record<string, FetchRoute> = {
@@ -188,12 +188,12 @@ function createHarness(opts: FetchScript = {}): {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    'GET /mode': async () =>
+    'GET /delivery-mode': async () =>
       new Response(JSON.stringify({ mode: initialMode }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    'PUT /mode': async (init) => {
+    'PUT /delivery-mode': async (init) => {
       if (opts.modeFlipFailure) {
         return new Response(JSON.stringify({ error: opts.modeFlipFailure.error ?? 'fail' }), {
           status: opts.modeFlipFailure.status,
@@ -255,11 +255,11 @@ function createHarness(opts: FetchScript = {}): {
     }
     fetchLog.push({ url, method, body: bodyJson, headers });
 
-    // Match by the trailing path segment (`/mode`, `/pending`, `/flush`)
+    // Match by the trailing path segment (`/delivery-mode`, `/pending`, `/flush`)
     // or the `/api/input/...` prefix.
     let key: string | null = null;
-    if (/\/api\/spawned\/[^/]+\/mode$/.test(url)) {
-      key = `${method} /mode`;
+    if (/\/api\/spawned\/[^/]+\/delivery-mode$/.test(url)) {
+      key = `${method} /delivery-mode`;
     } else if (/\/api\/spawned\/[^/]+\/pending$/.test(url)) {
       key = `${method} /pending`;
     } else if (/\/api\/spawned\/[^/]+\/flush$/.test(url)) {
@@ -436,15 +436,15 @@ describe('KeybindParser', () => {
 
 describe('renderStatusLine', () => {
   it('includes agent name, mode, pending count, and detach hint', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'human', pending: 3, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3, showHelp: false });
     expect(out).toContain('drive Alice');
-    expect(out).toContain('mode=human');
+    expect(out).toContain('delivery=manual_flush');
     expect(out).toContain('pending=3');
     expect(out).toContain('Ctrl+B D detach');
   });
 
   it('uses save/restore cursor + reverse video so the agent screen is preserved', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'human', pending: 0, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 0, showHelp: false });
     expect(out.startsWith('\x1b7')).toBe(true); // save cursor
     expect(out.endsWith('\x1b8')).toBe(true); // restore cursor
     expect(out).toContain('\x1b[7m'); // reverse video
@@ -454,7 +454,7 @@ describe('renderStatusLine', () => {
   it('positions at the given row', () => {
     const out = renderStatusLine({
       name: 'A',
-      mode: 'human',
+      mode: 'manual_flush',
       pending: 0,
       showHelp: false,
       rows: 50,
@@ -463,22 +463,22 @@ describe('renderStatusLine', () => {
   });
 
   it('shows extra hint when help is toggled on', () => {
-    const out = renderStatusLine({ name: 'A', mode: 'human', pending: 0, showHelp: true });
+    const out = renderStatusLine({ name: 'A', mode: 'manual_flush', pending: 0, showHelp: true });
     expect(out).toContain('hide help');
   });
 });
 
 describe('runDriveSession', () => {
-  it('flips to human mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
-    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'passthrough' });
+  it('flips to manual_flush delivery mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
+    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'auto_inject' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
 
-    // PUT /mode body should be { mode: 'human' }.
-    const flipCall = fetchLog.find((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    expect(flipCall?.body).toEqual({ mode: 'human' });
+    // PUT /delivery-mode body should be { mode: 'manual_flush' }.
+    const flipCall = fetchLog.find((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(flipCall?.body).toEqual({ mode: 'manual_flush' });
 
     // Raw mode should be on after open.
     expect(stdin.rawModeCalls.includes(true)).toBe(true);
@@ -491,10 +491,10 @@ describe('runDriveSession', () => {
     // Raw mode restored.
     expect(stdin.rawModeCalls).toEqual([true, false]);
 
-    // Last PUT /mode call should restore to 'passthrough' (the prior mode).
-    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
+    // Last PUT /delivery-mode call should restore to 'auto_inject' (the prior mode).
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
     expect(modeCalls).toHaveLength(2);
-    expect(modeCalls[1].body).toEqual({ mode: 'passthrough' });
+    expect(modeCalls[1].body).toEqual({ mode: 'auto_inject' });
   });
 
   it('aborts before opening the WS when the broker rejects the mode flip', async () => {
@@ -516,8 +516,8 @@ describe('runDriveSession', () => {
     expect(sockets).toHaveLength(0);
     expect(errors[0]?.[0]).toMatch(/no agent named/);
     // Best-effort restore PUT should still have fired.
-    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'passthrough' }]);
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
   });
 
   it('aborts before opening the WS when the worker has no PTY', async () => {
@@ -608,7 +608,7 @@ describe('runDriveSession', () => {
   });
 
   it('restores the prior mode even on abnormal WebSocket close', async () => {
-    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'passthrough' });
+    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'auto_inject' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
@@ -617,21 +617,21 @@ describe('runDriveSession', () => {
     expect(code).toBe(1);
     expect(errors.some((args) => String(args[0]).includes('connection closed'))).toBe(true);
 
-    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'passthrough' }]);
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
   });
 
-  it('proceeds when the worker is already in human mode (re-attach scenario)', async () => {
-    const { deps, sockets, stdin, fetchLog } = createHarness({ initialMode: 'human' });
+  it('proceeds when the worker is already in manual_flush mode (re-attach scenario)', async () => {
+    const { deps, sockets, stdin, fetchLog } = createHarness({ initialMode: 'manual_flush' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     await openSocket(sockets);
 
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
 
-    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/mode'));
-    // Restore to 'human' since that was the prior mode.
-    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'human' }, { mode: 'human' }]);
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    // Restore to 'manual_flush' since that was the prior mode.
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'manual_flush' }]);
   });
 
   it('exits cleanly on SIGINT', async () => {

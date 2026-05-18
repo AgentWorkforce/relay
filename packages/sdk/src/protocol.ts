@@ -2,7 +2,7 @@ export const PROTOCOL_VERSION = 1 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
-export type SessionMode = 'passthrough' | 'human';
+export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
 export type SnapshotFormat = 'plain' | 'ansi';
 
 export interface RestartPolicy {
@@ -291,6 +291,12 @@ export type BrokerEvent =
       name: string;
       count: number;
       reason?: string;
+    }
+  | {
+      kind: 'agent_inbound_delivery_mode_changed';
+      name: string;
+      previous_mode: InboundDeliveryMode;
+      mode: InboundDeliveryMode;
     }
   | {
       kind: 'delivery_injected';

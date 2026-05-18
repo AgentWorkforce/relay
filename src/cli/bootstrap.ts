@@ -28,7 +28,7 @@ import { registerOnCommands } from './commands/on.js';
 import { registerDlqCommands } from './commands/dlq.js';
 import { registerViewCommands } from './commands/view.js';
 import { registerDriveCommands } from './commands/drive.js';
-import { registerPassthroughCommands } from './commands/passthrough.js';
+import { registerRelayCommands } from './commands/relay.js';
 import { registerNewCommands } from './commands/new.js';
 import { registerRmCommands } from './commands/rm.js';
 import { parseVerblessAlias, runVerblessAliasDispatch } from './lib/spawn-and-attach.js';
@@ -289,7 +289,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerDlqCommands(program);
   registerViewCommands(program);
   registerDriveCommands(program);
-  registerPassthroughCommands(program);
+  registerRelayCommands(program);
   // The `run` command (registered by `registerSetupCommands` above) is the
   // workflow-file runner and is intentionally untouched. The spawn-and-attach
   // composition lives on `new --attach` — see `src/cli/commands/new.ts`.
@@ -320,6 +320,9 @@ function collectTopLevelVerbs(program: Command): Set<string> {
   const verbs = new Set<string>();
   for (const command of program.commands) {
     verbs.add(command.name());
+    for (const alias of command.aliases()) {
+      verbs.add(alias);
+    }
   }
   return verbs;
 }
@@ -341,8 +344,8 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   installExitHooks();
 
   // Bare `-n NAME CLI` shorthand. `agent-relay -n NAME CLI [args...]`
-  // dispatches to `runSpawnAndAttach` with mode='passthrough' and ephemeral=true,
-  // which is equivalent to `agent-relay new NAME CLI --attach --mode passthrough --ephemeral`.
+  // dispatches to `runSpawnAndAttach` with mode='relay' and ephemeral=true,
+  // which is equivalent to `agent-relay new NAME CLI --attach --mode relay --ephemeral`.
   // Detected here BEFORE commander parses so the shorthand routes
   // identically to the verbose form. See `parseVerblessAlias` in
   // `lib/spawn-and-attach.ts`.
