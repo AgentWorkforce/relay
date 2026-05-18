@@ -341,14 +341,6 @@ fn listen_api_router_with_auth(
             routing::get(listen_api_get_inbound_delivery_mode)
                 .put(listen_api_set_inbound_delivery_mode),
         )
-        // Back-compat alias for the first cut of the attach API. New
-        // callers should use `/delivery-mode`, but keeping `/mode` avoids
-        // stranding older clients while the feature settles.
-        .route(
-            "/api/spawned/{name}/mode",
-            routing::get(listen_api_get_inbound_delivery_mode)
-                .put(listen_api_set_inbound_delivery_mode),
-        )
         .route(
             "/api/spawned/{name}/pending",
             routing::get(listen_api_get_pending),
@@ -3006,6 +2998,29 @@ mod auth_tests {
         assert!(
             rx.try_recv().is_err(),
             "invalid mode should not enqueue request"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_mode_route_is_not_registered() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/mode")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            rx.try_recv().is_err(),
+            "legacy /mode route should not enqueue request"
         );
     }
 
