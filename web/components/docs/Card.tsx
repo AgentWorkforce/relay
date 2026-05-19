@@ -1,7 +1,12 @@
 import type { ReactNode } from 'react';
+import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 
 import styles from './docs.module.css';
+
+function isInternalHref(href: string): boolean {
+  return href.startsWith('/') && !href.startsWith('//');
+}
 
 interface CardProps {
   title: string;
@@ -22,6 +27,13 @@ export function Card({ title, href, children }: CardProps) {
   );
 
   if (href) {
+    if (isInternalHref(href)) {
+      return (
+        <Link href={href} className={styles.card}>
+          {inner}
+        </Link>
+      );
+    }
     return (
       <a href={href} className={styles.card}>
         {inner}

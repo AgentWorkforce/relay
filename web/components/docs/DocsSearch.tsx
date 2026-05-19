@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import type { SearchEntry } from '../../lib/docs';
@@ -124,18 +125,18 @@ export function DocsSearch({ index }: DocsSearchProps) {
                   <p className={s.empty}>No results for &ldquo;{query}&rdquo;</p>
                 ) : (
                   results.map((entry, i) => (
-                    <a
+                    <Link
                       key={entry.slug}
                       href={`/docs/${entry.slug}`}
                       className={`${s.result} ${i === activeIdx ? s.resultActive : ''}`}
-                      onClick={(e) => { e.preventDefault(); navigate(entry.slug); }}
+                      onClick={() => close()}
                       onMouseEnter={() => setActiveIdx(i)}
                     >
                       <span className={s.resultTitle}>{entry.title}</span>
                       {entry.description && (
                         <span className={s.resultDesc}>{entry.description}</span>
                       )}
-                    </a>
+                    </Link>
                   ))
                 )}
               </div>
