@@ -164,6 +164,19 @@ function getAncestorBinDirs(): string[] {
   return binDirs;
 }
 
+function findAncestorSourceCheckoutRoot(start: string): string | null {
+  let current = resolve(start);
+  for (let i = 0; i < 8; i++) {
+    if (isSourceCheckoutRoot(current)) {
+      return current;
+    }
+    const parent = resolve(current, '..');
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
 function getDevelopmentBinaryPaths(ext: string, binDirs: string[]): string[] {
   const binaryPaths: string[] = [];
   const repoRoots = new Set<string>();
@@ -184,6 +197,7 @@ function getDevelopmentBinaryPaths(ext: string, binDirs: string[]): string[] {
   };
 
   addRepoRoot(process.cwd());
+  addRepoRoot(findAncestorSourceCheckoutRoot(process.cwd()));
 
   const currentModuleDir = getCurrentModuleDir();
   if (currentModuleDir) {
@@ -201,7 +215,7 @@ function isSourceCheckoutRoot(candidate: string): boolean {
   const repoRoot = resolve(candidate);
   return (
     existsSync(join(repoRoot, 'Cargo.toml')) &&
-    existsSync(join(repoRoot, 'src', 'main.rs')) &&
+    existsSync(join(repoRoot, 'crates', 'broker', 'src', 'main.rs')) &&
     existsSync(join(repoRoot, 'packages', 'sdk', 'package.json'))
   );
 }

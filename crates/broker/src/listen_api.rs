@@ -1765,8 +1765,9 @@ mod wave0_contract_tests {
     use super::broadcast_if_relevant;
 
     fn required_broadcast_kinds() -> Vec<String> {
-        let fixture =
-            include_str!("../tests/fixtures/contracts/wave0/dashboard-broadcast-whitelist.json");
+        let fixture = include_str!(
+            "../../../tests/fixtures/contracts/wave0/dashboard-broadcast-whitelist.json"
+        );
         let parsed: Value = serde_json::from_str(fixture)
             .expect("dashboard whitelist fixture should be valid JSON");
         parsed

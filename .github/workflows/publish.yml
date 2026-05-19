@@ -138,7 +138,7 @@ jobs:
         # Variables, NOT Secrets) — the PostHog ingest key is
         # public-by-design (same category as Sentry DSN). We map it into
         # the code-side env var `AGENT_RELAY_POSTHOG_KEY`, which
-        # `option_env!` in src/telemetry.rs consumes at compile time.
+        # `option_env!` in crates/broker/src/telemetry.rs consumes at compile time.
         # Unset variable → telemetry ships disabled (acceptable for
         # forks / pre-release pipelines).
         env:
