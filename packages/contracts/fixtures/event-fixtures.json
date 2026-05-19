@@ -47,7 +47,8 @@
       "timestamp": "2026-02-23T00:00:02.000Z",
       "payload": {
         "name": "WorkerA",
-        "code": 0
+        "code": 0,
+        "reason": "worker_exited"
       }
     },
     {

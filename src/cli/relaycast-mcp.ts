@@ -589,16 +589,16 @@ export async function startPatchedStdio(options: PatchedMcpServerOptions): Promi
 }
 
 export function optionsFromEnv(): PatchedMcpServerOptions {
-  const apiKey = process.env.RELAY_API_KEY;
+  const apiKey = resolveEnv('RELAY_API_KEY');
   const agentName =
-    process.env.RELAY_AGENT_NAME ?? process.env.RELAY_CLAW_NAME ?? (apiKey ? 'orchestrator' : undefined);
+    resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME') ?? (apiKey ? 'orchestrator' : undefined);
   return {
     apiKey,
     baseUrl: resolveEnv('RELAY_BASE_URL'),
-    agentToken: process.env.RELAY_AGENT_TOKEN,
+    agentToken: resolveEnv('RELAY_AGENT_TOKEN'),
     agentName,
-    agentType: normalizeAgentType(process.env.RELAY_AGENT_TYPE),
-    strictAgentName: envFlagEnabled(process.env.RELAY_STRICT_AGENT_NAME),
+    agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
+    strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),
   };
 }
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Broker/SDK wire protocol is now version 2 for delivery terminal events and lifecycle event shape changes.
 - `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
 - `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
 - The `relay_broker` Rust crate now exposes only `protocol`, `snippets`, and `run_cli`; broker implementation modules are crate-private.
@@ -61,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Broker worker teardown now emits `message_delivery_failed` for dropped pending deliveries so SDK delivery waiters terminate.
+- SDK `sendAndWaitForDelivery` waits for `message_delivery_confirmed` or `message_delivery_failed` instead of treating `delivery_ack` as final.
+- Relaycast MCP startup ignores unresolved `${RELAY_*}` environment placeholders before auto-registering.
+- PTY context budget detection uses the latest percentage in output and can re-emit after the budget rises.
 - `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
 - `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.

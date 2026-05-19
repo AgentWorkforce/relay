@@ -144,16 +144,22 @@ impl BrokerRuntime {
                 }
                 Some(RestartDecision::PermanentlyDead { reason }) => {
                     workers.metrics.on_permanent_death(name);
-                    let dropped = drop_pending_for_worker(pending_deliveries, name);
-                    if dropped > 0 {
+                    let dropped = take_pending_for_worker(pending_deliveries, name);
+                    if !dropped.is_empty() {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"delivery_dropped",
                                 "name": name,
-                                "count": dropped,
+                                "count": dropped.len(),
                                 "reason":"worker_permanently_dead",
                             }),
+                        )
+                        .await;
+                        let _ = emit_dropped_delivery_failures(
+                            sdk_out_tx,
+                            &dropped,
+                            "worker_permanently_dead",
                         )
                         .await;
                     }
@@ -191,18 +197,21 @@ impl BrokerRuntime {
                 }
                 None => {
                     // Not supervised — original behavior
-                    let dropped = drop_pending_for_worker(pending_deliveries, name);
-                    if dropped > 0 {
+                    let dropped = take_pending_for_worker(pending_deliveries, name);
+                    if !dropped.is_empty() {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"delivery_dropped",
                                 "name": name,
-                                "count": dropped,
+                                "count": dropped.len(),
                                 "reason":"worker_exited",
                             }),
                         )
                         .await;
+                        let _ =
+                            emit_dropped_delivery_failures(sdk_out_tx, &dropped, "worker_exited")
+                                .await;
                     }
                     fail_pending_requests_for_worker(pending_requests, name, "worker_exited");
                     delivery_states.remove(name);

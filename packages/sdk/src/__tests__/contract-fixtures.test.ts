@@ -49,8 +49,17 @@ function toCurrentSdkBrokerEventShape(event: Record<string, unknown>): Record<st
     };
   }
 
+  if (kind === 'agent_exited') {
+    return {
+      kind,
+      name: payload.name,
+      code: payload.code,
+      signal: payload.signal,
+      reason: payload.reason,
+    };
+  }
+
   if (
-    kind === 'agent_exited' ||
     kind === 'agent_released' ||
     kind === 'agent_restarting' ||
     kind === 'agent_restarted' ||
@@ -165,7 +174,12 @@ function isCurrentSdkBrokerEventShape(event: Record<string, unknown>): boolean {
     case 'agent_spawned':
       return typeof event.name === 'string' && typeof event.runtime === 'string';
     case 'agent_exited':
-      return typeof event.name === 'string';
+      return (
+        typeof event.name === 'string' &&
+        (event.code === undefined || typeof event.code === 'number') &&
+        (event.signal === undefined || typeof event.signal === 'string') &&
+        (event.reason === undefined || typeof event.reason === 'string')
+      );
     case 'agent_released':
       return typeof event.name === 'string';
     case 'worker_ready':

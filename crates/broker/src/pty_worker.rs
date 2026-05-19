@@ -128,10 +128,14 @@ fn detect_context_budget_pct(output: &str) -> Option<u8> {
     let re = CONTEXT_RE.get_or_init(|| {
         regex::Regex::new(r"(?i)\bcontext\s+(\d{1,3})%\s+left\b").expect("context regex compiles")
     });
-    re.captures(output)
-        .and_then(|captures| captures.get(1))
-        .and_then(|m| m.as_str().parse::<u16>().ok())
-        .map(|pct| pct.min(100) as u8)
+    let mut latest = None;
+    for captures in re.captures_iter(output) {
+        latest = captures
+            .get(1)
+            .and_then(|m| m.as_str().parse::<u16>().ok())
+            .map(|pct| pct.min(100) as u8);
+    }
+    latest
 }
 
 fn evaluate_startup_gate(
@@ -599,6 +603,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }
                         }
                         if let Some(pct) = detect_context_budget_pct(&clean_text) {
+                            if last_context_low_pct.is_some_and(|last| pct > last) {
+                                last_context_low_pct = None;
+                            }
                             if pct <= 10 && last_context_low_pct != Some(pct) {
                                 let _ = send_frame(&out_tx, "agent_context_low", None, json!({
                                     "pct": pct,
@@ -1335,6 +1342,11 @@ mod tests {
     fn detects_context_budget_percentage() {
         assert_eq!(detect_context_budget_pct("Context 6% left"), Some(6));
         assert_eq!(detect_context_budget_pct("context 100% left"), Some(100));
+        assert_eq!(
+            detect_context_budget_pct("Context 7% left\nContext 12% left"),
+            Some(12)
+        );
+        assert_eq!(detect_context_budget_pct("context 125% left"), Some(100));
         assert_eq!(detect_context_budget_pct("no budget here"), None);
     }
 }

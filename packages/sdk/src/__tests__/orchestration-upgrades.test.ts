@@ -1007,7 +1007,7 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('sendAndWaitForDelivery waits for delivery ack with typed response', async () => {
+  it('sendAndWaitForDelivery tracks delivery_ack without resolving before terminal status', async () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
@@ -1034,10 +1034,20 @@ describe('AgentRelay orchestration handles', () => {
         delivery_id: 'del_1',
         event_id: 'evt_1',
       });
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 1,
+        lastError: 'worker_permanently_dead',
+      });
 
       await expect(wait).resolves.toEqual({
         eventId: 'evt_1',
-        status: 'ack',
+        status: 'failed',
         targets: ['worker'],
       });
     } finally {
@@ -1058,6 +1068,46 @@ describe('AgentRelay orchestration handles', () => {
 
       await vi.waitFor(() => {
         expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'message_delivery_confirmed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'ack',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery ignores legacy delivery_failed until typed terminal event', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        reason: 'legacy failure',
       });
       emit({
         kind: 'message_delivery_confirmed',
@@ -1255,6 +1305,17 @@ describe('AgentRelay orchestration handles', () => {
         reason: 'broken pipe',
       });
       expect(relay.getDeliveryState('evt-state')?.status).toBe('failed');
+
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        event_id: 'evt-terminal',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 1,
+        lastError: 'worker_permanently_dead',
+      });
+      expect(relay.getDeliveryState('evt-terminal')?.status).toBe('failed');
       expect(relay.getDeliveryState('missing-event')).toBeUndefined();
     } finally {
       await relay.shutdown();
@@ -1339,6 +1400,34 @@ describe('Agent.status computed getter', () => {
       emit({ kind: 'agent_exited', name: 'status-exited', code: 0, signal: undefined });
 
       expect(agent.status).toBe('exited');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('copies agent_exited reason before invoking onAgentExited', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const exitedReasons: Array<string | undefined> = [];
+    relay.onAgentExited = (agent) => exitedReasons.push(agent.exitReason);
+    try {
+      await relay.spawnPty({
+        name: 'reason-exited',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      emit({
+        kind: 'agent_exited',
+        name: 'reason-exited',
+        code: 1,
+        signal: undefined,
+        reason: 'worker_exited',
+      });
+
+      expect(exitedReasons).toEqual(['worker_exited']);
     } finally {
       await relay.shutdown();
     }

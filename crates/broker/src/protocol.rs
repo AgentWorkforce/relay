@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::supervisor::RestartPolicy;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -382,7 +382,7 @@ mod tests {
 
         let encoded = serde_json::to_string(&frame).unwrap();
         let decoded: ProtocolEnvelope<Value> = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded.v, 1);
+        assert_eq!(decoded.v, PROTOCOL_VERSION);
         assert_eq!(decoded.msg_type, "spawn_agent");
         assert_eq!(decoded.request_id.as_deref(), Some("req_1"));
     }

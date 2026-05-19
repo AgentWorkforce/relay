@@ -419,6 +419,7 @@ pub(crate) async fn retry_pending_delivery(
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
+                current.last_error = None;
                 return Ok(DeliveryAttemptOutcome::Attempted {
                     worker_name: current.worker_name.clone(),
                     attempts: current.attempts,
@@ -453,7 +454,7 @@ pub(crate) async fn retry_pending_delivery(
                 }
                 return Ok(DeliveryAttemptOutcome::Noop);
             }
-            Err(error)
+            Ok(DeliveryAttemptOutcome::Noop)
         }
     }
 }
@@ -511,13 +512,51 @@ pub(crate) async fn emit_delivery_attempt_outcome(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn drop_pending_for_worker(
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
     worker_name: &str,
 ) -> usize {
-    let before = pending_deliveries.len();
-    pending_deliveries.retain(|_, pending| pending.worker_name != worker_name);
-    before.saturating_sub(pending_deliveries.len())
+    take_pending_for_worker(pending_deliveries, worker_name).len()
+}
+
+pub(crate) fn take_pending_for_worker(
+    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    worker_name: &str,
+) -> Vec<PendingDelivery> {
+    let delivery_ids: Vec<String> = pending_deliveries
+        .iter()
+        .filter(|(_, pending)| pending.worker_name == worker_name)
+        .map(|(delivery_id, _)| delivery_id.clone())
+        .collect();
+
+    delivery_ids
+        .into_iter()
+        .filter_map(|delivery_id| pending_deliveries.remove(&delivery_id))
+        .collect()
+}
+
+pub(crate) async fn emit_dropped_delivery_failures(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dropped: &[PendingDelivery],
+    reason: &str,
+) -> Result<()> {
+    for pending in dropped {
+        send_broker_event(
+            sdk_out_tx,
+            BrokerEvent::MessageDeliveryFailed {
+                name: pending.worker_name.clone(),
+                delivery_id: Some(pending.delivery.delivery_id.clone()),
+                event_id: Some(pending.delivery.event_id.clone()),
+                from: pending.delivery.from.clone(),
+                to: pending.delivery.target.clone(),
+                attempts: pending.attempts,
+                last_error: reason.to_string(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Drain every in-flight worker request targeting `worker_name` and
@@ -569,11 +608,10 @@ pub(crate) fn clear_pending_delivery_if_event_matches(
     event_id: Option<&str>,
     worker_name: &str,
     worker_signal: &str,
-) {
+) -> Option<PendingDelivery> {
     let pending = pending_deliveries.get(delivery_id);
     if should_clear_pending_delivery_for_event(pending, event_id) {
-        pending_deliveries.remove(delivery_id);
-        return;
+        return pending_deliveries.remove(delivery_id);
     }
 
     if let Some(pending) = pending {
@@ -587,4 +625,5 @@ pub(crate) fn clear_pending_delivery_if_event_matches(
             "ignoring stale delivery lifecycle event due to event_id mismatch"
         );
     }
+    None
 }

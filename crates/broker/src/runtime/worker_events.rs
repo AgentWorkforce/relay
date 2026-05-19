@@ -36,20 +36,23 @@ impl BrokerRuntime {
                                 return;
                             }
 
-                            let pending_for_confirmation =
-                                pending_deliveries.get(delivery_id).cloned();
-                            if let Ok(ack) =
+                            let pending_for_confirmation = if let Ok(ack) =
                                 serde_json::from_value::<DeliveryAckPayload>(payload.clone())
                             {
-                                clear_pending_delivery_if_event_matches(
+                                let pending = clear_pending_delivery_if_event_matches(
                                     pending_deliveries,
                                     &ack.delivery_id,
                                     Some(&ack.event_id),
                                     &name,
                                     "delivery_ack",
                                 );
-                                terminal_failed_deliveries.remove(&ack.delivery_id);
-                            }
+                                if pending.is_some() {
+                                    terminal_failed_deliveries.remove(&ack.delivery_id);
+                                }
+                                pending
+                            } else {
+                                None
+                            };
                             let _ = send_event(
                                 sdk_out_tx,
                                 json!({
@@ -125,9 +128,7 @@ impl BrokerRuntime {
                                 event_id = %event_id,
                                 "delivery verified by echo detection"
                             );
-                            let pending_for_confirmation =
-                                pending_deliveries.get(delivery_id).cloned();
-                            clear_pending_delivery_if_event_matches(
+                            let pending_for_confirmation = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
                                 Some(event_id),
@@ -144,11 +145,11 @@ impl BrokerRuntime {
                                 }),
                             )
                             .await;
-                            if let Some(handle) = workers.workers.get_mut(&name) {
-                                handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::Working;
-                            }
                             if let Some(pending) = pending_for_confirmation {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::Working;
+                                }
                                 let _ = send_broker_event(
                                     sdk_out_tx,
                                     BrokerEvent::MessageDeliveryConfirmed {
@@ -202,20 +203,15 @@ impl BrokerRuntime {
                                 reason = %reason,
                                 "delivery failed — echo not detected"
                             );
-                            let pending_for_failure = pending_deliveries.get(delivery_id).cloned();
-                            clear_pending_delivery_if_event_matches(
+                            let pending_for_failure = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
                                 Some(event_id),
                                 &name,
                                 "delivery_failed",
                             );
-                            if !delivery_id.is_empty() {
+                            if pending_for_failure.is_some() && !delivery_id.is_empty() {
                                 terminal_failed_deliveries.insert(delivery_id.to_string());
-                            }
-                            if let Some(handle) = workers.workers.get_mut(&name) {
-                                handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::Working;
                             }
                             let _ = send_event(
                                 sdk_out_tx,
@@ -228,28 +224,25 @@ impl BrokerRuntime {
                                 }),
                             )
                             .await;
-                            let _ = send_broker_event(
-                                sdk_out_tx,
-                                BrokerEvent::MessageDeliveryFailed {
-                                    name: name.clone(),
-                                    delivery_id: Some(delivery_id.to_string()),
-                                    event_id: Some(event_id.to_string()),
-                                    from: pending_for_failure
-                                        .as_ref()
-                                        .map(|p| p.delivery.from.clone())
-                                        .unwrap_or_else(|| "unknown".to_string()),
-                                    to: pending_for_failure
-                                        .as_ref()
-                                        .map(|p| p.delivery.target.clone())
-                                        .unwrap_or_else(|| name.clone()),
-                                    attempts: pending_for_failure
-                                        .as_ref()
-                                        .map(|p| p.attempts)
-                                        .unwrap_or(1),
-                                    last_error: reason.to_string(),
-                                },
-                            )
-                            .await;
+                            if let Some(pending) = pending_for_failure {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::Working;
+                                }
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::MessageDeliveryFailed {
+                                        name: name.clone(),
+                                        delivery_id: Some(pending.delivery.delivery_id),
+                                        event_id: Some(pending.delivery.event_id),
+                                        from: pending.delivery.from,
+                                        to: pending.delivery.target,
+                                        attempts: pending.attempts,
+                                        last_error: reason.to_string(),
+                                    },
+                                )
+                                .await;
+                            }
                         }
                     } else if msg_type == "worker_error" {
                         let _ = send_event(

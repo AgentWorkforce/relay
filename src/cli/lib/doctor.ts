@@ -38,10 +38,10 @@ interface DiagnosticDb {
 }
 
 async function checkBrokerReliability(): Promise<CheckResult[]> {
+  let client: AgentRelayClient | undefined;
   try {
-    const client = AgentRelayClient.connect({ cwd: process.cwd() });
+    client = AgentRelayClient.connect({ cwd: process.cwd() });
     const status = await client.getStatus();
-    await client.shutdown().catch(() => undefined);
     const typedStatus = status as BrokerStatus;
     const auth = typedStatus.auth;
     const authMessage = auth?.authenticated
@@ -82,6 +82,8 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
         message: 'Skipped (broker unavailable)',
       },
     ];
+  } finally {
+    await client?.shutdown().catch(() => undefined);
   }
 }
 

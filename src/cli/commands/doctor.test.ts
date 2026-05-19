@@ -7,6 +7,12 @@ let tempRoot: string;
 let dataDir: string;
 let mockStore: Map<string, string>;
 
+const sdkMock = vi.hoisted(() => ({
+  connect: vi.fn(),
+  getStatus: vi.fn(),
+  shutdown: vi.fn(),
+}));
+
 // Store availability in an object to ensure closure works correctly across module resets
 const mockAvailability = { betterAvailable: true, nodeAvailable: true };
 
@@ -19,6 +25,12 @@ vi.mock('@agent-relay/config', () => ({
     projectRoot: tempRoot,
     projectId: 'test-project',
   }),
+}));
+
+vi.mock('@agent-relay/sdk', () => ({
+  AgentRelayClient: {
+    connect: sdkMock.connect,
+  },
 }));
 
 // doctor.ts now reads AGENT_RELAY_STORAGE_TYPE and AGENT_RELAY_STORAGE_PATH
@@ -44,8 +56,7 @@ vi.mock('better-sqlite3', () => {
       }
       if (sql.includes('SELECT value FROM doctor_diagnostics')) {
         return {
-          get: (key: string) =>
-            this.store.has(key) ? { value: this.store.get(key) } : undefined,
+          get: (key: string) => (this.store.has(key) ? { value: this.store.get(key) } : undefined),
         };
       }
       if (sql.includes('DELETE FROM doctor_diagnostics')) {
@@ -84,41 +95,40 @@ vi.mock('node:sqlite', () => {
       }
     }
 
-        exec(_sql: string) {
-          // no-op
-        }
+    exec(_sql: string) {
+      // no-op
+    }
 
-        prepare(sql: string) {
-          if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
-            return {
-              run: (key: string, value: string) => {
-                this.store.set(key, value);
-              },
-            };
-          }
-          if (sql.includes('SELECT value FROM doctor_diagnostics')) {
-            return {
-              get: (key: string) =>
-                this.store.has(key) ? { value: this.store.get(key) } : undefined,
-            };
-          }
-          if (sql.includes('DELETE FROM doctor_diagnostics')) {
-            return {
-              run: (key: string) => {
-                this.store.delete(key);
-              },
-            };
-          }
-          return {
-            run: () => {},
-            get: () => ({ result: 1 }),
-          };
-        }
-
-        close() {
-          // no-op
-        }
+    prepare(sql: string) {
+      if (sql.includes('INSERT OR REPLACE INTO doctor_diagnostics')) {
+        return {
+          run: (key: string, value: string) => {
+            this.store.set(key, value);
+          },
+        };
       }
+      if (sql.includes('SELECT value FROM doctor_diagnostics')) {
+        return {
+          get: (key: string) => (this.store.has(key) ? { value: this.store.get(key) } : undefined),
+        };
+      }
+      if (sql.includes('DELETE FROM doctor_diagnostics')) {
+        return {
+          run: (key: string) => {
+            this.store.delete(key);
+          },
+        };
+      }
+      return {
+        run: () => {},
+        get: () => ({ result: 1 }),
+      };
+    }
+
+    close() {
+      // no-op
+    }
+  }
 
   return { DatabaseSync: MockNodeSqlite };
 });
@@ -151,6 +161,18 @@ beforeEach(() => {
   process.env.AGENT_RELAY_DOCTOR_NODE_VERSION = '22.1.0';
   delete process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE;
   delete process.env.AGENT_RELAY_DOCTOR_NODE_SQLITE_AVAILABLE;
+  sdkMock.getStatus.mockReset();
+  sdkMock.shutdown.mockReset();
+  sdkMock.connect.mockReset();
+  sdkMock.getStatus.mockResolvedValue({
+    auth: { authenticated: false, workspace_count: 0 },
+    pending_deliveries: [],
+  });
+  sdkMock.shutdown.mockResolvedValue(undefined);
+  sdkMock.connect.mockReturnValue({
+    getStatus: sdkMock.getStatus,
+    shutdown: sdkMock.shutdown,
+  });
   vi.resetModules();
 });
 
@@ -283,5 +305,19 @@ describe('doctor diagnostics', () => {
     expect(output).toContain('Database file:');
     expect(output).toContain('unreadable or unwritable');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('shuts down the broker client when status lookup throws', async () => {
+    process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
+    process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
+    sdkMock.getStatus.mockRejectedValueOnce(new Error('broker unavailable'));
+    const { logs, restore } = collectLogs();
+    const { runDoctor } = await loadDoctor();
+
+    await runDoctor();
+
+    restore();
+    expect(logs.join('\n')).toContain('Skipped (broker unavailable: broker unavailable)');
+    expect(sdkMock.shutdown).toHaveBeenCalledTimes(1);
   });
 });

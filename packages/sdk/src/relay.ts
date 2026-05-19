@@ -901,6 +901,7 @@ export class AgentRelay {
     return new Promise<DeliveryWaitResult>((resolve) => {
       let resolved = false;
       const ackedTargets = new Set<string>();
+      const confirmedTargets = new Set<string>();
       // eslint-disable-next-line prefer-const
       let unsubscribe: (() => void) | undefined;
 
@@ -921,12 +922,6 @@ export class AgentRelay {
           result.targets.includes(event.name)
         ) {
           ackedTargets.add(event.name);
-          if (ackedTargets.size >= result.targets.length) {
-            resolved = true;
-            clearTimeout(timer);
-            unsubscribe?.();
-            resolve({ eventId: result.event_id, status: 'ack', targets: result.targets });
-          }
         }
 
         if (
@@ -934,8 +929,8 @@ export class AgentRelay {
           event.event_id === result.event_id &&
           result.targets.includes(event.name)
         ) {
-          ackedTargets.add(event.name);
-          if (ackedTargets.size >= result.targets.length) {
+          confirmedTargets.add(event.name);
+          if (confirmedTargets.size >= result.targets.length) {
             resolved = true;
             clearTimeout(timer);
             unsubscribe?.();
@@ -944,7 +939,7 @@ export class AgentRelay {
         }
 
         if (
-          (event.kind === 'delivery_failed' || event.kind === 'message_delivery_failed') &&
+          event.kind === 'message_delivery_failed' &&
           event.event_id === result.event_id &&
           result.targets.includes(event.name)
         ) {
@@ -1563,6 +1558,9 @@ export class AgentRelay {
           // Populate exit info before firing the hook
           (agent as { exitCode?: number }).exitCode = event.code;
           (agent as { exitSignal?: string }).exitSignal = event.signal;
+          if (event.reason !== undefined) {
+            (agent as { exitReason?: string }).exitReason = event.reason;
+          }
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
@@ -1647,9 +1645,11 @@ export class AgentRelay {
           break;
         }
         case 'message_delivery_failed': {
+          if (event.event_id) {
+            this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
+          }
           if (event.event_id && event.delivery_id) {
             this.closeAgentDelivery(event.name, 'message_delivery_failed', event.event_id, event.delivery_id);
-            this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
           }
           break;
         }

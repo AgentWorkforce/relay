@@ -88,12 +88,18 @@ impl BrokerRuntime {
                     match workers.release(&name).await {
                         Ok(()) => {
                             workspace_http.forget_agent_registration(&name);
-                            let dropped = drop_pending_for_worker(pending_deliveries, &name);
-                            if dropped > 0 {
+                            let dropped = take_pending_for_worker(pending_deliveries, &name);
+                            if !dropped.is_empty() {
                                 let _ = send_event(
                                                 sdk_out_tx,
-                                                json!({"kind":"delivery_dropped","name":name,"count":dropped,"reason":"agent_released"}),
+                                                json!({"kind":"delivery_dropped","name":name,"count":dropped.len(),"reason":"agent_released"}),
                                             ).await;
+                                let _ = emit_dropped_delivery_failures(
+                                    sdk_out_tx,
+                                    &dropped,
+                                    "agent_released",
+                                )
+                                .await;
                             }
                             fail_pending_requests_for_worker(
                                 pending_requests,
