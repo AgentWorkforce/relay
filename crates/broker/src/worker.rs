@@ -612,12 +612,18 @@ impl WorkerRegistry {
                 };
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
-                let reason = self.workers.get(&name).and_then(|handle| handle.exit_reason.clone());
+                let reason = self
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 exited.push((name, code, signal, reason));
             } else if gone_via_kill0 {
-                let reason = self.workers.get(&name).and_then(|handle| handle.exit_reason.clone());
+                let reason = self
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 exited.push((name, None, None, reason));
