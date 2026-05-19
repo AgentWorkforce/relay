@@ -144,26 +144,6 @@ function getSdkBinDirs(): string[] {
   return binDirs;
 }
 
-// The `agent-relay` npm tarball historically shipped platform-specific
-// brokers at its top-level `bin/`. Walk up from the SDK module looking for
-// any ancestor with a `bin/` directory. This fallback is retained for one
-// release cycle while downstream installs migrate to the optional-dep
-// package; delete it in the next major.
-function getAncestorBinDirs(): string[] {
-  const binDirs: string[] = [];
-  const start = getCurrentModuleDir();
-  if (!start) return binDirs;
-
-  let current = resolve(start);
-  for (let i = 0; i < 6; i++) {
-    addUniquePath(binDirs, join(current, 'bin'));
-    const parent = resolve(current, '..');
-    if (parent === current) break;
-    current = parent;
-  }
-  return binDirs;
-}
-
 function findAncestorSourceCheckoutRoot(start: string): string | null {
   let current = resolve(start);
   for (let i = 0; i < 8; i++) {
@@ -238,17 +218,14 @@ function getSourceCheckoutBinaryPaths(ext: string, binDirs: string[]): string[] 
  *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
  *   4. SDK's bin/ directory (legacy bundled binary — kept for one release
  *      cycle so mixed-version installs still work)
- *   5. Ancestor bin/ directories (legacy, from PR #768 — kept for one
- *      release cycle so stale `agent-relay` tarballs still resolve)
- *   6. Cargo development paths (target/release and target/debug)
- *   7. PATH lookup via `which` / `where`
+ *   5. Cargo development paths (target/release and target/debug)
+ *   6. PATH lookup via `which` / `where`
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
 export function getBrokerBinaryPath(): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const binDirs = getSdkBinDirs();
-  const ancestorBinDirs = getAncestorBinDirs();
   const platformSpecific = `${BROKER_NAME}-${process.platform}-${process.arch}${ext}`;
   const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
 
@@ -290,20 +267,7 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 5. Ancestor bin/ directories (legacy from PR #768 — the `agent-relay`
-  // tarball historically shipped brokers at its package-root bin/).
-  for (const binDir of ancestorBinDirs) {
-    const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
-    if (existsSync(exactPath)) {
-      return exactPath;
-    }
-    const platformPath = join(binDir, platformSpecific);
-    if (existsSync(platformPath)) {
-      return platformPath;
-    }
-  }
-
-  // 6. Common development paths for local Cargo builds.
+  // 5. Common development paths for local Cargo builds.
   for (const developmentPath of getDevelopmentBinaryPaths(ext, binDirs)) {
     if (existsSync(developmentPath)) {
       return developmentPath;

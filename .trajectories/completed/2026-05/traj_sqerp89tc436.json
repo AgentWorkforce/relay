@@ -1,0 +1,65 @@
+{
+  "id": "traj_sqerp89tc436",
+  "version": 1,
+  "task": {
+    "title": "Remove legacy root bin fallback"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T00:45:33.159Z",
+  "completedAt": "2026-05-19T00:50:03.857Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T00:47:49.716Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_443zfkj16ho0",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T00:47:49.716Z",
+      "endedAt": "2026-05-19T00:50:03.857Z",
+      "events": [
+        {
+          "ts": 1779151669717,
+          "type": "decision",
+          "content": "Apply issue 875 to crates/broker/src/main.rs: Apply issue 875 to crates/broker/src/main.rs",
+          "raw": {
+            "question": "Apply issue 875 to crates/broker/src/main.rs",
+            "chosen": "Apply issue 875 to crates/broker/src/main.rs",
+            "alternatives": [],
+            "reasoning": "The broker binary was moved under crates/broker after the issue text was written, so the current main.rs entrypoint now lives there."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779151798770,
+          "type": "decision",
+          "content": "Removed repository-root bin fallback: Removed repository-root bin fallback",
+          "raw": {
+            "question": "Removed repository-root bin fallback",
+            "chosen": "Removed repository-root bin fallback",
+            "alternatives": [],
+            "reasoning": "The root bin directory only contained .gitkeep, production broker binaries resolve through optional packages, and local development resolves through Cargo target or SDK bin paths."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed the stale repository-root bin placeholder and resolver fallbacks that searched it. Broker resolution now stops at active SDK/optional-dep/Cargo/PATH locations, relay-pty no longer probes source-checkout root bin, and release/build scripts no longer reference root bin artifacts.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": ["040e6d9f"],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8929d13c620fad1ede204affdbb64cb729263667",
+    "endRef": "8929d13c620fad1ede204affdbb64cb729263667"
+  }
+}
