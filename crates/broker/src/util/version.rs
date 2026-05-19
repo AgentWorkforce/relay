@@ -9,8 +9,12 @@
 /// Rust crate's `CARGO_PKG_VERSION`, which is a reasonable developer-build
 /// label rather than a release-line identifier.
 pub const BROKER_VERSION: &str = match option_env!("AGENT_RELAY_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
+    // Treat an empty `AGENT_RELAY_VERSION` as unset — CI workflows that
+    // forward an unresolved expression (e.g. `${{ needs.build.outputs.new_version }}`
+    // before the upstream job ran) can leave the var defined but blank,
+    // which would otherwise surface as an empty broker version string.
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
 };
 
 /// Returns the broker version. Prefer this helper over `env!("CARGO_PKG_VERSION")`
@@ -33,11 +37,12 @@ mod tests {
 
     #[test]
     fn broker_version_matches_compile_time_env() {
-        // When AGENT_RELAY_VERSION is set at build time, the helper must
-        // surface that exact value rather than the Cargo crate version.
+        // When AGENT_RELAY_VERSION is set to a non-empty string at build
+        // time, the helper surfaces that exact value; empty or unset
+        // falls back to the Cargo crate version.
         match option_env!("AGENT_RELAY_VERSION") {
-            Some(v) => assert_eq!(broker_version(), v),
-            None => assert_eq!(broker_version(), env!("CARGO_PKG_VERSION")),
+            Some(v) if !v.is_empty() => assert_eq!(broker_version(), v),
+            _ => assert_eq!(broker_version(), env!("CARGO_PKG_VERSION")),
         }
     }
 }

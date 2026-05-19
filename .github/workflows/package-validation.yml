@@ -270,13 +270,9 @@ jobs:
         # `agent-relay` / `@agent-relay/sdk`. `option_env!` in
         # crates/broker/src/util/version.rs consumes this at compile time
         # and falls back to `CARGO_PKG_VERSION` when unset.
-        env:
-          AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
         run: |
-          if [ -z "$AGENT_RELAY_VERSION" ]; then
-            AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
-            export AGENT_RELAY_VERSION
-          fi
+          AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
+          export AGENT_RELAY_VERSION
           echo "Building broker with AGENT_RELAY_VERSION=$AGENT_RELAY_VERSION"
           cargo build --release --bin agent-relay-broker
 
