@@ -185,14 +185,19 @@ impl BrokerRuntime {
                     }
                 }
 
+                let spawn_workspace_id = default_workspace_id.clone().or_else(|| {
+                    workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace_id.clone())
+                });
                 match workers
                     .spawn(
                         spec,
                         Some("Dashboard".to_string()),
-                        None,
+                        idle_threshold_secs,
                         worker_relay_key.clone(),
                         skip_relay_prompt,
-                        idle_threshold_secs.map(|s| s.to_string()),
+                        spawn_workspace_id.clone(),
                     )
                     .await
                 {
@@ -235,11 +240,7 @@ impl BrokerRuntime {
                         }
                         note_local_spawn_control_dedup(
                             dedup,
-                            default_workspace_id.as_deref().or_else(|| {
-                                workspaces
-                                    .first()
-                                    .map(|workspace| workspace.workspace_id.as_str())
-                            }),
+                            spawn_workspace_id.as_deref(),
                             &name,
                             worker_relay_key.as_deref(),
                         );
