@@ -12,6 +12,7 @@ import {
 function createDeps(options?: {
   workers?: ListingWorkerInfo[];
   listAgentsError?: Error;
+  createClientError?: Error;
   nowIso?: string;
   metrics?: Array<{ name: string; pid: number; memory_bytes: number; uptime_secs: number }>;
   getMetricsError?: Error;
@@ -40,11 +41,15 @@ function createDeps(options?: {
   const deps: AgentManagementListingDependencies = {
     getProjectRoot: vi.fn(() => '/tmp/project'),
     getDataDir: vi.fn(() => '/tmp/data'),
-    createClient: vi.fn(() => ({
-      listAgents,
-      ...(getMetrics ? { getMetrics } : {}),
-      shutdown,
-    })),
+    createClient: options?.createClientError
+      ? vi.fn(() => {
+          throw options.createClientError;
+        })
+      : vi.fn(() => ({
+          listAgents,
+          ...(getMetrics ? { getMetrics } : {}),
+          shutdown,
+        })),
     fileExists: vi.fn(() => false),
     readFile: vi.fn(() => ''),
     fetch: vi.fn(async () => {
@@ -56,7 +61,7 @@ function createDeps(options?: {
     exit,
   };
 
-  return { deps, listAgents, shutdown, log, error };
+  return { deps, listAgents, shutdown, log, error, exit };
 }
 
 describe('agent-management-listing JSON output', () => {
@@ -234,16 +239,29 @@ describe('agent-management-listing JSON output', () => {
     expect(output).toContain('claude');
   });
 
-  it('runAgentsCommand returns [] JSON when listAgents fails', async () => {
-    const { deps, log, shutdown } = createDeps({
+  it('runAgentsCommand exits non-zero when listAgents fails instead of emitting [] JSON', async () => {
+    const { deps, log, shutdown, error } = createDeps({
       listAgentsError: new Error('broker unavailable'),
     });
 
-    await runAgentsCommand({ json: true }, deps);
+    await expect(runAgentsCommand({ json: true }, deps)).rejects.toThrow('exit:1');
 
     expect(shutdown).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(log.mock.calls[0][0] as string)).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Failed to query broker agents: broker unavailable');
+    expect(error).toHaveBeenCalledWith('Start the broker with `agent-relay up` and try again.');
+  });
+
+  it('runWhoCommand exits non-zero when broker client creation fails instead of emitting [] JSON', async () => {
+    const { deps, log, error } = createDeps({
+      createClientError: new Error('stale connection refused'),
+    });
+
+    await expect(runWhoCommand({ json: true }, deps)).rejects.toThrow('exit:1');
+
+    expect(log).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith('Failed to query broker agents: stale connection refused');
+    expect(error).toHaveBeenCalledWith('Start the broker with `agent-relay up` and try again.');
   });
 });
 

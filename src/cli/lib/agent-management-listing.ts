@@ -97,6 +97,11 @@ function tableCell(value: string | null | undefined, fallback = '-'): string {
   return sanitizeForTerminalLine(value ?? fallback);
 }
 
+function formatListAgentsError(err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  return `Failed to query broker agents: ${sanitizeForTerminalLine(detail)}`;
+}
+
 function shouldHideLocalAgentByDefault(name: string | undefined): boolean {
   if (!name) return true;
   if (name.startsWith('__')) return true;
@@ -229,16 +234,23 @@ export async function runAgentsCommand(
   let client: Awaited<ReturnType<typeof deps.createClient>>;
   try {
     client = await deps.createClient(deps.getProjectRoot());
-  } catch {
-    if (options.json) {
-      deps.log(JSON.stringify([], null, 2));
-    } else {
-      deps.log('No agents found. Ensure the broker is running and agents are connected.');
-    }
+  } catch (err: unknown) {
+    deps.error(formatListAgentsError(err));
+    deps.error('Start the broker with `agent-relay up` and try again.');
+    deps.exit(1);
     return;
   }
-  const workers = await client.listAgents().catch(() => []);
-  await client.shutdown().catch(() => undefined);
+  let workers: ListingWorkerInfo[];
+  try {
+    workers = await client.listAgents();
+  } catch (err: unknown) {
+    deps.error(formatListAgentsError(err));
+    deps.error('Start the broker with `agent-relay up` and try again.');
+    deps.exit(1);
+    return;
+  } finally {
+    await client.shutdown().catch(() => undefined);
+  }
 
   const combined: CombinedAgent[] = workers
     .filter((worker) => (options.all ? true : !shouldHideLocalAgentByDefault(worker.name)))
@@ -344,13 +356,10 @@ export async function runWhoCommand(
   let client: Awaited<ReturnType<typeof deps.createClient>>;
   try {
     client = await deps.createClient(deps.getProjectRoot());
-  } catch {
-    if (options.json) {
-      deps.log(JSON.stringify([], null, 2));
-    } else {
-      const hint = options.all ? '' : ' (use --all to include internal/cli agents)';
-      deps.log(`No active agents found${hint}.`);
-    }
+  } catch (err: unknown) {
+    deps.error(formatListAgentsError(err));
+    deps.error('Start the broker with `agent-relay up` and try again.');
+    deps.exit(1);
     return;
   }
   // Real per-agent metrics from the broker (pid / memory / uptime). This
@@ -372,40 +381,40 @@ export async function runWhoCommand(
     }
   }
 
-  const onlineAgents = await client
-    .listAgents()
-    .then((list) =>
-      list
-        .filter((agent) => (options.all ? true : !shouldHideLocalAgentByDefault(agent.name)))
-        .map((agent) => {
-          const m = metricsByName.get(agent.name);
-          return {
-            name: agent.name,
-            cli: agent.cli || agent.runtime || null,
-            // An agent present in the broker's live list is connected. We
-            // do not synthesize idle/exited here — that requires broker
-            // lifecycle state the CLI cannot observe without a follow-up
-            // broker change.
-            status: 'online' as const,
-            pid: m?.pid ?? agent.pid ?? null,
-            uptimeSecs: typeof m?.uptime_secs === 'number' ? m.uptime_secs : null,
-            memoryBytes: typeof m?.memory_bytes === 'number' ? m.memory_bytes : null,
-          };
-        })
-    )
-    .catch(
-      () =>
-        [] as Array<{
-          name: string;
-          cli: string | null;
-          status: 'online';
-          pid: number | null;
-          uptimeSecs: number | null;
-          memoryBytes: number | null;
-        }>
-    );
-
-  await client.shutdown().catch(() => undefined);
+  let onlineAgents: Array<{
+    name: string;
+    cli: string | null;
+    status: 'online';
+    pid: number | null;
+    uptimeSecs: number | null;
+    memoryBytes: number | null;
+  }>;
+  try {
+    onlineAgents = (await client.listAgents())
+      .filter((agent) => (options.all ? true : !shouldHideLocalAgentByDefault(agent.name)))
+      .map((agent) => {
+        const m = metricsByName.get(agent.name);
+        return {
+          name: agent.name,
+          cli: agent.cli || agent.runtime || null,
+          // An agent present in the broker's live list is connected. We
+          // do not synthesize idle/exited here — that requires broker
+          // lifecycle state the CLI cannot observe without a follow-up
+          // broker change.
+          status: 'online' as const,
+          pid: m?.pid ?? agent.pid ?? null,
+          uptimeSecs: typeof m?.uptime_secs === 'number' ? m.uptime_secs : null,
+          memoryBytes: typeof m?.memory_bytes === 'number' ? m.memory_bytes : null,
+        };
+      });
+  } catch (err: unknown) {
+    deps.error(formatListAgentsError(err));
+    deps.error('Start the broker with `agent-relay up` and try again.');
+    deps.exit(1);
+    return;
+  } finally {
+    await client.shutdown().catch(() => undefined);
+  }
 
   if (options.json) {
     deps.log(JSON.stringify(onlineAgents, null, 2));
