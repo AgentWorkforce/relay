@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import {
   formatTableRow,
@@ -74,15 +75,22 @@ export interface AgentManagementListingDependencies {
     maxBytes: number,
     encoding?: BufferEncoding
   ) => { text: string; size: number };
+  readFileBuffer?: (filePath: string) => Buffer;
+  readFileTailBuffer?: (filePath: string, maxBytes: number) => { buffer: Buffer; size: number };
   readFileFrom?: (
     filePath: string,
     offset: number,
     maxBytes: number,
     encoding?: BufferEncoding
   ) => { text: string; size: number };
+  readFileFromBuffer?: (
+    filePath: string,
+    offset: number,
+    maxBytes: number
+  ) => { buffer: Buffer; size: number };
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   nowIso: () => string;
-  writeChunk: (chunk: string) => void;
+  writeChunk: (chunk: string | Uint8Array) => void;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -157,6 +165,24 @@ function readLogTail(
   return { text, size: Buffer.byteLength(text, 'utf-8') };
 }
 
+function readLogTailBuffer(
+  deps: AgentManagementListingDependencies,
+  filePath: string,
+  lineCount: number
+): { buffer: Buffer; size: number } {
+  const maxBytes = getTailByteLimit(lineCount);
+  if (deps.readFileTailBuffer) {
+    return deps.readFileTailBuffer(filePath, maxBytes);
+  }
+  if (deps.readFileBuffer) {
+    const buffer = deps.readFileBuffer(filePath);
+    return { buffer: buffer.subarray(Math.max(0, buffer.length - maxBytes)), size: buffer.length };
+  }
+  const text = deps.readFile(filePath, 'utf-8');
+  const buffer = Buffer.from(text, 'utf-8');
+  return { buffer: buffer.subarray(Math.max(0, buffer.length - maxBytes)), size: buffer.length };
+}
+
 function readLogFrom(
   deps: AgentManagementListingDependencies,
   filePath: string,
@@ -167,6 +193,24 @@ function readLogFrom(
   }
   const text = deps.readFile(filePath, 'utf-8');
   return { text: text.slice(offset), size: text.length };
+}
+
+function readLogFromBuffer(
+  deps: AgentManagementListingDependencies,
+  filePath: string,
+  offset: number
+): { buffer: Buffer; size: number } {
+  if (deps.readFileFromBuffer) {
+    return deps.readFileFromBuffer(filePath, offset, MAX_LOG_FOLLOW_BYTES);
+  }
+  if (deps.readFileBuffer) {
+    const buffer = deps.readFileBuffer(filePath);
+    const start = Math.max(0, Math.min(offset, buffer.length));
+    const end = Math.min(buffer.length, start + MAX_LOG_FOLLOW_BYTES);
+    return { buffer: buffer.subarray(start, end), size: end };
+  }
+  const current = readLogFrom(deps, filePath, offset);
+  return { buffer: Buffer.from(current.text, 'utf-8'), size: current.size };
 }
 
 function readCloudConfig(deps: AgentManagementListingDependencies): CloudConfig | undefined {
@@ -445,21 +489,59 @@ function trimLeadingPartialCsi(raw: string): string {
   return /^[0-?;]*[ -/]*[@-~]$/.test(prefix) ? raw.slice(firstEscape) : raw;
 }
 
-class PtyLogCooker {
+function trailingIncompleteSequenceStart(raw: string): number | undefined {
+  const csiStart = raw.lastIndexOf('\x9b');
+  const escapeStart = raw.lastIndexOf('\x1b');
+  const start = Math.max(csiStart, escapeStart);
+  if (start < 0) return undefined;
+  if (raw.slice(start).includes('\n')) return undefined;
+
+  if (raw[start] === '\x9b') {
+    for (let cursor = start + 1; cursor < raw.length; cursor += 1) {
+      const code = raw.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) return undefined;
+    }
+    return start;
+  }
+
+  const next = raw[start + 1];
+  if (next === undefined) return start;
+  if (next === '[') {
+    for (let cursor = start + 2; cursor < raw.length; cursor += 1) {
+      const code = raw.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) return undefined;
+    }
+    return start;
+  }
+  if (next === ']') {
+    for (let cursor = start + 2; cursor < raw.length; cursor += 1) {
+      if (raw[cursor] === '\x07') return undefined;
+      if (raw[cursor] === '\x1b' && raw[cursor + 1] === '\\') return undefined;
+    }
+    return start;
+  }
+  return undefined;
+}
+
+export class PtyLogCooker {
   private readonly rows = new Map<number, string[]>();
   private readonly emitted: string[] = [];
+  private readonly decoder = new TextDecoder('utf-8');
+  private pending = '';
   private row = 0;
   private col = 0;
   private previousEmitted: string | undefined;
 
-  push(raw: string): string[] {
+  push(raw: string | Uint8Array): string[] {
     const start = this.emitted.length;
-    this.replay(raw);
+    this.replayCompleteText(this.decode(raw));
     return this.emitted.slice(start);
   }
 
   finish(): string[] {
     const start = this.emitted.length;
+    this.replay(this.pending + this.decoder.decode());
+    this.pending = '';
     this.flushScreenRows();
     return this.emitted.slice(start);
   }
@@ -467,6 +549,22 @@ class PtyLogCooker {
   lines(): string[] {
     this.finish();
     return [...this.emitted];
+  }
+
+  private decode(raw: string | Uint8Array): string {
+    return typeof raw === 'string' ? raw : this.decoder.decode(raw, { stream: true });
+  }
+
+  private replayCompleteText(raw: string): void {
+    const combined = this.pending + raw;
+    this.pending = '';
+    const pendingStart = trailingIncompleteSequenceStart(combined);
+    if (pendingStart === undefined) {
+      this.replay(combined);
+      return;
+    }
+    this.pending = combined.slice(pendingStart);
+    this.replay(combined.slice(0, pendingStart));
   }
 
   private replay(raw: string): void {
@@ -532,6 +630,9 @@ class PtyLogCooker {
     let cursor = index;
     while (cursor < raw.length) {
       const code = raw.charCodeAt(cursor);
+      if (raw[cursor] === '\n' || raw[cursor] === '\r' || raw[cursor] === '\x1b') {
+        return cursor - 1;
+      }
       if (code >= 0x40 && code <= 0x7e) {
         this.applyCsi(raw.slice(index, cursor), raw[cursor]);
         return cursor;
@@ -544,6 +645,9 @@ class PtyLogCooker {
   private skipOsc(raw: string, index: number): number {
     let cursor = index;
     while (cursor < raw.length) {
+      if (raw[cursor] === '\n' || raw[cursor] === '\r') {
+        return cursor - 1;
+      }
       if (raw[cursor] === '\x07') {
         return cursor;
       }
@@ -684,7 +788,7 @@ function emitCookedLines(lines: string[], deps: AgentManagementListingDependenci
 }
 
 function createCookedLogStreamer(initialText: string): {
-  push: (raw: string) => string[];
+  push: (raw: string | Uint8Array) => string[];
   reset: () => void;
 } {
   let cooker = new PtyLogCooker();
@@ -692,7 +796,7 @@ function createCookedLogStreamer(initialText: string): {
   cooker.finish();
 
   return {
-    push: (raw: string) => cooker.push(raw),
+    push: (raw: string | Uint8Array) => cooker.push(raw),
     reset: () => {
       cooker = new PtyLogCooker();
     },
@@ -748,16 +852,51 @@ export async function runAgentsLogsCommand(
 
   try {
     const lineCount = parseLogLineCount(options.lines);
-    const snapshot = readLogTail(deps, logFile, lineCount);
-    const text = snapshot.text;
 
     if (options.raw && options.json) {
       throw new Error('--raw cannot be combined with --json');
     }
 
     if (options.raw) {
-      deps.writeChunk(text);
-    } else if (options.json) {
+      const snapshot = readLogTailBuffer(deps, logFile, lineCount);
+      deps.writeChunk(snapshot.buffer);
+
+      if (options.follow) {
+        let lastSize = snapshot.size;
+
+        await new Promise<void>(() => {
+          const interval = setInterval(() => {
+            try {
+              if (!deps.fileExists(logFile)) {
+                return;
+              }
+              const current = readLogFromBuffer(deps, logFile, lastSize);
+              if (current.size > lastSize) {
+                lastSize = current.size;
+                deps.writeChunk(current.buffer);
+              } else if (current.size < lastSize) {
+                lastSize = 0;
+              }
+            } catch {
+              // Ignore read errors during follow, file may be temporarily unavailable
+            }
+          }, 500);
+
+          if (typeof process !== 'undefined') {
+            process.on('SIGINT', () => {
+              clearInterval(interval);
+              process.exit(0);
+            });
+          }
+        });
+      }
+      return;
+    }
+
+    const snapshot = readLogTail(deps, logFile, lineCount);
+    const text = snapshot.text;
+
+    if (options.json) {
       // --json: machine-readable snapshot of cooked, line-oriented output.
       // (Snapshot only — combine with the SDK event stream for live tailing.)
       const plainLines = toPlainLogLines(text).slice(-lineCount);
@@ -782,14 +921,10 @@ export async function runAgentsLogsCommand(
             if (!deps.fileExists(logFile)) {
               return;
             }
-            const current = readLogFrom(deps, logFile, lastSize);
+            const current = readLogFromBuffer(deps, logFile, lastSize);
             if (current.size > lastSize) {
               lastSize = current.size;
-              if (options.raw) {
-                deps.writeChunk(current.text);
-              } else {
-                emitCookedLines(streamer.push(current.text), deps);
-              }
+              emitCookedLines(streamer.push(current.buffer), deps);
             } else if (current.size < lastSize) {
               // File was truncated/rotated, reset
               lastSize = 0;

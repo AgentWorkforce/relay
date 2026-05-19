@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
+- `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.

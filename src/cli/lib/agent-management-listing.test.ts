@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PtyLogCooker,
   runAgentsCommand,
   runAgentsLogsCommand,
   runWhoCommand,
@@ -291,6 +292,26 @@ describe('toPlainLogLines', () => {
 
     expect(toPlainLogLines(`2H${ESC}[1;1Hready`)).toEqual(['ready']);
   });
+
+  it('carries split CSI and UTF-8 sequences across streamed pushes', () => {
+    const ESC = '\u001b';
+    const euro = Buffer.from('€', 'utf-8');
+    const chunks = [
+      Buffer.from(`busy\r${ESC}[`, 'utf-8'),
+      Buffer.concat([Buffer.from('Kdone ', 'utf-8'), euro.subarray(0, 1)]),
+      Buffer.concat([euro.subarray(1), Buffer.from('\n', 'utf-8')]),
+    ];
+    const full = Buffer.concat(chunks);
+
+    const streamed = new PtyLogCooker();
+    const streamedLines = chunks.flatMap((chunk) => streamed.push(chunk)).concat(streamed.finish());
+
+    const oneShot = new PtyLogCooker();
+    const oneShotLines = oneShot.push(full).concat(oneShot.finish());
+
+    expect(streamedLines).toEqual(['done €']);
+    expect(streamedLines).toEqual(oneShotLines);
+  });
 });
 
 describe('runAgentsLogsCommand --plain / --json', () => {
@@ -373,8 +394,24 @@ describe('runAgentsLogsCommand --plain / --json', () => {
     await runAgentsLogsCommand('WorkerA', { raw: true }, deps);
 
     expect(writeChunk).toHaveBeenCalledTimes(1);
-    expect(writeChunk).toHaveBeenCalledWith(rawLog);
+    expect(writeChunk).toHaveBeenCalledWith(Buffer.from(rawLog, 'utf-8'));
     expect(log).not.toHaveBeenCalled();
+  });
+
+  it('--raw emits non-UTF-8 and control bytes byte-identically', async () => {
+    const { deps, writeChunk } = logsDeps();
+    const rawBytes = Buffer.from([0x6f, 0x6b, 0x0a, 0x1b, 0x5b, 0x4b, 0xff, 0x80, 0x00, 0x41]);
+    deps.readFile = vi.fn(() => {
+      throw new Error('raw path must not decode the log as UTF-8');
+    });
+    deps.readFileTailBuffer = vi.fn(() => ({ buffer: rawBytes, size: rawBytes.length }));
+
+    await runAgentsLogsCommand('WorkerA', { raw: true }, deps);
+
+    expect(writeChunk).toHaveBeenCalledTimes(1);
+    const emitted = writeChunk.mock.calls[0][0];
+    expect(Buffer.isBuffer(emitted)).toBe(true);
+    expect(Buffer.compare(emitted as Buffer, rawBytes)).toBe(0);
   });
 
   it('rejects path traversal agent names before probing or reading files', async () => {
