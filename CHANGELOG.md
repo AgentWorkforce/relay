@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
 - `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
 - `agent-relay up --no-dashboard` and `agent-relay down --force` now recover half-started brokers that stayed alive without readable connection metadata.
+- `agent-relay who` and `agent-relay agents` now fail clearly when broker queries fail instead of printing an empty agent list.
+- `agent-relay history` and `agent-relay replies` now resolve the project broker session even when `AGENT_RELAY_STATE_DIR` points elsewhere.
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
