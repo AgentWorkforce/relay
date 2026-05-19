@@ -10,7 +10,7 @@ use relay_broker::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::McpArgsCommand;
+use crate::cli::McpArgsCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

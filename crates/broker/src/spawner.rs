@@ -7,7 +7,7 @@ use tokio::{
     time::timeout,
 };
 
-use crate::helpers::parse_cli_command;
+use crate::cli::command_parse::parse_cli_command;
 
 #[cfg(unix)]
 use nix::{

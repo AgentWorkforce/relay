@@ -1,6 +1,6 @@
-use crate::helpers;
 use crate::swarm_tui;
 use crate::swarm_tui::{TuiCommand, TuiUpdate};
+use crate::util::ansi;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use clap::Parser;
@@ -817,7 +817,7 @@ async fn wait_for_worker_results(
                     .get("chunk")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let clean = helpers::strip_ansi(chunk);
+                let clean = ansi::strip_ansi(chunk);
                 stream_buffers
                     .entry(name.clone())
                     .or_default()
@@ -904,7 +904,7 @@ async fn wait_for_worker_results(
                 let last_output = event
                     .get("last_output")
                     .and_then(Value::as_str)
-                    .map(helpers::strip_ansi)
+                    .map(ansi::strip_ansi)
                     .unwrap_or_default();
 
                 let accumulated = stream_buffers.remove(&name).unwrap_or_default();
@@ -1054,7 +1054,7 @@ fn truncate_line(text: &str, max: usize) -> String {
     if text.len() <= max {
         text.to_string()
     } else {
-        let boundary = helpers::floor_char_boundary(text, max.saturating_sub(3));
+        let boundary = ansi::floor_char_boundary(text, max.saturating_sub(3));
         format!("{}...", &text[..boundary])
     }
 }
@@ -1081,7 +1081,7 @@ fn result_preview(text: &str, max_chars: usize) -> String {
     if oneline.len() <= max_chars {
         oneline
     } else {
-        let boundary = helpers::floor_char_boundary(&oneline, max_chars.saturating_sub(3));
+        let boundary = ansi::floor_char_boundary(&oneline, max_chars.saturating_sub(3));
         format!("{}...", &oneline[..boundary])
     }
 }
@@ -1163,7 +1163,7 @@ fn summarize_agent_output(raw: &str) -> String {
 }
 
 fn sanitize_result(raw: &str) -> String {
-    let clean = helpers::strip_ansi(raw);
+    let clean = ansi::strip_ansi(raw);
     let trimmed = clean.trim();
 
     // Handle <<<RESULT: ...>>> wrapper

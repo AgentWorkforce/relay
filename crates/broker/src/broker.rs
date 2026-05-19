@@ -7,6 +7,10 @@ use relay_broker::{
 };
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod continuity;
+pub(crate) mod delivery_verification;
+pub(crate) mod injection_format;
+
 /// Check if a process with the given PID is alive.
 #[cfg(unix)]
 pub(crate) fn is_pid_alive(pid: u32) -> bool {

@@ -21,11 +21,13 @@ use tokio::{
 };
 
 use crate::{
-    headless_provider_cli_name,
-    helpers::{normalize_cli_name, parse_cli_command},
+    cli::command_parse::{normalize_cli_name, parse_cli_command},
     routing,
+    runtime::headless_provider_cli_name,
     spawner::terminate_child,
 };
+
+pub(crate) mod detection;
 
 #[derive(Debug)]
 pub(crate) struct WorkerHandle {
