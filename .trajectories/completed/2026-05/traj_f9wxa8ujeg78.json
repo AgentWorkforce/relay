@@ -46,12 +46,21 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": ["2ecfb018"],
+  "filesChanged": [
+    "crates/broker/src/main.rs",
+    "crates/broker/src/cli/mod.rs",
+    "crates/broker/src/runtime.rs",
+    "crates/broker/src/cli_mcp_args.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/routing.rs",
+    "crates/broker/src/worker.rs",
+    "crates/broker/src/wrap.rs"
+  ],
   "projectId": "/Users/will/Projects/AgentWorkforce/relay",
   "tags": [],
   "_trace": {
-    "startRef": "8a6b9b41b6d2de072e41ecd62f382419e1efb764",
-    "endRef": "8a6b9b41b6d2de072e41ecd62f382419e1efb764"
+    "startRef": "040e6d9fb2b9d1fa544a54d176dfc8a437ca76b9",
+    "endRef": "2ecfb01884a7cd3eae7a67768c20b84feb994c29"
   }
 }
