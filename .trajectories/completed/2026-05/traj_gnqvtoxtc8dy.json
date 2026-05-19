@@ -1,0 +1,53 @@
+{
+  "id": "traj_gnqvtoxtc8dy",
+  "version": 1,
+  "task": {
+    "title": "Fix broker half-start recovery"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T12:34:36.057Z",
+  "completedAt": "2026-05-19T12:47:18.115Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T12:41:16.026Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_b3d0wym6dp08",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T12:41:16.026Z",
+      "endedAt": "2026-05-19T12:47:18.115Z",
+      "events": [
+        {
+          "ts": 1779194476027,
+          "type": "decision",
+          "content": "Recover half-started detached brokers by killing foreground CLI wrappers and unready broker PIDs before retrying: Recover half-started detached brokers by killing foreground CLI wrappers and unready broker PIDs before retrying",
+          "raw": {
+            "question": "Recover half-started detached brokers by killing foreground CLI wrappers and unready broker PIDs before retrying",
+            "chosen": "Recover half-started detached brokers by killing foreground CLI wrappers and unready broker PIDs before retrying",
+            "alternatives": [],
+            "reasoning": "The failure mode leaves a live agent-relay up --foreground process without usable connection metadata; scanning only agent-relay-broker misses that wrapper, so up/down --force must reap both wrapper and broker PID candidates."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added deterministic recovery for detached broker half-starts by reaping unready broker PIDs and metadata-less foreground wrappers before restart, and by cleaning failed detached children on readiness timeout.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-worktrees/broker-half-start-recovery",
+  "tags": [],
+  "_trace": {
+    "startRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca",
+    "endRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca"
+  }
+}
