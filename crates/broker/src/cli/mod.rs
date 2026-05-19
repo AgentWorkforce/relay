@@ -9,6 +9,8 @@ use relay_broker::{
 
 use crate::{cli_mcp_args, pty_worker, runtime, swarm, wrap};
 
+pub(crate) mod command_parse;
+
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
 #[command(about = "Agent relay broker and worker runtime")]

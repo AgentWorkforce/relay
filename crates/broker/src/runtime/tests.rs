@@ -6,11 +6,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::helpers::{
-    detect_bypass_permissions_prompt, detect_claude_trust_prompt, floor_char_boundary,
-    format_injection, is_auto_suggestion, is_bypass_selection_menu, is_in_editor_mode, strip_ansi,
-};
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
+use crate::{
+    broker::injection_format::format_injection,
+    util::{
+        ansi::{floor_char_boundary, strip_ansi},
+        terminal::{
+            detect_bypass_permissions_prompt, detect_claude_trust_prompt, is_auto_suggestion,
+            is_bypass_selection_menu, is_in_editor_mode,
+        },
+    },
+};
 use relay_broker::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;

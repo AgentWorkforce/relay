@@ -1,5 +1,5 @@
 use crate::{
-    helpers::{floor_char_boundary, strip_ansi},
+    util::ansi::{floor_char_boundary, strip_ansi},
     wait::{for_cli, WaitSnapshot},
 };
 

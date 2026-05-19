@@ -13,15 +13,18 @@ use relay_broker::{
 };
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
-use crate::helpers::{
-    agent_name_eq, check_echo_in_output, detect_bypass_permissions_prompt,
-    detect_claude_trust_prompt, detect_codex_model_prompt, detect_gemini_action_required,
-    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, detect_opencode_permission_prompt,
-    floor_char_boundary, format_injection_for_worker_with_workspace, is_auto_suggestion,
-    is_bypass_selection_menu, is_in_editor_mode, is_self_name, parse_cli_command,
-    resolve_dm_participants_cached, strip_ansi, ActivityDetector, DeliveryOutcome, PendingActivity,
-    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+use crate::broker::{
+    delivery_verification::{
+        check_echo_in_output, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+    },
+    injection_format::format_injection_for_worker_with_workspace,
+};
+use crate::cli::command_parse::parse_cli_command;
+use crate::relaycast::{
+    dm_participants::resolve_dm_participants_cached,
+    identity::{agent_name_eq, is_self_name},
 };
 use crate::runtime::{
     channels_from_csv, command_targets_self, connect_relay, ensure_runtime_paths, env_flag_enabled,
@@ -29,6 +32,16 @@ use crate::runtime::{
     RelaySessionOptions, RelayWorkspace,
 };
 use crate::spawner::{spawn_env_vars, Spawner};
+use crate::util::{
+    ansi::{floor_char_boundary, strip_ansi},
+    terminal::{
+        detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+        detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
+        detect_opencode_permission_prompt, is_auto_suggestion, is_bypass_selection_menu,
+        is_in_editor_mode,
+    },
+};
+use crate::worker::detection::ActivityDetector;
 
 // PTY auto-response constants (shared by wrap and pty workers)
 const BYPASS_PERMS_COOLDOWN: Duration = Duration::from_secs(2);
