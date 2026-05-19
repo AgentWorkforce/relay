@@ -14,6 +14,7 @@ pub(crate) mod command_parse;
 #[derive(Debug, Parser)]
 #[command(name = "agent-relay-broker")]
 #[command(about = "Agent relay broker and worker runtime")]
+#[command(version = crate::util::version::BROKER_VERSION)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
