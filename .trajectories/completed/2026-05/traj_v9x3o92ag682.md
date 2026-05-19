@@ -66,4 +66,4 @@ _Agent: validator-codex_
 
 _Agent: orchestrator_
 
-- All 17 steps completed in 28min. (completed in 28 minutes)
+- All 17 steps completed in 28min.

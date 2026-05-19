@@ -70,7 +70,7 @@ _Agent: validator-codex_
 
 _Agent: orchestrator_
 
-- All 17 steps completed in 38min. 1 step(s) needed retries: implement-slice. (completed in 38 minutes)
+- All 17 steps completed in 38min. 1 step(s) needed retries: implement-slice.
 
 ---
 

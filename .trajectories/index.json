@@ -1081,14 +1081,14 @@
       "status": "completed",
       "startedAt": "2026-05-19T16:54:14.672Z",
       "completedAt": "2026-05-19T16:54:23.471Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a90562b7ed038f1a0/.trajectories/completed/2026-05/traj_citl6rhje2sc.json"
+      "path": ".trajectories/completed/2026-05/traj_citl6rhje2sc.json"
     },
     "traj_uoh2y4raguxp": {
       "title": "Relax harness slug validation",
       "status": "completed",
       "startedAt": "2026-05-19T17:08:28.774Z",
       "completedAt": "2026-05-19T17:12:38.005Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a90562b7ed038f1a0/.trajectories/completed/2026-05/traj_uoh2y4raguxp.json"
+      "path": ".trajectories/completed/2026-05/traj_uoh2y4raguxp.json"
     }
   }
 }

@@ -615,7 +615,7 @@ impl TelemetryClient {
                 obj.insert("os_version".to_string(), json!(v));
             }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
-            obj.insert("orchestrator_harness".to_string(), json!(self.harness));
+            obj.insert("harness".to_string(), json!(self.harness));
             obj.insert("surface".to_string(), json!("broker"));
         }
 

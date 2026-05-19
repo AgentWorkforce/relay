@@ -57,7 +57,7 @@ const MAX_ANCESTOR_DEPTH = 10;
 const HARNESS_PATTERNS: Array<{ harness: ClassifiedHarness; re: RegExp }> = [
   // Claude Code ships as `claude` on PATH plus a desktop "Claude" app on macOS.
   { harness: 'claude-code', re: /^claude(?:-code)?(?:\.exe)?$/i },
-  { harness: 'claude-code', re: /^Claude(?:\s+Helper)?$/ },
+  { harness: 'claude-code', re: /^claude(?:\s+helper)?(?:\.exe)?$/i },
   // Cursor: editor + helper processes.
   { harness: 'cursor', re: /^cursor(?:\s+helper)?(?:\.exe)?$/i },
   // Codex CLI (OpenAI).

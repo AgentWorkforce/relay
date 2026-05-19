@@ -35,7 +35,7 @@ interface SdkCommonProps {
   os_version?: string;
   node_version: string;
   arch: string;
-  orchestrator_harness: string;
+  harness: string;
   surface: typeof SDK_SURFACE;
 }
 
@@ -188,7 +188,7 @@ function init(): void {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
-    orchestrator_harness: resolveHarness(),
+    harness: resolveHarness(),
     surface: SDK_SURFACE,
   };
 }
