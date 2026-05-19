@@ -6,12 +6,10 @@ impl BrokerRuntime {
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
         let ws_control_tx = &self.ws_control_tx;
-        let relaycast_http = &self.relaycast_http;
         let workers = &mut self.workers;
         let pending_deliveries = &mut self.pending_deliveries;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
-        let delivery_states = &mut self.delivery_states;
         let delivery_retry_interval = self.delivery_retry_interval;
 
         match worker_event {
@@ -492,9 +490,6 @@ impl BrokerRuntime {
                             }
                         }
                     } else if msg_type == "worker_exited" {
-                        // PTY worker process is exiting — clean up and
-                        // emit agent_exited so the SDK doesn't have to
-                        // wait for the reap_exited polling cycle.
                         let code = value
                             .get("payload")
                             .and_then(|p| p.get("code"))
@@ -509,62 +504,8 @@ impl BrokerRuntime {
                             agent = %name,
                             code = ?code,
                             signal = ?signal,
-                            "worker_exited received — cleaning up"
+                            "worker_exited received; deferring cleanup to reap_exited"
                         );
-                        // Remove from registry so reap_exited won't
-                        // double-process this worker.
-                        workers.workers.remove(&name);
-                        workers.initial_tasks.remove(&name);
-                        // Drop pending deliveries for this worker
-                        let dropped = drop_pending_for_worker(pending_deliveries, &name);
-                        if dropped > 0 {
-                            let _ = send_event(
-                                sdk_out_tx,
-                                json!({
-                                    "kind": "delivery_dropped",
-                                    "name": name,
-                                    "count": dropped,
-                                    "reason": "worker_exited",
-                                }),
-                            )
-                            .await;
-                        }
-                        fail_pending_requests_for_worker(pending_requests, &name, "worker_exited");
-                        delivery_states.remove(&name);
-                        let _ = send_event(
-                            sdk_out_tx,
-                            json!({
-                                "kind": "agent_exited",
-                                "name": name,
-                                "code": code,
-                                "signal": signal,
-                            }),
-                        )
-                        .await;
-                        publish_agent_state_transition(
-                            ws_control_tx,
-                            &name,
-                            "exited",
-                            Some("worker_exited"),
-                        )
-                        .await;
-                        if let Err(error) = relaycast_http.mark_agent_offline(&name).await {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "failed to mark exited worker offline in relaycast"
-                            );
-                        }
-                        state.agents.remove(&name);
-                        if paths.persist {
-                            if let Err(error) = state.save(&paths.state) {
-                                tracing::warn!(
-                                    path = %paths.state.display(),
-                                    error = %error,
-                                    "failed to persist broker state"
-                                );
-                            }
-                        }
                     }
                 }
             }

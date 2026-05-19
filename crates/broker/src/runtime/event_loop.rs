@@ -14,9 +14,12 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
+    pub(super) api_open: bool,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
+    pub(super) relaycast_open: bool,
     pub(super) sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
     pub(super) worker_event_rx: mpsc::Receiver<WorkerEvent>,
+    pub(super) worker_events_open: bool,
     pub(super) workers: WorkerRegistry,
     pub(super) crash_insights: relay_broker::crash_insights::CrashInsights,
     pub(super) crash_insights_path: PathBuf,
@@ -61,13 +64,13 @@ impl BrokerRuntime {
                 _ = tokio::signal::ctrl_c() => RuntimeEvent::CtrlC,
                 _ = self.lease_check.tick() => RuntimeEvent::LeaseTick,
                 _ = self.sigterm.recv() => RuntimeEvent::Sigterm,
-                request = self.api_rx.recv() => match request {
+                request = self.api_rx.recv(), if self.api_open => match request {
                     Some(request) => RuntimeEvent::Api(Box::new(request)),
                     None => RuntimeEvent::ApiClosed,
                 },
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
-                message = self.ws_inbound_rx.recv() => RuntimeEvent::Relaycast(message),
-                event = self.worker_event_rx.recv() => RuntimeEvent::Worker(event),
+                message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
+                event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
 
@@ -85,7 +88,9 @@ impl BrokerRuntime {
                 RuntimeEvent::Api(request) => {
                     self.handle_api_request(*request).await;
                 }
-                RuntimeEvent::ApiClosed => {}
+                RuntimeEvent::ApiClosed => {
+                    self.api_open = false;
+                }
                 RuntimeEvent::Stdin(result) => {
                     if matches!(result, Ok(None) | Err(_)) {
                         self.stdin_open = false;
@@ -94,11 +99,15 @@ impl BrokerRuntime {
                 RuntimeEvent::Relaycast(Some(message)) => {
                     self.handle_relaycast_message(message).await;
                 }
-                RuntimeEvent::Relaycast(None) => {}
+                RuntimeEvent::Relaycast(None) => {
+                    self.relaycast_open = false;
+                }
                 RuntimeEvent::Worker(Some(event)) => {
                     self.handle_worker_event(event).await;
                 }
-                RuntimeEvent::Worker(None) => {}
+                RuntimeEvent::Worker(None) => {
+                    self.worker_events_open = false;
+                }
                 RuntimeEvent::MaintenanceTick => {
                     self.handle_maintenance_tick().await;
                 }

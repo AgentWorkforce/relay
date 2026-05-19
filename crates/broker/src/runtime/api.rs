@@ -6,6 +6,7 @@ impl BrokerRuntime {
         let state = &mut self.state;
         let workspaces = &self.workspaces;
         let workspace_lookup = &self.workspace_lookup;
+        let default_workspace = &self.default_workspace;
         let default_workspace_id = &self.default_workspace_id;
         let self_names = &self.self_names;
         let relaycast_http = &self.relaycast_http;
@@ -1044,23 +1045,75 @@ impl BrokerRuntime {
                 channels,
                 reply,
             } => {
-                let Some(handle) = workers.workers.get_mut(&name) else {
-                    let _ = reply.send(Err(format!("unknown worker '{}'", name)));
-                    return;
+                let (workspace_id, parent, spec, pid, added, all_channels) = {
+                    let Some(handle) = workers.workers.get_mut(&name) else {
+                        let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                        return;
+                    };
+                    let mut added = Vec::new();
+                    for ch in &channels {
+                        let exists = handle
+                            .spec
+                            .channels
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(ch));
+                        if !exists {
+                            handle.spec.channels.push(ch.clone());
+                            added.push(ch.clone());
+                        }
+                    }
+                    (
+                        handle.workspace_id.clone(),
+                        handle.parent.clone(),
+                        handle.spec.clone(),
+                        handle.child.id(),
+                        added,
+                        handle.spec.channels.clone(),
+                    )
                 };
-                let mut added = Vec::new();
-                for ch in &channels {
-                    let exists = handle
-                        .spec
-                        .channels
-                        .iter()
-                        .any(|c| c.eq_ignore_ascii_case(ch));
-                    if !exists {
-                        handle.spec.channels.push(ch.clone());
-                        added.push(ch.clone());
+
+                if !added.is_empty() {
+                    let workspace = workspace_for_channel_update(
+                        workspace_id.as_deref(),
+                        workspace_lookup,
+                        default_workspace_id.as_deref(),
+                        default_workspace,
+                    );
+                    if let Err(error) = workspace.http_client.ensure_extra_channels(&added).await {
+                        tracing::warn!(
+                            worker = %name,
+                            workspace_id = %workspace.workspace_id,
+                            channels = ?added,
+                            error = %error,
+                            "failed to ensure subscribed channels"
+                        );
+                    }
+                    if let Err(error) = workspace
+                        .ws_control_tx
+                        .send(WsControl::Subscribe(added.clone()))
+                        .await
+                    {
+                        tracing::warn!(
+                            worker = %name,
+                            workspace_id = %workspace.workspace_id,
+                            channels = ?added,
+                            error = %error,
+                            "failed to send ws channel subscribe control"
+                        );
                     }
                 }
-                let all_channels = handle.spec.channels.clone();
+
+                persist_agent_channels(state, &name, parent, spec, pid, all_channels.clone());
+                if paths.persist {
+                    if let Err(error) = state.save(&paths.state) {
+                        tracing::warn!(
+                            path = %paths.state.display(),
+                            worker = %name,
+                            error = %error,
+                            "failed to persist channel subscriptions"
+                        );
+                    }
+                }
                 let _ = reply.send(Ok(json!({
                     "name": name,
                     "channels": all_channels,
@@ -1071,15 +1124,87 @@ impl BrokerRuntime {
                 channels,
                 reply,
             } => {
-                let Some(handle) = workers.workers.get_mut(&name) else {
-                    let _ = reply.send(Err(format!("unknown worker '{}'", name)));
-                    return;
+                let (workspace_id, parent, spec, pid, removed, remaining) = {
+                    let Some(handle) = workers.workers.get_mut(&name) else {
+                        let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                        return;
+                    };
+                    let before = handle.spec.channels.clone();
+                    handle
+                        .spec
+                        .channels
+                        .retain(|c| !channels.iter().any(|rem| rem.eq_ignore_ascii_case(c)));
+                    let remaining = handle.spec.channels.clone();
+                    let removed = before
+                        .into_iter()
+                        .filter(|channel| {
+                            !remaining
+                                .iter()
+                                .any(|kept| kept.eq_ignore_ascii_case(channel))
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        handle.workspace_id.clone(),
+                        handle.parent.clone(),
+                        handle.spec.clone(),
+                        handle.child.id(),
+                        removed,
+                        remaining,
+                    )
                 };
-                handle
-                    .spec
-                    .channels
-                    .retain(|c| !channels.iter().any(|rem| rem.eq_ignore_ascii_case(c)));
-                let remaining = handle.spec.channels.clone();
+
+                if !removed.is_empty() {
+                    let workspace = workspace_for_channel_update(
+                        workspace_id.as_deref(),
+                        workspace_lookup,
+                        default_workspace_id.as_deref(),
+                        default_workspace,
+                    );
+                    let target_workspace_id = effective_channel_workspace_id(
+                        workspace_id.as_deref(),
+                        default_workspace_id.as_deref(),
+                    );
+                    let unsubscribe = removed
+                        .iter()
+                        .filter(|channel| {
+                            !workers.workers.values().any(|handle| {
+                                effective_channel_workspace_id(
+                                    handle.workspace_id.as_deref(),
+                                    default_workspace_id.as_deref(),
+                                ) == target_workspace_id
+                                    && channel_in_list(&handle.spec.channels, channel)
+                            })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !unsubscribe.is_empty() {
+                        if let Err(error) = workspace
+                            .ws_control_tx
+                            .send(WsControl::Unsubscribe(unsubscribe.clone()))
+                            .await
+                        {
+                            tracing::warn!(
+                                worker = %name,
+                                workspace_id = %workspace.workspace_id,
+                                channels = ?unsubscribe,
+                                error = %error,
+                                "failed to send ws channel unsubscribe control"
+                            );
+                        }
+                    }
+                }
+
+                persist_agent_channels(state, &name, parent, spec, pid, remaining.clone());
+                if paths.persist {
+                    if let Err(error) = state.save(&paths.state) {
+                        tracing::warn!(
+                            path = %paths.state.display(),
+                            worker = %name,
+                            error = %error,
+                            "failed to persist channel subscriptions"
+                        );
+                    }
+                }
                 let _ = reply.send(Ok(json!({
                     "name": name,
                     "channels": remaining,
@@ -1233,4 +1358,59 @@ impl BrokerRuntime {
             }
         }
     }
+}
+
+fn workspace_for_channel_update<'a>(
+    workspace_id: Option<&str>,
+    workspace_lookup: &'a HashMap<String, RelayWorkspace>,
+    default_workspace_id: Option<&str>,
+    default_workspace: &'a RelayWorkspace,
+) -> &'a RelayWorkspace {
+    workspace_id
+        .and_then(|id| workspace_lookup.get(id))
+        .or_else(|| default_workspace_id.and_then(|id| workspace_lookup.get(id)))
+        .unwrap_or(default_workspace)
+}
+
+fn effective_channel_workspace_id<'a>(
+    workspace_id: Option<&'a str>,
+    default_workspace_id: Option<&'a str>,
+) -> Option<&'a str> {
+    workspace_id.or(default_workspace_id)
+}
+
+fn channel_in_list(channels: &[String], channel: &str) -> bool {
+    channels
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(channel))
+}
+
+fn persist_agent_channels(
+    state: &mut broker::BrokerState,
+    name: &str,
+    parent: Option<String>,
+    mut spec: AgentSpec,
+    pid: Option<u32>,
+    channels: Vec<String>,
+) {
+    spec.channels = channels.clone();
+    let runtime = spec.runtime.clone();
+    let agent = state
+        .agents
+        .entry(name.to_string())
+        .or_insert_with(|| broker::PersistedAgent {
+            runtime: runtime.clone(),
+            parent: parent.clone(),
+            channels: channels.clone(),
+            pid,
+            started_at: Some(unix_timestamp_secs()),
+            spec: Some(spec.clone()),
+            restart_policy: None,
+            initial_task: None,
+        });
+    agent.runtime = runtime;
+    agent.parent = parent;
+    agent.channels = channels;
+    agent.pid = pid;
+    agent.spec = Some(spec);
 }

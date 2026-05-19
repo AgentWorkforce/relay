@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     process::Stdio,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -17,10 +18,11 @@ use tokio::sync::mpsc;
 use super::{
     build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
     channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
-    display_target_for_dashboard, drop_pending_for_worker, extract_mcp_message_ids,
-    http_api_event_emit_timeout, http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
-    is_relaycast_self_control_target, is_unknown_worker_error_message, normalize_channel,
-    normalize_initial_task, normalize_sender, queue_inbound_for_delivery_mode,
+    display_target_for_dashboard, drop_pending_for_worker, ensure_ephemeral_paths,
+    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
+    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
+    is_unknown_worker_error_message, normalize_channel, normalize_initial_task, normalize_sender,
+    parse_sort_key_from_raw_timestamp, queue_inbound_for_delivery_mode,
     relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event, AgentRuntime,
@@ -29,6 +31,11 @@ use super::{
 use relay_broker::dedup::DedupCache;
 use relay_broker::relaycast_ws::{format_worker_preregistration_error, RelaycastRegistrationError};
 use relay_broker::types::{InboundDeliveryMode, InboundDeliveryState};
+
+fn env_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -451,6 +458,7 @@ async fn contract_health_fixture_requires_rich_listen_health_shape() {
 
 #[tokio::test]
 async fn contract_startup_429_fixture_requires_degraded_health_status() {
+    let _guard = env_test_lock().lock().expect("env test lock");
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../packages/contracts/fixtures/health-fixtures.json"
     ))
@@ -558,6 +566,7 @@ fn contract_broadcast_whitelist_fixture_requires_filtering_to_required_kinds() {
 
     let emitted = extract_kind_literals(concat!(
         include_str!("api.rs"),
+        include_str!("maintenance.rs"),
         include_str!("relaycast_events.rs"),
         include_str!("worker_events.rs"),
     ));
@@ -750,6 +759,22 @@ fn build_thread_infos_respects_explicit_unread_count() {
 }
 
 #[test]
+fn parse_sort_key_normalizes_numeric_seconds_to_millis() {
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("1771840800"),
+        Some(1_771_840_800_000)
+    );
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("1771840800000"),
+        Some(1_771_840_800_000)
+    );
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("2026-02-23T10:00:00Z"),
+        Some(1_771_840_800_000)
+    );
+}
+
+#[test]
 fn build_agent_state_transition_event_has_expected_shape() {
     let payload = build_agent_state_transition_event("worker-a", "spawned", Some("sdk_spawn"));
     assert_eq!(payload["type"], "agent.state");
@@ -860,6 +885,7 @@ fn display_target_for_dashboard_maps_self_identity() {
 
 #[test]
 fn delivery_retry_interval_uses_default_and_env_override() {
+    let _guard = env_test_lock().lock().expect("env test lock");
     std::env::remove_var("AGENT_RELAY_DELIVERY_RETRY_MS");
     assert_eq!(delivery_retry_interval().as_millis(), 1_000);
 
@@ -874,6 +900,7 @@ fn delivery_retry_interval_uses_default_and_env_override() {
 
 #[test]
 fn http_api_timeout_windows_use_default_and_env_override() {
+    let _guard = env_test_lock().lock().expect("env test lock");
     std::env::remove_var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS");
     std::env::remove_var("AGENT_RELAY_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS");
     std::env::remove_var("AGENT_RELAY_HTTP_API_EVENT_EMIT_TIMEOUT_MS");
@@ -1549,6 +1576,18 @@ fn continuity_dir_preserves_relative_paths() {
     let state_path = std::path::Path::new(".agent-relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+}
+
+#[test]
+fn ephemeral_paths_are_unique_per_broker_instance() {
+    let cwd = PathBuf::from("/tmp/agent-relay-test-project");
+    let first = ensure_ephemeral_paths(&cwd, "test broker").expect("first ephemeral paths");
+    let second = ensure_ephemeral_paths(&cwd, "test broker").expect("second ephemeral paths");
+
+    assert_ne!(first.state, second.state);
+    assert_ne!(first.pending, second.pending);
+    assert!(first.state.parent().unwrap().exists());
+    assert!(second.state.parent().unwrap().exists());
 }
 
 #[test]

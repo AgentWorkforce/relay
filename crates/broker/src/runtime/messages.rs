@@ -275,13 +275,21 @@ pub(crate) fn truncate_thread_preview(input: &str, max_len: usize) -> String {
     out
 }
 
+/// Parse a message timestamp into a millisecond sort key.
+///
+/// Numeric values below `4_102_444_800` are treated as Unix seconds so mixed
+/// second, millisecond, and RFC3339 inputs sort in the same unit.
 pub(crate) fn parse_sort_key_from_raw_timestamp(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
     if let Ok(epoch) = trimmed.parse::<i64>() {
-        return Some(epoch);
+        return Some(if epoch < 4_102_444_800 {
+            epoch.saturating_mul(1_000)
+        } else {
+            epoch
+        });
     }
     chrono::DateTime::parse_from_rfc3339(trimmed)
         .ok()

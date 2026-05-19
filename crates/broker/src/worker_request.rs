@@ -190,9 +190,9 @@ pub(crate) fn reap_expired(
 
 /// Fail every pending request targeting `worker_name` immediately with
 /// [`RequestWorkerError::WorkerDisappeared`]. Called from the broker's
-/// worker-teardown paths (explicit release, `worker_exited` frame,
-/// `reap_exited` sweep) so that in-flight HTTP callers don't have to
-/// wait out the full request deadline when a worker has clearly gone.
+/// worker-teardown paths (explicit release or `reap_exited` sweep) so
+/// that in-flight HTTP callers don't have to wait out the full request
+/// deadline when a worker has clearly gone.
 ///
 /// Returns the `(request_id, kind)` pairs that were drained, for the
 /// caller to emit structured logs.

@@ -19,6 +19,13 @@ pub(crate) fn log_startup_phase(enabled: bool, started_at: Instant, message: imp
     }
 }
 
+pub(crate) fn unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub(crate) fn init_tracing() {
     let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()

@@ -389,7 +389,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // drain without touching `WorkerHandle` (which holds OS-level
     // process state). See `relay_broker::types::InboundDeliveryState`. Entries
     // are created lazily on first lookup and removed wherever workers
-    // exit (`Release` arm, `worker_exited` frame, `reap_exited` sweep).
+    // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<String, InboundDeliveryState> = HashMap::new();
     let dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
@@ -437,9 +437,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_control_tx,
         relaycast_http,
         api_rx,
+        api_open: true,
         ws_inbound_rx,
+        relaycast_open: true,
         sdk_out_tx,
         worker_event_rx,
+        worker_events_open: true,
         workers,
         crash_insights,
         crash_insights_path,

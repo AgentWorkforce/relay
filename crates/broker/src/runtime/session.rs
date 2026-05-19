@@ -158,7 +158,6 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         .context("no relaycast memberships were initialized")?;
     let relay_workspace_key = default_session.credentials.api_key.clone();
     let self_agent_id = default_session.credentials.agent_id.clone();
-    let self_token = default_session.token.clone();
     let agent_name = default_session
         .credentials
         .agent_name
@@ -169,7 +168,6 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         "agent_name='{}'
 requested='{}'
 agent_id='{}'
-token_prefix='{}'
 default_workspace='{}'
 workspace_count='{}'
 timestamp='{}'
@@ -177,7 +175,6 @@ timestamp='{}'
         agent_name,
         opts.requested_name,
         self_agent_id,
-        &self_token[..self_token.len().min(16)],
         default_session.credentials.workspace_id,
         sessions.memberships.len(),
         chrono::Utc::now().to_rfc3339()

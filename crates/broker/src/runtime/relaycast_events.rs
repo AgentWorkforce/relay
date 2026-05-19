@@ -693,6 +693,7 @@ impl BrokerRuntime {
                 tracing::info!(dm_targets = ?delivery_plan.targets, "DM participant-based routing targets");
             }
 
+            let local_delivery_timeout = http_api_local_delivery_timeout();
             for worker_name in delivery_plan.targets {
                 // Inbound-delivery queue: mirrors the /api/send
                 // queue above. Auto-inject workers drain the queue
@@ -739,48 +740,88 @@ impl BrokerRuntime {
                     }
                     InboundQueueOutcome::DrainNow(to_drain) => {
                         for queued in to_drain {
-                            if let Err(error) = try_inject_pending_relay_message(
-                                workers,
-                                pending_deliveries,
-                                &worker_name,
-                                &queued,
-                                delivery_retry_interval,
+                            match timeout(
+                                local_delivery_timeout,
+                                try_inject_pending_relay_message(
+                                    workers,
+                                    pending_deliveries,
+                                    &worker_name,
+                                    &queued,
+                                    delivery_retry_interval,
+                                ),
                             )
                             .await
                             {
-                                let _ = send_error(
-                                    sdk_out_tx,
-                                    None,
-                                    "delivery_failed",
-                                    error.to_string(),
-                                    true,
-                                    Some(json!({"worker": worker_name})),
-                                )
-                                .await;
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => {
+                                    let _ = send_error(
+                                        sdk_out_tx,
+                                        None,
+                                        "delivery_failed",
+                                        error.to_string(),
+                                        true,
+                                        Some(json!({"worker": worker_name})),
+                                    )
+                                    .await;
+                                }
+                                Err(_) => {
+                                    let _ = send_error(
+                                        sdk_out_tx,
+                                        None,
+                                        "delivery_failed",
+                                        format!(
+                                            "relaycast delivery timed out after {}ms",
+                                            local_delivery_timeout.as_millis()
+                                        ),
+                                        true,
+                                        Some(json!({"worker": worker_name})),
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         continue;
                     }
                     InboundQueueOutcome::WorkerMissing => {}
                 }
-                if let Err(error) = queue_and_try_delivery(
-                    workers,
-                    pending_deliveries,
-                    &worker_name,
-                    &mapped,
-                    delivery_retry_interval,
+                match timeout(
+                    local_delivery_timeout,
+                    queue_and_try_delivery(
+                        workers,
+                        pending_deliveries,
+                        &worker_name,
+                        &mapped,
+                        delivery_retry_interval,
+                    ),
                 )
                 .await
                 {
-                    let _ = send_error(
-                        sdk_out_tx,
-                        None,
-                        "delivery_failed",
-                        error.to_string(),
-                        true,
-                        Some(json!({"worker": worker_name})),
-                    )
-                    .await;
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        let _ = send_error(
+                            sdk_out_tx,
+                            None,
+                            "delivery_failed",
+                            error.to_string(),
+                            true,
+                            Some(json!({"worker": worker_name})),
+                        )
+                        .await;
+                    }
+                    Err(_) => {
+                        let _ = send_error(
+                            sdk_out_tx,
+                            None,
+                            "delivery_failed",
+                            format!(
+                                "relaycast delivery timed out after {}ms",
+                                local_delivery_timeout.as_millis()
+                            ),
+                            true,
+                            Some(json!({"worker": worker_name})),
+                        )
+                        .await;
+                    }
                 }
             }
 

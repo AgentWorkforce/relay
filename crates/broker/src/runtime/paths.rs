@@ -23,8 +23,8 @@ pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
 ///
 /// Unlike `ensure_runtime_paths`, this function:
 /// - Writes nothing to the project directory
-/// - Uses a deterministic temp directory derived from cwd+broker name so
-///   duplicate brokers still collide on the same lock/PID files
+/// - Uses a unique temp directory per broker instance so concurrent
+///   ephemeral brokers cannot collide on state files
 ///
 /// The temp directory is NOT removed on exit — the OS cleans it up on reboot.
 /// State and pending-delivery files are still written there so they don't
@@ -34,10 +34,28 @@ pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
 /// parent (SDK client) exits, stdin gets EOF and the broker shuts down.
 /// Single-instance enforcement is unnecessary here because each SDK client
 /// manages its own child process.
-pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, _broker_name: &str) -> Result<RuntimePaths> {
-    // Use a random temp subdir so concurrent ephemeral brokers don't collide
-    // on state files.
-    let root = std::env::temp_dir().join(format!("agent-relay-ephemeral-{}", std::process::id()));
+pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
+    let safe_name: String = broker_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "broker".to_string()
+    } else {
+        safe_name
+    };
+    let root = std::env::temp_dir().join(format!(
+        "agent-relay-ephemeral-{}-{}-{}",
+        std::process::id(),
+        safe_name,
+        Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create ephemeral temp dir {}", root.display()))?;
 

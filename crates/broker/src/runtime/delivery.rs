@@ -387,10 +387,10 @@ pub(crate) fn drop_pending_for_worker(
 
 /// Drain every in-flight worker request targeting `worker_name` and
 /// notify each awaiter with [`worker_request::RequestWorkerError::WorkerDisappeared`].
-/// Called from every worker-teardown path (explicit release,
-/// `worker_exited` frame, `reap_exited` periodic sweep) so HTTP callers
-/// don't have to wait out the request deadline when the worker has
-/// clearly gone. Logs one structured warning per drained request.
+/// Called from every worker-teardown path (explicit release or
+/// `reap_exited` periodic sweep) so HTTP callers don't have to wait out
+/// the request deadline when the worker has clearly gone. Logs one
+/// structured warning per drained request.
 pub(crate) fn fail_pending_requests_for_worker(
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     worker_name: &str,

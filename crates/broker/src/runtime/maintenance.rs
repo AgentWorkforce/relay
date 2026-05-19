@@ -312,11 +312,51 @@ impl BrokerRuntime {
                     )
                     .await
                 {
-                    Ok(_) => {
+                    Ok(effective_spec) => {
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
-                        if let Some(task) = rst.initial_task {
+                        let initial_task = rst.initial_task.clone();
+                        if let Some(task) = initial_task.clone() {
                             workers.initial_tasks.insert(name.clone(), task);
+                        }
+                        let pid = workers.worker_pid(&name);
+                        let restart_policy = state
+                            .agents
+                            .get(&name)
+                            .and_then(|agent| agent.restart_policy.clone())
+                            .or_else(|| effective_spec.restart_policy.clone());
+                        state
+                            .agents
+                            .entry(name.clone())
+                            .and_modify(|agent| {
+                                agent.runtime = effective_spec.runtime.clone();
+                                agent.parent = rst.parent.clone();
+                                agent.channels = effective_spec.channels.clone();
+                                agent.pid = pid;
+                                agent.started_at = Some(unix_timestamp_secs());
+                                agent.spec = Some(effective_spec.clone());
+                                agent.restart_policy = restart_policy.clone();
+                                agent.initial_task = initial_task.clone();
+                            })
+                            .or_insert_with(|| broker::PersistedAgent {
+                                runtime: effective_spec.runtime.clone(),
+                                parent: rst.parent.clone(),
+                                channels: effective_spec.channels.clone(),
+                                pid,
+                                started_at: Some(unix_timestamp_secs()),
+                                spec: Some(effective_spec.clone()),
+                                restart_policy,
+                                initial_task,
+                            });
+                        if paths.persist {
+                            if let Err(error) = state.save(&paths.state) {
+                                tracing::warn!(
+                                    path = %paths.state.display(),
+                                    worker = %name,
+                                    error = %error,
+                                    "failed to persist restarted worker state"
+                                );
+                            }
                         }
                         tracing::info!(name = %name, restart_count = rst.restart_count, "agent restarted");
                         let _ = send_event(
