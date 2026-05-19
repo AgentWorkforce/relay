@@ -248,7 +248,7 @@ impl<'a> WaitState<'a> {
         if chunk.is_empty() {
             return;
         }
-        self.feed(&crate::helpers::strip_ansi(chunk));
+        self.feed(&crate::util::ansi::strip_ansi(chunk));
     }
 
     pub fn mark_exited(&mut self) {

@@ -6,18 +6,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::helpers::{
-    agent_name_eq, floor_char_boundary, is_self_name, normalize_cli_name, parse_cli_command,
-    resolve_dm_participants_cached,
-};
+use crate::cli::command_parse::{normalize_cli_name, parse_cli_command};
 use crate::listen_api::{
     broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
     ListenApiRequest, SetInboundDeliveryModeOk,
 };
+use crate::relaycast::{
+    dm_participants::{resolve_dm_participants_cached, DmParticipantsCache},
+    identity::{agent_name_eq, is_self_name},
+};
 use crate::routing::display_target_for_dashboard;
+use crate::util::ansi::floor_char_boundary;
 
+use ::relaycast::WsEvent;
 use anyhow::{Context, Result};
-use relaycast::WsEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
