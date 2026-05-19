@@ -66,48 +66,35 @@ impl BrokerRuntime {
                                     handle.last_activity_at = Instant::now();
                                     handle.state = AgentWorkState::Working;
                                 }
-                                let _ = send_event(
+                                let _ = send_broker_event(
                                     sdk_out_tx,
-                                    json!({
-                                        "kind": "message_delivery_confirmed",
-                                        "name": name,
-                                        "delivery_id": pending.delivery.delivery_id,
-                                        "event_id": pending.delivery.event_id,
-                                        "from": pending.delivery.from,
-                                        "to": pending.delivery.target,
-                                    }),
+                                    BrokerEvent::MessageDeliveryConfirmed {
+                                        name: name.clone(),
+                                        delivery_id: pending.delivery.delivery_id,
+                                        event_id: pending.delivery.event_id,
+                                        from: pending.delivery.from,
+                                        to: pending.delivery.target,
+                                    },
                                 )
                                 .await;
                             }
                         }
-                    } else if msg_type == "delivery_queued" {
-                        if let Some(payload) = value.get("payload") {
-                            if let Some(handle) = workers.workers.get_mut(&name) {
-                                handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::BlockedOnSend;
-                            }
-                            let _ = send_event(
-                                sdk_out_tx,
-                                json!({
-                                    "kind": msg_type,
-                                    "name": name,
-                                    "delivery_id": payload.get("delivery_id"),
-                                    "event_id": payload.get("event_id"),
-                                    "timestamp": payload.get("timestamp"),
-                                }),
-                            )
-                            .await;
-                        }
-                    } else if msg_type == "delivery_injected" {
+                    } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
                                 .get("delivery_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            let _ = delivery_id;
+                            if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
+                                pending.next_retry_at = Instant::now()
+                                    + std::cmp::max(
+                                        delivery_retry_interval,
+                                        crate::broker::delivery_verification::VERIFICATION_WINDOW,
+                                    );
+                            }
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::BlockedOnSend;
+                                handle.state = AgentWorkState::Working;
                             }
                             let _ = send_event(
                                 sdk_out_tx,
@@ -162,16 +149,15 @@ impl BrokerRuntime {
                                 handle.state = AgentWorkState::Working;
                             }
                             if let Some(pending) = pending_for_confirmation {
-                                let _ = send_event(
+                                let _ = send_broker_event(
                                     sdk_out_tx,
-                                    json!({
-                                        "kind": "message_delivery_confirmed",
-                                        "name": name,
-                                        "delivery_id": pending.delivery.delivery_id,
-                                        "event_id": pending.delivery.event_id,
-                                        "from": pending.delivery.from,
-                                        "to": pending.delivery.target,
-                                    }),
+                                    BrokerEvent::MessageDeliveryConfirmed {
+                                        name: name.clone(),
+                                        delivery_id: pending.delivery.delivery_id,
+                                        event_id: pending.delivery.event_id,
+                                        from: pending.delivery.from,
+                                        to: pending.delivery.target,
+                                    },
                                 )
                                 .await;
                             }
@@ -242,19 +228,26 @@ impl BrokerRuntime {
                                 }),
                             )
                             .await;
-                            let _ = send_event(
+                            let _ = send_broker_event(
                                 sdk_out_tx,
-                                json!({
-                                    "kind": "message_delivery_failed",
-                                    "name": name,
-                                    "delivery_id": delivery_id,
-                                    "event_id": event_id,
-                                    "from": pending_for_failure.as_ref().map(|p| p.delivery.from.as_str()).unwrap_or("unknown"),
-                                    "to": pending_for_failure.as_ref().map(|p| p.delivery.target.as_str()).unwrap_or(name.as_str()),
-                                    "attempts": pending_for_failure.as_ref().map(|p| p.attempts).unwrap_or(1),
-                                    "lastError": reason,
-                                    "last_error": reason,
-                                }),
+                                BrokerEvent::MessageDeliveryFailed {
+                                    name: name.clone(),
+                                    delivery_id: Some(delivery_id.to_string()),
+                                    event_id: Some(event_id.to_string()),
+                                    from: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.delivery.from.clone())
+                                        .unwrap_or_else(|| "unknown".to_string()),
+                                    to: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.delivery.target.clone())
+                                        .unwrap_or_else(|| name.clone()),
+                                    attempts: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.attempts)
+                                        .unwrap_or(1),
+                                    last_error: reason.to_string(),
+                                },
                             )
                             .await;
                         }
@@ -359,7 +352,8 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("idle_secs"))
                             .and_then(Value::as_u64)
                             .unwrap_or(0);
-                        let since = chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
+                        let since =
+                            chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.state = AgentWorkState::Idle;
                         }
@@ -390,18 +384,18 @@ impl BrokerRuntime {
                             .get("payload")
                             .and_then(|p| p.get("pending_delivery_count"))
                             .and_then(Value::as_u64)
-                            .unwrap_or(0) as usize;
+                            .unwrap_or(0)
+                            as usize;
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.state = AgentWorkState::BlockedOnSend;
                         }
-                        let _ = send_event(
+                        let _ = send_broker_event(
                             sdk_out_tx,
-                            json!({
-                                "kind": "agent_blocked_on_send",
-                                "name": name,
-                                "blocked_secs": blocked_secs,
-                                "pending_delivery_count": pending_delivery_count,
-                            }),
+                            BrokerEvent::AgentBlockedOnSend {
+                                name: name.clone(),
+                                blocked_secs,
+                                pending_delivery_count,
+                            },
                         )
                         .await;
                         publish_agent_state_transition(
@@ -422,13 +416,12 @@ impl BrokerRuntime {
                             handle.context_budget_pct = Some(pct);
                             handle.last_activity_at = Instant::now();
                         }
-                        let _ = send_event(
+                        let _ = send_broker_event(
                             sdk_out_tx,
-                            json!({
-                                "kind": "agent_context_low",
-                                "name": name,
-                                "pct": pct,
-                            }),
+                            BrokerEvent::AgentContextLow {
+                                name: name.clone(),
+                                pct,
+                            },
                         )
                         .await;
                     } else if msg_type == "agent_exit" {

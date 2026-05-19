@@ -57,52 +57,10 @@ impl BrokerRuntime {
             )
             .await
             {
-                Ok(DeliveryAttemptOutcome::Attempted {
-                    worker_name,
-                    attempts,
-                    event_id,
-                }) => {
-                    if was_retry {
-                        let _ = send_event(
-                            sdk_out_tx,
-                            json!({
-                                "kind":"delivery_retry",
-                                "name": worker_name,
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "attempts": attempts,
-                            }),
-                        )
-                        .await;
-                    }
-                }
-                Ok(DeliveryAttemptOutcome::Failed {
-                    worker_name,
-                    delivery_id,
-                    event_id,
-                    from,
-                    to,
-                    attempts,
-                    last_error,
-                }) => {
-                    let _ = send_event(
-                        sdk_out_tx,
-                        json!({
-                            "kind": "message_delivery_failed",
-                            "name": worker_name,
-                            "delivery_id": delivery_id,
-                            "event_id": event_id,
-                            "from": from,
-                            "to": to,
-                            "attempts": attempts,
-                            "lastError": last_error,
-                            "last_error": last_error,
-                        }),
-                    )
-                    .await;
-                }
-                Ok(DeliveryAttemptOutcome::Noop) => {
-                    let _ = delivery_id;
+                Ok(outcome) => {
+                    let _ =
+                        emit_delivery_attempt_outcome(sdk_out_tx, &delivery_id, was_retry, outcome)
+                            .await;
                 }
                 Err(error) => {
                     let _ = send_error(

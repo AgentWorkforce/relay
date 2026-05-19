@@ -367,7 +367,6 @@ export type BrokerEvent =
       to: string;
       attempts: number;
       lastError: string;
-      last_error?: string;
     }
   | {
       kind: 'delivery_active';

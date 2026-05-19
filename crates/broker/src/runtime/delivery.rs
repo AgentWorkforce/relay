@@ -428,12 +428,17 @@ pub(crate) async fn retry_pending_delivery(
             Ok(DeliveryAttemptOutcome::Noop)
         }
         Err(error) => {
-            if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
                 current.last_error = Some(error.to_string());
-                if current.attempts >= MAX_DELIVERY_RETRIES {
-                    let removed = pending_deliveries.remove(delivery_id).expect("delivery exists");
+                current.attempts >= MAX_DELIVERY_RETRIES
+            } else {
+                false
+            };
+
+            if should_fail {
+                if let Some(removed) = pending_deliveries.remove(delivery_id) {
                     return Ok(DeliveryAttemptOutcome::Failed {
                         worker_name: removed.worker_name,
                         delivery_id: removed.delivery.delivery_id,
@@ -446,10 +451,64 @@ pub(crate) async fn retry_pending_delivery(
                             .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
                     });
                 }
+                return Ok(DeliveryAttemptOutcome::Noop);
             }
             Err(error)
         }
     }
+}
+
+pub(crate) async fn emit_delivery_attempt_outcome(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    delivery_id: &str,
+    was_retry: bool,
+    outcome: DeliveryAttemptOutcome,
+) -> Result<()> {
+    match outcome {
+        DeliveryAttemptOutcome::Attempted {
+            worker_name,
+            attempts,
+            event_id,
+        } => {
+            if was_retry {
+                send_broker_event(
+                    sdk_out_tx,
+                    BrokerEvent::DeliveryRetry {
+                        name: worker_name,
+                        delivery_id: delivery_id.to_string(),
+                        event_id,
+                        attempts,
+                    },
+                )
+                .await?;
+            }
+        }
+        DeliveryAttemptOutcome::Failed {
+            worker_name,
+            delivery_id,
+            event_id,
+            from,
+            to,
+            attempts,
+            last_error,
+        } => {
+            send_broker_event(
+                sdk_out_tx,
+                BrokerEvent::MessageDeliveryFailed {
+                    name: worker_name,
+                    delivery_id: Some(delivery_id),
+                    event_id: Some(event_id),
+                    from,
+                    to,
+                    attempts,
+                    last_error,
+                },
+            )
+            .await?;
+        }
+        DeliveryAttemptOutcome::Noop => {}
+    }
+    Ok(())
 }
 
 pub(crate) fn drop_pending_for_worker(
