@@ -48,6 +48,9 @@
   },
   "commits": ["2ecfb018"],
   "filesChanged": [
+    ".trajectories/completed/2026-05/traj_f9wxa8ujeg78.json",
+    ".trajectories/completed/2026-05/traj_f9wxa8ujeg78.md",
+    ".trajectories/index.json",
     "crates/broker/src/main.rs",
     "crates/broker/src/cli/mod.rs",
     "crates/broker/src/runtime.rs",
