@@ -80,6 +80,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 
+## [6.2.5] - 2026-05-19
+
+### Product Perspective
+#### User-Impacting Fixes
+- Handle write_pty frames in PTY worker (#920)
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Sync package-lock.json for next 15.5.18 bump
+- Bump next from 15.5.14 to 15.5.18 in /web
+
+#### Releases
+- v6.2.5
+
+---
+
 ## [6.2.4] - 2026-05-19
 
 ### Technical Perspective
