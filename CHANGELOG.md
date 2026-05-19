@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Broker inbound delivery now uses one per-agent queue so `auto_inject` and `manual_flush` handle ordering consistently.
 - Inbound delivery APIs use `/delivery-mode` with `auto_inject` and `manual_flush` names before their first release.
 - CLI attach commands share SDK-backed broker snapshots, delivery mode changes, streams, and flushes.
 - PTY terminal query replies use the live VT grid, so cursor-position responses reflect the actual screen.

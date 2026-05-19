@@ -3,13 +3,12 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::MessageInjectionMode;
 
 /// Per-worker inbound delivery mode controlling how inbound relay messages are
-/// dispatched into the wrapped agent's PTY.
+/// drained from the broker-owned pending queue into the wrapped agent's PTY.
 ///
-/// - [`InboundDeliveryMode::AutoInject`] (default) injects inbound messages
-///   directly into the worker. The user's own keystrokes may also arrive
-///   through an attached relay session, so both writers can race.
-/// - [`InboundDeliveryMode::ManualFlush`] holds inbound messages in a
-///   per-worker pending queue so a client can decide when to flush them.
+/// - [`InboundDeliveryMode::AutoInject`] (default) queues inbound messages and
+///   drains the queue immediately in the same broker turn.
+/// - [`InboundDeliveryMode::ManualFlush`] holds queued inbound messages until a
+///   client explicitly flushes them or switches back to auto-inject.
 ///
 /// Mode is broker-side state only; the worker process does not observe it.
 /// It resets to [`InboundDeliveryMode::AutoInject`] on broker restart — there
@@ -17,7 +16,7 @@ use crate::protocol::MessageInjectionMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InboundDeliveryMode {
-    /// Inbound messages auto-inject into the worker's PTY.
+    /// Inbound messages queue and immediately drain into the worker's PTY.
     #[default]
     AutoInject,
     /// Inbound messages append to the per-worker pending queue and wait
@@ -42,10 +41,10 @@ impl InboundDeliveryMode {
     }
 }
 
-/// A relay message that arrived while a worker was in
-/// [`InboundDeliveryMode::ManualFlush`] and therefore got parked in the
-/// per-worker pending queue instead of being injected. Drained in FIFO order
-/// by `POST /api/spawned/{name}/flush` or the auto-drain on a
+/// A relay message captured in the per-worker pending queue before delivery.
+/// [`InboundDeliveryMode::AutoInject`] drains these messages immediately;
+/// [`InboundDeliveryMode::ManualFlush`] leaves them parked until
+/// `POST /api/spawned/{name}/flush` or the auto-drain on a
 /// `manual_flush → auto_inject` mode transition.
 ///
 /// The full delivery context is captured at queue time so a drain
@@ -205,11 +204,10 @@ pub struct InjectRequest {
 }
 
 /// Per-worker inbound delivery bookkeeping owned by the broker. Tracks the
-/// current [`InboundDeliveryMode`] plus the FIFO pending queue for messages
-/// captured while in [`InboundDeliveryMode::ManualFlush`]. The broker keeps one of
-/// these per spawned worker in a parallel `HashMap<String, InboundDeliveryState>`
-/// so the existing `WorkerHandle` (which holds OS-level process state)
-/// doesn't have to grow.
+/// current [`InboundDeliveryMode`] plus the FIFO pending queue every inbound
+/// relay message passes through. The broker keeps one of these per spawned
+/// worker in a parallel `HashMap<String, InboundDeliveryState>` so the existing
+/// `WorkerHandle` (which holds OS-level process state) doesn't have to grow.
 #[derive(Debug, Default)]
 pub struct InboundDeliveryState {
     pub mode: InboundDeliveryMode,
@@ -221,20 +219,16 @@ pub struct InboundDeliveryState {
 /// with a `tracing::warn!` (see [`InboundDeliveryState::push_pending`]).
 pub const MAX_PENDING_PER_WORKER: usize = 256;
 
-/// Outcome of dispatching one inbound relay message through the delivery
-/// gate. Returned by [`InboundDeliveryState::accept_inbound`] so the broker can
+/// Outcome of appending one inbound relay message to the pending queue.
+/// Returned by [`InboundDeliveryState::accept_inbound`] so the broker can
 /// log + telemetry consistently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboundDeliveryDispatch {
-    /// Worker is in [`InboundDeliveryMode::AutoInject`]; the broker should run
-    /// the existing inject path.
-    Inject,
-    /// Worker is in [`InboundDeliveryMode::ManualFlush`]; the message was queued.
-    /// `queue_len` is the queue size *after* the push.
+    /// The message was queued. `queue_len` is the queue size *after* the push.
     Queued { queue_len: usize },
-    /// Worker is in [`InboundDeliveryMode::ManualFlush`] but the queue was full, so
-    /// the oldest entry was evicted to make room. `queue_len` is the
-    /// queue size *after* the eviction + push (always equal to the cap).
+    /// The queue was full, so the oldest entry was evicted to make room.
+    /// `queue_len` is the queue size *after* the eviction + push (always equal
+    /// to the cap).
     QueuedEvicted {
         queue_len: usize,
         dropped_from: String,
@@ -263,28 +257,26 @@ impl InboundDeliveryState {
         evicted_from
     }
 
-    /// Gate an inbound relay message through the current inbound delivery mode.
+    /// Append an inbound relay message to the pending queue.
     ///
-    /// In [`InboundDeliveryMode::AutoInject`] the message is *not* enqueued;
-    /// the caller runs the existing inject path. In
-    /// [`InboundDeliveryMode::ManualFlush`] the message is appended (with FIFO
-    /// eviction at the cap) and the caller acks the sender without touching the
-    /// worker's PTY.
+    /// The current [`InboundDeliveryMode`] is a drain policy, not an admission
+    /// gate: callers should drain immediately in [`InboundDeliveryMode::AutoInject`]
+    /// and leave the queue intact in [`InboundDeliveryMode::ManualFlush`].
     pub fn accept_inbound(&mut self, msg: PendingRelayMessage) -> InboundDeliveryDispatch {
-        match self.mode {
-            InboundDeliveryMode::AutoInject => InboundDeliveryDispatch::Inject,
-            InboundDeliveryMode::ManualFlush => {
-                let evicted = self.push_pending(msg);
-                let queue_len = self.pending.len();
-                match evicted {
-                    Some(dropped_from) => InboundDeliveryDispatch::QueuedEvicted {
-                        queue_len,
-                        dropped_from,
-                    },
-                    None => InboundDeliveryDispatch::Queued { queue_len },
-                }
-            }
+        let evicted = self.push_pending(msg);
+        let queue_len = self.pending.len();
+        match evicted {
+            Some(dropped_from) => InboundDeliveryDispatch::QueuedEvicted {
+                queue_len,
+                dropped_from,
+            },
+            None => InboundDeliveryDispatch::Queued { queue_len },
         }
+    }
+
+    /// Whether queued inbound messages should be drained immediately.
+    pub fn should_drain_immediately(&self) -> bool {
+        matches!(self.mode, InboundDeliveryMode::AutoInject)
     }
 
     /// Drain the pending queue in FIFO order. Used by `POST /api/flush`
@@ -377,16 +369,21 @@ mod inbound_delivery_tests {
     }
 
     #[test]
-    fn auto_inject_mode_does_not_queue() {
+    fn auto_inject_mode_queues_for_immediate_drain() {
         let mut state = InboundDeliveryState::new(InboundDeliveryMode::AutoInject);
         let outcome = state.accept_inbound(msg("Alice", "hi"));
-        assert_eq!(outcome, InboundDeliveryDispatch::Inject);
+        assert_eq!(outcome, InboundDeliveryDispatch::Queued { queue_len: 1 });
+        assert!(state.should_drain_immediately());
+        let drained = state.drain_pending();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].from, "Alice");
         assert!(state.pending.is_empty());
     }
 
     #[test]
     fn manual_flush_mode_queues_in_fifo_order() {
         let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+        assert!(!state.should_drain_immediately());
         assert_eq!(
             state.accept_inbound(msg("Alice", "one")),
             InboundDeliveryDispatch::Queued { queue_len: 1 }
