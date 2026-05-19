@@ -1,6 +1,6 @@
 ---
-name: running-headless-orchestrator
-description: Use when an agent needs to self-bootstrap agent-relay and autonomously manage a team of workers - covers infrastructure startup, agent spawning, lifecycle monitoring, and team coordination without human intervention
+name: orchestrating-agent-relay
+description: The canonical way to run agent-relay - self-bootstrap the broker and autonomously spawn, monitor, and coordinate a team of worker agents without human intervention. Covers infrastructure startup, agent spawning, lifecycle monitoring, CLI-first reading, and team coordination.
 ---
 
 ### Overview
@@ -11,6 +11,12 @@ A headless orchestrator is an agent that:
 2. Spawns and manages worker agents
 3. Monitors agent lifecycle events
 4. Coordinates work without human intervention
+
+The orchestrator drives the team **from outside** and is **not** a
+registered relay agent, so it reads/sends/lists via the `agent-relay` CLI
+(MCP `mcp__relaycast__message_*` tools require a registered identity). The
+workers it spawns _are_ registered participants — their peer-messaging
+reference is the **`using-agent-relay`** skill.
 
 ### When to Use
 
@@ -65,7 +71,7 @@ agent-relay up --no-dashboard --verbose
 
 #### Step 2: Spawn Workers via MCP
 
-```
+```text
 mcp__relaycast__agent_add(
   name: "Worker1",
   cli: "claude",
@@ -92,16 +98,9 @@ agent-relay send '#general' "All workers: wrap up current task"
 agent-relay who --json
 ```
 
-> **The spawning orchestrator is not a registered relaycast agent.** The
-> `mcp__relaycast__message_*` / `agent_list` MCP tools require a registered
-> identity and will fail for you with `Not registered. Call agent.register
-first.` Use the `agent-relay` CLI for all reading, sending, and listing.
-> Add `--json` to any read command (`replies`, `history`, `inbox`, `who`)
-> when you need full, untruncated, parseable output.
-
 #### Step 4: Release Workers
 
-```
+```text
 mcp__relaycast__agent_remove(name: "Worker1")
 ```
 
@@ -119,7 +118,7 @@ agent-relay down
 # WRONG — history (no flags) will not show DM replies from workers
 agent-relay history
 
-# RIGHT — read a worker's DM replies (full text, chronological, untruncated)
+# RIGHT — read a worker's DM replies (full text, chronological)
 agent-relay replies Worker1
 
 # Machine-readable: full text + direction, safe to parse in a loop
@@ -132,12 +131,6 @@ agent-relay history --to Worker1
 # untruncated, chronological; add --json to parse it programmatically
 agent-relay history --to '#general' --json
 ```
-
-> **The spawning orchestrator is not a registered relaycast agent.** The
-> `mcp__relaycast__message_*` / `agent_list` MCP tools fail for you with
-> `Not registered. Call agent.register first.` Read, send, and list via
-> the `agent-relay` CLI; add `--json` for full, untruncated, parseable
-> output. `inbox --agent` is legacy unread-only — prefer `replies`.
 
 #### Spawning and Messaging
 
@@ -195,7 +188,7 @@ agent-relay agents:logs Worker1
 
 #### Give your lead agent these instructions:
 
-```
+```text
 You are an autonomous orchestrator. Bootstrap the relay infrastructure and manage a team of workers.
 
 ## Step 1: Verify Installation
@@ -222,8 +215,9 @@ Send targeted DM instructions:
 Broadcast to all workers:
   agent-relay send '#general' "All workers: prioritize the auth module"
 
-Read worker DM replies (full text, sender-attributed):
-  agent-relay replies Worker1
+Read worker replies (DMs are not visible in plain `history`):
+  agent-relay replies Worker1            # full text, chronological
+  agent-relay replies Worker1 --json     # parseable: text + direction
 
 Release when done:
   agent-relay release Worker1
@@ -232,10 +226,10 @@ Release when done:
 - Workers will ACK when they receive tasks
 - Workers will send DONE when complete
 - Use `agent-relay agents:logs <name>` to monitor progress
-- Prefer `agent-relay replies <name>` for worker DM replies
-- Use `agent-relay replies <name> --unread --mark-read` only when you want read-state filtering
-- Use `agent-relay history --to <name>` to re-read the full DM conversation (read + unread)
-- Use `agent-relay history --to '#general'` to see channel message flow
+- Use `agent-relay replies <name>` to read a worker's DM replies (full text, chronological, persistent); add `--json` to parse
+- Use `agent-relay history --to <name>` for the full DM conversation thread (read + unread)
+- Use `agent-relay history --to '#general' --json` to see channel message flow
+- Do NOT use `agent-relay history` alone to check worker replies — it only shows channel posts, DM replies are invisible there
 ```
 
 ### Lifecycle Events
@@ -252,22 +246,23 @@ The broker emits these events (available via SDK subscriptions):
 
 ### Common Mistakes
 
-| Mistake                                                    | Fix                                                                                                                                                                              |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-relay: command not found` or mise/asdf shim error   | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                                                  |
-| "Nested session" error                                     | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                                               |
-| Broker not starting                                        | Try `agent-relay down` first, then `agent-relay up --no-dashboard --verbose` and `agent-relay status --wait-for=10`                                                              |
-| Broker shows STARTING after `status --wait-for`            | The process is alive but the broker API is not ready; inspect logs, retry readiness, or restart with `agent-relay down --force` if it remains stuck                              |
-| Broker shows STOPPED immediately after start               | Check `pgrep -fl agent-relay-broker` and `.agent-relay/connection.json`; if the process is alive but status is STOPPED, rerun status from the project root or pass `--state-dir` |
-| Worktree verification leaves git status dirty              | Run `agent-relay down --force`, then remove generated `.agent-relay/` and `.mcp.json` from throwaway validation worktrees before committing                                      |
-| Spawn fails with `internal reply dropped`                  | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                                            |
-| Workers not connecting                                     | Ensure broker started; check `agent-relay who` and worker logs                                                                                                                   |
-| Not monitoring workers                                     | Use `agent-relay agents:logs <name>` frequently to track progress                                                                                                                |
-| Workers seem stuck                                         | Check logs with `agent-relay agents:logs <name>` for errors                                                                                                                      |
-| Messages not delivered                                     | Check `agent-relay history --to '#general'` for channel messages; use `agent-relay replies <name>` for DMs                                                                       |
-| `inbox_check` shows unread but can't see content           | `inbox_check` only returns counts. Use `agent-relay replies <name>` or `mcp__relaycast__message_dm_list(as: "<name>")` to list conversations with content                        |
-| `inbox --agent` showed messages once but now shows nothing | `inbox --agent` is legacy unread-only behavior. Use `agent-relay replies <name>` for a persistent view; use `--unread` and `--mark-read` only when you want read-state filtering |
-| Sent to wrong destination                                  | `agent-relay send Worker1 "..."` = DM; `agent-relay send '#general' "..."` = channel broadcast. The `#` prefix is required for channels                                          |
+| Mistake                                                  | Fix                                                                                                                                                                                            |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-relay: command not found` or mise/asdf shim error | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                                                                |
+| "Nested session" error                                   | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                                                             |
+| Broker not starting                                      | Try `agent-relay down` first, then `agent-relay up --no-dashboard --verbose` and `agent-relay status --wait-for=10`                                                                            |
+| Broker shows STARTING after `status --wait-for`          | The process is alive but the broker API is not ready; inspect logs, retry readiness, or restart with `agent-relay down --force` if it remains stuck                                            |
+| Broker shows STOPPED immediately after start             | Check `ps aux \| grep agent-relay-broker` and `.agent-relay/connection.json`; if the process is alive but status is STOPPED, rerun status from the project root or pass `--state-dir`          |
+| Worktree verification leaves git status dirty            | Run `agent-relay down --force`, then remove generated `.agent-relay/` and `.mcp.json` from throwaway validation worktrees before committing                                                    |
+| Spawn fails with `internal reply dropped`                | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                                                          |
+| Workers not connecting                                   | Ensure broker started; check `agent-relay who` and worker logs                                                                                                                                 |
+| Not monitoring workers                                   | Use `agent-relay agents:logs <name>` frequently to track progress                                                                                                                              |
+| Workers seem stuck                                       | Check logs with `agent-relay agents:logs <name>` for errors                                                                                                                                    |
+| Messages not delivered                                   | Check `agent-relay history --to '#general' --json` for channel messages; use `agent-relay replies <name> --json` for DMs                                                                       |
+| Worker replies not showing in history                    | Expected — plain `history` only shows channel posts. Use `agent-relay replies <name>` (full text, chronological) or `agent-relay history --to <name>` (full thread) to read DM replies         |
+| Need to see unread DM content                            | `inbox_check` / `inbox --agent` only return counts or clear on read, and the MCP `message_dm_list` tool requires a registered identity you don't have. Use `agent-relay replies <name> --json` |
+| Re-reading already-read replies                          | `agent-relay replies <name>` is a persistent view (not unread-only); use `--since <time>` to narrow, or `agent-relay history --to <name>` for the full thread                                  |
+| Sent to wrong destination                                | `agent-relay send Worker1 "..."` = DM; `agent-relay send '#general' "..."` = channel broadcast. The `#` prefix is required for channels                                                        |
 
 ### Overview
 
