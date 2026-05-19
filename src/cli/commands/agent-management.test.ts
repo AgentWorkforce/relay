@@ -78,6 +78,7 @@ function createHarness(options?: {
     nowIso: vi.fn(() => options?.nowIso ?? '2026-02-20T12:00:00.000Z'),
     killProcess: vi.fn(() => undefined),
     sleep: vi.fn(async () => undefined),
+    writeChunk: vi.fn(() => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -339,8 +340,8 @@ describe('registerAgentManagementCommands', () => {
     const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
       .map((call) => call.join(' '))
       .join('\n');
-    expect(output).toContain('Logs for WorkerLogs');
     expect(output).toContain('line-2');
     expect(output).toContain('line-3');
+    expect(output).not.toContain('Logs for WorkerLogs');
   });
 });

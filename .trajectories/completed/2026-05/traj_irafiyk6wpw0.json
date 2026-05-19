@@ -1,0 +1,63 @@
+{
+  "id": "traj_irafiyk6wpw0",
+  "version": 1,
+  "task": {
+    "title": "Fix agents:logs near-unparseable TTY redraw garbage (codex implement, claude review)"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T10:30:38.222Z",
+  "completedAt": "2026-05-19T10:44:24.757Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T10:34:18.265Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_celobruq6ana",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T10:34:18.265Z",
+      "endedAt": "2026-05-19T10:44:24.757Z",
+      "events": [
+        {
+          "ts": 1779186858266,
+          "type": "decision",
+          "content": "Cook agents:logs in the CLI with a small ANSI/VT replay helper: Cook agents:logs in the CLI with a small ANSI/VT replay helper",
+          "raw": {
+            "question": "Cook agents:logs in the CLI with a small ANSI/VT replay helper",
+            "chosen": "Cook agents:logs in the CLI with a small ANSI/VT replay helper",
+            "alternatives": [],
+            "reasoning": "The broker and workflow runner intentionally persist raw PTY bytes for dashboard/xterm debugging. The CLI can convert that stream to line-oriented output by replaying cursor positioning and clears; this avoids adding a terminal dependency and preserves --raw for exact diagnostics."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779187442268,
+          "type": "reflection",
+          "content": "Implemented CLI-side PTY cooking with raw opt-out; focused tests, typecheck, and build are green after a final rerun",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": ["confidence:0.9"]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made agents:logs cook raw PTY redraws into line-oriented output by default, added --raw for exact terminal bytes, covered cursor-redraw and raw-mode regressions, and validated with targeted Vitest, typecheck, build, and a compiled before/after sample.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca",
+    "endRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca"
+  }
+}
