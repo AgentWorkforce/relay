@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -702,7 +702,7 @@ pub(crate) async fn run_wrap(
 
     // Dedup for WS events
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
-    let mut dm_participants_cache: DmParticipantsCache = HashMap::new();
+    let mut dm_participants_cache = DmParticipantsCache::new();
 
     // Buffer for extracting message IDs from MCP tool responses in PTY output.
     // When the agent sends messages via MCP, the response contains the message ID.

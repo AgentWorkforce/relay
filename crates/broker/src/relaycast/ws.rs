@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, AgentClient, AgentRegistrationClient,
     AgentRegistrationError, AgentRegistrationRetryOutcome, MessageListQuery, RelayCast,
-    RelayCastOptions, RelayError, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
+    RelayCastOptions, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -129,8 +129,9 @@ impl RelaycastWsClient {
                         }
                     }
 
-                    // Get event and lifecycle receivers
-                    let mut event_rx = ws.subscribe_events();
+                    // Raw events keep Relay's broker bridge on the exact wire
+                    // payload while the SDK owns websocket transport details.
+                    let mut raw_event_rx = ws.subscribe_raw_events();
                     let mut lifecycle_rx = ws.subscribe_lifecycle();
 
                     let mut shutdown = false;
@@ -217,22 +218,10 @@ impl RelaycastWsClient {
                                     }
                                 }
                             }
-                            event = event_rx.recv() => {
+                            event = raw_event_rx.recv() => {
                                 match event {
-                                    Ok(ws_event) => {
-                                        // Serialize SDK WsEvent back to JSON Value for the broker
-                                        match serde_json::to_value(&ws_event) {
-                                            Ok(value) => {
-                                                let _ = inbound_tx.send(value).await;
-                                            }
-                                            Err(error) => {
-                                                tracing::debug!(
-                                                    target = "relay_broker::ws",
-                                                    error = %error,
-                                                    "failed to serialize SDK event to JSON"
-                                                );
-                                            }
-                                        }
+                                    Ok(value) => {
+                                        let _ = inbound_tx.send(value).await;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                                         tracing::warn!(
@@ -353,9 +342,9 @@ impl RelaycastHttpClient {
         }
     }
 
-    /// Pre-populate the token cache for an agent so that `ensure_token()` skips
-    /// the spawn registration call entirely. Used to seed the broker's own
-    /// session token obtained during auth startup.
+    /// Pre-populate the SDK token cache so registered-agent client creation
+    /// skips the spawn registration call entirely. Used to seed the broker's
+    /// own session token obtained during auth startup.
     pub fn seed_agent_token(&self, agent_name: &str, token: &str) {
         if let Some(registration) = self.registration.as_ref() {
             registration.seed_agent_token(agent_name, token);
@@ -373,6 +362,10 @@ impl RelaycastHttpClient {
         if let Some(registration) = self.registration.as_ref() {
             registration.invalidate_cached_registration(agent_name);
         }
+    }
+
+    pub(crate) fn relay_client(&self) -> Option<&RelayCast> {
+        self.relay.as_ref().as_ref()
     }
 
     pub fn forget_agent_registration(&self, agent_name: &str) {
@@ -399,22 +392,14 @@ impl RelaycastHttpClient {
             .await
     }
 
-    /// Register the broker agent via the spawn endpoint (which rotates the token
-    /// if the agent already exists, avoiding ghost duplicates).
-    async fn ensure_token(&self) -> Result<String> {
-        // Check if we already have a cached/pre-seeded token
-        if let Some(token) = self
+    async fn registered_agent_client(&self) -> Result<AgentClient> {
+        let registration = self
             .registration
             .as_ref()
             .as_ref()
-            .and_then(|registration| registration.cached_agent_token(&self.agent_name))
-        {
-            let prefix = &token[..token.len().min(16)];
-            tracing::info!(agent = %self.agent_name, token_prefix = %prefix, "ensure_token: using cached/pre-seeded token (no spawn)");
-            return Ok(token);
-        }
-        tracing::info!(agent = %self.agent_name, "ensure_token: no cached token, will register via spawn");
-        self.register_agent_token(&self.agent_name, Some(&self.default_cli))
+            .context("SDK relay client not initialized")?;
+        registration
+            .registered_agent_client(&self.agent_name, Some(&self.default_cli))
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
@@ -462,9 +447,7 @@ impl RelaycastHttpClient {
         text: &str,
         mode: MessageInjectionMode,
     ) -> Result<()> {
-        let token = self.ensure_token().await?;
-        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
-            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let agent_client = self.registered_agent_client().await?;
         let relay_mode = match mode {
             MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
             MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
@@ -486,9 +469,7 @@ impl RelaycastHttpClient {
 
     /// Post a message to a channel via the Relaycast REST API.
     pub async fn send_to_channel(&self, channel: &str, text: &str) -> Result<()> {
-        let token = self.ensure_token().await?;
-        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
-            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let agent_client = self.registered_agent_client().await?;
         agent_client
             .send(channel, text, None, None, None)
             .await
@@ -520,58 +501,32 @@ impl RelaycastHttpClient {
     ///
     /// Creates the channels if they don't already exist, ignoring 409 Conflict errors.
     pub async fn ensure_default_channels(&self) -> Result<()> {
-        let Some(_relay) = (*self.relay).as_ref() else {
-            tracing::warn!("SDK relay client not initialized; cannot ensure default channels");
-            return Ok(());
-        };
         let defaults = [
             ("general", "General discussion"),
             ("engineering", "Engineering discussion"),
         ];
+        let agent_client = match self.registered_agent_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to create registered agent client for channel startup");
+                return Ok(());
+            }
+        };
         for (name, topic) in &defaults {
             let request = relaycast::CreateChannelRequest {
                 name: name.to_string(),
                 topic: Some(topic.to_string()),
                 metadata: None,
             };
-            // Use the workspace-level agent client (from relay) to create channels
-            // The RelayCast workspace client doesn't have create_channel, so use an agent client
-            let token = match self.ensure_token().await {
-                Ok(token) => token,
+            match agent_client.ensure_joined_channel(request).await {
+                Ok(outcome) => tracing::info!(
+                    channel = %outcome.name,
+                    created = outcome.created,
+                    joined = outcome.joined,
+                    "ensured default channel membership"
+                ),
                 Err(error) => {
-                    tracing::warn!(error = %error, "failed to get agent token for channel creation");
-                    return Ok(());
-                }
-            };
-            let agent_client = match AgentClient::new(&token, Some(self.base_url.clone())) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(error = %error, "failed to create agent client for channel creation");
-                    return Ok(());
-                }
-            };
-            match agent_client.create_channel(request).await {
-                Ok(_) => {
-                    tracing::info!(channel = %name, "created default channel");
-                }
-                Err(RelayError::Api { status: 409, .. }) => {
-                    tracing::debug!(channel = %name, "default channel already exists");
-                }
-                Err(error) => {
-                    tracing::warn!(channel = %name, error = %error, "failed to create default channel");
-                    continue;
-                }
-            }
-            // Join so the broker receives message.created WS events for this channel.
-            match agent_client.join_channel(name).await {
-                Ok(_) => {
-                    tracing::info!(channel = %name, "broker joined default channel");
-                }
-                Err(RelayError::Api { status: 409, .. }) => {
-                    tracing::debug!(channel = %name, "broker already joined default channel");
-                }
-                Err(error) => {
-                    tracing::warn!(channel = %name, error = %error, "failed to join default channel");
+                    tracing::warn!(channel = %name, error = %error, "failed to ensure default channel membership");
                 }
             }
         }
@@ -592,45 +547,28 @@ impl RelaycastHttpClient {
         if extras.is_empty() {
             return Ok(());
         }
-        let token = match self.ensure_token().await {
-            Ok(token) => token,
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to get agent token for extra channel creation");
-                return Ok(());
-            }
-        };
-        let agent_client = match AgentClient::new(&token, Some(self.base_url.clone())) {
+        let agent_client = match self.registered_agent_client().await {
             Ok(client) => client,
             Err(error) => {
-                tracing::warn!(error = %error, "failed to create agent client for extra channel creation");
+                tracing::warn!(error = %error, "failed to create registered agent client for extra channel startup");
                 return Ok(());
             }
         };
         for name in extras {
-            // Create the channel (idempotent — 409 means already exists).
             let request = relaycast::CreateChannelRequest {
                 name: name.clone(),
                 topic: None,
                 metadata: None,
             };
-            match agent_client.create_channel(request).await {
-                Ok(_) => tracing::info!(channel = %name, "created extra channel"),
-                Err(RelayError::Api { status: 409, .. }) => {
-                    tracing::debug!(channel = %name, "extra channel already exists");
-                }
+            match agent_client.ensure_joined_channel(request).await {
+                Ok(outcome) => tracing::info!(
+                    channel = %outcome.name,
+                    created = outcome.created,
+                    joined = outcome.joined,
+                    "ensured extra channel membership"
+                ),
                 Err(error) => {
-                    tracing::warn!(channel = %name, error = %error, "failed to create extra channel");
-                    continue;
-                }
-            }
-            // Join the channel so the broker receives message.created WS events.
-            match agent_client.join_channel(name).await {
-                Ok(_) => tracing::info!(channel = %name, "broker joined extra channel"),
-                Err(RelayError::Api { status: 409, .. }) => {
-                    tracing::debug!(channel = %name, "broker already joined extra channel");
-                }
-                Err(error) => {
-                    tracing::warn!(channel = %name, error = %error, "failed to join extra channel");
+                    tracing::warn!(channel = %name, error = %error, "failed to ensure extra channel membership");
                 }
             }
         }
@@ -639,9 +577,7 @@ impl RelaycastHttpClient {
 
     /// Fetch recent DM history for an agent via the Relaycast REST API.
     pub async fn get_dms(&self, agent: &str, limit: usize) -> Result<Vec<Value>> {
-        let token = self.ensure_token().await?;
-        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
-            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let agent_client = self.registered_agent_client().await?;
         let opts = MessageListQuery {
             limit: Some(limit as i32),
             ..Default::default()
@@ -720,41 +656,9 @@ impl RelaycastHttpClient {
         Ok(all_messages)
     }
 
-    /// Resolve participant names for a DM conversation ID.
-    pub async fn get_dm_participants(&self, conversation_id: &str) -> Result<Vec<String>> {
-        let participants = if let Some(relay) = (*self.relay).as_ref() {
-            match relay.dm_conversation_participants(conversation_id).await {
-                Ok(participants) => participants,
-                Err(error) => {
-                    tracing::warn!(
-                        conversation_id = %conversation_id,
-                        error = %error,
-                        "relaycast get_dm_participants failed"
-                    );
-                    vec![]
-                }
-            }
-        } else {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                "SDK relay client not initialized; cannot resolve dm participants"
-            );
-            vec![]
-        };
-        if participants.is_empty() {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                "no participants found for DM conversation — message delivery will fail"
-            );
-        }
-        Ok(participants)
-    }
-
     /// Fetch recent message history from a channel via the Relaycast REST API.
     pub async fn get_channel_messages(&self, channel: &str, limit: usize) -> Result<Vec<Value>> {
-        let token = self.ensure_token().await?;
-        let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
-            .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+        let agent_client = self.registered_agent_client().await?;
         let opts = MessageListQuery {
             limit: Some(limit as i32),
             ..Default::default()
@@ -789,9 +693,7 @@ impl RelaycastHttpClient {
         mode: MessageInjectionMode,
     ) -> Result<()> {
         if to.starts_with('#') {
-            let token = self.ensure_token().await?;
-            let agent_client = AgentClient::new(&token, Some(self.base_url.clone()))
-                .map_err(|e| anyhow::anyhow!("failed to create agent client: {e}"))?;
+            let agent_client = self.registered_agent_client().await?;
             let relay_mode = match mode {
                 MessageInjectionMode::Wait => relaycast::MessageInjectionMode::Wait,
                 MessageInjectionMode::Steer => relaycast::MessageInjectionMode::Steer,
@@ -876,7 +778,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "relaycast 1.0 API response format mismatch - needs investigation"]
+    #[ignore = "relaycast API response fixture mismatch - needs investigation"]
     async fn send_with_mode_forwards_steer_for_relaycast_dm_targets() {
         let server = MockServer::start();
         let _mock = server.mock(|when, then| {
@@ -906,7 +808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "relaycast 1.0 API response format mismatch - needs investigation"]
+    #[ignore = "relaycast API response fixture mismatch - needs investigation"]
     async fn send_dm_defaults_to_wait_mode_for_relaycast_dm_targets() {
         let server = MockServer::start();
         let _mock = server.mock(|when, then| {
