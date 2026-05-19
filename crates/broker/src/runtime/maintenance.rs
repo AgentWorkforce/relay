@@ -109,8 +109,8 @@ impl BrokerRuntime {
         for (name, code, signal) in &exited {
             // Record crash in insights
             let (category, description) =
-                relay_broker::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
-            crash_insights.record(relay_broker::crash_insights::CrashRecord {
+                crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
+            crash_insights.record(crate::crash_insights::CrashRecord {
                 agent_name: name.clone(),
                 exit_code: *code,
                 signal: signal.clone(),
@@ -130,7 +130,7 @@ impl BrokerRuntime {
             });
 
             // Check supervisor for restart decision
-            use relay_broker::supervisor::RestartDecision;
+            use crate::supervisor::RestartDecision;
             match workers.supervisor.on_exit(name, *code, signal.as_deref()) {
                 Some(RestartDecision::Restart { delay }) => {
                     // Keep pending deliveries — we'll redeliver after restart

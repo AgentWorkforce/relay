@@ -165,7 +165,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
                 dropped_from = %dropped_from,
                 mode = state.mode.as_wire_str(),
                 queue_len,
-                max_pending = relay_broker::types::MAX_PENDING_PER_WORKER,
+                max_pending = crate::types::MAX_PENDING_PER_WORKER,
                 "pending queue full — evicting oldest message"
             );
         }
@@ -265,7 +265,7 @@ pub(crate) async fn queue_and_try_delivery(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
     worker_name: &str,
-    mapped: &relay_broker::types::InboundRelayEvent,
+    mapped: &crate::types::InboundRelayEvent,
     retry_interval: Duration,
 ) -> Result<()> {
     queue_and_try_delivery_raw(

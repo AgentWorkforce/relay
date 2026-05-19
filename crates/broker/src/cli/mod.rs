@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
-use relay_broker::{
+use crate::{
     protocol::HeadlessProvider as ProtocolHeadlessProvider,
     telemetry::{TelemetryClient, TelemetryEvent},
 };
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{cli_mcp_args, pty_worker, runtime, swarm, wrap};
 

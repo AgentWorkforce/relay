@@ -25,7 +25,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use relay_broker::{
+use crate::{
     dedup::DedupCache,
     protocol::{
         AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider,

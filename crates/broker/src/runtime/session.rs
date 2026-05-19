@@ -223,7 +223,7 @@ timestamp='{}'
         opts.channels,
         opts.read_mcp_identity,
         opts.runtime_cwd,
-        relay_broker::events::EventEmitter::new(false),
+        crate::events::EventEmitter::new(false),
     );
     log_startup_phase(
         startup_debug,
