@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
-use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
+use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
     broker::injection_format::format_injection,
     util::{
@@ -24,15 +24,16 @@ use tokio::sync::mpsc;
 use super::{
     build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
     channels_from_csv, continuity_dir, delivery_retry_interval, derive_ws_base_url_from_http,
-    display_target_for_dashboard, drop_pending_for_worker, ensure_ephemeral_paths,
-    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
-    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
-    is_unknown_worker_error_message, normalize_channel, normalize_initial_task, normalize_sender,
-    parse_sort_key_from_raw_timestamp, queue_inbound_for_delivery_mode,
-    relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event, AgentRuntime,
-    InboundContext, InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider,
+    display_target_for_dashboard, drop_pending_for_worker, emit_delivery_attempt_outcome,
+    ensure_ephemeral_paths, extract_mcp_message_ids, http_api_event_emit_timeout,
+    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
+    is_relaycast_self_control_target, is_unknown_worker_error_message, normalize_channel,
+    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
+    relaycast_ws_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, retry_pending_delivery, sender_is_dashboard_label,
+    should_clear_pending_delivery_for_event, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
+    InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
@@ -80,6 +81,10 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             child,
             stdin,
             spawned_at: Instant::now(),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
         },
     );
     registry
@@ -195,6 +200,180 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
 
     assert_eq!(outcome, InboundQueueOutcome::WorkerMissing);
     assert!(delivery_states.is_empty());
+}
+
+#[tokio::test]
+async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut pending_deliveries = HashMap::from([(
+        "del_gone".to_string(),
+        PendingDelivery {
+            worker_name: "ghost".to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_gone".to_string(),
+                event_id: "evt_gone".to_string(),
+                workspace_id: Some("ws_demo".to_string()),
+                workspace_alias: Some("Demo".to_string()),
+                from: "Lead".to_string(),
+                target: "Worker".to_string(),
+                body: "hello".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 3,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: Some("failed writing frame".to_string()),
+        },
+    )]);
+
+    let outcome = retry_pending_delivery(
+        "del_gone",
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("retry should classify missing recipient");
+
+    assert_eq!(
+        outcome,
+        DeliveryAttemptOutcome::Failed {
+            worker_name: "ghost".to_string(),
+            delivery_id: "del_gone".to_string(),
+            event_id: "evt_gone".to_string(),
+            from: "Lead".to_string(),
+            to: "Worker".to_string(),
+            attempts: 3,
+            last_error: "recipient gone".to_string(),
+        }
+    );
+    assert!(
+        pending_deliveries.is_empty(),
+        "terminal failed deliveries are removed so they cannot retry forever"
+    );
+}
+
+#[tokio::test]
+async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
+    let worker_name = "worker-blip";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    {
+        let handle = workers
+            .workers
+            .get_mut(worker_name)
+            .expect("present worker handle");
+        let _ = handle.child.start_kill();
+        let _ = handle.child.wait().await;
+    }
+    assert!(
+        workers.has_worker(worker_name),
+        "transient-blip regression must keep the recipient present"
+    );
+
+    let mut pending_deliveries = HashMap::from([(
+        "del_blip".to_string(),
+        PendingDelivery {
+            worker_name: worker_name.to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_blip".to_string(),
+                event_id: "evt_blip".to_string(),
+                workspace_id: Some("ws_demo".to_string()),
+                workspace_alias: Some("Demo".to_string()),
+                from: "orchestrator".to_string(),
+                target: worker_name.to_string(),
+                body: "transient auth blip".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 0,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
+        },
+    )]);
+
+    let mut final_outcome = None;
+    for retry_index in 1..=MAX_DELIVERY_RETRIES {
+        match retry_pending_delivery(
+            "del_blip",
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+        )
+        .await
+        {
+            Ok(outcome @ DeliveryAttemptOutcome::Failed { attempts, .. }) => {
+                assert_eq!(attempts, MAX_DELIVERY_RETRIES);
+                assert!(
+                    retry_index <= MAX_DELIVERY_RETRIES,
+                    "retry loop must terminate within the retry cap"
+                );
+                final_outcome = Some(outcome);
+                break;
+            }
+            Ok(other) => panic!("closed worker stdin should not report {other:?}"),
+            Err(error) => {
+                assert!(
+                    retry_index < MAX_DELIVERY_RETRIES,
+                    "the final bounded retry should return a terminal failure"
+                );
+                let pending = pending_deliveries
+                    .get("del_blip")
+                    .expect("delivery remains pending before terminal failure");
+                assert_eq!(pending.attempts, retry_index);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("failed writing frame to worker 'worker-blip'"),
+                    "unexpected retry error: {error}"
+                );
+            }
+        }
+    }
+
+    let outcome = final_outcome.expect("present worker write blip must terminate as failed");
+    assert!(
+        pending_deliveries.is_empty(),
+        "terminal failed deliveries are removed so they cannot stall silently"
+    );
+
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    emit_delivery_attempt_outcome(&sdk_out_tx, "del_blip", true, outcome)
+        .await
+        .expect("failed outcome should emit to sdk_out_tx");
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("orchestrator should receive delivery failure event promptly")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(frame.msg_type, "event");
+    assert_eq!(frame.payload["kind"], "message_delivery_failed");
+    assert_eq!(frame.payload["name"], worker_name);
+    assert_eq!(frame.payload["delivery_id"], "del_blip");
+    assert_eq!(frame.payload["event_id"], "evt_blip");
+    assert_eq!(frame.payload["from"], "orchestrator");
+    assert_eq!(frame.payload["to"], worker_name);
+    assert_eq!(
+        frame.payload["attempts"].as_u64(),
+        Some(u64::from(MAX_DELIVERY_RETRIES))
+    );
+    assert!(frame.payload["lastError"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("failed writing frame to worker 'worker-blip'"));
+    assert!(
+        frame.payload.get("last_error").is_none(),
+        "wire event should use the typed lastError field only"
+    );
 }
 
 fn extract_kind_literals(source: &str) -> BTreeSet<String> {
@@ -957,6 +1136,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             },
             attempts: 1,
             next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
         },
     );
     pending.insert(
@@ -977,6 +1158,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             },
             attempts: 1,
             next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
         },
     );
 
@@ -1004,6 +1187,8 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         },
         attempts: 1,
         next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -1034,6 +1219,8 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         },
         attempts: 1,
         next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(

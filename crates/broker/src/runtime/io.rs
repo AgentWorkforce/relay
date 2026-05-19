@@ -29,6 +29,13 @@ pub(crate) async fn send_event(
     send_frame(tx, "event", None, payload).await
 }
 
+pub(crate) async fn send_broker_event(
+    tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    event: BrokerEvent,
+) -> Result<()> {
+    send_event(tx, serde_json::to_value(event)?).await
+}
+
 pub(crate) async fn emit_http_api_event_with_timeout(
     tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     payload: Value,

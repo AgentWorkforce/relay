@@ -182,6 +182,8 @@ export type AgentActivityReason =
   | 'delivery_active'
   | 'delivery_ack'
   | 'delivery_failed'
+  | 'message_delivery_confirmed'
+  | 'message_delivery_failed'
   | 'relay_inbound'
   | 'agent_idle'
   | 'agent_exited'
@@ -928,7 +930,21 @@ export class AgentRelay {
         }
 
         if (
-          event.kind === 'delivery_failed' &&
+          event.kind === 'message_delivery_confirmed' &&
+          event.event_id === result.event_id &&
+          result.targets.includes(event.name)
+        ) {
+          ackedTargets.add(event.name);
+          if (ackedTargets.size >= result.targets.length) {
+            resolved = true;
+            clearTimeout(timer);
+            unsubscribe?.();
+            resolve({ eventId: result.event_id, status: 'ack', targets: result.targets });
+          }
+        }
+
+        if (
+          (event.kind === 'delivery_failed' || event.kind === 'message_delivery_failed') &&
           event.event_id === result.event_id &&
           result.targets.includes(event.name)
         ) {
@@ -1620,6 +1636,23 @@ export class AgentRelay {
           this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
           break;
         }
+        case 'message_delivery_confirmed': {
+          this.closeAgentDelivery(
+            event.name,
+            'message_delivery_confirmed',
+            event.event_id,
+            event.delivery_id
+          );
+          this.updateDeliveryState(event.event_id, event.name, 'verified', this.resolveEventTimestamp());
+          break;
+        }
+        case 'message_delivery_failed': {
+          if (event.event_id && event.delivery_id) {
+            this.closeAgentDelivery(event.name, 'message_delivery_failed', event.event_id, event.delivery_id);
+            this.updateDeliveryState(event.event_id, event.name, 'failed', this.resolveEventTimestamp());
+          }
+          break;
+        }
         case 'worker_stream': {
           // Agent producing output is no longer idle
           this.idleAgents.delete(event.name);
@@ -1645,7 +1678,7 @@ export class AgentRelay {
           break;
         }
       }
-      if (event.kind.startsWith('delivery_')) {
+      if (event.kind.startsWith('delivery_') || event.kind.startsWith('message_delivery_')) {
         this.onDeliveryUpdate?.(event);
       }
     });

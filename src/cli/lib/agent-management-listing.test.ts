@@ -106,6 +106,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 4321,
         uptimeSecs: 421,
         memoryBytes: 1048576,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -125,6 +128,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -145,6 +151,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -165,6 +174,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });

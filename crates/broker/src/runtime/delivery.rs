@@ -6,6 +6,8 @@ pub(crate) struct PendingDelivery {
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
     pub(super) next_retry_at: Instant,
+    pub(super) queued_at_ms: u64,
+    pub(super) last_error: Option<String>,
 }
 
 /// Serializable snapshot of pending deliveries for crash recovery.
@@ -14,6 +16,33 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) worker_name: String,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
+    #[serde(default)]
+    pub(super) queued_at_ms: u64,
+    #[serde(default)]
+    pub(super) last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeliveryAttemptOutcome {
+    Attempted {
+        worker_name: String,
+        attempts: u32,
+        event_id: String,
+    },
+    Failed {
+        worker_name: String,
+        delivery_id: String,
+        event_id: String,
+        from: String,
+        to: String,
+        attempts: u32,
+        last_error: String,
+    },
+    Noop,
+}
+
+pub(crate) fn unix_timestamp_millis() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
 pub(crate) fn save_pending_deliveries(
@@ -26,6 +55,8 @@ pub(crate) fn save_pending_deliveries(
             worker_name: pd.worker_name.clone(),
             delivery: pd.delivery.clone(),
             attempts: pd.attempts,
+            queued_at_ms: pd.queued_at_ms,
+            last_error: pd.last_error.clone(),
         })
         .collect();
     let json = serde_json::to_string_pretty(&persisted)?;
@@ -58,6 +89,12 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<String, PendingDel
                     delivery: p.delivery,
                     attempts: p.attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
+                    queued_at_ms: if p.queued_at_ms == 0 {
+                        unix_timestamp_millis()
+                    } else {
+                        p.queued_at_ms
+                    },
+                    last_error: p.last_error,
                 },
             )
         })
@@ -322,11 +359,16 @@ pub(crate) async fn queue_and_try_delivery_raw(
             delivery,
             attempts: 0,
             next_retry_at: Instant::now(),
+            queued_at_ms: unix_timestamp_millis(),
+            last_error: None,
         },
     );
 
-    let _ =
-        retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?;
+    if let DeliveryAttemptOutcome::Failed { last_error, .. } =
+        retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
+    {
+        anyhow::bail!(last_error);
+    }
     Ok(())
 }
 
@@ -335,20 +377,38 @@ pub(crate) async fn retry_pending_delivery(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<String, PendingDelivery>,
     retry_interval: Duration,
-) -> Result<Option<(String, u32, String)>> {
+) -> Result<DeliveryAttemptOutcome> {
     let pending = match pending_deliveries.get(delivery_id) {
         Some(pending) => pending.clone(),
-        None => return Ok(None),
+        None => return Ok(DeliveryAttemptOutcome::Noop),
     };
 
     if pending.attempts >= MAX_DELIVERY_RETRIES {
-        pending_deliveries.remove(delivery_id);
-        return Ok(None);
+        let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        return Ok(DeliveryAttemptOutcome::Failed {
+            worker_name: removed.worker_name,
+            delivery_id: removed.delivery.delivery_id,
+            event_id: removed.delivery.event_id,
+            from: removed.delivery.from,
+            to: removed.delivery.target,
+            attempts: removed.attempts,
+            last_error: removed
+                .last_error
+                .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+        });
     }
 
     if !workers.has_worker(&pending.worker_name) {
-        pending_deliveries.remove(delivery_id);
-        return Ok(None);
+        let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        return Ok(DeliveryAttemptOutcome::Failed {
+            worker_name: removed.worker_name,
+            delivery_id: removed.delivery.delivery_id,
+            event_id: removed.delivery.event_id,
+            from: removed.delivery.from,
+            to: removed.delivery.target,
+            attempts: removed.attempts,
+            last_error: "recipient gone".to_string(),
+        });
     }
 
     match workers
@@ -359,21 +419,96 @@ pub(crate) async fn retry_pending_delivery(
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
-                return Ok(Some((
-                    current.worker_name.clone(),
-                    current.attempts,
-                    current.delivery.event_id.clone(),
-                )));
+                return Ok(DeliveryAttemptOutcome::Attempted {
+                    worker_name: current.worker_name.clone(),
+                    attempts: current.attempts,
+                    event_id: current.delivery.event_id.clone(),
+                });
             }
-            Ok(None)
+            Ok(DeliveryAttemptOutcome::Noop)
         }
         Err(error) => {
-            if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+                current.attempts = current.attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
+                current.last_error = Some(error.to_string());
+                current.attempts >= MAX_DELIVERY_RETRIES
+            } else {
+                false
+            };
+
+            if should_fail {
+                if let Some(removed) = pending_deliveries.remove(delivery_id) {
+                    return Ok(DeliveryAttemptOutcome::Failed {
+                        worker_name: removed.worker_name,
+                        delivery_id: removed.delivery.delivery_id,
+                        event_id: removed.delivery.event_id,
+                        from: removed.delivery.from,
+                        to: removed.delivery.target,
+                        attempts: removed.attempts,
+                        last_error: removed
+                            .last_error
+                            .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+                    });
+                }
+                return Ok(DeliveryAttemptOutcome::Noop);
             }
             Err(error)
         }
     }
+}
+
+pub(crate) async fn emit_delivery_attempt_outcome(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    delivery_id: &str,
+    was_retry: bool,
+    outcome: DeliveryAttemptOutcome,
+) -> Result<()> {
+    match outcome {
+        DeliveryAttemptOutcome::Attempted {
+            worker_name,
+            attempts,
+            event_id,
+        } => {
+            if was_retry {
+                send_broker_event(
+                    sdk_out_tx,
+                    BrokerEvent::DeliveryRetry {
+                        name: worker_name,
+                        delivery_id: delivery_id.to_string(),
+                        event_id,
+                        attempts,
+                    },
+                )
+                .await?;
+            }
+        }
+        DeliveryAttemptOutcome::Failed {
+            worker_name,
+            delivery_id,
+            event_id,
+            from,
+            to,
+            attempts,
+            last_error,
+        } => {
+            send_broker_event(
+                sdk_out_tx,
+                BrokerEvent::MessageDeliveryFailed {
+                    name: worker_name,
+                    delivery_id: Some(delivery_id),
+                    event_id: Some(event_id),
+                    from,
+                    to,
+                    attempts,
+                    last_error,
+                },
+            )
+            .await?;
+        }
+        DeliveryAttemptOutcome::Noop => {}
+    }
+    Ok(())
 }
 
 pub(crate) fn drop_pending_for_worker(

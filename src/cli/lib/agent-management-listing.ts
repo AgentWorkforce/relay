@@ -17,6 +17,9 @@ export interface ListingWorkerInfo {
   model?: string;
   team?: string;
   pid?: number;
+  last_activity_at?: string;
+  context_budget_pct?: number | null;
+  current_state?: 'working' | 'idle' | 'blocked_on_send';
 }
 
 interface CloudConfig {
@@ -390,6 +393,9 @@ export async function runWhoCommand(
             pid: m?.pid ?? agent.pid ?? null,
             uptimeSecs: typeof m?.uptime_secs === 'number' ? m.uptime_secs : null,
             memoryBytes: typeof m?.memory_bytes === 'number' ? m.memory_bytes : null,
+            lastActivity: agent.last_activity_at ?? null,
+            contextBudgetPct: typeof agent.context_budget_pct === 'number' ? agent.context_budget_pct : null,
+            currentState: agent.current_state ?? 'working',
           };
         })
     )
@@ -402,6 +408,9 @@ export async function runWhoCommand(
           pid: number | null;
           uptimeSecs: number | null;
           memoryBytes: number | null;
+          lastActivity: string | null;
+          contextBudgetPct: number | null;
+          currentState: 'working' | 'idle' | 'blocked_on_send';
         }>
     );
 
@@ -418,16 +427,19 @@ export async function runWhoCommand(
     return;
   }
 
-  deps.log('NAME            STATUS   CLI       PID      UPTIME');
-  deps.log('-----------------------------------------------------');
+  deps.log('NAME            STATUS   STATE            CLI       PID      UPTIME      CONTEXT  LAST ACTIVITY');
+  deps.log('------------------------------------------------------------------------------------------');
   onlineAgents.forEach((agent) => {
     deps.log(
       formatTableRow([
         { value: tableCell(agent.name, 'unknown'), width: 15 },
         { value: tableCell(agent.status), width: 8 },
+        { value: tableCell(agent.currentState), width: 16 },
         { value: tableCell(agent.cli), width: 8 },
         { value: agent.pid != null ? String(agent.pid) : '-', width: 8 },
-        { value: agent.uptimeSecs != null ? formatUptimeSecs(agent.uptimeSecs) : '-' },
+        { value: agent.uptimeSecs != null ? formatUptimeSecs(agent.uptimeSecs) : '-', width: 11 },
+        { value: agent.contextBudgetPct != null ? `${agent.contextBudgetPct}%` : '-', width: 8 },
+        { value: tableCell(agent.lastActivity) },
       ])
     );
   });

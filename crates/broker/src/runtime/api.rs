@@ -1012,7 +1012,27 @@ impl BrokerRuntime {
                             "delivery_id": pd.delivery.delivery_id,
                             "worker_name": pd.worker_name,
                             "event_id": pd.delivery.event_id,
+                            "from": pd.delivery.from,
+                            "to": pd.delivery.target,
                             "attempts": pd.attempts,
+                            "queued_at_ms": pd.queued_at_ms,
+                            "age_ms": unix_timestamp_millis().saturating_sub(pd.queued_at_ms),
+                            "last_error": pd.last_error,
+                        })
+                    })
+                    .collect();
+                let auth_workspaces: Vec<Value> = workspaces
+                    .iter()
+                    .map(|workspace| {
+                        json!({
+                            "workspace_id": workspace.workspace_id,
+                            "workspace_alias": workspace.workspace_alias,
+                            "self_name": workspace.self_name,
+                            "self_agent_id": workspace.self_agent_id,
+                            "authenticated": true,
+                            "default": default_workspace_id
+                                .as_deref()
+                                .is_some_and(|id| id == workspace.workspace_id),
                         })
                     })
                     .collect();
@@ -1021,6 +1041,12 @@ impl BrokerRuntime {
                     "agents": workers.list(),
                     "pending_delivery_count": pending.len(),
                     "pending_deliveries": pending,
+                    "auth": {
+                        "authenticated": !auth_workspaces.is_empty(),
+                        "workspace_count": auth_workspaces.len(),
+                        "default_workspace_id": default_workspace_id,
+                        "workspaces": auth_workspaces,
+                    },
                 })));
             }
             ListenApiRequest::GetCrashInsights { reply } => {

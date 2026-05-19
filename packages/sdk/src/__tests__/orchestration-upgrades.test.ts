@@ -1045,6 +1045,74 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('sendAndWaitForDelivery resolves on message_delivery_confirmed', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'message_delivery_confirmed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'ack',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery fails on message_delivery_failed', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 10,
+        lastError: 'recipient gone',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'failed',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('sendAndWaitForDelivery timeout remains terminal in delivery state timeline (Wave 0 contract)', async () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);

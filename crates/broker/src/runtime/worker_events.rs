@@ -1,4 +1,5 @@
 use super::*;
+use crate::worker::AgentWorkState;
 
 impl BrokerRuntime {
     pub(super) async fn handle_worker_event(&mut self, worker_event: WorkerEvent) {
@@ -35,6 +36,8 @@ impl BrokerRuntime {
                                 return;
                             }
 
+                            let pending_for_confirmation =
+                                pending_deliveries.get(delivery_id).cloned();
                             if let Ok(ack) =
                                 serde_json::from_value::<DeliveryAckPayload>(payload.clone())
                             {
@@ -58,35 +61,41 @@ impl BrokerRuntime {
                                 }),
                             )
                             .await;
+                            if let Some(pending) = pending_for_confirmation {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::Working;
+                                }
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::MessageDeliveryConfirmed {
+                                        name: name.clone(),
+                                        delivery_id: pending.delivery.delivery_id,
+                                        event_id: pending.delivery.event_id,
+                                        from: pending.delivery.from,
+                                        to: pending.delivery.target,
+                                    },
+                                )
+                                .await;
+                            }
                         }
-                    } else if msg_type == "delivery_queued" {
-                        if let Some(payload) = value.get("payload") {
-                            let _ = send_event(
-                                sdk_out_tx,
-                                json!({
-                                    "kind": msg_type,
-                                    "name": name,
-                                    "delivery_id": payload.get("delivery_id"),
-                                    "event_id": payload.get("event_id"),
-                                    "timestamp": payload.get("timestamp"),
-                                }),
-                            )
-                            .await;
-                        }
-                    } else if msg_type == "delivery_injected" {
+                    } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
                                 .get("delivery_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            let event_id = payload.get("event_id").and_then(Value::as_str);
-                            clear_pending_delivery_if_event_matches(
-                                pending_deliveries,
-                                delivery_id,
-                                event_id,
-                                &name,
-                                "delivery_injected",
-                            );
+                            if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
+                                pending.next_retry_at = Instant::now()
+                                    + std::cmp::max(
+                                        delivery_retry_interval,
+                                        crate::broker::delivery_verification::VERIFICATION_WINDOW,
+                                    );
+                            }
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.last_activity_at = Instant::now();
+                                handle.state = AgentWorkState::Working;
+                            }
                             let _ = send_event(
                                 sdk_out_tx,
                                 json!({
@@ -116,6 +125,8 @@ impl BrokerRuntime {
                                 event_id = %event_id,
                                 "delivery verified by echo detection"
                             );
+                            let pending_for_confirmation =
+                                pending_deliveries.get(delivery_id).cloned();
                             clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
@@ -133,9 +144,30 @@ impl BrokerRuntime {
                                 }),
                             )
                             .await;
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.last_activity_at = Instant::now();
+                                handle.state = AgentWorkState::Working;
+                            }
+                            if let Some(pending) = pending_for_confirmation {
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::MessageDeliveryConfirmed {
+                                        name: name.clone(),
+                                        delivery_id: pending.delivery.delivery_id,
+                                        event_id: pending.delivery.event_id,
+                                        from: pending.delivery.from,
+                                        to: pending.delivery.target,
+                                    },
+                                )
+                                .await;
+                            }
                         }
                     } else if msg_type == "delivery_active" {
                         if let Some(payload) = value.get("payload") {
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.last_activity_at = Instant::now();
+                                handle.state = AgentWorkState::Working;
+                            }
                             let _ = send_event(
                                 sdk_out_tx,
                                 json!({
@@ -170,6 +202,7 @@ impl BrokerRuntime {
                                 reason = %reason,
                                 "delivery failed — echo not detected"
                             );
+                            let pending_for_failure = pending_deliveries.get(delivery_id).cloned();
                             clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
@@ -180,6 +213,10 @@ impl BrokerRuntime {
                             if !delivery_id.is_empty() {
                                 terminal_failed_deliveries.insert(delivery_id.to_string());
                             }
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.last_activity_at = Instant::now();
+                                handle.state = AgentWorkState::Working;
+                            }
                             let _ = send_event(
                                 sdk_out_tx,
                                 json!({
@@ -189,6 +226,28 @@ impl BrokerRuntime {
                                     "event_id": event_id,
                                     "reason": reason,
                                 }),
+                            )
+                            .await;
+                            let _ = send_broker_event(
+                                sdk_out_tx,
+                                BrokerEvent::MessageDeliveryFailed {
+                                    name: name.clone(),
+                                    delivery_id: Some(delivery_id.to_string()),
+                                    event_id: Some(event_id.to_string()),
+                                    from: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.delivery.from.clone())
+                                        .unwrap_or_else(|| "unknown".to_string()),
+                                    to: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.delivery.target.clone())
+                                        .unwrap_or_else(|| name.clone()),
+                                    attempts: pending_for_failure
+                                        .as_ref()
+                                        .map(|p| p.attempts)
+                                        .unwrap_or(1),
+                                    last_error: reason.to_string(),
+                                },
                             )
                             .await;
                         }
@@ -226,6 +285,10 @@ impl BrokerRuntime {
                             );
                         }
                     } else if msg_type == "worker_stream" {
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.last_activity_at = Instant::now();
+                            handle.state = AgentWorkState::Working;
+                        }
                         let _ = send_event(sdk_out_tx, json!({
                                         "kind": "worker_stream",
                                         "name": name,
@@ -289,12 +352,18 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("idle_secs"))
                             .and_then(Value::as_u64)
                             .unwrap_or(0);
+                        let since =
+                            chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.state = AgentWorkState::Idle;
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind": "agent_idle",
                                 "name": name,
                                 "idle_secs": idle_secs,
+                                "since": since,
                             }),
                         )
                         .await;
@@ -305,12 +374,66 @@ impl BrokerRuntime {
                             Some("idle_threshold"),
                         )
                         .await;
+                    } else if msg_type == "agent_blocked_on_send" {
+                        let blocked_secs = value
+                            .get("payload")
+                            .and_then(|p| p.get("blocked_secs"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                        let pending_delivery_count = value
+                            .get("payload")
+                            .and_then(|p| p.get("pending_delivery_count"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            as usize;
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.state = AgentWorkState::BlockedOnSend;
+                        }
+                        let _ = send_broker_event(
+                            sdk_out_tx,
+                            BrokerEvent::AgentBlockedOnSend {
+                                name: name.clone(),
+                                blocked_secs,
+                                pending_delivery_count,
+                            },
+                        )
+                        .await;
+                        publish_agent_state_transition(
+                            ws_control_tx,
+                            &name,
+                            "stuck",
+                            Some("blocked_on_send"),
+                        )
+                        .await;
+                    } else if msg_type == "agent_context_low" {
+                        let pct = value
+                            .get("payload")
+                            .and_then(|p| p.get("pct"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            .min(100) as u8;
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.context_budget_pct = Some(pct);
+                            handle.last_activity_at = Instant::now();
+                        }
+                        let _ = send_broker_event(
+                            sdk_out_tx,
+                            BrokerEvent::AgentContextLow {
+                                name: name.clone(),
+                                pct,
+                            },
+                        )
+                        .await;
                     } else if msg_type == "agent_exit" {
                         let reason = value
                             .get("payload")
                             .and_then(|p| p.get("reason"))
                             .and_then(Value::as_str)
                             .unwrap_or("unknown");
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.exit_reason = Some(reason.to_string());
+                            handle.last_activity_at = Instant::now();
+                        }
                         tracing::info!(agent = %name, reason = %reason, "agent requested exit");
                         let _ = send_event(
                             sdk_out_tx,
