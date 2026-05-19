@@ -1,0 +1,93 @@
+version: '1.0'
+name: security-audit
+description: 'Security review with readonly access, scoped network allowlists, and bounded exec.'
+swarm:
+  pattern: hub-spoke
+  maxConcurrency: 2
+  timeoutMs: 3600000
+  channel: swarm-security-audit-example
+agents:
+  - name: auditor
+    cli: claude
+    role: 'Scans for application and dependency vulnerabilities'
+    interactive: false
+    permissions:
+      access: readonly
+      network:
+        allow: ['registry.npmjs.org:443', 'github.com:443', 'nvd.nist.gov:443']
+        deny: ['*']
+      exec: ['npm audit', 'npx snyk test', 'git diff']
+
+  - name: dependency-checker
+    cli: codex
+    role: 'Inspects manifest files and dependency CVEs'
+    interactive: false
+    permissions:
+      access: readonly
+      files:
+        read: ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'Cargo.toml', 'Cargo.lock']
+        deny: ['.env*', 'secrets/**']
+      network:
+        allow: ['registry.npmjs.org:443']
+        deny: ['*']
+      exec: ['npm audit']
+
+  - name: reporter
+    cli: claude
+    role: 'Compiles findings into a single security report'
+    interactive: false
+    permissions:
+      access: readonly
+      network: false
+
+workflows:
+  - name: audit
+    description: 'Run deterministic dependency scan, parallel audits, and consolidate the report.'
+    onError: fail
+    steps:
+      - name: dep-scan
+        type: deterministic
+        command: npm audit --json 2>/dev/null || echo '{}'
+        captureOutput: true
+
+      - name: code-scan
+        type: agent
+        agent: auditor
+        dependsOn: [dep-scan]
+        task: |
+          Review the repository for OWASP-style risks, secret exposure, and insecure patterns.
+
+          Dependency scan:
+          {{steps.dep-scan.output}}
+        verification:
+          type: output_contains
+          value: SCAN_COMPLETE
+
+      - name: dep-review
+        type: agent
+        agent: dependency-checker
+        dependsOn: [dep-scan]
+        task: |
+          Review dependency vulnerabilities and recommend remediation priorities.
+
+          Dependency scan:
+          {{steps.dep-scan.output}}
+        verification:
+          type: output_contains
+          value: CHECK_COMPLETE
+
+      - name: report
+        type: agent
+        agent: reporter
+        dependsOn: [code-scan, dep-review]
+        task: |
+          Compile a final security report with severity, evidence, and next actions.
+
+          Code scan:
+          {{steps.code-scan.output}}
+
+          Dependency review:
+          {{steps.dep-review.output}}
+        verification:
+          type: output_contains
+          value: REPORT_COMPLETE

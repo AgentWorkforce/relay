@@ -1,0 +1,128 @@
+version: '1.0'
+name: full-team
+description: 'Full-stack feature workflow using reusable permission profiles and step overrides.'
+permissions:
+  profiles:
+    source-dev:
+      access: restricted
+      files:
+        read: ['src/**', 'packages/**', 'tests/**', 'package.json', 'tsconfig.json']
+        write: ['src/**', 'packages/**', 'tests/**']
+        deny: ['.env*', 'secrets/**', 'infrastructure/**']
+      network: false
+    reviewer:
+      access: readonly
+      files:
+        deny: ['.env*', 'secrets/**', '*.pem', '*.key']
+  default: readonly
+swarm:
+  pattern: hub-spoke
+  maxConcurrency: 4
+  timeoutMs: 3600000
+  channel: swarm-full-team
+agents:
+  - name: lead
+    cli: claude
+    role: 'Coordinates planning, review, and final sign-off'
+    permissions:
+      access: readwrite
+
+  - name: frontend
+    cli: codex
+    role: 'Implements UI components and page flows'
+    interactive: false
+    permissions: source-dev
+
+  - name: backend
+    cli: codex
+    role: 'Implements API handlers and business logic'
+    interactive: false
+    permissions: source-dev
+
+  - name: reviewer
+    cli: claude
+    role: 'Performs cross-stack review'
+    interactive: false
+    permissions: reviewer
+
+workflows:
+  - name: fullstack-feature
+    description: 'Plan, implement UI and API in parallel, then review and ship.'
+    onError: retry
+    steps:
+      - name: plan
+        type: agent
+        agent: lead
+        task: |
+          Produce a cross-stack plan for this feature request:
+          {{task}}
+        verification:
+          type: output_contains
+          value: PLAN_COMPLETE
+
+      - name: ui
+        type: agent
+        agent: frontend
+        dependsOn: [plan]
+        permissions:
+          access: restricted
+          files:
+            read: ['src/**', 'packages/**', 'package.json']
+            write: ['src/components/**', 'src/pages/**', 'src/styles/**']
+            deny: ['.env*', 'src/server/**']
+        task: |
+          Build the UI portion of the feature plan.
+
+          Plan:
+          {{steps.plan.output}}
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+
+      - name: api
+        type: agent
+        agent: backend
+        dependsOn: [plan]
+        permissions:
+          access: restricted
+          files:
+            read: ['src/**', 'packages/**', 'package.json']
+            write: ['src/server/**', 'src/api/**', 'packages/sdk/src/**']
+            deny: ['.env*', 'src/components/**']
+        task: |
+          Build the API and business logic portion of the feature plan.
+
+          Plan:
+          {{steps.plan.output}}
+        verification:
+          type: output_contains
+          value: IMPLEMENTATION_COMPLETE
+
+      - name: review
+        type: agent
+        agent: reviewer
+        dependsOn: [ui, api]
+        task: |
+          Review the combined frontend and backend work for correctness, cohesion, and risk.
+
+          UI result:
+          {{steps.ui.output}}
+
+          API result:
+          {{steps.api.output}}
+        verification:
+          type: output_contains
+          value: REVIEW_COMPLETE
+
+      - name: ship
+        type: agent
+        agent: lead
+        dependsOn: [review]
+        task: |
+          Produce final sign-off and summarize any follow-up work.
+
+          Review:
+          {{steps.review.output}}
+        verification:
+          type: output_contains
+          value: DONE
