@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use relay_broker::types::{InboundKind, InboundRelayEvent};
 
-use crate::normalize_channel;
+use crate::runtime::normalize_channel;
 
 #[derive(Clone)]
 pub(crate) struct RoutingWorker<'a> {

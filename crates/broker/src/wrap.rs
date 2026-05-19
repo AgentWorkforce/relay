@@ -1,14 +1,34 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use super::*;
-use crate::helpers::{
-    agent_name_eq, check_echo_in_output, floor_char_boundary,
-    format_injection_for_worker_with_workspace, is_self_name, resolve_dm_participants_cached,
-    ActivityDetector, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-    ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-    MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+use anyhow::{Context, Result};
+use relay_broker::{
+    control::{can_release_child, is_human_sender},
+    dedup::DedupCache,
+    message_bridge::{map_ws_broker_command, map_ws_event},
+    pty::PtySession,
+    relaycast_ws::{retry_agent_registration, RegRetryOutcome, WsControl},
+    telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
+    types::{BrokerCommandPayload, InboundKind, SenderKind},
 };
+use tokio::{sync::mpsc, time::MissedTickBehavior};
+
+use crate::helpers::{
+    agent_name_eq, check_echo_in_output, detect_bypass_permissions_prompt,
+    detect_claude_trust_prompt, detect_codex_model_prompt, detect_gemini_action_required,
+    detect_gemini_trust_prompt, detect_gemini_untrusted_banner, detect_opencode_permission_prompt,
+    floor_char_boundary, format_injection_for_worker_with_workspace, is_auto_suggestion,
+    is_bypass_selection_menu, is_in_editor_mode, is_self_name, parse_cli_command,
+    resolve_dm_participants_cached, strip_ansi, ActivityDetector, DeliveryOutcome, PendingActivity,
+    PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+    ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+};
+use crate::runtime::{
+    channels_from_csv, command_targets_self, connect_relay, ensure_runtime_paths, env_flag_enabled,
+    extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,
+    RelaySessionOptions, RelayWorkspace,
+};
+use crate::spawner::{spawn_env_vars, Spawner};
 
 // PTY auto-response constants (shared by wrap and pty workers)
 const BYPASS_PERMS_COOLDOWN: Duration = Duration::from_secs(2);

@@ -2037,7 +2037,7 @@ mod auth_tests {
                     shadow_of,
                     shadow_mode,
                     continue_from,
-                    idle_threshold_secs: _,
+                    idle_threshold_secs,
                     skip_relay_prompt: _,
                     restart_policy: _,
                     agent_token: _,
@@ -2058,6 +2058,7 @@ mod auth_tests {
                     assert_eq!(shadow_of.as_deref(), Some("Lead"));
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
+                    assert_eq!(idle_threshold_secs, Some(30));
                     let _ = reply.send(Ok(
                         json!({ "success": true, "name": "worker-a", "pid": 42 }),
                     ));
@@ -2087,6 +2088,7 @@ mod auth_tests {
                             "shadowOf": "Lead",
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
+                            "idleThresholdSecs": 30,
                         })
                         .to_string(),
                     ))
