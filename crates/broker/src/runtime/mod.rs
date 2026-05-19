@@ -62,22 +62,28 @@ const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
 static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
+mod api;
 mod connection;
 mod delivery;
+mod event_loop;
 mod headless;
 mod init;
 mod io;
+mod maintenance;
 mod messages;
 mod paths;
+mod relaycast_events;
 mod session;
 mod spawn_spec;
 mod system;
 #[cfg(test)]
 mod tests;
 mod util;
+mod worker_events;
 
 pub(crate) use connection::*;
 pub(crate) use delivery::*;
+pub(crate) use event_loop::*;
 pub(crate) use headless::*;
 pub(crate) use init::*;
 pub(crate) use io::*;

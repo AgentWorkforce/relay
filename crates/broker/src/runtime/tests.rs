@@ -523,14 +523,14 @@ fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
         .and_then(Value::as_str)
         .expect("timeout fixture requires late_event_kind");
 
-    let source = include_str!("init.rs");
+    let source = include_str!("worker_events.rs");
     let ack_branch = source
         .find("msg_type == \"delivery_ack\"")
         .map(|idx| {
             let end = (idx + 1200).min(source.len());
             &source[idx..end]
         })
-        .expect("main.rs must include delivery_ack handling");
+        .expect("worker_events.rs must include delivery_ack handling");
 
     assert!(
         ack_branch.contains(expected_terminal_status) || ack_branch.contains("terminal"),
@@ -556,7 +556,11 @@ fn contract_broadcast_whitelist_fixture_requires_filtering_to_required_kinds() {
         .map(str::to_owned)
         .collect::<BTreeSet<String>>();
 
-    let emitted = extract_kind_literals(include_str!("init.rs"));
+    let emitted = extract_kind_literals(concat!(
+        include_str!("api.rs"),
+        include_str!("relaycast_events.rs"),
+        include_str!("worker_events.rs"),
+    ));
 
     assert!(
         required.is_subset(&emitted),
