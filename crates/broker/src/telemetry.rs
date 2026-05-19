@@ -315,24 +315,11 @@ fn detect_os_version() -> Option<String> {
     }
 }
 
-/// Canonical harness slug set — must stay aligned with the TS
-/// `Harness` union in `packages/telemetry/src/harness.ts`
-/// and the relaycast server-side enum (#132).
-const KNOWN_HARNESSES: &[&str] = &[
-    "claude-code",
-    "cursor",
-    "codex",
-    "gemini",
-    "aider",
-    "cline",
-    "continue",
-    "windsurf",
-    "zed",
-    "unknown",
-];
-
 /// Map a process basename to a harness slug, or `None` for unrecognized.
-/// Match is case-insensitive against the executable basename.
+/// Match is case-insensitive against the executable basename. These known
+/// slugs are classifier outputs only; externally supplied harness labels are
+/// accepted as sanitized reporting strings rather than enforced against this
+/// local set.
 fn classify_harness_basename(basename: &str) -> Option<&'static str> {
     let lower = basename.trim().to_lowercase();
     // Strip Windows .exe suffix for portability with the TS classifier.
@@ -359,6 +346,28 @@ fn classify_harness_basename(basename: &str) -> Option<&'static str> {
                 None
             }
         }
+    }
+}
+
+/// Sanitize externally supplied harness labels for telemetry/reporting.
+///
+/// Values are lower-kebab-ish slugs capped at 40 chars, matching the shape
+/// Relaycast accepts for headers while still allowing newly added harnesses
+/// to show up in reports before this classifier knows how to detect them.
+fn sanitize_harness_slug(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() || normalized.len() > 40 {
+        return None;
+    }
+    let mut chars = normalized.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphanumeric() {
+        return None;
+    }
+    if chars.all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        Some(normalized)
+    } else {
+        None
     }
 }
 
@@ -420,18 +429,15 @@ fn read_proc_info(_pid: u32) -> Option<(String, u32)> {
 ///
 /// Resolution order:
 ///   1. `AGENT_RELAY_HARNESS` env var (set by the TS CLI before
-///      spawning the broker — Option A in the issue).
+///      spawning the broker). Any sanitized slug is accepted because this is
+///      a reporting label, not a runtime enum.
 ///   2. Process-tree walk via platform-specific APIs (fallback for the SDK
 ///      case where user code spawns the broker directly).
 ///   3. `"unknown"` as the long-tail baseline.
 fn detect_harness() -> String {
     // 1. Env-var hint set by a parent CLI — saves the broker from re-walking.
     if let Some(value) = env_nonempty("AGENT_RELAY_HARNESS") {
-        let lower = value.to_lowercase();
-        if KNOWN_HARNESSES.iter().any(|&h| h == lower) {
-            return lower;
-        }
-        return "unknown".to_string();
+        return sanitize_harness_slug(&value).unwrap_or_else(|| "unknown".to_string());
     }
 
     // 2. Walk the parent chain — up to 10 hops.
@@ -799,11 +805,26 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_harness_slug_accepts_reporting_slugs() {
+        assert_eq!(
+            sanitize_harness_slug(" New-Tool "),
+            Some("new-tool".to_string())
+        );
+        assert_eq!(sanitize_harness_slug("cursor"), Some("cursor".to_string()));
+        assert_eq!(sanitize_harness_slug(""), None);
+        assert_eq!(sanitize_harness_slug("../bad"), None);
+        assert_eq!(sanitize_harness_slug("bad value!"), None);
+        assert_eq!(sanitize_harness_slug(&"a".repeat(41)), None);
+    }
+
+    #[test]
     #[serial]
     fn detect_harness_respects_env_hint() {
         std::env::set_var("AGENT_RELAY_HARNESS", "claude-code");
         assert_eq!(detect_harness(), "claude-code");
-        std::env::set_var("AGENT_RELAY_HARNESS", "garbage-value");
+        std::env::set_var("AGENT_RELAY_HARNESS", "made-up-harness");
+        assert_eq!(detect_harness(), "made-up-harness");
+        std::env::set_var("AGENT_RELAY_HARNESS", "bad value!");
         assert_eq!(detect_harness(), "unknown");
         std::env::set_var("AGENT_RELAY_HARNESS", "CURSOR");
         // Case-insensitive normalization.

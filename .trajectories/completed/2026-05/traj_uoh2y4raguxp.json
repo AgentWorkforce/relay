@@ -1,0 +1,57 @@
+{
+  "id": "traj_uoh2y4raguxp",
+  "version": 1,
+  "task": {
+    "title": "Relax harness slug validation",
+    "source": {
+      "system": "plain",
+      "id": "PR-888"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T17:08:28.774Z",
+  "completedAt": "2026-05-19T17:12:38.005Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T17:10:48.466Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_swai2grrdca7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T17:10:48.466Z",
+      "endedAt": "2026-05-19T17:12:38.005Z",
+      "events": [
+        {
+          "ts": 1779210648467,
+          "type": "decision",
+          "content": "Treat orchestrator harness as sanitized reporting slug: Treat orchestrator harness as sanitized reporting slug",
+          "raw": {
+            "question": "Treat orchestrator harness as sanitized reporting slug",
+            "chosen": "Treat orchestrator harness as sanitized reporting slug",
+            "alternatives": [],
+            "reasoning": "Telemetry consumers only need a bounded string label; keeping a closed enum would drop newly introduced harnesses until every component was updated."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Relaxed orchestrator harness validation so env/header-provided values are sanitized reporting slugs rather than a closed enum, while keeping known process classifiers for automatic detection.",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/agent-a90562b7ed038f1a0",
+  "tags": [],
+  "_trace": {
+    "startRef": "aba66750baa816d0b2389723514c50a0de924b3d",
+    "endRef": "aba66750baa816d0b2389723514c50a0de924b3d"
+  }
+}

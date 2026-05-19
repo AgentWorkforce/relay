@@ -28,32 +28,6 @@ const POSTHOG_HOST = 'https://us.i.posthog.com';
 const HARNESS_ENV_VAR = 'AGENT_RELAY_HARNESS';
 const HTTP_TIMEOUT_MS = 5000;
 
-/** Lower-kebab-case harness slugs — must match the TS/Rust classifier sets. */
-type Harness =
-  | 'claude-code'
-  | 'cursor'
-  | 'codex'
-  | 'gemini'
-  | 'aider'
-  | 'cline'
-  | 'continue'
-  | 'windsurf'
-  | 'zed'
-  | 'unknown';
-
-const KNOWN_HARNESSES: ReadonlySet<string> = new Set([
-  'claude-code',
-  'cursor',
-  'codex',
-  'gemini',
-  'aider',
-  'cline',
-  'continue',
-  'windsurf',
-  'zed',
-  'unknown',
-]);
-
 interface SdkCommonProps {
   agent_relay_version: string;
   sdk_version: string;
@@ -172,10 +146,15 @@ function resolveSdkVersion(): string {
   return 'unknown';
 }
 
-function resolveHarness(): Harness {
-  const fromEnv = process.env[HARNESS_ENV_VAR]?.trim().toLowerCase();
-  if (fromEnv && KNOWN_HARNESSES.has(fromEnv)) {
-    return fromEnv as Harness;
+function sanitizeHarnessSlug(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{0,39}$/.test(normalized) ? normalized : null;
+}
+
+function resolveHarness(): string {
+  const fromEnv = process.env[HARNESS_ENV_VAR];
+  if (fromEnv?.trim()) {
+    return sanitizeHarnessSlug(fromEnv) ?? 'unknown';
   }
   // SDK avoids the process-tree walk itself — keep startup cost near zero
   // for library consumers. The broker still does the walk on its side.

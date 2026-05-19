@@ -79,8 +79,18 @@ describe('detectHarness', () => {
     expect(detectHarness()).toBe('claude-code');
   });
 
-  it('returns `unknown` for an unrecognized env hint', () => {
+  it('accepts sanitized custom env hints as reporting slugs', () => {
     process.env[HARNESS_ENV_VAR] = 'made-up-harness';
+    expect(detectHarness()).toBe('made-up-harness');
+  });
+
+  it('normalizes env hint case', () => {
+    process.env[HARNESS_ENV_VAR] = 'CURSOR';
+    expect(detectHarness()).toBe('cursor');
+  });
+
+  it('returns `unknown` for invalid env hints', () => {
+    process.env[HARNESS_ENV_VAR] = 'bad value!';
     expect(detectHarness()).toBe('unknown');
   });
 
@@ -109,5 +119,19 @@ describe('detectHarness', () => {
       'windsurf',
       'zed',
     ]).toContain(result);
+  });
+});
+
+describe('sanitizeHarnessSlug', () => {
+  it('accepts lower-kebab reporting slugs', () => {
+    expect(__internal.sanitizeHarnessSlug('new-tool')).toBe('new-tool');
+    expect(__internal.sanitizeHarnessSlug(' New-Tool ')).toBe('new-tool');
+  });
+
+  it('rejects empty, path-like, and high-cardinality values', () => {
+    expect(__internal.sanitizeHarnessSlug('')).toBeNull();
+    expect(__internal.sanitizeHarnessSlug('../bad')).toBeNull();
+    expect(__internal.sanitizeHarnessSlug('bad value')).toBeNull();
+    expect(__internal.sanitizeHarnessSlug('a'.repeat(41))).toBeNull();
   });
 });

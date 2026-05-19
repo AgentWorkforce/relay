@@ -13,26 +13,20 @@
  *   - On Windows we fall back to `'unknown'` (PowerShell-based detection is
  *     possible but adds latency; users on Windows are a long tail today).
  *
- * Failure modes are intentional non-events: any error returns `'unknown'`,
- * so telemetry can size the long tail and we discover new harnesses to
- * classify by watching which `unknown` baselines show up.
- *
- * Schema alignment: the slug set is shared verbatim with
- *   - `src/telemetry.rs` (broker-side detection)
- *   - the relaycast server-side header parser (PR
- *     AgentWorkforce/relaycast#132)
- * Keep all three in sync when adding a harness.
+ * Failure modes are intentional non-events: any error returns `'unknown'`.
+ * Known process classifiers should stay semantically consistent with the Rust
+ * broker detector, but externally supplied harness labels are reporting
+ * strings: any sanitized lower-kebab slug is accepted so new harnesses can
+ * show up before the detector has a local classifier for them.
  */
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-/**
- * Lower-kebab-case canonical harness values. The relaycast server-side
- * sanitizer is permissive (lowercase, ASCII-only, ≤40 chars) — we send the
- * canonical slug so values round-trip without truncation or coercion.
- */
-export type Harness =
+/** Lower-kebab-ish reporting slug for the orchestrator harness. */
+export type Harness = string;
+
+type ClassifiedHarness =
   | 'claude-code'
   | 'cursor'
   | 'codex'
@@ -60,7 +54,7 @@ const MAX_ANCESTOR_DEPTH = 10;
  *
  * Ordering matters: more specific patterns first.
  */
-const HARNESS_PATTERNS: Array<{ harness: Harness; re: RegExp }> = [
+const HARNESS_PATTERNS: Array<{ harness: ClassifiedHarness; re: RegExp }> = [
   // Claude Code ships as `claude` on PATH plus a desktop "Claude" app on macOS.
   { harness: 'claude-code', re: /^claude(?:-code)?(?:\.exe)?$/i },
   { harness: 'claude-code', re: /^Claude(?:\s+Helper)?$/ },
@@ -83,13 +77,18 @@ const HARNESS_PATTERNS: Array<{ harness: Harness; re: RegExp }> = [
   { harness: 'zed', re: /^zed(?:\.exe)?$/i },
 ];
 
-function classifyBasename(basename: string): Harness | null {
+function classifyBasename(basename: string): ClassifiedHarness | null {
   for (const { harness, re } of HARNESS_PATTERNS) {
     if (re.test(basename)) {
       return harness;
     }
   }
   return null;
+}
+
+function sanitizeHarnessSlug(value: string): Harness | null {
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{0,39}$/.test(normalized) ? normalized : null;
 }
 
 /** Extract a basename from a process command string. */
@@ -161,6 +160,8 @@ let cachedHarness: Harness | null = null;
  * Resolution order:
  *   1. `AGENT_RELAY_HARNESS` env var (set by a parent CLI when
  *      it spawns the broker — saves the broker from re-walking).
+ *      Any sanitized slug is accepted because this is a reporting label,
+ *      not a runtime enum.
  *   2. Process-tree walk via platform-specific APIs.
  *   3. `'unknown'` on any failure.
  */
@@ -170,9 +171,9 @@ export function detectHarness(): Harness {
   }
 
   // 1. Env-var hint (set by the CLI before spawning the broker).
-  const envHint = process.env[HARNESS_ENV_VAR]?.trim().toLowerCase();
-  if (envHint) {
-    cachedHarness = isKnownHarness(envHint) ? envHint : 'unknown';
+  const envHint = process.env[HARNESS_ENV_VAR];
+  if (envHint?.trim()) {
+    cachedHarness = sanitizeHarnessSlug(envHint) ?? 'unknown';
     return cachedHarness;
   }
 
@@ -199,23 +200,6 @@ export function detectHarness(): Harness {
   return cachedHarness;
 }
 
-const KNOWN_HARNESSES: ReadonlySet<string> = new Set([
-  'claude-code',
-  'cursor',
-  'codex',
-  'gemini',
-  'aider',
-  'cline',
-  'continue',
-  'windsurf',
-  'zed',
-  'unknown',
-]);
-
-function isKnownHarness(value: string): value is Harness {
-  return KNOWN_HARNESSES.has(value);
-}
-
 /** Reset the cache. Test-only — production code should never need this. */
 export function resetHarnessCacheForTests(): void {
   cachedHarness = null;
@@ -225,4 +209,5 @@ export function resetHarnessCacheForTests(): void {
 export const __internal = {
   classifyBasename,
   commandBasename,
+  sanitizeHarnessSlug,
 };
