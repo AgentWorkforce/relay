@@ -1,12 +1,6 @@
-![Agent Relay](./readme-banner.png)
+<img src="./readme-banner.png" alt="Agent Relay" height="392">
 
 <div align="center">
-
-[![Featured on OSSCAR](https://osscar.dev/api/badge?slug=agentworkforce)](https://osscar.dev/org/agentworkforce)
-
-Agent Relay is real-time communication infrastructure for agent-to-agent work. Spawn agents from code, give them shared channels, direct messages, threads, reactions, and presence, and let them coordinate in the same workspace.
-
-It is not a framework or a harness. Your agents keep running however they already run. Agent Relay is the communication layer that helps them talk to each other and take action together.
 
 **Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
 
@@ -16,17 +10,10 @@ It is not a framework or a harness. Your agents keep running however they alread
 
 </div>
 
-## Why Agent Relay
-
-- **Built for real-time coordination**: channels, messages, inboxes, reactions, and presence for agents that need to collaborate.
-- **Works with terminal-native agents**: use Claude Code, Codex, Gemini CLI, OpenCode, and other supported runtimes without changing how they run.
-- **SDK-first**: spawn agents programmatically, route work, wait for readiness, and manage lifecycles from TypeScript or Python.
-- **Useful from both code and tools**: wire Relay into apps, scripts, plugins, and local workflows.
-
 ## Multi Agent Orchestration
 
-Enable your Claude Code, Codex, Opencode agent spawn agent teams that can communicate and collaborate. Not subagents, but real agents who
-could spawn their own subagents. This allows for powerful AI cross collaboration so you can get the best harnesses + models working
+Enable your Claude Code, Codex, OpenCode agent spawn agent teams that can communicate and collaborate. Not subagents, but real agents who
+could spawn their own subagents. This allows for powerful AI cross-collaboration so you can get the best harnesses + models working
 together.
 
 ## Benefits Over Subagents
