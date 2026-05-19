@@ -80,6 +80,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 
+## [6.2.4] - 2026-05-19
+
+### Technical Perspective
+#### Architecture & API Changes
+- Use relaycast sdk 1.1 helpers
+
+#### Releases
+- v6.2.4
+
+---
+
 ## [6.2.3] - 2026-05-19
 
 ### Product Perspective
