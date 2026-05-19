@@ -1,8 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use relay_broker::{
+use crate::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
     pty::PtySession,
@@ -14,6 +13,7 @@ use relay_broker::{
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandPayload, InboundKind, SenderKind},
 };
+use anyhow::{Context, Result};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{

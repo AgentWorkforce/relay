@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use relay_broker::{
+use crate::{
     protocol::MessageInjectionMode,
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
@@ -1758,7 +1758,7 @@ pub async fn broadcast_if_relevant(
 
 #[cfg(test)]
 mod wave0_contract_tests {
-    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
+    use crate::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::broadcast;
 
@@ -1812,7 +1812,7 @@ mod wave0_contract_tests {
 #[cfg(test)]
 mod tests {
     use super::broadcast_if_relevant;
-    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
+    use crate::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::broadcast;
 
@@ -1898,11 +1898,11 @@ mod tests {
 
 #[cfg(test)]
 mod auth_tests {
+    use crate::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use axum::{
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
-    use relay_broker::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
     use serde_json::{json, Value};
     use tokio::sync::{broadcast, mpsc};
     use tower::ServiceExt;
@@ -1911,9 +1911,9 @@ mod auth_tests {
         listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
         SetInboundDeliveryModeOk,
     };
+    use crate::protocol::MessageInjectionMode;
+    use crate::types::{InboundDeliveryMode, PendingRelayMessage};
     use crate::worker_request::RequestWorkerError;
-    use relay_broker::protocol::MessageInjectionMode;
-    use relay_broker::types::{InboundDeliveryMode, PendingRelayMessage};
 
     fn test_router(
         broker_api_key: Option<&str>,
@@ -2163,10 +2163,7 @@ mod auth_tests {
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
                 Some(ListenApiRequest::Send { mode, reply, .. }) => {
-                    assert!(matches!(
-                        mode,
-                        relay_broker::protocol::MessageInjectionMode::Wait
-                    ));
+                    assert!(matches!(mode, crate::protocol::MessageInjectionMode::Wait));
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_1" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -2198,10 +2195,7 @@ mod auth_tests {
         let send_replier = tokio::spawn(async move {
             match rx.recv().await {
                 Some(ListenApiRequest::Send { mode, reply, .. }) => {
-                    assert!(matches!(
-                        mode,
-                        relay_broker::protocol::MessageInjectionMode::Steer
-                    ));
+                    assert!(matches!(mode, crate::protocol::MessageInjectionMode::Steer));
                     let _ = reply.send(Ok(json!({ "success": true, "event_id": "evt_2" })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),

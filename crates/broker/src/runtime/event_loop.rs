@@ -21,7 +21,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) worker_event_rx: mpsc::Receiver<WorkerEvent>,
     pub(super) worker_events_open: bool,
     pub(super) workers: WorkerRegistry,
-    pub(super) crash_insights: relay_broker::crash_insights::CrashInsights,
+    pub(super) crash_insights: crate::crash_insights::CrashInsights,
     pub(super) crash_insights_path: PathBuf,
     pub(super) sdk_lines: tokio::io::Lines<BufReader<tokio::io::Stdin>>,
     pub(super) stdin_open: bool,

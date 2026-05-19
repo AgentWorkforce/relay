@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
     broker::injection_format::format_injection,
@@ -17,7 +18,6 @@ use crate::{
         },
     },
 };
-use relay_broker::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -34,9 +34,9 @@ use super::{
     sender_is_dashboard_label, should_clear_pending_delivery_for_event, AgentRuntime,
     InboundContext, InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider,
 };
-use relay_broker::dedup::DedupCache;
-use relay_broker::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
-use relay_broker::types::{InboundDeliveryMode, InboundDeliveryState};
+use crate::dedup::DedupCache;
+use crate::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
+use crate::types::{InboundDeliveryMode, InboundDeliveryState};
 
 fn env_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

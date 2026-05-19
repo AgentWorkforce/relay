@@ -1,7 +1,7 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
+use crate::relaycast::configure_relaycast_mcp_with_token;
 use anyhow::{Context, Result};
-use relay_broker::relaycast::configure_relaycast_mcp_with_token;
 use tokio::{
     process::{Child, Command},
     time::timeout,

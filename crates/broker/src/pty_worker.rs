@@ -3,11 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
-use relay_broker::{
+use crate::{
     protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
     pty::PtySession,
 };
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -29,11 +29,11 @@ use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
 use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
+use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi};
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
-use relay_broker::snapshot::Snapshot;
 
 #[derive(Debug, Clone)]
 struct PendingWorkerInjection {

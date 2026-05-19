@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use relay_broker::types::{InboundKind, InboundRelayEvent};
+use crate::types::{InboundKind, InboundRelayEvent};
 
 use crate::runtime::normalize_channel;
 
@@ -245,7 +245,7 @@ pub(crate) fn display_target_for_dashboard(
 mod tests {
     use std::collections::HashSet;
 
-    use relay_broker::types::{InboundKind, InboundRelayEvent, RelayPriority, SenderKind};
+    use crate::types::{InboundKind, InboundRelayEvent, RelayPriority, SenderKind};
 
     use super::{
         display_target_for_dashboard, is_self_echo, resolve_delivery_targets,

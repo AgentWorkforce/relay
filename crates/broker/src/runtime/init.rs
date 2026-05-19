@@ -364,7 +364,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
-    let crash_insights = relay_broker::crash_insights::CrashInsights::load(&crash_insights_path);
+    let crash_insights = crate::crash_insights::CrashInsights::load(&crash_insights_path);
 
     let sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let stdin_open = true;

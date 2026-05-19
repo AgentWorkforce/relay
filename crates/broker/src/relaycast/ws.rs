@@ -322,7 +322,9 @@ pub struct RelaycastHttpClient {
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
 pub type RegRetryOutcome = AgentRegistrationRetryOutcome;
-pub use relaycast::{registration_is_retryable, registration_retry_after_secs};
+#[cfg(test)]
+pub(crate) use relaycast::registration_is_retryable;
+pub(crate) use relaycast::registration_retry_after_secs;
 
 impl RelaycastHttpClient {
     pub fn new(

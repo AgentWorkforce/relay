@@ -3,10 +3,10 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
-use relay_broker::relaycast::{
+use crate::relaycast::{
     configure_relaycast_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
 };
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::McpArgsCommand;
@@ -253,8 +253,8 @@ fn home_dir_from_env() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::relaycast::configure_relaycast_mcp_with_token;
     use httpmock::{Method::POST, MockServer};
-    use relay_broker::relaycast::configure_relaycast_mcp_with_token;
     use serde_json::{json, Value};
     use std::sync::{Mutex, MutexGuard, PoisonError};
     use tempfile::tempdir;

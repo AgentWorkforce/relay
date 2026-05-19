@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
 - `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
+- The `relay_broker` Rust crate now exposes only `protocol`, `snippets`, and `run_cli`; broker implementation modules are crate-private.
 
 ### Migration Guidance
 
@@ -69,15 +70,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.2] - 2026-05-18
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Share interactive-attach prep helpers via attach.ts
 - Split runDriveSession to drop below complexity 15 (#897)
 
 #### Dependencies & Tooling
+
 - Align trajectory title with retrospective scope
 - Sanitize absolute paths in metadata (#899)
 
 #### Releases
+
 - v6.2.2
 
 ---
@@ -85,7 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.1] - 2026-05-18
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.1
 
 ---
@@ -93,13 +100,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.0] - 2026-05-18
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **`new` / `relay` / `run` / `rm` verbs + `-n` silent alias (#864 sub-4)** (#864)
 - **`agent-relay drive <name>` interactive take-over client (#864 sub-3)** (#864)
 - **Per-agent session mode + pending-queue routes (#864 sub-2)** (#864)
 - **`agent-relay view <name>` read-only PTY stream client (#864 sub-1)** (#864)
 
 #### User-Impacting Fixes
+
 - Defer spawn-and-attach import until --attach is set
 - Surface drainer write failures from pty write_all
 - Resolve #800 — broker: composable wait-conditions for CLI readiness (steal from ht) (#800)
@@ -107,13 +117,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolve #802 — broker: add VT grid via alacritty_terminal (steal from ht, don't use libghostty) (#802)
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Rename session-mode `relay` → `passthrough` across all surfaces
 - `new` takes positional NAME (drop `-n` flag) + scrub PR refs (#864)
 - Drop `run` verb, fold spawn-and-attach into `new --attach` (#889)
 - Unify worker request/response correlation (#871) (#871)
 
 #### Performance & Reliability
+
 - Assert X-API-Key on every broker request
 - Actually assert on the API-key header in the harness
 - Cover drainer flush failure ack propagation
@@ -122,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add stale preview environment cleanup
 
 #### Dependencies & Tooling
+
 - Drop PR references and legacy framing from code comments (#864)
 - Record `run` -> `new --attach` refactor decision
 - Record decisions for sub-PR 4 (#864) (#864)
@@ -130,6 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inject PostHog key at build time (P0.5 of #881) (#881)
 
 #### Releases
+
 - v6.2.0
 
 ---
