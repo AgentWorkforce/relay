@@ -12,7 +12,7 @@ use crate::listen_api::{
     ListenApiRequest, SetInboundDeliveryModeOk,
 };
 use crate::relaycast::{
-    dm_participants::resolve_dm_participants_cached,
+    dm_participants::{resolve_dm_participants_cached, DmParticipantsCache},
     identity::{agent_name_eq, is_self_name},
 };
 use crate::routing::display_target_for_dashboard;

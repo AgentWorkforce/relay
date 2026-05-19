@@ -23,12 +23,10 @@ impl ActivityDetector {
 
     pub(crate) fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
         let clean_output = strip_ansi(output);
-        let relevant_output = if let Some(pos) = clean_output.find(expected_echo) {
-            let before = &clean_output[..pos];
-            let after = &clean_output[pos + expected_echo.len()..];
-            format!("{before}{after}")
-        } else {
+        let relevant_output = if expected_echo.is_empty() {
             clean_output
+        } else {
+            clean_output.replace(expected_echo, "")
         };
 
         if self.patterns.is_empty() {
@@ -149,6 +147,14 @@ mod tests {
         let detector = ActivityDetector::for_cli("claude");
         let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
         let output = expected_echo.to_string();
+        assert_eq!(detector.detect_activity(&output, expected_echo), None);
+    }
+
+    #[test]
+    fn detect_activity_removes_duplicate_echoes_before_matching_patterns() {
+        let detector = ActivityDetector::for_cli("claude");
+        let expected_echo = "Relay message from Alice [evt_1]: Tool: Write(file)";
+        let output = format!("{expected_echo}\n{expected_echo}");
         assert_eq!(detector.detect_activity(&output, expected_echo), None);
     }
 }

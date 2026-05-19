@@ -391,7 +391,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // are created lazily on first lookup and removed wherever workers
     // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<String, InboundDeliveryState> = HashMap::new();
-    let dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
+    let dm_participants_cache: DmParticipantsCache = HashMap::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
         tracing::info!(

@@ -23,7 +23,7 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::relaycast::{
-    dm_participants::resolve_dm_participants_cached,
+    dm_participants::{resolve_dm_participants_cached, DmParticipantsCache},
     identity::{agent_name_eq, is_self_name},
 };
 use crate::runtime::{
@@ -703,7 +703,7 @@ pub(crate) async fn run_wrap(
 
     // Dedup for WS events
     let mut dedup = DedupCache::new(Duration::from_secs(300), 8192);
-    let mut dm_participants_cache: HashMap<String, (Instant, Vec<String>)> = HashMap::new();
+    let mut dm_participants_cache: DmParticipantsCache = HashMap::new();
 
     // Buffer for extracting message IDs from MCP tool responses in PTY output.
     // When the agent sends messages via MCP, the response contains the message ID.

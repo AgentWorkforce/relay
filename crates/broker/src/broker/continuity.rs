@@ -53,6 +53,7 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
         }
 
         let mut action: Option<ContinuityAction> = None;
+        let mut action_line: Option<usize> = None;
         let mut body_start_line: Option<usize> = None;
 
         for (j, line_at_j) in lines.iter().enumerate().skip(i + 1) {
@@ -71,6 +72,7 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
                     "uncertain" => Some(ContinuityAction::Uncertain),
                     _ => None,
                 };
+                action_line = Some(j);
                 continue;
             }
             if action.is_some() {
@@ -103,7 +105,7 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
                     .take_while(|l| !l.trim().to_lowercase().starts_with(kind_prefix))
                     .count()
             })
-            .unwrap_or(i + 2);
+            .unwrap_or_else(|| action_line.map_or(i + 2, |line| line + 1));
 
         let bytes_consumed = lines[..end_line.min(lines.len())]
             .iter()
@@ -115,4 +117,19 @@ pub(crate) fn parse_continuity_command(buf: &str) -> Option<(ContinuityAction, S
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_continuity_command_consumes_through_delayed_action_line() {
+        let input = "noise\nKIND: continuity\n\nACTION: save\nKIND: other\n";
+        let (action, content, consumed) = parse_continuity_command(input).unwrap();
+
+        assert_eq!(action, ContinuityAction::Save);
+        assert_eq!(content, "");
+        assert_eq!(consumed, "noise\nKIND: continuity\n\nACTION: save\n".len());
+    }
 }

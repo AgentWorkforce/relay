@@ -58,7 +58,7 @@ pub(crate) fn is_in_editor_mode(recent_output: &str) -> bool {
     for pattern in vim_patterns {
         if let Some(pos) = last_output.rfind(pattern) {
             let after_pattern = &last_output[pos + pattern.len()..];
-            let trimmed = after_pattern.trim_start();
+            let trimmed = after_pattern.trim_start_matches([' ', '\t']);
             if trimmed.is_empty() || trimmed.starts_with('\n') {
                 return true;
             }
