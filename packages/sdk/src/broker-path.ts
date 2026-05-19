@@ -274,7 +274,7 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 7. PATH lookup
+  // 6. PATH lookup
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {
