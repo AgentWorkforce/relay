@@ -493,6 +493,37 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }
                                 }
                             }
+                            "write_pty" => {
+                                // Raw input forwarded by the broker (typically
+                                // from POST /api/input/{name} via
+                                // `client.sendInput()`). The payload is
+                                // `{ "data": "<bytes-as-utf8-string>" }`; we
+                                // write those bytes verbatim to the PTY so the
+                                // child process sees the keystrokes.
+                                match frame.payload.get("data").and_then(Value::as_str) {
+                                    Some(data) => {
+                                        if let Err(e) = pty.write_all(data.as_bytes()) {
+                                            tracing::warn!(
+                                                target = "agent_relay::worker::pty",
+                                                error = %e,
+                                                "failed to write input to pty"
+                                            );
+                                            let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                                "code": "pty_write_failed",
+                                                "message": e.to_string(),
+                                                "retryable": true,
+                                            })).await;
+                                        }
+                                    }
+                                    None => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_payload",
+                                            "message": "write_pty payload must include 'data' string",
+                                            "retryable": false,
+                                        })).await;
+                                    }
+                                }
+                            }
                             "ping" => {
                                 let ts = frame.payload.get("ts_ms").and_then(Value::as_u64).unwrap_or_default();
                                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
