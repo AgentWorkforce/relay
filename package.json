@@ -10,7 +10,6 @@
     "install.sh",
     "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
-    "relay-snippets",
     "LICENSE",
     "README.md"
   ],
