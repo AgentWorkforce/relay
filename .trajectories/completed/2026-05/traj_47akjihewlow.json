@@ -1,0 +1,73 @@
+{
+  "id": "traj_47akjihewlow",
+  "version": 1,
+  "task": {
+    "title": "Further split broker runtime module for issue 875",
+    "source": {
+      "system": "plain",
+      "id": "#875"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T01:28:35.746Z",
+  "completedAt": "2026-05-19T01:38:29.105Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T01:36:08.629Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_t1myrcwsr9k7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T01:36:08.629Z",
+      "endedAt": "2026-05-19T01:38:29.105Z",
+      "events": [
+        {
+          "ts": 1779154568630,
+          "type": "decision",
+          "content": "Split broker runtime by responsibility: Split broker runtime by responsibility",
+          "raw": {
+            "question": "Split broker runtime by responsibility",
+            "chosen": "Split broker runtime by responsibility",
+            "alternatives": [],
+            "reasoning": "Kept the CLI-facing runtime API stable while moving cohesive concerns into runtime submodules: init loop, session setup, pending delivery, headless worker, connection discovery, paths, terminal/system helpers, message/thread helpers, frame IO, and spawn spec parsing."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Split broker runtime into focused modules for session setup, init loop, pending delivery, headless workers, connection discovery, paths, frame I/O, message/thread helpers, system helpers, spawn spec parsing, and tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": ["7182810c"],
+  "filesChanged": [
+    "crates/broker/src/runtime.rs",
+    "crates/broker/src/runtime/connection.rs",
+    "crates/broker/src/runtime/delivery.rs",
+    "crates/broker/src/runtime/headless.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/io.rs",
+    "crates/broker/src/runtime/messages.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "crates/broker/src/runtime/paths.rs",
+    "crates/broker/src/runtime/session.rs",
+    "crates/broker/src/runtime/spawn_spec.rs",
+    "crates/broker/src/runtime/system.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/runtime/util.rs"
+  ],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d52c1476dc8b28f8504cf9d60dce10b1719b8c59",
+    "endRef": "7182810ce4863543c825d747a8f159644981d485",
+    "traceId": "c271dee5-bc34-4695-8fb1-bb228ded699f"
+  }
+}
