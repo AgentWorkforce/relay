@@ -954,6 +954,13 @@
       "completedAt": "2026-05-19T00:17:27.680Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_jmf9pyt3zikn.json"
     },
+    "traj_sqerp89tc436": {
+      "title": "Remove legacy root bin fallback",
+      "status": "completed",
+      "startedAt": "2026-05-19T00:45:33.159Z",
+      "completedAt": "2026-05-19T00:50:03.857Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_sqerp89tc436.json"
+    },
     "traj_f9wxa8ujeg78": {
       "title": "Refactor broker main for issue 875",
       "status": "completed",

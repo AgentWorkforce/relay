@@ -101,7 +101,7 @@ describe('broker-path', () => {
   // which packs real tarballs into a scratch project and confirms
   // getBrokerBinaryPath() goes through node_modules/@agent-relay/broker-*.
   // Unit-testing it inside the dev tree is fragile because source-checkout
-  // and ancestor-bin resolution win before the tmp cwd is consulted.
+  // resolution wins before the tmp cwd is consulted.
   // Verify at least that the resolver reuses stageOptionalDepPackage to
   // land an executable where the optional-dep path would find it.
   test('stageOptionalDepPackage produces an executable in the expected layout', () => {
