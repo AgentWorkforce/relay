@@ -1,7 +1,5 @@
 <img src="./readme-banner.png" alt="Agent Relay" height="392">
 
-<div align="center">
-
 **Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
 
 <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
