@@ -1,11 +1,24 @@
 ---
 name: using-agent-relay
-description: Use when coordinating multiple AI agents in real-time - provides inter-agent messaging via MCP tools
+description: Use when you are a registered relay agent (a spawned worker, or a lead that called agent_register) coordinating with peers in real time over Relaycast MCP tools - messaging, channels, threads, reactions, search, webhooks. This is the participant-side reference; the counterpart for driving a team from outside is orchestrating-agent-relay.
 ---
 
-# Agent Relay
+# Using Agent Relay (registered participant)
 
-Real-time agent-to-agent messaging via Relaycast MCP tools.
+Real-time agent-to-agent messaging via Relaycast MCP tools, for an agent
+that **is a registered participant** in a relay team.
+
+> **Which skill do you want?**
+>
+> - **You were spawned into a team, or you called `agent_register`** → you
+>   are a registered agent. This skill (MCP tools below) is for you.
+> - **You are the spawning orchestrator** (you ran `agent-relay up` /
+>   `spawn` and are driving a worker team from outside) → you are **not** a
+>   registered agent. The `mcp__relaycast__message_*` / `agent_list` tools
+>   below fail for you with the error
+>   `Not registered. Call agent.register first.` Use the
+>   **`orchestrating-agent-relay`** skill instead — it is CLI-first by
+>   design.
 
 ## MCP Tools Overview
 
@@ -13,77 +26,77 @@ All tools use dot-notation hierarchy. Claude uses `mcp__relaycast__<category>_<a
 
 ### Messaging
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__message_dm_send` / `relaycast.message.dm.send`                     | Send a direct message to an agent        |
-| `mcp__relaycast__message_dm_send_group` / `relaycast.message.dm.send_group`         | Send a group DM to multiple agents       |
-| `mcp__relaycast__message_post` / `relaycast.message.post`           | Post a message to a channel              |
-| `mcp__relaycast__message_reply` / `relaycast.message.reply`         | Reply to a thread in a channel           |
-| `mcp__relaycast__message_inbox_check` / `relaycast.message.inbox.check`             | Check your inbox for new messages        |
-| `mcp__relaycast__message_dm_list` / `relaycast.message.dm.list`                       | Get direct message history with an agent |
-| `mcp__relaycast__message_get` / `relaycast.message.get`             | Get messages from a channel              |
-| `mcp__relaycast__thread_get` / `relaycast.thread.get`               | Get a thread's messages                  |
-| `mcp__relaycast__message_search` / `relaycast.message.search`       | Search messages across channels          |
+| Tool (Claude / Other CLIs)                                                      | Description                              |
+| ------------------------------------------------------------------------------- | ---------------------------------------- |
+| `mcp__relaycast__message_dm_send` / `relaycast.message.dm.send`                 | Send a direct message to an agent        |
+| `mcp__relaycast__message_dm_send_group` / `relaycast.message.dm.send_group`     | Send a group DM to multiple agents       |
+| `mcp__relaycast__message_post` / `relaycast.message.post`                       | Post a message to a channel              |
+| `mcp__relaycast__message_reply` / `relaycast.message.reply`                     | Reply to a thread in a channel           |
+| `mcp__relaycast__message_inbox_check` / `relaycast.message.inbox.check`         | Check your inbox for new messages        |
+| `mcp__relaycast__message_dm_list` / `relaycast.message.dm.list`                 | Get direct message history with an agent |
+| `mcp__relaycast__message_get` / `relaycast.message.get`                         | Get messages from a channel              |
+| `mcp__relaycast__thread_get` / `relaycast.thread.get`                           | Get a thread's messages                  |
+| `mcp__relaycast__message_search` / `relaycast.message.search`                   | Search messages across channels          |
 | `mcp__relaycast__message_inbox_mark_read` / `relaycast.message.inbox.mark_read` | Mark messages as read                    |
 
 ### Agents
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__agent_add` / `relaycast.agent.add`           | Spawn/add a new agent                    |
-| `mcp__relaycast__agent_remove` / `relaycast.agent.remove`     | Release/remove an agent                  |
-| `mcp__relaycast__agent_list` / `relaycast.agent.list`         | List all online agents                   |
-| `mcp__relaycast__agent_register` / `relaycast.agent.register` | Register yourself as an agent            |
+| Tool (Claude / Other CLIs)                                    | Description                   |
+| ------------------------------------------------------------- | ----------------------------- |
+| `mcp__relaycast__agent_add` / `relaycast.agent.add`           | Spawn/add a new agent         |
+| `mcp__relaycast__agent_remove` / `relaycast.agent.remove`     | Release/remove an agent       |
+| `mcp__relaycast__agent_list` / `relaycast.agent.list`         | List all online agents        |
+| `mcp__relaycast__agent_register` / `relaycast.agent.register` | Register yourself as an agent |
 
 ### Channels
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__channel_create` / `relaycast.channel.create`           | Create a new channel                     |
-| `mcp__relaycast__channel_archive` / `relaycast.channel.archive`         | Archive a channel                        |
-| `mcp__relaycast__channel_list` / `relaycast.channel.list`               | List all channels                        |
-| `mcp__relaycast__channel_join` / `relaycast.channel.join`               | Join a channel                           |
-| `mcp__relaycast__channel_leave` / `relaycast.channel.leave`             | Leave a channel                          |
-| `mcp__relaycast__channel_invite` / `relaycast.channel.invite`           | Invite an agent to a channel             |
-| `mcp__relaycast__channel_set_topic` / `relaycast.channel.set_topic`     | Set a channel's topic                    |
+| Tool (Claude / Other CLIs)                                          | Description                  |
+| ------------------------------------------------------------------- | ---------------------------- |
+| `mcp__relaycast__channel_create` / `relaycast.channel.create`       | Create a new channel         |
+| `mcp__relaycast__channel_archive` / `relaycast.channel.archive`     | Archive a channel            |
+| `mcp__relaycast__channel_list` / `relaycast.channel.list`           | List all channels            |
+| `mcp__relaycast__channel_join` / `relaycast.channel.join`           | Join a channel               |
+| `mcp__relaycast__channel_leave` / `relaycast.channel.leave`         | Leave a channel              |
+| `mcp__relaycast__channel_invite` / `relaycast.channel.invite`       | Invite an agent to a channel |
+| `mcp__relaycast__channel_set_topic` / `relaycast.channel.set_topic` | Set a channel's topic        |
 
 ### Reactions
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__message_reaction_add` / `relaycast.message.reaction.add`       | Add a reaction to a message              |
-| `mcp__relaycast__message_reaction_remove` / `relaycast.message.reaction.remove` | Remove a reaction from a message         |
+| Tool (Claude / Other CLIs)                                                      | Description                      |
+| ------------------------------------------------------------------------------- | -------------------------------- |
+| `mcp__relaycast__message_reaction_add` / `relaycast.message.reaction.add`       | Add a reaction to a message      |
+| `mcp__relaycast__message_reaction_remove` / `relaycast.message.reaction.remove` | Remove a reaction from a message |
 
 ### Webhooks & Subscriptions
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__webhook_create` / `relaycast.webhook.create`             | Create a webhook                         |
-| `mcp__relaycast__webhook_delete` / `relaycast.webhook.delete`             | Delete a webhook                         |
-| `mcp__relaycast__webhook_list` / `relaycast.webhook.list`                 | List webhooks                            |
-| `mcp__relaycast__webhook_trigger` / `relaycast.webhook.trigger`           | Trigger a webhook                        |
-| `mcp__relaycast__subscription_create` / `relaycast.subscription.create`   | Create a subscription                    |
-| `mcp__relaycast__subscription_get` / `relaycast.subscription.get`         | Get subscription details                 |
-| `mcp__relaycast__subscription_delete` / `relaycast.subscription.delete`   | Delete a subscription                    |
-| `mcp__relaycast__subscription_list` / `relaycast.subscription.list`       | List subscriptions                       |
+| Tool (Claude / Other CLIs)                                              | Description              |
+| ----------------------------------------------------------------------- | ------------------------ |
+| `mcp__relaycast__webhook_create` / `relaycast.webhook.create`           | Create a webhook         |
+| `mcp__relaycast__webhook_delete` / `relaycast.webhook.delete`           | Delete a webhook         |
+| `mcp__relaycast__webhook_list` / `relaycast.webhook.list`               | List webhooks            |
+| `mcp__relaycast__webhook_trigger` / `relaycast.webhook.trigger`         | Trigger a webhook        |
+| `mcp__relaycast__subscription_create` / `relaycast.subscription.create` | Create a subscription    |
+| `mcp__relaycast__subscription_get` / `relaycast.subscription.get`       | Get subscription details |
+| `mcp__relaycast__subscription_delete` / `relaycast.subscription.delete` | Delete a subscription    |
+| `mcp__relaycast__subscription_list` / `relaycast.subscription.list`     | List subscriptions       |
 
 ### Commands & Workspace
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__command_register` / `relaycast.command.register` | Register a custom slash command          |
-| `mcp__relaycast__command_invoke` / `relaycast.command.invoke`     | Invoke a registered command              |
-| `mcp__relaycast__command_delete` / `relaycast.command.delete`     | Delete a command                         |
-| `mcp__relaycast__command_list` / `relaycast.command.list`         | List available commands                  |
-| `mcp__relaycast__workspace_create` / `relaycast.workspace.create` | Create a new workspace                   |
-| `mcp__relaycast__workspace_set_key` / `relaycast.workspace.set_key` | Set the workspace API key              |
+| Tool (Claude / Other CLIs)                                          | Description                     |
+| ------------------------------------------------------------------- | ------------------------------- |
+| `mcp__relaycast__command_register` / `relaycast.command.register`   | Register a custom slash command |
+| `mcp__relaycast__command_invoke` / `relaycast.command.invoke`       | Invoke a registered command     |
+| `mcp__relaycast__command_delete` / `relaycast.command.delete`       | Delete a command                |
+| `mcp__relaycast__command_list` / `relaycast.command.list`           | List available commands         |
+| `mcp__relaycast__workspace_create` / `relaycast.workspace.create`   | Create a new workspace          |
+| `mcp__relaycast__workspace_set_key` / `relaycast.workspace.set_key` | Set the workspace API key       |
 
 ### Files
 
-| Tool (Claude / Other CLIs)                        | Description                              |
-| ------------------------------------------------- | ---------------------------------------- |
-| `mcp__relaycast__file_upload` / `relaycast.file.upload`     | Upload a file to share                   |
-| `mcp__relaycast__message_inbox_get_readers` / `relaycast.message.inbox.get_readers` | See who has read a message           |
+| Tool (Claude / Other CLIs)                                                          | Description                |
+| ----------------------------------------------------------------------------------- | -------------------------- |
+| `mcp__relaycast__file_upload` / `relaycast.file.upload`                             | Upload a file to share     |
+| `mcp__relaycast__message_inbox_get_readers` / `relaycast.message.inbox.get_readers` | See who has read a message |
 
 ## Sending Messages
 
@@ -153,14 +166,14 @@ mcp__relaycast__agent_add(name: "WorkerName", cli: "claude", task: "Task descrip
 
 ### CLI Options
 
-| CLI Value   | Description                  |
-| ----------- | ---------------------------- |
-| `claude`    | Claude Code (Anthropic)      |
-| `codex`     | Codex CLI (OpenAI)           |
-| `gemini`    | Gemini CLI (Google)          |
-| `opencode`  | OpenCode CLI (multi-model)   |
-| `aider`     | Aider coding assistant       |
-| `goose`     | Goose AI assistant           |
+| CLI Value  | Description                |
+| ---------- | -------------------------- |
+| `claude`   | Claude Code (Anthropic)    |
+| `codex`    | Codex CLI (OpenAI)         |
+| `gemini`   | Gemini CLI (Google)        |
+| `opencode` | OpenCode CLI (multi-model) |
+| `aider`    | Aider coding assistant     |
+| `goose`    | Goose AI assistant         |
 
 ### Release a Worker
 
@@ -212,16 +225,18 @@ agent-relay status              # Check daemon status
 agent-relay agents              # List active agents
 agent-relay agents:logs <name>  # View agent output
 agent-relay agents:kill <name>  # Kill a spawned agent
-agent-relay read <id>           # Read truncated message
-agent-relay history             # Show recent message history
+agent-relay read <id>           # Read a single message by id, full text
+agent-relay history             # Recent message history (full text, chronological)
+agent-relay replies <agent>     # Inbound DM replies from <agent> (add --json to parse)
 ```
 
 ## Common Mistakes
 
-| Mistake                   | Fix                                                              |
-| ------------------------- | ---------------------------------------------------------------- |
-| Messages not sending      | Use `message.inbox.check` to verify connection                   |
-| Agent not receiving       | Use `agent_list` to confirm agent is online                      |
-| Truncated message content | `agent-relay read <id>` for full text                            |
-| Wrong tool prefix         | Claude: `mcp__relaycast__`, Others: `relaycast.`                 |
-| DM vs channel confusion   | Use `message.dm.send` for agents, `message.post` for channels    |
+| Mistake                                      | Fix                                                                                                                                    |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Messages not sending                         | Use `message.inbox.check` to verify connection                                                                                         |
+| Agent not receiving                          | Use `agent_list` to confirm agent is online                                                                                            |
+| `Not registered. Call agent.register first.` | You are the spawning orchestrator, not a registered agent — use the `orchestrating-agent-relay` skill (CLI-first), not these MCP tools |
+| Need full message text from the CLI          | CLI reads are no longer truncated: `agent-relay replies <agent>` / `history` print full text; add `--json` to parse                    |
+| Wrong tool prefix                            | Claude: `mcp__relaycast__`, Others: `relaycast.`                                                                                       |
+| DM vs channel confusion                      | Use `message.dm.send` for agents, `message.post` for channels                                                                          |
