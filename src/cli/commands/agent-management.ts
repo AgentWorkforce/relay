@@ -54,10 +54,29 @@ export interface AgentManagementDependencies {
   readTaskFromStdin: () => Promise<string | undefined>;
   fileExists: (filePath: string) => boolean;
   readFile: (filePath: string, encoding?: BufferEncoding) => string;
+  readFileTail: (
+    filePath: string,
+    maxBytes: number,
+    encoding?: BufferEncoding
+  ) => { text: string; size: number };
+  readFileBuffer?: (filePath: string) => Buffer;
+  readFileTailBuffer?: (filePath: string, maxBytes: number) => { buffer: Buffer; size: number };
+  readFileFrom: (
+    filePath: string,
+    offset: number,
+    maxBytes: number,
+    encoding?: BufferEncoding
+  ) => { text: string; size: number };
+  readFileFromBuffer?: (
+    filePath: string,
+    offset: number,
+    maxBytes: number
+  ) => { buffer: Buffer; size: number };
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   nowIso: () => string;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   sleep: (ms: number) => Promise<void>;
+  writeChunk: (chunk: string | Uint8Array) => void;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -194,6 +213,68 @@ async function waitForBrokerClient(
 }
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
+  const readFileTail = (filePath: string, maxBytes: number, encoding: BufferEncoding = 'utf-8') => {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stats = fs.fstatSync(fd);
+      const start = Math.max(0, stats.size - maxBytes);
+      const length = stats.size - start;
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return { text: buffer.toString(encoding), size: stats.size };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  const readFileTailBuffer = (filePath: string, maxBytes: number) => {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stats = fs.fstatSync(fd);
+      const start = Math.max(0, stats.size - maxBytes);
+      const length = stats.size - start;
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return { buffer, size: stats.size };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  const readFileFrom = (
+    filePath: string,
+    offset: number,
+    maxBytes: number,
+    encoding: BufferEncoding = 'utf-8'
+  ) => {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stats = fs.fstatSync(fd);
+      if (stats.size <= offset) {
+        return { text: '', size: stats.size };
+      }
+      const length = Math.min(maxBytes, stats.size - offset);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, offset);
+      return { text: buffer.toString(encoding), size: offset + length };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  const readFileFromBuffer = (filePath: string, offset: number, maxBytes: number) => {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stats = fs.fstatSync(fd);
+      if (stats.size <= offset) {
+        return { buffer: Buffer.alloc(0), size: stats.size };
+      }
+      const length = Math.min(maxBytes, stats.size - offset);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, offset);
+      return { buffer, size: offset + length };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
   return {
     getProjectRoot: () => getProjectPaths().projectRoot,
     getDataDir: () =>
@@ -203,10 +284,18 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     readTaskFromStdin,
     fileExists: fs.existsSync,
     readFile: (filePath, encoding = 'utf-8') => fs.readFileSync(filePath, encoding),
+    readFileBuffer: (filePath) => fs.readFileSync(filePath),
+    readFileTail,
+    readFileTailBuffer,
+    readFileFrom,
+    readFileFromBuffer,
     fetch: (url, init) => fetch(url, init),
     nowIso: () => new Date().toISOString(),
     killProcess: process.kill,
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    writeChunk: (chunk: string | Uint8Array) => {
+      process.stdout.write(chunk);
+    },
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -404,9 +493,17 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name')
     .option('-n, --lines <n>', 'Number of lines to show', '50')
     .option('-f, --follow', 'Follow log output (like tail -f)')
-    .action(async (name: string, options: { lines?: string; follow?: boolean }) => {
-      await runAgentsLogsCommand(name, options, deps);
-    });
+    .option('--plain', 'Line-oriented cooked output (default; kept for compatibility)')
+    .option('--raw', 'Emit original PTY stream with ANSI/control sequences')
+    .option('--json', 'Structured JSON: { agent, file, lines[] } (cooked; snapshot only)')
+    .action(
+      async (
+        name: string,
+        options: { lines?: string; follow?: boolean; plain?: boolean; raw?: boolean; json?: boolean }
+      ) => {
+        await runAgentsLogsCommand(name, options, deps);
+      }
+    );
 
   program
     .command('release')

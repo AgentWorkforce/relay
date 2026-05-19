@@ -1,9 +1,7 @@
 {
   "id": "sage-slack-egress-migrator",
   "intent": "sage-slack-egress-migration",
-  "tags": [
-    "implementation"
-  ],
+  "tags": ["implementation"],
   "description": "Migrates sage Slack egress off direct NangoClient onto the @relayfile/sdk ConnectionProvider abstraction without introducing hardcoded providerConfigKey defaults.",
   "harness": "opencode",
   "model": "opencode/gpt-5-nano",

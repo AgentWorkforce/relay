@@ -2,6 +2,7 @@
 
 import type { ComponentType } from 'react';
 import { useEffect, useRef } from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   Activity,
@@ -135,10 +136,10 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
               const Icon = navIcons[item.slug];
               return (
                 <li key={item.slug}>
-                  <a href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
+                  <Link href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>
                     {Icon && <Icon className={styles.navIcon} aria-hidden="true" />}
                     <span className={styles.navLabel}>{item.title}</span>
-                  </a>
+                  </Link>
                 </li>
               );
             })}

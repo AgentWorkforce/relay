@@ -40,14 +40,17 @@ describe('commandBasename', () => {
   });
 
   it('strips Windows-style backslash paths', () => {
-    // Note: we tokenize on whitespace first, so paths with spaces in them
-    // (e.g. "C:\Program Files\...") need quoting from the OS — which is
-    // exactly what `ps` does on darwin. Test the unquoted, space-free shape.
     expect(__internal.commandBasename('C:\\Users\\me\\cursor.exe')).toBe('cursor.exe');
   });
 
   it('strips surrounding quotes', () => {
     expect(__internal.commandBasename('"/Applications/Claude.app/Claude"')).toBe('Claude');
+  });
+
+  it('keeps quoted executable paths with spaces intact before taking the basename', () => {
+    expect(
+      __internal.commandBasename('"/Applications/Cursor App.app/Contents/MacOS/Cursor" --type=renderer')
+    ).toBe('Cursor');
   });
 
   it('handles empty input', () => {

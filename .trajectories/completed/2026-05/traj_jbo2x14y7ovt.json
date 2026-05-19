@@ -1,0 +1,57 @@
+{
+  "id": "traj_jbo2x14y7ovt",
+  "version": 1,
+  "task": {
+    "title": "Fix issue 876",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#876"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T02:48:10.768Z",
+  "completedAt": "2026-05-19T02:56:24.584Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T02:56:10.166Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_tdwqb9c86u1h",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T02:56:10.166Z",
+      "endedAt": "2026-05-19T02:56:24.584Z",
+      "events": [
+        {
+          "ts": 1779159370167,
+          "type": "decision",
+          "content": "Split broker helpers by ownership: Split broker helpers by ownership",
+          "raw": {
+            "question": "Split broker helpers by ownership",
+            "chosen": "Split broker helpers by ownership",
+            "alternatives": [],
+            "reasoning": "Issue 876 called out unrelated responsibilities in helpers.rs, so command parsing moved under cli, injection/verification/continuity under broker, ANSI and terminal prompt detection under util, worker activity detection under worker, and Relaycast identity/DM cache under relaycast-specific modules."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Refactored broker helpers.rs into domain-owned modules, updated all imports, moved helper tests with the code, and validated Rust check/test/fmt/clippy plus SDK TypeScript check.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6378fdb3a598b9f5f7131ca18f1fd8116770112d",
+    "endRef": "6378fdb3a598b9f5f7131ca18f1fd8116770112d"
+  }
+}

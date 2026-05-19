@@ -6,9 +6,9 @@
  * Consumers: runner.ts (buildNonInteractiveCommand, resolveCursorCli),
  * spawn-from-env.ts (BYPASS_FLAGS), cli-resolver.ts (path resolution).
  *
- * NOTE: The Rust PTY spawner (src/pty.rs) maintains its own PATH fallback.
+ * NOTE: The Rust PTY spawner (crates/broker/src/pty.rs) maintains its own PATH fallback.
  * When updating `COMMON_SEARCH_PATHS` here, also update the Rust fallback
- * in `resolve_command_path()` at src/pty.rs:53-67.
+ * in `resolve_command_path()` at crates/broker/src/pty.rs.
  */
 
 import type { AgentCli } from './workflows/types.js';
@@ -36,7 +36,7 @@ export interface CliDefinition {
  * Common install directories checked when PATH is empty or incomplete.
  * Paths containing `~` are expanded at resolution time.
  *
- * Keep in sync with the Rust fallback in src/pty.rs `resolve_command_path()`.
+ * Keep in sync with the Rust fallback in crates/broker/src/pty.rs `resolve_command_path()`.
  */
 export const COMMON_SEARCH_PATHS = [
   '~/.local/bin',
@@ -53,12 +53,7 @@ export const COMMON_SEARCH_PATHS = [
 const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   claude: {
     binaries: ['claude'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '-p',
-      '--dangerously-skip-permissions',
-      task,
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['-p', '--dangerously-skip-permissions', task, ...extra],
     bypassFlag: '--dangerously-skip-permissions',
     searchPaths: ['~/.claude/local'],
   },
@@ -92,50 +87,23 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   },
   aider: {
     binaries: ['aider'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--message',
-      task,
-      '--yes-always',
-      '--no-git',
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['--message', task, '--yes-always', '--no-git', ...extra],
   },
   goose: {
     binaries: ['goose'],
-    nonInteractiveArgs: (task, extra = []) => [
-      'run',
-      '--text',
-      task,
-      '--no-session',
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['run', '--text', task, '--no-session', ...extra],
   },
   'cursor-agent': {
     binaries: ['cursor-agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   agent: {
     binaries: ['agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   cursor: {
     binaries: ['cursor-agent', 'agent'],
-    nonInteractiveArgs: (task, extra = []) => [
-      '--force',
-      '-p',
-      task,
-      ...extra,
-    ],
+    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
   },
   api: {
     binaries: [],

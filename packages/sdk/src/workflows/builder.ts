@@ -505,18 +505,17 @@ export class WorkflowBuilder {
     } finally {
       // Lazy import keeps the no-telemetry-key path zero-cost for users who
       // never enable telemetry.
-      try {
-        const { trackSdkEvent } = await import('../telemetry.js');
-        trackSdkEvent('sdk_workflow_run', {
-          workflow_name: workflowName,
-          step_count: stepCount,
-          success,
-          duration_ms: Date.now() - startedAt,
-          ...(errorClass ? { error_class: errorClass } : {}),
-        });
-      } catch {
-        // Telemetry must never alter user-visible behaviour.
-      }
+      void import('../telemetry.js')
+        .then(({ trackSdkEvent }) => {
+          trackSdkEvent('sdk_workflow_run', {
+            workflow_name: workflowName,
+            step_count: stepCount,
+            success,
+            duration_ms: Date.now() - startedAt,
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
+        })
+        .catch(() => undefined);
     }
   }
 

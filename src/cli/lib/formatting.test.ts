@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { formatRelativeTime, formatTableRow, parseSince } from './formatting';
+import {
+  formatRelativeTime,
+  formatTableRow,
+  formatUptimeSecs,
+  parseSince,
+  sanitizeForTerminal,
+  sanitizeForTerminalLine,
+} from './formatting';
 
 describe('formatting helpers', () => {
   beforeEach(() => {
@@ -31,7 +38,7 @@ describe('formatting helpers', () => {
     expect(parseSince('5m')).toBe(now - 300_000);
     expect(parseSince('2h')).toBe(now - 7_200_000);
     expect(parseSince('1d')).toBe(now - 86_400_000);
-    expect(parseSince('-1h')).toBe(now + 3_600_000);
+    expect(parseSince('-1h')).toBeUndefined();
   });
 
   it('parses absolute time and rejects empty values', () => {
@@ -42,11 +49,44 @@ describe('formatting helpers', () => {
 
   it('formats padded table rows', () => {
     expect(
-      formatTableRow([
-        { value: 'name', width: 8 },
-        { value: 'status', width: 10 },
-        { value: 'online' },
-      ]),
+      formatTableRow([{ value: 'name', width: 8 }, { value: 'status', width: 10 }, { value: 'online' }])
     ).toBe('name     status     online');
+  });
+
+  it('formats uptime seconds compactly', () => {
+    expect(formatUptimeSecs(0)).toBe('0s');
+    expect(formatUptimeSecs(45)).toBe('45s');
+    expect(formatUptimeSecs(60)).toBe('1m 00s');
+    expect(formatUptimeSecs(125)).toBe('2m 05s');
+    expect(formatUptimeSecs(3600)).toBe('1h 00m 00s');
+    expect(formatUptimeSecs(3661)).toBe('1h 01m 01s');
+    expect(formatUptimeSecs(1_000_000_000)).toBe('277777h 46m 40s');
+    expect(formatUptimeSecs(421)).toBe('7m 01s');
+    expect(formatUptimeSecs(7.9)).toBe('7s'); // floors fractional seconds
+  });
+
+  it('formats invalid uptime as a dash', () => {
+    expect(formatUptimeSecs(-0)).toBe('0s');
+    expect(formatUptimeSecs(-1)).toBe('-');
+    expect(formatUptimeSecs(Number.NaN)).toBe('-');
+    expect(formatUptimeSecs(Number.POSITIVE_INFINITY)).toBe('-');
+    expect(formatUptimeSecs(Number.NEGATIVE_INFINITY)).toBe('-');
+  });
+});
+
+describe('sanitizeForTerminal', () => {
+  it('removes ANSI, OSC, and carriage-return controls from text output', () => {
+    expect(sanitizeForTerminal('safe\x1b[2Jclear')).toBe('safeclear');
+    expect(sanitizeForTerminal('link\x1b]52;c;YWJj\x07tail')).toBe('linktail');
+    expect(sanitizeForTerminal('old\rnew')).toBe('oldnew');
+    expect(sanitizeForTerminal('a\x1bMb')).toBe('ab');
+    expect(sanitizeForTerminal('x\x9bDy')).toBe('xy');
+    expect(sanitizeForTerminal('p\x1b]0;t\x1b\\q')).toBe('pq');
+  });
+});
+
+describe('sanitizeForTerminalLine', () => {
+  it('normalizes line-breaking controls for scalar terminal fields', () => {
+    expect(sanitizeForTerminalLine('evil\n[fake]\rroot\tok\x1b[31m')).toBe('evil [fake] root ok');
   });
 });

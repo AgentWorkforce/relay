@@ -1,0 +1,65 @@
+{
+  "id": "traj_lhyrcib40kao",
+  "version": 1,
+  "task": {
+    "title": "Address PR #914 CodeRabbit reliability review findings"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T11:52:46.110Z",
+  "completedAt": "2026-05-19T12:07:22.401Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T12:07:05.567Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zo07vgxdaby4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T12:07:05.567Z",
+      "endedAt": "2026-05-19T12:07:22.401Z",
+      "events": [
+        {
+          "ts": 1779192425569,
+          "type": "decision",
+          "content": "Gate terminal delivery events on event_id-aware pending removal: Gate terminal delivery events on event_id-aware pending removal",
+          "raw": {
+            "question": "Gate terminal delivery events on event_id-aware pending removal",
+            "chosen": "Gate terminal delivery events on event_id-aware pending removal",
+            "alternatives": [],
+            "reasoning": "Stale worker lifecycle frames can reuse delivery_id after retry/requeue; returning the removed PendingDelivery from clear_pending_delivery_if_event_matches prevents stale frames from emitting typed terminal events or mutating worker state."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779192425617,
+          "type": "decision",
+          "content": "Bump broker/SDK protocol version to 2: Bump broker/SDK protocol version to 2",
+          "raw": {
+            "question": "Bump broker/SDK protocol version to 2",
+            "chosen": "Bump broker/SDK protocol version to 2",
+            "alternatives": [],
+            "reasoning": "Agent exit reasons, typed message delivery terminal events, idle since metadata, and blocked-on-send events changed the wire contract relative to v1 clients."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed PR #914 CodeRabbit reliability findings: broker teardown now emits terminal message_delivery_failed for drained deliveries, stale delivery frames are gated by event_id-aware removal, retryable write failures stay queued, SDK delivery waiters use typed terminal events, CLI env/doctor leaks are fixed, protocol is v2, fixtures/tests/changelog updated, and required validation passed.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2fe5c0359dcacf1dc487a4d8041452d5a2a082c8",
+    "endRef": "2fe5c0359dcacf1dc487a4d8041452d5a2a082c8"
+  }
+}

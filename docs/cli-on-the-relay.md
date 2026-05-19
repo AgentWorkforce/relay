@@ -73,7 +73,7 @@ For true sandboxed execution, use [cloud mode](cli-cloud-commands.md). Cloud run
 
 ## See also
 
-- [CLI Overview](cli-overview.md) — Full map of the CLI command surface.
+- [CLI reference](reference-cli.md) — Full map of the CLI command surface.
 - [Cloud commands](cli-cloud-commands.md) — Run workflows remotely instead of entering the sandbox yourself.
 - [Authentication](authentication.md) — Understand the auth service used by relay-aware environments.
 - [File sharing](file-sharing.md) — Shared filesystem concepts used by the relay environment.

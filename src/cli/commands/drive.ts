@@ -1,53 +1,56 @@
 /**
  * `agent-relay drive <name>` — interactive read-write take-over client.
  *
- * Attaches to a running agent, flips it into `human` session mode so the
+ * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
  * broker parks new relay messages in a per-worker queue, and forwards your
  * keystrokes to the worker's PTY. You can drain the queue on demand with
  * `Ctrl+G` and detach with `Ctrl+B D` (or `Ctrl+C` as a safety alias).
- * Detaching restores the worker's previous session mode and leaves the
+ * Detaching restores the worker's previous inbound delivery mode and leaves the
  * agent running under the broker — `drive` never kills the worker.
  *
  * Sequence of operations on attach:
  *
  *   1. Discover broker connection (CLI flag → env → connection.json).
- *   2. `GET  /api/spawned/{name}/mode`  → remember the previous mode.
- *   3. `PUT  /api/spawned/{name}/mode`  → switch to `human`.
+ *   2. `GET  /api/spawned/{name}/delivery-mode`  → remember the previous mode.
+ *   3. `PUT  /api/spawned/{name}/delivery-mode`  → switch to `manual_flush`.
  *   4. `captureAndRenderSnapshot`       → repaint the agent's current screen.
  *   5. `GET  /api/spawned/{name}/pending` → seed the status-line counter.
  *   6. Open `/ws`, subscribe to events for this worker.
  *   7. Switch local stdin to raw mode; forward bytes to `POST /api/input/{name}`.
  *
- * On detach (clean or abnormal), best-effort `PUT .../mode` restores the
+ * On detach (clean or abnormal), best-effort `PUT .../delivery-mode` restores the
  * previous mode so the queue doesn't fill up indefinitely.
- *
- * See GitHub issue #864 for the full verb taxonomy. This module ships only
- * the `drive` verb — `relay` and `new`/`run` come in sub-PR 4.
  */
 
 import { Buffer } from 'node:buffer';
 
+import type { InboundDeliveryMode } from '@agent-relay/sdk';
 import { Command } from 'commander';
 import WebSocket from 'ws';
 
 import {
   captureAndRenderSnapshot,
+  captureInitialSnapshot,
+  pickInitialTerminalRows,
+  prepareAttachTarget,
+  switchInboundDeliveryModeOrAbort,
+  syncInitialPtySize,
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
 import {
   defaultStateDir,
   readConnectionFileFromDisk,
-  resolveBrokerConnection,
   toWsUrl,
   type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
+import { createBrokerClient, mapBrokerSdkFailure } from '../lib/sdk-client.js';
 
 type ExitFn = (code: number) => never;
 
-/** Wire string for the broker's `SessionMode` enum. */
-export type SessionMode = 'human' | 'relay';
+/** Wire string for the broker's `InboundDeliveryMode` enum. */
+export type { InboundDeliveryMode };
 
 /** Minimal WebSocket surface we depend on — same shape as `view`'s. */
 export interface DriveWebSocket {
@@ -111,7 +114,7 @@ export interface DriveDependencies {
   /** Override for the snapshot-on-attach helper (tests substitute a stub). */
   captureAndRenderSnapshot: (
     connection: AttachSnapshotConnection,
-    agentName: string,
+    name: string,
     deps: AttachSnapshotDeps
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   /** Stdin handle — defaults to `process.stdin`. */
@@ -160,90 +163,55 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
   };
 }
 
-/** Build the `X-API-Key` header set, or an empty object when no key. */
-function authHeaders(connection: BrokerConnection): Record<string, string> {
-  return connection.apiKey ? { 'X-API-Key': connection.apiKey } : {};
-}
-
 /** ----- HTTP helpers ----- */
 
-/** `GET /api/spawned/{name}/mode` → `'human' | 'relay'` or `null` on failure. */
-export async function getSessionMode(
+/** `GET /api/spawned/{name}/delivery-mode` → `'manual_flush' | 'auto_inject'` or `null` on failure. */
+export async function getInboundDeliveryMode(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
-): Promise<SessionMode | null> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/mode`;
+): Promise<InboundDeliveryMode | null> {
   try {
-    const res = await fetchFn(url, { headers: authHeaders(connection) });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { mode?: unknown };
-    if (body.mode === 'human' || body.mode === 'relay') return body.mode;
-    return null;
+    return await createBrokerClient(connection, fetchFn).getInboundDeliveryMode(name);
   } catch {
     return null;
   }
 }
 
-/** Outcome of a `PUT /api/spawned/{name}/mode` call. */
-export interface SetSessionModeResult {
+/** Outcome of a `PUT /api/spawned/{name}/delivery-mode` call. */
+export interface SetInboundDeliveryModeResult {
   ok: boolean;
   status: number;
-  /** Server-reported number of pending messages drained on a `human→relay` flip. */
+  /** Server-reported number of pending messages drained on a `manual_flush→auto_inject` flip. */
   flushed?: number;
   /** Human-readable error message when `ok` is false. */
   message?: string;
 }
 
-export async function setSessionMode(
+export async function setInboundDeliveryMode(
   connection: BrokerConnection,
-  agentName: string,
-  mode: SessionMode,
+  name: string,
+  mode: InboundDeliveryMode,
   fetchFn: typeof globalThis.fetch
-): Promise<SetSessionModeResult> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/mode`;
+): Promise<SetInboundDeliveryModeResult> {
   try {
-    const res = await fetchFn(url, {
-      method: 'PUT',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
-    });
-    if (!res.ok) {
-      let message = `HTTP ${res.status}`;
-      try {
-        const body = (await res.json()) as { error?: unknown };
-        if (typeof body.error === 'string') message = body.error;
-      } catch {
-        // body wasn't JSON; stick with HTTP status
-      }
-      return { ok: false, status: res.status, message };
-    }
-    let flushed: number | undefined;
-    try {
-      const body = (await res.json()) as { flushed?: unknown };
-      if (typeof body.flushed === 'number') flushed = body.flushed;
-    } catch {
-      // missing body is fine — mode flip still succeeded
-    }
-    return { ok: true, status: res.status, flushed };
+    const body = await createBrokerClient(connection, fetchFn).setInboundDeliveryMode(name, mode);
+    const flushed = body.flushed;
+    return { ok: true, status: 200, flushed };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, status: 0, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, status: failure.status, message: failure.message };
   }
 }
 
 /** `GET /api/spawned/{name}/pending` → count, or `0` on failure (best-effort). */
 export async function getPendingCount(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<number> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/pending`;
   try {
-    const res = await fetchFn(url, { headers: authHeaders(connection) });
-    if (!res.ok) return 0;
-    const body = (await res.json()) as { pending?: unknown };
-    return Array.isArray(body.pending) ? body.pending.length : 0;
+    return (await createBrokerClient(connection, fetchFn).getPending(name)).length;
   } catch {
     return 0;
   }
@@ -252,49 +220,31 @@ export async function getPendingCount(
 /** `POST /api/spawned/{name}/flush` → server returns `{ flushed: N }`. */
 export async function flushPending(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; flushed?: number; message?: string }> {
-  const url = `${connection.url}/api/spawned/${encodeURIComponent(agentName)}/flush`;
   try {
-    const res = await fetchFn(url, { method: 'POST', headers: authHeaders(connection) });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
-    try {
-      const body = (await res.json()) as { flushed?: unknown };
-      const flushed = typeof body.flushed === 'number' ? body.flushed : undefined;
-      return { ok: true, flushed };
-    } catch {
-      return { ok: true };
-    }
+    const body = await createBrokerClient(connection, fetchFn).flushPending(name);
+    return { ok: true, flushed: body.flushed };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
 /** `POST /api/input/{name}` body `{ data: "<bytes>" }`. */
 export async function sendInput(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   data: string,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/input/${encodeURIComponent(agentName)}`;
   try {
-    const res = await fetchFn(url, {
-      method: 'POST',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
+    await createBrokerClient(connection, fetchFn).sendInput(name, data);
     return { ok: true };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
@@ -306,25 +256,17 @@ export async function sendInput(
  */
 export async function resizeWorker(
   connection: BrokerConnection,
-  agentName: string,
+  name: string,
   rows: number,
   cols: number,
   fetchFn: typeof globalThis.fetch
 ): Promise<{ ok: boolean; message?: string }> {
-  const url = `${connection.url}/api/resize/${encodeURIComponent(agentName)}`;
   try {
-    const res = await fetchFn(url, {
-      method: 'POST',
-      headers: { ...authHeaders(connection), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, cols }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `HTTP ${res.status}` };
-    }
+    await createBrokerClient(connection, fetchFn).resizePty(name, rows, cols);
     return { ok: true };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+    const failure = mapBrokerSdkFailure(err);
+    return { ok: false, message: failure.message };
   }
 }
 
@@ -348,7 +290,7 @@ export type DriveWsEvent =
  *
  * Exported for unit testing the filter in isolation.
  */
-export function classifyWsEvent(rawMessage: string, agentName: string): DriveWsEvent {
+export function classifyWsEvent(rawMessage: string, name: string): DriveWsEvent {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawMessage);
@@ -357,7 +299,7 @@ export function classifyWsEvent(rawMessage: string, agentName: string): DriveWsE
   }
   if (!isStringObject(parsed)) return { kind: 'other' };
   // All three events we care about are scoped by the worker `name` field.
-  if (parsed.name !== agentName) return { kind: 'other' };
+  if (parsed.name !== name) return { kind: 'other' };
 
   if (parsed.kind === 'worker_stream') {
     const chunk = parsed.chunk;
@@ -473,8 +415,8 @@ export class KeybindParser {
  * pending-count change.
  */
 export function renderStatusLine(opts: {
-  agentName: string;
-  mode: SessionMode;
+  name: string;
+  mode: InboundDeliveryMode;
   pending: number;
   showHelp: boolean;
   /** Terminal rows — defaults to 24 if unknown. The status line lands on row N. */
@@ -484,7 +426,7 @@ export function renderStatusLine(opts: {
   const help = opts.showHelp
     ? ' | Ctrl+G flush | Ctrl+B D detach | Ctrl+B ? hide help'
     : ' | Ctrl+G flush | Ctrl+B D detach';
-  const text = `[drive ${opts.agentName} | mode=${opts.mode} | pending=${opts.pending}${help}]`;
+  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending}${help}]`;
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -492,125 +434,23 @@ export function renderStatusLine(opts: {
 
 /** ----- Main session runner ----- */
 
+/** Initial state handed off to the interactive session loop. */
+interface DriveSessionState {
+  connection: BrokerConnection;
+  name: string;
+  previousMode: InboundDeliveryMode | null;
+  initialPending: number;
+  initialTerminalRows: number | undefined;
+}
+
 /**
- * Open a `drive` session. Resolves with the exit code the CLI should
- * propagate. Cleans up its own stdin raw-mode and best-effort restores
- * the worker's previous session mode on any exit path.
+ * Run the interactive session: opens the WS, takes over stdin on
+ * `open`, drives keybinds/resize/status-line, and restores the
+ * worker's previous mode on any exit path. Resolves with the exit
+ * code the CLI should propagate.
  */
-export async function runDriveSession(
-  agentName: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
-  deps: DriveDependencies
-): Promise<number> {
-  if (!agentName.trim()) {
-    deps.error('Error: agent name is required');
-    return 1;
-  }
-
-  const connection = resolveBrokerConnection(options, deps);
-  if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agent-relay/connection.json.'
-    );
-    return 1;
-  }
-
-  // Remember the worker's prior mode so we can restore it on detach.
-  // `null` means we couldn't read it (broker hiccup or worker missing);
-  // we default the restore target to `relay` in that case so the queue
-  // doesn't keep growing.
-  const previousMode = await getSessionMode(connection, agentName, deps.fetch);
-
-  // Flip the worker into human mode. If this fails outright, abort
-  // before doing anything else — we don't want to redraw the screen
-  // and then silently keep auto-injecting into the agent.
-  const flip = await setSessionMode(connection, agentName, 'human', deps.fetch);
-  if (!flip.ok) {
-    if (flip.status === 404) {
-      deps.error(`Error: no agent named '${agentName}'`);
-    } else {
-      deps.error(`Error: could not switch '${agentName}' to human mode: ${flip.message ?? 'unknown error'}`);
-    }
-    return 1;
-  }
-
-  // Render the agent's current visible screen before the live stream
-  // begins. Same error semantics as `view`: hard errors abort, transient
-  // errors warn and proceed.
-  const snapshot = await deps.captureAndRenderSnapshot(
-    { url: connection.url, apiKey: connection.apiKey },
-    agentName,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
-  switch (snapshot.status) {
-    case 'ok':
-      break;
-    case 'not_found':
-      // Best-effort restore — we did flip the mode above.
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `no agent named '${agentName}'`}`);
-      return 1;
-    case 'no_pty':
-      await setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch);
-      deps.error(`Error: ${snapshot.message ?? `agent '${agentName}' has no PTY to drive`}`);
-      return 1;
-    case 'unavailable':
-    case 'transport_error':
-      deps.log(
-        `[drive] could not capture initial screen (${snapshot.message ?? snapshot.status}); streaming live output only`
-      );
-      break;
-  }
-
-  // Seed the pending counter so the status line is correct from the
-  // first paint.
-  let pending = await getPendingCount(connection, agentName, deps.fetch);
-  let showHelp = false;
-
-  // Status-line row tracks the LOCAL terminal's bottom row, not the
-  // agent's PTY rows from the snapshot — those can differ before we
-  // forward our size to the broker, and the status line needs to land
-  // where the human is looking. Falls back to the snapshot rows, then
-  // the renderer's own 24-row default.
-  const initialLocalSize = deps.terminal.getSize();
-  let terminalRows: number | undefined =
-    initialLocalSize?.rows ??
-    (typeof snapshot.rows === 'number' && snapshot.rows > 0 ? snapshot.rows : undefined);
-
-  const paintStatus = (): void => {
-    deps.writeChunk(
-      renderStatusLine({
-        agentName,
-        mode: 'human',
-        pending,
-        showHelp,
-        rows: terminalRows,
-      })
-    );
-  };
-  paintStatus();
-
-  // Sync the agent's PTY to the driver's local terminal size. tmux /
-  // screen / ssh all do this — without it, a TUI in the agent renders
-  // into whatever 24×80 box the PTY was spawned with, ignoring the
-  // human's actual viewport. Best-effort: a failure here is annoying
-  // but not fatal (the human can still type, output just renders into
-  // the old size). Skipped entirely when stdout isn't a TTY.
-  if (initialLocalSize) {
-    const initialResize = await resizeWorker(
-      connection,
-      agentName,
-      initialLocalSize.rows,
-      initialLocalSize.cols,
-      deps.fetch
-    );
-    if (!initialResize.ok) {
-      deps.log(
-        `[drive] could not sync agent PTY size to local terminal (${initialResize.message ?? 'unknown'}); continuing`
-      );
-    }
-  }
+function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies): Promise<number> {
+  const { connection, name, previousMode } = state;
 
   const wsUrl = toWsUrl(connection.url);
   const headers: Record<string, string> = {};
@@ -622,7 +462,23 @@ export async function runDriveSession(
     let settled = false;
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
+    let pending = state.initialPending;
+    let showHelp = false;
+    let terminalRows = state.initialTerminalRows;
     const parser = new KeybindParser();
+
+    const paintStatus = (): void => {
+      deps.writeChunk(
+        renderStatusLine({
+          name,
+          mode: 'manual_flush',
+          pending,
+          showHelp,
+          rows: terminalRows,
+        })
+      );
+    };
+    paintStatus();
 
     // Local-terminal resize handler. Forwards to the broker and
     // repaints the status line at the new bottom-row index. Registered
@@ -633,7 +489,7 @@ export async function runDriveSession(
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
-      void resizeWorker(connection, agentName, size.rows, size.cols, deps.fetch).then((res) => {
+      void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
           deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
         }
@@ -655,7 +511,7 @@ export async function runDriveSession(
         // 'binary' would map bytes ≥ 0x80 to Latin-1 code points,
         // which then get UTF-8 re-encoded on the wire, doubling
         // multi-byte characters (e.g. `é` → `Ã©` on the agent's side).
-        void sendInput(connection, agentName, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
+        void sendInput(connection, name, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
           if (!res.ok) {
             deps.log(`[drive] input send failed: ${res.message ?? 'unknown error'}`);
           }
@@ -664,7 +520,7 @@ export async function runDriveSession(
       for (const action of outcome.actions) {
         switch (action) {
           case 'flush':
-            void flushPending(connection, agentName, deps.fetch).then((res) => {
+            void flushPending(connection, name, deps.fetch).then((res) => {
               if (!res.ok) {
                 deps.log(`[drive] flush failed: ${res.message ?? 'unknown error'}`);
               }
@@ -724,8 +580,8 @@ export async function runDriveSession(
         // best effort
       }
       // Best-effort: restore the worker's previous mode so we don't
-      // leave it stuck in human and silently piling up queued messages.
-      void setSessionMode(connection, agentName, previousMode ?? 'relay', deps.fetch).finally(() => {
+      // leave it stuck in manual_flush and silently piling up queued messages.
+      void setInboundDeliveryMode(connection, name, previousMode ?? 'auto_inject', deps.fetch).finally(() => {
         resolve(code);
       });
     };
@@ -736,7 +592,7 @@ export async function runDriveSession(
     deps.onSignal('SIGTERM', () => finish(0));
 
     socket.on('open', () => {
-      deps.log(`[drive] driving ${agentName} via ${connection.url} (Ctrl+B D to detach)`);
+      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
       // Now that the WS is up, take over stdin. We do this on `open`
       // rather than synchronously so a failed connection doesn't leave
       // the user's terminal in raw mode with nothing to type into.
@@ -761,7 +617,7 @@ export async function runDriveSession(
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);
-      const event = classifyWsEvent(text, agentName);
+      const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
           deps.writeChunk(event.chunk);
@@ -797,6 +653,57 @@ export async function runDriveSession(
       }
     });
   });
+}
+
+/**
+ * Open a `drive` session. Resolves with the exit code the CLI should
+ * propagate. Cleans up its own stdin raw-mode and best-effort restores
+ * the worker's previous inbound delivery mode on any exit path.
+ */
+export async function runDriveSession(
+  agentName: string,
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  deps: DriveDependencies
+): Promise<number> {
+  const target = prepareAttachTarget(agentName, options, deps);
+  if (!target) return 1;
+  const { name, connection } = target;
+
+  const flipResult = await switchInboundDeliveryModeOrAbort(
+    connection,
+    name,
+    'manual_flush',
+    `switch '${name}' to manual_flush mode`,
+    deps
+  );
+  if (!flipResult) return 1;
+  const { previousMode } = flipResult;
+
+  const snapshotResult = await captureInitialSnapshot(connection, name, previousMode, 'drive', 'drive', {
+    fetch: deps.fetch,
+    writeChunk: deps.writeChunk,
+    log: deps.log,
+    error: deps.error,
+    captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
+  });
+  if (!snapshotResult) return 1;
+
+  const initialPending = await getPendingCount(connection, name, deps.fetch);
+  const initialLocalSize = deps.terminal.getSize();
+  const initialTerminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
+
+  await syncInitialPtySize(connection, name, initialLocalSize, 'drive', deps);
+
+  return runDriveSessionLoop(
+    {
+      connection,
+      name,
+      previousMode,
+      initialPending,
+      initialTerminalRows,
+    },
+    deps
+  );
 }
 
 /** Register `agent-relay drive <name>` on the supplied commander program. */

@@ -16,7 +16,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
-import { trackSdkEvent } from './telemetry.js';
+import { instrumentMethod } from './telemetry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -24,6 +24,10 @@ import type {
   BrokerStatus,
   CrashInsightsResponse,
   HeadlessProvider,
+  PendingRelayMessage,
+  PtySnapshot,
+  InboundDeliveryMode,
+  SnapshotFormat,
 } from './protocol.js';
 import type {
   AgentTransport,
@@ -39,6 +43,8 @@ import type {
 export interface AgentRelayClientOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Fetch implementation. Defaults to globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
   /** Timeout in ms for HTTP requests. Default: 30000. */
   requestTimeoutMs?: number;
 }
@@ -84,6 +90,18 @@ export interface SessionInfo {
   uptime_secs: number;
 }
 
+export interface SetInboundDeliveryModeResult {
+  mode: InboundDeliveryMode;
+  flushed: number;
+}
+
+export interface WorkerStreamSubscriptionOptions {
+  /** Filter by stream name, for example `stdout` or `stderr`. Defaults to all streams. */
+  stream?: string;
+  /** Sequence offset to pass to the broker event stream when connecting. */
+  sinceSeq?: number;
+}
+
 interface BrokerStartupDebugContext {
   binaryPath: string;
   args: string[];
@@ -119,30 +137,7 @@ function isProcessRunning(pid: number): boolean {
  * identical with or without telemetry configured.
  */
 async function trackMethod<T>(methodName: string, fn: () => Promise<T>): Promise<T> {
-  const startedAt = Date.now();
-  try {
-    const result = await fn();
-    trackSdkEvent('sdk_method_call', {
-      method_name: methodName,
-      success: true,
-      duration_ms: Date.now() - startedAt,
-    });
-    return result;
-  } catch (err) {
-    let errorClass = 'Error';
-    if (err instanceof Error) {
-      errorClass = err.constructor.name;
-    } else if (err && typeof err === 'object') {
-      errorClass = (err as { constructor?: { name?: string } }).constructor?.name ?? 'Object';
-    }
-    trackSdkEvent('sdk_method_call', {
-      method_name: methodName,
-      success: false,
-      duration_ms: Date.now() - startedAt,
-      error_class: errorClass,
-    });
-    throw err;
-  }
+  return instrumentMethod(methodName, fn)();
 }
 
 function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
@@ -184,6 +179,7 @@ export class AgentRelayClient {
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
+      fetch: options.fetch,
       requestTimeoutMs: options.requestTimeoutMs,
     });
   }
@@ -413,19 +409,19 @@ export class AgentRelayClient {
         body: JSON.stringify({
           name: input.name,
           cli: input.cli,
-          model: input.model,
+          ...(input.model !== undefined ? { model: input.model } : {}),
           args: input.args ?? [],
-          task: input.task,
+          ...(input.task !== undefined ? { task: input.task } : {}),
           channels: input.channels ?? [],
-          cwd: input.cwd,
-          team: input.team,
-          agentToken: input.agentToken,
-          shadowOf: input.shadowOf,
-          shadowMode: input.shadowMode,
-          continueFrom: input.continueFrom,
-          idleThresholdSecs: input.idleThresholdSecs,
-          restartPolicy: input.restartPolicy,
-          skipRelayPrompt: input.skipRelayPrompt,
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.team !== undefined ? { team: input.team } : {}),
+          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
         }),
       })
     );
@@ -445,19 +441,19 @@ export class AgentRelayClient {
         body: JSON.stringify({
           name: input.name,
           cli: input.provider,
-          model: input.model,
+          ...(input.model !== undefined ? { model: input.model } : {}),
           args: input.args ?? [],
-          task: input.task,
+          ...(input.task !== undefined ? { task: input.task } : {}),
           channels: input.channels ?? [],
-          cwd: input.cwd,
-          team: input.team,
-          agentToken: input.agentToken,
-          shadowOf: input.shadowOf,
-          shadowMode: input.shadowMode,
-          continueFrom: input.continueFrom,
-          idleThresholdSecs: input.idleThresholdSecs,
-          restartPolicy: input.restartPolicy,
-          skipRelayPrompt: input.skipRelayPrompt,
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.team !== undefined ? { team: input.team } : {}),
+          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
           transport,
         }),
       })
@@ -514,6 +510,138 @@ export class AgentRelayClient {
       method: 'POST',
       body: JSON.stringify({ rows, cols }),
     });
+  }
+
+  async getInboundDeliveryMode(name: string): Promise<InboundDeliveryMode> {
+    const result = await this.transport.request<{ mode?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`
+    );
+    if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
+      throw new AgentRelayProtocolError({
+        code: 'invalid_response',
+        message: "inbound delivery mode response missing valid 'mode'",
+      });
+    }
+    return result.mode;
+  }
+
+  async setInboundDeliveryMode(
+    name: string,
+    mode: InboundDeliveryMode
+  ): Promise<SetInboundDeliveryModeResult> {
+    const result = await this.transport.request<{ mode?: unknown; flushed?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/delivery-mode`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ mode }),
+      }
+    );
+    if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
+      throw new AgentRelayProtocolError({
+        code: 'invalid_response',
+        message: "set inbound delivery mode response missing valid 'mode'",
+      });
+    }
+    return {
+      mode: result.mode,
+      flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+    };
+  }
+
+  async getPending(name: string): Promise<PendingRelayMessage[]> {
+    const result = await this.transport.request<{ pending?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/pending`
+    );
+    return Array.isArray(result.pending) ? (result.pending as PendingRelayMessage[]) : [];
+  }
+
+  async flushPending(name: string): Promise<{ flushed: number }> {
+    const result = await this.transport.request<{ flushed?: unknown }>(
+      `/api/spawned/${encodeURIComponent(name)}/flush`,
+      { method: 'POST' }
+    );
+    return { flushed: typeof result.flushed === 'number' ? result.flushed : 0 };
+  }
+
+  async snapshot(name: string, format: SnapshotFormat = 'plain'): Promise<PtySnapshot> {
+    return this.transport.request<PtySnapshot>(
+      `/api/spawned/${encodeURIComponent(name)}/snapshot?format=${encodeURIComponent(format)}`
+    );
+  }
+
+  subscribeWorkerStream(name: string, options: WorkerStreamSubscriptionOptions = {}): AsyncIterable<string> {
+    this.connectEvents(options.sinceSeq);
+
+    return {
+      [Symbol.asyncIterator]: () => {
+        const queue: string[] = [];
+        let pending:
+          | {
+              resolve: (result: IteratorResult<string>) => void;
+              reject: (error: unknown) => void;
+            }
+          | undefined;
+        let done = false;
+
+        const unsubscribe = this.onEvent((event) => {
+          if (
+            event.kind !== 'worker_stream' ||
+            event.name !== name ||
+            (options.stream !== undefined && event.stream !== options.stream)
+          ) {
+            return;
+          }
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: false, value: event.chunk });
+            return;
+          }
+          queue.push(event.chunk);
+        });
+
+        const close = (): IteratorResult<string> => {
+          done = true;
+          unsubscribe();
+          if (pending) {
+            const { resolve } = pending;
+            pending = undefined;
+            resolve({ done: true, value: undefined as never });
+          }
+          return { done: true, value: undefined as never };
+        };
+
+        return {
+          next(): Promise<IteratorResult<string>> {
+            if (queue.length > 0) {
+              return Promise.resolve({ done: false, value: queue.shift() as string });
+            }
+            if (done) {
+              return Promise.resolve({ done: true, value: undefined as never });
+            }
+            return new Promise<IteratorResult<string>>((resolve, reject) => {
+              pending = { resolve, reject };
+            });
+          },
+          return(): Promise<IteratorResult<string>> {
+            return Promise.resolve(close());
+          },
+          throw(error?: unknown): Promise<IteratorResult<string>> {
+            done = true;
+            unsubscribe();
+            if (pending) {
+              const { reject } = pending;
+              pending = undefined;
+              reject(error);
+            }
+            return Promise.reject(error);
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+      },
+    };
   }
 
   // ── Messaging ──────────────────────────────────────────────────────

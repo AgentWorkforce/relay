@@ -9,9 +9,8 @@
  * 5. npm install -g (Homebrew macOS arm64)
  * 6. npm install (local project)
  * 7. pnpm global
- * 8. Development (monorepo)
- * 9. Docker container
- * 10. Environment variable override
+ * 8. Docker container
+ * 9. Environment variable override
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -162,34 +161,13 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Development (monorepo)', () => {
-    // /path/to/relay/packages/bridge/dist/
-
-    it('should include project root bin/ path', () => {
+    it('should not include the project root bin/ path', () => {
       const callerDirname = '/path/to/relay/packages/bridge/dist';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
-      // Development path: go up 3 levels to project root
-      expect(paths.some((p) => p.startsWith('/path/to/relay/bin'))).toBe(true);
-    });
-
-    it('should include project root platform-specific binary path', () => {
-      const callerDirname = '/path/to/relay/packages/bridge/dist';
-
-      findRelayPtyBinary(callerDirname);
-      const paths = getLastSearchPaths();
-
-      expect(paths.some((p) => p.startsWith('/path/to/relay/bin/relay-pty-'))).toBe(true);
-    });
-
-    it('should include project root generic binary path', () => {
-      const callerDirname = '/path/to/relay/packages/bridge/dist';
-
-      findRelayPtyBinary(callerDirname);
-      const paths = getLastSearchPaths();
-
-      expect(paths).toContain('/path/to/relay/bin/relay-pty');
+      expect(paths.some((p) => p.startsWith('/path/to/relay/bin'))).toBe(false);
     });
   });
 
@@ -372,16 +350,14 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Real binary resolution', () => {
-    it('should include development paths when run from monorepo', () => {
-      // Verify search paths include dev locations without requiring binary on disk
+    it('does not probe the repository root bin/ when run from the monorepo', () => {
       const devPath = `${process.cwd()}/packages/utils/dist`;
 
       findRelayPtyBinary(devPath);
       const paths = getLastSearchPaths();
       const expectedBinDir = nodePath.join(process.cwd(), 'bin');
 
-      expect(paths.some((p) => p.startsWith(expectedBinDir))).toBe(true);
-      expect(paths.some((p) => p.startsWith(expectedBinDir) && p.includes('relay-pty-'))).toBe(true);
+      expect(paths.some((p) => p.startsWith(expectedBinDir))).toBe(false);
     });
   });
 });

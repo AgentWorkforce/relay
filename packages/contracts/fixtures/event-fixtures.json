@@ -9,17 +9,15 @@
     "agent_restarting",
     "agent_restarted",
     "agent_permanently_dead",
+    "agent_context_low",
+    "agent_blocked_on_send",
     "delivery_verified",
     "delivery_failed",
+    "message_delivery_confirmed",
+    "message_delivery_failed",
     "worker_error"
   ],
-  "message_lifecycle_states": [
-    "queued",
-    "injected",
-    "verified",
-    "failed",
-    "uncertain"
-  ],
+  "message_lifecycle_states": ["queued", "injected", "verified", "failed", "uncertain"],
   "contract_events": [
     {
       "kind": "relay_inbound",
@@ -49,7 +47,8 @@
       "timestamp": "2026-02-23T00:00:02.000Z",
       "payload": {
         "name": "WorkerA",
-        "code": 0
+        "code": 0,
+        "reason": "worker_exited"
       }
     },
     {
@@ -142,6 +141,53 @@
         "code": "worker_unresponsive",
         "message": "worker output stream stalled"
       }
+    },
+    {
+      "kind": "message_delivery_confirmed",
+      "eventId": "evt_0013",
+      "seq": 113,
+      "timestamp": "2026-02-23T00:00:12.000Z",
+      "payload": {
+        "deliveryId": "del_3",
+        "name": "WorkerA",
+        "from": "Lead",
+        "to": "WorkerA"
+      }
+    },
+    {
+      "kind": "message_delivery_failed",
+      "eventId": "evt_0014",
+      "seq": 114,
+      "timestamp": "2026-02-23T00:00:13.000Z",
+      "payload": {
+        "deliveryId": "del_4",
+        "name": "WorkerA",
+        "from": "Lead",
+        "to": "WorkerA",
+        "attempts": 10,
+        "lastError": "recipient gone"
+      }
+    },
+    {
+      "kind": "agent_context_low",
+      "eventId": "evt_0015",
+      "seq": 115,
+      "timestamp": "2026-02-23T00:00:14.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "pct": 6
+      }
+    },
+    {
+      "kind": "agent_blocked_on_send",
+      "eventId": "evt_0016",
+      "seq": 116,
+      "timestamp": "2026-02-23T00:00:15.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "blockedSecs": 120,
+        "pendingDeliveryCount": 1
+      }
     }
   ],
   "wave0_timeout_terminal_semantics": {
@@ -151,11 +197,6 @@
     "late_event_kind": "delivery_ack"
   },
   "wave0_broadcast_whitelist": {
-    "required_kinds": [
-      "relay_inbound",
-      "agent_spawned",
-      "agent_exited",
-      "delivery_ack"
-    ]
+    "required_kinds": ["relay_inbound", "agent_spawned", "agent_exited", "delivery_ack"]
   }
 }

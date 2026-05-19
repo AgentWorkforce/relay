@@ -7,7 +7,7 @@
  * spawned child agent's CLI (which the broker already tracks).
  *
  * Detection is best-effort and pure observation:
- *   - On macOS we shell out to `ps -o command= -p <pid>` since `process.platform`
+ *   - On macOS we invoke `ps -o command= -p <pid>` since `process.platform`
  *     doesn't expose parent process names natively.
  *   - On Linux we read `/proc/<pid>/comm` and `/proc/<pid>/status` (PPid:).
  *   - On Windows we fall back to `'unknown'` (PowerShell-based detection is
@@ -24,7 +24,7 @@
  * Keep all three in sync when adding a harness.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 /**
@@ -94,11 +94,18 @@ function classifyBasename(basename: string): Harness | null {
 
 /** Extract a basename from a process command string. */
 function commandBasename(command: string): string {
-  const trimmed = command.trim().split(/\s+/)[0] ?? '';
-  const stripped = trimmed.replace(/^["']|["']$/g, '');
+  const trimmed = command.trim();
+  const quote = trimmed[0];
+  let executable = '';
+  if (quote === '"' || quote === "'") {
+    const endQuote = trimmed.indexOf(quote, 1);
+    executable = endQuote >= 0 ? trimmed.slice(1, endQuote) : trimmed.slice(1);
+  } else {
+    executable = trimmed.split(/\s+/)[0] ?? '';
+  }
   // Posix and Windows-style separators.
-  const lastSlash = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf('\\'));
-  return lastSlash >= 0 ? stripped.slice(lastSlash + 1) : stripped;
+  const lastSlash = Math.max(executable.lastIndexOf('/'), executable.lastIndexOf('\\'));
+  return lastSlash >= 0 ? executable.slice(lastSlash + 1) : executable;
 }
 
 interface ProcInfo {
@@ -120,8 +127,11 @@ function readLinuxProcInfo(pid: number): ProcInfo | null {
 
 function readDarwinProcInfo(pid: number): ProcInfo | null {
   try {
+    if (!Number.isFinite(pid) || Math.floor(pid) !== pid || pid <= 0) {
+      return null;
+    }
     // Single `ps` call returns ppid and full command path.
-    const out = execSync(`ps -o ppid=,command= -p ${pid}`, {
+    const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
       encoding: 'utf-8',
       timeout: 1000,
       stdio: ['ignore', 'pipe', 'ignore'],

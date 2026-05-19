@@ -1,6 +1,6 @@
 ---
 name: relay-80-100-workflow
-description: Use when writing agent-relay workflows that must fully validate features end-to-end before merging. Covers the 80-to-100 pattern - going beyond "code compiles" to "feature works, tested E2E locally." Includes PGlite for in-memory Postgres testing, mock sandbox patterns, test-fix-rerun loops, verify gates after every edit, and the full lifecycle from implementation through passing tests to commit.
+description: Use when writing agent-relay workflows that must fully validate features end-to-end before merging. Covers the 80-to-100 pattern - going beyond "code compiles" to "feature works, tested E2E locally." Includes repair-before-failure validation gates, mandatory sequential Claude-then-Codex fresh-eyes review/fix loops with test hardening, PGlite for in-memory Postgres testing, mock sandbox patterns, test-fix-rerun loops, verify gates after every edit, and the full lifecycle from implementation through passing tests to commit.
 ---
 
 # Writing 80-to-100 Validated Workflows
@@ -26,9 +26,51 @@ implement → write tests → run tests → fix failures → re-run → build ch
 
 This means the commit at the end of the workflow represents code that is **proven working**, not just code that an agent wrote and claimed works.
 
+## Repair Before Failure
+
+An 80-to-100 workflow should not stop merely because a test, typecheck, lint, schema, or E2E gate turns red. That red output is work for the agent team. Capture it, hand it to a repair owner, fix it, and rerun. Workflow-owned validation gates should never terminate the run with `FAILED`. If the team exhausts its repair budget or hits an external blocker such as missing credentials, wrong repository, or unsafe dirty worktree, write a `BLOCKED_NO_COMMIT` artifact and end without committing or opening a PR instead of crashing the workflow.
+
+Use this shape for every meaningful gate:
+
+1. `run-*`: deterministic command with `captureOutput: true` and `failOnError: false`.
+2. `fix-*`: agent step that reads `{{steps.run-*.output}}`, fixes source/tests/config, and reruns the command locally until green.
+3. `verify-*`: deterministic rerun, usually still `failOnError: false`, followed by a final repair step if red.
+4. `commit-if-green`: deterministic step that reruns the full acceptance command and commits only when every exit code is zero. If anything is still red, it writes `BLOCKED_NO_COMMIT` with the failing evidence and exits successfully so the workflow reports a handled blocked state, not a runtime failure.
+
+AgentWorkforce/relay#827 added repair-aware reliability to the SDK (`.reliable()` / `.repairable()` and repair-aware retry-mode workflows). Prefer those presets when available, but still model explicit repair owners when gate output needs domain-specific fixing.
+
+## Keep Repairable Gates On The Critical Path
+
+Repair-before-failure only works after the workflow reaches a deterministic gate. If a long-running interactive agent step is a hard dependency for the first gate, then a dropped PTY, agent spawn error, or transport failure can stop the workflow before the repair loop ever sees evidence.
+
+For large rollouts, treat implementation agents as advisory producers and put a deterministic reconciliation step on the critical path:
+
+1. Start implementation/review agents in parallel if useful, but require them to write durable artifacts such as `.workflow-artifacts/<task>/runtime.md`, self-review notes, changed-file lists, and command evidence.
+2. Add `implementation-reconcile`: a deterministic step that inspects `git status --short -- <paths>`, required files, artifact files, and diff stats. It should use `captureOutput: true` and `failOnError: false`.
+3. Add `repair-implementation-reconcile`: a focused repair owner that reads the reconcile output and finishes missing artifacts or code before validation gates run.
+4. Make discovery, typecheck, E2E, and final acceptance depend on the reconcile/repair path, not directly on every long-lived implementation agent.
+5. Keep the final commit deterministic and green-only; red final evidence becomes a repair/blocking artifact, not a failed workflow.
+
+This shape prevents "agent transport failed" from masquerading as "the product failed." The product still has to pass the same gates; the difference is that the workflow can reach the gates and repair them.
+
+## Squad Review Before Final Acceptance
+
+For high-stakes implementation workflows, validation should include human-like review structure, not only command gates. Use small implementation squads and make review state durable:
+
+1. Split independent scopes into 2-3 agent squads. Each squad has an implementer, a shadow reviewer, and optionally a validation/test owner.
+2. The shadow reviewer follows the implementer while work is happening and flags spec drift early.
+3. Before external review, the implementer writes a self-reflection artifact under `.workflow-artifacts/<task>/` covering spec coverage, changed files, tests/proofs, repo-rule alignment, and known risks.
+4. A fresh self-review agent reads the actual files, AGENTS.md / CLAUDE.md, recent related work, and local conventions. It writes findings to disk.
+5. The implementer repairs valid findings, then deterministic gates rerun from captured output.
+6. After all squads converge, run the mandatory sequential fresh-eyes review/fix loops: Claude reviews the final diff and artifacts, a fixer repairs valid findings and adds or updates appropriate tests/proofs, Claude reviews the post-fix state again, then Codex repeats the same cycle from scratch over the post-Claude-fix state.
+7. If either final review still finds issues, run another explicit fix pass or write `BLOCKED_NO_COMMIT` with exact evidence.
+8. Commit or PR creation is allowed only after final deterministic acceptance and post-Codex-fix review are green. Otherwise write a `BLOCKED_NO_COMMIT` artifact with exact evidence.
+
+This keeps "100%" tied to both executable evidence and independent review over the final state.
+
 ## The Test-Fix-Rerun Pattern
 
-Every testable feature in a workflow should follow this three-step pattern:
+Every testable feature in a workflow should follow this four-step pattern:
 
 ```typescript
 // Step 1: Run tests (allow failure — we expect issues on first run)
@@ -58,21 +100,32 @@ If there are failures:
   verification: { type: 'exit_code' },
 })
 
-// Step 3: Deterministic final run — this one MUST pass
+// Step 3: Deterministic rerun — capture result for a final repair pass
 .step('run-tests-final', {
   type: 'deterministic',
   dependsOn: ['fix-tests'],
   command: 'npx tsx --test tests/my-feature.test.ts 2>&1',
   captureOutput: true,
-  failOnError: true,  // <-- Hard fail if tests still broken
+  failOnError: false,
+})
+
+// Step 4: Repair again if the rerun is still red
+.step('fix-tests-final', {
+  agent: 'tester',
+  dependsOn: ['run-tests-final'],
+  task: `If the final test rerun passed, record the green evidence.
+If it failed, fix the remaining issue and rerun until green:
+{{steps.run-tests-final.output}}`,
+  verification: { type: 'exit_code' },
 })
 ```
 
-**Why three steps instead of one?**
+**Why four steps instead of one?**
 
 - The first run captures output for the agent to diagnose
 - The agent step can iterate (read errors, fix, re-run) multiple times
-- The final deterministic run is the gate — no agent judgment, just pass/fail
+- The final deterministic run is still evidence-based, but a repair agent sees it before the workflow stops
+- The last repair step keeps the workflow aligned with the agent-team model instead of ending on a fixable failure
 
 ## PGlite: In-Memory Postgres for Database Testing
 
@@ -171,8 +224,14 @@ Never trust that an agent edited a file correctly. Add a deterministic verify ga
   dependsOn: ['edit-schema'],
   command: `if git diff --quiet packages/web/lib/db/schema.ts; then echo "NOT MODIFIED"; exit 1; fi
 grep "my_new_table" packages/web/lib/db/schema.ts >/dev/null && echo "OK" || (echo "MISSING"; exit 1)`,
-  failOnError: true,
+  failOnError: false,
   captureOutput: true,
+})
+.step('fix-schema-verification', {
+  agent: 'impl',
+  dependsOn: ['verify-schema'],
+  task: `Fix the schema edit if verification failed. Output:\n{{steps.verify-schema.output}}`,
+  verification: { type: 'exit_code' },
 })
 ```
 
@@ -181,11 +240,63 @@ grep "my_new_table" packages/web/lib/db/schema.ts >/dev/null && echo "OK" || (ec
 - File was actually modified (`git diff --quiet` returns non-zero)
 - Key content exists (grep for table names, function names, imports)
 - For new files: `file_exists` verification type
+- For new directories, package trees, generated files, or mixed tracked/untracked
+  edits: use `git status --short -- <paths>`, because `git diff --quiet`
+  ignores untracked files
 
 **What NOT to verify:**
 
 - Exact content (too brittle — agents format differently)
 - Line counts or byte sizes (meaningless)
+
+### Edit Gates That Include New Files
+
+When an agent may create new files or package directories, do not use
+`git diff --quiet -- <paths>` as the only edit gate. It only sees tracked
+changes, so a valid new package can be misclassified as "no changes."
+
+Use `git status --short -- <paths>` and keep the first gate repairable:
+
+```typescript
+.step('edit-gate-capture', {
+  type: 'deterministic',
+  dependsOn: ['implement'],
+  command: `if [ -z "$(git status --short -- packages/new-adapter tests docs)" ]; then
+  echo "NO_CHANGES"
+  exit 1
+fi
+echo "EDIT_GATE_OK"`,
+  captureOutput: true,
+  failOnError: false,
+})
+.step('fix-edit-gate', {
+  agent: 'impl',
+  dependsOn: ['edit-gate-capture'],
+  task: `If the edit gate reported NO_CHANGES, inspect the acceptance contract
+and current git status, then add the missing source/test/artifacts.
+
+Gate output:
+{{steps.edit-gate-capture.output}}
+
+If it already passed, do nothing.`,
+  verification: { type: 'exit_code' },
+})
+.step('edit-gate-final', {
+  type: 'deterministic',
+  dependsOn: ['fix-edit-gate'],
+  command: `if [ -z "$(git status --short -- packages/new-adapter tests docs)" ]; then
+  echo "NO_CHANGES"
+  exit 1
+fi
+echo "EDIT_GATE_FINAL_OK"`,
+  captureOutput: true,
+  failOnError: true,
+})
+```
+
+Rule of thumb: `git diff --quiet` is fine for tracked-only edits to known
+files. Use `git status --short -- <paths>` for materialization gates that may
+include new tests, docs, generated artifacts, or package directories.
 
 ## Mock Sandbox Pattern
 
@@ -273,6 +384,7 @@ const result = await workflow('my-feature')
   .channel('wf-my-feature')
   .maxConcurrency(3)
   .timeout(3_600_000)
+  .repairable()
 
   .agent('impl', { cli: 'claude', preset: 'worker', retries: 2 })
   .agent('tester', { cli: 'claude', preset: 'worker', retries: 2 })
@@ -298,8 +410,14 @@ Only edit this one file.`,
     type: 'deterministic',
     dependsOn: ['edit-target'],
     command: 'git diff --quiet path/to/file.ts && (echo "NOT MODIFIED"; exit 1) || echo "OK"',
-    failOnError: true,
+    failOnError: false,
     captureOutput: true,
+  })
+  .step('fix-target-verification', {
+    agent: 'impl',
+    dependsOn: ['verify-target'],
+    task: `Fix the target edit if verification failed. Output:\n{{steps.verify-target.output}}`,
+    verification: { type: 'exit_code' },
   })
 
   // ── Phase 3: Test infrastructure ─────────────────────────────────
@@ -316,7 +434,7 @@ Only edit this one file.`,
   })
   .step('create-tests', {
     agent: 'tester',
-    dependsOn: ['create-test-helpers', 'verify-target'],
+    dependsOn: ['create-test-helpers', 'fix-target-verification'],
     task: 'Create tests/my-feature.test.ts with <test descriptions>...',
     verification: { type: 'file_exists', value: 'tests/my-feature.test.ts' },
   })
@@ -340,13 +458,19 @@ Only edit this one file.`,
     dependsOn: ['fix-tests'],
     command: 'npx tsx --test tests/my-feature.test.ts 2>&1',
     captureOutput: true,
-    failOnError: true,
+    failOnError: false,
+  })
+  .step('fix-tests-final', {
+    agent: 'tester',
+    dependsOn: ['run-tests-final'],
+    task: `If the final test rerun is red, fix and rerun until green. Output:\n{{steps.run-tests-final.output}}`,
+    verification: { type: 'exit_code' },
   })
 
   // ── Phase 5: Build + regression ──────────────────────────────────
   .step('build-check', {
     type: 'deterministic',
-    dependsOn: ['run-tests-final'],
+    dependsOn: ['fix-tests-final'],
     command: 'npx tsc --noEmit 2>&1 | tail -20; echo "EXIT: $?"',
     captureOutput: true,
     failOnError: false,
@@ -372,10 +496,51 @@ Only edit this one file.`,
   })
 
   // ── Phase 6: Commit ──────────────────────────────────────────────
-  .step('commit', {
+  .step('record-head-baseline', {
     type: 'deterministic',
     dependsOn: ['fix-regressions'],
-    command: 'git add <files> && git commit -m "feat: ..."',
+    // Snapshot HEAD *before* committing so verify-commit-created can prove
+    // HEAD actually advanced, not just that the latest subject happens to match.
+    command: 'git rev-parse HEAD > .workflow-head-before',
+    captureOutput: true,
+    failOnError: true,
+  })
+  .step('commit', {
+    type: 'deterministic',
+    dependsOn: ['record-head-baseline'],
+    command: [
+      'npx tsx --test tests/my-feature.test.ts',
+      'npm test',
+      'git add <files>',
+      'git commit -m "feat: ..."',
+    ].join(' && '),
+    captureOutput: true,
+    failOnError: false,
+  })
+  .step('repair-commit', {
+    agent: 'impl',
+    dependsOn: ['commit'],
+    task: `If commit failed, fix the blocker, rerun the feature and regression tests, and create the commit.
+If commit passed, confirm the commit subject.
+Output:
+{{steps.commit.output}}`,
+    verification: { type: 'exit_code' },
+  })
+  .step('verify-commit-created', {
+    type: 'deterministic',
+    dependsOn: ['repair-commit'],
+    // Assert HEAD advanced past the baseline AND the new commit has the
+    // expected subject AND nothing is left uncommitted. Checking the subject
+    // alone passes falsely when HEAD was already a matching commit and the
+    // commit step never created a new one.
+    command:
+      [
+        'baseline="$(cat .workflow-head-before)"',
+        'rm -f .workflow-head-before',
+        'test "$(git rev-parse HEAD)" != "$baseline"',
+        'git log -1 --pretty=%s | grep -q "^feat: "',
+        'test -z "$(git status --porcelain)"',
+      ].join(' && ') + ' && echo "COMMIT_OK" || (echo "COMMIT_MISSING_OR_HEAD_UNCHANGED"; exit 1)',
     captureOutput: true,
     failOnError: true,
   })
@@ -386,26 +551,28 @@ Only edit this one file.`,
 
 ## Checklist: Is Your Workflow 80-to-100?
 
-| Check                               | How                                             |
-| ----------------------------------- | ----------------------------------------------- |
-| Tests exist                         | `file_exists` verification on test file         |
-| Tests actually run                  | Deterministic step executes them                |
-| Test failures get fixed             | Agent step reads output, fixes, re-runs         |
-| Final test run is hard-gated        | `failOnError: true` on last test step           |
-| Build passes                        | `npx tsc --noEmit` deterministic step           |
-| No regressions                      | Existing test suite runs after changes          |
-| Every edit is verified              | `git diff --quiet` + grep after each agent edit |
-| Commit only happens after all gates | `dependsOn` chains to final verification        |
+| Check                                    | How                                                                                                                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Tests exist                              | `file_exists` verification on test file                                                                                               |
+| Tests actually run                       | Deterministic step executes them                                                                                                      |
+| Test failures get fixed                  | Agent step reads output, fixes, re-runs                                                                                               |
+| Final test run is repairable             | Deterministic rerun captures output, then a repair owner gets one more pass                                                           |
+| Build passes                             | `npx tsc --noEmit` deterministic step                                                                                                 |
+| No regressions                           | Existing test suite runs after changes                                                                                                |
+| Every edit is verified and repairable    | `git diff --quiet` + grep for tracked-only edits; `git status --short -- <paths>` when new files/packages may appear; then a fix step |
+| Commit only happens after green evidence | Final commit step reruns acceptance checks and commits only on zero exit codes                                                        |
 
 ## Common Anti-Patterns
 
-| Anti-pattern                                     | Why it fails                                                          | Fix                                                   |
-| ------------------------------------------------ | --------------------------------------------------------------------- | ----------------------------------------------------- |
-| Tests written but never executed                 | Agent claims they pass, they don't                                    | Add deterministic `run-tests` step                    |
-| Single `failOnError: true` test run              | First failure kills workflow, no chance to fix                        | Use the three-step test-fix-rerun pattern             |
-| No regression test                               | New feature works, old features break                                 | Run `npm test` after build check                      |
-| Agent asked to "write and run tests" in one step | Agent writes tests, runs them, they fail, it edits, output is garbled | Separate write/run/fix into distinct steps            |
-| PGlite DDL doesn't match Drizzle schema          | Tests pass on wrong schema                                            | Derive DDL from schema.ts or test with real migration |
-| `failOnError: false` on final test run           | Broken tests get committed                                            | Always `failOnError: true` on the gate step           |
-| Testing only happy path                          | Edge cases break in prod                                              | Specify edge case tests in the task prompt            |
-| No verify gate after agent edits                 | Agent exits 0 without writing anything                                | Add `git diff --quiet` check after every edit         |
+| Anti-pattern                                                 | Why it fails                                                                     | Fix                                                                                     |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Tests written but never executed                             | Agent claims they pass, they don't                                               | Add deterministic `run-tests` step                                                      |
+| Single `failOnError: true` test run                          | First failure kills workflow, no chance to fix                                   | Use repairable run-fix-rerun-final-fix loops                                            |
+| No regression test                                           | New feature works, old features break                                            | Run `npm test` after build check                                                        |
+| Agent asked to "write and run tests" in one step             | Agent writes tests, runs them, they fail, it edits, output is garbled            | Separate write/run/fix into distinct steps                                              |
+| PGlite DDL doesn't match Drizzle schema                      | Tests pass on wrong schema                                                       | Derive DDL from schema.ts or test with real migration                                   |
+| Final test output not handed to an agent                     | Broken tests can stop the run or get ignored                                     | Add a final repair owner before commit                                                  |
+| Testing only happy path                                      | Edge cases break in prod                                                         | Specify edge case tests in the task prompt                                              |
+| No verify gate after agent edits                             | Agent exits 0 without writing anything                                           | Add `git diff --quiet` check after every edit, then route failures to a repair step     |
+| `git diff --quiet` for new package/test directories          | Untracked files are invisible, so valid new artifacts can look like "no changes" | Use `git status --short -- <paths>` and a repairable capture → fix → final gate pattern |
+| Committing after `failOnError: false` without checking exits | Broken work can be committed because the shell step returned successfully        | In `commit-if-green`, record each exit code and skip commit unless all are zero         |

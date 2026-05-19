@@ -80,7 +80,7 @@ export interface CommonProperties {
    * as `unknown` until we add them to the classifier. Always present so
    * dashboards can group on it without coalescing.
    */
-  harness: string;
+  orchestrator_harness: string;
   /**
    * Coarse-grained surface that emitted the event: `cli`, `broker`, or
    * `sdk`. Lets dashboards split by emitter without inferring from event

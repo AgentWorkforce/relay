@@ -1,0 +1,25 @@
+{
+  "id": "traj_zu3252hxzoqh",
+  "version": 1,
+  "task": {
+    "title": "Open PR for reading worker DM replies"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-16T06:08:22.396Z",
+  "completedAt": "2026-05-16T06:09:24.599Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Prepared the workflow implementation changes for existing PR #861, excluding local opencode.json and planning to update the PR body with final validation evidence.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "<repo-root>",
+  "tags": [],
+  "_trace": {
+    "startRef": "2090ea7ffb1f561d96ae0fa1e473136e40f25c99",
+    "endRef": "2090ea7ffb1f561d96ae0fa1e473136e40f25c99"
+  }
+}

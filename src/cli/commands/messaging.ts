@@ -3,9 +3,16 @@ import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { defaultExit } from '../lib/exit.js';
-import { parseSince } from '../lib/formatting.js';
+import { parseSince, sanitizeForTerminal, sanitizeForTerminalLine } from '../lib/formatting.js';
 
 type ExitFn = (code: number) => never;
+const MAX_DM_FETCH_LIMIT = 1000;
+const MARK_READ_CONCURRENCY = 8;
+const HISTORY_DM_CONVERSATION_SCAN_LIMIT = 50;
+const HISTORY_DM_PER_CONVERSATION_FETCH_LIMIT = 100;
+const INBOX_UNREAD_DM_FETCH_CONVERSATION_LIMIT = 50;
+const INBOX_DM_PREVIEW_FETCH_LIMIT = 10;
+const FALLBACK_DM_CREATED_AT = '1970-01-01T00:00:00.000Z';
 
 interface RelaycastMessage {
   id: string;
@@ -37,8 +44,17 @@ interface RelaycastMention {
 interface RelaycastLastMessage {
   id: string;
   text: string;
+  agentName?: string;
+  agent_name?: string;
   createdAt?: string;
   created_at?: string;
+  direction?: DmDirection;
+  unread?: boolean;
+  isUnread?: boolean;
+  is_unread?: boolean;
+  read?: boolean;
+  isRead?: boolean;
+  is_read?: boolean;
 }
 
 interface RelaycastUnreadDm {
@@ -46,6 +62,7 @@ interface RelaycastUnreadDm {
   conversationId?: string;
   unreadCount?: number;
   lastMessage?: RelaycastLastMessage | null;
+  messages?: RelaycastLastMessage[];
   conversation_id?: string;
   unread_count?: number;
   last_message?: RelaycastLastMessage | null;
@@ -80,6 +97,8 @@ interface DmConversationParticipant {
 
 interface DmConversationSummary {
   id: string;
+  type?: string;
+  dm_type?: string;
   participants: DmConversationParticipant[];
   lastMessage?: {
     id: string;
@@ -110,7 +129,15 @@ interface DmMessageItem {
   text: string;
   createdAt?: string;
   created_at?: string;
+  unread?: boolean;
+  isUnread?: boolean;
+  is_unread?: boolean;
+  read?: boolean;
+  isRead?: boolean;
+  is_read?: boolean;
 }
+
+type DmDirection = 'inbound' | 'outbound';
 
 interface NormalizedRelaycastMessage {
   id: string;
@@ -136,6 +163,9 @@ interface NormalizedRelaycastLastMessage {
   id: string;
   text: string;
   createdAt: string;
+  agentName?: string;
+  direction?: DmDirection;
+  unread?: boolean;
 }
 
 interface NormalizedRelaycastUnreadDm {
@@ -143,6 +173,7 @@ interface NormalizedRelaycastUnreadDm {
   from: string;
   unreadCount: number;
   lastMessage: NormalizedRelaycastLastMessage | null;
+  messages: NormalizedRelaycastLastMessage[];
 }
 
 interface NormalizedRelaycastRecentReaction {
@@ -169,10 +200,15 @@ export interface MessagingRelaycastClient {
   inbox(): Promise<RelaycastInbox>;
   dm(to: string, text: string): Promise<void>;
   post(channel: string, text: string): Promise<void>;
+  markRead?: (messageId: string) => Promise<unknown> | unknown;
+  markMessagesRead?: (conversationId: string, messageIds: string[]) => Promise<unknown> | unknown;
   dms: {
     conversations(): Promise<DmConversationSummary[]>;
     messages(conversationId: string, opts?: { limit?: number }): Promise<DmMessageItem[]>;
+    markRead?: (conversationId: string, messageIds: string[]) => Promise<unknown> | unknown;
+    markMessagesRead?: (conversationId: string, messageIds: string[]) => Promise<unknown> | unknown;
   };
+  disconnect?: () => Promise<unknown> | unknown;
 }
 
 export interface MessagingBrokerClient {
@@ -202,6 +238,10 @@ function readString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function readText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
 function readNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -209,6 +249,183 @@ function readNumber(...values: unknown[]): number | undefined {
     }
   }
   return undefined;
+}
+
+function readBoolean(...values: unknown[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function formatErrorDetail(err: unknown): string {
+  return sanitizeForTerminalLine(err instanceof Error ? err.message : String(err));
+}
+
+function getDefaultOrchestratorName(): string {
+  return process.env.AGENT_RELAY_ORCHESTRATOR_NAME?.trim() || 'orchestrator';
+}
+
+function getAllowedReadAgentNames(): Set<string> {
+  const allowed = new Set([getDefaultOrchestratorName()]);
+  for (const name of (process.env.AGENT_RELAY_ALLOWED_READ_IDENTITIES ?? '').split(',')) {
+    const trimmed = name.trim();
+    if (trimmed) {
+      allowed.add(trimmed);
+    }
+  }
+  return allowed;
+}
+
+function isAuthorizedReadIdentity(agentName: string): boolean {
+  return getAllowedReadAgentNames().has(agentName);
+}
+
+function reportUnauthorizedReadIdentity(deps: MessagingDependencies, agentName: string): void {
+  deps.error(
+    `Refusing to read as ${sanitizeForTerminalLine(
+      agentName
+    )}: read identities must be the configured orchestrator or listed in AGENT_RELAY_ALLOWED_READ_IDENTITIES.`
+  );
+  deps.exit(1);
+}
+
+function parseMessageLimit(value: string | undefined, defaultValue = 50): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  const trimmed = String(value).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid --limit value: ${value}`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid --limit value: ${value}`);
+  }
+  return Math.min(parsed, MAX_DM_FETCH_LIMIT);
+}
+
+type SinceFilter = { kind: 'none' } | { kind: 'time'; ts: number } | { kind: 'cursor'; id: string };
+
+/**
+ * `--since` accepts either a time (`5m`, `1h`, ISO-8601) or a message-id
+ * cursor. A cursor returns only messages strictly AFTER that id in
+ * chronological order, so a polling caller (`--since <lastId>`) never
+ * re-receives a message it already saw — the spec's stale-replay fix.
+ */
+function resolveSince(value: string | undefined): SinceFilter {
+  if (value === undefined || !String(value).trim()) return { kind: 'none' };
+  const trimmed = String(value).trim();
+  const ts = parseSince(trimmed);
+  if (ts !== undefined) return { kind: 'time', ts };
+  if (/^-\d+(?:[smhd]|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)$/i.test(trimmed)) {
+    throw new Error(`Invalid --since value: ${value}`);
+  }
+  if (/^\d+(?:sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)$/i.test(trimmed)) {
+    throw new Error(`Invalid --since value: ${value}`);
+  }
+  // Not a time. Treat as an opaque message-id cursor. Whitespace means it is
+  // neither a valid time nor a plausible id — surface the original error.
+  if (/\s/.test(trimmed)) {
+    throw new Error(`Invalid --since value: ${value}`);
+  }
+  return { kind: 'cursor', id: trimmed };
+}
+
+/**
+ * Drop everything up to and including the cursor message. If the cursor id
+ * is not in the (already chronologically sorted) window, return the available
+ * window so callers do not silently miss a burst that pushed the cursor out of
+ * the bounded fetch. `messages` MUST be sorted oldest→newest.
+ */
+function sliceAfterCursor<T extends { id: string }>(messages: T[], cursorId: string): T[] {
+  let cut = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].id === cursorId) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut === -1) return messages;
+  return messages.slice(cut + 1);
+}
+
+function normalizeUnreadCount(value: number | undefined): number {
+  if (!Number.isFinite(value) || value === undefined || value < 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function renderShellQuotedForTerminal(value: string): string {
+  return shellQuote(sanitizeForTerminalLine(value));
+}
+
+async function disconnectRelaycastClient(client: MessagingRelaycastClient | undefined): Promise<void> {
+  try {
+    await client?.disconnect?.();
+  } catch {
+    // Best-effort cleanup must not mask the command result.
+  }
+}
+
+function getDmParticipantName(participant: DmConversationParticipant): string | undefined {
+  return readString(participant.agentName, participant.agent_name);
+}
+
+function getDmParticipantNames(conversation: DmConversationSummary): string[] {
+  return conversation.participants.map(getDmParticipantName).filter(isPresent);
+}
+
+const IMPLICIT_DM_PARTICIPANT_NAMES = new Set(['system', 'relay', 'relaycast', 'bot']);
+
+function isImplicitDmParticipant(name: string): boolean {
+  return IMPLICIT_DM_PARTICIPANT_NAMES.has(name.trim().toLowerCase());
+}
+
+function hasCompatibleDirectDmParticipants(
+  conversation: DmConversationSummary,
+  readerName: string,
+  agentName: string,
+  allowReaderOmitted: boolean
+): boolean {
+  const participantNames = new Set(getDmParticipantNames(conversation));
+  if (!participantNames.has(agentName)) {
+    return false;
+  }
+  const hasReader = participantNames.has(readerName);
+  if (!hasReader && !allowReaderOmitted) {
+    return false;
+  }
+  if (!hasReader && allowReaderOmitted) {
+    return [...participantNames].every((name) => name === agentName || isImplicitDmParticipant(name));
+  }
+  return [...participantNames].every(
+    (name) => name === readerName || name === agentName || isImplicitDmParticipant(name)
+  );
+}
+
+function findDirectDmConversation(
+  conversations: DmConversationSummary[],
+  readerName: string,
+  agentName: string
+): DmConversationSummary | undefined {
+  return (
+    conversations.find((conversation) => {
+      const dmType = readString(conversation.type, conversation.dm_type);
+      return dmType === '1:1' && hasCompatibleDirectDmParticipants(conversation, readerName, agentName, true);
+    }) ??
+    conversations.find((conversation) => {
+      const dmType = readString(conversation.type, conversation.dm_type);
+      return !dmType && hasCompatibleDirectDmParticipants(conversation, readerName, agentName, false);
+    })
+  );
 }
 
 function normalizeIsoTimestamp(value: unknown): string | undefined {
@@ -232,9 +449,134 @@ function normalizeMessage(message: RelaycastMessage): NormalizedRelaycastMessage
   return {
     id: message.id,
     agentName,
-    text: message.text,
+    text: readText(message.text),
     createdAt,
   };
+}
+
+interface NormalizedDmMessage {
+  id: string;
+  agentName: string;
+  text: string;
+  createdAt: string;
+  unread?: boolean;
+}
+
+function normalizeDmMessage(
+  message: DmMessageItem,
+  defaults: { agentName?: string; createdAt?: string } = {}
+): NormalizedDmMessage | null {
+  const agentName = readString(message.agentName, message.agent_name) ?? defaults.agentName;
+  const createdAt =
+    normalizeIsoTimestamp(readString(message.createdAt, message.created_at)) ?? defaults.createdAt;
+  if (!agentName || !createdAt) {
+    return null;
+  }
+
+  const explicitUnread = readBoolean(message.unread, message.isUnread, message.is_unread);
+  const explicitRead = readBoolean(message.read, message.isRead, message.is_read);
+
+  return {
+    id: message.id,
+    agentName,
+    text: readText(message.text),
+    createdAt,
+    unread: explicitUnread ?? (explicitRead === undefined ? undefined : !explicitRead),
+  };
+}
+
+function sortDmMessagesChronologically<T extends Pick<NormalizedDmMessage, 'createdAt'>>(messages: T[]): T[] {
+  return [...messages].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function renderTranscriptMessage(
+  log: MessagingDependencies['log'],
+  message: Pick<NormalizedDmMessage, 'agentName' | 'text' | 'createdAt'>
+): void {
+  const agentName = sanitizeForTerminalLine(message.agentName);
+  const createdAt = sanitizeForTerminalLine(message.createdAt);
+  const lines = message.text.split(/\r?\n/).map(sanitizeForTerminal);
+  if (lines.length === 1) {
+    log(`[${createdAt}] ${agentName}: ${lines[0]}`);
+    return;
+  }
+
+  log(`[${createdAt}] ${agentName}:`);
+  for (const line of lines) {
+    log(`  ${line}`);
+  }
+}
+
+type UnreadDmDisplayMessage = Pick<NormalizedDmMessage, 'id' | 'text' | 'createdAt'> & {
+  agentName?: string;
+  direction?: DmDirection;
+  unread?: boolean;
+  diagnostic?: string;
+};
+
+function isInboundUnreadDmMessage(message: UnreadDmDisplayMessage, senderName: string): boolean {
+  return message.agentName === senderName;
+}
+
+function sortUnreadDmMessagesMostRecentFirst(messages: UnreadDmDisplayMessage[]): UnreadDmDisplayMessage[] {
+  return [...messages].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+function getFilteredDmFetchLimit(displayLimit: number, unreadCount = 0): number {
+  return Math.min(Math.max(displayLimit * 2, normalizeUnreadCount(unreadCount), 100), MAX_DM_FETCH_LIMIT);
+}
+
+function selectUnreadCandidates<T extends { unread?: boolean; createdAt: string }>(
+  messages: T[],
+  unreadCount: number
+): T[] {
+  const normalizedUnreadCount = normalizeUnreadCount(unreadCount);
+  const explicitUnread = messages.filter((message) => message.unread === true);
+  if (explicitUnread.length > 0 || normalizedUnreadCount === 0) {
+    return explicitUnread;
+  }
+  const unknownReadState = messages.filter((message) => message.unread === undefined);
+  if (unknownReadState.length === 0) {
+    return [];
+  }
+  return sortDmMessagesChronologically(unknownReadState).slice(-normalizedUnreadCount);
+}
+
+function renderUnreadDmMessage(
+  log: MessagingDependencies['log'],
+  message: UnreadDmDisplayMessage,
+  senderName: string
+): void {
+  if (message.diagnostic) {
+    log(`    ${sanitizeForTerminalLine(message.diagnostic)}`);
+    return;
+  }
+  const lines = message.text.split(/\r?\n/).map(sanitizeForTerminal);
+  const displaySender = sanitizeForTerminalLine(message.agentName || senderName);
+  const createdAt = sanitizeForTerminalLine(message.createdAt);
+  if (lines.length === 1) {
+    log(`    [${createdAt}] ${displaySender}: ${lines[0]}`);
+    return;
+  }
+
+  log(`    [${createdAt}] ${displaySender}:`);
+  for (const line of lines) {
+    log(`      ${line}`);
+  }
+}
+
+function getLastMessageDirection(
+  message: NormalizedRelaycastLastMessage,
+  dmFrom: string,
+  readerName: string
+): DmDirection | 'unknown' {
+  if (message.agentName === dmFrom) {
+    return 'inbound';
+  }
+  if (message.agentName === readerName) {
+    return 'outbound';
+  }
+  return message.agentName ? 'outbound' : 'unknown';
 }
 
 function normalizeUnreadChannel(channel: RelaycastUnreadChannel): NormalizedRelaycastUnreadChannel | null {
@@ -262,7 +604,7 @@ function normalizeMention(mention: RelaycastMention): NormalizedRelaycastMention
     id: mention.id,
     channelName,
     agentName,
-    text: mention.text,
+    text: readText(mention.text),
     createdAt,
   };
 }
@@ -278,26 +620,35 @@ function normalizeLastMessage(
   if (!createdAt) {
     return null;
   }
+  const explicitUnread = readBoolean(message.unread, message.isUnread, message.is_unread);
+  const explicitRead = readBoolean(message.read, message.isRead, message.is_read);
 
   return {
     id: message.id,
-    text: message.text,
+    text: readText(message.text),
     createdAt,
+    agentName: readString(message.agentName, message.agent_name),
+    unread: explicitUnread ?? (explicitRead === undefined ? undefined : !explicitRead),
   };
 }
 
 function normalizeUnreadDm(dm: RelaycastUnreadDm): NormalizedRelaycastUnreadDm | null {
   const conversationId = readString(dm.conversationId, dm.conversation_id);
-  const unreadCount = readNumber(dm.unreadCount, dm.unread_count);
-  if (!conversationId || unreadCount === undefined) {
+  const from = readString(dm.from);
+  const unreadCount = normalizeUnreadCount(readNumber(dm.unreadCount, dm.unread_count));
+  if (!conversationId || !from) {
     return null;
   }
 
   return {
     conversationId,
-    from: dm.from,
+    from,
     unreadCount,
     lastMessage: normalizeLastMessage(dm.lastMessage ?? dm.last_message),
+    // Current Relaycast inbox summaries expose last_message without sender
+    // metadata. Keep messages[] forward-compatible, but production previews
+    // are expected to use the explicit DM body fetch path today.
+    messages: (Array.isArray(dm.messages) ? dm.messages : []).map(normalizeLastMessage).filter(isPresent),
   };
 }
 
@@ -337,6 +688,112 @@ function normalizeInbox(inbox: RelaycastInbox | null | undefined): NormalizedRel
       .map(normalizeRecentReaction)
       .filter(isPresent),
   };
+}
+
+async function getUnreadDmDisplayMessages(
+  relaycast: MessagingRelaycastClient,
+  dm: NormalizedRelaycastUnreadDm
+): Promise<UnreadDmDisplayMessage[]> {
+  const embeddedMessages = dm.messages.length > 0 ? dm.messages : dm.lastMessage ? [dm.lastMessage] : [];
+  const inboundEmbedded = sortUnreadDmMessagesMostRecentFirst(
+    embeddedMessages.filter((message) => isInboundUnreadDmMessage(message, dm.from))
+  );
+  const unreadEmbedded = selectUnreadCandidates(inboundEmbedded, dm.unreadCount);
+  const targetVisibleCount = Math.min(3, dm.unreadCount);
+  if (unreadEmbedded.length >= targetVisibleCount || dm.unreadCount === 0) {
+    return unreadEmbedded;
+  }
+
+  try {
+    const fetchedMessages = (
+      await relaycast.dms.messages(dm.conversationId, {
+        limit: INBOX_DM_PREVIEW_FETCH_LIMIT,
+      })
+    )
+      .map((message) =>
+        normalizeDmMessage(message, {
+          createdAt: FALLBACK_DM_CREATED_AT,
+        })
+      )
+      .filter(isPresent)
+      .filter((message) => message.agentName === dm.from);
+    const candidateMessages = selectUnreadCandidates(fetchedMessages, dm.unreadCount);
+    const mergedMessages = new Map<string, UnreadDmDisplayMessage>();
+    for (const message of [...unreadEmbedded, ...candidateMessages]) {
+      mergedMessages.set(message.id, message);
+    }
+    return sortUnreadDmMessagesMostRecentFirst([...mergedMessages.values()]);
+  } catch {
+    if (unreadEmbedded.length === 0 && dm.unreadCount > 0) {
+      return [
+        {
+          id: `diagnostic:${dm.conversationId}`,
+          text: '',
+          createdAt: FALLBACK_DM_CREATED_AT,
+          diagnostic: `(could not load message bodies — run \`agent-relay replies ${renderShellQuotedForTerminal(
+            dm.from
+          )} --unread\`)`,
+        },
+      ];
+    }
+    return unreadEmbedded;
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const step = Math.max(1, Math.floor(concurrency));
+  const results = new Array<R>(items.length);
+  for (let index = 0; index < items.length; index += step) {
+    const batch = items.slice(index, index + step);
+    const batchResults = await Promise.all(batch.map((item, batchIndex) => mapper(item, index + batchIndex)));
+    for (const [batchIndex, result] of batchResults.entries()) {
+      results[index + batchIndex] = result;
+    }
+  }
+  return results;
+}
+
+async function markDmMessagesRead(
+  relaycast: MessagingRelaycastClient,
+  conversationId: string,
+  messages: Array<Pick<NormalizedDmMessage, 'id'>>
+): Promise<void> {
+  const ids = messages.map((message) => message.id);
+  if (ids.length === 0) {
+    return;
+  }
+  if (typeof relaycast.markRead === 'function') {
+    await mapWithConcurrency(ids, MARK_READ_CONCURRENCY, async (id) => relaycast.markRead!(id));
+    return;
+  }
+  if (typeof relaycast.dms.markMessagesRead === 'function') {
+    await relaycast.dms.markMessagesRead(conversationId, ids);
+    return;
+  }
+  if (typeof relaycast.dms.markRead === 'function') {
+    await relaycast.dms.markRead(conversationId, ids);
+    return;
+  }
+  if (typeof relaycast.markMessagesRead === 'function') {
+    await relaycast.markMessagesRead(conversationId, ids);
+  }
+}
+
+function getConversationRecency(conversation: DmConversationSummary): number {
+  const lastMessage = conversation.lastMessage ?? conversation.last_message;
+  return (
+    Date.parse(readString(lastMessage?.createdAt, lastMessage?.created_at) ?? '') ||
+    Date.parse(readString(conversation.createdAt, conversation.created_at) ?? '') ||
+    0
+  );
+}
+
+function sortConversationsMostRecentFirst(conversations: DmConversationSummary[]): DmConversationSummary[] {
+  return [...conversations].sort((a, b) => getConversationRecency(b) - getConversationRecency(a));
 }
 
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
@@ -393,16 +850,24 @@ async function createDefaultRelaycastClient(options: {
     type: 'agent',
   });
   const agentClient = relaycast.as(registration.token);
+  return wrapRelaycastAgentClient(agentClient);
+}
+
+export function wrapRelaycastAgentClient(agentClient: any): MessagingRelaycastClient {
   // AgentClient already has dm(agent, text) — preserve the original reference before casting.
   // post() bridges to AgentClient.send() which has a different name.
   const originalDm = agentClient.dm.bind(agentClient);
   const originalSend = (agentClient as any).send.bind(agentClient);
+  const originalDisconnect = agentClient.disconnect.bind(agentClient);
   const client = agentClient as unknown as MessagingRelaycastClient;
   client.dm = async (to: string, text: string) => {
     await originalDm(to, text);
   };
   client.post = async (channel: string, text: string) => {
     await originalSend(channel, text);
+  };
+  client.disconnect = async () => {
+    await originalDisconnect();
   };
   return client;
 }
@@ -430,17 +895,21 @@ export function registerMessagingCommands(
     .description('Send a message to an agent')
     .argument('<agent>', 'Target agent name (or * for broadcast, #channel for channel)')
     .argument('<message>', 'Message to send')
-    .option('--from <name>', 'Sender name (registered identity in relaycast, defaults to "relay")')
+    .option(
+      '--from <name>',
+      'Sender name (registered identity in relaycast). Default: $AGENT_RELAY_ORCHESTRATOR_NAME or "orchestrator"; use this identity with `agent-relay replies <worker>`.'
+    )
     .option('--thread <id>', 'Thread identifier')
     .action(async (agent: string, message: string, options: { from?: string; thread?: string }) => {
-      const senderName = options.from?.trim() || 'relay';
+      const senderName = options.from?.trim() || getDefaultOrchestratorName();
       const isChannel = agent.startsWith('#');
 
       // Primary path: send via relaycast SDK so messages are stored and queryable
       // Skip relaycast path when --thread is used since the relaycast SDK does not support threading
       if (!options.thread) {
+        let relaycastClient: MessagingRelaycastClient | undefined;
         try {
-          const relaycastClient = await deps.createRelaycastClient({
+          relaycastClient = await deps.createRelaycastClient({
             agentName: senderName,
             cwd: deps.getProjectRoot(),
           });
@@ -449,10 +918,12 @@ export function registerMessagingCommands(
           } else {
             await relaycastClient.dm(agent, message);
           }
-          deps.log(`Message sent to ${agent}`);
+          deps.log(`Message sent to ${sanitizeForTerminalLine(agent)}`);
           return;
         } catch {
           // Fall through to broker path
+        } finally {
+          await disconnectRelaycastClient(relaycastClient);
         }
       }
 
@@ -461,7 +932,7 @@ export function registerMessagingCommands(
       try {
         brokerClient = await deps.createClient(deps.getProjectRoot());
       } catch (err: any) {
-        deps.error(`Failed to connect to broker: ${err?.message || String(err)}`);
+        deps.error(`Failed to connect to broker: ${formatErrorDetail(err)}`);
         deps.error('Start the broker with `agent-relay up` and try again.');
         deps.exit(1);
         return;
@@ -471,12 +942,12 @@ export function registerMessagingCommands(
         await brokerClient.sendMessage({
           to: agent,
           text: message,
-          from: options.from?.trim() ? options.from.trim() : undefined,
+          from: senderName,
           threadId: options.thread,
         });
-        deps.log(`Message sent to ${agent}`);
+        deps.log(`Message sent to ${sanitizeForTerminalLine(agent)}`);
       } catch (err: any) {
-        deps.error(`Failed to send message: ${err?.message || String(err)}`);
+        deps.error(`Failed to send message: ${formatErrorDetail(err)}`);
         deps.exit(1);
       } finally {
         await brokerClient.shutdown().catch(() => undefined);
@@ -489,14 +960,14 @@ export function registerMessagingCommands(
     .argument('<id>', 'Message ID')
     .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
     .action(async (messageId: string) => {
-      let relaycast: MessagingRelaycastClient;
+      let relaycast: MessagingRelaycastClient | undefined;
       try {
         relaycast = await deps.createRelaycastClient({
           agentName: '__cli_read__',
           cwd: deps.getProjectRoot(),
         });
       } catch (err: any) {
-        deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+        deps.error(`Failed to initialize relaycast client: ${formatErrorDetail(err)}`);
         deps.exit(1);
         return;
       }
@@ -508,15 +979,17 @@ export function registerMessagingCommands(
           throw new Error(`message ${messageId} is missing sender or timestamp metadata`);
         }
 
-        deps.log(`From: ${normalizedMessage.agentName}`);
+        deps.log(`From: ${sanitizeForTerminalLine(normalizedMessage.agentName)}`);
         deps.log('To: #channel');
-        deps.log(`Time: ${normalizedMessage.createdAt}`);
+        deps.log(`Time: ${sanitizeForTerminalLine(normalizedMessage.createdAt)}`);
         deps.log('---');
         deps.log(normalizedMessage.text);
       } catch (err: any) {
-        deps.error(`Failed to read message ${messageId}: ${err?.message || String(err)}`);
+        deps.error(`Failed to read message ${sanitizeForTerminalLine(messageId)}: ${formatErrorDetail(err)}`);
         deps.error('Ensure the broker is running (`agent-relay up`) and try again.');
         deps.exit(1);
+      } finally {
+        await disconnectRelaycastClient(relaycast);
       }
     });
 
@@ -527,7 +1000,10 @@ export function registerMessagingCommands(
     .option('-f, --from <agent>', 'Filter by sender')
     .option('-t, --to <agent>', 'Filter by recipient')
     .option('--thread <id>', 'Filter by thread ID')
-    .option('--since <time>', 'Since time (e.g., "1h", "30m", "2024-01-01")')
+    .option(
+      '--since <time|id>',
+      'Time ("1h", "30m", "2024-01-01") or a message-id cursor (only messages after that id)'
+    )
     .option('--json', 'Output as JSON')
     .option('--storage <type>', 'Storage type override (jsonl, sqlite, memory)')
     .action(
@@ -539,67 +1015,137 @@ export function registerMessagingCommands(
         since?: string;
         json?: boolean;
       }) => {
-        const limit = Number.parseInt(options.limit ?? '50', 10) || 50;
-        const sinceTs = parseSince(options.since);
+        let limit: number;
+        let since: SinceFilter;
+        try {
+          limit = parseMessageLimit(options.limit);
+          since = resolveSince(options.since);
+        } catch (err: any) {
+          deps.error(formatErrorDetail(err));
+          deps.exit(1);
+          return;
+        }
+        const sinceTs = since.kind === 'time' ? since.ts : undefined;
 
         if (options.from && !options.to) {
+          if (!isAuthorizedReadIdentity(options.from)) {
+            reportUnauthorizedReadIdentity(deps, options.from);
+            return;
+          }
           // Cross-context sender history: channel messages + DMs sent by this agent
-          const channelItems: Array<{ ts: string; to: string; text: string; kind: 'channel' }> = [];
-          const dmItems: Array<{ ts: string; to: string; text: string; kind: 'dm' }> = [];
+          const channelItems: Array<{ id: string; ts: string; to: string; text: string; kind: 'channel' }> =
+            [];
+          const dmItems: Array<{ id: string; ts: string; to: string; text: string; kind: 'dm' }> = [];
+          const sourceErrors: string[] = [];
+          let relaycastClient: MessagingRelaycastClient | undefined;
+
+          try {
+            relaycastClient = await deps.createRelaycastClient({
+              agentName: options.from,
+              cwd: deps.getProjectRoot(),
+            });
+          } catch (err: any) {
+            const detail = formatErrorDetail(err);
+            sourceErrors.push(`channel: ${detail}`);
+            sourceErrors.push(`dm: ${detail}`);
+          }
 
           // Part 1: channel messages from this agent
           try {
-            const channelClient = await deps.createRelaycastClient({
-              agentName: '__cli_history__',
-              cwd: deps.getProjectRoot(),
-            });
-            const raw = (await channelClient.messages('general', { limit: Math.max(limit * 2, 100) }))
-              .map(normalizeMessage)
-              .filter(isPresent)
-              .filter((msg) => msg.agentName === options.from)
-              .filter((msg) => !sinceTs || Date.parse(msg.createdAt) >= sinceTs)
-              .slice(0, limit);
-            for (const msg of raw) {
-              channelItems.push({ ts: msg.createdAt, to: '#general', text: msg.text, kind: 'channel' });
+            if (!relaycastClient) {
+              // Initialization failure already contributed both source errors.
+            } else {
+              const raw = (await relaycastClient.messages('general', { limit: Math.max(limit * 2, 100) }))
+                .map(normalizeMessage)
+                .filter(isPresent)
+                .filter((msg) => msg.agentName === options.from)
+                .filter((msg) => !sinceTs || Date.parse(msg.createdAt) >= sinceTs)
+                // Relaycast feed order is not guaranteed: sort chronologically
+                // and keep the most recent `limit` (matches the channel branch).
+                // A bare slice(0, limit) here silently kept the OLDEST messages.
+                .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+                .slice(-limit);
+              for (const msg of raw) {
+                channelItems.push({
+                  id: msg.id,
+                  ts: msg.createdAt,
+                  to: '#general',
+                  text: msg.text,
+                  kind: 'channel',
+                });
+              }
             }
-          } catch {
-            // non-fatal — continue to DM section
+          } catch (err: any) {
+            sourceErrors.push(`channel: ${formatErrorDetail(err)}`);
           }
 
           // Part 2: DM messages sent by this agent
           try {
-            const dmClient = await deps.createRelaycastClient({
-              agentName: options.from,
-              cwd: deps.getProjectRoot(),
-            });
-            const conversations = await dmClient.dms.conversations();
-            const perConvLimit = Math.max(Math.ceil(limit / Math.max(conversations.length, 1)), 10);
-            for (const conv of conversations.slice(0, 10)) {
-              const msgs = await dmClient.dms.messages(conv.id, { limit: perConvLimit });
-              const recipient =
-                conv.participants
-                  .filter((p) => (p.agentName || p.agent_name) !== options.from)
-                  .map((p) => p.agentName || p.agent_name)
-                  .join(', ') || '(self)';
-              for (const m of msgs) {
-                const sender = m.agentName || m.agent_name;
-                if (sender !== options.from) continue;
-                const ts = m.createdAt || m.created_at || '';
-                if (sinceTs && Date.parse(ts) < sinceTs) continue;
-                dmItems.push({ ts, to: recipient, text: m.text, kind: 'dm' });
+            if (!relaycastClient) {
+              // Initialization failure already contributed both source errors.
+            } else {
+              const conversations = sortConversationsMostRecentFirst(
+                await relaycastClient.dms.conversations()
+              ).slice(0, HISTORY_DM_CONVERSATION_SCAN_LIMIT);
+              const perConvLimit = Math.min(
+                HISTORY_DM_PER_CONVERSATION_FETCH_LIMIT,
+                MAX_DM_FETCH_LIMIT,
+                Math.max(limit, 10)
+              );
+              const perConversationItems = await mapWithConcurrency(
+                conversations,
+                MARK_READ_CONCURRENCY,
+                async (conv) => {
+                  const msgs = await relaycastClient!.dms.messages(conv.id, { limit: perConvLimit });
+                  const recipient =
+                    conv.participants
+                      .filter((p) => (p.agentName || p.agent_name) !== options.from)
+                      .map((p) => p.agentName || p.agent_name)
+                      .join(', ') || '(self)';
+                  return msgs
+                    .map((m) => {
+                      const sender = m.agentName || m.agent_name;
+                      if (sender !== options.from) return null;
+                      const ts = m.createdAt || m.created_at || '';
+                      if (sinceTs && Date.parse(ts) < sinceTs) return null;
+                      return { id: m.id, ts, to: recipient, text: readText(m.text), kind: 'dm' as const };
+                    })
+                    .filter(isPresent);
+                }
+              );
+              for (const items of perConversationItems) {
+                dmItems.push(...items);
               }
             }
-          } catch {
-            // non-fatal — continue with channel results only
+          } catch (err: any) {
+            sourceErrors.push(`dm: ${formatErrorDetail(err)}`);
+          } finally {
+            await disconnectRelaycastClient(relaycastClient);
           }
 
-          const allItems = [...channelItems, ...dmItems].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+          const orderedItems = [...channelItems, ...dmItems].sort(
+            (a, b) => Date.parse(a.ts) - Date.parse(b.ts)
+          );
+          const allItems = (
+            since.kind === 'cursor' ? sliceAfterCursor(orderedItems, since.id) : orderedItems
+          ).slice(-limit);
+
+          if (!allItems.length && sourceErrors.length >= 2) {
+            deps.error(`Failed to fetch history sources: ${sourceErrors.join('; ')}`);
+            deps.exit(1);
+            return;
+          }
+
+          if (sourceErrors.length > 0) {
+            deps.error(`Warning: partial history results; ${sourceErrors.join('; ')}`);
+          }
 
           if (options.json) {
             deps.log(
               JSON.stringify(
                 allItems.map((item) => ({
                   from: options.from,
+                  id: item.id,
                   to: item.to,
                   text: item.text,
                   createdAt: item.ts,
@@ -618,98 +1164,114 @@ export function registerMessagingCommands(
           }
 
           allItems.forEach((item) => {
-            const body = item.text.length > 200 ? item.text.slice(0, 197) + '...' : item.text;
-            if (item.kind === 'dm') {
-              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ' (DM): ' + body);
+            const suffix = item.kind === 'dm' ? ' (DM)' : '';
+            const header = `[${sanitizeForTerminalLine(item.ts)}] ${sanitizeForTerminalLine(
+              options.from ?? ''
+            )} -> ${sanitizeForTerminalLine(item.to)}${suffix}`;
+            // No truncation: substantive payloads (diffs, grep counts,
+            // GO/NO-GO reasoning) must be readable in full. Multi-line
+            // messages print under an indented header.
+            const lines = item.text.split(/\r?\n/).map(sanitizeForTerminal);
+            if (lines.length === 1) {
+              deps.log(`${header}: ${lines[0]}`);
             } else {
-              deps.log('[' + item.ts + '] ' + options.from + ' -> ' + item.to + ': ' + body);
+              deps.log(`${header}:`);
+              for (const line of lines) {
+                deps.log(`  ${line}`);
+              }
             }
           });
           return;
         }
 
         if (options.to && !options.to.startsWith('#')) {
-          // DM history mode: register as the target agent and show their conversations
+          const toName = options.to;
+          const readerName = getDefaultOrchestratorName();
           let dmClient: MessagingRelaycastClient;
           try {
             dmClient = await deps.createRelaycastClient({
-              agentName: options.to,
+              agentName: readerName,
               cwd: deps.getProjectRoot(),
             });
           } catch (err: any) {
-            deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+            deps.error(`Failed to initialize relaycast client: ${formatErrorDetail(err)}`);
             deps.exit(1);
             return;
           }
 
           try {
             const conversations = await dmClient.dms.conversations();
+            const conversation = findDirectDmConversation(conversations, readerName, toName);
 
-            if (options.from) {
-              // Show messages in the specific conversation with --from agent
-              const conv = conversations.find((c) =>
-                c.participants.some((p) => (p.agentName || p.agent_name) === options.from)
+            if (!conversation) {
+              deps.log(
+                `No DM conversation found between ${sanitizeForTerminalLine(
+                  readerName
+                )} and ${sanitizeForTerminalLine(toName)}.`
               );
-              if (!conv) {
-                deps.log(`No DM conversation found between ${options.to} and ${options.from}.`);
-                return;
-              }
-              const messages = await dmClient.dms.messages(conv.id, { limit });
-              if (options.json) {
-                deps.log(
-                  JSON.stringify(
-                    messages.map((m) => ({
-                      id: m.id,
-                      from: m.agentName || m.agent_name || 'unknown',
-                      text: m.text,
-                      createdAt: m.createdAt || m.created_at,
-                    })),
-                    null,
-                    2
-                  )
-                );
-                return;
-              }
-              if (!messages.length) {
-                deps.log('No messages found.');
-                return;
-              }
-              messages.forEach((m) => {
-                const sender = m.agentName || m.agent_name || 'unknown';
-                const ts = m.createdAt || m.created_at || '';
-                const body = m.text.length > 200 ? `${m.text.slice(0, 197)}...` : m.text;
-                deps.log(`[${ts}] ${sender}: ${body}`);
+              return;
+            }
+
+            const collected: Array<NormalizedDmMessage & { to: string }> = [];
+            const rawFetchLimit =
+              options.from || sinceTs || since.kind === 'cursor' ? getFilteredDmFetchLimit(limit) : limit;
+            const dmMessages = await dmClient.dms.messages(conversation.id, { limit: rawFetchLimit });
+            for (const message of dmMessages) {
+              const normalized = normalizeDmMessage(message, {
+                agentName: toName,
+                createdAt: FALLBACK_DM_CREATED_AT,
               });
-            } else {
-              // Show all conversations summary
-              if (options.json) {
-                deps.log(JSON.stringify(conversations, null, 2));
-                return;
-              }
-              if (!conversations.length) {
-                deps.log(`No DM conversations found for ${options.to}.`);
-                return;
-              }
-              deps.log(`DM conversations for ${options.to}:`);
-              conversations.forEach((conv) => {
-                const others = conv.participants
-                  .filter((p) => (p.agentName || p.agent_name) !== options.to)
-                  .map((p) => p.agentName || p.agent_name)
-                  .join(', ');
-                const lastText = (conv.lastMessage || conv.last_message)?.text ?? '(no messages)';
-                const preview = lastText.length > 60 ? `${lastText.slice(0, 57)}...` : lastText;
-                const unread = conv.unreadCount ?? conv.unread_count ?? 0;
-                deps.log(`  ${others || '(self)'}: "${preview}" [${unread} unread]`);
+              if (!normalized) continue;
+              if (options.from && normalized.agentName !== options.from) continue;
+              if (sinceTs && Date.parse(normalized.createdAt) < sinceTs) continue;
+              collected.push({
+                ...normalized,
+                to: normalized.agentName === readerName ? toName : readerName,
               });
             }
+
+            const ordered = sortDmMessagesChronologically(collected);
+            // `--since <id>`: only messages strictly after that id (no replay).
+            const messages = (since.kind === 'cursor' ? sliceAfterCursor(ordered, since.id) : ordered).slice(
+              -limit
+            );
+
+            if (options.json) {
+              deps.log(
+                JSON.stringify(
+                  messages.map((message) => ({
+                    id: message.id,
+                    from: message.agentName,
+                    to: message.to,
+                    text: message.text,
+                    createdAt: message.createdAt,
+                    direction: message.agentName === readerName ? 'outbound' : 'inbound',
+                  })),
+                  null,
+                  2
+                )
+              );
+              return;
+            }
+
+            if (!messages.length) {
+              deps.log('No messages found.');
+              return;
+            }
+
+            for (const message of messages) {
+              renderTranscriptMessage(deps.log, message);
+            }
           } catch (err: any) {
-            deps.error(`Failed to fetch DM history: ${err?.message || String(err)}`);
+            deps.error(`Failed to fetch DM history: ${formatErrorDetail(err)}`);
             deps.exit(1);
+          } finally {
+            await disconnectRelaycastClient(dmClient);
           }
           return;
         }
 
-        let relaycast: MessagingRelaycastClient;
+        let relaycast: MessagingRelaycastClient | undefined;
 
         try {
           relaycast = await deps.createRelaycastClient({
@@ -717,7 +1279,7 @@ export function registerMessagingCommands(
             cwd: deps.getProjectRoot(),
           });
         } catch (err: any) {
-          deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+          deps.error(`Failed to initialize relaycast client: ${formatErrorDetail(err)}`);
           deps.exit(1);
           return;
         }
@@ -739,7 +1301,19 @@ export function registerMessagingCommands(
             return true;
           });
 
-          filteredMessages = filteredMessages.slice(0, limit);
+          // Order chronologically (oldest first, newest at the bottom) so a
+          // reader reconstructs the conversation top-to-bottom like a
+          // transcript, then keep the most recent `limit` messages. The
+          // relaycast feed order is not guaranteed, so an explicit sort is
+          // required to stop messages interleaving out of order.
+          filteredMessages = filteredMessages.sort(
+            (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
+          );
+          // `--since <id>`: only messages strictly after that id (no replay).
+          if (since.kind === 'cursor') {
+            filteredMessages = sliceAfterCursor(filteredMessages, since.id);
+          }
+          filteredMessages = filteredMessages.slice(-limit);
 
           if (options.json) {
             const payload = filteredMessages.map((msg) => ({
@@ -762,14 +1336,29 @@ export function registerMessagingCommands(
             return;
           }
 
+          // No truncation: channel evidence (literal diffs, grep counts,
+          // GO/NO-GO reasoning) must be fully readable. Multi-line messages
+          // print under an indented header.
           filteredMessages.forEach((msg) => {
-            const body = msg.text.length > 200 ? `${msg.text.slice(0, 197)}...` : msg.text;
-            deps.log(`[${msg.createdAt}] ${msg.agentName} -> #${channel}: ${body}`);
+            const header = `[${sanitizeForTerminalLine(msg.createdAt)}] ${sanitizeForTerminalLine(
+              msg.agentName
+            )} -> #${sanitizeForTerminalLine(channel)}`;
+            const lines = msg.text.split(/\r?\n/).map(sanitizeForTerminal);
+            if (lines.length === 1) {
+              deps.log(`${header}: ${lines[0]}`);
+            } else {
+              deps.log(`${header}:`);
+              for (const line of lines) {
+                deps.log(`  ${line}`);
+              }
+            }
           });
         } catch (err: any) {
-          deps.error(`Failed to fetch history: ${err?.message || String(err)}`);
+          deps.error(`Failed to fetch history: ${formatErrorDetail(err)}`);
           deps.error('Ensure the broker is running (`agent-relay up`) and try again.');
           deps.exit(1);
+        } finally {
+          await disconnectRelaycastClient(relaycast);
         }
       }
     );
@@ -780,14 +1369,20 @@ export function registerMessagingCommands(
     .option('--agent <name>', 'Agent whose inbox to check (defaults to cli user)')
     .option('--json', 'Output as JSON')
     .action(async (options: { agent?: string; json?: boolean }) => {
-      let relaycast: MessagingRelaycastClient;
+      const requestedReaderName = options.agent?.trim();
+      if (requestedReaderName && !isAuthorizedReadIdentity(requestedReaderName)) {
+        reportUnauthorizedReadIdentity(deps, requestedReaderName);
+        return;
+      }
+      const readerName = requestedReaderName || '__cli_inbox__';
+      let relaycast: MessagingRelaycastClient | undefined;
       try {
         relaycast = await deps.createRelaycastClient({
-          agentName: options.agent?.trim() || '__cli_inbox__',
+          agentName: readerName,
           cwd: deps.getProjectRoot(),
         });
       } catch (err: any) {
-        deps.error(`Failed to initialize relaycast client: ${err?.message || String(err)}`);
+        deps.error(`Failed to initialize relaycast client: ${formatErrorDetail(err)}`);
         deps.exit(1);
         return;
       }
@@ -795,6 +1390,12 @@ export function registerMessagingCommands(
       try {
         const inbox = normalizeInbox(await relaycast.inbox());
         if (options.json) {
+          const unreadDmsForFetch = inbox.unreadDms.slice(0, INBOX_UNREAD_DM_FETCH_CONVERSATION_LIMIT);
+          const unreadDmDisplays = await mapWithConcurrency(
+            unreadDmsForFetch,
+            MARK_READ_CONCURRENCY,
+            async (dm) => getUnreadDmDisplayMessages(relaycast!, dm)
+          );
           const payload = {
             unread_channels: inbox.unreadChannels.map((item) => ({
               channel_name: item.channelName,
@@ -807,18 +1408,30 @@ export function registerMessagingCommands(
               text: mention.text,
               created_at: mention.createdAt,
             })),
-            unread_dms: inbox.unreadDms.map((dm) => ({
-              conversation_id: dm.conversationId,
-              from: dm.from,
-              unread_count: dm.unreadCount,
-              last_message: dm.lastMessage
-                ? {
-                    id: dm.lastMessage.id,
-                    text: dm.lastMessage.text,
-                    created_at: dm.lastMessage.createdAt,
-                  }
-                : null,
-            })),
+            unread_dms: inbox.unreadDms.map((dm, index) => {
+              const selectedMessage = unreadDmDisplays[index]?.[0];
+              const lastMessageError = selectedMessage?.diagnostic;
+              const selectedDisplayMessage = lastMessageError ? undefined : selectedMessage;
+              const lastMessage = selectedDisplayMessage ?? dm.lastMessage;
+              return {
+                conversation_id: dm.conversationId,
+                from: dm.from,
+                unread_count: dm.unreadCount,
+                last_message: lastMessage
+                  ? {
+                      id: lastMessage.id,
+                      text: lastMessage.text,
+                      created_at: lastMessage.createdAt,
+                      direction:
+                        selectedDisplayMessage?.direction ??
+                        (selectedDisplayMessage
+                          ? 'inbound'
+                          : getLastMessageDirection(lastMessage, dm.from, readerName)),
+                    }
+                  : null,
+                ...(lastMessageError ? { last_message_error: lastMessageError } : {}),
+              };
+            }),
             recent_reactions: inbox.recentReactions.map((reaction) => ({
               message_id: reaction.messageId,
               channel_name: reaction.channelName,
@@ -845,7 +1458,7 @@ export function registerMessagingCommands(
         if (inbox.unreadChannels.length > 0) {
           deps.log('Unread Channels:');
           for (const item of inbox.unreadChannels) {
-            deps.log(`  #${item.channelName}: ${item.unreadCount}`);
+            deps.log(`  #${sanitizeForTerminalLine(item.channelName)}: ${item.unreadCount}`);
           }
           deps.log('');
         }
@@ -854,15 +1467,40 @@ export function registerMessagingCommands(
           deps.log('Mentions:');
           for (const mention of inbox.mentions) {
             const preview = mention.text.length > 120 ? `${mention.text.slice(0, 117)}...` : mention.text;
-            deps.log(`  [${mention.createdAt}] #${mention.channelName} @${mention.agentName}: ${preview}`);
+            deps.log(
+              `  [${sanitizeForTerminalLine(mention.createdAt)}] #${sanitizeForTerminalLine(
+                mention.channelName
+              )} @${sanitizeForTerminalLine(mention.agentName)}: ${sanitizeForTerminalLine(preview)}`
+            );
           }
           deps.log('');
         }
 
         if (inbox.unreadDms.length > 0) {
           deps.log('Unread DMs:');
-          for (const dm of inbox.unreadDms) {
-            deps.log(`  ${dm.from}: ${dm.unreadCount}`);
+          const unreadDmsForFetch = inbox.unreadDms.slice(0, INBOX_UNREAD_DM_FETCH_CONVERSATION_LIMIT);
+          const unreadDmDisplays = await mapWithConcurrency(
+            unreadDmsForFetch,
+            MARK_READ_CONCURRENCY,
+            async (dm) => getUnreadDmDisplayMessages(relaycast!, dm)
+          );
+          for (const [index, dm] of inbox.unreadDms.entries()) {
+            deps.log(
+              `  ${sanitizeForTerminalLine(dm.from)} → ${sanitizeForTerminalLine(readerName)} (${dm.unreadCount} unread):`
+            );
+            const displayMessages = unreadDmDisplays[index] ?? [];
+            const visibleMessages = displayMessages.slice(0, 3);
+            for (const message of visibleMessages) {
+              renderUnreadDmMessage(deps.log, message, dm.from);
+            }
+            const remaining = Math.max(dm.unreadCount, displayMessages.length) - visibleMessages.length;
+            if (remaining > 0) {
+              deps.log(
+                `    … (${remaining} more — run \`agent-relay replies ${renderShellQuotedForTerminal(
+                  dm.from
+                )} --unread\` to see all)`
+              );
+            }
           }
           deps.log('');
         }
@@ -871,13 +1509,162 @@ export function registerMessagingCommands(
           deps.log('Recent Reactions:');
           for (const reaction of inbox.recentReactions) {
             deps.log(
-              `  [${reaction.createdAt}] #${reaction.channelName} ${reaction.emoji} by @${reaction.agentName}`
+              `  [${sanitizeForTerminalLine(reaction.createdAt)}] #${sanitizeForTerminalLine(
+                reaction.channelName
+              )} ${sanitizeForTerminalLine(reaction.emoji)} by @${sanitizeForTerminalLine(reaction.agentName)}`
             );
           }
         }
       } catch (err: any) {
-        deps.error(`Failed to fetch inbox: ${err?.message || String(err)}`);
+        deps.error(`Failed to fetch inbox: ${formatErrorDetail(err)}`);
         deps.exit(1);
+      } finally {
+        await disconnectRelaycastClient(relaycast);
       }
     });
+
+  program
+    .command('replies')
+    .description('Show DM replies received from an agent')
+    .argument('<agent>', 'Agent whose replies to show')
+    .option('-n, --limit <count>', 'Number of messages to show', '50')
+    .option(
+      '--since <time|id>',
+      'Time ("5m", "1h", ISO-8601) or a message-id cursor (only messages after that id; no replay)'
+    )
+    .option('--unread', 'Only unread messages')
+    .option('--mark-read', 'Mark displayed unread replies as read')
+    .option('--as <name>', 'Read as this orchestrator identity')
+    .option('--json', 'Output as JSON')
+    .option('--full', 'Disable truncation; text is always printed in full')
+    .action(
+      async (
+        agent: string,
+        options: {
+          limit?: string;
+          since?: string;
+          unread?: boolean;
+          markRead?: boolean;
+          as?: string;
+          json?: boolean;
+          full?: boolean;
+        }
+      ) => {
+        let limit: number;
+        let since: SinceFilter;
+        try {
+          limit = parseMessageLimit(options.limit);
+          since = resolveSince(options.since);
+        } catch (err: any) {
+          deps.error(formatErrorDetail(err));
+          deps.exit(1);
+          return;
+        }
+        const sinceTs = since.kind === 'time' ? since.ts : undefined;
+        const requestedReaderName = options.as?.trim();
+        if (requestedReaderName && !isAuthorizedReadIdentity(requestedReaderName)) {
+          reportUnauthorizedReadIdentity(deps, requestedReaderName);
+          return;
+        }
+        const readerName = requestedReaderName || getDefaultOrchestratorName();
+
+        let relaycast: MessagingRelaycastClient | undefined;
+        try {
+          relaycast = await deps.createRelaycastClient({
+            agentName: readerName,
+            cwd: deps.getProjectRoot(),
+          });
+        } catch (err: any) {
+          deps.error(`Failed to initialize relaycast client: ${formatErrorDetail(err)}`);
+          deps.exit(1);
+          return;
+        }
+
+        try {
+          const conversations = await relaycast.dms.conversations();
+          const conversation = findDirectDmConversation(conversations, readerName, agent);
+
+          if (!conversation) {
+            deps.log(`No DM conversation with ${sanitizeForTerminalLine(agent)}.`);
+            return;
+          }
+
+          const rawUnreadCount = readNumber(conversation.unreadCount, conversation.unread_count);
+          const unreadCount = normalizeUnreadCount(rawUnreadCount);
+          const messages = sortDmMessagesChronologically(
+            (
+              await relaycast.dms.messages(conversation.id, {
+                limit: getFilteredDmFetchLimit(limit, unreadCount),
+              })
+            )
+              .map((message) =>
+                normalizeDmMessage(message, {
+                  agentName: agent,
+                  createdAt: FALLBACK_DM_CREATED_AT,
+                })
+              )
+              .filter(isPresent)
+              .filter((message) => message.agentName === agent)
+              .filter((message) => !sinceTs || Date.parse(message.createdAt) >= sinceTs)
+          );
+
+          // `--since <id>`: only messages strictly after that id, so a
+          // polling caller never re-receives what it already saw.
+          const cursored = since.kind === 'cursor' ? sliceAfterCursor(messages, since.id) : messages;
+
+          const hasPerMessageReadState = cursored.some((message) => message.unread !== undefined);
+          const unreadStateUnknown =
+            options.unread === true && rawUnreadCount === undefined && !hasPerMessageReadState;
+          const filteredMessages = (
+            options.unread && !unreadStateUnknown ? selectUnreadCandidates(cursored, unreadCount) : cursored
+          ).slice(-limit);
+
+          if (options.json) {
+            deps.log(
+              JSON.stringify(
+                filteredMessages.map((message) => ({
+                  id: message.id,
+                  from: message.agentName,
+                  to: readerName,
+                  text: message.text,
+                  createdAt: message.createdAt,
+                  direction: 'inbound',
+                  ...(unreadStateUnknown ? { unread_state: 'unknown' } : {}),
+                  ...(message.unread !== undefined ? { unread: message.unread } : {}),
+                })),
+                null,
+                2
+              )
+            );
+          } else if (!filteredMessages.length) {
+            deps.log('No messages found.');
+          } else {
+            if (unreadStateUnknown) {
+              deps.log('Unread state unavailable — showing recent inbound messages.');
+            }
+            for (const message of filteredMessages) {
+              renderTranscriptMessage(deps.log, message);
+            }
+          }
+          if (options.markRead && filteredMessages.length > 0) {
+            try {
+              await markDmMessagesRead(relaycast, conversation.id, filteredMessages);
+            } catch (err: any) {
+              deps.error(
+                `Warning: failed to mark replies from ${sanitizeForTerminalLine(
+                  agent
+                )} as read: ${formatErrorDetail(err)}`
+              );
+            }
+          }
+        } catch (err: any) {
+          deps.error(
+            `Failed to fetch replies for ${sanitizeForTerminalLine(agent)}: ${formatErrorDetail(err)}`
+          );
+          deps.exit(1);
+        } finally {
+          await disconnectRelaycastClient(relaycast);
+        }
+      }
+    );
 }

@@ -10,7 +10,6 @@
  * - npm install -g agent-relay (nvm, volta, fnm, n, asdf, Homebrew, system)
  * - npm install agent-relay (local project)
  * - pnpm/yarn global
- * - Development (monorepo with Rust builds)
  * - Docker containers
  */
 
@@ -123,11 +122,6 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
     packageRoots.push(directMatch[1]);
   }
 
-  // Development: packages/{package}/dist/ -> project root
-  if (!normalizedCaller.includes('node_modules')) {
-    packageRoots.push(path.join(callerDirname, '..', '..', '..'));
-  }
-
   const home = process.env.HOME || process.env.USERPROFILE || '';
 
   // npx cache locations - npm stores packages here when running via npx
@@ -160,47 +154,69 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
 
     // volta (increasingly popular)
     packageRoots.push(
-      path.join(home, '.volta', 'tools', 'image', 'packages', 'agent-relay', 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.volta',
+        'tools',
+        'image',
+        'packages',
+        'agent-relay',
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // fnm (fast Node manager)
     packageRoots.push(
-      path.join(home, '.fnm', 'node-versions', process.version, 'installation', 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.fnm',
+        'node-versions',
+        process.version,
+        'installation',
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // n (simple Node version manager)
-    packageRoots.push(
-      path.join(home, 'n', 'lib', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, 'n', 'lib', 'node_modules', 'agent-relay'));
 
     // asdf (universal version manager)
     packageRoots.push(
-      path.join(home, '.asdf', 'installs', 'nodejs', process.version.replace('v', ''), 'lib', 'node_modules', 'agent-relay')
+      path.join(
+        home,
+        '.asdf',
+        'installs',
+        'nodejs',
+        process.version.replace('v', ''),
+        'lib',
+        'node_modules',
+        'agent-relay'
+      )
     );
 
     // pnpm global
-    packageRoots.push(
-      path.join(home, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.local', 'share', 'pnpm', 'global', 'node_modules', 'agent-relay'));
 
     // yarn global (yarn 1.x)
-    packageRoots.push(
-      path.join(home, '.config', 'yarn', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.config', 'yarn', 'global', 'node_modules', 'agent-relay'));
 
     // yarn global (alternative location)
-    packageRoots.push(
-      path.join(home, '.yarn', 'global', 'node_modules', 'agent-relay')
-    );
+    packageRoots.push(path.join(home, '.yarn', 'global', 'node_modules', 'agent-relay'));
   }
 
   // Bash installer locations (curl | bash install method)
   // install.sh puts relay-pty at $INSTALL_DIR/bin/ (default: ~/.agent-relay/bin/)
   const bashInstallerDir = process.env.AGENT_RELAY_INSTALL_DIR
     ? path.join(process.env.AGENT_RELAY_INSTALL_DIR, 'bin')
-    : home ? path.join(home, '.agent-relay', 'bin') : null;
-  const bashInstallerBinDir = process.env.AGENT_RELAY_BIN_DIR
-    || (home ? path.join(home, '.local', 'bin') : null);
+    : home
+      ? path.join(home, '.agent-relay', 'bin')
+      : null;
+  const bashInstallerBinDir =
+    process.env.AGENT_RELAY_BIN_DIR || (home ? path.join(home, '.local', 'bin') : null);
 
   // Universal: derive global node_modules from Node's own executable path.
   // This covers ALL Node installations regardless of version manager
@@ -310,7 +326,11 @@ function isPlatformCompatibleBinary(filePath: string): boolean {
     return true;
   } finally {
     if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch { /* ignore close errors */ }
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore close errors */
+      }
     }
   }
 }
@@ -326,7 +346,7 @@ function isMachOBinary(magic: number): boolean {
     magic === 0xcefaedfe || // MH_CIGAM    — 32-bit, byte-swapped
     magic === 0xfeedface || // MH_MAGIC    — 32-bit, native byte order
     magic === 0xcafebabe || // FAT_MAGIC   — universal/fat binary
-    magic === 0xbebafeca    // FAT_CIGAM   — universal/fat binary, byte-swapped
+    magic === 0xbebafeca // FAT_CIGAM   — universal/fat binary, byte-swapped
   );
 }
 

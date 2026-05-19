@@ -1,0 +1,69 @@
+{
+  "id": "traj_jmf9pyt3zikn",
+  "version": 1,
+  "task": {
+    "title": "Fix issue 874",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#874"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T00:07:13.993Z",
+  "completedAt": "2026-05-19T00:17:27.680Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T00:07:19.795Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_jyly6sw47t5n",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T00:07:19.795Z",
+      "endedAt": "2026-05-19T00:17:27.680Z",
+      "events": [
+        {
+          "ts": 1779149239796,
+          "type": "decision",
+          "content": "Scope issue 874 to crate relocation and path/build updates only: Scope issue 874 to crate relocation and path/build updates only",
+          "raw": {
+            "question": "Scope issue 874 to crate relocation and path/build updates only",
+            "chosen": "Scope issue 874 to crate relocation and path/build updates only",
+            "alternatives": [],
+            "reasoning": "Acceptance criteria explicitly ask to preserve broker behavior and avoid functional refactors in this PR."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779149807792,
+          "type": "decision",
+          "content": "Kept the root target directory by using a virtual workspace with default member crates/broker: Kept the root target directory by using a virtual workspace with default member crates/broker",
+          "raw": {
+            "question": "Kept the root target directory by using a virtual workspace with default member crates/broker",
+            "chosen": "Kept the root target directory by using a virtual workspace with default member crates/broker",
+            "alternatives": [],
+            "reasoning": "The existing npm scripts, SDK tests, and integration harnesses resolve target/debug or target/release from the repository root; Cargo workspace builds preserve that output path while moving source under crates/broker."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Moved the Rust broker crate from root src into crates/broker, converted the root Cargo manifest into a workspace, preserved root target binary paths, and updated SDK/workflow source path references.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9cf82381c2936236bd242557d97f3025e0956341",
+    "endRef": "9cf82381c2936236bd242557d97f3025e0956341"
+  }
+}

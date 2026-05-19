@@ -61,7 +61,7 @@ interface SdkCommonProps {
   os_version?: string;
   node_version: string;
   arch: string;
-  harness: string;
+  orchestrator_harness: string;
   surface: typeof SDK_SURFACE;
 }
 
@@ -75,7 +75,7 @@ let enabled = false;
 let apiKey: string | null = null;
 let distinctId: string | null = null;
 let commonProps: SdkCommonProps | null = null;
-let inFlight: Promise<void>[] = [];
+const inFlight = new Set<Promise<void>>();
 
 function isTruthyEnv(value: string | undefined): boolean {
   if (!value) return false;
@@ -117,13 +117,10 @@ function loadMachineId(): string {
     try {
       fs.mkdirSync(path.dirname(machineIdPath), { recursive: true });
       const machineId = `${os.hostname()}-${randomBytes(8).toString('hex')}`;
-      const fd = fs.openSync(
-        machineIdPath,
-        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
-        0o600
-      );
-      fs.writeSync(fd, machineId);
-      fs.closeSync(fd);
+      fs.writeFileSync(machineIdPath, machineId, {
+        flag: 'wx',
+        mode: 0o600,
+      });
       return machineId;
     } catch (writeErr: unknown) {
       if ((writeErr as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -142,7 +139,18 @@ function createAnonymousId(): string {
   return createHash('sha256').update(loadMachineId()).digest('hex').slice(0, 16);
 }
 
+function sanitizeTelemetryVersion(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(trimmed) ? trimmed : null;
+}
+
 function resolveSdkVersion(): string {
+  const fromEnv = sanitizeTelemetryVersion(process.env.AGENT_RELAY_SDK_VERSION);
+  if (fromEnv) {
+    return fromEnv;
+  }
+
   try {
     const here = fileURLToPath(import.meta.url);
     // Walk up from this file looking for package.json — works in both
@@ -151,8 +159,8 @@ function resolveSdkVersion(): string {
     for (let i = 0; i < 6; i += 1) {
       const candidate = path.join(dir, 'package.json');
       if (fs.existsSync(candidate)) {
-        const pkg = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as { version?: string };
-        return pkg.version ?? 'unknown';
+        const pkg = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as { version?: unknown };
+        return sanitizeTelemetryVersion(pkg.version) ?? 'unknown';
       }
       const parent = path.dirname(dir);
       if (parent === dir) break;
@@ -201,7 +209,7 @@ function init(): void {
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
-    harness: resolveHarness(),
+    orchestrator_harness: resolveHarness(),
     surface: SDK_SURFACE,
   };
 }
@@ -214,8 +222,8 @@ async function postEvent(body: SdkTelemetryEvent): Promise<void> {
     event: body.event,
     distinct_id: distinctId,
     properties: {
-      ...commonProps,
       ...body.properties,
+      ...commonProps,
     },
   };
 
@@ -240,11 +248,10 @@ export function trackSdkEvent(event: string, properties: Record<string, unknown>
   init();
   if (!enabled) return;
   const p = postEvent({ event, properties }).catch(() => undefined);
-  inFlight.push(p);
-  // Cap the queue so a long-lived process doesn't accumulate references.
-  if (inFlight.length > 64) {
-    inFlight = inFlight.slice(-32);
-  }
+  inFlight.add(p);
+  void p.finally(() => {
+    inFlight.delete(p);
+  });
 }
 
 /**
@@ -252,9 +259,8 @@ export function trackSdkEvent(event: string, properties: Record<string, unknown>
  * to call when telemetry is disabled.
  */
 export async function flushSdkTelemetry(): Promise<void> {
-  if (inFlight.length === 0) return;
-  const pending = inFlight;
-  inFlight = [];
+  if (inFlight.size === 0) return;
+  const pending = [...inFlight];
   await Promise.allSettled(pending);
 }
 
@@ -308,5 +314,5 @@ export function resetSdkTelemetryForTests(): void {
   apiKey = null;
   distinctId = null;
   commonProps = null;
-  inFlight = [];
+  inFlight.clear();
 }

@@ -1,9 +1,7 @@
 {
   "id": "cloud-slack-proxy-guard",
   "intent": "cloud-slack-proxy-guard",
-  "tags": [
-    "implementation"
-  ],
+  "tags": ["implementation"],
   "description": "Owns the canonical POST /api/v1/proxy/slack route in cloud — enforces allow-listed methods, shared-secret auth, rate limits, audit log, and stable {ok,data,code,retryAfterMs} envelope so sage and other clients never talk to Slack directly.",
   "harness": "opencode",
   "model": "opencode/gpt-5-nano",

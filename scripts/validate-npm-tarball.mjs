@@ -186,6 +186,15 @@ async function validateTarball(tarballPath, bundledPackageDirs) {
 
       const entryPath = normalizeTarPath(entry.path);
 
+      if (entryPath.startsWith('package/dist/packages/')) {
+        addViolation(
+          violations,
+          'root-dist-workspace-source',
+          'package/dist/packages/',
+          `root TypeScript emit included workspace package source; first seen at ${entryPath}`
+        );
+      }
+
       if (isHardLink(entry)) {
         addViolation(
           violations,

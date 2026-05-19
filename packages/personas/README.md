@@ -37,16 +37,16 @@ agentworkforce install ./packages/personas --persona relay-orchestrator
 
 ## Personas
 
-| Persona | Purpose |
-| --- | --- |
-| `relay-orchestrator` | Coordinates Relay implementation and operations work via a headless orchestrator that spawns larger models as needed. |
-| `agent-relay-workflow` | Authors complete, runnable agent-relay workflow artifacts that follow the workflow skill contract and ship via GitHub primitives. |
-| `agent-relay-e2e-conductor` | Drives full sage ↔ cloud ↔ Slack end-to-end validation across a real docker-compose stack. |
-| `cloud-sandbox-infra` | Implements cloud sandbox provisioning, session management, credentials, executor wiring, and Daytona SDK integration. |
-| `cloud-slack-proxy-guard` | Owns the canonical `POST /api/v1/proxy/slack` route — allow-listed methods, shared-secret auth, rate limits, audit log, stable response envelope. |
-| `sage-slack-egress-migrator` | Migrates sage Slack egress off direct `NangoClient` and onto the `@relayfile/sdk` `ConnectionProvider` abstraction with no hardcoded `providerConfigKey` defaults. |
-| `sage-proactive-rewirer` | Rewires sage's proactive Slack paths to resolve `connectionId` and `providerConfigKey` from stored state instead of guessing. |
-| `opencode-workflow-specialist` | Diagnoses and repairs opencode-based agent-relay workflow failures across SDK, broker, cloud bootstrap, and CLI layers. |
+| Persona                        | Purpose                                                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `relay-orchestrator`           | Coordinates Relay implementation and operations work via a headless orchestrator that spawns larger models as needed.                                              |
+| `agent-relay-workflow`         | Authors complete, runnable agent-relay workflow artifacts that follow the workflow skill contract and ship via GitHub primitives.                                  |
+| `agent-relay-e2e-conductor`    | Drives full sage ↔ cloud ↔ Slack end-to-end validation across a real docker-compose stack.                                                                         |
+| `cloud-sandbox-infra`          | Implements cloud sandbox provisioning, session management, credentials, executor wiring, and Daytona SDK integration.                                              |
+| `cloud-slack-proxy-guard`      | Owns the canonical `POST /api/v1/proxy/slack` route — allow-listed methods, shared-secret auth, rate limits, audit log, stable response envelope.                  |
+| `sage-slack-egress-migrator`   | Migrates sage Slack egress off direct `NangoClient` and onto the `@relayfile/sdk` `ConnectionProvider` abstraction with no hardcoded `providerConfigKey` defaults. |
+| `sage-proactive-rewirer`       | Rewires sage's proactive Slack paths to resolve `connectionId` and `providerConfigKey` from stored state instead of guessing.                                      |
+| `opencode-workflow-specialist` | Diagnoses and repairs opencode-based agent-relay workflow failures across SDK, broker, cloud bootstrap, and CLI layers.                                            |
 
 ## Persona pack metadata
 
@@ -76,9 +76,7 @@ persona schema (workforce v3 — flat, no per-tier map):
   "intent": "string",
   "tags": ["..."],
   "description": "string",
-  "skills": [
-    { "id": "string", "source": "url-or-pkg", "description": "string" }
-  ],
+  "skills": [{ "id": "string", "source": "url-or-pkg", "description": "string" }],
   "harness": "claude | codex | opencode",
   "model": "string",
   "systemPrompt": "string",

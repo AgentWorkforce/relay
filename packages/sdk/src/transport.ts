@@ -14,13 +14,21 @@ import type { BrokerEvent } from './protocol.js';
 export class AgentRelayProtocolError extends Error {
   code: string;
   retryable: boolean;
+  status?: number;
   data?: unknown;
 
-  constructor(payload: { code: string; message: string; retryable?: boolean; data?: unknown }) {
+  constructor(payload: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+    status?: number;
+    data?: unknown;
+  }) {
     super(payload.message);
     this.name = 'AgentRelayProtocolError';
     this.code = payload.code;
     this.retryable = payload.retryable ?? false;
+    this.status = payload.status;
     this.data = payload.data;
   }
 }
@@ -28,6 +36,8 @@ export class AgentRelayProtocolError extends Error {
 export interface BrokerTransportOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Fetch implementation. Defaults to globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
   /** Timeout in ms for HTTP requests. Default: 30000. */
   requestTimeoutMs?: number;
   /** Maximum number of events to buffer in memory for queryEvents/getLastEvent */
@@ -37,6 +47,7 @@ export interface BrokerTransportOptions {
 export class BrokerTransport {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
+  private readonly fetchFn: typeof globalThis.fetch;
   private readonly requestTimeoutMs: number;
   private readonly maxBufferSize: number;
 
@@ -51,6 +62,7 @@ export class BrokerTransport {
   constructor(options: BrokerTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.apiKey = options.apiKey;
+    this.fetchFn = options.fetch ?? fetch;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.maxBufferSize = options.maxBufferSize ?? 1000;
   }
@@ -66,16 +78,16 @@ export class BrokerTransport {
   // ── HTTP ─────────────────────────────────────────────────────────────
 
   async request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-    const headers = new Headers(init?.headers);
-    if (!headers.has('Content-Type')) {
-      headers.set('Content-Type', 'application/json');
+    const headers = headersToRecord(init?.headers);
+    if (init?.body !== undefined && !hasHeader(headers, 'Content-Type')) {
+      headers['Content-Type'] = 'application/json';
     }
     if (this.apiKey) {
-      headers.set('X-API-Key', this.apiKey);
+      setHeader(headers, 'X-API-Key', this.apiKey);
     }
 
     const signal = init?.signal ?? AbortSignal.timeout(this.requestTimeoutMs);
-    const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal });
+    const res = await this.fetchFn(`${this.baseUrl}${path}`, { ...init, headers, signal });
 
     if (!res.ok) {
       let body: { code?: string; message?: string; error?: string } | undefined;
@@ -86,12 +98,31 @@ export class BrokerTransport {
       }
       throw new AgentRelayProtocolError({
         code: body?.code ?? `http_${res.status}`,
-        message: body?.message ?? body?.error ?? res.statusText,
+        message: (body?.message ?? body?.error ?? res.statusText) || `HTTP ${res.status}`,
         retryable: res.status >= 500,
+        status: res.status,
+        data: body,
       });
     }
 
-    return res.json() as Promise<T>;
+    if (isEmptySuccessResponse(res)) {
+      return undefined as T;
+    }
+
+    const bodyText = await res.text();
+    if (bodyText.length === 0) {
+      return undefined as T;
+    }
+    try {
+      return JSON.parse(bodyText) as T;
+    } catch {
+      throw new AgentRelayProtocolError({
+        code: 'invalid_response',
+        message: 'response was not JSON',
+        retryable: false,
+        status: res.status,
+      });
+    }
   }
 
   // ── WebSocket events ─────────────────────────────────────────────────
@@ -213,4 +244,50 @@ export class BrokerTransport {
     }
     return undefined;
   }
+}
+
+function headersToRecord(headersInit: HeadersInit | undefined): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (!headersInit) return headers;
+
+  if (headersInit instanceof Headers) {
+    headersInit.forEach((value, key) => {
+      headers[key] = value;
+    });
+    return headers;
+  }
+
+  if (Array.isArray(headersInit)) {
+    for (const [key, value] of headersInit) {
+      headers[key] = value;
+    }
+    return headers;
+  }
+
+  for (const [key, value] of Object.entries(headersInit)) {
+    headers[key] = value;
+  }
+  return headers;
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === lowerName);
+}
+
+function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName && key !== name) {
+      delete headers[key];
+    }
+  }
+  headers[name] = value;
+}
+
+function isEmptySuccessResponse(res: Response): boolean {
+  if (res.status === 204 || res.status === 205) {
+    return true;
+  }
+  return res.headers.get('content-length')?.trim() === '0';
 }

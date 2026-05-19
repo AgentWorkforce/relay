@@ -33,7 +33,6 @@ npm run build
 # Copy essential files
 info "Copying files..."
 cp -r dist "$RELEASE_DIR/agent-relay/"
-cp -r bin "$RELEASE_DIR/agent-relay/"
 cp package.json "$RELEASE_DIR/agent-relay/"
 cp package-lock.json "$RELEASE_DIR/agent-relay/" 2>/dev/null || true
 

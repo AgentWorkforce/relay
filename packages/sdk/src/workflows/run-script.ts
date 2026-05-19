@@ -116,13 +116,23 @@ export function ensureLocalSdkWorkflowRuntime(
   if (fs.existsSync(workflowsEntry)) return;
 
   console.log(
-    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building packages/sdk...'
+    '[agent-relay] Detected local @agent-relay/sdk workspace without built workflows runtime; building SDK workflow dependencies...'
   );
-  execRunner('npm', ['run', 'build:sdk'], {
-    cwd: workspace.rootDir,
-    stdio: 'inherit',
-    env: process.env,
-  });
+  const buildCommands: string[][] = [
+    ['run', 'build:config'],
+    ['--prefix', 'packages/workflow-types', 'run', 'build'],
+    ['--prefix', 'packages/github-primitive', 'run', 'build'],
+    ['--prefix', 'packages/slack-primitive', 'run', 'build'],
+    ['--prefix', 'packages/cloud', 'run', 'build'],
+    ['run', 'build:sdk'],
+  ];
+  for (const args of buildCommands) {
+    execRunner('npm', args, {
+      cwd: workspace.rootDir,
+      stdio: 'inherit',
+      env: process.env,
+    });
+  }
 
   if (!fs.existsSync(workflowsEntry)) {
     throw new Error(`Local SDK workflows runtime is still missing after build: ${workflowsEntry}`);
@@ -185,6 +195,160 @@ export function parseTsxStderr(stderr: string): ParsedWorkflowError | null {
   }
 
   return null;
+}
+
+function resolveLocalTypeScriptImport(fromFile: string, specifier: string): string | null {
+  if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
+    return null;
+  }
+
+  const basePath = specifier.startsWith('/')
+    ? path.resolve(specifier)
+    : path.resolve(path.dirname(fromFile), specifier);
+  const ext = path.extname(basePath);
+  const candidates =
+    ext === '.js' || ext === '.mjs' || ext === '.cjs'
+      ? [
+          `${basePath.slice(0, -ext.length)}.ts`,
+          `${basePath.slice(0, -ext.length)}.tsx`,
+          `${basePath.slice(0, -ext.length)}.mts`,
+          `${basePath.slice(0, -ext.length)}.cts`,
+          basePath,
+        ]
+      : ext
+        ? [basePath]
+        : [
+            `${basePath}.ts`,
+            `${basePath}.tsx`,
+            `${basePath}.mts`,
+            `${basePath}.cts`,
+            path.join(basePath, 'index.ts'),
+            path.join(basePath, 'index.tsx'),
+            path.join(basePath, 'index.mts'),
+            path.join(basePath, 'index.cts'),
+          ];
+
+  for (const candidate of candidates) {
+    if (/\.(?:ts|tsx|mts|cts)$/.test(candidate) && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function findStaticLocalTypeScriptImports(filePath: string, source: string): string[] {
+  const imports: string[] = [];
+  const staticImportPattern =
+    /(?:^|[\n;])\s*(?:import\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?|export\s+(?:type\s+)?[^'"]*?\s+from\s+)['"]([^'"]+)['"]/g;
+  for (const match of source.matchAll(staticImportPattern)) {
+    const resolved = resolveLocalTypeScriptImport(filePath, match[1]!);
+    if (resolved) {
+      imports.push(resolved);
+    }
+  }
+  return imports;
+}
+
+export function shouldSkipNodeStripTypesPreflight(
+  filePath: string,
+  seen = new Set<string>(),
+  isEntry = true
+): boolean {
+  const resolvedPath = path.resolve(filePath);
+  if (seen.has(resolvedPath)) {
+    return false;
+  }
+  seen.add(resolvedPath);
+
+  let source: string;
+  try {
+    source = fs.readFileSync(resolvedPath, 'utf8');
+  } catch {
+    return !isEntry;
+  }
+
+  // Node's strip-only runner cannot parse TypeScript constructs that require
+  // code generation. Detecting them before execution lets valid workflows go
+  // straight to tsx without retrying after user code may have already run.
+  if (containsNodeStripTypesUnsupportedSyntax(source)) {
+    return true;
+  }
+  return findStaticLocalTypeScriptImports(resolvedPath, source).some((importPath) =>
+    shouldSkipNodeStripTypesPreflight(importPath, seen, false)
+  );
+}
+
+function stripCommentsAndStringsForSyntaxScan(source: string): string {
+  let output = '';
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    const next = source[index + 1];
+
+    if (char === '/' && next === '/') {
+      output += '  ';
+      index += 1;
+      while (index + 1 < source.length && source[index + 1] !== '\n') {
+        output += ' ';
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 1;
+      while (index + 1 < source.length) {
+        index += 1;
+        const current = source[index]!;
+        output += current === '\n' ? '\n' : ' ';
+        if (current === '*' && source[index + 1] === '/') {
+          output += ' ';
+          index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      const quote = char;
+      output += ' ';
+      while (index + 1 < source.length) {
+        index += 1;
+        const current = source[index]!;
+        output += current === '\n' ? '\n' : ' ';
+        if (current === '\\') {
+          if (index + 1 < source.length) {
+            index += 1;
+            output += source[index] === '\n' ? '\n' : ' ';
+          }
+          continue;
+        }
+        if (current === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+
+    output += char;
+  }
+  return output;
+}
+
+function containsNodeStripTypesUnsupportedSyntax(source: string): boolean {
+  const scanSource = stripCommentsAndStringsForSyntaxScan(source);
+  return (
+    /(?:^|[;\n{}])\s*(?:export\s+)?(?:const\s+)?enum\s+[A-Za-z_$][\w$]*/.test(scanSource) ||
+    /(?:^|[;\n{}])\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+[A-Za-z_$][\w$]*/.test(scanSource) ||
+    /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[A-Za-z_$][\w$]*/.test(
+      scanSource
+    ) ||
+    /(?:^|[;\n{}])\s*import\s+[A-Za-z_$][\w$]*\s*=\s*(?:require\s*\(|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.test(
+      scanSource
+    ) ||
+    /(?:^|[;\n{}])\s*export\s*=\s*/.test(scanSource)
+  );
 }
 
 /**
@@ -391,6 +555,10 @@ Run ID: ${runId}`;
       { label: 'ts-node', bin: 'ts-node', preArgs: [] },
     ];
     for (const { label, bin, preArgs } of runners) {
+      if (bin === 'node' && shouldSkipNodeStripTypesPreflight(resolved)) {
+        diag(`runScriptWorkflow: ${label} cannot parse this TypeScript file — trying next`);
+        continue;
+      }
       diag(`runScriptWorkflow: trying runner ${label}`);
       const result = await spawnRunnerWithStderrCapture(bin, [...preArgs, resolved], childEnv);
       if (result.error) {
@@ -402,11 +570,11 @@ Run ID: ${runId}`;
       }
       if (result.status !== 0) {
         // Node exits with code 9 ("Invalid Argument") when it doesn't
-        // recognise --experimental-strip-types (Node <22.6). Only skip
-        // to the next runner for that specific exit code; any other
-        // non-zero status is a real script failure.
+        // recognise --experimental-strip-types (Node <22.6). Other non-zero
+        // exits may have occurred after entry module evaluation, so do not
+        // retry them under another runner.
         if (bin === 'node' && result.status === 9) {
-          diag(`runScriptWorkflow: runner ${label} unsupported on this Node (exit 9) — trying next`);
+          diag(`runScriptWorkflow: runner ${label} cannot handle this TypeScript file — trying next`);
           continue;
         }
         return augmentErrorWithRunId(wrapRunnerError(label, result));

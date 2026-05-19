@@ -92,6 +92,21 @@ Topology is still resolved per-pattern once selected; the "Triggering roles" col
 | `competitive`     | — (declared explicitly)                                 | independent parallel implementations + judge   |
 | `review-loop`     | `implement*` + 2+ `reviewer*`                           | implementer ↔ reviewers                        |
 
+### Structured Squad Review Loop
+
+- Split the work into bounded implementation squads. Each squad owns a non-overlapping file or subsystem scope.
+- Give each squad an implementer plus a shadow/review partner. The shadow follows the implementer in real time, checks alignment with the spec, and posts concise feedback before the work drifts.
+- Require the implementer to self-reflect before external review: compare the final diff against the spec, AGENTS.md / CLAUDE.md, recent local conventions, tests, and declared non-goals.
+- Run an independent self-review/fresh-eyes agent that reads the actual files and recent repo context, not just the chat transcript.
+- Send that review back to the implementer for one repair round.
+- After squads converge, run a final two-agent review team, usually one Claude reviewer and one Codex reviewer, independently. They compare notes, merge findings, and produce one final verdict.
+- Spawn fresh fix agents for final-review findings. Those fix agents self-reflect, then the final reviewers re-check the post-fix state until the spec is fully satisfied or a blocker is documented.
+- Use `supervisor` or `hub-spoke` when a lead needs to coordinate live squads.
+- Use `review-loop` when the main risk is code quality and feedback iteration.
+- Use `reflection` when critic feedback should loop directly back to producers.
+- Use `verifier` when completion evidence matters more than design debate.
+- Use `competitive` only when independent alternative implementations are useful; otherwise split by ownership scope.
+
 ### Pattern Details
 
 #### 1. fan-out — Parallel Workers

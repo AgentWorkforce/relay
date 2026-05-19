@@ -26,6 +26,14 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
+## Changelog Style
+
+Changelog entries should be concise and impact-first. Prefer one short bullet
+per user-visible change: name the command, API, or schema touched and the
+practical effect. Drop issue/PR links, internal review notes, implementation
+backstory, and "foundation for..." phrasing unless that text clearly explains
+the shipped impact.
+
 ## .trajectories Must Be Tracked
 
 **CRITICAL: Never add `.trajectories/` to `.gitignore`.**

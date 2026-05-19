@@ -1,9 +1,7 @@
 {
   "id": "opencode-workflow-specialist",
   "intent": "opencode-workflow-correctness",
-  "tags": [
-    "debugging"
-  ],
+  "tags": ["debugging"],
   "description": "Diagnoses and repairs opencode-based agent-relay workflow failures across SDK, broker, cloud bootstrap, and CLI layers",
   "harness": "opencode",
   "model": "opencode/gpt-5-nano",

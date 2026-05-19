@@ -1,10 +1,7 @@
 {
   "id": "agent-relay-workflow",
   "intent": "agent-relay-workflow",
-  "tags": [
-    "implementation",
-    "documentation"
-  ],
+  "tags": ["implementation", "documentation"],
   "description": "Authors complete, runnable agent-relay workflow artifacts. Applies workflow skills as source material, preserves Ricky's artifact contract, and includes GitHub primitive PR shipping steps for implementation workflows.",
   "skills": [
     {

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -41,6 +44,7 @@ function createHarness(options?: {
   const dataDir = options?.dataDir ?? '/tmp/data';
   const stdinTask = options?.stdinTask;
   const files = new Map(Object.entries(options?.files ?? {}));
+  const readFileFromMap = (filePath: string) => files.get(filePath) ?? '';
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -53,11 +57,31 @@ function createHarness(options?: {
     createAutostartClient: vi.fn(() => client),
     readTaskFromStdin: vi.fn(async () => stdinTask),
     fileExists: vi.fn((filePath: string) => files.has(filePath)),
-    readFile: vi.fn((filePath: string) => files.get(filePath) ?? ''),
+    readFile: vi.fn(readFileFromMap),
+    readFileTail: vi.fn((filePath: string, maxBytes: number) => {
+      const text = readFileFromMap(filePath);
+      const buffer = Buffer.from(text, 'utf-8');
+      const start = Math.max(0, buffer.length - maxBytes);
+      return {
+        text: buffer.subarray(start).toString('utf-8'),
+        size: buffer.length,
+      };
+    }),
+    readFileFrom: vi.fn((filePath: string, offset: number, maxBytes: number) => {
+      const text = readFileFromMap(filePath);
+      const buffer = Buffer.from(text, 'utf-8');
+      const start = Math.max(0, Math.min(offset, buffer.length));
+      const end = Math.min(buffer.length, start + maxBytes);
+      return {
+        text: buffer.subarray(start, end).toString('utf-8'),
+        size: end,
+      };
+    }),
     fetch: vi.fn(async () => new Response(JSON.stringify(options?.fetchResponse ?? { allAgents: [] }))),
     nowIso: vi.fn(() => options?.nowIso ?? '2026-02-20T12:00:00.000Z'),
     killProcess: vi.fn(() => undefined),
     sleep: vi.fn(async () => undefined),
+    writeChunk: vi.fn(() => undefined),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -98,6 +122,61 @@ describe('registerAgentManagementCommands', () => {
         'broker-spawn',
       ])
     );
+  });
+
+  it('reads raw log tails through the default filesystem tail helper', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-logs-'));
+    try {
+      const logsDir = path.join(projectRoot, '.agent-relay', 'team', 'worker-logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+
+      const expectedTail = Buffer.from('tail bytes\n');
+      const logBytes = Buffer.concat([Buffer.alloc(70 * 1024, 'a'), expectedTail]);
+      fs.writeFileSync(path.join(logsDir, 'WorkerTail.log'), logBytes);
+
+      const chunks: Buffer[] = [];
+      const program = new Command();
+      registerAgentManagementCommands(program, {
+        getProjectRoot: () => projectRoot,
+        getDataDir: () => path.join(projectRoot, 'data'),
+        writeChunk: (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      });
+
+      await runCommand(program, ['agents:logs', 'WorkerTail', '--raw', '--lines', '1']);
+
+      const output = Buffer.concat(chunks);
+      expect(output.byteLength).toBe(64 * 1024);
+      expect(output.subarray(-expectedTail.length)).toEqual(expectedTail);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reads cooked log tails through the default filesystem tail helper', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-logs-'));
+    try {
+      const logsDir = path.join(projectRoot, '.agent-relay', 'team', 'worker-logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(logsDir, 'WorkerCookedTail.log'),
+        `${'x'.repeat(70 * 1024)}\nline one\nline two\n`
+      );
+
+      const log = vi.fn(() => undefined);
+      const program = new Command();
+      registerAgentManagementCommands(program, {
+        getProjectRoot: () => projectRoot,
+        getDataDir: () => path.join(projectRoot, 'data'),
+        log,
+      });
+
+      await runCommand(program, ['agents:logs', 'WorkerCookedTail', '--lines', '2']);
+
+      expect(log).toHaveBeenCalledWith('line one\nline two');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('spawns an agent using AgentRelayClient and exits 0', async () => {
@@ -319,8 +398,8 @@ describe('registerAgentManagementCommands', () => {
     const output = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
       .map((call) => call.join(' '))
       .join('\n');
-    expect(output).toContain('Logs for WorkerLogs');
     expect(output).toContain('line-2');
     expect(output).toContain('line-3');
+    expect(output).not.toContain('Logs for WorkerLogs');
   });
 });

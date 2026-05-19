@@ -260,6 +260,123 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
+  it('exposes inbound delivery mode and pending queue HTTP routes', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValueOnce({ mode: 'manual_flush' })
+      .mockResolvedValueOnce({ mode: 'auto_inject', flushed: 2 })
+      .mockResolvedValueOnce({
+        pending: [
+          {
+            from: 'Alice',
+            body: 'one',
+            target: '#general',
+            priority: 1,
+            mode: 'steer',
+            queued_at_ms: 100,
+            event_id: 'evt_1',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ flushed: 1 });
+
+    await expect(client.getInboundDeliveryMode('worker a')).resolves.toBe('manual_flush');
+    await expect(client.setInboundDeliveryMode('worker a', 'auto_inject')).resolves.toEqual({
+      mode: 'auto_inject',
+      flushed: 2,
+    });
+    await expect(client.getPending('worker a')).resolves.toHaveLength(1);
+    await expect(client.flushPending('worker a')).resolves.toEqual({ flushed: 1 });
+
+    expect(request).toHaveBeenNthCalledWith(1, '/api/spawned/worker%20a/delivery-mode');
+    expect(request).toHaveBeenNthCalledWith(2, '/api/spawned/worker%20a/delivery-mode', {
+      method: 'PUT',
+      body: JSON.stringify({ mode: 'auto_inject' }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker%20a/pending');
+    expect(request).toHaveBeenNthCalledWith(4, '/api/spawned/worker%20a/flush', { method: 'POST' });
+  });
+
+  it('exposes input, resize, and snapshot PTY routes', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValueOnce({ name: 'worker', bytes_written: 5 })
+      .mockResolvedValueOnce({ name: 'worker', rows: 40, cols: 120 })
+      .mockResolvedValueOnce({
+        format: 'ansi',
+        rows: 40,
+        cols: 120,
+        cursor: [2, 3],
+        screen: 'YW5zaQ==',
+      });
+
+    await expect(client.sendInput('worker', 'hello')).resolves.toEqual({
+      name: 'worker',
+      bytes_written: 5,
+    });
+    await expect(client.resizePty('worker', 40, 120)).resolves.toEqual({
+      name: 'worker',
+      rows: 40,
+      cols: 120,
+    });
+    await expect(client.snapshot('worker', 'ansi')).resolves.toMatchObject({
+      format: 'ansi',
+      rows: 40,
+      cols: 120,
+      screen: 'YW5zaQ==',
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, '/api/input/worker', {
+      method: 'POST',
+      body: JSON.stringify({ data: 'hello' }),
+    });
+    expect(request).toHaveBeenNthCalledWith(2, '/api/resize/worker', {
+      method: 'POST',
+      body: JSON.stringify({ rows: 40, cols: 120 }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker/snapshot?format=ansi');
+  });
+
+  it('subscribeWorkerStream yields only matching stream chunks', async () => {
+    const client = createProtocolClient();
+    const connect = vi.spyOn((client as any).transport, 'connect').mockImplementation(() => undefined);
+    const stream = client.subscribeWorkerStream('worker', { stream: 'stdout', sinceSeq: 7 });
+    const iterator = stream[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    emitClientEvent(client, { kind: 'worker_stream', name: 'other', stream: 'stdout', chunk: 'skip-other' });
+    emitClientEvent(client, {
+      kind: 'worker_stream',
+      name: 'worker',
+      stream: 'stderr',
+      chunk: 'skip-stderr',
+    });
+    emitClientEvent(client, { kind: 'worker_stream', name: 'worker', stream: 'stdout', chunk: 'first' });
+
+    await expect(next).resolves.toEqual({ done: false, value: 'first' });
+    await iterator.return?.();
+    expect(connect).toHaveBeenCalledWith(7);
+  });
+
+  it('HTTP protocol errors include response status for CLI adapters', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 'agent_not_found', message: "no agent named 'ghost'" }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    const client = new AgentRelayClient({ baseUrl: TEST_BASE_URL, fetch: fetchMock as typeof fetch });
+
+    await expect(client.getInboundDeliveryMode('ghost')).rejects.toMatchObject({
+      code: 'agent_not_found',
+      status: 404,
+      message: "no agent named 'ghost'",
+    });
+  });
+
   it('buffers broker events and supports query/getLast helpers', () => {
     const client = createProtocolClient();
 
@@ -890,7 +1007,7 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('sendAndWaitForDelivery waits for delivery ack with typed response', async () => {
+  it('sendAndWaitForDelivery tracks delivery_ack without resolving before terminal status', async () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
@@ -917,10 +1034,128 @@ describe('AgentRelay orchestration handles', () => {
         delivery_id: 'del_1',
         event_id: 'evt_1',
       });
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 1,
+        lastError: 'worker_permanently_dead',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'failed',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery resolves on message_delivery_confirmed', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'message_delivery_confirmed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+      });
 
       await expect(wait).resolves.toEqual({
         eventId: 'evt_1',
         status: 'ack',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery ignores legacy delivery_failed until typed terminal event', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        reason: 'legacy failure',
+      });
+      emit({
+        kind: 'message_delivery_confirmed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'ack',
+        targets: ['worker'],
+      });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('sendAndWaitForDelivery fails on message_delivery_failed', async () => {
+    const { client, mock, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    try {
+      const wait = relay.sendAndWaitForDelivery({
+        to: 'worker',
+        text: 'hello',
+      });
+
+      await vi.waitFor(() => {
+        expect(mock.onEvent).toHaveBeenCalledTimes(2);
+      });
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        delivery_id: 'del_1',
+        event_id: 'evt_1',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 10,
+        lastError: 'recipient gone',
+      });
+
+      await expect(wait).resolves.toEqual({
+        eventId: 'evt_1',
+        status: 'failed',
         targets: ['worker'],
       });
     } finally {
@@ -1070,6 +1305,17 @@ describe('AgentRelay orchestration handles', () => {
         reason: 'broken pipe',
       });
       expect(relay.getDeliveryState('evt-state')?.status).toBe('failed');
+
+      emit({
+        kind: 'message_delivery_failed',
+        name: 'worker',
+        event_id: 'evt-terminal',
+        from: 'Lead',
+        to: 'worker',
+        attempts: 1,
+        lastError: 'worker_permanently_dead',
+      });
+      expect(relay.getDeliveryState('evt-terminal')?.status).toBe('failed');
       expect(relay.getDeliveryState('missing-event')).toBeUndefined();
     } finally {
       await relay.shutdown();
@@ -1154,6 +1400,34 @@ describe('Agent.status computed getter', () => {
       emit({ kind: 'agent_exited', name: 'status-exited', code: 0, signal: undefined });
 
       expect(agent.status).toBe('exited');
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('copies agent_exited reason before invoking onAgentExited', async () => {
+    const { client, emit } = createMockFacadeClient();
+    vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
+
+    const relay = new AgentRelay();
+    const exitedReasons: Array<string | undefined> = [];
+    relay.onAgentExited = (agent) => exitedReasons.push(agent.exitReason);
+    try {
+      await relay.spawnPty({
+        name: 'reason-exited',
+        cli: 'claude',
+        channels: ['general'],
+      });
+
+      emit({
+        kind: 'agent_exited',
+        name: 'reason-exited',
+        code: 1,
+        signal: undefined,
+        reason: 'worker_exited',
+      });
+
+      expect(exitedReasons).toEqual(['worker_exited']);
     } finally {
       await relay.shutdown();
     }

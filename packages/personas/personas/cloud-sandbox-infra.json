@@ -1,9 +1,7 @@
 {
   "id": "cloud-sandbox-infra",
   "intent": "cloud-sandbox-infra",
-  "tags": [
-    "implementation"
-  ],
+  "tags": ["implementation"],
   "description": "Implements cloud infrastructure features: sandbox provisioning, session management, credential handling, executor wiring, and Daytona SDK integration.",
   "harness": "claude",
   "model": "claude-sonnet-4-6",

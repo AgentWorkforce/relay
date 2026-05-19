@@ -1,0 +1,57 @@
+{
+  "id": "traj_x37bhga2j5ph",
+  "version": 1,
+  "task": {
+    "title": "Deepen broker runtime refactor for PR 906",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#875"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T01:42:10.602Z",
+  "completedAt": "2026-05-19T01:50:40.359Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T01:50:18.748Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gm8mr25x5hgw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T01:50:18.748Z",
+      "endedAt": "2026-05-19T01:50:40.359Z",
+      "events": [
+        {
+          "ts": 1779155418749,
+          "type": "decision",
+          "content": "Split broker runtime into event-loop context and event handlers: Split broker runtime into event-loop context and event handlers",
+          "raw": {
+            "question": "Split broker runtime into event-loop context and event handlers",
+            "chosen": "Split broker runtime into event-loop context and event handlers",
+            "alternatives": [],
+            "reasoning": "The prior runtime/init split still left long-lived state and every select branch in one function. Moving state into BrokerRuntime and dispatching RuntimeEvent to HTTP API, Relaycast, worker-event, and maintenance handlers makes ownership and control flow explicit while preserving tested behavior."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Split the broker runtime beyond the init facade: run_init now bootstraps services and hands off to BrokerRuntime, which dispatches typed RuntimeEvent values to focused HTTP API, Relaycast inbound, worker-event, and maintenance handlers. Updated source-inspection contract tests to follow the new handler files and verified cargo fmt, test, and clippy for agent-relay-broker.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "450740c7201e6fd4c3cfb9c875ef2f4bff7e98e5",
+    "endRef": "450740c7201e6fd4c3cfb9c875ef2f4bff7e98e5"
+  }
+}
