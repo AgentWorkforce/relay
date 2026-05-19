@@ -69,6 +69,7 @@ export interface AgentManagementDependencies {
   nowIso: () => string;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   sleep: (ms: number) => Promise<void>;
+  writeChunk: (chunk: string) => void;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -254,6 +255,9 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     nowIso: () => new Date().toISOString(),
     killProcess: process.kill,
     sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    writeChunk: (chunk: string) => {
+      process.stdout.write(chunk);
+    },
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -451,12 +455,13 @@ export function registerAgentManagementCommands(
     .argument('<name>', 'Agent name')
     .option('-n, --lines <n>', 'Number of lines to show', '50')
     .option('-f, --follow', 'Follow log output (like tail -f)')
-    .option('--plain', 'ANSI-stripped, deduped, line-oriented (greppable)')
-    .option('--json', 'Structured JSON: { agent, file, lines[] } (sanitized; snapshot only)')
+    .option('--plain', 'Line-oriented cooked output (default; kept for compatibility)')
+    .option('--raw', 'Emit original PTY stream with ANSI/control sequences')
+    .option('--json', 'Structured JSON: { agent, file, lines[] } (cooked; snapshot only)')
     .action(
       async (
         name: string,
-        options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean }
+        options: { lines?: string; follow?: boolean; plain?: boolean; raw?: boolean; json?: boolean }
       ) => {
         await runAgentsLogsCommand(name, options, deps);
       }

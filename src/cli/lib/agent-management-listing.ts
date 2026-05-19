@@ -82,6 +82,7 @@ export interface AgentManagementListingDependencies {
   ) => { text: string; size: number };
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   nowIso: () => string;
+  writeChunk: (chunk: string) => void;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -141,14 +142,6 @@ function parseLogLineCount(value: string | undefined): number {
 
 function getTailByteLimit(lineCount: number): number {
   return Math.min(MAX_LOG_TAIL_BYTES, Math.max(MIN_LOG_TAIL_BYTES, lineCount * 4096));
-}
-
-function tailLinesFromText(text: string, lineCount: number): string[] {
-  const lines = text.length > 0 ? text.split('\n') : [];
-  if (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop();
-  }
-  return lines.slice(-lineCount);
 }
 
 function readLogTail(
@@ -433,13 +426,280 @@ export async function runWhoCommand(
   });
 }
 
+function parseCsiParams(sequence: string): number[] {
+  const numeric = sequence.replace(/[?<>=]/g, '');
+  if (!numeric) return [];
+  return numeric.split(';').map((part) => (part === '' ? 0 : Number(part) || 0));
+}
+
+function trimLeadingPartialCsi(raw: string): string {
+  // eslint-disable-next-line no-control-regex -- scanning for an ESC/C1 CSI opener in raw PTY bytes
+  const firstEscape = raw.search(/[\x1b\x9b]/);
+  if (firstEscape <= 0 || firstEscape > 20) {
+    return raw;
+  }
+  const prefix = raw.slice(0, firstEscape);
+  if (prefix.includes('\n')) {
+    return raw;
+  }
+  return /^[0-?;]*[ -/]*[@-~]$/.test(prefix) ? raw.slice(firstEscape) : raw;
+}
+
+class PtyLogCooker {
+  private readonly rows = new Map<number, string[]>();
+  private readonly emitted: string[] = [];
+  private row = 0;
+  private col = 0;
+  private previousEmitted: string | undefined;
+
+  push(raw: string): string[] {
+    const start = this.emitted.length;
+    this.replay(raw);
+    return this.emitted.slice(start);
+  }
+
+  finish(): string[] {
+    const start = this.emitted.length;
+    this.flushScreenRows();
+    return this.emitted.slice(start);
+  }
+
+  lines(): string[] {
+    this.finish();
+    return [...this.emitted];
+  }
+
+  private replay(raw: string): void {
+    for (let index = 0; index < raw.length; index += 1) {
+      const char = raw[index];
+
+      if (char === '\x1b') {
+        index = this.skipEscape(raw, index);
+        continue;
+      }
+
+      if (char === '\x9b') {
+        index = this.readCsi(raw, index + 1);
+        continue;
+      }
+
+      if (char === '\r') {
+        this.col = 0;
+        continue;
+      }
+
+      if (char === '\n') {
+        this.emitRow(this.row, true);
+        this.rows.delete(this.row);
+        this.row += 1;
+        this.col = 0;
+        continue;
+      }
+
+      if (char === '\b') {
+        this.col = Math.max(0, this.col - 1);
+        continue;
+      }
+
+      if (char === '\t') {
+        const nextTab = this.col + (8 - (this.col % 8));
+        while (this.col < nextTab) {
+          this.writeChar(' ');
+        }
+        continue;
+      }
+
+      if (char === '\x07' || char < ' ' || char === '\x7f') {
+        continue;
+      }
+
+      this.writeChar(char);
+    }
+  }
+
+  private skipEscape(raw: string, index: number): number {
+    const next = raw[index + 1];
+    if (next === '[') {
+      return this.readCsi(raw, index + 2);
+    }
+    if (next === ']') {
+      return this.skipOsc(raw, index + 2);
+    }
+    return Math.min(raw.length - 1, index + 1);
+  }
+
+  private readCsi(raw: string, index: number): number {
+    let cursor = index;
+    while (cursor < raw.length) {
+      const code = raw.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) {
+        this.applyCsi(raw.slice(index, cursor), raw[cursor]);
+        return cursor;
+      }
+      cursor += 1;
+    }
+    return raw.length - 1;
+  }
+
+  private skipOsc(raw: string, index: number): number {
+    let cursor = index;
+    while (cursor < raw.length) {
+      if (raw[cursor] === '\x07') {
+        return cursor;
+      }
+      if (raw[cursor] === '\x1b' && raw[cursor + 1] === '\\') {
+        return cursor + 1;
+      }
+      cursor += 1;
+    }
+    return raw.length - 1;
+  }
+
+  private applyCsi(sequence: string, final: string): void {
+    const params = parseCsiParams(sequence);
+    const first = params[0] ?? 0;
+
+    switch (final) {
+      case 'A':
+        this.row = Math.max(0, this.row - Math.max(1, first));
+        break;
+      case 'B':
+        this.row += Math.max(1, first);
+        break;
+      case 'C':
+        this.col += Math.max(1, first);
+        break;
+      case 'D':
+        this.col = Math.max(0, this.col - Math.max(1, first));
+        break;
+      case 'E':
+        this.row += Math.max(1, first);
+        this.col = 0;
+        break;
+      case 'F':
+        this.row = Math.max(0, this.row - Math.max(1, first));
+        this.col = 0;
+        break;
+      case 'G':
+        this.col = Math.max(0, Math.max(1, first) - 1);
+        break;
+      case 'H':
+      case 'f':
+        this.row = Math.max(0, Math.max(1, first || 1) - 1);
+        this.col = Math.max(0, Math.max(1, params[1] ?? 1) - 1);
+        break;
+      case 'J':
+        this.flushScreenRows();
+        this.clearScreen(first);
+        break;
+      case 'K':
+        this.clearLine(first);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private currentRow(): string[] {
+    const row = this.rows.get(this.row) ?? [];
+    this.rows.set(this.row, row);
+    return row;
+  }
+
+  private writeChar(char: string): void {
+    const row = this.currentRow();
+    while (row.length < this.col) {
+      row.push(' ');
+    }
+    row[this.col] = char;
+    this.col += 1;
+  }
+
+  private clearLine(mode: number): void {
+    const row = this.currentRow();
+    if (mode === 1) {
+      for (let index = 0; index <= this.col; index += 1) {
+        row[index] = ' ';
+      }
+      return;
+    }
+    if (mode === 2) {
+      this.rows.set(this.row, []);
+      return;
+    }
+    row.length = this.col;
+  }
+
+  private clearScreen(mode: number): void {
+    if (mode === 1) {
+      for (const row of [...this.rows.keys()].filter((key) => key <= this.row)) {
+        this.rows.delete(row);
+      }
+      return;
+    }
+    if (mode === 0) {
+      for (const row of [...this.rows.keys()].filter((key) => key >= this.row)) {
+        this.rows.delete(row);
+      }
+      return;
+    }
+    this.rows.clear();
+  }
+
+  private flushScreenRows(): void {
+    for (const row of [...this.rows.keys()].sort((a, b) => a - b)) {
+      this.emitRow(row);
+    }
+  }
+
+  private emitRow(rowNumber: number, preserveBlank = false): void {
+    const raw = this.rows.get(rowNumber)?.join('') ?? '';
+    const clean = sanitizeForTerminal(raw).replace(/\s+$/, '');
+    if (
+      (clean === '' && (!preserveBlank || this.previousEmitted === undefined)) ||
+      clean === this.previousEmitted
+    ) {
+      return;
+    }
+    this.emitted.push(clean);
+    this.previousEmitted = clean;
+  }
+}
+
 /**
- * Convert a raw PTY/TTY log capture into greppable, line-oriented plain text:
- * strip ANSI/cursor/control escapes, drop lines that were pure escape noise,
- * and collapse consecutive identical lines (spinner/redraw frames like
- * `⠙ Working(18m 07s)` re-printed every tick).
+ * Convert a raw PTY/TTY log capture into greppable, line-oriented plain text by
+ * replaying the small ANSI/VT subset used for redraws, then emitting rendered
+ * rows with consecutive duplicates collapsed.
  */
 export function toPlainLogLines(raw: string): string[] {
+  const cooked = new PtyLogCooker();
+  cooked.push(trimLeadingPartialCsi(raw));
+  return cooked.lines();
+}
+
+function emitCookedLines(lines: string[], deps: AgentManagementListingDependencies): void {
+  if (lines.length > 0) {
+    deps.log(lines.join('\n'));
+  }
+}
+
+function createCookedLogStreamer(initialText: string): {
+  push: (raw: string) => string[];
+  reset: () => void;
+} {
+  let cooker = new PtyLogCooker();
+  cooker.push(trimLeadingPartialCsi(initialText));
+  cooker.finish();
+
+  return {
+    push: (raw: string) => cooker.push(raw),
+    reset: () => {
+      cooker = new PtyLogCooker();
+    },
+  };
+}
+
+function legacySanitizedLines(raw: string): string[] {
   const out: string[] = [];
   let prev: string | undefined;
   // Drop the single file-terminating newline (its trailing '' element) so a
@@ -461,7 +721,7 @@ export function toPlainLogLines(raw: string): string[] {
 
 export async function runAgentsLogsCommand(
   name: string,
-  options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean },
+  options: { lines?: string; follow?: boolean; plain?: boolean; raw?: boolean; json?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
   if (!isSafeLogAgentName(name)) {
@@ -491,33 +751,29 @@ export async function runAgentsLogsCommand(
     const snapshot = readLogTail(deps, logFile, lineCount);
     const text = snapshot.text;
 
-    // --json: machine-readable snapshot of sanitized, line-oriented output.
-    // (Snapshot only — combine with the SDK event stream for live tailing.)
-    if (options.json) {
+    if (options.raw && options.json) {
+      throw new Error('--raw cannot be combined with --json');
+    }
+
+    if (options.raw) {
+      deps.writeChunk(text);
+    } else if (options.json) {
+      // --json: machine-readable snapshot of cooked, line-oriented output.
+      // (Snapshot only — combine with the SDK event stream for live tailing.)
       const plainLines = toPlainLogLines(text).slice(-lineCount);
       deps.log(JSON.stringify({ agent: name, file: logFile, lines: plainLines }, null, 2));
       return;
-    }
-
-    // --plain: ANSI-stripped, deduped, greppable. No decorative header so the
-    // output is pure log content for piping into grep/awk.
-    if (options.plain) {
-      const plainLines = toPlainLogLines(text).slice(-lineCount);
-      deps.log(plainLines.join('\n'));
     } else {
-      const tail = tailLinesFromText(text, lineCount).map(sanitizeForTerminal).join('\n');
-
-      deps.log(`Logs for ${sanitizeForTerminalLine(name)} (last ${lineCount} lines):`);
-      deps.log('─'.repeat(50));
-      deps.log(tail || '(empty)');
+      // Default and --plain are both cooked and headerless so the command is
+      // safe to pipe into grep/awk/jq-adjacent tooling.
+      const plainLines = toPlainLogLines(text);
+      const cookedLines = plainLines.length > 0 ? plainLines : legacySanitizedLines(text);
+      emitCookedLines(cookedLines.slice(-lineCount), deps);
     }
 
     if (options.follow) {
       let lastSize = snapshot.size;
-      let remainder = '';
-      let prevStreamLine: string | undefined = options.plain
-        ? toPlainLogLines(text).slice(-lineCount).at(-1)
-        : undefined;
+      const streamer = createCookedLogStreamer(text);
 
       // Poll the log file for new content every 500ms
       await new Promise<void>(() => {
@@ -528,27 +784,16 @@ export async function runAgentsLogsCommand(
             }
             const current = readLogFrom(deps, logFile, lastSize);
             if (current.size > lastSize) {
-              const newContent = remainder + current.text;
               lastSize = current.size;
-              const newLines = newContent.split('\n');
-              // Keep the last element as remainder (may be incomplete line)
-              remainder = newLines.pop() ?? '';
-              for (const line of newLines) {
-                if (options.plain) {
-                  const clean = sanitizeForTerminal(line).replace(/\s+$/, '');
-                  if (clean === '' && line.trim() !== '') continue;
-                  if (clean === prevStreamLine) continue;
-                  prevStreamLine = clean;
-                  deps.log(clean);
-                } else {
-                  deps.log(sanitizeForTerminal(line));
-                }
+              if (options.raw) {
+                deps.writeChunk(current.text);
+              } else {
+                emitCookedLines(streamer.push(current.text), deps);
               }
             } else if (current.size < lastSize) {
               // File was truncated/rotated, reset
               lastSize = 0;
-              remainder = '';
-              prevStreamLine = undefined;
+              streamer.reset();
             }
           } catch {
             // Ignore read errors during follow, file may be temporarily unavailable
