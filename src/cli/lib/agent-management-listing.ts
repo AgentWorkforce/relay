@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import {
   formatTableRow,
@@ -17,6 +18,9 @@ export interface ListingWorkerInfo {
   model?: string;
   team?: string;
   pid?: number;
+  last_activity_at?: string;
+  context_budget_pct?: number | null;
+  current_state?: 'working' | 'idle' | 'blocked_on_send';
 }
 
 interface CloudConfig {
@@ -74,14 +78,22 @@ export interface AgentManagementListingDependencies {
     maxBytes: number,
     encoding?: BufferEncoding
   ) => { text: string; size: number };
+  readFileBuffer?: (filePath: string) => Buffer;
+  readFileTailBuffer?: (filePath: string, maxBytes: number) => { buffer: Buffer; size: number };
   readFileFrom?: (
     filePath: string,
     offset: number,
     maxBytes: number,
     encoding?: BufferEncoding
   ) => { text: string; size: number };
+  readFileFromBuffer?: (
+    filePath: string,
+    offset: number,
+    maxBytes: number
+  ) => { buffer: Buffer; size: number };
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   nowIso: () => string;
+  writeChunk: (chunk: string | Uint8Array) => void;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
@@ -143,14 +155,6 @@ function getTailByteLimit(lineCount: number): number {
   return Math.min(MAX_LOG_TAIL_BYTES, Math.max(MIN_LOG_TAIL_BYTES, lineCount * 4096));
 }
 
-function tailLinesFromText(text: string, lineCount: number): string[] {
-  const lines = text.length > 0 ? text.split('\n') : [];
-  if (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop();
-  }
-  return lines.slice(-lineCount);
-}
-
 function readLogTail(
   deps: AgentManagementListingDependencies,
   filePath: string,
@@ -164,6 +168,24 @@ function readLogTail(
   return { text, size: Buffer.byteLength(text, 'utf-8') };
 }
 
+function readLogTailBuffer(
+  deps: AgentManagementListingDependencies,
+  filePath: string,
+  lineCount: number
+): { buffer: Buffer; size: number } {
+  const maxBytes = getTailByteLimit(lineCount);
+  if (deps.readFileTailBuffer) {
+    return deps.readFileTailBuffer(filePath, maxBytes);
+  }
+  if (deps.readFileBuffer) {
+    const buffer = deps.readFileBuffer(filePath);
+    return { buffer: buffer.subarray(Math.max(0, buffer.length - maxBytes)), size: buffer.length };
+  }
+  const text = deps.readFile(filePath, 'utf-8');
+  const buffer = Buffer.from(text, 'utf-8');
+  return { buffer: buffer.subarray(Math.max(0, buffer.length - maxBytes)), size: buffer.length };
+}
+
 function readLogFrom(
   deps: AgentManagementListingDependencies,
   filePath: string,
@@ -174,6 +196,24 @@ function readLogFrom(
   }
   const text = deps.readFile(filePath, 'utf-8');
   return { text: text.slice(offset), size: text.length };
+}
+
+function readLogFromBuffer(
+  deps: AgentManagementListingDependencies,
+  filePath: string,
+  offset: number
+): { buffer: Buffer; size: number } {
+  if (deps.readFileFromBuffer) {
+    return deps.readFileFromBuffer(filePath, offset, MAX_LOG_FOLLOW_BYTES);
+  }
+  if (deps.readFileBuffer) {
+    const buffer = deps.readFileBuffer(filePath);
+    const start = Math.max(0, Math.min(offset, buffer.length));
+    const end = Math.min(buffer.length, start + MAX_LOG_FOLLOW_BYTES);
+    return { buffer: buffer.subarray(start, end), size: end };
+  }
+  const current = readLogFrom(deps, filePath, offset);
+  return { buffer: Buffer.from(current.text, 'utf-8'), size: current.size };
 }
 
 function readCloudConfig(deps: AgentManagementListingDependencies): CloudConfig | undefined {
@@ -390,6 +430,9 @@ export async function runWhoCommand(
             pid: m?.pid ?? agent.pid ?? null,
             uptimeSecs: typeof m?.uptime_secs === 'number' ? m.uptime_secs : null,
             memoryBytes: typeof m?.memory_bytes === 'number' ? m.memory_bytes : null,
+            lastActivity: agent.last_activity_at ?? null,
+            contextBudgetPct: typeof agent.context_budget_pct === 'number' ? agent.context_budget_pct : null,
+            currentState: agent.current_state ?? 'working',
           };
         })
     )
@@ -402,6 +445,9 @@ export async function runWhoCommand(
           pid: number | null;
           uptimeSecs: number | null;
           memoryBytes: number | null;
+          lastActivity: string | null;
+          contextBudgetPct: number | null;
+          currentState: 'working' | 'idle' | 'blocked_on_send';
         }>
     );
 
@@ -418,28 +464,358 @@ export async function runWhoCommand(
     return;
   }
 
-  deps.log('NAME            STATUS   CLI       PID      UPTIME');
-  deps.log('-----------------------------------------------------');
+  deps.log('NAME            STATUS   STATE            CLI       PID      UPTIME      CONTEXT  LAST ACTIVITY');
+  deps.log('------------------------------------------------------------------------------------------');
   onlineAgents.forEach((agent) => {
     deps.log(
       formatTableRow([
         { value: tableCell(agent.name, 'unknown'), width: 15 },
         { value: tableCell(agent.status), width: 8 },
+        { value: tableCell(agent.currentState), width: 16 },
         { value: tableCell(agent.cli), width: 8 },
         { value: agent.pid != null ? String(agent.pid) : '-', width: 8 },
-        { value: agent.uptimeSecs != null ? formatUptimeSecs(agent.uptimeSecs) : '-' },
+        { value: agent.uptimeSecs != null ? formatUptimeSecs(agent.uptimeSecs) : '-', width: 11 },
+        { value: agent.contextBudgetPct != null ? `${agent.contextBudgetPct}%` : '-', width: 8 },
+        { value: tableCell(agent.lastActivity) },
       ])
     );
   });
 }
 
+function parseCsiParams(sequence: string): number[] {
+  const numeric = sequence.replace(/[?<>=]/g, '');
+  if (!numeric) return [];
+  return numeric.split(';').map((part) => (part === '' ? 0 : Number(part) || 0));
+}
+
+function trimLeadingPartialCsi(raw: string): string {
+  // eslint-disable-next-line no-control-regex -- scanning for an ESC/C1 CSI opener in raw PTY bytes
+  const firstEscape = raw.search(/[\x1b\x9b]/);
+  if (firstEscape <= 0 || firstEscape > 20) {
+    return raw;
+  }
+  const prefix = raw.slice(0, firstEscape);
+  if (prefix.includes('\n')) {
+    return raw;
+  }
+  return /^[0-?;]*[ -/]*[@-~]$/.test(prefix) ? raw.slice(firstEscape) : raw;
+}
+
+function trailingIncompleteSequenceStart(raw: string): number | undefined {
+  const csiStart = raw.lastIndexOf('\x9b');
+  const escapeStart = raw.lastIndexOf('\x1b');
+  const start = Math.max(csiStart, escapeStart);
+  if (start < 0) return undefined;
+  if (raw.slice(start).includes('\n')) return undefined;
+
+  if (raw[start] === '\x9b') {
+    for (let cursor = start + 1; cursor < raw.length; cursor += 1) {
+      const code = raw.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) return undefined;
+    }
+    return start;
+  }
+
+  const next = raw[start + 1];
+  if (next === undefined) return start;
+  if (next === '[') {
+    for (let cursor = start + 2; cursor < raw.length; cursor += 1) {
+      const code = raw.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) return undefined;
+    }
+    return start;
+  }
+  if (next === ']') {
+    for (let cursor = start + 2; cursor < raw.length; cursor += 1) {
+      if (raw[cursor] === '\x07') return undefined;
+      if (raw[cursor] === '\x1b' && raw[cursor + 1] === '\\') return undefined;
+    }
+    return start;
+  }
+  return undefined;
+}
+
+export class PtyLogCooker {
+  private readonly rows = new Map<number, string[]>();
+  private readonly emitted: string[] = [];
+  private readonly decoder = new TextDecoder('utf-8');
+  private pending = '';
+  private row = 0;
+  private col = 0;
+  private previousEmitted: string | undefined;
+
+  push(raw: string | Uint8Array): string[] {
+    const start = this.emitted.length;
+    this.replayCompleteText(this.decode(raw));
+    return this.emitted.slice(start);
+  }
+
+  finish(): string[] {
+    const start = this.emitted.length;
+    this.replay(this.pending + this.decoder.decode());
+    this.pending = '';
+    this.flushScreenRows();
+    return this.emitted.slice(start);
+  }
+
+  lines(): string[] {
+    this.finish();
+    return [...this.emitted];
+  }
+
+  private decode(raw: string | Uint8Array): string {
+    return typeof raw === 'string' ? raw : this.decoder.decode(raw, { stream: true });
+  }
+
+  private replayCompleteText(raw: string): void {
+    const combined = this.pending + raw;
+    this.pending = '';
+    const pendingStart = trailingIncompleteSequenceStart(combined);
+    if (pendingStart === undefined) {
+      this.replay(combined);
+      return;
+    }
+    this.pending = combined.slice(pendingStart);
+    this.replay(combined.slice(0, pendingStart));
+  }
+
+  private replay(raw: string): void {
+    for (let index = 0; index < raw.length; index += 1) {
+      const char = raw[index];
+
+      if (char === '\x1b') {
+        index = this.skipEscape(raw, index);
+        continue;
+      }
+
+      if (char === '\x9b') {
+        index = this.readCsi(raw, index + 1);
+        continue;
+      }
+
+      if (char === '\r') {
+        this.col = 0;
+        continue;
+      }
+
+      if (char === '\n') {
+        this.emitRow(this.row, true);
+        this.rows.delete(this.row);
+        this.row += 1;
+        this.col = 0;
+        continue;
+      }
+
+      if (char === '\b') {
+        this.col = Math.max(0, this.col - 1);
+        continue;
+      }
+
+      if (char === '\t') {
+        const nextTab = this.col + (8 - (this.col % 8));
+        while (this.col < nextTab) {
+          this.writeChar(' ');
+        }
+        continue;
+      }
+
+      if (char === '\x07' || char < ' ' || char === '\x7f') {
+        continue;
+      }
+
+      this.writeChar(char);
+    }
+  }
+
+  private skipEscape(raw: string, index: number): number {
+    const next = raw[index + 1];
+    if (next === '[') {
+      return this.readCsi(raw, index + 2);
+    }
+    if (next === ']') {
+      return this.skipOsc(raw, index + 2);
+    }
+    return Math.min(raw.length - 1, index + 1);
+  }
+
+  private readCsi(raw: string, index: number): number {
+    let cursor = index;
+    while (cursor < raw.length) {
+      const code = raw.charCodeAt(cursor);
+      if (raw[cursor] === '\n' || raw[cursor] === '\r' || raw[cursor] === '\x1b') {
+        return cursor - 1;
+      }
+      if (code >= 0x40 && code <= 0x7e) {
+        this.applyCsi(raw.slice(index, cursor), raw[cursor]);
+        return cursor;
+      }
+      cursor += 1;
+    }
+    return raw.length - 1;
+  }
+
+  private skipOsc(raw: string, index: number): number {
+    let cursor = index;
+    while (cursor < raw.length) {
+      if (raw[cursor] === '\n' || raw[cursor] === '\r') {
+        return cursor - 1;
+      }
+      if (raw[cursor] === '\x07') {
+        return cursor;
+      }
+      if (raw[cursor] === '\x1b' && raw[cursor + 1] === '\\') {
+        return cursor + 1;
+      }
+      cursor += 1;
+    }
+    return raw.length - 1;
+  }
+
+  private applyCsi(sequence: string, final: string): void {
+    const params = parseCsiParams(sequence);
+    const first = params[0] ?? 0;
+
+    switch (final) {
+      case 'A':
+        this.row = Math.max(0, this.row - Math.max(1, first));
+        break;
+      case 'B':
+        this.row += Math.max(1, first);
+        break;
+      case 'C':
+        this.col += Math.max(1, first);
+        break;
+      case 'D':
+        this.col = Math.max(0, this.col - Math.max(1, first));
+        break;
+      case 'E':
+        this.row += Math.max(1, first);
+        this.col = 0;
+        break;
+      case 'F':
+        this.row = Math.max(0, this.row - Math.max(1, first));
+        this.col = 0;
+        break;
+      case 'G':
+        this.col = Math.max(0, Math.max(1, first) - 1);
+        break;
+      case 'H':
+      case 'f':
+        this.row = Math.max(0, Math.max(1, first || 1) - 1);
+        this.col = Math.max(0, Math.max(1, params[1] ?? 1) - 1);
+        break;
+      case 'J':
+        this.flushScreenRows();
+        this.clearScreen(first);
+        break;
+      case 'K':
+        this.clearLine(first);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private currentRow(): string[] {
+    const row = this.rows.get(this.row) ?? [];
+    this.rows.set(this.row, row);
+    return row;
+  }
+
+  private writeChar(char: string): void {
+    const row = this.currentRow();
+    while (row.length < this.col) {
+      row.push(' ');
+    }
+    row[this.col] = char;
+    this.col += 1;
+  }
+
+  private clearLine(mode: number): void {
+    const row = this.currentRow();
+    if (mode === 1) {
+      for (let index = 0; index <= this.col; index += 1) {
+        row[index] = ' ';
+      }
+      return;
+    }
+    if (mode === 2) {
+      this.rows.set(this.row, []);
+      return;
+    }
+    row.length = this.col;
+  }
+
+  private clearScreen(mode: number): void {
+    if (mode === 1) {
+      for (const row of [...this.rows.keys()].filter((key) => key <= this.row)) {
+        this.rows.delete(row);
+      }
+      return;
+    }
+    if (mode === 0) {
+      for (const row of [...this.rows.keys()].filter((key) => key >= this.row)) {
+        this.rows.delete(row);
+      }
+      return;
+    }
+    this.rows.clear();
+  }
+
+  private flushScreenRows(): void {
+    for (const row of [...this.rows.keys()].sort((a, b) => a - b)) {
+      this.emitRow(row);
+    }
+  }
+
+  private emitRow(rowNumber: number, preserveBlank = false): void {
+    const raw = this.rows.get(rowNumber)?.join('') ?? '';
+    const clean = sanitizeForTerminal(raw).replace(/\s+$/, '');
+    if (
+      (clean === '' && (!preserveBlank || this.previousEmitted === undefined)) ||
+      clean === this.previousEmitted
+    ) {
+      return;
+    }
+    this.emitted.push(clean);
+    this.previousEmitted = clean;
+  }
+}
+
 /**
- * Convert a raw PTY/TTY log capture into greppable, line-oriented plain text:
- * strip ANSI/cursor/control escapes, drop lines that were pure escape noise,
- * and collapse consecutive identical lines (spinner/redraw frames like
- * `⠙ Working(18m 07s)` re-printed every tick).
+ * Convert a raw PTY/TTY log capture into greppable, line-oriented plain text by
+ * replaying the small ANSI/VT subset used for redraws, then emitting rendered
+ * rows with consecutive duplicates collapsed.
  */
 export function toPlainLogLines(raw: string): string[] {
+  const cooked = new PtyLogCooker();
+  cooked.push(trimLeadingPartialCsi(raw));
+  return cooked.lines();
+}
+
+function emitCookedLines(lines: string[], deps: AgentManagementListingDependencies): void {
+  if (lines.length > 0) {
+    deps.log(lines.join('\n'));
+  }
+}
+
+function createCookedLogStreamer(initialText: string): {
+  push: (raw: string | Uint8Array) => string[];
+  reset: () => void;
+} {
+  let cooker = new PtyLogCooker();
+  cooker.push(trimLeadingPartialCsi(initialText));
+  cooker.finish();
+
+  return {
+    push: (raw: string | Uint8Array) => cooker.push(raw),
+    reset: () => {
+      cooker = new PtyLogCooker();
+    },
+  };
+}
+
+function legacySanitizedLines(raw: string): string[] {
   const out: string[] = [];
   let prev: string | undefined;
   // Drop the single file-terminating newline (its trailing '' element) so a
@@ -461,7 +837,7 @@ export function toPlainLogLines(raw: string): string[] {
 
 export async function runAgentsLogsCommand(
   name: string,
-  options: { lines?: string; follow?: boolean; plain?: boolean; json?: boolean },
+  options: { lines?: string; follow?: boolean; plain?: boolean; raw?: boolean; json?: boolean },
   deps: AgentManagementListingDependencies
 ): Promise<void> {
   if (!isSafeLogAgentName(name)) {
@@ -488,36 +864,67 @@ export async function runAgentsLogsCommand(
 
   try {
     const lineCount = parseLogLineCount(options.lines);
-    const snapshot = readLogTail(deps, logFile, lineCount);
-    const text = snapshot.text;
 
-    // --json: machine-readable snapshot of sanitized, line-oriented output.
-    // (Snapshot only — combine with the SDK event stream for live tailing.)
-    if (options.json) {
-      const plainLines = toPlainLogLines(text).slice(-lineCount);
-      deps.log(JSON.stringify({ agent: name, file: logFile, lines: plainLines }, null, 2));
+    if (options.raw && options.json) {
+      throw new Error('--raw cannot be combined with --json');
+    }
+
+    if (options.raw) {
+      const snapshot = readLogTailBuffer(deps, logFile, lineCount);
+      deps.writeChunk(snapshot.buffer);
+
+      if (options.follow) {
+        let lastSize = snapshot.size;
+
+        await new Promise<void>(() => {
+          const interval = setInterval(() => {
+            try {
+              if (!deps.fileExists(logFile)) {
+                return;
+              }
+              const current = readLogFromBuffer(deps, logFile, lastSize);
+              if (current.size > lastSize) {
+                lastSize = current.size;
+                deps.writeChunk(current.buffer);
+              } else if (current.size < lastSize) {
+                lastSize = 0;
+              }
+            } catch {
+              // Ignore read errors during follow, file may be temporarily unavailable
+            }
+          }, 500);
+
+          if (typeof process !== 'undefined') {
+            process.on('SIGINT', () => {
+              clearInterval(interval);
+              process.exit(0);
+            });
+          }
+        });
+      }
       return;
     }
 
-    // --plain: ANSI-stripped, deduped, greppable. No decorative header so the
-    // output is pure log content for piping into grep/awk.
-    if (options.plain) {
-      const plainLines = toPlainLogLines(text).slice(-lineCount);
-      deps.log(plainLines.join('\n'));
-    } else {
-      const tail = tailLinesFromText(text, lineCount).map(sanitizeForTerminal).join('\n');
+    const snapshot = readLogTail(deps, logFile, lineCount);
+    const text = snapshot.text;
 
-      deps.log(`Logs for ${sanitizeForTerminalLine(name)} (last ${lineCount} lines):`);
-      deps.log('─'.repeat(50));
-      deps.log(tail || '(empty)');
+    if (options.json) {
+      // --json: machine-readable snapshot of cooked, line-oriented output.
+      // (Snapshot only — combine with the SDK event stream for live tailing.)
+      const plainLines = toPlainLogLines(text).slice(-lineCount);
+      deps.log(JSON.stringify({ agent: name, file: logFile, lines: plainLines }, null, 2));
+      return;
+    } else {
+      // Default and --plain are both cooked and headerless so the command is
+      // safe to pipe into grep/awk/jq-adjacent tooling.
+      const plainLines = toPlainLogLines(text);
+      const cookedLines = plainLines.length > 0 ? plainLines : legacySanitizedLines(text);
+      emitCookedLines(cookedLines.slice(-lineCount), deps);
     }
 
     if (options.follow) {
       let lastSize = snapshot.size;
-      let remainder = '';
-      let prevStreamLine: string | undefined = options.plain
-        ? toPlainLogLines(text).slice(-lineCount).at(-1)
-        : undefined;
+      const streamer = createCookedLogStreamer(text);
 
       // Poll the log file for new content every 500ms
       await new Promise<void>(() => {
@@ -526,29 +933,14 @@ export async function runAgentsLogsCommand(
             if (!deps.fileExists(logFile)) {
               return;
             }
-            const current = readLogFrom(deps, logFile, lastSize);
+            const current = readLogFromBuffer(deps, logFile, lastSize);
             if (current.size > lastSize) {
-              const newContent = remainder + current.text;
               lastSize = current.size;
-              const newLines = newContent.split('\n');
-              // Keep the last element as remainder (may be incomplete line)
-              remainder = newLines.pop() ?? '';
-              for (const line of newLines) {
-                if (options.plain) {
-                  const clean = sanitizeForTerminal(line).replace(/\s+$/, '');
-                  if (clean === '' && line.trim() !== '') continue;
-                  if (clean === prevStreamLine) continue;
-                  prevStreamLine = clean;
-                  deps.log(clean);
-                } else {
-                  deps.log(sanitizeForTerminal(line));
-                }
-              }
+              emitCookedLines(streamer.push(current.buffer), deps);
             } else if (current.size < lastSize) {
               // File was truncated/rotated, reset
               lastSize = 0;
-              remainder = '';
-              prevStreamLine = undefined;
+              streamer.reset();
             }
           } catch {
             // Ignore read errors during follow, file may be temporarily unavailable

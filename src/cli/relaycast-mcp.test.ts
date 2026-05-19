@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerAgentWithRebind } from './relaycast-mcp.js';
+import { optionsFromEnv, registerAgentWithRebind } from './relaycast-mcp.js';
 
 describe('registerAgentWithRebind', () => {
   it('reuses the pre-registered strict token without re-registering', async () => {
@@ -84,5 +84,62 @@ describe('registerAgentWithRebind', () => {
       registered_name: 'WorkerA',
       warnings: [],
     });
+  });
+});
+
+describe('optionsFromEnv', () => {
+  it('auto-selects an orchestrator identity when a workspace key is configured', () => {
+    const previous = {
+      apiKey: process.env.RELAY_API_KEY,
+      agentName: process.env.RELAY_AGENT_NAME,
+      clawName: process.env.RELAY_CLAW_NAME,
+    };
+    process.env.RELAY_API_KEY = 'rk_live_test';
+    delete process.env.RELAY_AGENT_NAME;
+    delete process.env.RELAY_CLAW_NAME;
+
+    try {
+      expect(optionsFromEnv()).toMatchObject({
+        apiKey: 'rk_live_test',
+        agentName: 'orchestrator',
+      });
+    } finally {
+      if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
+      else process.env.RELAY_API_KEY = previous.apiKey;
+      if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;
+      else process.env.RELAY_AGENT_NAME = previous.agentName;
+      if (previous.clawName === undefined) delete process.env.RELAY_CLAW_NAME;
+      else process.env.RELAY_CLAW_NAME = previous.clawName;
+    }
+  });
+
+  it('ignores unresolved template environment placeholders', () => {
+    const previous = {
+      apiKey: process.env.RELAY_API_KEY,
+      agentName: process.env.RELAY_AGENT_NAME,
+      clawName: process.env.RELAY_CLAW_NAME,
+      agentToken: process.env.RELAY_AGENT_TOKEN,
+    };
+    process.env.RELAY_API_KEY = '${RELAY_API_KEY}';
+    process.env.RELAY_AGENT_NAME = '${RELAY_AGENT_NAME}';
+    process.env.RELAY_CLAW_NAME = 'ClawFallback';
+    process.env.RELAY_AGENT_TOKEN = '${RELAY_AGENT_TOKEN}';
+
+    try {
+      expect(optionsFromEnv()).toMatchObject({
+        apiKey: undefined,
+        agentName: 'ClawFallback',
+        agentToken: undefined,
+      });
+    } finally {
+      if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
+      else process.env.RELAY_API_KEY = previous.apiKey;
+      if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;
+      else process.env.RELAY_AGENT_NAME = previous.agentName;
+      if (previous.clawName === undefined) delete process.env.RELAY_CLAW_NAME;
+      else process.env.RELAY_CLAW_NAME = previous.clawName;
+      if (previous.agentToken === undefined) delete process.env.RELAY_AGENT_TOKEN;
+      else process.env.RELAY_AGENT_TOKEN = previous.agentToken;
+    }
   });
 });

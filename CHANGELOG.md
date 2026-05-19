@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Broker/SDK wire protocol is now version 2 for delivery terminal events and lifecycle event shape changes.
 - `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
 - `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
 - The `relay_broker` Rust crate now exposes only `protocol`, `snippets`, and `run_cli`; broker implementation modules are crate-private.
@@ -43,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prerelease publishing supports staging releases.
 - Broker `--api-bind` configures the HTTP/WS bind address.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
+- Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
 
 ### Changed
 
@@ -54,9 +56,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Broker snapshot requests return consistent worker timeout and error-envelope responses.
 - Rust and TypeScript telemetry disable PostHog reporting when no `AGENT_RELAY_POSTHOG_KEY` is configured.
 - `agent-relay inbox` shows unread DM content and `direction` metadata, with terminal controls stripped from text summaries.
+- `agent-relay who` reports last activity, context budget, and working/idle/blocked-on-send state.
+- `agent-relay doctor` reports broker Relaycast auth state and stuck outbound delivery queues.
+- Relaycast MCP auto-registers workspace-key sessions as an orchestrator so read tools work without a manual register step.
 
 ### Fixed
 
+- Broker worker teardown now emits `message_delivery_failed` for dropped pending deliveries so SDK delivery waiters terminate.
+- SDK `sendAndWaitForDelivery` waits for `message_delivery_confirmed` or `message_delivery_failed` instead of treating `delivery_ack` as final.
+- Relaycast MCP startup ignores unresolved `${RELAY_*}` environment placeholders before auto-registering.
+- PTY context budget detection uses the latest percentage in output and can re-emit after the budget rises.
+- `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
+- `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
@@ -66,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests treat `better-sqlite3` as optional, improving CI reliability.
 - `agent-relay doctor` validates partial driver availability correctly.
 - SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
+- DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
+- The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 
 ## [6.2.2] - 2026-05-18
 

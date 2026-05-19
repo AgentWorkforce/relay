@@ -16,7 +16,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::time::{interval, timeout, Instant};
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const DEFAULT_PATTERN: &str = "fan-out";
 const DEFAULT_TEAMS: usize = 2;
 const DEFAULT_TIMEOUT: &str = "300s";

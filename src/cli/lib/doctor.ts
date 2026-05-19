@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
+import { AgentRelayClient, type BrokerStatus } from '@agent-relay/sdk';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -34,6 +35,56 @@ interface DiagnosticDb {
   exec: (sql: string) => void;
   prepare: (sql: string) => { run: (...params: any[]) => unknown; get: (...params: any[]) => any };
   close?: () => void;
+}
+
+async function checkBrokerReliability(): Promise<CheckResult[]> {
+  let client: AgentRelayClient | undefined;
+  try {
+    client = AgentRelayClient.connect({ cwd: process.cwd() });
+    const status = await client.getStatus();
+    const typedStatus = status as BrokerStatus;
+    const auth = typedStatus.auth;
+    const authMessage = auth?.authenticated
+      ? `Authenticated (${auth.workspace_count} workspace${auth.workspace_count === 1 ? '' : 's'})`
+      : 'No authenticated Relaycast workspace reported by broker';
+    const pending = typedStatus.pending_deliveries ?? [];
+    const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
+    return [
+      {
+        name: 'Broker auth',
+        ok: true,
+        message: authMessage,
+      },
+      {
+        name: 'Outbound queues',
+        ok: stuck.length === 0,
+        message:
+          pending.length === 0
+            ? 'No pending deliveries'
+            : `${pending.length} pending deliver${pending.length === 1 ? 'y' : 'ies'}, ${stuck.length} stuck`,
+        remediation:
+          stuck.length > 0
+            ? 'Check agent-relay who --json for blocked_on_send agents and inspect pending_deliveries in /api/status.'
+            : undefined,
+      },
+    ];
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return [
+      {
+        name: 'Broker auth',
+        ok: true,
+        message: `Skipped (broker unavailable: ${message})`,
+      },
+      {
+        name: 'Outbound queues',
+        ok: true,
+        message: 'Skipped (broker unavailable)',
+      },
+    ];
+  } finally {
+    await client?.shutdown().catch(() => undefined);
+  }
 }
 
 const require = createRequire(import.meta.url);
@@ -97,7 +148,9 @@ async function checkBetterSqlite3(): Promise<CheckResult> {
       const require = createRequire(import.meta.url);
       const pkg = require('better-sqlite3/package.json');
       version = pkg.version ?? 'unknown';
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return {
       name: 'better-sqlite3',
       ok: true,
@@ -357,7 +410,9 @@ async function checkWriteTest(
         created_at INTEGER
       );
     `);
-    const insert = db.prepare('INSERT OR REPLACE INTO doctor_diagnostics (key, value, created_at) VALUES (?, ?, ?)');
+    const insert = db.prepare(
+      'INSERT OR REPLACE INTO doctor_diagnostics (key, value, created_at) VALUES (?, ?, ?)'
+    );
     insert.run(key, value, Date.now());
     db.close?.();
     return {
@@ -463,7 +518,11 @@ function readInstallationStatus(dataDir: string): InstallationStatus {
   }
 
   try {
-    const lines = fs.readFileSync(statusPath, 'utf-8').split('\n').map((l) => l.trim()).filter(Boolean);
+    const lines = fs
+      .readFileSync(statusPath, 'utf-8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     const map: Record<string, string> = {};
     for (const line of lines) {
       const idx = line.indexOf(':');
@@ -547,6 +606,7 @@ export async function runDoctor(): Promise<void> {
   results.push(writeResult);
   const readResult = await checkReadTest(storageType, dbPath, availability, testKey, testValue);
   results.push(readResult);
+  results.push(...(await checkBrokerReliability()));
 
   printHeader();
   printInstallationStatus(installationStatus);

@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::supervisor::RestartPolicy;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -171,6 +171,12 @@ pub enum BrokerEvent {
         name: String,
         code: Option<i32>,
         signal: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    AgentContextLow {
+        name: String,
+        pct: u8,
     },
     RelayInbound {
         event_id: String,
@@ -206,6 +212,25 @@ pub enum BrokerEvent {
         event_id: String,
         reason: String,
     },
+    MessageDeliveryConfirmed {
+        name: String,
+        delivery_id: String,
+        event_id: String,
+        from: String,
+        to: String,
+    },
+    MessageDeliveryFailed {
+        name: String,
+        #[serde(default)]
+        delivery_id: Option<String>,
+        #[serde(default)]
+        event_id: Option<String>,
+        from: String,
+        to: String,
+        attempts: u32,
+        #[serde(rename = "lastError")]
+        last_error: String,
+    },
     DeliveryQueued {
         delivery_id: String,
         agent: String,
@@ -240,6 +265,13 @@ pub enum BrokerEvent {
     AgentIdle {
         name: String,
         idle_secs: u64,
+        #[serde(default)]
+        since: Option<String>,
+    },
+    AgentBlockedOnSend {
+        name: String,
+        blocked_secs: u64,
+        pending_delivery_count: usize,
     },
     AgentRestarting {
         name: String,
@@ -350,7 +382,7 @@ mod tests {
 
         let encoded = serde_json::to_string(&frame).unwrap();
         let decoded: ProtocolEnvelope<Value> = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded.v, 1);
+        assert_eq!(decoded.v, PROTOCOL_VERSION);
         assert_eq!(decoded.msg_type, "spawn_agent");
         assert_eq!(decoded.request_id.as_deref(), Some("req_1"));
     }

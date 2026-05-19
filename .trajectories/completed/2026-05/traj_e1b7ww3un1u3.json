@@ -1,0 +1,53 @@
+{
+  "id": "traj_e1b7ww3un1u3",
+  "version": 1,
+  "task": {
+    "title": "Harden agents logs raw and follow output"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T10:59:00.118Z",
+  "completedAt": "2026-05-19T11:04:44.466Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T11:03:09.871Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_rj3r8z5el0ux",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T11:03:09.871Z",
+      "endedAt": "2026-05-19T11:04:44.466Z",
+      "events": [
+        {
+          "ts": 1779188589872,
+          "type": "decision",
+          "content": "Use Buffer reads for raw agents logs and stream byte chunks through cooked follow: Use Buffer reads for raw agents logs and stream byte chunks through cooked follow",
+          "raw": {
+            "question": "Use Buffer reads for raw agents logs and stream byte chunks through cooked follow",
+            "chosen": "Use Buffer reads for raw agents logs and stream byte chunks through cooked follow",
+            "alternatives": [],
+            "reasoning": "Raw output must avoid UTF-8 decoding entirely, while cooked follow needs TextDecoder streaming so multibyte codepoints split by polling are reconstructed before ANSI replay"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened agents:logs raw output to write Buffer bytes unchanged and made cooked follow preserve split ANSI CSI and UTF-8 sequences across poll chunks",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9252ae4ea526d039517922fa196e3ce39b18c834",
+    "endRef": "9252ae4ea526d039517922fa196e3ce39b18c834"
+  }
+}

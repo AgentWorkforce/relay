@@ -433,7 +433,7 @@ async fn listen_api_session(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "broker_version": state.broker_version,
-        "protocol_version": 1,
+        "protocol_version": 2,
         "workspace_key": state.workspace_key,
         "default_workspace_id": state.default_workspace_id,
         "mode": if state.persist { "persist" } else { "ephemeral" },
@@ -2347,7 +2347,7 @@ mod auth_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert!(body["broker_version"].is_string());
-        assert_eq!(body["protocol_version"], 1);
+        assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["mode"], "ephemeral");
     }
 

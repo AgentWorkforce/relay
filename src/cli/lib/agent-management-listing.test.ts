@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PtyLogCooker,
   runAgentsCommand,
   runAgentsLogsCommand,
   runWhoCommand,
@@ -32,6 +33,7 @@ function createDeps(options?: {
         : undefined;
   const shutdown = vi.fn(async () => undefined);
   const log = vi.fn(() => undefined);
+  const writeChunk = vi.fn(() => undefined);
   const error = vi.fn(() => undefined);
   const exit = vi.fn((code: number) => {
     throw new Error(`exit:${code}`);
@@ -51,6 +53,7 @@ function createDeps(options?: {
       throw new Error('not implemented');
     }),
     nowIso: vi.fn(() => options?.nowIso ?? '2026-03-04T00:00:00.000Z'),
+    writeChunk,
     log,
     error,
     exit,
@@ -106,6 +109,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 4321,
         uptimeSecs: 421,
         memoryBytes: 1048576,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -125,6 +131,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -145,6 +154,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -165,6 +177,9 @@ describe('agent-management-listing JSON output', () => {
         pid: 99,
         uptimeSecs: null,
         memoryBytes: null,
+        lastActivity: null,
+        contextBudgetPct: null,
+        currentState: 'working',
       },
     ]);
   });
@@ -265,6 +280,50 @@ describe('toPlainLogLines', () => {
   it('preserves a single genuine blank line but collapses runs', () => {
     expect(toPlainLogLines('a\n\n\n b ')).toEqual(['a', '', ' b']);
   });
+
+  it('replays cursor-position redraws instead of concatenating repaint fragments', () => {
+    const ESC = '\u001b';
+    const raw = [
+      `${ESC}[10;3HSt${ESC}[10;4Hta${ESC}[10;5Har${ESC}[10;6Hrt${ESC}[10;7Hti${ESC}[10;8Hin${ESC}[10;9Hng MCP servers`,
+      `${ESC}[11;1H•${ESC}[11;3HW${ESC}[11;3HWo${ESC}[11;4Hor${ESC}[11;5Hrk${ESC}[11;6Hki${ESC}[11;7Hin${ESC}[11;8Hng`,
+      `${ESC}[14;1H•${ESC}[14;3HCalling${ESC}[15;3H└ relaycast.agent.remove(...)`,
+    ].join('');
+
+    const cooked = toPlainLogLines(raw).join('\n');
+
+    expect(cooked).toContain('Starting MCP servers');
+    expect(cooked).toContain('• Working');
+    expect(cooked).toContain('Calling');
+    expect(cooked).toContain('└ relaycast.agent.remove(...)');
+    expect(cooked).not.toContain('Sttaarrtti');
+    expect(cooked).not.toContain('WWoor');
+  });
+
+  it('drops a leading partial CSI suffix from byte-tailed snapshots', () => {
+    const ESC = '\u001b';
+
+    expect(toPlainLogLines(`2H${ESC}[1;1Hready`)).toEqual(['ready']);
+  });
+
+  it('carries split CSI and UTF-8 sequences across streamed pushes', () => {
+    const ESC = '\u001b';
+    const euro = Buffer.from('€', 'utf-8');
+    const chunks = [
+      Buffer.from(`busy\r${ESC}[`, 'utf-8'),
+      Buffer.concat([Buffer.from('Kdone ', 'utf-8'), euro.subarray(0, 1)]),
+      Buffer.concat([euro.subarray(1), Buffer.from('\n', 'utf-8')]),
+    ];
+    const full = Buffer.concat(chunks);
+
+    const streamed = new PtyLogCooker();
+    const streamedLines = chunks.flatMap((chunk) => streamed.push(chunk)).concat(streamed.finish());
+
+    const oneShot = new PtyLogCooker();
+    const oneShotLines = oneShot.push(full).concat(oneShot.finish());
+
+    expect(streamedLines).toEqual(['done €']);
+    expect(streamedLines).toEqual(oneShotLines);
+  });
 });
 
 describe('runAgentsLogsCommand --plain / --json', () => {
@@ -280,6 +339,7 @@ describe('runAgentsLogsCommand --plain / --json', () => {
 
   function logsDeps() {
     const log = vi.fn(() => undefined);
+    const writeChunk = vi.fn(() => undefined);
     const error = vi.fn(() => undefined);
     const exit = vi.fn((code: number) => {
       throw new Error(`exit:${code}`);
@@ -297,11 +357,12 @@ describe('runAgentsLogsCommand --plain / --json', () => {
         throw new Error('not implemented');
       }),
       nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      writeChunk,
       log,
       error,
       exit,
     };
-    return { deps, log, error };
+    return { deps, log, writeChunk, error };
   }
 
   it('--plain emits sanitized, deduped lines with no decorative header', async () => {
@@ -328,15 +389,41 @@ describe('runAgentsLogsCommand --plain / --json', () => {
     expect(log.mock.calls[0][0] as string).not.toContain(ESC);
   });
 
-  it('default (no flags) sanitizes the header and content', async () => {
+  it('default (no flags) emits cooked lines without a decorative header', async () => {
     const { deps, log } = logsDeps();
 
     await runAgentsLogsCommand('WorkerA', {}, deps);
 
     const joined = log.mock.calls.map((c) => c[0] as string).join('\n');
-    expect(joined).toContain('Logs for WorkerA');
+    expect(joined).not.toContain('Logs for WorkerA');
     expect(joined).toContain('line one');
     expect(joined).not.toContain(ESC);
+  });
+
+  it('--raw emits the unmodified PTY stream through stdout', async () => {
+    const { deps, log, writeChunk } = logsDeps();
+
+    await runAgentsLogsCommand('WorkerA', { raw: true }, deps);
+
+    expect(writeChunk).toHaveBeenCalledTimes(1);
+    expect(writeChunk).toHaveBeenCalledWith(Buffer.from(rawLog, 'utf-8'));
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('--raw emits non-UTF-8 and control bytes byte-identically', async () => {
+    const { deps, writeChunk } = logsDeps();
+    const rawBytes = Buffer.from([0x6f, 0x6b, 0x0a, 0x1b, 0x5b, 0x4b, 0xff, 0x80, 0x00, 0x41]);
+    deps.readFile = vi.fn(() => {
+      throw new Error('raw path must not decode the log as UTF-8');
+    });
+    deps.readFileTailBuffer = vi.fn(() => ({ buffer: rawBytes, size: rawBytes.length }));
+
+    await runAgentsLogsCommand('WorkerA', { raw: true }, deps);
+
+    expect(writeChunk).toHaveBeenCalledTimes(1);
+    const emitted = writeChunk.mock.calls[0][0];
+    expect(Buffer.isBuffer(emitted)).toBe(true);
+    expect(Buffer.compare(emitted as Buffer, rawBytes)).toBe(0);
   });
 
   it('rejects path traversal agent names before probing or reading files', async () => {
@@ -408,6 +495,7 @@ describe('runAgentsLogsCommand --plain / --json', () => {
         throw new Error('not implemented');
       }),
       nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      writeChunk: vi.fn(() => undefined),
       log,
       error,
       exit,
@@ -443,6 +531,7 @@ describe('runAgentsLogsCommand --plain / --json', () => {
         throw new Error('not implemented');
       }),
       nowIso: vi.fn(() => '2026-03-04T00:00:00.000Z'),
+      writeChunk: vi.fn(() => undefined),
       log,
       error,
       exit,

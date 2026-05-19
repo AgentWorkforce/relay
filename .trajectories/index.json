@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-19T04:27:19.071Z",
+  "lastUpdated": "2026-05-19T13:26:28.836Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1009,6 +1009,69 @@
       "startedAt": "2026-05-19T04:18:25.024Z",
       "completedAt": "2026-05-19T04:27:18.903Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_zqwco4gl76g3.json"
+    },
+    "traj_81kobstnzzwk": {
+      "title": "Orchestrate team to fix #892 #893 #894 #895 (codex implement, claude review, claude signoff)",
+      "status": "completed",
+      "startedAt": "2026-05-19T08:16:32.762Z",
+      "completedAt": "2026-05-19T08:37:32.966Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_81kobstnzzwk.json"
+    },
+    "traj_f1iac9ngymlj": {
+      "title": "Fix reliability review findings 892-895",
+      "status": "completed",
+      "startedAt": "2026-05-19T09:52:54.932Z",
+      "completedAt": "2026-05-19T10:01:19.068Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_f1iac9ngymlj.json"
+    },
+    "traj_irafiyk6wpw0": {
+      "title": "Fix agents:logs near-unparseable TTY redraw garbage (codex implement, claude review)",
+      "status": "completed",
+      "startedAt": "2026-05-19T10:30:38.222Z",
+      "completedAt": "2026-05-19T10:44:24.757Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_irafiyk6wpw0.json"
+    },
+    "traj_e1b7ww3un1u3": {
+      "title": "Harden agents logs raw and follow output",
+      "status": "completed",
+      "startedAt": "2026-05-19T10:59:00.118Z",
+      "completedAt": "2026-05-19T11:04:44.466Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_e1b7ww3un1u3.json"
+    },
+    "traj_l97mdks4cooq": {
+      "title": "Investigate PR 913 clippy failure",
+      "status": "completed",
+      "startedAt": "2026-05-19T11:16:32.729Z",
+      "completedAt": "2026-05-19T11:17:32.013Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_l97mdks4cooq.json"
+    },
+    "traj_rqz29je4z9nf": {
+      "title": "agents:logs hardening (findings 1&2) — codex fix + claude re-review",
+      "status": "completed",
+      "startedAt": "2026-05-19T11:19:40.333Z",
+      "completedAt": "2026-05-19T11:19:40.433Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_rqz29je4z9nf.json"
+    },
+    "traj_so81rqed6qz9": {
+      "title": "Remove stale relay snippet installer",
+      "status": "completed",
+      "startedAt": "2026-05-19T11:23:42.436Z",
+      "completedAt": "2026-05-19T11:30:01.924Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_so81rqed6qz9.json"
+    },
+    "traj_lhyrcib40kao": {
+      "title": "Address PR #914 CodeRabbit reliability review findings",
+      "status": "completed",
+      "startedAt": "2026-05-19T11:52:46.110Z",
+      "completedAt": "2026-05-19T12:07:22.401Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_lhyrcib40kao.json"
+    },
+    "traj_5nzj6v56id4z": {
+      "title": "Fix PR914 review comments",
+      "status": "completed",
+      "startedAt": "2026-05-19T13:20:42.407Z",
+      "completedAt": "2026-05-19T13:26:28.697Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_5nzj6v56id4z.json"
     }
   }
 }

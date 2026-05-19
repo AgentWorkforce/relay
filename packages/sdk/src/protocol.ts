@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
@@ -151,7 +151,12 @@ export interface PendingDeliveryInfo {
   delivery_id: string;
   worker_name: string;
   event_id: string;
+  from?: string;
+  to?: string;
   attempts: number;
+  queued_at_ms?: number;
+  age_ms?: number;
+  last_error?: string;
 }
 
 export interface BrokerStatus {
@@ -166,9 +171,30 @@ export interface BrokerStatus {
     channels: string[];
     parent?: string;
     pid?: number;
+    last_activity_at?: string;
+    last_activity_ms?: number;
+    context_budget_pct?: number | null;
+    current_state?: AgentCurrentState;
   }>;
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
+  auth?: BrokerAuthStatus;
+}
+
+export type AgentCurrentState = 'working' | 'idle' | 'blocked_on_send';
+
+export interface BrokerAuthStatus {
+  authenticated: boolean;
+  workspace_count: number;
+  default_workspace_id?: string | null;
+  workspaces: Array<{
+    workspace_id: string;
+    workspace_alias?: string | null;
+    self_name: string;
+    self_agent_id: string;
+    authenticated: boolean;
+    default: boolean;
+  }>;
 }
 
 export type BrokerAgentStatus = 'healthy' | 'restarting' | 'dead' | 'released';
@@ -249,6 +275,12 @@ export type BrokerEvent =
       name: string;
       code?: number;
       signal?: string;
+      reason?: string;
+    }
+  | {
+      kind: 'agent_context_low';
+      name: string;
+      pct: number;
     }
   | {
       kind: 'relay_inbound';
@@ -319,6 +351,24 @@ export type BrokerEvent =
       reason: string;
     }
   | {
+      kind: 'message_delivery_confirmed';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      from: string;
+      to: string;
+    }
+  | {
+      kind: 'message_delivery_failed';
+      name: string;
+      delivery_id?: string;
+      event_id?: string;
+      from: string;
+      to: string;
+      attempts: number;
+      lastError: string;
+    }
+  | {
       kind: 'delivery_active';
       name: string;
       delivery_id: string;
@@ -376,6 +426,13 @@ export type BrokerEvent =
       kind: 'agent_idle';
       name: string;
       idle_secs: number;
+      since?: string;
+    }
+  | {
+      kind: 'agent_blocked_on_send';
+      name: string;
+      blocked_secs: number;
+      pending_delivery_count: number;
     }
   | {
       kind: 'agent_restarting';
@@ -444,6 +501,14 @@ export type WorkerToBroker =
   | {
       type: 'delivery_ack';
       payload: { delivery_id: string; event_id: string };
+    }
+  | {
+      type: 'delivery_verified';
+      payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
+    }
+  | {
+      type: 'delivery_failed';
+      payload: { delivery_id: string; event_id: string; reason: string };
     }
   | {
       type: 'worker_stream';

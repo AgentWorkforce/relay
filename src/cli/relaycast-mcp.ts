@@ -26,7 +26,7 @@ const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace 
 
 ## Getting Started
 1. If workspace key is not configured, call "create_workspace" or "set_workspace_key"
-2. Call "register" with your agent name to join the workspace
+2. When RELAY_API_KEY is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register" with your agent name to join the workspace
 3. Use "list_channels" to see available channels
 4. Use "join_channel" to join channels of interest
 5. Use "check_inbox" to see unread messages and mentions
@@ -589,13 +589,16 @@ export async function startPatchedStdio(options: PatchedMcpServerOptions): Promi
 }
 
 export function optionsFromEnv(): PatchedMcpServerOptions {
+  const apiKey = resolveEnv('RELAY_API_KEY');
+  const agentName =
+    resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME') ?? (apiKey ? 'orchestrator' : undefined);
   return {
-    apiKey: process.env.RELAY_API_KEY,
+    apiKey,
     baseUrl: resolveEnv('RELAY_BASE_URL'),
-    agentToken: process.env.RELAY_AGENT_TOKEN,
-    agentName: process.env.RELAY_AGENT_NAME ?? process.env.RELAY_CLAW_NAME,
-    agentType: normalizeAgentType(process.env.RELAY_AGENT_TYPE),
-    strictAgentName: envFlagEnabled(process.env.RELAY_STRICT_AGENT_NAME),
+    agentToken: resolveEnv('RELAY_AGENT_TOKEN'),
+    agentName,
+    agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
+    strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),
   };
 }
 

@@ -240,7 +240,7 @@ describe('relaycast-mcp startup helpers', () => {
       apiKey: 'rk_live_env',
       baseUrl: 'https://api.relaycast.dev///',
       agentToken: 'at_live_env',
-      agentName: '',
+      agentName: 'FallbackClaw',
       agentType: 'human',
       strictAgentName: true,
     });

@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -120,6 +121,21 @@ fn output_has_prompt(cli: &str, output: &str) -> bool {
         matches!(trimmed, "›" | ">" | "$" | ">>>" | "❯")
             || (lower_cli.contains("codex") && trimmed.eq_ignore_ascii_case("codex>"))
     })
+}
+
+fn detect_context_budget_pct(output: &str) -> Option<u8> {
+    static CONTEXT_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = CONTEXT_RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)\bcontext\s+(\d{1,3})%\s+left\b").expect("context regex compiles")
+    });
+    let mut latest = None;
+    for captures in re.captures_iter(output) {
+        latest = captures
+            .get(1)
+            .and_then(|m| m.as_str().parse::<u16>().ok())
+            .map(|pct| pct.min(100) as u8);
+    }
+    latest
 }
 
 fn evaluate_startup_gate(
@@ -355,6 +371,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     const NO_OUTPUT_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
     let mut last_pty_output_time = Instant::now();
     let mut reported_idle = false;
+    let mut last_context_low_pct: Option<u8> = None;
 
     while running {
         tokio::select! {
@@ -583,6 +600,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     STARTUP_BUFFER_MAX,
                                     STARTUP_BUFFER_KEEP,
                                 );
+                            }
+                        }
+                        if let Some(pct) = detect_context_budget_pct(&clean_text) {
+                            if last_context_low_pct.is_some_and(|last| pct > last) {
+                                last_context_low_pct = None;
+                            }
+                            if pct <= 10 && last_context_low_pct != Some(pct) {
+                                let _ = send_frame(&out_tx, "agent_context_low", None, json!({
+                                    "pct": pct,
+                                })).await;
+                                last_context_low_pct = Some(pct);
                             }
                         }
                         let startup_ready = startup_gate_ready(
@@ -1023,11 +1051,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                 // Idle detection: emit agent_idle once when silence exceeds threshold.
                 // Granularity depends on auto_enter_interval tick rate (2s).
-                if let Some(threshold) = idle_threshold {
+                if pending_worker_injections.is_empty()
+                    && pending_verifications.is_empty()
+                    && pending_activities.is_empty()
+                {
+                    if let Some(threshold) = idle_threshold {
                     if let Some(idle_secs) = pty_auto.check_idle_transition(threshold) {
                         let _ = send_frame(&out_tx, "agent_idle", None, json!({
                             "idle_secs": idle_secs,
                         })).await;
+                    }
                     }
                 }
             }
@@ -1088,16 +1121,33 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     // event so the broker or dashboard can decide what to do.
                     let silent_duration = last_pty_output_time.elapsed();
                     if silent_duration >= NO_OUTPUT_EXIT_TIMEOUT && !reported_idle {
-                        tracing::info!(
-                            target = "agent_relay::worker::pty",
-                            silent_secs = silent_duration.as_secs(),
-                            "watchdog: no PTY output for {}s — marking idle",
-                            silent_duration.as_secs()
-                        );
-                        let _ = send_frame(&out_tx, "agent_idle", None, json!({
-                            "reason": "no_output_timeout",
-                            "idle_secs": silent_duration.as_secs(),
-                        })).await;
+                        let pending_count = pending_worker_injections.len()
+                            + pending_verifications.len()
+                            + pending_activities.len();
+                        if pending_count > 0 {
+                            tracing::warn!(
+                                target = "agent_relay::worker::pty",
+                                silent_secs = silent_duration.as_secs(),
+                                pending_delivery_count = pending_count,
+                                "watchdog: no PTY output while delivery work is pending — marking blocked_on_send"
+                            );
+                            let _ = send_frame(&out_tx, "agent_blocked_on_send", None, json!({
+                                "reason": "no_output_timeout",
+                                "blocked_secs": silent_duration.as_secs(),
+                                "pending_delivery_count": pending_count,
+                            })).await;
+                        } else {
+                            tracing::info!(
+                                target = "agent_relay::worker::pty",
+                                silent_secs = silent_duration.as_secs(),
+                                "watchdog: no PTY output for {}s — marking idle",
+                                silent_duration.as_secs()
+                            );
+                            let _ = send_frame(&out_tx, "agent_idle", None, json!({
+                                "reason": "no_output_timeout",
+                                "idle_secs": silent_duration.as_secs(),
+                            })).await;
+                        }
                         reported_idle = true;
                     }
                 }
@@ -1286,5 +1336,17 @@ mod tests {
         };
 
         assert!(!should_block_pending_injection(true, &pending));
+    }
+
+    #[test]
+    fn detects_context_budget_percentage() {
+        assert_eq!(detect_context_budget_pct("Context 6% left"), Some(6));
+        assert_eq!(detect_context_budget_pct("context 100% left"), Some(100));
+        assert_eq!(
+            detect_context_budget_pct("Context 7% left\nContext 12% left"),
+            Some(12)
+        );
+        assert_eq!(detect_context_budget_pct("context 125% left"), Some(100));
+        assert_eq!(detect_context_budget_pct("no budget here"), None);
     }
 }

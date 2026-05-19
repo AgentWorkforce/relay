@@ -12,6 +12,7 @@ use crate::{
     supervisor::Supervisor,
 };
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -37,6 +38,28 @@ pub(crate) struct WorkerHandle {
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
     pub(crate) spawned_at: Instant,
+    pub(crate) last_activity_at: Instant,
+    pub(crate) context_budget_pct: Option<u8>,
+    pub(crate) state: AgentWorkState,
+    pub(crate) exit_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentWorkState {
+    Working,
+    Idle,
+    BlockedOnSend,
+}
+
+impl AgentWorkState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AgentWorkState::Working => "working",
+            AgentWorkState::Idle => "idle",
+            AgentWorkState::BlockedOnSend => "blocked_on_send",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +136,11 @@ impl WorkerRegistry {
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
                     "pid": handle.child.id(),
+                    "last_activity_ms": handle.last_activity_at.elapsed().as_millis() as u64,
+                    "last_activity_at": chrono::Utc::now()
+                        - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
+                    "context_budget_pct": handle.context_budget_pct,
+                    "current_state": handle.state.as_str(),
                 })
             })
             .collect()
@@ -400,6 +428,10 @@ impl WorkerRegistry {
             child,
             stdin,
             spawned_at: Instant::now(),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
         };
         self.workers.insert(spec.name.clone(), handle);
 
@@ -515,7 +547,7 @@ impl WorkerRegistry {
 
     pub(crate) async fn reap_exited(
         &mut self,
-    ) -> Result<Vec<(String, Option<i32>, Option<String>)>> {
+    ) -> Result<Vec<(String, Option<i32>, Option<String>, Option<String>)>> {
         let names: Vec<String> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
@@ -580,13 +612,21 @@ impl WorkerRegistry {
                 };
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
+                let reason = self
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, code, signal));
+                exited.push((name, code, signal, reason));
             } else if gone_via_kill0 {
+                let reason = self
+                    .workers
+                    .get(&name)
+                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, None, None));
+                exited.push((name, None, None, reason));
             }
         }
         Ok(exited)

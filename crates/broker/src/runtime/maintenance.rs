@@ -57,33 +57,10 @@ impl BrokerRuntime {
             )
             .await
             {
-                Ok(Some((worker_name, attempts, event_id))) => {
-                    if was_retry {
-                        let _ = send_event(
-                            sdk_out_tx,
-                            json!({
-                                "kind":"delivery_retry",
-                                "name": worker_name,
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "attempts": attempts,
-                            }),
-                        )
-                        .await;
-                    }
-                }
-                Ok(None) => {
-                    if was_retry {
-                        let _ = send_event(
-                            sdk_out_tx,
-                            json!({
-                                "kind": "delivery_dropped",
-                                "delivery_id": delivery_id,
-                                "reason": "max_retries_exceeded",
-                            }),
-                        )
-                        .await;
-                    }
+                Ok(outcome) => {
+                    let _ =
+                        emit_delivery_attempt_outcome(sdk_out_tx, &delivery_id, was_retry, outcome)
+                            .await;
                 }
                 Err(error) => {
                     let _ = send_error(
@@ -106,7 +83,8 @@ impl BrokerRuntime {
                 vec![]
             }
         };
-        for (name, code, signal) in &exited {
+        for (name, code, signal, exit_reason) in &exited {
+            let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             // Record crash in insights
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
@@ -166,16 +144,22 @@ impl BrokerRuntime {
                 }
                 Some(RestartDecision::PermanentlyDead { reason }) => {
                     workers.metrics.on_permanent_death(name);
-                    let dropped = drop_pending_for_worker(pending_deliveries, name);
-                    if dropped > 0 {
+                    let dropped = take_pending_for_worker(pending_deliveries, name);
+                    if !dropped.is_empty() {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"delivery_dropped",
                                 "name": name,
-                                "count": dropped,
+                                "count": dropped.len(),
                                 "reason":"worker_permanently_dead",
                             }),
+                        )
+                        .await;
+                        let _ = emit_dropped_delivery_failures(
+                            sdk_out_tx,
+                            &dropped,
+                            "worker_permanently_dead",
                         )
                         .await;
                     }
@@ -213,24 +197,33 @@ impl BrokerRuntime {
                 }
                 None => {
                     // Not supervised — original behavior
-                    let dropped = drop_pending_for_worker(pending_deliveries, name);
-                    if dropped > 0 {
+                    let dropped = take_pending_for_worker(pending_deliveries, name);
+                    if !dropped.is_empty() {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind":"delivery_dropped",
                                 "name": name,
-                                "count": dropped,
+                                "count": dropped.len(),
                                 "reason":"worker_exited",
                             }),
                         )
                         .await;
+                        let _ =
+                            emit_dropped_delivery_failures(sdk_out_tx, &dropped, "worker_exited")
+                                .await;
                     }
                     fail_pending_requests_for_worker(pending_requests, name, "worker_exited");
                     delivery_states.remove(name);
                     let _ = send_event(
                         sdk_out_tx,
-                        json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
+                        json!({
+                            "kind":"agent_exited",
+                            "name":name,
+                            "code":code,
+                            "signal":signal,
+                            "reason": lifecycle_reason,
+                        }),
                     )
                     .await;
                     publish_agent_state_transition(
