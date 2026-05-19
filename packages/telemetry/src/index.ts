@@ -46,8 +46,14 @@ export type {
   SetupInitEvent,
   SwarmRunEvent,
   BridgeSpawnEvent,
+  CliInstallEvent,
+  CliUpdateEvent,
+  SdkWorkflowRunEvent,
+  SdkMethodCallEvent,
   TelemetryEventName,
   TelemetryEventMap,
 } from './events.js';
 
 export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';
+
+export { detectHarness, HARNESS_ENV_VAR, resetHarnessCacheForTests, type Harness } from './harness.js';

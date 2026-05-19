@@ -9,9 +9,16 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
-import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-relay/telemetry';
+import {
+  detectHarness,
+  HARNESS_ENV_VAR,
+  initTelemetry,
+  shutdown as shutdownTelemetry,
+  track,
+} from '@agent-relay/telemetry';
 
 import { CliExit } from './lib/exit.js';
+import { installRelaycastFetchInterceptor } from './lib/relaycast-fetch-interceptor.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerAgentManagementCommands } from './commands/agent-management.js';
 import { registerMessagingCommands } from './commands/messaging.js';
@@ -113,6 +120,16 @@ function propagateVersionsToChildren(): void {
   }
   if (SDK_VERSION && !process.env.AGENT_RELAY_SDK_VERSION) {
     process.env.AGENT_RELAY_SDK_VERSION = SDK_VERSION;
+  }
+  // Detect the harness (Claude Code / Cursor / Codex / ...)
+  // once in the TS process and propagate to every child (notably the Rust
+  // broker). Children can still re-detect if the var is unset — e.g. when
+  // user code spawns the broker directly via the SDK.
+  if (!process.env[HARNESS_ENV_VAR]) {
+    const harness = detectHarness();
+    if (harness !== 'unknown') {
+      process.env[HARNESS_ENV_VAR] = harness;
+    }
   }
 }
 
@@ -330,6 +347,11 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   maybeRunUpdateCheck(VERSION, argv);
   propagateVersionsToChildren();
+
+  // Tag every outgoing relaycast HTTP call with the harness.
+  // Install before any command action so MCP / messaging code paths pick it
+  // up automatically.
+  installRelaycastFetchInterceptor();
 
   if (!shouldSkipTelemetryInit(argv)) {
     initTelemetry({

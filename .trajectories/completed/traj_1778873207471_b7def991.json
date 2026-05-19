@@ -132,13 +132,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "5 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                "implement-slice",
-                "COMPLETE",
-                "0"
-              ],
+              "signals": ["implement-slice", "COMPLETE", "implement-slice", "COMPLETE", "0"],
               "channelPosts": [
                 "OWNER_DECISION: COMPLETE\nREASON: Updated the bounded MDX docs slice to document `agent-relay replies`, the `send --from` orchestrator default, and revised `inbo"
               ],
@@ -433,8 +427,6 @@
     "approach": "dag workflow (3 agents)",
     "confidence": 0.20588235294117646,
     "learnings": [],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

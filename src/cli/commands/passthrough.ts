@@ -38,11 +38,7 @@ import {
   type AttachSnapshotConnection,
   type AttachSnapshotDeps,
 } from '../lib/attach.js';
-import {
-  defaultStateDir,
-  readConnectionFileFromDisk,
-  toWsUrl,
-} from '../lib/broker-connection.js';
+import { defaultStateDir, readConnectionFileFromDisk, toWsUrl } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 import { resizeWorker, sendInput, setInboundDeliveryMode, type InboundDeliveryMode } from './drive.js';
 

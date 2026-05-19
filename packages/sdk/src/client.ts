@@ -16,6 +16,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
+import { instrumentMethod } from './telemetry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -128,6 +129,15 @@ function isProcessRunning(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * Wrap a public client method invocation with `sdk_method_call` telemetry.
+ * Fire-and-forget — never throws, and the user-observable behaviour is
+ * identical with or without telemetry configured.
+ */
+async function trackMethod<T>(methodName: string, fn: () => Promise<T>): Promise<T> {
+  return instrumentMethod(methodName, fn)();
 }
 
 function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
@@ -393,26 +403,28 @@ export class AgentRelayClient {
   // ── Agent lifecycle ────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
-    return this.transport.request('/api/spawn', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: input.name,
-        cli: input.cli,
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        args: input.args ?? [],
-        ...(input.task !== undefined ? { task: input.task } : {}),
-        channels: input.channels ?? [],
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-        ...(input.team !== undefined ? { team: input.team } : {}),
-        ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-        ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-        ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-        ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-        ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-        ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-        ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-      }),
-    });
+    return trackMethod('AgentRelayClient.spawnPty', () =>
+      this.transport.request('/api/spawn', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: input.name,
+          cli: input.cli,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          args: input.args ?? [],
+          ...(input.task !== undefined ? { task: input.task } : {}),
+          channels: input.channels ?? [],
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.team !== undefined ? { team: input.team } : {}),
+          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+        }),
+      })
+    );
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -423,27 +435,29 @@ export class AgentRelayClient {
       );
     }
 
-    return this.transport.request('/api/spawn', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: input.name,
-        cli: input.provider,
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        args: input.args ?? [],
-        ...(input.task !== undefined ? { task: input.task } : {}),
-        channels: input.channels ?? [],
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-        ...(input.team !== undefined ? { team: input.team } : {}),
-        ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-        ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-        ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-        ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-        ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-        ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-        ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-        transport,
-      }),
-    });
+    return trackMethod('AgentRelayClient.spawnProvider', () =>
+      this.transport.request('/api/spawn', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: input.name,
+          cli: input.provider,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          args: input.args ?? [],
+          ...(input.task !== undefined ? { task: input.task } : {}),
+          channels: input.channels ?? [],
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.team !== undefined ? { team: input.team } : {}),
+          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+          transport,
+        }),
+      })
+    );
   }
 
   async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -463,15 +477,19 @@ export class AgentRelayClient {
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
-    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
-      method: 'DELETE',
-      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-    });
+    return trackMethod('AgentRelayClient.release', () =>
+      this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+      })
+    );
   }
 
   async listAgents(): Promise<ListAgent[]> {
-    const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
-    return result.agents;
+    return trackMethod('AgentRelayClient.listAgents', async () => {
+      const result = await this.transport.request<{ agents: ListAgent[] }>('/api/spawned');
+      return result.agents;
+    });
   }
 
   // ── PTY control ────────────────────────────────────────────────────
@@ -629,27 +647,29 @@ export class AgentRelayClient {
   // ── Messaging ──────────────────────────────────────────────────────
 
   async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
-    try {
-      return await this.transport.request('/api/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          to: input.to,
-          text: input.text,
-          from: input.from,
-          threadId: input.threadId,
-          workspaceId: input.workspaceId,
-          workspaceAlias: input.workspaceAlias,
-          priority: input.priority,
-          data: input.data,
-          mode: input.mode,
-        }),
-      });
-    } catch (error) {
-      if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
-        return { event_id: 'unsupported_operation', targets: [] };
+    return trackMethod('AgentRelayClient.sendMessage', async () => {
+      try {
+        return await this.transport.request('/api/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            to: input.to,
+            text: input.text,
+            from: input.from,
+            threadId: input.threadId,
+            workspaceId: input.workspaceId,
+            workspaceAlias: input.workspaceAlias,
+            priority: input.priority,
+            data: input.data,
+            mode: input.mode,
+          }),
+        });
+      } catch (error) {
+        if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
+          return { event_id: 'unsupported_operation', targets: [] };
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   // ── Model control ──────────────────────────────────────────────────

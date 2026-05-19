@@ -3,11 +3,7 @@
   "version": 1,
   "type": "compacted",
   "compactedAt": "2026-05-19T14:41:29.877Z",
-  "sourceTrajectories": [
-    "traj_47akjihewlow",
-    "traj_f9wxa8ujeg78",
-    "traj_sqerp89tc436"
-  ],
+  "sourceTrajectories": ["traj_47akjihewlow", "traj_f9wxa8ujeg78", "traj_sqerp89tc436"],
   "dateRange": {
     "start": "2026-05-19T00:45:33.159Z",
     "end": "2026-05-19T01:38:29.105Z"
@@ -15,9 +11,7 @@
   "summary": {
     "totalDecisions": 4,
     "totalEvents": 4,
-    "uniqueAgents": [
-      "default"
-    ]
+    "uniqueAgents": ["default"]
   },
   "decisionGroups": [
     {
@@ -83,9 +77,5 @@
     "crates/broker/src/worker.rs",
     "crates/broker/src/wrap.rs"
   ],
-  "commits": [
-    "7182810c",
-    "2ecfb018",
-    "040e6d9f"
-  ]
+  "commits": ["7182810c", "2ecfb018", "040e6d9f"]
 }

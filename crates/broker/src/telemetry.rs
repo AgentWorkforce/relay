@@ -315,6 +315,157 @@ fn detect_os_version() -> Option<String> {
     }
 }
 
+/// Map a process basename to a harness slug, or `None` for unrecognized.
+/// Match is case-insensitive against the executable basename. These known
+/// slugs are classifier outputs only; externally supplied harness labels are
+/// accepted as sanitized reporting strings rather than enforced against this
+/// local set.
+fn classify_harness_basename(basename: &str) -> Option<&'static str> {
+    let lower = basename.trim().to_lowercase();
+    // Strip Windows .exe suffix for portability with the TS classifier.
+    let stripped = lower.strip_suffix(".exe").unwrap_or(&lower);
+    match stripped {
+        "claude" | "claude-code" => Some("claude-code"),
+        "cursor" => Some("cursor"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "aider" => Some("aider"),
+        "cline" => Some("cline"),
+        "continue" => Some("continue"),
+        "windsurf" => Some("windsurf"),
+        "zed" => Some("zed"),
+        _ => {
+            // Catch helper-style names like "Cursor Helper", "Claude Helper".
+            if stripped.starts_with("cursor ") {
+                Some("cursor")
+            } else if stripped.starts_with("claude ") {
+                Some("claude-code")
+            } else if stripped.starts_with("windsurf ") {
+                Some("windsurf")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Sanitize externally supplied harness labels for telemetry/reporting.
+///
+/// Values are lower-kebab-ish slugs capped at 40 chars, matching the shape
+/// Relaycast accepts for headers while still allowing newly added harnesses
+/// to show up in reports before this classifier knows how to detect them.
+fn sanitize_harness_slug(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() || normalized.len() > 40 {
+        return None;
+    }
+    let mut chars = normalized.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphanumeric() {
+        return None;
+    }
+    if chars.all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+/// Read the basename portion of a process command string.
+fn command_basename(command: &str) -> String {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let stripped = first.trim_matches(['"', '\''].as_ref());
+    let last_sep = stripped.rfind(['/', '\\'].as_ref());
+    match last_sep {
+        Some(idx) => stripped[idx + 1..].to_string(),
+        None => stripped.to_string(),
+    }
+}
+
+/// Linux-only: read `/proc/<pid>/comm` and `/proc/<pid>/status`.
+#[cfg(target_os = "linux")]
+fn read_proc_info(pid: u32) -> Option<(String, u32)> {
+    let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        .ok()?
+        .trim()
+        .to_string();
+    let status = std::fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    let ppid = status
+        .lines()
+        .find(|line| line.starts_with("PPid:"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((comm, ppid))
+}
+
+/// macOS: shell out to `ps -o ppid=,command= -p <pid>`. Cheap enough for
+/// the small number of ancestor walks we do at startup.
+#[cfg(target_os = "macos")]
+fn read_proc_info(pid: u32) -> Option<(String, u32)> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=,command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let ppid_str = parts.next()?.trim();
+    let command = parts.next()?.trim().to_string();
+    let ppid = ppid_str.parse::<u32>().ok()?;
+    Some((command, ppid))
+}
+
+/// Fallback for platforms we don't implement (Windows, BSDs, etc.).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_proc_info(_pid: u32) -> Option<(String, u32)> {
+    None
+}
+
+/// Walk the parent process chain looking for a known harness basename.
+/// Returns `"unknown"` on any failure or after exhausting the depth limit.
+///
+/// Resolution order:
+///   1. `AGENT_RELAY_HARNESS` env var (set by the TS CLI before
+///      spawning the broker). Any sanitized slug is accepted because this is
+///      a reporting label, not a runtime enum.
+///   2. Process-tree walk via platform-specific APIs (fallback for the SDK
+///      case where user code spawns the broker directly).
+///   3. `"unknown"` as the long-tail baseline.
+fn detect_harness() -> String {
+    // 1. Env-var hint set by a parent CLI — saves the broker from re-walking.
+    if let Some(value) = env_nonempty("AGENT_RELAY_HARNESS") {
+        return sanitize_harness_slug(&value).unwrap_or_else(|| "unknown".to_string());
+    }
+
+    // 2. Walk the parent chain — up to 10 hops.
+    #[cfg(unix)]
+    {
+        let mut pid: u32 = unsafe { libc::getppid() } as u32;
+        for _ in 0..10 {
+            if pid <= 1 {
+                break;
+            }
+            let Some((command, ppid)) = read_proc_info(pid) else {
+                break;
+            };
+            let basename = command_basename(&command);
+            if let Some(harness) = classify_harness_basename(&basename) {
+                return harness.to_string();
+            }
+            if ppid == pid || ppid <= 1 {
+                break;
+            }
+            pid = ppid;
+        }
+    }
+
+    // 3. Fallback.
+    "unknown".to_string()
+}
+
 /// Tiny hex encoder (avoids adding the `hex` crate).
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
@@ -343,6 +494,12 @@ pub struct TelemetryClient {
     /// OS release string (best-effort via `uname -r`, empty on failure /
     /// platforms where that isn't meaningful).
     os_version: Option<String>,
+    /// Parent harness driving the broker (Claude Code, Cursor,
+    /// Codex, etc.). Read from `AGENT_RELAY_HARNESS` if the
+    /// CLI set it before spawning; otherwise detected via a parent-process
+    /// walk. Always falls back to `"unknown"` so dashboards can size the
+    /// long tail.
+    harness: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,6 +528,7 @@ impl TelemetryClient {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            harness: "unknown".to_string(),
         }
     }
 
@@ -418,6 +576,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
+            harness: detect_harness(),
         }
     }
 
@@ -456,6 +615,8 @@ impl TelemetryClient {
                 obj.insert("os_version".to_string(), json!(v));
             }
             obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+            obj.insert("orchestrator_harness".to_string(), json!(self.harness));
+            obj.insert("surface".to_string(), json!("broker"));
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -535,6 +696,7 @@ async fn sender_loop(mut rx: mpsc::UnboundedReceiver<PostHogCapture>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn anonymous_id_is_deterministic_and_16_chars() {
@@ -594,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn disabled_client_does_not_panic() {
         // Set env var to disable, then construct.
         std::env::set_var("AGENT_RELAY_TELEMETRY_DISABLED", "1");
@@ -604,6 +767,7 @@ mod tests {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            harness: "unknown".to_string(),
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
@@ -612,6 +776,64 @@ mod tests {
     }
 
     #[test]
+    fn classify_harness_basename_recognizes_known_harnesses() {
+        assert_eq!(classify_harness_basename("claude"), Some("claude-code"));
+        assert_eq!(
+            classify_harness_basename("claude-code"),
+            Some("claude-code")
+        );
+        assert_eq!(classify_harness_basename("Claude"), Some("claude-code"));
+        assert_eq!(classify_harness_basename("Cursor"), Some("cursor"));
+        assert_eq!(classify_harness_basename("cursor.exe"), Some("cursor"));
+        assert_eq!(classify_harness_basename("Cursor Helper"), Some("cursor"));
+        assert_eq!(classify_harness_basename("codex"), Some("codex"));
+        assert_eq!(classify_harness_basename("gemini"), Some("gemini"));
+        assert_eq!(classify_harness_basename("zed"), Some("zed"));
+        assert_eq!(classify_harness_basename("bash"), None);
+        assert_eq!(classify_harness_basename("node"), None);
+    }
+
+    #[test]
+    fn command_basename_strips_path_and_quotes() {
+        assert_eq!(command_basename("/usr/bin/claude --foo"), "claude");
+        assert_eq!(
+            command_basename("\"/Applications/Claude.app/Claude\""),
+            "Claude"
+        );
+        assert_eq!(command_basename("zed"), "zed");
+        assert_eq!(command_basename(""), "");
+    }
+
+    #[test]
+    fn sanitize_harness_slug_accepts_reporting_slugs() {
+        assert_eq!(
+            sanitize_harness_slug(" New-Tool "),
+            Some("new-tool".to_string())
+        );
+        assert_eq!(sanitize_harness_slug("cursor"), Some("cursor".to_string()));
+        assert_eq!(sanitize_harness_slug(""), None);
+        assert_eq!(sanitize_harness_slug("../bad"), None);
+        assert_eq!(sanitize_harness_slug("bad value!"), None);
+        assert_eq!(sanitize_harness_slug(&"a".repeat(41)), None);
+    }
+
+    #[test]
+    #[serial]
+    fn detect_harness_respects_env_hint() {
+        std::env::set_var("AGENT_RELAY_HARNESS", "claude-code");
+        assert_eq!(detect_harness(), "claude-code");
+        std::env::set_var("AGENT_RELAY_HARNESS", "made-up-harness");
+        assert_eq!(detect_harness(), "made-up-harness");
+        std::env::set_var("AGENT_RELAY_HARNESS", "bad value!");
+        assert_eq!(detect_harness(), "unknown");
+        std::env::set_var("AGENT_RELAY_HARNESS", "CURSOR");
+        // Case-insensitive normalization.
+        assert_eq!(detect_harness(), "cursor");
+        std::env::remove_var("AGENT_RELAY_HARNESS");
+    }
+
+    #[test]
+    #[serial]
     fn do_not_track_disables_telemetry() {
         // Clear both vars, set DO_NOT_TRACK, and verify check_enabled is false.
         std::env::remove_var("AGENT_RELAY_TELEMETRY_DISABLED");
