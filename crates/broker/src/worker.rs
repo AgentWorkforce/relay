@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use relay_broker::{
     metrics::MetricsCollector,
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
-    snippets::configure_relaycast_mcp_with_token,
+    relaycast::configure_relaycast_mcp_with_token,
     supervisor::Supervisor,
 };
 use serde_json::{json, Value};

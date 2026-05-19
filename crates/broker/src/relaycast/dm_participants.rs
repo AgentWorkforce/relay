@@ -6,12 +6,12 @@ use std::{
 
 static DM_DROPS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
-pub(crate) const DM_PARTICIPANT_FAILURE_TTL: Duration = Duration::from_secs(5);
+pub const DM_PARTICIPANT_CACHE_TTL: Duration = Duration::from_secs(30);
+pub const DM_PARTICIPANT_FAILURE_TTL: Duration = Duration::from_secs(5);
 const MAX_DM_CACHE_ENTRIES: usize = 8192;
 
 #[derive(Debug, Clone)]
-pub(crate) enum DmParticipantsCacheEntry {
+pub enum DmParticipantsCacheEntry {
     Success {
         fetched_at: Instant,
         participants: Vec<String>,
@@ -30,10 +30,10 @@ impl DmParticipantsCacheEntry {
     }
 }
 
-pub(crate) type DmParticipantsCache = HashMap<String, DmParticipantsCacheEntry>;
+pub type DmParticipantsCache = HashMap<String, DmParticipantsCacheEntry>;
 
-pub(crate) async fn resolve_dm_participants_cached(
-    http: &relay_broker::relaycast_ws::RelaycastHttpClient,
+pub async fn resolve_dm_participants_cached(
+    http: &super::RelaycastHttpClient,
     cache: &mut DmParticipantsCache,
     workspace_id: &str,
     conversation_id: &str,

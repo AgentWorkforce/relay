@@ -7,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use relay_broker::{
-    multi_workspace::WorkspaceMembershipSummary,
     protocol::MessageInjectionMode,
+    relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
 };

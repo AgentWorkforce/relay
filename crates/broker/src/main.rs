@@ -4,7 +4,6 @@ mod cli_mcp_args;
 mod listen_api;
 mod pty_worker;
 mod readiness;
-mod relaycast;
 mod routing;
 mod runtime;
 mod spawner;
