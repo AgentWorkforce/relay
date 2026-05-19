@@ -6,16 +6,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'vitest';
 
-import {
-  formatBrokerNotFoundError,
-  getBrokerBinaryPath,
-  getOptionalDepPackageName,
-} from '../broker-path.js';
+import { formatBrokerNotFoundError, getBrokerBinaryPath, getOptionalDepPackageName } from '../broker-path.js';
 
 function stageOptionalDepPackage(root: string): string {
   const pkgName = getOptionalDepPackageName();
@@ -25,7 +21,7 @@ function stageOptionalDepPackage(root: string): string {
   mkdirSync(binDir, { recursive: true });
   writeFileSync(
     join(pkgDir, 'package.json'),
-    JSON.stringify({ name: pkgName, version: '0.0.0-test' }, null, 2),
+    JSON.stringify({ name: pkgName, version: '0.0.0-test' }, null, 2)
   );
   const binaryPath = join(binDir, `agent-relay-broker${ext}`);
   writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n');
@@ -55,10 +51,7 @@ describe('broker-path', () => {
   });
 
   test('getOptionalDepPackageName returns @agent-relay/broker-<platform>-<arch>', () => {
-    assert.equal(
-      getOptionalDepPackageName('darwin', 'arm64'),
-      '@agent-relay/broker-darwin-arm64',
-    );
+    assert.equal(getOptionalDepPackageName('darwin', 'arm64'), '@agent-relay/broker-darwin-arm64');
     assert.equal(getOptionalDepPackageName('linux', 'x64'), '@agent-relay/broker-linux-x64');
     assert.equal(getOptionalDepPackageName('win32', 'x64'), '@agent-relay/broker-win32-x64');
   });
@@ -79,7 +72,28 @@ describe('broker-path', () => {
     }
 
     process.env.BROKER_BINARY_PATH = fakeBinary;
-    assert.equal(getBrokerBinaryPath(), fakeBinary);
+    assert.equal(getBrokerBinaryPath(), resolve(fakeBinary));
+  });
+
+  test('source checkout resolution recognizes the broker crate layout', () => {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const fakeBinary = join(tmp, 'target', 'release', `agent-relay-broker${ext}`);
+    mkdirSync(join(tmp, 'crates', 'broker', 'src'), { recursive: true });
+    mkdirSync(join(tmp, 'packages', 'sdk'), { recursive: true });
+    mkdirSync(join(tmp, 'target', 'release'), { recursive: true });
+    writeFileSync(join(tmp, 'Cargo.toml'), '[workspace]\nmembers = ["crates/broker"]\n');
+    writeFileSync(join(tmp, 'crates', 'broker', 'src', 'main.rs'), 'fn main() {}\n');
+    writeFileSync(join(tmp, 'packages', 'sdk', 'package.json'), '{"name":"@agent-relay/sdk"}\n');
+    writeFileSync(fakeBinary, '#!/bin/sh\nexit 0\n');
+    if (process.platform !== 'win32') {
+      chmodSync(fakeBinary, 0o755);
+    }
+
+    process.chdir(join(tmp, 'packages', 'sdk'));
+
+    const resolved = getBrokerBinaryPath();
+    assert.ok(resolved);
+    assert.equal(realpathSync(resolved), realpathSync(fakeBinary));
   });
 
   // Optional-dep end-to-end resolution is exercised by the cross-platform

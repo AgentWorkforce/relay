@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn ansi_emits_green_sgr_for_green_text() {
         // Same shape as parser_strips_csi_color_sequences_from_visible_text
-        // in src/pty.rs — green wrapper around "OK".
+        // in crates/broker/src/pty.rs — green wrapper around "OK".
         let term = parse_into(4, 20, &[b"\x1b[32mOK\x1b[0m"]);
         let snap = Snapshot::from_term(&term);
         let bytes = snap.to_ansi();

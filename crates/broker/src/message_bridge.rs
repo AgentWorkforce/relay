@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn contract_identity_fixture_requires_broker_identity_normalization() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/identity-fixtures.json"
+            "../../../packages/contracts/fixtures/identity-fixtures.json"
         ))
         .expect("identity fixture should be valid JSON");
         let cases = fixture

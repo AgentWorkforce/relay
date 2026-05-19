@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'crates/broker/**'
       - 'Cargo.toml'
+      - 'crates/broker/Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/build-broker-binary.yml'
   workflow_dispatch:
@@ -65,7 +66,7 @@ jobs:
         # key is a public-by-design write-only key — same category as a
         # Sentry DSN. We map it into the code-side env var name
         # `AGENT_RELAY_POSTHOG_KEY`, which `option_env!` in
-        # src/telemetry.rs reads and bakes into the binary. Unset
+        # crates/broker/src/telemetry.rs reads and bakes into the binary. Unset
         # variable → telemetry ships disabled (acceptable for forks and
         # pre-release pipelines).
         env:

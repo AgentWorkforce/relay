@@ -6432,7 +6432,7 @@ mod tests {
     #[tokio::test]
     async fn contract_health_fixture_requires_rich_listen_health_shape() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/health-fixtures.json"
+            "../../../packages/contracts/fixtures/health-fixtures.json"
         ))
         .expect("health fixture should be valid JSON");
         let expected_shape = fixture
@@ -6456,7 +6456,7 @@ mod tests {
     #[tokio::test]
     async fn contract_startup_429_fixture_requires_degraded_health_status() {
         let fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/health-fixtures.json"
+            "../../../packages/contracts/fixtures/health-fixtures.json"
         ))
         .expect("health fixture should be valid JSON");
         let expected = fixture
@@ -6488,7 +6488,7 @@ mod tests {
     #[test]
     fn contract_replay_fixture_requires_replay_route_exposure() {
         let replay_fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/replay-fixtures.json"
+            "../../../packages/contracts/fixtures/replay-fixtures.json"
         ))
         .expect("replay fixture should be valid JSON");
         assert!(
@@ -6510,7 +6510,7 @@ mod tests {
     #[test]
     fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
         let replay_fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/replay-fixtures.json"
+            "../../../packages/contracts/fixtures/replay-fixtures.json"
         ))
         .expect("replay fixture should be valid JSON");
         let timeout_fixture = replay_fixture
@@ -6547,7 +6547,7 @@ mod tests {
     #[test]
     fn contract_broadcast_whitelist_fixture_requires_filtering_to_required_kinds() {
         let event_fixture: Value = serde_json::from_str(include_str!(
-            "../packages/contracts/fixtures/event-fixtures.json"
+            "../../../packages/contracts/fixtures/event-fixtures.json"
         ))
         .expect("event fixture should be valid JSON");
         let required = event_fixture
