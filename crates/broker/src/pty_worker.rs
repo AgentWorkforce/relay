@@ -1,12 +1,30 @@
-use super::*;
+use std::{
+    collections::{HashSet, VecDeque},
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result};
+use relay_broker::{
+    protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
+    pty::PtySession,
+};
+use serde_json::{json, Value};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::mpsc,
+    time::MissedTickBehavior,
+};
+
+use crate::cli::PtyCommand;
 use crate::helpers::{
     check_echo_in_output, current_timestamp_ms, delivery_injected_event_payload,
     delivery_queued_event_payload, floor_char_boundary, format_injection_for_worker_with_workspace,
-    parse_cli_command, parse_continuity_command, ActivityDetector, DeliveryOutcome,
+    parse_cli_command, parse_continuity_command, strip_ansi, ActivityDetector, DeliveryOutcome,
     PendingActivity, PendingVerification, ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES,
     ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, VERIFICATION_WINDOW,
 };
 use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
+use crate::runtime::{get_terminal_size, send_frame};
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
 use relay_broker::snapshot::Snapshot;
