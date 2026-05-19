@@ -11,10 +11,6 @@ use crate::listen_api::{
     broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
     ListenApiRequest, SetInboundDeliveryModeOk,
 };
-use crate::relaycast::{
-    dm_participants::{resolve_dm_participants_cached, DmParticipantsCache},
-    identity::{agent_name_eq, is_self_name},
-};
 use crate::routing::display_target_for_dashboard;
 use crate::util::ansi::floor_char_boundary;
 
@@ -30,20 +26,19 @@ use tokio::{
 use uuid::Uuid;
 
 use relay_broker::{
-    auth::AuthClient,
     dedup::DedupCache,
-    message_bridge::map_ws_event,
-    multi_workspace::{MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary},
     protocol::{
         AgentRuntime, AgentSpec, HeadlessProvider as ProtocolHeadlessProvider,
         MessageInjectionMode, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
     },
-    relaycast_ws::{
-        format_worker_preregistration_error, registration_retry_after_secs,
-        retry_agent_registration, RegRetryOutcome, RelaycastHttpClient, WsControl,
+    relaycast::{
+        agent_name_eq, ensure_relaycast_mcp_config, format_worker_preregistration_error,
+        is_self_name, map_ws_event, registration_retry_after_secs, resolve_dm_participants_cached,
+        retry_agent_registration, AuthClient, DmParticipantsCache, MultiWorkspaceSession,
+        RegRetryOutcome, RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary,
+        WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
-    snippets::ensure_relaycast_mcp_config,
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         BrokerCommandEvent, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,

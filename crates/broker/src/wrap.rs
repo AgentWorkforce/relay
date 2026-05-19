@@ -5,9 +5,12 @@ use anyhow::{Context, Result};
 use relay_broker::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
-    message_bridge::{map_ws_broker_command, map_ws_event},
     pty::PtySession,
-    relaycast_ws::{retry_agent_registration, RegRetryOutcome, WsControl},
+    relaycast::{
+        agent_name_eq, is_self_name, map_ws_broker_command, map_ws_event,
+        resolve_dm_participants_cached, retry_agent_registration, DmParticipantsCache,
+        RegRetryOutcome, WsControl,
+    },
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandPayload, InboundKind, SenderKind},
 };
@@ -22,10 +25,6 @@ use crate::broker::{
     injection_format::format_injection_for_worker_with_workspace,
 };
 use crate::cli::command_parse::parse_cli_command;
-use crate::relaycast::{
-    dm_participants::{resolve_dm_participants_cached, DmParticipantsCache},
-    identity::{agent_name_eq, is_self_name},
-};
 use crate::runtime::{
     channels_from_csv, command_targets_self, connect_relay, ensure_runtime_paths, env_flag_enabled,
     extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,

@@ -35,7 +35,7 @@ use super::{
     InboundContext, InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider,
 };
 use relay_broker::dedup::DedupCache;
-use relay_broker::relaycast_ws::{format_worker_preregistration_error, RelaycastRegistrationError};
+use relay_broker::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
 use relay_broker::types::{InboundDeliveryMode, InboundDeliveryState};
 
 fn env_test_lock() -> &'static Mutex<()> {

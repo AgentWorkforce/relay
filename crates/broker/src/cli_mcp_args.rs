@@ -4,9 +4,8 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use relay_broker::{
-    relaycast_ws::{RelaycastHttpClient, RelaycastRegistrationError},
-    snippets::configure_relaycast_mcp_with_token,
+use relay_broker::relaycast::{
+    configure_relaycast_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -255,7 +254,7 @@ fn home_dir_from_env() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use httpmock::{Method::POST, MockServer};
-    use relay_broker::snippets::configure_relaycast_mcp_with_token;
+    use relay_broker::relaycast::configure_relaycast_mcp_with_token;
     use serde_json::{json, Value};
     use std::sync::{Mutex, MutexGuard, PoisonError};
     use tempfile::tempdir;

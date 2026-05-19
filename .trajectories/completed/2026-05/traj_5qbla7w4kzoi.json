@@ -1,0 +1,57 @@
+{
+  "id": "traj_5qbla7w4kzoi",
+  "version": 1,
+  "task": {
+    "title": "Fix issue 877",
+    "source": {
+      "system": "plain",
+      "id": "#877"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T03:40:40.798Z",
+  "completedAt": "2026-05-19T03:54:06.889Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T03:53:51.754Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_gybecr4fw5g6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T03:53:51.754Z",
+      "endedAt": "2026-05-19T03:54:06.889Z",
+      "events": [
+        {
+          "ts": 1779162831755,
+          "type": "decision",
+          "content": "Moved Relaycast broker integration under relaycast module tree: Moved Relaycast broker integration under relaycast module tree",
+          "raw": {
+            "question": "Moved Relaycast broker integration under relaycast module tree",
+            "chosen": "Moved Relaycast broker integration under relaycast module tree",
+            "alternatives": [],
+            "reasoning": "Issue 877 asks for ownership cleanup without protocol changes; moving auth, websocket/http transport, event/command mapping, and multi-workspace session code under crates/broker/src/relaycast gives runtime callers a single relay_broker::relaycast boundary while compatibility shims preserve existing public paths."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Refactored broker Relaycast integration into the relaycast module tree with compatibility re-exports and updated runtime callers to use relay_broker::relaycast.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9b205103414fd6f8b950f5b00ac2827f565472ce",
+    "endRef": "9b205103414fd6f8b950f5b00ac2827f565472ce"
+  }
+}

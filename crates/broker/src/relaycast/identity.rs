@@ -4,12 +4,12 @@
 /// events, and API responses. Centralising the comparison here prevents
 /// recurrences of the case-sensitivity routing bugs that the codebase has
 /// hit when each call site rolled its own comparison.
-pub(crate) fn agent_name_eq(a: &str, b: &str) -> bool {
+pub fn agent_name_eq(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
 /// Check whether *any* of the `self_names` match `name` (case-insensitive).
-pub(crate) fn is_self_name<'a, I>(self_names: I, name: &str) -> bool
+pub fn is_self_name<'a, I>(self_names: I, name: &str) -> bool
 where
     I: IntoIterator<Item = &'a String>,
 {
