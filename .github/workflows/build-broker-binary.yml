@@ -69,9 +69,28 @@ jobs:
         # crates/broker/src/telemetry.rs reads and bakes into the binary. Unset
         # variable → telemetry ships disabled (acceptable for forks and
         # pre-release pipelines).
+        #
+        # `AGENT_RELAY_VERSION` is consumed by `option_env!` in
+        # crates/broker/src/util/version.rs. The standalone build is fed
+        # from the dispatch tag input (or the repo's package.json version
+        # for branch pushes) so the broker reports a release-line version
+        # rather than the Cargo crate version.
         env:
           AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
+          # Resolve a release-line version for AGENT_RELAY_VERSION. Prefer the
+          # workflow_dispatch tag (e.g. "v6.2.2" → "6.2.2"); fall back to
+          # package.json on branch pushes.
+          TAG_INPUT="${{ inputs.tag }}"
+          if [[ -n "$TAG_INPUT" && "$TAG_INPUT" != "latest" ]]; then
+            VERSION="${TAG_INPUT#v}"
+          else
+            # `npm pkg get` is available on the default GitHub runner image;
+            # the value is quoted JSON, so strip the quotes.
+            VERSION="$(npm pkg get version | tr -d '"')"
+          fi
+          export AGENT_RELAY_VERSION="$VERSION"
+          echo "AGENT_RELAY_VERSION=$VERSION"
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --target ${{ matrix.target }} --bin agent-relay-broker
             aarch64-linux-gnu-strip target/${{ matrix.target }}/release/agent-relay-broker 2>/dev/null || true

@@ -442,7 +442,7 @@ impl TelemetryClient {
         // which component emitted the event. `agent_relay_version` is kept
         // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            let broker_version = env!("CARGO_PKG_VERSION");
+            let broker_version = crate::util::version::broker_version();
             obj.insert("agent_relay_version".to_string(), json!(broker_version));
             obj.insert("broker_version".to_string(), json!(broker_version));
             if let Some(ref v) = self.cli_version {

@@ -266,7 +266,19 @@ jobs:
         run: npm run build
 
       - name: Build broker binary
-        run: cargo build --release --bin agent-relay-broker
+        # Pin the broker's reported version to the same release line as
+        # `agent-relay` / `@agent-relay/sdk`. `option_env!` in
+        # crates/broker/src/util/version.rs consumes this at compile time
+        # and falls back to `CARGO_PKG_VERSION` when unset.
+        env:
+          AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
+        run: |
+          if [ -z "$AGENT_RELAY_VERSION" ]; then
+            AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
+            export AGENT_RELAY_VERSION
+          fi
+          echo "Building broker with AGENT_RELAY_VERSION=$AGENT_RELAY_VERSION"
+          cargo build --release --bin agent-relay-broker
 
       - name: Verify broker binary
         run: |
@@ -284,6 +296,21 @@ jobs:
           fi
           echo "STANDALONE_BROKER=$STANDALONE_BROKER" >> "$GITHUB_ENV"
           echo "Verified broker binary: $STANDALONE_BROKER"
+
+      - name: Verify broker version matches release version
+        # Acceptance criteria from #904: released broker binaries must
+        # report the same version as the `agent-relay` / `@agent-relay/sdk`
+        # release that shipped them.
+        run: |
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          REPORTED="$(./target/release/agent-relay-broker --version | awk '{print $NF}')"
+          echo "expected: $EXPECTED_VERSION"
+          echo "reported: $REPORTED"
+          if [ "$EXPECTED_VERSION" != "$REPORTED" ]; then
+            echo "ERROR: broker --version reported '$REPORTED' but package.json is '$EXPECTED_VERSION'." >&2
+            echo "AGENT_RELAY_VERSION did not propagate at compile time. See crates/broker/src/util/version.rs." >&2
+            exit 1
+          fi
 
       - name: Build standalone binary
         run: |
