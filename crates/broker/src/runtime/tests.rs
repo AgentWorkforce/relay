@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
-use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
+use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
     broker::injection_format::format_injection,
     util::{
@@ -32,7 +32,8 @@ use super::{
     relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event, AgentRuntime,
-    InboundContext, InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider,
+    retry_pending_delivery, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
+    PendingDelivery, ProtocolHeadlessProvider,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
@@ -80,6 +81,10 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             child,
             stdin,
             spawned_at: Instant::now(),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
         },
     );
     registry
@@ -195,6 +200,65 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
 
     assert_eq!(outcome, InboundQueueOutcome::WorkerMissing);
     assert!(delivery_states.is_empty());
+}
+
+#[tokio::test]
+async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut pending_deliveries = HashMap::from([(
+        "del_gone".to_string(),
+        PendingDelivery {
+            worker_name: "ghost".to_string(),
+            delivery: RelayDelivery {
+                delivery_id: "del_gone".to_string(),
+                event_id: "evt_gone".to_string(),
+                workspace_id: Some("ws_demo".to_string()),
+                workspace_alias: Some("Demo".to_string()),
+                from: "Lead".to_string(),
+                target: "Worker".to_string(),
+                body: "hello".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 3,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: Some("failed writing frame".to_string()),
+        },
+    )]);
+
+    let outcome = retry_pending_delivery(
+        "del_gone",
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("retry should classify missing recipient");
+
+    assert_eq!(
+        outcome,
+        DeliveryAttemptOutcome::Failed {
+            worker_name: "ghost".to_string(),
+            delivery_id: "del_gone".to_string(),
+            event_id: "evt_gone".to_string(),
+            from: "Lead".to_string(),
+            to: "Worker".to_string(),
+            attempts: 3,
+            last_error: "recipient gone".to_string(),
+        }
+    );
+    assert!(
+        pending_deliveries.is_empty(),
+        "terminal failed deliveries are removed so they cannot retry forever"
+    );
 }
 
 fn extract_kind_literals(source: &str) -> BTreeSet<String> {
@@ -957,6 +1021,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             },
             attempts: 1,
             next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
         },
     );
     pending.insert(
@@ -977,6 +1043,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             },
             attempts: 1,
             next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
         },
     );
 
@@ -1004,6 +1072,8 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         },
         attempts: 1,
         next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -1034,6 +1104,8 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         },
         attempts: 1,
         next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(

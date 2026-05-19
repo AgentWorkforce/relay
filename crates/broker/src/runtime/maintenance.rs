@@ -57,7 +57,11 @@ impl BrokerRuntime {
             )
             .await
             {
-                Ok(Some((worker_name, attempts, event_id))) => {
+                Ok(DeliveryAttemptOutcome::Attempted {
+                    worker_name,
+                    attempts,
+                    event_id,
+                }) => {
                     if was_retry {
                         let _ = send_event(
                             sdk_out_tx,
@@ -72,18 +76,33 @@ impl BrokerRuntime {
                         .await;
                     }
                 }
-                Ok(None) => {
-                    if was_retry {
-                        let _ = send_event(
-                            sdk_out_tx,
-                            json!({
-                                "kind": "delivery_dropped",
-                                "delivery_id": delivery_id,
-                                "reason": "max_retries_exceeded",
-                            }),
-                        )
-                        .await;
-                    }
+                Ok(DeliveryAttemptOutcome::Failed {
+                    worker_name,
+                    delivery_id,
+                    event_id,
+                    from,
+                    to,
+                    attempts,
+                    last_error,
+                }) => {
+                    let _ = send_event(
+                        sdk_out_tx,
+                        json!({
+                            "kind": "message_delivery_failed",
+                            "name": worker_name,
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "from": from,
+                            "to": to,
+                            "attempts": attempts,
+                            "lastError": last_error,
+                            "last_error": last_error,
+                        }),
+                    )
+                    .await;
+                }
+                Ok(DeliveryAttemptOutcome::Noop) => {
+                    let _ = delivery_id;
                 }
                 Err(error) => {
                     let _ = send_error(
@@ -106,7 +125,8 @@ impl BrokerRuntime {
                 vec![]
             }
         };
-        for (name, code, signal) in &exited {
+        for (name, code, signal, exit_reason) in &exited {
+            let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             // Record crash in insights
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
@@ -230,7 +250,13 @@ impl BrokerRuntime {
                     delivery_states.remove(name);
                     let _ = send_event(
                         sdk_out_tx,
-                        json!({"kind":"agent_exited","name":name,"code":code,"signal":signal}),
+                        json!({
+                            "kind":"agent_exited",
+                            "name":name,
+                            "code":code,
+                            "signal":signal,
+                            "reason": lifecycle_reason,
+                        }),
                     )
                     .await;
                     publish_agent_state_transition(

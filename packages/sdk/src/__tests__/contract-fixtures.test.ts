@@ -106,6 +106,47 @@ function toCurrentSdkBrokerEventShape(event: Record<string, unknown>): Record<st
     };
   }
 
+  if (kind === 'message_delivery_confirmed') {
+    return {
+      kind,
+      name: payload.name,
+      delivery_id: payload.deliveryId,
+      event_id: event.eventId,
+      from: payload.from,
+      to: payload.to,
+    };
+  }
+
+  if (kind === 'message_delivery_failed') {
+    return {
+      kind,
+      name: payload.name,
+      delivery_id: payload.deliveryId,
+      event_id: event.eventId,
+      from: payload.from,
+      to: payload.to,
+      attempts: payload.attempts,
+      lastError: payload.lastError,
+    };
+  }
+
+  if (kind === 'agent_context_low') {
+    return {
+      kind,
+      name: payload.name,
+      pct: payload.pct,
+    };
+  }
+
+  if (kind === 'agent_blocked_on_send') {
+    return {
+      kind,
+      name: payload.name,
+      blocked_secs: payload.blockedSecs,
+      pending_delivery_count: payload.pendingDeliveryCount,
+    };
+  }
+
   return event;
 }
 
@@ -147,6 +188,32 @@ function isCurrentSdkBrokerEventShape(event: Record<string, unknown>): boolean {
     case 'worker_error':
       return (
         typeof event.name === 'string' && typeof event.code === 'string' && typeof event.message === 'string'
+      );
+    case 'message_delivery_confirmed':
+      return (
+        typeof event.name === 'string' &&
+        typeof event.delivery_id === 'string' &&
+        typeof event.event_id === 'string' &&
+        typeof event.from === 'string' &&
+        typeof event.to === 'string'
+      );
+    case 'message_delivery_failed':
+      return (
+        typeof event.name === 'string' &&
+        typeof event.delivery_id === 'string' &&
+        typeof event.event_id === 'string' &&
+        typeof event.from === 'string' &&
+        typeof event.to === 'string' &&
+        typeof event.attempts === 'number' &&
+        typeof event.lastError === 'string'
+      );
+    case 'agent_context_low':
+      return typeof event.name === 'string' && typeof event.pct === 'number';
+    case 'agent_blocked_on_send':
+      return (
+        typeof event.name === 'string' &&
+        typeof event.blocked_secs === 'number' &&
+        typeof event.pending_delivery_count === 'number'
       );
     case 'agent_restarting':
     case 'agent_restarted':

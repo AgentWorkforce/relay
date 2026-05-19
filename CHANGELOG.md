@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prerelease publishing supports staging releases.
 - Broker `--api-bind` configures the HTTP/WS bind address.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
+- Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
 
 ### Changed
 
@@ -54,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Broker snapshot requests return consistent worker timeout and error-envelope responses.
 - Rust and TypeScript telemetry disable PostHog reporting when no `AGENT_RELAY_POSTHOG_KEY` is configured.
 - `agent-relay inbox` shows unread DM content and `direction` metadata, with terminal controls stripped from text summaries.
+- `agent-relay who` reports last activity, context budget, and working/idle/blocked-on-send state.
+- `agent-relay doctor` reports broker Relaycast auth state and stuck outbound delivery queues.
+- Relaycast MCP auto-registers workspace-key sessions as an orchestrator so read tools work without a manual register step.
 
 ### Fixed
 
@@ -66,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests treat `better-sqlite3` as optional, improving CI reliability.
 - `agent-relay doctor` validates partial driver availability correctly.
 - SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
+- DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
+- The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 
 ## [6.2.2] - 2026-05-18
 
