@@ -2111,7 +2111,7 @@ export class WorkflowRunner {
     const repairRetries =
       existing?.repairRetries ??
       (hasRepairAgentCandidate
-        ? existing?.maxRetries ?? DEFAULT_WORKFLOW_REPAIR_RETRIES
+        ? (existing?.maxRetries ?? DEFAULT_WORKFLOW_REPAIR_RETRIES)
         : existing?.repairRetries);
 
     return {
@@ -2843,7 +2843,10 @@ export class WorkflowRunner {
     this.validateConfig(resolved);
     const runtimeConfig = this.applyReliabilityDefaults(resolved);
 
-    const permissionResult = this.validatePermissions(runtimeConfig.agents, runtimeConfig.permission_profiles);
+    const permissionResult = this.validatePermissions(
+      runtimeConfig.agents,
+      runtimeConfig.permission_profiles
+    );
     if (permissionResult.errors.length > 0) {
       throw new Error(`Permission validation failed:\n  ${permissionResult.errors.join('\n  ')}`);
     }
@@ -3005,7 +3008,9 @@ export class WorkflowRunner {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
     }
 
-    const resolvedConfig = this.applyReliabilityDefaults(vars ? this.resolveVariables(run.config, vars) : run.config);
+    const resolvedConfig = this.applyReliabilityDefaults(
+      vars ? this.resolveVariables(run.config, vars) : run.config
+    );
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
     const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
@@ -3728,7 +3733,7 @@ export class WorkflowRunner {
     errorHandling: ErrorHandlingConfig | undefined,
     lifecycle: WorkflowStepLifecycleExecutor<StepState>
   ): Promise<void> {
-    const repairRetries = errorHandling?.strategy === 'retry' ? errorHandling.repairRetries ?? 0 : 0;
+    const repairRetries = errorHandling?.strategy === 'retry' ? (errorHandling.repairRetries ?? 0) : 0;
     const repairAgent =
       repairRetries > 0
         ? this.resolveWorkflowRepairAgent(step, stepStates, agentMap, errorHandling)
@@ -4730,34 +4735,34 @@ export class WorkflowRunner {
                   promptTaskText: ownerTask,
                 }
               : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
-                retryAttempt: attempt,
-                evidenceStepName: step.name,
-                evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
-                preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
-                logicalName: effectiveOwner.name,
-                onSpawned: explicitInteractiveWorker
-                  ? ({ agent }) => {
-                      explicitWorkerHandle = agent;
-                    }
-                  : undefined,
-                onChunk: explicitInteractiveWorker
-                  ? ({ chunk }) => {
-                      explicitWorkerOutput += WorkflowRunner.stripAnsi(chunk);
-                      if (
-                        !explicitWorkerCompleted &&
-                        this.hasExplicitInteractiveWorkerCompletionEvidence(
-                          step,
-                          explicitWorkerOutput,
-                          ownerTask,
-                          resolvedTask
-                        )
-                      ) {
-                        explicitWorkerCompleted = true;
-                        void explicitWorkerHandle?.release().catch(() => undefined);
+                  retryAttempt: attempt,
+                  evidenceStepName: step.name,
+                  evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                  preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
+                  logicalName: effectiveOwner.name,
+                  onSpawned: explicitInteractiveWorker
+                    ? ({ agent }) => {
+                        explicitWorkerHandle = agent;
                       }
-                    }
-                  : undefined,
-              });
+                    : undefined,
+                  onChunk: explicitInteractiveWorker
+                    ? ({ chunk }) => {
+                        explicitWorkerOutput += WorkflowRunner.stripAnsi(chunk);
+                        if (
+                          !explicitWorkerCompleted &&
+                          this.hasExplicitInteractiveWorkerCompletionEvidence(
+                            step,
+                            explicitWorkerOutput,
+                            ownerTask,
+                            resolvedTask
+                          )
+                        ) {
+                          explicitWorkerCompleted = true;
+                          void explicitWorkerHandle?.release().catch(() => undefined);
+                        }
+                      }
+                    : undefined,
+                });
           const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
           promptTaskText =
             typeof spawnResult === 'string'
@@ -7727,11 +7732,33 @@ export class WorkflowRunner {
       /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
     // TUI directory breadcrumb lines (e.g. "  ~/Projects/agent-workforce/relay-...")
     const dirBreadcrumbRe = /^\s*~[\\/]/u;
+    // The `\s*` variants below catch the no-whitespace TUI renderings that
+    // happen when Claude Code's footer overwrites itself faster than the PTY
+    // can flush whitespace — we see lines like `bypasspermissionson` and
+    // `pasteagaintoexpand` in real captures.
+    // Trailing `\b` is intentionally omitted: real PTY captures often show the
+    // hint with extra word chars stuck to it ("bypasspermissionson",
+    // "interrupting") because the TUI overwrote whitespace. Leading `\b` is
+    // enough to anchor without false-positive matches inside unrelated words.
     const uiHintRe =
-      /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
+      /\b(?:Press\s*up\s*to\s*edit|tab\s*to\s*queue|bypass\s*permissions|esc\s*to\s*interrupt|paste\s*again\s*to\s*expand|shift\s*[+]?\s*tab\s*to\s*cycle|running\s+stop\s+hook|fan\s+out\s+subagents)/iu;
+    // Vim-style mode indicators that Claude Code's input bar emits when the
+    // user is mid-edit (e.g. `--INSERT--⏵⏵bypasspermissionson`).
+    const vimModeRe =
+      /^[-\s]*--?(?:INSERT|NORMAL|VISUAL|REPLACE)--?[-\s]*$|--?(?:INSERT|NORMAL|VISUAL|REPLACE)--/u;
+    // Claude Code bottom status bar: "Opus 4.7 (1M context) ctx:5% $1.45"
+    // or "workflows git:(main) Opus 4.7 (1M context) ctx:5% $1.45".
+    // The shell-prompt + model-label + ctx% + cost line is pure chrome.
+    const claudeFooterRe =
+      /(?:Opus|Sonnet|Haiku)\s*\d[\d.]*\s*\(?(?:1M\s*context|context)?\)?\s*ctx\s*:\s*\d+%/iu;
     // Any spinner-prefixed word ending in … — catches all Claude thinking animations
     // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
     const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
+    // Looser thinking-status filter: catches "thinking with high effort", "↓ 13 tokens · thinking",
+    // "Crunched for 32s", "Befuddling…  running stop hook", token-count interludes — all
+    // ambient TUI status that the previous ellipsis-anchored regex missed.
+    const thinkingStatusRe =
+      /\b(?:thinking\s+(?:with\s+\w+\s+effort|more\s+with|harder)|↓\s*\d+\s*tokens?\b|↑\s*\d+\s*tokens?\b|crunched\s+for\s+\d|sautéed\s+for\s+\d|befuddl|flibbertigib|gitifying|flowing\s*…)/iu;
     const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
     // Cursor Agent TUI lines: generating animations, pasted text indicators, UI chrome
     const cursorAgentRe =
@@ -7777,7 +7804,10 @@ export class WorkflowRunner {
       if (claudeHeaderRe.test(trimmed)) continue;
       if (dirBreadcrumbRe.test(trimmed)) continue;
       if (uiHintRe.test(trimmed)) continue;
+      if (vimModeRe.test(trimmed)) continue;
+      if (claudeFooterRe.test(trimmed)) continue;
       if (thinkingLineRe.test(trimmed)) continue;
+      if (thinkingStatusRe.test(trimmed)) continue;
       if (cursorOnlyRe.test(trimmed)) continue;
       if (cursorAgentRe.test(trimmed)) continue;
       if (slashCommandRe.test(trimmed)) continue;

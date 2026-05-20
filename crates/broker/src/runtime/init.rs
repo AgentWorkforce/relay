@@ -32,17 +32,27 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let paths = if cmd.persist || custom_state_dir.is_some() {
         ensure_runtime_paths(&runtime_cwd, &resolved_name, custom_state_dir.as_deref())?
     } else {
-        // Warn if a stale .agent-relay/ dir exists from a previous persist run.
-        // Agents can read files from it directly (logs, state) and get confused.
-        let stale_dir = runtime_cwd.join(".agent-relay");
-        if stale_dir.exists() {
+        // Warn only if there is *actual broker state* in .agent-relay/ from a
+        // prior `--persist` run that could confuse this ephemeral run.
+        //
+        // The SDK workflow runner ALWAYS writes .agent-relay/step-outputs/ and
+        // .agent-relay/team/worker-logs/ regardless of broker mode (those are
+        // durable artifacts, not broker state), so a bare directory check fires
+        // on virtually every workflow run — a noisy false positive. The
+        // discriminator is `state.json`, which only the broker writes and only
+        // in persist mode.
+        let stale_state = runtime_cwd.join(".agent-relay").join("state.json");
+        if stale_state.exists() {
             eprintln!(
-                "[agent-relay] WARNING: stale .agent-relay/ directory found in {}",
-                runtime_cwd.display()
+                "[agent-relay] WARNING: stale broker state found at {}",
+                stale_state.display()
             );
             eprintln!(
-                "[agent-relay] WARNING: remove it to avoid confusing spawned agents: rm -rf {}",
-                stale_dir.display()
+                "[agent-relay] WARNING: this run is ephemeral but a prior --persist run left state behind."
+            );
+            eprintln!(
+                "[agent-relay] WARNING: remove it to avoid confusing spawned agents: rm {}",
+                stale_state.display()
             );
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?

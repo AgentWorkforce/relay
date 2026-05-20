@@ -41,7 +41,25 @@ export interface AgentOptions {
   maxTokens?: number;
   timeoutMs?: number;
   retries?: number;
-  /** Seconds of silence before considering the agent idle (for idle nudging). */
+  /**
+   * Seconds of silence on the agent's PTY before the runtime marks it idle and
+   * tears it down. Default: 30s. Set to `0` to disable idle detection entirely.
+   *
+   * When to override (per-agent):
+   *   - You expect long quiet stretches by design — a long-running reviewer
+   *     waiting for downstream verdicts, a grader watching a file that updates
+   *     every few minutes, or a `@-mention` recipient whose triggering event
+   *     may arrive >30s after spawn. Setting `0` (or a generous N) prevents
+   *     the runtime from killing the agent before the awaited event arrives.
+   *
+   * When NOT to override:
+   *   - One-shot worker steps. The default is right; idle-as-complete is what
+   *     makes `OWNER_DECISION: COMPLETE` + clean exit fast.
+   *
+   * See the `writing-agent-relay-workflows` skill ("Idle detection beats
+   * 'wait for X' prompts") for the trade-offs around long-running interactive
+   * agents and the Per-turn interactive spawn alternative.
+   */
   idleThresholdSecs?: number;
   /** When false, the agent runs as a non-interactive subprocess (no PTY, no relay messaging).
    *  Default: true. */
