@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/personas",
-  "version": "6.2.6",
+  "version": "6.2.7",
   "description": "Relay-maintained AgentWorkforce personas for use with `agentworkforce install`.",
   "type": "module",
   "private": false,
