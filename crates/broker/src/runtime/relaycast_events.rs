@@ -230,14 +230,15 @@ impl BrokerRuntime {
                     };
                     let effective_task = normalize_initial_task(task.clone());
 
-                    // Pre-register agent token for all CLIs. Claude needs it
-                    // too: without RELAY_AGENT_TOKEN + RELAY_SKIP_BOOTSTRAP=1 in
-                    // the relaycast MCP env, `@relaycast/mcp` runs bootstrap
-                    // (network registration) before responding to the MCP
-                    // initialize handshake, and Claude drops the pending server
-                    // before any relaycast tool names land in deferred_tools
-                    // (issue #926). A short timeout keeps spawn latency bounded
-                    // while still giving the registration call a real chance.
+                    // Pre-register an agent token for every spawned worker.
+                    // `@relaycast/mcp` needs RELAY_AGENT_TOKEN +
+                    // RELAY_SKIP_BOOTSTRAP=1 in its environment to expose
+                    // tools immediately; otherwise it runs network
+                    // registration before responding to the MCP initialize
+                    // handshake, the client drops the pending server, and
+                    // no relaycast tool names land in deferred_tools. The
+                    // short timeout keeps spawn latency bounded while still
+                    // giving the registration call a real chance.
                     let worker_relay_key = {
                         let ws_token = relaycast_ws_spawn_token(&ws_value);
                         if ws_token.is_some() {
