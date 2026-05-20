@@ -1,0 +1,81 @@
+{
+  "id": "compact_d2w10h1joxy8",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-05-19T14:41:29.877Z",
+  "sourceTrajectories": ["traj_47akjihewlow", "traj_f9wxa8ujeg78", "traj_sqerp89tc436"],
+  "dateRange": {
+    "start": "2026-05-19T00:45:33.159Z",
+    "end": "2026-05-19T01:38:29.105Z"
+  },
+  "summary": {
+    "totalDecisions": 4,
+    "totalEvents": 4,
+    "uniqueAgents": ["default"]
+  },
+  "decisionGroups": [
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Split broker runtime by responsibility",
+          "chosen": "Split broker runtime by responsibility",
+          "reasoning": "Kept the CLI-facing runtime API stable while moving cohesive concerns into runtime submodules: init loop, session setup, pending delivery, headless worker, connection discovery, paths, terminal/system helpers, message/thread helpers, frame IO, and spawn spec parsing.",
+          "fromTrajectory": "traj_47akjihewlow"
+        },
+        {
+          "question": "Split broker binary entrypoint mechanically",
+          "chosen": "Split broker binary entrypoint mechanically",
+          "reasoning": "Kept behavior stable by moving clap parsing to crates/broker/src/cli/mod.rs and the existing broker runtime/test code to crates/broker/src/runtime.rs, then updated sibling modules to import moved helpers explicitly.",
+          "fromTrajectory": "traj_f9wxa8ujeg78"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Apply issue 875 to crates/broker/src/main.rs",
+          "chosen": "Apply issue 875 to crates/broker/src/main.rs",
+          "reasoning": "The broker binary was moved under crates/broker after the issue text was written, so the current main.rs entrypoint now lives there.",
+          "fromTrajectory": "traj_sqerp89tc436"
+        },
+        {
+          "question": "Removed repository-root bin fallback",
+          "chosen": "Removed repository-root bin fallback",
+          "reasoning": "The root bin directory only contained .gitkeep, production broker binaries resolve through optional packages, and local development resolves through Cargo target or SDK bin paths.",
+          "fromTrajectory": "traj_sqerp89tc436"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "crates/broker/src/runtime.rs",
+    "crates/broker/src/runtime/connection.rs",
+    "crates/broker/src/runtime/delivery.rs",
+    "crates/broker/src/runtime/headless.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/io.rs",
+    "crates/broker/src/runtime/messages.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "crates/broker/src/runtime/paths.rs",
+    "crates/broker/src/runtime/session.rs",
+    "crates/broker/src/runtime/spawn_spec.rs",
+    "crates/broker/src/runtime/system.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/runtime/util.rs",
+    ".trajectories/completed/2026-05/traj_f9wxa8ujeg78.json",
+    ".trajectories/completed/2026-05/traj_f9wxa8ujeg78.md",
+    ".trajectories/index.json",
+    "crates/broker/src/main.rs",
+    "crates/broker/src/cli/mod.rs",
+    "crates/broker/src/cli_mcp_args.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/routing.rs",
+    "crates/broker/src/worker.rs",
+    "crates/broker/src/wrap.rs"
+  ],
+  "commits": ["7182810c", "2ecfb018", "040e6d9f"]
+}

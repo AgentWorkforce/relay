@@ -1,0 +1,33 @@
+{
+  "id": "compact_gqmrna24cmm4",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-05-19T16:06:53.295Z",
+  "sourceTrajectories": ["traj_i7omu80dfogk"],
+  "dateRange": {
+    "start": "2026-05-19T15:54:09.198Z",
+    "end": "2026-05-19T16:06:38.323Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": ["default"]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Use relaycast 1.1.0 SDK helpers for RelayCast bridge and client plumbing",
+          "chosen": "Use relaycast 1.1.0 SDK helpers for RelayCast bridge and client plumbing",
+          "reasoning": "SDK v1.1.0 now owns raw websocket event delivery, inbound event and command normalization, identity comparison, registered-agent client creation, channel ensure/join behavior, and DM participant caching; keeping those in Relay duplicated SDK behavior and made wire-shape changes harder to absorb.",
+          "fromTrajectory": "traj_i7omu80dfogk"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

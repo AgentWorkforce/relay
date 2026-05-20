@@ -1437,7 +1437,7 @@ impl BrokerClient {
                 "hello",
                 json!({
                     "client_name": "broker-swarm",
-                    "client_version": env!("CARGO_PKG_VERSION"),
+                    "client_version": crate::util::version::broker_version(),
                 }),
             )
             .await?;

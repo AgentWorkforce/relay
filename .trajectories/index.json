@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-19T12:07:22.506Z",
+  "lastUpdated": "2026-05-19T17:21:49.872Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -959,21 +959,24 @@
       "status": "completed",
       "startedAt": "2026-05-19T00:45:33.159Z",
       "completedAt": "2026-05-19T00:50:03.857Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_sqerp89tc436.json"
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_sqerp89tc436.json",
+      "compactedInto": "compact_d2w10h1joxy8"
     },
     "traj_f9wxa8ujeg78": {
       "title": "Refactor broker main for issue 875",
       "status": "completed",
       "startedAt": "2026-05-19T00:54:40.328Z",
       "completedAt": "2026-05-19T00:55:57.506Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_f9wxa8ujeg78.json"
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_f9wxa8ujeg78.json",
+      "compactedInto": "compact_d2w10h1joxy8"
     },
     "traj_47akjihewlow": {
       "title": "Further split broker runtime module for issue 875",
       "status": "completed",
       "startedAt": "2026-05-19T01:28:35.746Z",
       "completedAt": "2026-05-19T01:38:29.105Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_47akjihewlow.json"
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_47akjihewlow.json",
+      "compactedInto": "compact_d2w10h1joxy8"
     },
     "traj_x37bhga2j5ph": {
       "title": "Deepen broker runtime refactor for PR 906",
@@ -1065,6 +1068,20 @@
       "startedAt": "2026-05-19T11:52:46.110Z",
       "completedAt": "2026-05-19T12:07:22.401Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_lhyrcib40kao.json"
+    },
+    "traj_5nzj6v56id4z": {
+      "title": "Fix PR914 review comments",
+      "status": "completed",
+      "startedAt": "2026-05-19T13:20:42.407Z",
+      "completedAt": "2026-05-19T13:26:28.697Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_5nzj6v56id4z.json"
+    },
+    "traj_sh2ahp9z2xg6": {
+      "title": "Fix uuid install deprecation warning",
+      "status": "completed",
+      "startedAt": "2026-05-19T17:21:40.756Z",
+      "completedAt": "2026-05-19T17:21:49.702Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_sh2ahp9z2xg6.json"
     }
   }
 }

@@ -215,11 +215,11 @@ async function waitForBrokerClient(
 
 function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): AgentManagementDependencies {
   const readFileTail = (filePath: string, maxBytes: number, encoding: BufferEncoding = 'utf-8') => {
-    const stats = fs.statSync(filePath);
-    const start = Math.max(0, stats.size - maxBytes);
-    const length = stats.size - start;
     const fd = fs.openSync(filePath, 'r');
     try {
+      const stats = fs.fstatSync(fd);
+      const start = Math.max(0, stats.size - maxBytes);
+      const length = stats.size - start;
       const buffer = Buffer.alloc(length);
       fs.readSync(fd, buffer, 0, length, start);
       return { text: buffer.toString(encoding), size: stats.size };
@@ -228,11 +228,11 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     }
   };
   const readFileTailBuffer = (filePath: string, maxBytes: number) => {
-    const stats = fs.statSync(filePath);
-    const start = Math.max(0, stats.size - maxBytes);
-    const length = stats.size - start;
     const fd = fs.openSync(filePath, 'r');
     try {
+      const stats = fs.fstatSync(fd);
+      const start = Math.max(0, stats.size - maxBytes);
+      const length = stats.size - start;
       const buffer = Buffer.alloc(length);
       fs.readSync(fd, buffer, 0, length, start);
       return { buffer, size: stats.size };
@@ -246,13 +246,13 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     maxBytes: number,
     encoding: BufferEncoding = 'utf-8'
   ) => {
-    const stats = fs.statSync(filePath);
-    if (stats.size <= offset) {
-      return { text: '', size: stats.size };
-    }
-    const length = Math.min(maxBytes, stats.size - offset);
     const fd = fs.openSync(filePath, 'r');
     try {
+      const stats = fs.fstatSync(fd);
+      if (stats.size <= offset) {
+        return { text: '', size: stats.size };
+      }
+      const length = Math.min(maxBytes, stats.size - offset);
       const buffer = Buffer.alloc(length);
       fs.readSync(fd, buffer, 0, length, offset);
       return { text: buffer.toString(encoding), size: offset + length };
@@ -261,13 +261,13 @@ function withDefaults(overrides: Partial<AgentManagementDependencies> = {}): Age
     }
   };
   const readFileFromBuffer = (filePath: string, offset: number, maxBytes: number) => {
-    const stats = fs.statSync(filePath);
-    if (stats.size <= offset) {
-      return { buffer: Buffer.alloc(0), size: stats.size };
-    }
-    const length = Math.min(maxBytes, stats.size - offset);
     const fd = fs.openSync(filePath, 'r');
     try {
+      const stats = fs.fstatSync(fd);
+      if (stats.size <= offset) {
+        return { buffer: Buffer.alloc(0), size: stats.size };
+      }
+      const length = Math.min(maxBytes, stats.size - offset);
       const buffer = Buffer.alloc(length);
       fs.readSync(fd, buffer, 0, length, offset);
       return { buffer, size: offset + length };

@@ -1,7 +1,6 @@
 pub(crate) mod auth;
 pub(crate) mod bridge;
 pub(crate) mod dm_participants;
-pub(crate) mod identity;
 pub(crate) mod workspace;
 pub(crate) mod ws;
 
@@ -9,7 +8,7 @@ pub(crate) use crate::snippets::{configure_relaycast_mcp_with_token, ensure_rela
 pub(crate) use auth::AuthClient;
 pub(crate) use bridge::{map_ws_broker_command, map_ws_event};
 pub(crate) use dm_participants::{resolve_dm_participants_cached, DmParticipantsCache};
-pub(crate) use identity::{agent_name_eq, is_self_name};
+pub(crate) use relaycast::{agent_name_eq, is_self_name};
 pub(crate) use workspace::{
     MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary,
 };

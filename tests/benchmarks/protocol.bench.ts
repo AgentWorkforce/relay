@@ -5,13 +5,13 @@
  *
  * Measures:
  * - Frame encoding/decoding performance
- * - ID generation (generateId vs uuid)
+ * - ID generation (generateId vs randomUUID)
  * - Parser throughput
  * - Dedup cache performance
  */
 
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { v4 as uuid } from 'uuid';
 import { generateId, IdGenerator } from '../../src/utils/id-generator.js';
 import {
   encodeFrame,
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   printHeader('ID Generation');
 
   const idGen = new IdGenerator();
-  printResult(bench('uuid() [baseline]', () => uuid()));
+  printResult(bench('randomUUID() [baseline]', () => randomUUID()));
   printResult(bench('generateId() [optimized]', () => generateId()));
   printResult(bench('IdGenerator.next()', () => idGen.next()));
   printResult(bench('IdGenerator.short()', () => idGen.short()));
@@ -182,13 +182,17 @@ async function main(): Promise<void> {
 
   // Multiple frames in sequence (reuse parser)
   printResult(
-    bench('FrameParser 10 msgs (reuse)', () => {
-      const parser = new FrameParser();
-      parser.setLegacyMode(true);
-      for (let i = 0; i < 10; i++) {
-        parser.push(smallFrame);
-      }
-    }, 1000)
+    bench(
+      'FrameParser 10 msgs (reuse)',
+      () => {
+        const parser = new FrameParser();
+        parser.setLegacyMode(true);
+        for (let i = 0; i < 10; i++) {
+          parser.push(smallFrame);
+        }
+      },
+      1000
+    )
   );
 
   // ─────────────────────────────────────────────────────────────────
@@ -300,7 +304,7 @@ async function main(): Promise<void> {
   // ─────────────────────────────────────────────────────────────────
   console.log(`\n${BOLD}Summary${RESET}`);
   console.log('─'.repeat(65));
-  console.log('ID Generation:      generateId() is ~10-20x faster than uuid()');
+  console.log('ID Generation:      generateId() is ~10-20x faster than randomUUID()');
   console.log('Frame Parsing:      Ring buffer eliminates GC pressure');
   console.log('Output Parser:      Early exit avoids ANSI stripping for most lines');
   console.log('Dedup Cache:        Circular buffer is O(1) vs O(n) for eviction');

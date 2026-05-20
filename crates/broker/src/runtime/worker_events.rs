@@ -380,6 +380,7 @@ impl BrokerRuntime {
                             .unwrap_or(0)
                             as usize;
                         if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.last_activity_at = Instant::now();
                             handle.state = AgentWorkState::BlockedOnSend;
                         }
                         let _ = send_broker_event(

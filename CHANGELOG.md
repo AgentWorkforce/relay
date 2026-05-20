@@ -83,6 +83,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
 - DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
+- PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
+
+## [6.2.6] - 2026-05-20
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Flush UTF-8 decoder on normal pty_closed path
+- Preserve split multi-byte UTF-8 in worker_stream (#922) (#922)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.2.6
+
+---
+
+## [6.2.5] - 2026-05-19
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Handle write_pty frames in PTY worker (#920)
+
+### Technical Perspective
+
+#### Dependencies & Tooling
+
+- Sync package-lock.json for next 15.5.18 bump
+- Bump next from 15.5.14 to 15.5.18 in /web
+
+#### Releases
+
+- v6.2.5
+
+---
+
+## [6.2.4] - 2026-05-19
+
+### Technical Perspective
+
+#### Architecture & API Changes
+
+- Use relaycast sdk 1.1 helpers
+
+#### Releases
+
+- v6.2.4
+
+---
+
+## [6.2.3] - 2026-05-19
+
+### Product Perspective
+
+#### User-Facing Features & Improvements
+
+- **Align reported version with product release line** (#904)
+
+#### User-Impacting Fixes
+
+- Address coderabbit review on version handling
+- Use next/link for docs navigation
+- Pass idle threshold to spawned workers
+- Address runtime review findings
+
+### Technical Perspective
+
+#### Architecture & API Changes
+
+- Narrow public crate API
+- Group relaycast broker integration
+- Extract broker runtime event handlers
+- Split broker runtime modules
+- Split broker main entrypoint
+- Move broker crate under crates
+
+#### Dependencies & Tooling
+
+- Record runtime split trajectory
+- Complete issue 875 trajectory file list
+- Update issue 875 trajectory metadata
+
+#### Releases
+
+- v6.2.3
+
+---
 
 ## [6.2.2] - 2026-05-18
 

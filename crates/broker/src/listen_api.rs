@@ -309,7 +309,7 @@ fn listen_api_router_with_auth(
             .filter(|value| !value.is_empty()),
         memberships: config.memberships,
         default_workspace_id: config.default_workspace_id,
-        broker_version: env!("CARGO_PKG_VERSION").to_string(),
+        broker_version: crate::util::version::broker_version().to_string(),
         persist: config.persist,
         started_at: std::time::Instant::now(),
     };
@@ -403,7 +403,7 @@ pub(crate) fn listen_api_health_payload(
     json!({
         "status": status,
         "service": "agent-relay-listen",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::util::version::broker_version(),
         "uptimeMs": 0,
         "workspaceId": workspace_id,
         "defaultWorkspaceId": default_workspace_id,

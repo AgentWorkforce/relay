@@ -75,6 +75,11 @@ jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)
   build-broker:
     name: Build broker (${{ matrix.target }})
+    # Depends on `build` so we can pass the shipped product version into the
+    # broker at compile time via `AGENT_RELAY_VERSION`. See
+    # crates/broker/src/util/version.rs — released binaries report this
+    # version through health/session/telemetry payloads.
+    needs: build
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
     strategy:
@@ -141,8 +146,15 @@ jobs:
         # `option_env!` in crates/broker/src/telemetry.rs consumes at compile time.
         # Unset variable → telemetry ships disabled (acceptable for
         # forks / pre-release pipelines).
+        #
+        # `AGENT_RELAY_VERSION` is consumed by `option_env!` in
+        # crates/broker/src/util/version.rs and becomes the broker version
+        # reported through health/session/telemetry payloads. We pin it to
+        # the release-line version so a `6.2.x` artifact does not report
+        # the Cargo crate version (`3.0.0`).
         env:
           AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
+          AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
@@ -156,6 +168,7 @@ jobs:
         shell: pwsh
         env:
           AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
+          AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
         run: |
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
           cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
