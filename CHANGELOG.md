@@ -85,6 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 - PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
 
+## [6.2.8] - 2026-05-20
+
+### Product Perspective
+#### User-Impacting Fixes
+- Tighten PTY chrome scrubbing, document idle override, tame stale-state warning (#930) (#930)
+
+### Technical Perspective
+#### Releases
+- v6.2.8
+
+---
+
 ## [6.2.7] - 2026-05-20
 
 ### Technical Perspective
