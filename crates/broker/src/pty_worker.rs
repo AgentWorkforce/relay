@@ -870,7 +870,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                     None => {
                         // PTY reader closed — child likely exited. Flush
-                        // any buffered stream output before sending
+                        // any incomplete trailing UTF-8 bytes (no further
+                        // chunks will arrive to complete them) before the
+                        // stream_buffer flush so they reach worker_stream
+                        // and echo_buffer like normal output.
+                        let tail = utf8_decoder.flush();
+                        if !tail.is_empty() {
+                            stream_buffer.push_str(&tail);
+                            echo_buffer.push_str(&tail);
+                        }
+                        // Flush any buffered stream output before sending
                         // agent_exit to preserve output ordering.
                         flush_stream_buffer!();
                         // Emit agent_exit with any echo_buffer tail so the
