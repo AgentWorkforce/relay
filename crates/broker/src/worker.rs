@@ -959,6 +959,15 @@ fn spawn_worker_reader<R>(
             )
             .await;
 
+            // Only stdout carries the PTY-output protocol. Stderr is captured
+            // in the worker log file for diagnostics; forwarding it as a
+            // worker_stream event causes tracing logs (e.g. the idle
+            // watchdog) to render inside the agent's xterm buffer, on top of
+            // the CLI's input prompt.
+            if !parse_json {
+                continue;
+            }
+
             let fallback = json!({
                 "v": PROTOCOL_VERSION,
                 "type": "worker_stream",

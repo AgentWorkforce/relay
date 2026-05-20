@@ -1188,7 +1188,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             + pending_verifications.len()
                             + pending_activities.len();
                         if pending_count > 0 {
-                            tracing::warn!(
+                            tracing::debug!(
                                 target = "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 pending_delivery_count = pending_count,
@@ -1200,7 +1200,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 "pending_delivery_count": pending_count,
                             })).await;
                         } else {
-                            tracing::info!(
+                            tracing::debug!(
                                 target = "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 "watchdog: no PTY output for {}s — marking idle",
