@@ -38,21 +38,38 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         // The SDK workflow runner ALWAYS writes .agent-relay/step-outputs/ and
         // .agent-relay/team/worker-logs/ regardless of broker mode (those are
         // durable artifacts, not broker state), so a bare directory check fires
-        // on virtually every workflow run — a noisy false positive. The
-        // discriminator is `state.json`, which only the broker writes and only
-        // in persist mode.
-        let stale_state = runtime_cwd.join(".agent-relay").join("state.json");
-        if stale_state.exists() {
+        // on virtually every workflow run — a noisy false positive.
+        //
+        // The discriminator is the broker's state file. `ensure_runtime_paths`
+        // (the persist-mode helper in runtime/paths.rs) writes it as
+        // `state-{safe_name}.json`, where `safe_name` is the sanitized broker
+        // name — so the exact filename varies by run. Glob for any
+        // `state-*.json` entry in `.agent-relay/` and surface every match so
+        // the user can see exactly what's stale regardless of broker name.
+        let stale_dir = runtime_cwd.join(".agent-relay");
+        let stale_state_files: Vec<PathBuf> = std::fs::read_dir(&stale_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                name_str.starts_with("state-") && name_str.ends_with(".json")
+            })
+            .map(|entry| entry.path())
+            .collect();
+        if !stale_state_files.is_empty() {
             eprintln!(
-                "[agent-relay] WARNING: stale broker state found at {}",
-                stale_state.display()
+                "[agent-relay] WARNING: this run is ephemeral but {} prior --persist state file(s) remain in {}:",
+                stale_state_files.len(),
+                stale_dir.display()
             );
+            for state_file in &stale_state_files {
+                eprintln!("[agent-relay] WARNING:   {}", state_file.display());
+            }
             eprintln!(
-                "[agent-relay] WARNING: this run is ephemeral but a prior --persist run left state behind."
-            );
-            eprintln!(
-                "[agent-relay] WARNING: remove it to avoid confusing spawned agents: rm {}",
-                stale_state.display()
+                "[agent-relay] WARNING: remove them to avoid confusing spawned agents."
             );
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
