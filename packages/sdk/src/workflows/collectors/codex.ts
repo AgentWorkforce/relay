@@ -3,11 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-import type {
-  CliSessionCollector,
-  CliSessionQuery,
-  CliSessionReport,
-} from '../cli-session-collector.js';
+import type { CliSessionCollector, CliSessionQuery, CliSessionReport } from '../cli-session-collector.js';
 
 const require = createRequire(import.meta.url);
 const CODEX_HOME = path.join(os.homedir(), '.codex');
@@ -23,14 +19,11 @@ type DatabaseInstance = {
 
 type DatabaseConstructor = new (
   filename: string,
-  options?: { readonly?: boolean; fileMustExist?: boolean },
+  options?: { readonly?: boolean; fileMustExist?: boolean }
 ) => DatabaseInstance;
 
 interface DatabaseSyncModule {
-  DatabaseSync: new (
-    filename: string,
-    options?: { readOnly?: boolean; open?: boolean },
-  ) => DatabaseInstance;
+  DatabaseSync: new (filename: string, options?: { readOnly?: boolean; open?: boolean }) => DatabaseInstance;
 }
 
 interface CodexCollectorOptions {
@@ -69,14 +62,30 @@ function loadBetterSqlite3(): DatabaseConstructor | null {
   }
 }
 
+function isBunRuntime(): boolean {
+  // Bun exposes its version on process.versions.bun. The `node:sqlite` module
+  // is a Node.js 22+ builtin that Bun does not implement; attempting
+  // `await import('node:sqlite')` under Bun rejects AND emits cosmetic stderr
+  // noise ("error: Registry URL must be http:// or https://") that leaks
+  // through the try/catch into runner.log. Skip the fallback under Bun.
+  return (
+    typeof process !== 'undefined' &&
+    typeof (process.versions as { bun?: string } | undefined)?.bun === 'string'
+  );
+}
+
 async function openDatabase(dbPath: string): Promise<DatabaseInstance | null> {
   const BetterSqlite = loadBetterSqlite3();
   if (BetterSqlite) {
     try {
       return new BetterSqlite(dbPath, { readonly: true, fileMustExist: true });
     } catch {
-      // Fall through to node:sqlite.
+      // Fall through to node:sqlite (on Node) or give up (on Bun).
     }
+  }
+
+  if (isBunRuntime()) {
+    return null;
   }
 
   try {
@@ -88,11 +97,12 @@ async function openDatabase(dbPath: string): Promise<DatabaseInstance | null> {
 }
 
 function normalizeTimestamp(value: unknown): number | null {
-  const numeric = typeof value === 'number' && Number.isFinite(value)
-    ? value
-    : typeof value === 'string' && value.trim()
-      ? Number(value)
-      : null;
+  const numeric =
+    typeof value === 'number' && Number.isFinite(value)
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value)
+        : null;
   if (numeric === null || !Number.isFinite(numeric)) {
     return null;
   }
@@ -108,7 +118,10 @@ function parseJsonLine<T>(line: string): T | null {
   }
 }
 
-function parseModelProvider(value: string | null | undefined): { provider: string | null; model: string | null } {
+function parseModelProvider(value: string | null | undefined): {
+  provider: string | null;
+  model: string | null;
+} {
   if (!value) {
     return { provider: null, model: null };
   }
@@ -247,7 +260,8 @@ export class CodexCollector implements CliSessionCollector {
     }
 
     try {
-      return fs.readFileSync(this.historyPath, 'utf8')
+      return fs
+        .readFileSync(this.historyPath, 'utf8')
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean)
@@ -287,20 +301,24 @@ export class CodexCollector implements CliSessionCollector {
     }
 
     try {
-      const threads = db.prepare(
-        `
+      const threads = db
+        .prepare(
+          `
           SELECT *
           FROM threads
           WHERE cwd = ?
           ORDER BY created_at DESC
           LIMIT 100
-        `,
-      ).all<ThreadRow>(query.cwd);
+        `
+        )
+        .all<ThreadRow>(query.cwd);
 
-      return threads.find((thread) => {
-        const createdAt = normalizeTimestamp(thread.created_at);
-        return createdAt !== null && createdAt >= query.startedAt && createdAt <= query.completedAt;
-      }) ?? null;
+      return (
+        threads.find((thread) => {
+          const createdAt = normalizeTimestamp(thread.created_at);
+          return createdAt !== null && createdAt >= query.startedAt && createdAt <= query.completedAt;
+        }) ?? null
+      );
     } catch {
       return null;
     } finally {
@@ -319,15 +337,17 @@ export class CodexCollector implements CliSessionCollector {
     }
 
     try {
-      const rows = db.prepare(
-        `
+      const rows = db
+        .prepare(
+          `
           SELECT ts, level, message, line
           FROM logs
           WHERE thread_id = ?
             AND lower(level) = 'error'
           ORDER BY ts ASC
-        `,
-      ).all<LogRow>(threadId);
+        `
+        )
+        .all<LogRow>(threadId);
 
       return rows
         .map((row, index) => {
