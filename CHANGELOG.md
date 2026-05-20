@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker output events with filters and JSON Lines output.
+- `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker output events in a human-readable stream with filters and JSON Lines output.
 - `agent-relay view <name>` streams a running agent's PTY without taking control or stopping the agent.
 - `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
 - `agent-relay passthrough <name>` attaches interactively while inbound relay messages continue to auto-inject.

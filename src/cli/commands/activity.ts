@@ -47,9 +47,13 @@ export interface ActivityOptions extends BrokerConnectionOptions {
   streams?: boolean;
   kind?: string;
   name?: string;
+  ids?: boolean;
 }
 
 type ActivityEvent = Record<string, unknown> & { kind?: unknown; seq?: unknown };
+interface ActivityFormatOptions {
+  ids?: boolean;
+}
 
 function withDefaults(overrides: Partial<ActivityDependencies> = {}): ActivityDependencies {
   return {
@@ -109,7 +113,18 @@ function quotePreview(value: string | undefined, max = 140): string {
   if (!value) return '';
   const clean = sanitizeForTerminalLine(value).replace(/\s+/g, ' ').trim();
   if (!clean) return '';
-  return ` "${clean.length > max ? `${clean.slice(0, max - 1)}...` : clean}"`;
+  return `"${clean.length > max ? `${clean.slice(0, max - 1)}...` : clean}"`;
+}
+
+function humanizeCode(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const clean = sanitizeForTerminalLine(value).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean || undefined;
+}
+
+function reasonSuffix(event: ActivityEvent): string | undefined {
+  const reason = humanizeCode(readString(event, 'reason'));
+  return reason ? `(${reason})` : undefined;
 }
 
 function detail(parts: Array<string | undefined>): string {
@@ -126,25 +141,53 @@ function formatClock(iso: string): string {
   return new Date(parsed).toISOString().slice(11, 19);
 }
 
-function formatLine(nowIso: string, label: string, message: string, event: ActivityEvent): string {
-  return `${formatClock(nowIso)} ${label.padEnd(10)} ${message}${seqSuffix(event)}`;
+function metadataSuffix(event: ActivityEvent, options: ActivityFormatOptions): string {
+  if (!options.ids) return '';
+  const parts = [
+    eventId(event) ? `event ${eventId(event)}` : undefined,
+    deliveryId(event) ? `delivery ${deliveryId(event)}` : undefined,
+    seqSuffix(event) ? `seq ${seqSuffix(event).slice(2)}` : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? ` [${parts.join(', ')}]` : '';
 }
 
-function formatDelivery(label: string, verb: string, event: ActivityEvent, nowIso: string): string {
+function formatLine(
+  nowIso: string,
+  label: string,
+  message: string,
+  event: ActivityEvent,
+  options: ActivityFormatOptions
+): string {
+  return `${formatClock(nowIso)}  ${label.padEnd(18)} ${message}${metadataSuffix(event, options)}`.trimEnd();
+}
+
+function formatDelivery(
+  label: string,
+  preposition: string,
+  event: ActivityEvent,
+  nowIso: string,
+  options: ActivityFormatOptions
+): string {
   return formatLine(
     nowIso,
     label,
     detail([
-      `${verb} ${actorName(event)}`,
-      eventId(event) ? `event ${eventId(event)}` : undefined,
-      deliveryId(event) ? `delivery ${deliveryId(event)}` : undefined,
-      readString(event, 'reason') ? `(${readString(event, 'reason')})` : undefined,
+      `${preposition} ${actorName(event)}`,
+      readString(event, 'from') && readString(event, 'target')
+        ? `${readString(event, 'from')} -> ${readString(event, 'target')}`
+        : undefined,
+      reasonSuffix(event),
     ]),
-    event
+    event,
+    options
   );
 }
 
-export function formatActivityEvent(event: ActivityEvent, nowIso: string): string | null {
+export function formatActivityEvent(
+  event: ActivityEvent,
+  nowIso: string,
+  options: ActivityFormatOptions = {}
+): string | null {
   const kind = readString(event, 'kind');
 
   switch (kind) {
@@ -152,120 +195,105 @@ export function formatActivityEvent(event: ActivityEvent, nowIso: string): strin
       const from = readString(event, 'from') ?? '?';
       const target = readString(event, 'target') ?? '?';
       const thread = readString(event, 'thread_id');
-      return formatLine(
-        nowIso,
-        'RECEIVED',
-        detail([
-          `${from} -> ${target}`,
-          thread ? `thread ${thread}` : undefined,
-          eventId(event),
-          quotePreview(readString(event, 'body')),
-        ]),
-        event
-      );
+      const route = `${from} -> ${target}${thread ? ` (thread ${thread})` : ''}`;
+      const preview = quotePreview(readString(event, 'body'));
+      return formatLine(nowIso, 'Message received', preview ? `${route}: ${preview}` : route, event, options);
     }
     case 'relaycast_published':
       return formatLine(
         nowIso,
-        'SENT',
+        'Message sent',
         detail([
           `broker -> ${readString(event, 'to') ?? '?'}`,
           readString(event, 'target_type') ? `(${readString(event, 'target_type')})` : undefined,
-          eventId(event) ? `event ${eventId(event)}` : undefined,
         ]),
-        event
+        event,
+        options
       );
     case 'relaycast_publish_failed':
       return formatLine(
         nowIso,
-        'SEND_FAIL',
-        detail([
-          `broker -> ${readString(event, 'to') ?? '?'}`,
-          eventId(event) ? `event ${eventId(event)}` : undefined,
-          readString(event, 'reason') ? `(${readString(event, 'reason')})` : undefined,
-        ]),
-        event
+        'Send failed',
+        detail([`broker -> ${readString(event, 'to') ?? '?'}`, reasonSuffix(event)]),
+        event,
+        options
       );
     case 'delivery_queued':
-      return formatDelivery('QUEUED', 'queued for', event, nowIso);
+      return formatDelivery('Delivery queued', 'for', event, nowIso, options);
     case 'delivery_injected':
-      return formatDelivery('INJECTED', 'injected into', event, nowIso);
+      return formatDelivery('Delivery injected', 'into', event, nowIso, options);
     case 'delivery_active':
-      return formatDelivery('ACTIVE', 'active in', event, nowIso);
+      return formatDelivery('Delivery active', 'in', event, nowIso, options);
     case 'delivery_ack':
-      return formatDelivery('ACKED', 'acked by', event, nowIso);
+      return formatDelivery('Delivery acked', 'by', event, nowIso, options);
     case 'delivery_verified':
-      return formatDelivery('VERIFIED', 'verified by', event, nowIso);
+      return formatDelivery('Delivery verified', 'by', event, nowIso, options);
     case 'delivery_retry':
       return formatLine(
         nowIso,
-        'RETRY',
-        detail([
-          `${actorName(event)} attempt ${readCount(event, 'attempts') ?? '?'}`,
-          eventId(event) ? `event ${eventId(event)}` : undefined,
-          deliveryId(event) ? `delivery ${deliveryId(event)}` : undefined,
-        ]),
-        event
+        'Delivery retry',
+        detail([`${actorName(event)} attempt ${readCount(event, 'attempts') ?? '?'}`]),
+        event,
+        options
       );
     case 'delivery_failed':
       return formatLine(
         nowIso,
-        'FAILED',
-        detail([
-          `${actorName(event)}`,
-          eventId(event) ? `event ${eventId(event)}` : undefined,
-          deliveryId(event) ? `delivery ${deliveryId(event)}` : undefined,
-          readString(event, 'reason') ? `(${readString(event, 'reason')})` : undefined,
-        ]),
-        event
+        'Delivery failed',
+        detail([`${actorName(event)}`, reasonSuffix(event)]),
+        event,
+        options
       );
     case 'delivery_dropped':
       return formatLine(
         nowIso,
-        'DROPPED',
+        'Delivery dropped',
         detail([
           `${actorName(event)} dropped ${readCount(event, 'count') ?? '?'} pending`,
-          readString(event, 'reason') ? `(${readString(event, 'reason')})` : undefined,
+          reasonSuffix(event),
         ]),
-        event
+        event,
+        options
       );
     case 'message_delivery_confirmed':
       return formatLine(
         nowIso,
-        'DELIVERED',
+        'Message delivered',
         detail([
           `${readString(event, 'from') ?? '?'} -> ${readString(event, 'to') ?? '?'}`,
-          `via ${actorName(event)}`,
-          eventId(event) ? `event ${eventId(event)}` : undefined,
+          `through ${actorName(event)}`,
         ]),
-        event
+        event,
+        options
       );
     case 'message_delivery_failed':
       return formatLine(
         nowIso,
-        'FAILED',
+        'Message failed',
         detail([
           `${readString(event, 'from') ?? '?'} -> ${readString(event, 'to') ?? '?'}`,
-          `via ${actorName(event)}`,
+          `through ${actorName(event)}`,
           readCount(event, 'attempts') ? `after ${readCount(event, 'attempts')} attempts` : undefined,
           quotePreview(readString(event, 'lastError') ?? readString(event, 'last_error'), 100),
         ]),
-        event
+        event,
+        options
       );
     case 'worker_stream': {
       const preview = quotePreview(readString(event, 'chunk'), 160);
       if (!preview) return null;
       return formatLine(
         nowIso,
-        'OUTPUT',
-        `${actorName(event)} ${readString(event, 'stream') ?? 'stream'}:${preview}`,
-        event
+        'Output',
+        `${actorName(event)} ${readString(event, 'stream') ?? 'stream'}: ${preview}`,
+        event,
+        options
       );
     }
     case 'agent_spawned':
       return formatLine(
         nowIso,
-        'SPAWNED',
+        'Agent spawned',
         detail([
           `${actorName(event)}`,
           readString(event, 'runtime') ? `(${readString(event, 'runtime')})` : undefined,
@@ -273,138 +301,163 @@ export function formatActivityEvent(event: ActivityEvent, nowIso: string): strin
           readString(event, 'model') ? `model=${readString(event, 'model')}` : undefined,
           readCount(event, 'pid') ? `pid=${readCount(event, 'pid')}` : undefined,
         ]),
-        event
+        event,
+        options
       );
     case 'worker_ready':
       return formatLine(
         nowIso,
-        'READY',
+        'Agent ready',
         detail([
           `${actorName(event)}`,
           readString(event, 'runtime') ? `(${readString(event, 'runtime')})` : undefined,
           readString(event, 'provider') ? `provider=${readString(event, 'provider')}` : undefined,
           readString(event, 'model') ? `model=${readString(event, 'model')}` : undefined,
         ]),
-        event
+        event,
+        options
       );
     case 'worker_error':
       return formatLine(
         nowIso,
-        'ERROR',
-        `${actorName(event)} ${readString(event, 'code') ?? 'worker_error'}${quotePreview(readString(event, 'message'), 120)}`,
-        event
+        'Agent error',
+        detail([
+          `${actorName(event)}`,
+          humanizeCode(readString(event, 'code') ?? 'worker_error'),
+          quotePreview(readString(event, 'message'), 120),
+        ]),
+        event,
+        options
       );
     case 'agent_released':
-      return formatLine(nowIso, 'RELEASED', actorName(event), event);
+      return formatLine(nowIso, 'Agent released', actorName(event), event, options);
     case 'agent_exit':
       return formatLine(
         nowIso,
-        'EXIT',
-        `${actorName(event)} ${readString(event, 'reason') ?? ''}`.trim(),
-        event
+        'Agent exit',
+        detail([actorName(event), reasonSuffix(event)]),
+        event,
+        options
       );
     case 'agent_exited':
       return formatLine(
         nowIso,
-        'EXITED',
+        'Agent exited',
         detail([
           `${actorName(event)}`,
           readCount(event, 'code') ? `code=${readCount(event, 'code')}` : undefined,
           readString(event, 'signal') ? `signal=${readString(event, 'signal')}` : undefined,
-          readString(event, 'reason') ? `(${readString(event, 'reason')})` : undefined,
+          reasonSuffix(event),
         ]),
-        event
+        event,
+        options
       );
     case 'agent_context_low':
       return formatLine(
         nowIso,
-        'CONTEXT',
+        'Context low',
         `${actorName(event)} ${readCount(event, 'pct') ?? '?'}% remaining`,
-        event
+        event,
+        options
       );
     case 'agent_idle':
       return formatLine(
         nowIso,
-        'IDLE',
+        'Agent idle',
         `${actorName(event)} idle ${readCount(event, 'idle_secs') ?? '?'}s`,
-        event
+        event,
+        options
       );
     case 'agent_blocked_on_send':
       return formatLine(
         nowIso,
-        'BLOCKED',
+        'Agent blocked',
         `${actorName(event)} blocked ${readCount(event, 'blocked_secs') ?? '?'}s (${readCount(event, 'pending_delivery_count') ?? '?'} pending)`,
-        event
+        event,
+        options
       );
     case 'agent_restarting':
       return formatLine(
         nowIso,
-        'RESTART',
+        'Agent restarting',
         `${actorName(event)} restart ${readCount(event, 'restart_count') ?? '?'} in ${readCount(event, 'delay_ms') ?? '?'}ms`,
-        event
+        event,
+        options
       );
     case 'agent_restarted':
       return formatLine(
         nowIso,
-        'RESTARTED',
+        'Agent restarted',
         `${actorName(event)} restart ${readCount(event, 'restart_count') ?? '?'}`,
-        event
+        event,
+        options
       );
     case 'agent_permanently_dead':
       return formatLine(
         nowIso,
-        'DEAD',
-        `${actorName(event)}${quotePreview(readString(event, 'reason'), 120)}`,
-        event
+        'Agent dead',
+        detail([actorName(event), reasonSuffix(event)]),
+        event,
+        options
       );
     case 'channel_subscribed':
       return formatLine(
         nowIso,
-        'SUBSCRIBED',
+        'Subscribed',
         `${actorName(event)} ${JSON.stringify(event.channels ?? [])}`,
-        event
+        event,
+        options
       );
     case 'channel_unsubscribed':
       return formatLine(
         nowIso,
-        'UNSUB',
+        'Unsubscribed',
         `${actorName(event)} ${JSON.stringify(event.channels ?? [])}`,
-        event
+        event,
+        options
       );
     case 'agent_pending_drained':
       return formatLine(
         nowIso,
-        'DRAINED',
-        `${actorName(event)} drained ${readCount(event, 'count') ?? '?'} pending${readString(event, 'reason') ? ` (${readString(event, 'reason')})` : ''}`,
-        event
+        'Pending drained',
+        detail([
+          `${actorName(event)} drained ${readCount(event, 'count') ?? '?'} pending`,
+          reasonSuffix(event),
+        ]),
+        event,
+        options
       );
     case 'agent_inbound_delivery_mode_changed':
       return formatLine(
         nowIso,
-        'MODE',
-        `${actorName(event)} ${readString(event, 'previous_mode') ?? '?'} -> ${readString(event, 'mode') ?? '?'}`,
-        event
+        'Delivery mode',
+        `${actorName(event)} ${humanizeCode(readString(event, 'previous_mode')) ?? '?'} -> ${humanizeCode(readString(event, 'mode')) ?? '?'}`,
+        event,
+        options
       );
     case 'acl_denied':
       return formatLine(
         nowIso,
-        'ACL_DENIED',
+        'ACL denied',
         `${actorName(event)} from ${readString(event, 'sender') ?? '?'}`,
-        event
+        event,
+        options
       );
     case 'replay_gap':
       return formatLine(
         nowIso,
-        'GAP',
+        'Replay gap',
         `requested ${readCount(event, 'requestedSinceSeq') ?? '?'} oldest available ${readCount(event, 'oldestAvailable') ?? '?'}`,
-        event
+        event,
+        options
       );
     default:
       return formatLine(
         nowIso,
-        'EVENT',
+        'Broker event',
         `${kind ?? 'unknown'} ${quotePreview(JSON.stringify(event), 180)}`.trim(),
-        event
+        event,
+        options
       );
   }
 }
@@ -513,7 +566,7 @@ export async function runActivitySession(
         return;
       }
 
-      const line = formatActivityEvent(event, deps.nowIso());
+      const line = formatActivityEvent(event, deps.nowIso(), { ids: options.ids === true });
       if (line) deps.writeLine(line);
     });
 
@@ -552,6 +605,7 @@ export function registerActivityCommands(
     .option('--kind <kind>', 'Only show events with this kind')
     .option('--name <name>', 'Only show events involving this agent/name')
     .option('--no-streams', 'Hide worker_stream output previews')
+    .option('--ids', 'Show event, delivery, and replay sequence identifiers')
     .option('--json', 'Emit matching events as JSON Lines')
     .action(async (options: ActivityOptions) => {
       const code = await runActivitySession(options, deps);

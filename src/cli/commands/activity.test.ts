@@ -122,7 +122,24 @@ describe('formatActivityEvent', () => {
         },
         '2026-02-20T12:34:56.000Z'
       )
-    ).toBe('12:34:56 RECEIVED   Alice -> Bob evt_1 "hello there" #4');
+    ).toBe('12:34:56  Message received   Alice -> Bob: "hello there"');
+  });
+
+  it('shows event identifiers only when requested', () => {
+    expect(
+      formatActivityEvent(
+        {
+          kind: 'relay_inbound',
+          from: 'Alice',
+          target: 'Bob',
+          body: 'hello',
+          event_id: 'evt_1',
+          seq: 4,
+        },
+        '2026-02-20T12:34:56.000Z',
+        { ids: true }
+      )
+    ).toBe('12:34:56  Message received   Alice -> Bob: "hello" [event evt_1, seq 4]');
   });
 
   it('formats outbound relaycast publish activity', () => {
@@ -136,7 +153,7 @@ describe('formatActivityEvent', () => {
         },
         '2026-02-20T12:34:56.000Z'
       )
-    ).toBe('12:34:56 SENT       broker -> #general (channel) event evt_2');
+    ).toBe('12:34:56  Message sent       broker -> #general (channel)');
   });
 
   it('sanitizes worker output previews and drops empty control chunks', () => {
@@ -150,7 +167,7 @@ describe('formatActivityEvent', () => {
         },
         '2026-02-20T12:34:56.000Z'
       )
-    ).toBe('12:34:56 OUTPUT     WorkerA stdout: "result"');
+    ).toBe('12:34:56  Output             WorkerA stdout: "result"');
 
     expect(
       formatActivityEvent(
@@ -200,7 +217,7 @@ describe('runActivitySession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(logs[0]?.[0]).toContain('[activity] streaming broker activity');
-    expect(lines).toEqual(['12:34:56 RECEIVED   Alice -> Bob evt_1 "ship it" #8']);
+    expect(lines).toEqual(['12:34:56  Message received   Alice -> Bob: "ship it"']);
   });
 
   it('supports JSON Lines output and event filters', async () => {
@@ -246,7 +263,7 @@ describe('runActivitySession', () => {
     socket.emit('close', 1000, Buffer.from(''));
 
     await sessionPromise;
-    expect(lines).toEqual(['12:34:56 IDLE       WorkerA idle 30s']);
+    expect(lines).toEqual(['12:34:56  Agent idle         WorkerA idle 30s']);
   });
 
   it('returns 1 when no broker connection can be resolved', async () => {
@@ -303,6 +320,6 @@ describe('registerActivityCommands', () => {
     socket.emit('close', 1000, Buffer.from(''));
 
     await commandPromise;
-    expect(lines).toEqual(['12:34:56 RELEASED   WorkerA']);
+    expect(lines).toEqual(['12:34:56  Agent released     WorkerA']);
   });
 });
