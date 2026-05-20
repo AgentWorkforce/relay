@@ -68,9 +68,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             for state_file in &stale_state_files {
                 eprintln!("[agent-relay] WARNING:   {}", state_file.display());
             }
-            eprintln!(
-                "[agent-relay] WARNING: remove them to avoid confusing spawned agents."
-            );
+            eprintln!("[agent-relay] WARNING: remove them to avoid confusing spawned agents.");
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
     };
