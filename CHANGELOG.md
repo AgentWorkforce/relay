@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay new NAME CLI [args...]` starts broker-owned agents, with `--attach`, `--ephemeral`, and `-n` / `--name` spawn-and-attach forms.
 - `agent-relay rm <name>` releases broker-owned agents.
 - Broker `/api/spawned/{name}/delivery-mode`, `/pending`, and `/flush` routes manage per-agent inbound queues.
+- Broker `/api/input/{name}/stream` and SDK `openInputStream()` provide ordered websocket PTY input without one HTTP request per keystroke.
 - TypeScript SDK clients can read snapshots, stream worker output, set delivery mode, inspect pending queues, and flush queued messages.
 - `agent-relay replies <agent>` reads worker DM replies with JSON, unread, mark-read, sender identity, and cursor options.
 - `agent-relay history` and `agent-relay replies` accept message-id `--since` cursors for incremental reads.

@@ -14,7 +14,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
+import {
+  BrokerTransport,
+  AgentRelayProtocolError,
+  type PtyInputStream,
+  type PtyInputStreamOptions,
+} from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
 import type {
   AgentRuntime,
@@ -481,6 +486,10 @@ export class AgentRelayClient {
       method: 'POST',
       body: JSON.stringify({ data }),
     });
+  }
+
+  openInputStream(name: string, options?: PtyInputStreamOptions): PtyInputStream {
+    return this.transport.openInputStream(name, options);
   }
 
   async resizePty(

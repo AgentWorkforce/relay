@@ -180,6 +180,7 @@ as `drive`, `view`, and `passthrough`.
 | Method | Broker route | Description |
 | ------ | ------------ | ----------- |
 | `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
+| `client.openInputStream(name, options?)` | `GET /api/input/{name}/stream` | Open a websocket input stream with ordered writes and bounded client-side buffering. |
 | `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
 | `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
 | `client.getInboundDeliveryMode(name)` | `GET /api/spawned/{name}/delivery-mode` | Read `manual_flush` or `auto_inject`. |
@@ -204,7 +205,11 @@ try {
   const pending = await client.getPending(name);
   console.log(`Queued messages: ${pending.length}`);
 
-  await client.sendInput(name, 'please continue\n');
+  const input = client.openInputStream(name);
+  await input.waitUntilOpen();
+  await input.send('please continue\n');
+  input.close();
+
   await client.resizePty(name, 40, 120);
   await client.flushPending(name);
 } finally {

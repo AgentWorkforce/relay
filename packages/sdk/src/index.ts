@@ -1,6 +1,13 @@
 export * from './protocol.js';
 export * from './types.js';
-export { BrokerTransport, type BrokerTransportOptions, AgentRelayProtocolError } from './transport.js';
+export {
+  BrokerTransport,
+  type BrokerTransportOptions,
+  AgentRelayProtocolError,
+  PtyInputStream,
+  type PtyInputStreamOptions,
+  type PtyInputWriteResult,
+} from './transport.js';
 export {
   AgentRelayClient,
   type AgentRelayBrokerInitArgs,
