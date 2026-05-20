@@ -904,6 +904,29 @@ impl BrokerRuntime {
                     })));
                 }
             }
+            ListenApiRequest::CheckPtyInputTarget { name, reply } => {
+                match workers
+                    .workers
+                    .get(&name)
+                    .map(|handle| handle.spec.runtime.clone())
+                {
+                    None => {
+                        let _ =
+                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                    }
+                    Some(AgentRuntime::Headless) => {
+                        let _ = reply.send(Err(format!(
+                            "unsupported_runtime: worker '{name}' is headless; pty input streams are only supported on PTY workers"
+                        )));
+                    }
+                    Some(AgentRuntime::Pty) => {
+                        let _ = reply.send(Ok(json!({
+                            "name": name,
+                            "runtime": "pty",
+                        })));
+                    }
+                }
+            }
             ListenApiRequest::ResizePty {
                 name,
                 rows,

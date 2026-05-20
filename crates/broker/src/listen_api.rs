@@ -4,7 +4,11 @@
 //! that power the dashboard's REST API for spawning/releasing agents and
 //! sending messages.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     protocol::MessageInjectionMode,
@@ -21,6 +25,8 @@ use uuid::Uuid;
 use crate::worker_request::{RequestWorkerError, DEFAULT_REQUEST_TIMEOUT};
 
 const LISTEN_API_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 // ---------------------------------------------------------------------------
 // Request / State types
@@ -76,6 +82,10 @@ pub enum ListenApiRequest {
     SendInput {
         name: String,
         data: String,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    CheckPtyInputTarget {
+        name: String,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     ResizePty {
@@ -249,6 +259,7 @@ struct ListenApiState {
     persist: bool,
     /// When the broker started
     started_at: std::time::Instant,
+    input_serializers: PtyInputSerializers,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -312,6 +323,7 @@ fn listen_api_router_with_auth(
         broker_version: crate::util::version::broker_version().to_string(),
         persist: config.persist,
         started_at: std::time::Instant::now(),
+        input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
 
     let protected = Router::new()
@@ -332,6 +344,10 @@ fn listen_api_router_with_auth(
         )
         .route("/api/send", routing::post(listen_api_send))
         .route("/api/input/{name}", routing::post(listen_api_send_input))
+        .route(
+            "/api/input/{name}/stream",
+            routing::get(listen_api_input_stream),
+        )
         .route("/api/resize/{name}", routing::post(listen_api_resize_pty))
         .route(
             "/api/spawned/{name}/snapshot",
@@ -1015,7 +1031,7 @@ fn api_error(
 /// preserves typed-error code/status mappings but falls back here for
 /// the structured `RequestWorkerError::WorkerError` envelope so worker-
 /// side codes like `invalid_format` keep producing 400s.
-fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
+fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
     if err.starts_with("agent_not_found") {
         (axum::http::StatusCode::NOT_FOUND, "agent_not_found")
     } else if err.starts_with("unsupported_operation") {
@@ -1030,6 +1046,11 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &str) {
         // Worker died or stalled between accepting the frame and
         // replying. This is a server-side fault, not a bad request.
         (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
+    } else if err.starts_with("internal_error") {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+        )
     } else if err.starts_with("invalid_") {
         (axum::http::StatusCode::BAD_REQUEST, "invalid_request")
     } else {
@@ -1059,24 +1080,239 @@ async fn listen_api_send_input(
     axum::extract::Path(name): axum::extract::Path<String>,
     axum::Json(body): axum::Json<SendInputBody>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
+    match send_pty_input_serialized(&state.tx, &state.input_serializers, &name, body.data).await {
+        Ok(val) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Err(err) => {
+            let (status, code) = classify_error(&err);
+            api_error(status, code, err)
+        }
+    }
+}
+
+async fn listen_api_input_stream(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| {
+        handle_pty_input_ws(
+            socket,
+            state.tx.clone(),
+            state.input_serializers.clone(),
+            name,
+        )
+    })
+}
+
+async fn handle_pty_input_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    tx: mpsc::Sender<ListenApiRequest>,
+    input_serializers: PtyInputSerializers,
+    name: String,
+) {
+    tracing::info!(agent = %name, "PTY input WS client connected");
+
+    match check_pty_input_target(&tx, &name).await {
+        Ok(_) => {
+            if !send_pty_input_ws_payload(
+                &mut socket,
+                json!({ "type": "pty_input_ready", "name": name }),
+            )
+            .await
+            {
+                return;
+            }
+        }
+        Err(err) => {
+            let (status, code) = classify_error(&err);
+            let _ = send_pty_input_ws_error(&mut socket, code, err, status.as_u16()).await;
+            let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+            return;
+        }
+    }
+
+    while let Some(next) = socket.recv().await {
+        let message = match next {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::debug!(agent = %name, error = %error, "PTY input WS receive failed");
+                break;
+            }
+        };
+
+        match pty_input_data_from_ws_message(message) {
+            PtyInputFrame::Data(data) => {
+                let bytes_written = data.len();
+                match send_pty_input_serialized(&tx, &input_serializers, &name, data).await {
+                    Ok(_) => {
+                        if !send_pty_input_ws_payload(
+                            &mut socket,
+                            json!({
+                                "type": "pty_input_ack",
+                                "name": name,
+                                "bytes_written": bytes_written,
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let (status, code) = classify_error(&err);
+                        let _ =
+                            send_pty_input_ws_error(&mut socket, code, err, status.as_u16()).await;
+                        let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+                        break;
+                    }
+                }
+            }
+            PtyInputFrame::Pong(payload) => {
+                if socket
+                    .send(axum::extract::ws::Message::Pong(payload.into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            PtyInputFrame::Ignore => {}
+            PtyInputFrame::Close => break,
+            PtyInputFrame::Invalid(message) => {
+                if !send_pty_input_ws_error(&mut socket, "invalid_input", message, 400).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    tracing::info!(agent = %name, "PTY input WS client disconnected");
+}
+
+async fn send_pty_input_serialized(
+    tx: &mpsc::Sender<ListenApiRequest>,
+    input_serializers: &PtyInputSerializers,
+    name: &str,
+    data: String,
+) -> Result<Value, String> {
+    let serializer = {
+        let mut serializers = input_serializers.lock().await;
+        serializers
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _guard = serializer.lock().await;
+    send_pty_input_frame(tx, name, data).await
+}
+
+async fn check_pty_input_target(
+    tx: &mpsc::Sender<ListenApiRequest>,
+    name: &str,
+) -> Result<Value, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::SendInput {
-            name: name.clone(),
-            data: body.data,
-            reply: reply_tx,
-        })
+    tx.send(ListenApiRequest::CheckPtyInputTarget {
+        name: name.to_string(),
+        reply: reply_tx,
+    })
+    .await
+    .map_err(|_| "internal_error: internal channel closed".to_string())?;
+    reply_rx
         .await
-        .is_err()
-    {
-        return internal_error();
+        .map_err(|_| "internal_error: internal reply dropped".to_string())?
+}
+
+async fn send_pty_input_frame(
+    tx: &mpsc::Sender<ListenApiRequest>,
+    name: &str,
+    data: String,
+) -> Result<Value, String> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(ListenApiRequest::SendInput {
+        name: name.to_string(),
+        data,
+        reply: reply_tx,
+    })
+    .await
+    .map_err(|_| "internal_error: internal channel closed".to_string())?;
+    reply_rx
+        .await
+        .map_err(|_| "internal_error: internal reply dropped".to_string())?
+}
+
+enum PtyInputFrame {
+    Data(String),
+    Pong(Vec<u8>),
+    Ignore,
+    Close,
+    Invalid(String),
+}
+
+fn pty_input_data_from_ws_message(message: axum::extract::ws::Message) -> PtyInputFrame {
+    match message {
+        axum::extract::ws::Message::Text(text) => parse_pty_input_text(text.as_str()),
+        axum::extract::ws::Message::Binary(bytes) => match String::from_utf8(bytes.to_vec()) {
+            Ok(data) => PtyInputFrame::Data(data),
+            Err(_) => PtyInputFrame::Invalid("binary input frames must be valid UTF-8".to_string()),
+        },
+        axum::extract::ws::Message::Ping(payload) => PtyInputFrame::Pong(payload.to_vec()),
+        axum::extract::ws::Message::Pong(_) => PtyInputFrame::Ignore,
+        axum::extract::ws::Message::Close(_) => PtyInputFrame::Close,
     }
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => api_error(axum::http::StatusCode::BAD_REQUEST, "agent_not_found", err),
-        Err(_) => internal_error(),
+}
+
+fn parse_pty_input_text(text: &str) -> PtyInputFrame {
+    let trimmed = text.trim();
+    if !(trimmed.starts_with('{') && trimmed.ends_with('}')) {
+        return PtyInputFrame::Data(text.to_string());
     }
+
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        return PtyInputFrame::Data(text.to_string());
+    };
+
+    if value.get("type").and_then(Value::as_str) != Some("pty_input") {
+        return PtyInputFrame::Data(text.to_string());
+    }
+
+    match value.get("data").and_then(Value::as_str) {
+        Some(data) => PtyInputFrame::Data(data.to_string()),
+        None => {
+            PtyInputFrame::Invalid("pty_input frame must include a string 'data' field".to_string())
+        }
+    }
+}
+
+async fn send_pty_input_ws_payload(
+    socket: &mut axum::extract::ws::WebSocket,
+    payload: Value,
+) -> bool {
+    let Ok(serialized) = serde_json::to_string(&payload) else {
+        return false;
+    };
+    socket
+        .send(axum::extract::ws::Message::Text(serialized.into()))
+        .await
+        .is_ok()
+}
+
+async fn send_pty_input_ws_error(
+    socket: &mut axum::extract::ws::WebSocket,
+    code: &str,
+    message: impl Into<String>,
+    status_code: u16,
+) -> bool {
+    send_pty_input_ws_payload(
+        socket,
+        json!({
+            "type": "pty_input_error",
+            "code": code,
+            "message": message.into(),
+            "retryable": false,
+            "statusCode": status_code,
+        }),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -1909,7 +2145,7 @@ mod auth_tests {
 
     use super::{
         listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
-        SetInboundDeliveryModeOk,
+        PtyInputFrame, SetInboundDeliveryModeOk,
     };
     use crate::protocol::MessageInjectionMode;
     use crate::types::{InboundDeliveryMode, PendingRelayMessage};
@@ -2267,6 +2503,46 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn input_stream_route_rejects_missing_api_key_when_auth_enabled() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/input/worker-a/stream")
+                    .method("GET")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn input_stream_parser_accepts_raw_and_json_control_frames() {
+        match super::parse_pty_input_text("hello\n") {
+            PtyInputFrame::Data(data) => assert_eq!(data, "hello\n"),
+            _ => panic!("raw text should become input data"),
+        }
+
+        match super::parse_pty_input_text(r#"{"type":"pty_input","data":"hello\n"}"#) {
+            PtyInputFrame::Data(data) => assert_eq!(data, "hello\n"),
+            _ => panic!("pty_input json should become input data"),
+        }
+
+        match super::parse_pty_input_text(r#"{"type":"other","data":"hello"}"#) {
+            PtyInputFrame::Data(data) => assert_eq!(data, r#"{"type":"other","data":"hello"}"#),
+            _ => panic!("non-pty_input json should be treated as raw input"),
+        }
+
+        match super::parse_pty_input_text(r#"{"type":"pty_input"}"#) {
+            PtyInputFrame::Invalid(message) => assert!(message.contains("'data'")),
+            _ => panic!("missing data field should be invalid"),
+        }
+    }
+
+    #[tokio::test]
     async fn api_route_accepts_bearer_token() {
         let (router, mut rx) = test_router(Some("secret"));
         let list_replier = tokio::spawn(async move {
@@ -2609,6 +2885,65 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(body["sent"], json!(true));
         replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn input_serializer_preserves_per_agent_order_until_reply() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let serializers =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+        let first = tokio::spawn({
+            let tx = tx.clone();
+            let serializers = serializers.clone();
+            async move {
+                super::send_pty_input_serialized(&tx, &serializers, "worker-a", "first".into())
+                    .await
+            }
+        });
+
+        let first_reply = match rx.recv().await {
+            Some(ListenApiRequest::SendInput { name, data, reply }) => {
+                assert_eq!(name, "worker-a");
+                assert_eq!(data, "first");
+                reply
+            }
+            other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+        };
+
+        let second = tokio::spawn({
+            let tx = tx.clone();
+            let serializers = serializers.clone();
+            async move {
+                super::send_pty_input_serialized(&tx, &serializers, "worker-a", "second".into())
+                    .await
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "second input for same agent must wait for first broker reply"
+        );
+
+        let _ = first_reply.send(Ok(json!({ "sent": "first" })));
+        assert_eq!(
+            first.await.expect("first task should complete"),
+            Ok(json!({ "sent": "first" }))
+        );
+
+        match rx.recv().await {
+            Some(ListenApiRequest::SendInput { name, data, reply }) => {
+                assert_eq!(name, "worker-a");
+                assert_eq!(data, "second");
+                let _ = reply.send(Ok(json!({ "sent": "second" })));
+            }
+            other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+        }
+        assert_eq!(
+            second.await.expect("second task should complete"),
+            Ok(json!({ "sent": "second" }))
+        );
     }
 
     #[tokio::test]

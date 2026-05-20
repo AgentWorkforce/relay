@@ -180,6 +180,7 @@ as `drive`, `view`, and `passthrough`.
 | Method | Broker route | Description |
 | ------ | ------------ | ----------- |
 | `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
+| `client.openInputStream(name, options?)` | `GET /api/input/{name}/stream` | Open a websocket input stream with ordered writes and bounded client-side buffering. |
 | `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
 | `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
 | `client.getInboundDeliveryMode(name)` | `GET /api/spawned/{name}/delivery-mode` | Read `manual_flush` or `auto_inject`. |
@@ -187,6 +188,11 @@ as `drive`, `view`, and `passthrough`.
 | `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `manual_flush` mode. |
 | `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
 | `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
+
+`client.openInputStream` accepts `PtyInputStreamOptions`: `highWaterMarkBytes`
+defaults to 1 MiB of queued and in-flight UTF-8 input, and `openTimeoutMs`
+defaults to 10 seconds. Invalid non-finite or non-positive values are rejected
+before connecting.
 
 ```typescript
 import { AgentRelayClient, type InboundDeliveryMode } from '@agent-relay/sdk';
@@ -204,7 +210,17 @@ try {
   const pending = await client.getPending(name);
   console.log(`Queued messages: ${pending.length}`);
 
-  await client.sendInput(name, 'please continue\n');
+  const input = client.openInputStream(name);
+  try {
+    await input.waitUntilOpen();
+    const result = await input.send('please continue\n');
+    console.log(`Wrote ${result.bytes_written} bytes`);
+  } catch (error) {
+    console.error(`Input stream failed: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    input.close();
+  }
+
   await client.resizePty(name, 40, 120);
   await client.flushPending(name);
 } finally {

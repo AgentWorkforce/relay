@@ -1,0 +1,57 @@
+{
+  "id": "traj_1rrpe2r7fyem",
+  "version": 1,
+  "task": {
+    "title": "Use streaming PTY input in CLI drive",
+    "source": {
+      "system": "plain",
+      "id": "github-924"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-20T07:20:33.009Z",
+  "completedAt": "2026-05-20T07:26:17.567Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-20T07:26:13.626Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k7lezyjr8huj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-20T07:26:13.626Z",
+      "endedAt": "2026-05-20T07:26:17.567Z",
+      "events": [
+        {
+          "ts": 1779261973627,
+          "type": "decision",
+          "content": "Drive and passthrough now use SDK PTY input streams: Drive and passthrough now use SDK PTY input streams",
+          "raw": {
+            "question": "Drive and passthrough now use SDK PTY input streams",
+            "chosen": "Drive and passthrough now use SDK PTY input streams",
+            "alternatives": [],
+            "reasoning": "Both CLI modes represent direct human terminal input, so they should use AgentRelayClient.openInputStream while Relay messages continue through delivery and flush APIs."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Updated drive and passthrough CLI sessions to open SDK PTY input streams before raw-mode stdin takeover, kept Relay flush/delivery paths unchanged, and added CLI tests for stream writes and open failures.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "35943eb6e144ae2410b34e52328ca699edf952eb",
+    "endRef": "35943eb6e144ae2410b34e52328ca699edf952eb"
+  }
+}

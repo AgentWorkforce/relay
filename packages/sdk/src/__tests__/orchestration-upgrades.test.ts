@@ -339,6 +339,17 @@ describe('AgentRelayClient orchestration payloads', () => {
     expect(request).toHaveBeenNthCalledWith(3, '/api/spawned/worker/snapshot?format=ansi');
   });
 
+  it('exposes websocket PTY input streams', () => {
+    const client = createProtocolClient();
+    const fakeStream = { send: vi.fn(), close: vi.fn(), waitUntilOpen: vi.fn() };
+    const openInputStream = vi
+      .spyOn((client as any).transport, 'openInputStream')
+      .mockReturnValue(fakeStream);
+
+    expect(client.openInputStream('worker', { highWaterMarkBytes: 4096 })).toBe(fakeStream);
+    expect(openInputStream).toHaveBeenCalledWith('worker', { highWaterMarkBytes: 4096 });
+  });
+
   it('subscribeWorkerStream yields only matching stream chunks', async () => {
     const client = createProtocolClient();
     const connect = vi.spyOn((client as any).transport, 'connect').mockImplementation(() => undefined);

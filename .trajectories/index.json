@@ -1083,6 +1083,27 @@
       "completedAt": "2026-05-19T17:21:49.702Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_sh2ahp9z2xg6.json"
     },
+    "traj_hysw5o7idqas": {
+      "title": "Fix issue 924",
+      "status": "completed",
+      "startedAt": "2026-05-20T05:35:07.262Z",
+      "completedAt": "2026-05-20T05:47:54.189Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_hysw5o7idqas.json"
+    },
+    "traj_qtmid2nzz0kz": {
+      "title": "Address PR 929 review comments",
+      "status": "completed",
+      "startedAt": "2026-05-20T06:21:54.721Z",
+      "completedAt": "2026-05-20T06:26:56.700Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_qtmid2nzz0kz.json"
+    },
+    "traj_1rrpe2r7fyem": {
+      "title": "Use streaming PTY input in CLI drive",
+      "status": "completed",
+      "startedAt": "2026-05-20T07:20:33.009Z",
+      "completedAt": "2026-05-20T07:26:17.567Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_1rrpe2r7fyem.json"
+    },
     "traj_2gpglosdsq7s": {
       "title": "Fix broker session read paths and agent listing errors",
       "status": "completed",

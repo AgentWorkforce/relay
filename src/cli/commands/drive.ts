@@ -16,7 +16,8 @@
  *   4. `captureAndRenderSnapshot`       → repaint the agent's current screen.
  *   5. `GET  /api/spawned/{name}/pending` → seed the status-line counter.
  *   6. Open `/ws`, subscribe to events for this worker.
- *   7. Switch local stdin to raw mode; forward bytes to `POST /api/input/{name}`.
+ *   7. Open the SDK PTY input stream, then switch local stdin to raw
+ *      mode and forward bytes through that stream.
  *
  * On detach (clean or abnormal), best-effort `PUT .../delivery-mode` restores the
  * previous mode so the queue doesn't fill up indefinitely.
@@ -24,7 +25,7 @@
 
 import { Buffer } from 'node:buffer';
 
-import type { InboundDeliveryMode } from '@agent-relay/sdk';
+import type { InboundDeliveryMode, PtyInputStreamOptions, PtyInputWriteResult } from '@agent-relay/sdk';
 import { Command } from 'commander';
 import WebSocket from 'ws';
 
@@ -93,6 +94,12 @@ export interface DriveTerminal {
   onResize(handler: () => void): () => void;
 }
 
+export interface CliPtyInputStream {
+  waitUntilOpen(): Promise<void>;
+  send(data: string): Promise<PtyInputWriteResult>;
+  close(code?: number, reason?: string): void;
+}
+
 export interface DriveDependencies {
   /** Reads `<state-dir>/connection.json` and returns parsed JSON, or null. */
   readConnectionFile: (stateDir: string) => unknown;
@@ -109,7 +116,7 @@ export interface DriveDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
-  /** HTTP client used for mode/pending/flush/input calls. Defaults to global `fetch`. */
+  /** HTTP client used for mode/pending/flush/resize calls. Defaults to global `fetch`. */
   fetch: typeof globalThis.fetch;
   /** Override for the snapshot-on-attach helper (tests substitute a stub). */
   captureAndRenderSnapshot: (
@@ -121,9 +128,16 @@ export interface DriveDependencies {
   stdin: DriveStdin;
   /** Local terminal size source — defaults to `process.stdout`. */
   terminal: DriveTerminal;
+  /** Opens the SDK PTY input stream used for raw human keystrokes. */
+  openInputStream: (
+    connection: BrokerConnection,
+    name: string,
+    options?: PtyInputStreamOptions
+  ) => CliPtyInputStream;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
+  const fetchFn: typeof globalThis.fetch = overrides.fetch ?? ((input, init) => fetch(input, init));
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -138,7 +152,7 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
-    fetch: (input, init) => fetch(input, init),
+    fetch: fetchFn,
     captureAndRenderSnapshot,
     stdin: process.stdin as DriveStdin,
     terminal: {
@@ -159,6 +173,7 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
         return () => process.stdout.off('resize', handler);
       },
     },
+    openInputStream: (connection, name, options) => openPtyInputStream(connection, name, fetchFn, options),
     ...overrides,
   };
 }
@@ -246,6 +261,16 @@ export async function sendInput(
     const failure = mapBrokerSdkFailure(err);
     return { ok: false, message: failure.message };
   }
+}
+
+/** Open the SDK-backed raw PTY input stream for interactive CLI sessions. */
+export function openPtyInputStream(
+  connection: BrokerConnection,
+  name: string,
+  fetchFn: typeof globalThis.fetch,
+  options?: PtyInputStreamOptions
+): CliPtyInputStream {
+  return createBrokerClient(connection, fetchFn).openInputStream(name, options);
 }
 
 /**
@@ -466,6 +491,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let showHelp = false;
     let terminalRows = state.initialTerminalRows;
     const parser = new KeybindParser();
+    let inputStream: CliPtyInputStream | null = null;
 
     const paintStatus = (): void => {
       deps.writeChunk(
@@ -504,17 +530,22 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     const stdinDataHandler = (chunk: Buffer): void => {
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
+        const stream = inputStream;
+        if (!stream) {
+          deps.log('[drive] input stream is not ready');
+          return;
+        }
         // Fire-and-forget; surface errors via log but don't block the
         // event loop on every keystroke.
-        // UTF-8, not latin1 — the broker deserializes /api/input's
-        // `data` as a Rust `String` and forwards the bytes verbatim.
+        // UTF-8, not latin1 — the broker input stream forwards string
+        // payload bytes verbatim to the PTY.
         // 'binary' would map bytes ≥ 0x80 to Latin-1 code points,
         // which then get UTF-8 re-encoded on the wire, doubling
         // multi-byte characters (e.g. `é` → `Ã©` on the agent's side).
-        void sendInput(connection, name, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
-          if (!res.ok) {
-            deps.log(`[drive] input send failed: ${res.message ?? 'unknown error'}`);
-          }
+        void stream.send(outcome.forward.toString('utf-8')).catch((err: unknown) => {
+          if (settled) return;
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log(`[drive] input stream send failed: ${message}`);
         });
       }
       for (const action of outcome.actions) {
@@ -570,10 +601,22 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       rawModeWasSet = false;
     };
 
+    const closeInputStream = (): void => {
+      const stream = inputStream;
+      inputStream = null;
+      if (!stream) return;
+      try {
+        stream.close(1000, 'drive client exiting');
+      } catch {
+        // best effort
+      }
+    };
+
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
       teardownStdin();
+      closeInputStream();
       try {
         socket.close(1000, 'drive client exiting');
       } catch {
@@ -588,15 +631,14 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
 
     const socket = deps.createWebSocket(wsUrl, headers);
 
-    deps.onSignal('SIGINT', () => finish(0));
-    deps.onSignal('SIGTERM', () => finish(0));
-
-    socket.on('open', () => {
-      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
-      // Now that the WS is up, take over stdin. We do this on `open`
-      // rather than synchronously so a failed connection doesn't leave
-      // the user's terminal in raw mode with nothing to type into.
+    const openInputStreamAndTakeStdin = async (): Promise<void> => {
       try {
+        inputStream = deps.openInputStream(connection, name);
+        await inputStream.waitUntilOpen();
+        if (settled) {
+          closeInputStream();
+          return;
+        }
         if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
           deps.stdin.setRawMode(true);
           rawModeWasSet = true;
@@ -608,10 +650,22 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         // `teardownStdin` on any exit path.
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
       } catch (err: unknown) {
+        if (settled) return;
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`[drive] could not enable raw input mode: ${message}`);
+        deps.error(`[drive] could not open PTY input stream: ${message}`);
         finish(1);
       }
+    };
+
+    deps.onSignal('SIGINT', () => finish(0));
+    deps.onSignal('SIGTERM', () => finish(0));
+
+    socket.on('open', () => {
+      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
+      // Now that the event WS is up, open the SDK input stream before
+      // taking over stdin. A failed stream should not leave the user's
+      // terminal in raw mode with nowhere to send bytes.
+      void openInputStreamAndTakeStdin();
     });
 
     socket.on('message', (data) => {

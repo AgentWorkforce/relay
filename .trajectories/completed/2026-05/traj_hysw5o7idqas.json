@@ -1,0 +1,57 @@
+{
+  "id": "traj_hysw5o7idqas",
+  "version": 1,
+  "task": {
+    "title": "Fix issue 924",
+    "source": {
+      "system": "plain",
+      "id": "#924"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-20T05:35:07.262Z",
+  "completedAt": "2026-05-20T05:47:54.189Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-20T05:37:56.168Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ymurwovkx9zj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-20T05:37:56.168Z",
+      "endedAt": "2026-05-20T05:47:54.189Z",
+      "events": [
+        {
+          "ts": 1779255476169,
+          "type": "decision",
+          "content": "Use dedicated PTY input websocket: Use dedicated PTY input websocket",
+          "raw": {
+            "question": "Use dedicated PTY input websocket",
+            "chosen": "Use dedicated PTY input websocket",
+            "alternatives": [],
+            "reasoning": "A separate /api/input/{name}/stream path isolates low-latency input from dashboard event replay, can reuse broker API-key auth, and lets the server preserve per-agent ordering by processing one frame at a time."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added authenticated PTY input websocket stream and TypeScript SDK openInputStream helper with ordered acks, bounded buffering, docs, and tests.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9c1849b6cf0aafa80dd2820d06cd56e8aebb6800",
+    "endRef": "9c1849b6cf0aafa80dd2820d06cd56e8aebb6800"
+  }
+}
