@@ -32,6 +32,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi};
+use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
@@ -336,6 +337,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Bounded to avoid unbounded memory growth; continuity blocks are small.
     let mut continuity_buffer = String::new();
     const CONTINUITY_BUFFER_MAX: usize = 4096;
+    // Streaming UTF-8 decoder. PTY reads can split multi-byte codepoints
+    // across chunks; the decoder holds incomplete trailing bytes for the
+    // next chunk instead of corrupting them into U+FFFD.
+    let mut utf8_decoder = Utf8StreamDecoder::new();
     // Rate-limited buffering for worker_stream emissions.
     // Chunks are accumulated and flushed at most every 100ms or when buffer exceeds threshold.
     let mut stream_buffer = String::new();
@@ -594,9 +599,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         reported_idle = false;
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
-                        let text = String::from_utf8_lossy(&chunk).to_string();
-                        let clean_text = strip_ansi(&text);
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
+                        let text = utf8_decoder.decode(&chunk);
+                        if text.is_empty() {
+                            // Whole chunk was an incomplete UTF-8 prefix held
+                            // back for the next read; nothing to emit yet.
+                            continue;
+                        }
+                        let clean_text = strip_ansi(&text);
                         append_bounded(
                             &mut startup_output,
                             &clean_text,
@@ -860,7 +870,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                     None => {
                         // PTY reader closed — child likely exited. Flush
-                        // any buffered stream output before sending
+                        // any incomplete trailing UTF-8 bytes (no further
+                        // chunks will arrive to complete them) before the
+                        // stream_buffer flush so they reach worker_stream
+                        // and echo_buffer like normal output.
+                        let tail = utf8_decoder.flush();
+                        if !tail.is_empty() {
+                            stream_buffer.push_str(&tail);
+                            echo_buffer.push_str(&tail);
+                        }
+                        // Flush any buffered stream output before sending
                         // agent_exit to preserve output ordering.
                         flush_stream_buffer!();
                         // Emit agent_exit with any echo_buffer tail so the
@@ -1111,11 +1130,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     flush_stream_buffer!();
                     let mut late_output = String::new();
                     while let Ok(chunk) = pty_rx.try_recv() {
-                        let text = String::from_utf8_lossy(&chunk).to_string();
+                        let text = utf8_decoder.decode(&chunk);
+                        if text.is_empty() {
+                            continue;
+                        }
                         late_output.push_str(&text);
                         let _ = send_frame(&out_tx, "worker_stream", None, json!({
                             "stream": "stdout",
                             "chunk": text,
+                        })).await;
+                    }
+                    // Stream is closing; flush any incomplete trailing bytes
+                    // as U+FFFD rather than silently dropping them.
+                    let tail = utf8_decoder.flush();
+                    if !tail.is_empty() {
+                        late_output.push_str(&tail);
+                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                            "stream": "stdout",
+                            "chunk": tail,
                         })).await;
                     }
                     if !late_output.is_empty() {
