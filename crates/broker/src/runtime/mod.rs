@@ -40,8 +40,8 @@ use crate::{
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
-        BrokerCommandEvent, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        InboundKind, PendingRelayMessage,
+        AgentResultMcpConfig, BrokerCommandEvent, InboundDeliveryDispatch, InboundDeliveryMode,
+        InboundDeliveryState, InboundKind, PendingRelayMessage,
     },
 };
 

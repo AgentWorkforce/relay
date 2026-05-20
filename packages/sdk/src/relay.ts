@@ -28,6 +28,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { RelayCast } from '@relaycast/sdk';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { ZodTypeAny } from 'zod';
 
 import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
 import {
@@ -41,7 +43,7 @@ import {
   type ResolvedPersona,
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
-import type { SendMessageInput, SpawnPtyInput } from './types.js';
+import type { JsonSchema, SendMessageInput, SpawnPtyInput } from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -161,6 +163,36 @@ export interface Message {
   mode?: MessageInjectionMode;
 }
 
+export interface AgentResultMeta {
+  name: string;
+  resultId: string;
+  final: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentResult<T = unknown> extends AgentResultMeta {
+  data: T;
+}
+
+export type AgentResultParser<T = unknown> = (value: unknown) => T;
+
+export type AgentResultSchema<T = unknown> =
+  | ZodTypeAny
+  | {
+      parse?: (value: unknown) => T;
+      safeParse?: (value: unknown) => { success: true; data: T } | { success: false; error: unknown };
+    }
+  | AgentResultParser<T>;
+
+export interface AgentResultOptions<T = unknown> {
+  /** Runtime validator/parser for submitted data. Zod schemas are supported. */
+  schema?: AgentResultSchema<T>;
+  /** JSON Schema exposed to the spawned agent's MCP result tool. Defaults to any JSON. */
+  jsonSchema?: JsonSchema;
+  /** Invoked after a result arrives and passes local schema validation. */
+  onResult?: (data: T, meta: AgentResultMeta) => void | Promise<void>;
+}
+
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
 export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
 export type DeliveryStateStatus = 'queued' | 'injected' | 'active' | 'verified' | 'failed';
@@ -237,7 +269,7 @@ export interface ReleaseOptions extends ReleaseLifecycleHooks {
   reason?: string;
 }
 
-export interface SpawnOptions extends SpawnLifecycleHooks {
+export interface SpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHooks {
   args?: string[];
   channels?: string[];
   model?: string;
@@ -258,14 +290,19 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
+  /**
+   * Enables a structured-result MCP tool for the spawned agent and validates
+   * submissions on the SDK side.
+   */
+  result?: AgentResultOptions<TAgentResult>;
 }
 
-export interface SpawnAndWaitOptions extends SpawnOptions {
+export interface SpawnAndWaitOptions<TAgentResult = unknown> extends SpawnOptions<TAgentResult> {
   timeoutMs?: number;
   waitForMessage?: boolean;
 }
 
-export interface SpawnPersonaOptions extends SpawnOptions {
+export interface SpawnPersonaOptions<TAgentResult = unknown> extends SpawnOptions<TAgentResult> {
   /** Override the spawned agent's name. Defaults to the persona id. */
   name?: string;
   /** Initial task / user prompt for the agent. */
@@ -296,7 +333,7 @@ export interface SpawnPersonaOptions extends SpawnOptions {
 type AgentOutputPayload = { stream: string; chunk: string };
 type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayload) => void);
 
-export interface Agent {
+export interface Agent<TAgentResult = unknown> {
   readonly name: string;
   readonly runtime: AgentRuntime;
   readonly channels: string[];
@@ -318,6 +355,8 @@ export interface Agent {
    *  @param timeoutMs — optional timeout in ms. Resolves with `"idle"` when first idle event fires,
    *  `"timeout"` if timeoutMs elapses first, or `"exited"` if the agent exits. */
   waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
+  /** Wait for the structured result submitted through the spawned agent's result MCP tool. */
+  waitForResult(timeoutMs?: number): Promise<AgentResult<TAgentResult>>;
   sendMessage(input: {
     to: string;
     text: string;
@@ -351,10 +390,10 @@ export interface HumanHandle {
 }
 
 export interface AgentSpawner {
-  spawn(options?: SpawnerSpawnOptions): Promise<Agent>;
+  spawn<TAgentResult = unknown>(options?: SpawnerSpawnOptions<TAgentResult>): Promise<Agent<TAgentResult>>;
 }
 
-export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
+export interface SpawnerSpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHooks {
   name?: string;
   args?: string[];
   channels?: string[];
@@ -373,6 +412,7 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
    *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
   skipRelayPrompt?: boolean;
+  result?: AgentResultOptions<TAgentResult>;
 }
 
 export type EventHook<T> = ((value: T) => void) | null;
@@ -424,8 +464,20 @@ type OutputListener = {
   stream?: string;
 };
 
-type InternalAgent = Agent & {
+type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
+};
+
+type InternalAgentResultContract<T = unknown> = {
+  schema?: AgentResultSchema<T>;
+  jsonSchema: JsonSchema;
+  onResult?: (data: T, meta: AgentResultMeta) => void | Promise<void>;
+};
+
+type AgentResultResolver = {
+  resolve: (result: AgentResult<unknown>) => void;
+  reject: (error: Error) => void;
+  token: number;
 };
 
 interface AgentActivityState {
@@ -445,6 +497,7 @@ export class AgentRelay {
   onAgentReady: EventHook<Agent> = null;
   onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
   onDeliveryUpdate: EventHook<BrokerEvent> = null;
+  onAgentResult: EventHook<AgentResult> = null;
   onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
   onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
   onAgentActivityChanged: EventHook<AgentActivityChange> = null;
@@ -490,6 +543,10 @@ export class AgentRelay {
   private readonly deliveryStates = new Map<string, DeliveryState>();
   private readonly agentActivityStates = new Map<string, AgentActivityState>();
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
+  private readonly resultContracts = new Map<string, InternalAgentResultContract>();
+  private readonly lastAgentResults = new Map<string, AgentResult<unknown>>();
+  private readonly resultResolvers = new Map<string, AgentResultResolver>();
+  private resultResolverSeq = 0;
   private readonly exitResolvers = new Map<
     string,
     { resolve: (reason: 'exited' | 'released') => void; token: number }
@@ -661,7 +718,9 @@ export class AgentRelay {
 
   // ── Spawning ────────────────────────────────────────────────────────────
 
-  async spawnPty(input: SpawnPtyInput & SpawnLifecycleHooks): Promise<Agent> {
+  async spawnPty<TAgentResult = unknown>(
+    input: SpawnPtyInput & SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> }
+  ): Promise<Agent<TAgentResult>> {
     const client = await this.ensureStarted();
     if (!input.channels || input.channels.length === 0) {
       console.warn(
@@ -678,6 +737,10 @@ export class AgentRelay {
     };
     await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
     let result: { name: string; runtime: AgentRuntime };
+    const resultContract = this.prepareAgentResultContract(input.result);
+    if (resultContract) {
+      this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
+    }
     try {
       result = await client.spawnPty({
         name: input.name,
@@ -694,8 +757,12 @@ export class AgentRelay {
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
         skipRelayPrompt: input.skipRelayPrompt,
+        agentResultSchema: resultContract?.jsonSchema,
       });
     } catch (error) {
+      if (resultContract) {
+        this.resultContracts.delete(input.name);
+      }
       await this.invokeLifecycleHook(
         input.onError,
         {
@@ -707,7 +774,11 @@ export class AgentRelay {
       throw error;
     }
     this.resetAgentLifecycleState(result.name);
-    const agent = this.makeAgent(result.name, result.runtime, channels);
+    if (result.name !== input.name && resultContract) {
+      this.resultContracts.delete(input.name);
+      this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
+    }
+    const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
     this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
       input.onSuccess,
@@ -721,7 +792,12 @@ export class AgentRelay {
     return agent;
   }
 
-  async spawn(name: string, cli: string, task?: string, options?: SpawnOptions): Promise<Agent> {
+  async spawn<TAgentResult = unknown>(
+    name: string,
+    cli: string,
+    task?: string,
+    options?: SpawnOptions<TAgentResult>
+  ): Promise<Agent<TAgentResult>> {
     return this.spawnPty({
       name,
       cli,
@@ -737,19 +813,25 @@ export class AgentRelay {
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
       skipRelayPrompt: options?.skipRelayPrompt,
+      result: options?.result,
       onStart: options?.onStart,
       onSuccess: options?.onSuccess,
       onError: options?.onError,
     });
   }
 
-  async spawnAndWait(name: string, cli: string, task: string, options?: SpawnAndWaitOptions): Promise<Agent> {
+  async spawnAndWait<TAgentResult = unknown>(
+    name: string,
+    cli: string,
+    task: string,
+    options?: SpawnAndWaitOptions<TAgentResult>
+  ): Promise<Agent<TAgentResult>> {
     const { timeoutMs, waitForMessage, ...spawnOptions } = options ?? {};
     await this.spawn(name, cli, task, spawnOptions);
     if (waitForMessage) {
-      return this.waitForAgentMessage(name, timeoutMs ?? 60_000);
+      return this.waitForAgentMessage(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
     }
-    return this.waitForAgentReady(name, timeoutMs ?? 60_000);
+    return this.waitForAgentReady(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
   }
 
   /**
@@ -770,7 +852,10 @@ export class AgentRelay {
    * @param options — overrides for tier, search dirs, name, task, and the
    *   underlying spawn options
    */
-  async spawnPersona(personaId: string, options: SpawnPersonaOptions = {}): Promise<Agent> {
+  async spawnPersona<TAgentResult = unknown>(
+    personaId: string,
+    options: SpawnPersonaOptions<TAgentResult> = {}
+  ): Promise<Agent<TAgentResult>> {
     const personaCwd = options.personaCwd ?? options.cwd ?? process.cwd();
     const searchDirs = options.searchDirs ?? this.defaultPersonaDirs;
     const loadOpts: PersonaLoadOptions = {
@@ -795,7 +880,7 @@ export class AgentRelay {
     const task = composePersonaTask(spec, options.task);
     const spawnName = options.name ?? persona.id;
 
-    let agent: Agent;
+    let agent: Agent<TAgentResult>;
     try {
       agent = await this.spawnPty({
         name: spawnName,
@@ -812,6 +897,7 @@ export class AgentRelay {
         idleThresholdSecs: options.idleThresholdSecs,
         restartPolicy: options.restartPolicy,
         skipRelayPrompt: options.skipRelayPrompt,
+        result: options.result,
         onStart: options.onStart,
         onSuccess: options.onSuccess,
         onError: options.onError,
@@ -1542,10 +1628,15 @@ export class AgentRelay {
           this.onAgentReleased?.(agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
+          this.resultContracts.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve('released');
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
+          this.resultResolvers
+            .get(event.name)
+            ?.reject(new Error(`Agent '${event.name}' was released before submitting a result`));
+          this.resultResolvers.delete(event.name);
           break;
         }
         case 'agent_exited': {
@@ -1564,10 +1655,15 @@ export class AgentRelay {
           this.onAgentExited?.(agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
+          this.resultContracts.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve('exited');
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
+          this.resultResolvers
+            .get(event.name)
+            ?.reject(new Error(`Agent '${event.name}' exited before submitting a result`));
+          this.resultResolvers.delete(event.name);
           break;
         }
         case 'agent_exit': {
@@ -1677,6 +1773,16 @@ export class AgentRelay {
           this.idleResolvers.delete(event.name);
           break;
         }
+        case 'agent_result': {
+          this.dispatchAgentResult(event.name, {
+            name: event.name,
+            resultId: event.result_id,
+            data: event.data,
+            final: event.final,
+            metadata: event.metadata ?? undefined,
+          });
+          break;
+        }
       }
       if (event.kind.startsWith('delivery_') || event.kind.startsWith('message_delivery_')) {
         this.onDeliveryUpdate?.(event);
@@ -1684,7 +1790,111 @@ export class AgentRelay {
     });
   }
 
-  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent {
+  private prepareAgentResultContract<T>(
+    options: AgentResultOptions<T> | undefined
+  ): InternalAgentResultContract<T> | undefined {
+    if (!options) {
+      return undefined;
+    }
+    return {
+      schema: options.schema,
+      jsonSchema: options.jsonSchema ?? this.schemaToJsonSchema(options.schema),
+      onResult: options.onResult,
+    };
+  }
+
+  private schemaToJsonSchema(schema: AgentResultSchema | undefined): JsonSchema {
+    if (schema && typeof schema === 'object' && this.isZodSchema(schema)) {
+      return zodToJsonSchema(schema as ZodTypeAny, { target: 'jsonSchema7' }) as JsonSchema;
+    }
+    return true;
+  }
+
+  private isZodSchema(schema: object): boolean {
+    return '_def' in schema && typeof (schema as { safeParse?: unknown }).safeParse === 'function';
+  }
+
+  private validateAgentResult<T>(contract: InternalAgentResultContract<T> | undefined, value: unknown): T {
+    const schema = contract?.schema;
+    if (!schema) {
+      return value as T;
+    }
+    if (typeof schema === 'function') {
+      return schema(value) as T;
+    }
+    if (typeof schema.safeParse === 'function') {
+      const parsed = schema.safeParse(value);
+      if (parsed.success) {
+        return parsed.data;
+      }
+      throw new Error(`Agent result failed schema validation: ${String(parsed.error)}`);
+    }
+    if (typeof schema.parse === 'function') {
+      return schema.parse(value);
+    }
+    return value as T;
+  }
+
+  private dispatchAgentResult(name: string, raw: AgentResult<unknown>): void {
+    const contract = this.resultContracts.get(name);
+    let result: AgentResult<unknown>;
+    try {
+      const data = this.validateAgentResult(contract, raw.data);
+      result = { ...raw, data };
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.resultResolvers.get(name)?.reject(err);
+      this.resultResolvers.delete(name);
+      console.warn(`[AgentRelay] structured result from "${name}" failed validation`, err);
+      return;
+    }
+
+    this.lastAgentResults.set(name, result);
+    this.onAgentResult?.(result);
+    if (contract?.onResult) {
+      Promise.resolve(contract.onResult(result.data, result)).catch((error) => {
+        console.warn(`[AgentRelay] result("${name}") onResult hook threw`, error);
+      });
+    }
+    this.resultResolvers.get(name)?.resolve(result);
+    this.resultResolvers.delete(name);
+  }
+
+  private waitForAgentResult(name: string, timeoutMs?: number): Promise<AgentResult<unknown>> {
+    const existing = this.lastAgentResults.get(name);
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+    if (timeoutMs === 0) {
+      return Promise.reject(new Error(`Timed out waiting for structured result from '${name}'`));
+    }
+    return new Promise<AgentResult<unknown>>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const token = ++this.resultResolverSeq;
+      this.resultResolvers.set(name, {
+        resolve(result) {
+          if (timer) clearTimeout(timer);
+          resolve(result);
+        },
+        reject(error) {
+          if (timer) clearTimeout(timer);
+          reject(error);
+        },
+        token,
+      });
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          const current = this.resultResolvers.get(name);
+          if (current?.token === token) {
+            this.resultResolvers.delete(name);
+          }
+          reject(new Error(`Timed out waiting for structured result from '${name}' after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+    });
+  }
+
+  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
@@ -1826,6 +2036,9 @@ export class AgentRelay {
           }
         });
       },
+      waitForResult(timeoutMs?: number) {
+        return relay.waitForAgentResult(name, timeoutMs);
+      },
       async sendMessage(input) {
         const client = await relay.ensureStarted();
         let result: Awaited<ReturnType<typeof client.sendMessage>>;
@@ -1898,7 +2111,7 @@ export class AgentRelay {
 
   private createSpawner(cli: string, defaultName: string, runtime: AgentRuntime): AgentSpawner {
     return {
-      spawn: async (options?) => {
+      spawn: async <TAgentResult = unknown>(options?: SpawnerSpawnOptions<TAgentResult>) => {
         const name = options?.name ?? defaultName;
         const channels = options?.channels ?? ['general'];
         const args = options?.args ?? [];
@@ -1916,6 +2129,7 @@ export class AgentRelay {
             idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
+            result: options?.result,
             onStart: options?.onStart,
             onSuccess: options?.onSuccess,
             onError: options?.onError,
@@ -1931,6 +2145,10 @@ export class AgentRelay {
         };
         await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
         let result: { name: string; runtime: AgentRuntime };
+        const resultContract = this.prepareAgentResultContract(options?.result);
+        if (resultContract) {
+          this.resultContracts.set(name, resultContract as InternalAgentResultContract);
+        }
         try {
           result = await client.spawnProvider({
             name,
@@ -1944,8 +2162,12 @@ export class AgentRelay {
             idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
+            agentResultSchema: resultContract?.jsonSchema,
           });
         } catch (error) {
+          if (resultContract) {
+            this.resultContracts.delete(name);
+          }
           await this.invokeLifecycleHook(
             options?.onError,
             {
@@ -1958,7 +2180,11 @@ export class AgentRelay {
         }
 
         this.resetAgentLifecycleState(result.name);
-        const agent = this.makeAgent(result.name, result.runtime, channels);
+        if (result.name !== name && resultContract) {
+          this.resultContracts.delete(name);
+          this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
+        }
+        const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
         this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
           options?.onSuccess,
@@ -1995,6 +2221,8 @@ export class AgentRelay {
     this.exitedAgents.delete(name);
     this.idleAgents.delete(name);
     this.agentActivityStates.delete(name);
+    this.lastAgentResults.delete(name);
+    this.resultResolvers.delete(name);
   }
 
   private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {

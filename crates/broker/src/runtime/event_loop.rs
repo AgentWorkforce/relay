@@ -32,6 +32,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) terminal_failed_deliveries: HashSet<String>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<String, InboundDeliveryState>,
+    pub(super) agent_result_tokens: HashMap<String, String>,
     pub(super) dm_participants_cache: DmParticipantsCache,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,

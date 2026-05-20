@@ -268,6 +268,15 @@ pub enum BrokerEvent {
         #[serde(default)]
         since: Option<String>,
     },
+    AgentResult {
+        name: String,
+        result_id: String,
+        data: Value,
+        #[serde(rename = "final")]
+        final_result: bool,
+        #[serde(default)]
+        metadata: Option<Value>,
+    },
     AgentBlockedOnSend {
         name: String,
         blocked_secs: u64,

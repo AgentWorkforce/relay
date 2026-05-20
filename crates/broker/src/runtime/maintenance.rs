@@ -13,6 +13,7 @@ impl BrokerRuntime {
         let pending_deliveries = &mut self.pending_deliveries;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
+        let agent_result_tokens = &mut self.agent_result_tokens;
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
 
@@ -169,6 +170,7 @@ impl BrokerRuntime {
                         "worker_permanently_dead",
                     );
                     delivery_states.remove(name);
+                    agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
                         json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
@@ -215,6 +217,7 @@ impl BrokerRuntime {
                     }
                     fail_pending_requests_for_worker(pending_requests, name, "worker_exited");
                     delivery_states.remove(name);
+                    agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
                         json!({
@@ -301,6 +304,7 @@ impl BrokerRuntime {
                         None,
                         worker_relay_key,
                         rst.skip_relay_prompt,
+                        None,
                         None,
                     )
                     .await

@@ -416,6 +416,7 @@ export class AgentRelayClient {
         ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
         ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+        ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
       }),
     });
   }
@@ -446,6 +447,7 @@ export class AgentRelayClient {
         ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
         ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+        ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
         transport,
       }),
     });

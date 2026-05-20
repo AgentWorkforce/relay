@@ -8,8 +8,9 @@ use std::{
 use crate::{
     metrics::MetricsCollector,
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
-    relaycast::configure_relaycast_mcp_with_token,
+    relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
+    types::AgentResultMcpConfig,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -161,11 +162,12 @@ impl WorkerRegistry {
         cwd: &Path,
         worker_relay_api_key: Option<&str>,
         skip_relay_prompt: bool,
+        agent_result: Option<&AgentResultMcpConfig>,
     ) -> Result<Vec<String>> {
-        if skip_relay_prompt {
+        if skip_relay_prompt && agent_result.is_none() {
             return Ok(Vec::new());
         }
-        configure_relaycast_mcp_with_token(
+        configure_relaycast_mcp_with_result(
             cli_name,
             agent_name,
             self.env_value("RELAY_API_KEY"),
@@ -175,6 +177,7 @@ impl WorkerRegistry {
             worker_relay_api_key,
             self.env_value("RELAY_WORKSPACES_JSON"),
             self.env_value("RELAY_DEFAULT_WORKSPACE"),
+            agent_result,
         )
         .await
     }
@@ -195,6 +198,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<String>,
+        agent_result: Option<AgentResultMcpConfig>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.workers.contains_key(&spec.name) {
@@ -281,6 +285,7 @@ impl WorkerRegistry {
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
                         worker_relay_api_key.as_deref(),
                         skip_relay_prompt,
+                        agent_result.as_ref(),
                     )
                     .await?;
 
@@ -345,6 +350,7 @@ impl WorkerRegistry {
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
                         worker_relay_api_key.as_deref(),
                         skip_relay_prompt,
+                        agent_result.as_ref(),
                     )
                     .await?;
 
@@ -382,6 +388,11 @@ impl WorkerRegistry {
             .stderr(Stdio::piped());
         for (key, value) in &self.worker_env {
             command.env(key, value);
+        }
+        if let Some(config) = &agent_result {
+            for (key, value) in config.env_pairs() {
+                command.env(key, value);
+            }
         }
         if !skip_relay_prompt && !matches!(spec.runtime, AgentRuntime::Headless) {
             if let Some(relay_key) = worker_relay_api_key {

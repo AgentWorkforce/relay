@@ -429,6 +429,14 @@ export type BrokerEvent =
       since?: string;
     }
   | {
+      kind: 'agent_result';
+      name: string;
+      result_id: string;
+      data: unknown;
+      final: boolean;
+      metadata?: Record<string, unknown> | null;
+    }
+  | {
       kind: 'agent_blocked_on_send';
       name: string;
       blocked_secs: number;

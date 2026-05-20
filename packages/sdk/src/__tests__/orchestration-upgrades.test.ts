@@ -130,6 +130,25 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
+  it('spawnPty forwards structured result JSON schema', async () => {
+    const client = createProtocolClient();
+    const request = vi
+      .spyOn((client as any).transport, 'request')
+      .mockResolvedValue({ name: 'agent-result', runtime: 'pty' });
+
+    await client.spawnPty({
+      name: 'agent-result',
+      cli: 'claude',
+      agentResultSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+    });
+
+    const body = JSON.parse(request.mock.calls[0]?.[1]?.body ?? '{}');
+    expect(body.agentResultSchema).toEqual({
+      type: 'object',
+      properties: { ok: { type: 'boolean' } },
+    });
+  });
+
   it('spawnPty forwards model and args in the broker payload', async () => {
     const client = createProtocolClient();
     const request = vi
@@ -542,6 +561,59 @@ describe('AgentRelay orchestration handles', () => {
       emit({ kind: 'worker_ready', name: 'ready-agent', runtime: 'pty' });
 
       await expect(waitPromise).resolves.toBeUndefined();
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.waitForResult resolves typed structured results and invokes hooks', async () => {
+    const { client, emit, mock } = createMockFacadeClient();
+
+    const relay = createWiredRelay(client);
+    const globalResults: unknown[] = [];
+    const callbackResults: unknown[] = [];
+    relay.onAgentResult = (result) => globalResults.push(result);
+
+    try {
+      const agent = await relay.spawnPty<{ ok: boolean }>({
+        name: 'result-agent',
+        cli: 'claude',
+        channels: ['general'],
+        result: {
+          jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+          schema(value) {
+            if (!value || typeof value !== 'object' || typeof (value as { ok?: unknown }).ok !== 'boolean') {
+              throw new Error('invalid result');
+            }
+            return value as { ok: boolean };
+          },
+          onResult: (data) => callbackResults.push(data),
+        },
+      });
+
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentResultSchema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+        })
+      );
+
+      const waitPromise = agent.waitForResult(1_000);
+      emit({
+        kind: 'agent_result',
+        name: 'result-agent',
+        result_id: 'ar_1',
+        data: { ok: true },
+        final: true,
+      });
+
+      await expect(waitPromise).resolves.toMatchObject({
+        name: 'result-agent',
+        resultId: 'ar_1',
+        data: { ok: true },
+        final: true,
+      });
+      expect(globalResults).toHaveLength(1);
+      expect(callbackResults).toEqual([{ ok: true }]);
     } finally {
       await relay.shutdown();
     }

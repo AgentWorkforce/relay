@@ -339,6 +339,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
         (
+            "AGENT_RELAY_RESULT_URL".to_string(),
+            format!("http://{}:{}/api/agent-result", cmd.api_bind, actual_port),
+        ),
+        (
             "RELAY_WORKSPACES_JSON".to_string(),
             relay_workspaces_json.clone(),
         ),
@@ -416,6 +420,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // are created lazily on first lookup and removed wherever workers
     // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<String, InboundDeliveryState> = HashMap::new();
+    let agent_result_tokens: HashMap<String, String> = HashMap::new();
     let dm_participants_cache = DmParticipantsCache::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -480,6 +485,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         terminal_failed_deliveries,
         pending_requests,
         delivery_states,
+        agent_result_tokens,
         dm_participants_cache,
         recent_thread_messages,
         shutdown,
