@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
 import { AgentRelayClient, type BrokerStatus } from '@agent-relay/sdk';
@@ -37,8 +38,191 @@ interface DiagnosticDb {
   close?: () => void;
 }
 
+interface DoctorBrokerConnection {
+  url: string;
+  api_key: string;
+  pid: number;
+}
+
+interface BrokerProcessInfo {
+  pid: number;
+  command: string;
+}
+
+function parseBrokerConnection(raw: string): DoctorBrokerConnection | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as { url?: unknown }).url === 'string' &&
+      typeof (parsed as { api_key?: unknown }).api_key === 'string' &&
+      typeof (parsed as { pid?: unknown }).pid === 'number' &&
+      (parsed as { pid: number }).pid > 0
+    ) {
+      const conn = parsed as DoctorBrokerConnection;
+      return { url: conn.url, api_key: conn.api_key, pid: conn.pid };
+    }
+  } catch {
+    // Handled by caller as invalid metadata.
+  }
+  return null;
+}
+
+function readBrokerConnectionFile(dataDir: string): {
+  path: string;
+  exists: boolean;
+  conn: DoctorBrokerConnection | null;
+} {
+  const connPath = path.join(dataDir, 'connection.json');
+  if (!fs.existsSync(connPath)) {
+    return { path: connPath, exists: false, conn: null };
+  }
+
+  try {
+    return {
+      path: connPath,
+      exists: true,
+      conn: parseBrokerConnection(fs.readFileSync(connPath, 'utf-8')),
+    };
+  } catch {
+    return { path: connPath, exists: true, conn: null };
+  }
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parsePsLine(line: string): BrokerProcessInfo | null {
+  const match = line.match(/^\s*(\d+)\s+(.+)$/);
+  if (!match) return null;
+  const pid = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return null;
+  return { pid, command: match[2] };
+}
+
+function findLiveBrokerProcesses(projectRoot: string, dataDir: string): BrokerProcessInfo[] {
+  let output: string;
+  try {
+    output = execFileSync('ps', ['axo', 'pid=,command='], { encoding: 'utf-8' });
+  } catch {
+    return [];
+  }
+
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const resolvedDataDir = path.resolve(dataDir);
+  const brokerName = path.basename(resolvedProjectRoot);
+  return output
+    .split('\n')
+    .map(parsePsLine)
+    .filter((processInfo): processInfo is BrokerProcessInfo => processInfo !== null)
+    .filter((processInfo) => processInfo.command.includes('agent-relay-broker'))
+    .filter(
+      (processInfo) =>
+        processInfo.command.includes(resolvedProjectRoot) ||
+        processInfo.command.includes(resolvedDataDir) ||
+        (brokerName !== '' && processInfo.command.includes(`--name ${brokerName}`))
+    );
+}
+
+function unresolvedTemplate(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/\$\{[^}]+\}/);
+  return match?.[0] ?? null;
+}
+
 async function checkBrokerReliability(): Promise<CheckResult[]> {
   let client: AgentRelayClient | undefined;
+  const paths = getProjectPaths();
+  const connection = readBrokerConnectionFile(paths.dataDir);
+  const relayApiKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY);
+  const relayApiKeyResult: CheckResult | null = relayApiKeyTemplate
+    ? {
+        name: 'Relaycast API key',
+        ok: false,
+        message: `Unresolved RELAY_API_KEY template (${relayApiKeyTemplate})`,
+        remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
+      }
+    : null;
+
+  if (!connection.exists) {
+    const liveBrokers = findLiveBrokerProcesses(paths.projectRoot, paths.dataDir);
+    if (liveBrokers.length > 0) {
+      return [
+        ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+        {
+          name: 'Broker connection',
+          ok: false,
+          message: `Broker process alive but ${relativePath(connection.path)} is missing (pid${liveBrokers.length === 1 ? '' : 's'}: ${liveBrokers.map((processInfo) => processInfo.pid).join(', ')})`,
+          remediation:
+            'Run `agent-relay down --force`, then `agent-relay up` to clear the half-started broker.',
+        },
+        {
+          name: 'Outbound queues',
+          ok: true,
+          message: 'Skipped (broker connection metadata missing)',
+        },
+      ];
+    }
+
+    return [
+      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      {
+        name: 'Broker connection',
+        ok: true,
+        message: 'Skipped (broker not running: no connection metadata found)',
+      },
+      {
+        name: 'Outbound queues',
+        ok: true,
+        message: 'Skipped (broker not running)',
+      },
+    ];
+  }
+
+  if (!connection.conn) {
+    return [
+      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      {
+        name: 'Broker connection',
+        ok: false,
+        message: `Invalid broker connection metadata at ${relativePath(connection.path)}`,
+        remediation: 'Run `agent-relay down --force`, then `agent-relay up` to rewrite connection metadata.',
+      },
+      {
+        name: 'Outbound queues',
+        ok: true,
+        message: 'Skipped (broker connection metadata invalid)',
+      },
+    ];
+  }
+
+  if (!isProcessRunning(connection.conn.pid)) {
+    return [
+      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      {
+        name: 'Broker connection',
+        ok: false,
+        message: `Stale broker connection metadata: pid ${connection.conn.pid} is not running`,
+        remediation:
+          'Run `agent-relay down --force`, then `agent-relay up` to remove stale connection metadata.',
+      },
+      {
+        name: 'Outbound queues',
+        ok: true,
+        message: 'Skipped (broker process is not running)',
+      },
+    ];
+  }
+
   try {
     client = AgentRelayClient.connect({ cwd: process.cwd() });
     const status = await client.getStatus();
@@ -50,6 +234,12 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     const pending = typedStatus.pending_deliveries ?? [];
     const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
     return [
+      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      {
+        name: 'Broker connection',
+        ok: true,
+        message: `Reachable at ${connection.conn.url} (pid ${connection.conn.pid})`,
+      },
       {
         name: 'Broker auth',
         ok: true,
@@ -71,10 +261,13 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return [
+      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
       {
-        name: 'Broker auth',
-        ok: true,
-        message: `Skipped (broker unavailable: ${message})`,
+        name: 'Broker connection',
+        ok: false,
+        message: `Stale or unreachable broker connection metadata: ${message}`,
+        remediation:
+          'Run `agent-relay status --wait-for=10` to confirm readiness, or `agent-relay down --force` before retrying.',
       },
       {
         name: 'Outbound queues',

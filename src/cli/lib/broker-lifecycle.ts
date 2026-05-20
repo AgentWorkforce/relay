@@ -321,6 +321,20 @@ function isBrokerExecutableCommand(command: string): boolean {
   return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
 }
 
+function isForegroundBrokerCliCommand(command: string): boolean {
+  if (command.includes('agent-relay-mcp')) {
+    return false;
+  }
+  if (!/(?:^|\s)up(?:\s|$)/.test(command) || !/(?:^|\s)--foreground(?:\s|=|$)/.test(command)) {
+    return false;
+  }
+  return /(?:^|\s)(?:\S*agent-relay(?:\.js)?|\S*agent-relay-[^\s]+)(?:\s|$)/.test(command);
+}
+
+function isBrokerProcessCommand(command: string): boolean {
+  return isBrokerExecutableCommand(command) || isForegroundBrokerCliCommand(command);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -351,32 +365,62 @@ async function processCwdMatchesProjectRoot(
   }
 }
 
-async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDependencies): Promise<void> {
+async function terminateProcess(pid: number, deps: CoreDependencies, force: boolean): Promise<boolean> {
+  try {
+    deps.killProcess(pid, 'SIGTERM');
+  } catch {
+    return false;
+  }
+
+  const exited = await waitForProcessExit(pid, force ? 500 : 300, deps);
+  if (exited || !force) {
+    return exited;
+  }
+
+  try {
+    deps.killProcess(pid, 'SIGKILL');
+  } catch {
+    return false;
+  }
+  return waitForProcessExit(pid, 500, deps);
+}
+
+async function killOrphanedBrokerProcesses(
+  projectRoot: string,
+  deps: CoreDependencies,
+  options?: { force?: boolean }
+): Promise<{ matchedCount: number; killedCount: number }> {
+  let matchedCount = 0;
+  let killedCount = 0;
   try {
     const resolvedProjectRoot = path.resolve(projectRoot);
     const brokerName = path.basename(resolvedProjectRoot) || 'project';
     const candidates: ProcessInfo[] = [];
     try {
       const processList = await deps.execCommand('ps aux');
-      const brokerProcesses = processList.stdout
+      const relayProcesses = processList.stdout
         .split('\n')
         .map(parsePsAuxLine)
         .filter((process): process is ProcessInfo => process !== null)
-        .filter((process) => isBrokerExecutableCommand(process.command));
+        .filter((process) => isBrokerProcessCommand(process.command));
 
       const matchedPids = new Set<number>();
-      for (const processInfo of brokerProcesses) {
+      for (const processInfo of relayProcesses) {
         if (commandHasProjectRoot(processInfo.command, resolvedProjectRoot)) {
           candidates.push(processInfo);
           matchedPids.add(processInfo.pid);
         }
       }
 
-      for (const processInfo of brokerProcesses) {
+      for (const processInfo of relayProcesses) {
+        if (matchedPids.has(processInfo.pid)) {
+          continue;
+        }
+        const cwdMatches = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
+        if (!cwdMatches) continue;
         if (
-          matchedPids.has(processInfo.pid) ||
-          !commandHasBrokerName(processInfo.command, brokerName) ||
-          !(await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps))
+          isBrokerExecutableCommand(processInfo.command) &&
+          !commandHasBrokerName(processInfo.command, brokerName)
         ) {
           continue;
         }
@@ -390,20 +434,19 @@ async function killOrphanedBrokerProcesses(projectRoot: string, deps: CoreDepend
       if (pid === deps.pid) {
         continue;
       }
+      matchedCount += 1;
       deps.warn(`Killing orphaned broker process (pid: ${pid})`);
-      try {
-        deps.killProcess(pid, 'SIGTERM');
-      } catch {
-        // Process may have already exited.
+      const killed = await terminateProcess(pid, deps, options?.force === true);
+      if (killed) {
+        killedCount += 1;
+      } else if (options?.force === true) {
+        deps.warn(`Broker orphan process may still be running (pid: ${pid})`);
       }
-    }
-    // Give killed processes a moment to exit.
-    if (candidates.length > 0) {
-      await deps.sleep(300);
     }
   } catch {
     // Best-effort orphan cleanup.
   }
+  return { matchedCount, killedCount };
 }
 
 function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
@@ -426,6 +469,49 @@ async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDepe
     await deps.sleep(100);
   }
   return false;
+}
+
+async function recoverHalfStartedBroker(
+  paths: CoreProjectPaths,
+  deps: CoreDependencies
+): Promise<'running' | 'recovered' | 'clear' | 'blocked'> {
+  deps.fs.mkdirSync(paths.dataDir, { recursive: true });
+  const readiness = await waitForBrokerReadiness(paths, deps, 0, true);
+  if (readiness.state === 'running') {
+    return 'running';
+  }
+
+  if (readiness.state === 'starting') {
+    deps.warn(
+      `Broker process is running but the API is not ready; killing half-started broker (pid: ${readiness.conn.pid}).`
+    );
+    const stopped = await terminateProcess(readiness.conn.pid, deps, true);
+    if (!stopped) {
+      deps.error(
+        `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+      );
+      return 'blocked';
+    }
+    cleanupBrokerFiles(paths, deps);
+    return 'recovered';
+  }
+
+  const orphanCleanup = await killOrphanedBrokerProcesses(paths.projectRoot, deps, { force: true });
+  if (orphanCleanup.matchedCount > 0) {
+    if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
+      deps.error(
+        'Failed to stop all half-started broker processes. ' +
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the processes.'
+      );
+      return 'blocked';
+    }
+    cleanupBrokerFiles(paths, deps);
+    return 'recovered';
+  }
+
+  cleanupBrokerFiles(paths, deps);
+  return 'clear';
 }
 
 function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): void {
@@ -1146,6 +1232,23 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   if (options.background || (options.dashboard === false && !options.foreground)) {
+    const preflight = await recoverHalfStartedBroker(paths, deps);
+    if (preflight === 'running') {
+      const pid = readBrokerPid(paths.dataDir, deps);
+      deps.error(
+        pid
+          ? `Broker already running for this project (pid: ${pid}).`
+          : 'Broker already running for this project.'
+      );
+      deps.error('Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.');
+      deps.exit(1);
+      return;
+    }
+    if (preflight === 'blocked') {
+      deps.exit(1);
+      return;
+    }
+
     const args = childUpArgsForDetachedStart(options, deps);
     const invocation = detachedCliInvocation(deps, args);
     let child: SpawnedProcess;
@@ -1175,6 +1278,24 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.error(
         'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
       );
+      const cleanupPids = new Set<number>();
+      if (typeof child.pid === 'number' && child.pid > 0) {
+        cleanupPids.add(child.pid);
+      }
+      if (readiness.state === 'starting') {
+        cleanupPids.add(readiness.conn.pid);
+      }
+      for (const cleanupPid of cleanupPids) {
+        deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
+        const stopped = await terminateProcess(cleanupPid, deps, true);
+        if (!stopped) {
+          deps.error(
+            `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
+              'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+          );
+        }
+      }
+      cleanupBrokerFiles(paths, deps);
       deps.exit(1);
       return;
     }
@@ -1522,7 +1643,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (!conn) {
     if (options.force) {
-      await killOrphanedBrokerProcesses(paths.projectRoot, deps);
+      await killOrphanedBrokerProcesses(paths.projectRoot, deps, { force: true });
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {

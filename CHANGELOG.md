@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PTY context budget detection uses the latest percentage in output and can re-emit after the budget rises.
 - `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
 - `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
+- `agent-relay up --no-dashboard` and `agent-relay down --force` now recover half-started brokers that stayed alive without readable connection metadata.
+- `agent-relay who` and `agent-relay agents` now fail clearly when broker queries fail instead of printing an empty agent list.
+- `agent-relay history` and `agent-relay replies` now resolve the project broker session even when `AGENT_RELAY_STATE_DIR` points elsewhere.
+- `agent-relay doctor` now fails with an actionable diagnostic for half-started, stale-connection, and unresolved-API-key-template brokers instead of reporting "healthy".
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
@@ -84,12 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.6] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Flush UTF-8 decoder on normal pty_closed path
 - Preserve split multi-byte UTF-8 in worker_stream (#922) (#922)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.6
 
 ---
@@ -97,15 +105,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.5] - 2026-05-19
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Handle write_pty frames in PTY worker (#920)
 
 ### Technical Perspective
+
 #### Dependencies & Tooling
+
 - Sync package-lock.json for next 15.5.18 bump
 - Bump next from 15.5.14 to 15.5.18 in /web
 
 #### Releases
+
 - v6.2.5
 
 ---
@@ -113,10 +126,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.4] - 2026-05-19
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Use relaycast sdk 1.1 helpers
 
 #### Releases
+
 - v6.2.4
 
 ---
@@ -124,17 +140,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.3] - 2026-05-19
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Align reported version with product release line** (#904)
 
 #### User-Impacting Fixes
+
 - Address coderabbit review on version handling
 - Use next/link for docs navigation
 - Pass idle threshold to spawned workers
 - Address runtime review findings
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Narrow public crate API
 - Group relaycast broker integration
 - Extract broker runtime event handlers
@@ -143,11 +164,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move broker crate under crates
 
 #### Dependencies & Tooling
+
 - Record runtime split trajectory
 - Complete issue 875 trajectory file list
 - Update issue 875 trajectory metadata
 
 #### Releases
+
 - v6.2.3
 
 ---
