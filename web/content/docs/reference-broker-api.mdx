@@ -136,8 +136,9 @@ that the target exists and is PTY-backed before sending:
 { "type": "pty_input_ready", "name": "Alice" }
 ```
 
-Clients may send raw text websocket frames, or JSON frames when an explicit
-envelope is easier:
+Clients may send raw text websocket frames, binary frames containing UTF-8
+input, or JSON frames when an explicit envelope is easier. Binary frames are
+decoded as UTF-8 and then processed the same way as raw text frames:
 
 ```json
 { "type": "pty_input", "data": "hello\n" }

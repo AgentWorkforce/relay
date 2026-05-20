@@ -167,6 +167,17 @@ describe('BrokerTransport.openInputStream', () => {
       await closeWebSocketServer(server);
     }
   });
+
+  it('rejects invalid stream option bounds before connecting', () => {
+    const transport = new BrokerTransport({ baseUrl: TEST_BASE_URL });
+
+    expect(() => transport.openInputStream('worker', { highWaterMarkBytes: 0 })).toThrow(
+      AgentRelayProtocolError
+    );
+    expect(() => transport.openInputStream('worker', { openTimeoutMs: Number.NaN })).toThrow(
+      AgentRelayProtocolError
+    );
+  });
 });
 
 async function waitForWebSocketServer(server: WebSocketServer): Promise<void> {

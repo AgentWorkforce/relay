@@ -189,6 +189,11 @@ as `drive`, `view`, and `passthrough`.
 | `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
 | `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
 
+`client.openInputStream` accepts `PtyInputStreamOptions`: `highWaterMarkBytes`
+defaults to 1 MiB of queued and in-flight UTF-8 input, and `openTimeoutMs`
+defaults to 10 seconds. Invalid non-finite or non-positive values are rejected
+before connecting.
+
 ```typescript
 import { AgentRelayClient, type InboundDeliveryMode } from '@agent-relay/sdk';
 
@@ -206,9 +211,15 @@ try {
   console.log(`Queued messages: ${pending.length}`);
 
   const input = client.openInputStream(name);
-  await input.waitUntilOpen();
-  await input.send('please continue\n');
-  input.close();
+  try {
+    await input.waitUntilOpen();
+    const result = await input.send('please continue\n');
+    console.log(`Wrote ${result.bytes_written} bytes`);
+  } catch (error) {
+    console.error(`Input stream failed: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    input.close();
+  }
 
   await client.resizePty(name, 40, 120);
   await client.flushPending(name);

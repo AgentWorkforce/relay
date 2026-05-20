@@ -318,8 +318,9 @@ paths:
         Open an authenticated WebSocket for low-latency PTY stdin input.
         The broker sends `{"type":"pty_input_ready","name":"..."}` after
         validating that the target exists and is PTY-backed. Clients may
-        send raw text frames or JSON frames shaped as
-        `{"type":"pty_input","data":"..."}`. Each accepted frame receives
+        send raw text frames, binary frames containing UTF-8 input, or JSON
+        frames shaped as `{"type":"pty_input","data":"..."}`. Each accepted
+        raw text, binary, or `pty_input` frame receives
         `{"type":"pty_input_ack","name":"...","bytes_written":N}`. Missing
         agents, exited agents, and unsupported runtimes are reported as
         `pty_input_error` frames before close.

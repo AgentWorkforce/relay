@@ -64,6 +64,9 @@ interface PendingPtyInput {
   settled: boolean;
 }
 
+const DEFAULT_INPUT_HIGH_WATER_MARK_BYTES = 1024 * 1024;
+const DEFAULT_INPUT_OPEN_TIMEOUT_MS = 10_000;
+
 export class PtyInputStream {
   private readonly ws: WebSocket;
   private readonly queue: PendingPtyInput[] = [];
@@ -79,7 +82,16 @@ export class PtyInputStream {
   private flushing = false;
 
   constructor(options: { url: string; apiKey?: string } & PtyInputStreamOptions) {
-    this.highWaterMarkBytes = options.highWaterMarkBytes ?? 1024 * 1024;
+    this.highWaterMarkBytes = normalizePositiveIntegerOption(
+      options.highWaterMarkBytes,
+      DEFAULT_INPUT_HIGH_WATER_MARK_BYTES,
+      'highWaterMarkBytes'
+    );
+    const openTimeoutMs = normalizePositiveIntegerOption(
+      options.openTimeoutMs,
+      DEFAULT_INPUT_OPEN_TIMEOUT_MS,
+      'openTimeoutMs'
+    );
     this.openPromise = new Promise<void>((resolve, reject) => {
       this.openResolve = resolve;
       this.openReject = reject;
@@ -101,7 +113,7 @@ export class PtyInputStream {
       this.rejectOpen(error);
       this.failAll(error);
       this.close();
-    }, options.openTimeoutMs ?? 10_000);
+    }, openTimeoutMs);
 
     this.ws.on('open', () => {
       // The broker sends pty_input_ready after it verifies the agent exists
@@ -323,6 +335,18 @@ export class PtyInputStream {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function normalizePositiveIntegerOption(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new AgentRelayProtocolError({
+      code: 'invalid_input_stream_options',
+      message: `${name} must be a finite number greater than 0`,
+      retryable: false,
+    });
+  }
+  return Math.floor(resolved);
 }
 
 function rawDataToString(data: RawData): string {
