@@ -42,9 +42,16 @@ import {
   defaultStateDir,
   readConnectionFileFromDisk,
   toWsUrl,
+  type BrokerConnection,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
-import { resizeWorker, sendInput, setInboundDeliveryMode, type InboundDeliveryMode } from './drive.js';
+import {
+  type CliPtyInputStream,
+  openPtyInputStream,
+  resizeWorker,
+  setInboundDeliveryMode,
+  type InboundDeliveryMode,
+} from './drive.js';
 
 type ExitFn = (code: number) => never;
 
@@ -99,9 +106,12 @@ export interface PassthroughDependencies {
   ) => ReturnType<typeof captureAndRenderSnapshot>;
   stdin: PassthroughStdin;
   terminal: PassthroughTerminal;
+  /** Opens the SDK PTY input stream used for raw human keystrokes. */
+  openInputStream: (connection: BrokerConnection, name: string) => CliPtyInputStream;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
+  const fetchFn: typeof globalThis.fetch = overrides.fetch ?? ((input, init) => fetch(input, init));
   return {
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -116,7 +126,7 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
-    fetch: (input, init) => fetch(input, init),
+    fetch: fetchFn,
     captureAndRenderSnapshot,
     stdin: process.stdin as PassthroughStdin,
     terminal: {
@@ -133,6 +143,7 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
         return () => process.stdout.off('resize', handler);
       },
     },
+    openInputStream: (connection, name) => openPtyInputStream(connection, name, fetchFn),
     ...overrides,
   };
 }
@@ -323,6 +334,7 @@ export async function runPassthroughSession(
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
     const parser = new PassthroughKeybindParser();
+    let inputStream: CliPtyInputStream | null = null;
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
@@ -339,10 +351,15 @@ export async function runPassthroughSession(
     const stdinDataHandler = (chunk: Buffer): void => {
       const outcome = parser.feed(chunk);
       if (outcome.forward.length > 0) {
-        void sendInput(connection, name, outcome.forward.toString('utf-8'), deps.fetch).then((res) => {
-          if (!res.ok) {
-            deps.log(`[passthrough] input send failed: ${res.message ?? 'unknown error'}`);
-          }
+        const stream = inputStream;
+        if (!stream) {
+          deps.log('[passthrough] input stream is not ready');
+          return;
+        }
+        void stream.send(outcome.forward.toString('utf-8')).catch((err: unknown) => {
+          if (settled) return;
+          const message = err instanceof Error ? err.message : String(err);
+          deps.log(`[passthrough] input stream send failed: ${message}`);
         });
       }
       for (const action of outcome.actions) {
@@ -391,10 +408,22 @@ export async function runPassthroughSession(
       rawModeWasSet = false;
     };
 
+    const closeInputStream = (): void => {
+      const stream = inputStream;
+      inputStream = null;
+      if (!stream) return;
+      try {
+        stream.close(1000, 'passthrough client exiting');
+      } catch {
+        // best effort
+      }
+    };
+
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
       teardownStdin();
+      closeInputStream();
       try {
         socket.close(1000, 'passthrough client exiting');
       } catch {
@@ -409,12 +438,14 @@ export async function runPassthroughSession(
 
     const socket = deps.createWebSocket(wsUrl, headers);
 
-    deps.onSignal('SIGINT', () => finish(0));
-    deps.onSignal('SIGTERM', () => finish(0));
-
-    socket.on('open', () => {
-      deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
+    const openInputStreamAndTakeStdin = async (): Promise<void> => {
       try {
+        inputStream = deps.openInputStream(connection, name);
+        await inputStream.waitUntilOpen();
+        if (settled) {
+          closeInputStream();
+          return;
+        }
         if (typeof deps.stdin.setRawMode === 'function' && deps.stdin.isTTY !== false) {
           deps.stdin.setRawMode(true);
           rawModeWasSet = true;
@@ -423,10 +454,19 @@ export async function runPassthroughSession(
         deps.stdin.on('data', stdinDataHandler);
         unsubscribeResize = deps.terminal.onResize(resizeHandler);
       } catch (err: unknown) {
+        if (settled) return;
         const message = err instanceof Error ? err.message : String(err);
-        deps.error(`[passthrough] could not enable raw input mode: ${message}`);
+        deps.error(`[passthrough] could not open PTY input stream: ${message}`);
         finish(1);
       }
+    };
+
+    deps.onSignal('SIGINT', () => finish(0));
+    deps.onSignal('SIGTERM', () => finish(0));
+
+    socket.on('open', () => {
+      deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
+      void openInputStreamAndTakeStdin();
     });
 
     socket.on('message', (data) => {
