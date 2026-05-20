@@ -74,6 +74,27 @@ describe('WorkflowRunner.scrubForChannel — PTY chrome stripping', () => {
     expect(out).not.toMatch(/Gitifying/);
   });
 
+  it('strips malformed overwritten q0/qW0 PTY frame runs', () => {
+    const input = [
+      'first useful line',
+      'qW0 | q0 / ql0 _ qqm ~ lqq = qW0 | q0 / ql0 _ qqm',
+      'summary: kept qW0 | q0 / ql0 _ qqm ~ lqq = qW0 | q0 done',
+      'last useful line',
+    ].join('\n');
+    const out = scrub(input);
+    expect(out).toContain('first useful line');
+    expect(out).toContain('last useful line');
+    expect(out).toMatch(/summary: kept\s+done/);
+    expect(out).not.toMatch(/qW0|ql0|qqm|lqq/);
+  });
+
+  it('redacts secrets in the runner public preview path', () => {
+    const out = scrub('deploy succeeded\napi_key=sk-abcdefghijklmnopqrstuvwxyz123456\n');
+    expect(out).toContain('deploy succeeded');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+  });
+
   it('preserves real content and OWNER_DECISION signals', () => {
     const input = [
       'Read 1 file, calling relaycast 2 times',

@@ -71,8 +71,14 @@ const CLAUDE_HEADER_RE =
   /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
 const DIR_BREADCRUMB_RE = /^\s*~[\\/]/u;
 const UI_HINT_RE =
-  /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
+  /\b(?:Press\s*up\s*to\s*edit|tab\s*to\s*queue|bypass\s*permissions|esc\s*to\s*interrupt|paste\s*again\s*to\s*expand|shift\s*[+]?\s*tab\s*to\s*cycle|running\s+stop\s+hook|fan\s+out\s+subagents)/iu;
+const VIM_MODE_RE =
+  /^[-\s]*--?(?:INSERT|NORMAL|VISUAL|REPLACE)--?[-\s]*$|--?(?:INSERT|NORMAL|VISUAL|REPLACE)--/u;
+const CLAUDE_FOOTER_RE =
+  /(?:Opus|Sonnet|Haiku)\s*\d[\d.]*\s*\(?(?:1M\s*context|context)?\)?\s*ctx\s*:\s*\d+%/iu;
 const THINKING_LINE_RE = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
+const THINKING_STATUS_RE =
+  /\b(?:thinking\s+(?:with\s+\w+\s+effort|more\s+with|harder)|↓\s*\d+\s*tokens?\b|↑\s*\d+\s*tokens?\b|crunched\s+for\s+\d|sautéed\s+for\s+\d|befuddl|flibbertigib|gitifying|flowing\s*…)/iu;
 const CURSOR_ONLY_RE = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
 const CURSOR_AGENT_RE =
   /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
@@ -80,6 +86,8 @@ const SLASH_COMMAND_RE = /^\/\w+\s*$/u;
 const MCP_JSON_KV_RE =
   /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
 const MEANINGFUL_CONTENT_RE = /[a-zA-Z0-9]/u;
+const MALFORMED_PTY_FRAME_RUN_RE = /(?:(?:qW0|q[A-Za-z]?0|[lmjkx]q{2,}|q{2,}[lmjkx]?)[\s|/_=\-~]*){4,}/giu;
+const MALFORMED_PTY_FRAME_ONLY_RE = /^[\s|/_=\-~lmjkxqtwuvn0W]{12,}$/iu;
 
 export function scrubSecrets(text: string): string {
   let result = text;
@@ -87,6 +95,15 @@ export function scrubSecrets(text: string): string {
     result = result.replace(pattern, '[REDACTED]');
   }
   return result;
+}
+
+function stripMalformedPtyFrameGarbage(line: string): string {
+  const strippedRuns = line.replace(MALFORMED_PTY_FRAME_RUN_RE, ' ');
+  const compact = strippedRuns.replace(SPINNER_RE, '').replace(/\s+/g, '');
+  if (compact.length >= 12 && MALFORMED_PTY_FRAME_ONLY_RE.test(compact)) {
+    return '';
+  }
+  return strippedRuns;
 }
 
 export function scrubForChannel(text: string): string {
@@ -130,10 +147,11 @@ export function scrubForChannel(text: string): string {
   let jsonDepth = 0;
 
   for (const line of lines) {
-    const trimmed = line.trim();
+    const cleanedLine = stripMalformedPtyFrameGarbage(line);
+    const trimmed = cleanedLine.trim();
 
     if (jsonDepth > 0) {
-      jsonDepth += countJsonDepth(line);
+      jsonDepth += countJsonDepth(cleanedLine);
       if (jsonDepth <= 0) jsonDepth = 0;
       continue;
     }
@@ -141,18 +159,21 @@ export function scrubForChannel(text: string): string {
     if (trimmed.length === 0) continue;
 
     if (trimmed.startsWith('{') || /^\[\s*\{/.test(trimmed)) {
-      jsonDepth = Math.max(countJsonDepth(line), 0);
+      jsonDepth = Math.max(countJsonDepth(cleanedLine), 0);
       continue;
     }
 
-    if (MCP_JSON_KV_RE.test(line)) continue;
+    if (MCP_JSON_KV_RE.test(cleanedLine)) continue;
     if (SPINNER_CLASS_RE.test(trimmed)) continue;
     if (BOX_DRAWING_ONLY_RE.test(trimmed)) continue;
     if (BROKER_LOG_RE.test(trimmed)) continue;
     if (CLAUDE_HEADER_RE.test(trimmed)) continue;
     if (DIR_BREADCRUMB_RE.test(trimmed)) continue;
     if (UI_HINT_RE.test(trimmed)) continue;
+    if (VIM_MODE_RE.test(trimmed)) continue;
+    if (CLAUDE_FOOTER_RE.test(trimmed)) continue;
     if (THINKING_LINE_RE.test(trimmed)) continue;
+    if (THINKING_STATUS_RE.test(trimmed)) continue;
     if (CURSOR_ONLY_RE.test(trimmed)) continue;
     if (CURSOR_AGENT_RE.test(trimmed)) continue;
     if (SLASH_COMMAND_RE.test(trimmed)) continue;
@@ -161,7 +182,7 @@ export function scrubForChannel(text: string): string {
     const alphanum = trimmed.replace(SPINNER_RE, '').replace(/\s+/g, '');
     if (alphanum.replace(/[^a-zA-Z0-9]/g, '').length <= 3) continue;
 
-    meaningful.push(line);
+    meaningful.push(cleanedLine);
   }
 
   return meaningful
