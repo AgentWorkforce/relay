@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker output events with filters and JSON Lines output.
 - `agent-relay view <name>` streams a running agent's PTY without taking control or stopping the agent.
 - `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
 - `agent-relay passthrough <name>` attaches interactively while inbound relay messages continue to auto-inject.
@@ -83,10 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.4] - 2026-05-19
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Use relaycast sdk 1.1 helpers
 
 #### Releases
+
 - v6.2.4
 
 ---
@@ -94,17 +98,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.3] - 2026-05-19
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Align reported version with product release line** (#904)
 
 #### User-Impacting Fixes
+
 - Address coderabbit review on version handling
 - Use next/link for docs navigation
 - Pass idle threshold to spawned workers
 - Address runtime review findings
 
 ### Technical Perspective
+
 #### Architecture & API Changes
+
 - Narrow public crate API
 - Group relaycast broker integration
 - Extract broker runtime event handlers
@@ -113,11 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move broker crate under crates
 
 #### Dependencies & Tooling
+
 - Record runtime split trajectory
 - Complete issue 875 trajectory file list
 - Update issue 875 trajectory metadata
 
 #### Releases
+
 - v6.2.3
 
 ---
