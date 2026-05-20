@@ -230,23 +230,19 @@ impl BrokerRuntime {
                     };
                     let effective_task = normalize_initial_task(task.clone());
 
-                    // Pre-register agent token. Claude doesn't need this — it
-                    // bakes the API key into --mcp-config JSON and self-registers.
-                    // Non-Claude CLIs need the token injected into their CLI args
-                    // at spawn time, so we do a quick (3s) registration attempt.
-                    let cli_command = parse_cli_command(&cli)
-                        .map(|(cmd, _)| cmd)
-                        .unwrap_or_else(|_| cli.clone());
-                    let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
-                    let is_claude =
-                        cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
+                    // Pre-register an agent token for every spawned worker.
+                    // `@relaycast/mcp` needs RELAY_AGENT_TOKEN +
+                    // RELAY_SKIP_BOOTSTRAP=1 in its environment to expose
+                    // tools immediately; otherwise it runs network
+                    // registration before responding to the MCP initialize
+                    // handshake, the client drops the pending server, and
+                    // no relaycast tool names land in deferred_tools. The
+                    // short timeout keeps spawn latency bounded while still
+                    // giving the registration call a real chance.
                     let worker_relay_key = {
                         let ws_token = relaycast_ws_spawn_token(&ws_value);
                         if ws_token.is_some() {
                             ws_token
-                        } else if is_claude {
-                            // Claude self-registers via its MCP server — skip blocking call
-                            None
                         } else {
                             const REG_TIMEOUT: Duration = Duration::from_secs(3);
                             match tokio::time::timeout(
@@ -445,18 +441,10 @@ impl BrokerRuntime {
                         let effective_task = normalize_initial_task(task_opt.clone());
 
                         // Pre-register (same logic as primary WS spawn path).
-                        let cli_command = parse_cli_command(&cli)
-                            .map(|(cmd, _)| cmd)
-                            .unwrap_or_else(|_| cli.clone());
-                        let cli_name_lower = normalize_cli_name(&cli_command).to_lowercase();
-                        let is_claude =
-                            cli_name_lower == "claude" || cli_name_lower.starts_with("claude:");
                         let worker_relay_key = {
                             let ws_token = relaycast_ws_spawn_token(&ws_value);
                             if ws_token.is_some() {
                                 ws_token
-                            } else if is_claude {
-                                None
                             } else {
                                 const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                 match tokio::time::timeout(
