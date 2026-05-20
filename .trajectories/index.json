@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-20T07:26:17.741Z",
+  "lastUpdated": "2026-05-20T11:46:17.517Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1103,6 +1103,27 @@
       "startedAt": "2026-05-20T07:20:33.009Z",
       "completedAt": "2026-05-20T07:26:17.567Z",
       "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_1rrpe2r7fyem.json"
+    },
+    "traj_2gpglosdsq7s": {
+      "title": "Fix broker session read paths and agent listing errors",
+      "status": "completed",
+      "startedAt": "2026-05-19T12:37:18.367Z",
+      "completedAt": "2026-05-19T12:48:50.116Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_2gpglosdsq7s.json"
+    },
+    "traj_gnqvtoxtc8dy": {
+      "title": "Fix broker half-start recovery",
+      "status": "completed",
+      "startedAt": "2026-05-19T12:34:36.057Z",
+      "completedAt": "2026-05-19T12:47:18.115Z",
+      "path": "/home/runner/work/relay/relay/.trajectories/completed/2026-05/traj_gnqvtoxtc8dy.json"
+    },
+    "traj_af7iew24eiip": {
+      "title": "autofix-swarm-Agentworkforce-relay-workflow",
+      "status": "completed",
+      "startedAt": "2026-05-20T11:36:34.306Z",
+      "completedAt": "2026-05-20T11:46:17.506Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/.msd-autofix-1bdf6c0b/.trajectories/completed/2026-05/traj_af7iew24eiip.json"
     }
   }
 }

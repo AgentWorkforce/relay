@@ -331,6 +331,21 @@ describe('registerAgentManagementCommands', () => {
     expect(exitCode).toBe(1);
   });
 
+  it('fails agents:kill when listing agents fails', async () => {
+    const client = createClientMock({
+      listAgents: vi.fn(async () => {
+        throw new Error('session query failed');
+      }),
+    });
+    const { program, deps } = createHarness({ client });
+
+    const exitCode = await runCommand(program, ['agents:kill', 'WorkerF']);
+
+    expect(exitCode).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to list agents: session query failed');
+    expect(deps.killProcess).not.toHaveBeenCalled();
+  });
+
   it('lists agents including remote agents with --remote', async () => {
     const client = createClientMock({
       listAgents: vi.fn(async () => [{ name: 'WorkerLocal', runtime: 'pty', pid: 2222 }]),

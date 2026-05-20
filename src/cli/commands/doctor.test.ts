@@ -13,6 +13,10 @@ const sdkMock = vi.hoisted(() => ({
   shutdown: vi.fn(),
 }));
 
+const childProcessMock = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+}));
+
 // Store availability in an object to ensure closure works correctly across module resets
 const mockAvailability = { betterAvailable: true, nodeAvailable: true };
 
@@ -31,6 +35,10 @@ vi.mock('@agent-relay/sdk', () => ({
   AgentRelayClient: {
     connect: sdkMock.connect,
   },
+}));
+
+vi.mock('node:child_process', () => ({
+  execFileSync: childProcessMock.execFileSync,
 }));
 
 // doctor.ts now reads AGENT_RELAY_STORAGE_TYPE and AGENT_RELAY_STORAGE_PATH
@@ -150,6 +158,24 @@ function collectLogs() {
   };
 }
 
+function writeConnection(overrides: Partial<{ url: string; api_key: string; pid: number }> = {}) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dataDir, 'connection.json'),
+    JSON.stringify(
+      {
+        url: 'http://127.0.0.1:39999',
+        api_key: 'br_test',
+        pid: process.pid,
+        ...overrides,
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
+}
+
 beforeEach(() => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-test-'));
   dataDir = path.join(tempRoot, '.agent-relay');
@@ -164,6 +190,8 @@ beforeEach(() => {
   sdkMock.getStatus.mockReset();
   sdkMock.shutdown.mockReset();
   sdkMock.connect.mockReset();
+  childProcessMock.execFileSync.mockReset();
+  childProcessMock.execFileSync.mockReturnValue('');
   sdkMock.getStatus.mockResolvedValue({
     auth: { authenticated: false, workspace_count: 0 },
     pending_deliveries: [],
@@ -183,6 +211,7 @@ afterEach(() => {
   delete process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3;
   delete process.env.AGENT_RELAY_STORAGE_TYPE;
   delete process.env.AGENT_RELAY_STORAGE_PATH;
+  delete process.env.RELAY_API_KEY;
   process.exitCode = undefined;
   vi.restoreAllMocks();
 });
@@ -307,9 +336,10 @@ describe('doctor diagnostics', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('shuts down the broker client when status lookup throws', async () => {
+  it('fails when broker connection metadata points at an unreachable broker', async () => {
     process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
     process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
+    writeConnection();
     sdkMock.getStatus.mockRejectedValueOnce(new Error('broker unavailable'));
     const { logs, restore } = collectLogs();
     const { runDoctor } = await loadDoctor();
@@ -317,7 +347,52 @@ describe('doctor diagnostics', () => {
     await runDoctor();
 
     restore();
-    expect(logs.join('\n')).toContain('Skipped (broker unavailable: broker unavailable)');
+    const output = logs.join('\n');
+    expect(output).toContain('Broker connection');
+    expect(output).toContain('Stale or unreachable broker connection metadata: broker unavailable');
+    expect(output).toContain('agent-relay down --force');
+    expect(output).toContain('Some checks failed');
+    expect(process.exitCode).toBe(1);
     expect(sdkMock.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails when a literal RELAY_API_KEY template is still unresolved', async () => {
+    process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
+    process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
+    process.env.RELAY_API_KEY = '${RELAY_API_KEY}';
+    const { logs, restore } = collectLogs();
+    const { runDoctor } = await loadDoctor();
+
+    await runDoctor();
+
+    restore();
+    const output = logs.join('\n');
+    expect(output).toContain('Relaycast API key');
+    expect(output).toContain('Unresolved RELAY_API_KEY template (${RELAY_API_KEY})');
+    expect(output).toContain('real rk_live_... workspace key');
+    expect(output).toContain('Some checks failed');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails when a broker process is alive but connection metadata is missing', async () => {
+    process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
+    process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
+    childProcessMock.execFileSync.mockReturnValue(
+      `12345 /tmp/agent-relay-broker init --name ${path.basename(tempRoot)} --state-dir ${dataDir}\n`
+    );
+    const { logs, restore } = collectLogs();
+    const { runDoctor } = await loadDoctor();
+
+    await runDoctor();
+
+    restore();
+    const output = logs.join('\n');
+    expect(output).toContain('Broker connection');
+    expect(output).toContain('Broker process alive but');
+    expect(output).toContain('connection.json is missing');
+    expect(output).toContain('pid: 12345');
+    expect(output).toContain('half-started broker');
+    expect(output).toContain('Some checks failed');
+    expect(process.exitCode).toBe(1);
   });
 });

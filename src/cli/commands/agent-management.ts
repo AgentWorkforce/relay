@@ -8,6 +8,7 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import { runAgentsCommand, runAgentsLogsCommand, runWhoCommand } from '../lib/agent-management-listing.js';
 import { defaultExit } from '../lib/exit.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 
 type ShadowMode = 'subagent' | 'process';
 type ShadowTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
@@ -110,7 +111,7 @@ async function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentMa
 
   // Connect to an existing broker if one is running
   try {
-    client = AgentRelayClient.connect({ cwd });
+    client = connectProjectBrokerClient(cwd);
   } catch (err) {
     if (!autoStart) {
       if (err instanceof Error && err.message !== '') {
@@ -422,7 +423,13 @@ export function registerAgentManagementCommands(
             continueFrom,
             skipRelayPrompt: options.skipRelayPrompt,
           });
-          const agents = await client.listAgents().catch(() => []);
+          let agents: WorkerInfo[] = [];
+          try {
+            agents = await client.listAgents();
+          } catch (err: unknown) {
+            const detail = err instanceof Error ? err.message : String(err);
+            deps.error(`Warning: spawned ${name}, but failed to refresh agent list: ${detail}`);
+          }
           const spawned = agents.find((agent) => agent.name === name);
           if (spawned?.pid) {
             deps.log(`Spawned agent: ${name} (pid: ${spawned.pid})`);
@@ -584,7 +591,16 @@ export function registerAgentManagementCommands(
         deps.exit(1);
         return;
       }
-      const workers = await client.listAgents().catch(() => []);
+      let workers: WorkerInfo[];
+      try {
+        workers = await client.listAgents();
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : String(err);
+        deps.error(`Failed to list agents: ${detail}`);
+        await client.shutdown().catch(() => undefined);
+        deps.exit(1);
+        return;
+      }
       await client.shutdown().catch(() => undefined);
       const worker = workers.find((entry) => entry.name === name);
 

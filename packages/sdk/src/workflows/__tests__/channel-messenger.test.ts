@@ -30,6 +30,18 @@ describe('channel messenger helpers', () => {
     expect(formatStepOutput('plan', output)).toBe('**[plan] Output:**\n```\nuseful line\n```');
   });
 
+  it('formatStepOutput strips malformed PTY frames through the shared scrubber', () => {
+    const output = ['real result', 'qW0 | q0 / ql0 _ qqm ~ lqq = qW0 | q0 / ql0 _ qqm', 'done'].join('\n');
+    expect(formatStepOutput('plan', output)).toBe('**[plan] Output:**\n```\nreal result\ndone\n```');
+  });
+
+  it('formatStepOutput redacts secrets through the shared scrubber', () => {
+    const output = 'deploy succeeded\naccess_token=ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ\n';
+    const formatted = formatStepOutput('deploy', output);
+    expect(formatted).toContain('[REDACTED]');
+    expect(formatted).not.toContain('ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ');
+  });
+
   it('formatError normalizes unknown errors', () => {
     expect(formatError('build', new Error('Boom'))).toBe('**[build]** Failed: Boom');
     expect(formatError('build', 'bad input')).toBe('**[build]** Failed: bad input');
@@ -47,12 +59,8 @@ describe('ChannelMessenger', () => {
 
     it('lists non-interactive agents with step references', () => {
       const messenger = new ChannelMessenger();
-      const agents = new Map([
-        ['bg-worker', { name: 'bg-worker', cli: 'claude', interactive: false }],
-      ]);
-      const stepStates = new Map([
-        ['analyze', { row: { agentName: 'bg-worker', status: 'running' } }],
-      ]);
+      const agents = new Map([['bg-worker', { name: 'bg-worker', cli: 'claude', interactive: false }]]);
+      const stepStates = new Map([['analyze', { row: { agentName: 'bg-worker', status: 'running' } }]]);
       const result = messenger.buildNonInteractiveAwareness(agents as any, stepStates as any);
       expect(result).toContain('bg-worker');
       expect(result).toContain('{{steps.analyze.output}}');
