@@ -57,7 +57,7 @@ import type { MountHandle } from '../provisioner/mount.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { executeApiStep } from './api-executor.js';
 import { BudgetExceededError, BudgetTracker } from './budget-tracker.js';
-import { ChannelMessenger } from './channel-messenger.js';
+import { ChannelMessenger, scrubForChannel as scrubWorkflowOutputForChannel } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
 import { createProcessBackendExecutor } from './process-backend-executor.js';
@@ -7705,126 +7705,7 @@ export class WorkflowRunner {
    * The raw (ANSI-stripped) output is still written to disk for step chaining.
    */
   private static scrubForChannel(text: string): string {
-    // Strip system-reminder blocks (closed or unclosed)
-    const withoutSystemReminders = text
-      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
-      .replace(/<system-reminder>[\s\S]*/giu, '');
-
-    // Normalize CRLF and bare \r before stripping ANSI — PTY output often
-    // contains \r\r\n which leaves stray \r after stripping that confuse line splitting.
-    const normalized = withoutSystemReminders.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const ansiStripped = stripAnsiFn(normalized);
-
-    // Unicode spinner / ornament characters used by Claude TUI animations.
-    // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
-    const SPINNER =
-      '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
-      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' + // additional block elements
-      '\\u2b21\\u2b22'; // hex-hollow ⬡ and hex-filled ⬢ (Cursor "Generating" spinner)
-    const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
-    const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
-
-    // Line-level filters
-    const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
-    // Broker internal log lines: "2026-02-26T12:45:12.123Z  INFO agent_relay_broker::..."
-    const brokerLogRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+(?:INFO|WARN|ERROR|DEBUG)\s/u;
-    const claudeHeaderRe =
-      /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
-    // TUI directory breadcrumb lines (e.g. "  ~/Projects/agent-workforce/relay-...")
-    const dirBreadcrumbRe = /^\s*~[\\/]/u;
-    // The `\s*` variants below catch the no-whitespace TUI renderings that
-    // happen when Claude Code's footer overwrites itself faster than the PTY
-    // can flush whitespace — we see lines like `bypasspermissionson` and
-    // `pasteagaintoexpand` in real captures.
-    // Trailing `\b` is intentionally omitted: real PTY captures often show the
-    // hint with extra word chars stuck to it ("bypasspermissionson",
-    // "interrupting") because the TUI overwrote whitespace. Leading `\b` is
-    // enough to anchor without false-positive matches inside unrelated words.
-    const uiHintRe =
-      /\b(?:Press\s*up\s*to\s*edit|tab\s*to\s*queue|bypass\s*permissions|esc\s*to\s*interrupt|paste\s*again\s*to\s*expand|shift\s*[+]?\s*tab\s*to\s*cycle|running\s+stop\s+hook|fan\s+out\s+subagents)/iu;
-    // Vim-style mode indicators that Claude Code's input bar emits when the
-    // user is mid-edit (e.g. `--INSERT--⏵⏵bypasspermissionson`).
-    const vimModeRe =
-      /^[-\s]*--?(?:INSERT|NORMAL|VISUAL|REPLACE)--?[-\s]*$|--?(?:INSERT|NORMAL|VISUAL|REPLACE)--/u;
-    // Claude Code bottom status bar: "Opus 4.7 (1M context) ctx:5% $1.45"
-    // or "workflows git:(main) Opus 4.7 (1M context) ctx:5% $1.45".
-    // The shell-prompt + model-label + ctx% + cost line is pure chrome.
-    const claudeFooterRe =
-      /(?:Opus|Sonnet|Haiku)\s*\d[\d.]*\s*\(?(?:1M\s*context|context)?\)?\s*ctx\s*:\s*\d+%/iu;
-    // Any spinner-prefixed word ending in … — catches all Claude thinking animations
-    // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
-    const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
-    // Looser thinking-status filter: catches "thinking with high effort", "↓ 13 tokens · thinking",
-    // "Crunched for 32s", "Befuddling…  running stop hook", token-count interludes — all
-    // ambient TUI status that the previous ellipsis-anchored regex missed.
-    const thinkingStatusRe =
-      /\b(?:thinking\s+(?:with\s+\w+\s+effort|more\s+with|harder)|↓\s*\d+\s*tokens?\b|↑\s*\d+\s*tokens?\b|crunched\s+for\s+\d|sautéed\s+for\s+\d|befuddl|flibbertigib|gitifying|flowing\s*…)/iu;
-    const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
-    // Cursor Agent TUI lines: generating animations, pasted text indicators, UI chrome
-    const cursorAgentRe =
-      /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
-    const slashCommandRe = /^\/\w+\s*$/u;
-    const mcpJsonKvRe =
-      /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
-    const meaningfulContentRe = /[a-zA-Z0-9]/u;
-
-    const countJsonDepth = (line: string): number => {
-      let depth = 0;
-      for (const ch of line) {
-        if (ch === '{' || ch === '[') depth += 1;
-        if (ch === '}' || ch === ']') depth -= 1;
-      }
-      return depth;
-    };
-
-    const lines = ansiStripped.split('\n');
-    const meaningful: string[] = [];
-    let jsonDepth = 0;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      if (jsonDepth > 0) {
-        jsonDepth += countJsonDepth(line);
-        if (jsonDepth <= 0) jsonDepth = 0;
-        continue;
-      }
-
-      if (trimmed.length === 0) continue;
-
-      if (trimmed.startsWith('{') || /^\[\s*\{/.test(trimmed)) {
-        jsonDepth = Math.max(countJsonDepth(line), 0);
-        continue;
-      }
-
-      if (mcpJsonKvRe.test(line)) continue;
-      if (spinnerClassRe.test(trimmed)) continue;
-      if (boxDrawingOnlyRe.test(trimmed)) continue;
-      if (brokerLogRe.test(trimmed)) continue;
-      if (claudeHeaderRe.test(trimmed)) continue;
-      if (dirBreadcrumbRe.test(trimmed)) continue;
-      if (uiHintRe.test(trimmed)) continue;
-      if (vimModeRe.test(trimmed)) continue;
-      if (claudeFooterRe.test(trimmed)) continue;
-      if (thinkingLineRe.test(trimmed)) continue;
-      if (thinkingStatusRe.test(trimmed)) continue;
-      if (cursorOnlyRe.test(trimmed)) continue;
-      if (cursorAgentRe.test(trimmed)) continue;
-      if (slashCommandRe.test(trimmed)) continue;
-      if (!meaningfulContentRe.test(trimmed)) continue;
-
-      // Drop TUI animation frame fragments: lines where stripping spinners and
-      // whitespace leaves ≤ 3 alphanumeric characters (e.g. "F", "l  b", "i  g").
-      const alphanum = trimmed.replace(spinnerRe, '').replace(/\s+/g, '');
-      if (alphanum.replace(/[^a-zA-Z0-9]/g, '').length <= 3) continue;
-
-      meaningful.push(line);
-    }
-
-    return meaningful
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return scrubWorkflowOutputForChannel(text);
   }
 
   /** Sanitize a workflow name into a valid channel name. */
