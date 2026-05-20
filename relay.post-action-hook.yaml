@@ -1,0 +1,331 @@
+version: '1.0'
+name: post-action-hook
+description: >
+  Implements GitHub issue #500: Add optional postAction hook to WorkflowStep.
+  postAction supports shell commands and HTTP webhooks that run after a step
+  completes successfully, with configurable failAction (fail vs warn).
+
+  3 phases: context reads → parallel implementation → verify + fix.
+
+swarm:
+  pattern: dag
+  maxConcurrency: 4
+  timeoutMs: 2400000
+  channel: wf-post-action
+
+agents:
+  - name: types-author
+    cli: codex
+    preset: worker
+    role: 'Adds PostAction interface and updates WorkflowStep in types.ts and schema.json.'
+    constraints:
+      model: o4-mini
+
+  - name: implementer
+    cli: codex
+    preset: worker
+    role: 'Implements postAction execution logic in runner.ts.'
+    constraints:
+      model: o4-mini
+
+  - name: validator-author
+    cli: codex
+    preset: worker
+    role: 'Updates YAML validator to accept postAction fields.'
+    constraints:
+      model: o4-mini
+
+  - name: test-writer
+    cli: codex
+    preset: worker
+    role: 'Writes unit tests for postAction execution.'
+    constraints:
+      model: o4-mini
+
+  - name: fixer
+    cli: codex
+    preset: worker
+    role: 'Fixes TypeScript errors or failing tests.'
+    constraints:
+      model: o4-mini
+
+  - name: reviewer
+    cli: claude
+    preset: reviewer
+    role: 'Reviews full diff for correctness, security, and backwards compatibility.'
+    constraints:
+      model: sonnet
+
+workflows:
+  - name: default
+    description: 'Add postAction hook to workflow steps with shell command and webhook support.'
+    onError: retry
+
+    preflight:
+      - command: test -f packages/sdk/src/workflows/types.ts
+        description: 'Workflow types file exists'
+      - command: test -f packages/sdk/src/workflows/runner.ts
+        description: 'Workflow runner file exists'
+      - command: test -f packages/sdk/src/workflows/validator.ts
+        description: 'Workflow validator file exists'
+
+    steps:
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 1: Context reads
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: read-types
+        type: deterministic
+        command: cat packages/sdk/src/workflows/types.ts
+        captureOutput: true
+
+      - name: read-schema
+        type: deterministic
+        command: cat packages/sdk/src/workflows/schema.json
+        captureOutput: true
+
+      - name: read-validator
+        type: deterministic
+        command: cat packages/sdk/src/workflows/validator.ts
+        captureOutput: true
+
+      - name: read-runner-step-exec
+        type: deterministic
+        command: |
+          echo "=== Step completion sites (where postAction should be called) ==="
+          grep -n "status.*completed\|step.*complete\|captureStepTerminalEvidence" packages/sdk/src/workflows/runner.ts | head -20
+          echo ""
+          echo "=== Deterministic step execution ==="
+          sed -n '/private.*executeDeterministic\|private.*runDeterministic/,+40p' packages/sdk/src/workflows/runner.ts | head -50
+          echo ""
+          echo "=== Existing interpolation patterns ==="
+          grep -n -B2 -A5 'interpolat\|replace.*steps\.' packages/sdk/src/workflows/runner.ts | head -30
+          echo ""
+          echo "=== Imports ==="
+          head -40 packages/sdk/src/workflows/runner.ts
+        captureOutput: true
+
+      - name: read-existing-tests
+        type: deterministic
+        command: |
+          echo "=== Test file structure ==="
+          head -80 packages/sdk/src/__tests__/workflow-runner.test.ts
+          echo ""
+          echo "=== Mock patterns ==="
+          grep -n -B2 -A5 'vi.mock\|vi.fn\|mockResolvedValue' packages/sdk/src/__tests__/workflow-runner.test.ts | head -40
+        captureOutput: true
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 2: Implementation (2 waves)
+      # ════════════════════════════════════════════════════════════════════════
+
+      # ── Wave A: types + schema + validator (parallel, independent) ─────────
+
+      - name: add-types
+        agent: types-author
+        dependsOn: [read-types, read-schema]
+        task: |
+          Add PostAction types to two files.
+
+          CURRENT types.ts:
+          {{steps.read-types.output}}
+
+          CURRENT schema.json:
+          {{steps.read-schema.output}}
+
+          In types.ts, add before WorkflowStep interface:
+          - PostActionWebhook interface: url (string), method? ('POST'|'PUT'|'PATCH'), headers? (Record), body? (string)
+          - PostAction interface: command? (string), webhook? (PostActionWebhook), failAction? ('fail'|'warn')
+          - Add `postAction?: PostAction` to WorkflowStep after captureOutput
+
+          In schema.json, add matching postAction property (optional) to step definition.
+
+          Write both files to disk.
+        verification:
+          type: exit_code
+
+      - name: update-validator
+        agent: validator-author
+        dependsOn: [read-validator, add-types]
+        task: |
+          Update packages/sdk/src/workflows/validator.ts to validate postAction.
+
+          CURRENT:
+          {{steps.read-validator.output}}
+
+          Validate that:
+          - At least one of command or webhook is present
+          - webhook.url is non-empty string when webhook exists
+          - webhook.method is POST/PUT/PATCH when present
+          - failAction is 'fail' or 'warn' when present
+          - Warn (not error) when both command and webhook are defined
+
+          Follow existing validation patterns. Write file to disk.
+        verification:
+          type: exit_code
+
+      # ── Wave A gate ────────────────────────────────────────────────────────
+
+      - name: verify-types
+        type: deterministic
+        dependsOn: [add-types, update-validator]
+        command: |
+          errors=0
+          grep -q "PostAction" packages/sdk/src/workflows/types.ts || { echo "FAIL: types.ts missing PostAction"; errors=$((errors+1)); }
+          grep -q "PostActionWebhook" packages/sdk/src/workflows/types.ts || { echo "FAIL: types.ts missing PostActionWebhook"; errors=$((errors+1)); }
+          grep -q "postAction" packages/sdk/src/workflows/types.ts || { echo "FAIL: types.ts missing postAction field"; errors=$((errors+1)); }
+          grep -q "postAction" packages/sdk/src/workflows/schema.json || { echo "FAIL: schema.json missing postAction"; errors=$((errors+1)); }
+          grep -q "postAction\|post_action" packages/sdk/src/workflows/validator.ts || { echo "FAIL: validator not updated"; errors=$((errors+1)); }
+          [ $errors -gt 0 ] && exit 1
+          echo "Types wave verified"
+        captureOutput: true
+        failOnError: true
+
+      # ── Wave B: runner implementation + tests (parallel, after types) ──────
+
+      - name: implement-runner
+        agent: implementer
+        dependsOn: [read-runner-step-exec, verify-types]
+        task: |
+          Implement postAction execution in packages/sdk/src/workflows/runner.ts.
+
+          RUNNER CONTEXT:
+          {{steps.read-runner-step-exec.output}}
+
+          Add a private `executePostAction(step, stepOutput, runId)` method that:
+          1. Returns early if no postAction defined
+          2. Interpolates {{step.output}}, {{step.name}}, {{run.id}} in command/webhook strings
+          3. Executes shell command via execSync with timeout (30s default)
+          4. Executes webhook via fetch with proper error handling
+          5. On failure: if failAction='fail' throws, if failAction='warn' (default) logs and continues
+
+          Call executePostAction after step completes successfully — both agent and deterministic paths.
+
+          SECURITY: Shell-escape interpolated values to prevent command injection.
+
+          Write file to disk.
+        verification:
+          type: exit_code
+
+      - name: write-tests
+        agent: test-writer
+        dependsOn: [read-existing-tests, verify-types]
+        task: |
+          Write tests in a NEW file: packages/sdk/src/__tests__/post-action.test.ts
+
+          TEST PATTERNS:
+          {{steps.read-existing-tests.output}}
+
+          Test cases (use vitest — describe, it, expect, vi):
+          1. Executes shell command after deterministic step completes
+          2. Executes webhook after agent step completes
+          3. Interpolates {{step.output}}, {{step.name}}, {{run.id}} in webhook body
+          4. failAction: 'warn' logs warning and continues on command failure
+          5. failAction: 'fail' throws and fails the step
+          6. failAction: 'warn' continues on webhook 500 response
+          7. Skips postAction when not defined
+          8. Executes both command and webhook when both defined
+
+          Mock execSync and fetch. Follow existing test patterns.
+          Write file to disk.
+        verification:
+          type: exit_code
+
+      # ════════════════════════════════════════════════════════════════════════
+      # PHASE 3: Verification + fix + review
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: verify-impl
+        type: deterministic
+        dependsOn: [implement-runner, write-tests]
+        command: |
+          errors=0
+          grep -q "executePostAction" packages/sdk/src/workflows/runner.ts || { echo "FAIL: runner missing executePostAction"; errors=$((errors+1)); }
+          grep -q "postAction" packages/sdk/src/workflows/runner.ts || { echo "FAIL: runner doesn't reference postAction"; errors=$((errors+1)); }
+          test -f packages/sdk/src/__tests__/post-action.test.ts || { echo "FAIL: test file not created"; errors=$((errors+1)); }
+          [ $errors -gt 0 ] && exit 1
+          echo "Implementation verified"
+        captureOutput: true
+        failOnError: true
+
+      - name: typecheck
+        type: deterministic
+        dependsOn: [verify-impl]
+        command: |
+          cd packages/sdk && npx tsc --noEmit 2>&1 | tail -30
+        captureOutput: true
+        failOnError: false
+
+      - name: run-tests
+        type: deterministic
+        dependsOn: [typecheck]
+        command: |
+          cd packages/sdk && npx vitest run 2>&1 | tail -60
+        captureOutput: true
+        failOnError: false
+
+      - name: fix-failures
+        agent: fixer
+        dependsOn: [run-tests, typecheck]
+        task: |
+          Fix any type or test failures.
+
+          Typecheck:
+          {{steps.typecheck.output}}
+
+          Tests:
+          {{steps.run-tests.output}}
+
+          If no failures, just confirm all clear.
+          Otherwise fix the issues in the relevant files and re-run to verify.
+          Do not weaken or remove test assertions.
+          Write files to disk.
+        verification:
+          type: exit_code
+        retries: 2
+
+      - name: final-tests
+        type: deterministic
+        dependsOn: [fix-failures]
+        command: |
+          cd packages/sdk && npx vitest run 2>&1 | tail -40
+          exit_code=$?
+          [ $exit_code -eq 0 ] && echo "ALL_TESTS_PASSED" || echo "TESTS_FAILED"
+          exit $exit_code
+        captureOutput: true
+        failOnError: true
+
+      - name: capture-diff
+        type: deterministic
+        dependsOn: [final-tests]
+        command: |
+          git add -N packages/sdk/src/__tests__/post-action.test.ts 2>/dev/null
+          git diff HEAD -- \
+            packages/sdk/src/workflows/types.ts \
+            packages/sdk/src/workflows/runner.ts \
+            packages/sdk/src/workflows/validator.ts \
+            packages/sdk/src/workflows/schema.json \
+            packages/sdk/src/__tests__/post-action.test.ts
+        captureOutput: true
+
+      - name: review
+        agent: reviewer
+        dependsOn: [capture-diff, final-tests]
+        task: |
+          Review the postAction hook implementation for issue #500.
+
+          Tests: {{steps.final-tests.output}}
+
+          Diff: {{steps.capture-diff.output}}
+
+          Check: PostAction/PostActionWebhook types, executePostAction implementation,
+          interpolation correctness, failAction handling, command injection prevention,
+          validator rules, test coverage, no regressions, schema.json consistency.
+        verification:
+          type: exit_code
+
+errorHandling:
+  strategy: retry
+  maxRetries: 2
+  retryDelayMs: 5000
+  notifyChannel: wf-post-action
