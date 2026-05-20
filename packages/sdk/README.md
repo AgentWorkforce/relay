@@ -107,6 +107,22 @@ await client.release('Worker1');
 await client.shutdown();
 ```
 
+### Communicate Mode
+
+Use communicate adapters when an agent framework owns the run loop and you want it to exchange Relaycast messages with other agents.
+
+```ts
+import { Relay, onRelay } from '@agent-relay/sdk/communicate';
+
+const relay = new Relay('CodexWorker');
+const codex = onRelay('CodexWorker', { framework: 'codex', cwd: process.cwd() }, relay);
+
+await codex.ready;
+await codex.send('Review the current branch and report risks.');
+```
+
+The Codex adapter uses `codex app-server` over stdio JSON-RPC instead of the foreground PTY path. That gives background workers structured `thread/*`, `turn/*`, and `item/*` events for steering and completion; it does not render the Codex TUI. On startup it ensures the `relaycast` MCP server is present in Codex config so the agent can use Relaycast tools in addition to injected inbox messages.
+
 ### Provider + Transport Spawning (Opencode/Claude)
 
 Use provider-first spawn helpers and set `transport` when you want headless mode.
