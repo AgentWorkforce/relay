@@ -1,4 +1,4 @@
-<img src="./readme-banner.png" alt="Agent Relay" height="392">
+<img src="./readme-banner.png" alt="Agent Relay">
 
 **Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
 
@@ -6,50 +6,53 @@
 <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 
-</div>
+# Use Claude to orchestrate a team of Codex agents.
 
-## Multi Agent Orchestration
+Don't limit yourself to one model or one harness. Use the best tools for the job.
 
-Enable your Claude Code, Codex, OpenCode agent spawn agent teams that can communicate and collaborate. Not subagents, but real agents who
-could spawn their own subagents. This allows for powerful AI cross-collaboration so you can get the best harnesses + models working
-together.
+![Three agents debating a plan in real time](./scripts/demos/three-way-debate.gif)
 
-## Benefits Over Subagents
+A planner drafts a plan. An adversarial critic tears it apart. A reviewer arbitrates. Three live agents, three terminals, talking to each other on a shared channel until they agree. You watched it happen — you didn't drive it.
 
-1. The agent orchestrating has full insight what the spawned agents are doing. It can read the logs and steer mid turn if needed
-2. Enables advanced swarm techniques as each agent can communicate with each other and coordinate to form agent teams for different types: review/fix loops, adversarial/debate pairs, fan-out -> pipeline -> gather, or lead + workers to name a few
-3. Diversity of thought and implementation. Codex implement, Claude review, Gemini do the final verification leads to better results as different models + harnesses excel in different things.
-4. Review happens as a conversation between the live reviewer and the live implementer, not as a report handed back to the parent after each one finishes.
-5. Audit trail exists outside the agent and outside the parent. With the [Agent Relay Observer](https://agentrelay.com/observer) you get full auditability into every single DM and group message sent by the agents.
+## What you can build with it today
 
-## Get Started
+- **Claude orchestrates, Codex implements.** Spawn a Claude lead that hands work to Codex workers, reads their progress live, and steers mid-task when one goes off the rails.
+- **Adversarial review loops.** Run an implementer alongside one or two critics. They iterate until the critic ratifies — no human in the loop.
+- **Walk-away autonomy.** Kick off a multi-step job, close the laptop. Agents keep talking, finishing, and verifying each other's work.
 
-1. Install the agent-relay cli
+## Get started
 
-```
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+1. Install the agent-relay CLI:
 
-```
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+   ```
 
-2. Install the skill
+2. Install the orchestration skill:
 
-```
-npx skills add https://github.com/agentworkforce/skills --skill orchestrating-agent-relay
-```
+   ```bash
+   npx skills add https://github.com/agentworkforce/skills --skill orchestrating-agent-relay
+   ```
 
-3. Tell your agent to use it
+3. Tell your agent to use it:
 
-```
-use the orchestrating-agent-relay skill to spawn a claude and codex agent and [YOUR_TASK]
-```
+   ```
+   use the orchestrating-agent-relay skill to spawn a claude and codex agent and [YOUR_TASK]
+   ```
 
-For single, well-scoped, one-shot tasks, subagents still win. Agent relay's advantages compound when work is multi-step, multi-role, long-running or needs independent verification.
+## Why not subagents?
+
+Subagents are the right tool when work is a single well-scoped one-shot. Agent Relay's advantages compound when work is multi-step, multi-role, long-running, or needs independent verification.
+
+- **Mix models and harnesses.** Codex implements, Claude reviews, Gemini verifies — each model used for what it's best at, not whatever the parent harness happens to be.
+- **Live steering.** The orchestrator reads logs and DMs as workers run and can redirect mid-turn instead of waiting for a final report.
+- **Review as a conversation.** The reviewer and implementer talk while the code is being written, not after the fact.
+- **Swarm patterns out of the box.** Review/fix loops, adversarial debate pairs, fan-out → pipeline → gather, lead + workers.
+- **Audit trail outside the agent.** Every DM and channel message shows up in the [Agent Relay Observer](https://agentrelay.com/observer) — full visibility without trusting the parent agent's self-report.
 
 ## SDK
 
-Use the Agent Relay SDK to spawn and control agents programmatically.
-
-### Install
+Spawn and control agents programmatically.
 
 **TypeScript / Node.js**
 
@@ -102,24 +105,15 @@ await AgentRelay.waitForAny([x, o], 5 * 60 * 1000);
 await relay.shutdown();
 ```
 
-Want more than a toy example? Start with:
+More:
 
 - [Introduction](https://agentrelay.com/docs/introduction)
 - [TypeScript SDK README](https://agentrelay.com/docs/typescript-sdk)
 - [Python SDK README](https://agentrelay.com/docs/python-sdk)
 
-### What you can build
-
-- Multi-agent coding flows with shared channels and worker handoffs
-- Agent inboxes for status updates, blockers, and review loops
-- Tooling that lets existing agents communicate without rewriting their runtime
-- Local or remote coordination patterns where multiple agents need shared context
-
-Then use Agent Relay to bring agents into a shared workspace and route work between them.
-
 ## Supported agents and runtimes
 
-Agent Relay is designed for terminal-native agents and SDK-driven workflows. This repo currently includes first-class support for:
+First-class support for terminal-native agents:
 
 - Claude Code
 - Codex CLI
@@ -128,9 +122,7 @@ Agent Relay is designed for terminal-native agents and SDK-driven workflows. Thi
 
 The broader SDK and workflow surface also includes additional integrations in the codebase. See the package docs for details.
 
-### Development
-
-If you want to work on the repo itself:
+## Development
 
 ```bash
 npm install
@@ -138,7 +130,7 @@ npm run build
 npm test
 ```
 
-Useful references:
+References:
 
 - [CHANGELOG.md](./CHANGELOG.md)
 - [GitHub Issues](https://github.com/AgentWorkforce/relay/issues)
