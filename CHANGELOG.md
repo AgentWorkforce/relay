@@ -87,6 +87,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 - PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
 
+## [6.3.4] - 2026-05-21
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Upload workflow code through cloud storage API (#938)** (#938)
+- **Pass env vars to scheduled workflows (#935)** (#935)
+
+### Technical Perspective
+#### Releases
+- v6.3.4
+
+---
+
 ## [6.3.3] - 2026-05-21
 
 ### Product Perspective
