@@ -183,6 +183,7 @@ export type ScheduleWorkflowOptions = {
   cron?: string;
   at?: string;
   timezone?: string;
+  envSecrets?: Record<string, string>;
 };
 
 export type WorkflowLogsResponse = {
