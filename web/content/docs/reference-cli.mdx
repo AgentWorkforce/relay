@@ -254,3 +254,27 @@ Flags:
 Returns 1 with a friendly error if the agent doesn't exist (`404`) or the broker is unreachable.
 
 The `new`, `passthrough`, and `rm` verbs above round out the attach-style client surface alongside `view` and `drive`. Together they're the first-class client interface on the broker's HTTP and WebSocket routes.
+
+## `log`
+
+Inspect and prune the broker's daily-rotated tracing logs. The broker writes them to `~/Library/Logs/agent-relay/` (macOS), `~/.local/state/agent-relay/logs/` (Linux), or `%LOCALAPPDATA%\agent-relay\Logs\` (Windows). See the [broker lifecycle docs](/docs/cli-broker-lifecycle) for the env var that controls destination (`AGENT_RELAY_BROKER_LOG`).
+
+```bash
+agent-relay log path
+agent-relay log list [brokerId]
+agent-relay log view <brokerId> [-n 200] [--file <path>]
+agent-relay log rotate [--keep-days 7] [--broker-id <id>] [--dry-run]
+agent-relay log clear [--broker-id <id>] [--force] [--dry-run]
+```
+
+Subcommands:
+
+| Subcommand | Description |
+| ---------- | ----------- |
+| `path` | Print the log directory for the current platform. |
+| `list [brokerId]` | List broker log files (name, date, size, mtime), newest first. Filters by broker id when supplied. |
+| `view <brokerId>` | Tail the newest log file for the broker. `-n / --lines` controls the trailing line count (default 200). `--file <path>` reads a specific rotated file instead. |
+| `rotate` | Delete rotated files older than `--keep-days` (default 7). `--broker-id` scopes to one broker; `--dry-run` previews without deleting. The active un-suffixed file is always kept. |
+| `clear` | Delete every matching file, including the active one. Requires either `--broker-id <id>` or `--force` to avoid accidental full wipes. |
+
+The same logic is available programmatically via the SDK helpers `getBrokerLogDir`, `listBrokerLogs`, `tailBrokerLog`, `pruneBrokerLogs`, and `clearBrokerLogs` exported from `@agent-relay/sdk` — see the [TypeScript SDK docs](/docs/typescript-sdk).
