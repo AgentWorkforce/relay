@@ -544,6 +544,8 @@ describe('registerCoreCommands', () => {
       stateDir,
       '--workspace-key',
       'rk_live_custom',
+      '--broker-name',
+      'relayfile-dev',
     ];
 
     const exitCode = await runCommand(program, [
@@ -554,6 +556,8 @@ describe('registerCoreCommands', () => {
       stateDir,
       '--workspace-key',
       'rk_live_custom',
+      '--broker-name',
+      'relayfile-dev',
     ]);
 
     expect(exitCode).toBe(0);
@@ -567,6 +571,8 @@ describe('registerCoreCommands', () => {
         stateDir,
         '--workspace-key',
         'rk_live_custom',
+        '--broker-name',
+        'relayfile-dev',
         '--foreground',
       ],
       {

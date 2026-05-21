@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agents can switch provider or model at runtime.
 - Prerelease publishing supports staging releases.
 - Broker `--api-bind` configures the HTTP/WS bind address.
+- `agent-relay up --broker-name` overrides the local broker identity instead of deriving it from the project directory.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
 - Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
 
@@ -90,11 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.3] - 2026-05-21
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Detect opencode api key completion (#934) (#934)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.3
 
 ---
@@ -102,11 +107,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.2] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Stop worker stderr from rendering inside agent xterm (#931) (#931)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.2
 
 ---
@@ -114,15 +123,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.1] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Pre-register Claude PTY workers so Relaycast MCP boots fast (#926)
 
 ### Technical Perspective
+
 #### Dependencies & Tooling
+
 - Retrigger flaky macOS Rust Tests
 - Drop change-implying framing from PTY pre-register note
 
 #### Releases
+
 - v6.3.1
 
 ---
@@ -130,7 +144,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.0] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.0
 
 ---
@@ -138,11 +154,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.8] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Tighten PTY chrome scrubbing, document idle override, tame stale-state warning (#930) (#930)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.8
 
 ---
@@ -150,7 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.7] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.7
 
 ---
