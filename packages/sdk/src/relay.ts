@@ -10,8 +10,8 @@
  *
  * const relay = new AgentRelay();
  *
- * relay.onMessageReceived = (message) => console.log(message);
- * relay.onAgentSpawned = (agent) => console.log("spawned", agent.name);
+ * relay.addListener('messageReceived', (message) => console.log(message));
+ * relay.addListener('agentSpawned', (agent) => console.log("spawned", agent.name));
  *
  * const codex = await relay.codex.spawn();
  * const human = relay.human({ name: "System" });
@@ -30,6 +30,8 @@ import path from 'node:path';
 import { RelayCast } from '@relaycast/sdk';
 
 import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
+import { EventBus } from './event-bus.js';
+import type { AgentRelayEvents } from './lifecycle-hooks.js';
 import {
   buildPersonaSpawnSpec,
   composePersonaTask,
@@ -302,11 +304,11 @@ export interface Agent {
   readonly channels: string[];
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
-  /** Set when the agent exits. Available after `onAgentExited` fires. */
+  /** Set when the agent exits. Available once the `agentExited` event fires. */
   exitCode?: number;
-  /** Set when the agent exits via signal. Available after `onAgentExited` fires. */
+  /** Set when the agent exits via signal. Available once the `agentExited` event fires. */
   exitSignal?: string;
-  /** Set when the agent requests exit via /exit. Available after `onAgentExitRequested` fires. */
+  /** Set when the agent requests exit via /exit. Available once the `agentExitRequested` event fires. */
   exitReason?: string;
   release(reasonOrOptions?: string | ReleaseOptions): Promise<void>;
   waitForReady(timeoutMs?: number): Promise<void>;
@@ -436,20 +438,49 @@ interface AgentActivityState {
 // ── AgentRelay facade ───────────────────────────────────────────────────────
 
 export class AgentRelay {
-  // Event hooks — assign a callback or null to clear.
-  onMessageReceived: EventHook<Message> = null;
-  onMessageSent: EventHook<Message> = null;
-  onAgentSpawned: EventHook<Agent> = null;
-  onAgentReleased: EventHook<Agent> = null;
-  onAgentExited: EventHook<Agent> = null;
-  onAgentReady: EventHook<Agent> = null;
-  onWorkerOutput: EventHook<{ name: string; stream: string; chunk: string }> = null;
-  onDeliveryUpdate: EventHook<BrokerEvent> = null;
-  onAgentExitRequested: EventHook<{ name: string; reason: string }> = null;
-  onAgentIdle: EventHook<{ name: string; idleSecs: number }> = null;
-  onAgentActivityChanged: EventHook<AgentActivityChange> = null;
-  onChannelSubscribed: ((agent: string, channels: string[]) => void) | null = null;
-  onChannelUnsubscribed: ((agent: string, channels: string[]) => void) | null = null;
+  /**
+   * Multi-listener event registry. Subscribe via {@link addListener} or
+   * `bus.addListener` directly; emit happens internally as broker events
+   * arrive and at SDK call sites for the spawn / release lifecycle hooks.
+   *
+   * The bus is shared with the underlying `AgentRelayClient` (created via
+   * {@link ensureStarted}) so listeners registered on either object see
+   * the same events.
+   */
+  readonly bus: EventBus<AgentRelayEvents> = new EventBus<AgentRelayEvents>();
+
+  // ── Listener registration ───────────────────────────────────────────────
+
+  /**
+   * Register a listener for a relay lifecycle event. Returns an
+   * unsubscribe function.
+   *
+   * Example:
+   * ```ts
+   * const off = relay.addListener('agentSpawned', (agent) => console.log(agent.name));
+   * // later:
+   * off();
+   * ```
+   *
+   * Replaces the pre-2.x single-callback `on*` fields. Multiple listeners
+   * can register for the same event; they fire sequentially in
+   * registration order. Async handlers are awaited. Handler exceptions
+   * are caught and logged; one bad listener never blocks the others.
+   */
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): () => void {
+    return this.bus.addListener(event, handler);
+  }
+
+  /** Remove a previously-registered listener. Idempotent. */
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): void {
+    this.bus.removeListener(event, handler);
+  }
 
   // ── Public accessors ────────────────────────────────────────────────────
 
@@ -868,7 +899,7 @@ export class AgentRelay {
           data: input.data,
           mode: input.mode,
         };
-        this.onMessageSent?.(msg);
+        void this.bus.emit('messageSent', msg);
         return msg;
       },
     };
@@ -1331,7 +1362,7 @@ export class AgentRelay {
       return;
     }
     state.active = active;
-    this.onAgentActivityChanged?.({
+    void this.bus.emit('agentActivityChanged', {
       name,
       active,
       pendingDeliveries: state.pendingDeliveries.size,
@@ -1461,6 +1492,7 @@ export class AgentRelay {
       .then(() =>
         AgentRelayClient.spawn({
           ...this.clientOptions,
+          eventBus: this.bus,
           onStderr: (line) => {
             for (const listener of this.stderrListeners) {
               try {
@@ -1520,7 +1552,7 @@ export class AgentRelay {
             threadId: event.thread_id,
             mode: event.injection_mode ?? event.mode,
           };
-          this.onMessageReceived?.(msg);
+          void this.bus.emit('messageReceived', msg);
           break;
         }
         case 'agent_spawned': {
@@ -1529,7 +1561,7 @@ export class AgentRelay {
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
-          this.onAgentSpawned?.(agent);
+          void this.bus.emit('agentSpawned', agent);
           break;
         }
         case 'agent_released': {
@@ -1539,7 +1571,7 @@ export class AgentRelay {
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.idleAgents.delete(event.name);
-          this.onAgentReleased?.(agent);
+          void this.bus.emit('agentReleased', agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve('released');
@@ -1561,7 +1593,7 @@ export class AgentRelay {
           if (event.reason !== undefined) {
             (agent as { exitReason?: string }).exitReason = event.reason;
           }
-          this.onAgentExited?.(agent);
+          void this.bus.emit('agentExited', agent);
           this.knownAgents.delete(event.name);
           this.outputListeners.delete(event.name);
           this.exitResolvers.get(event.name)?.resolve('exited');
@@ -1573,7 +1605,7 @@ export class AgentRelay {
         case 'agent_exit': {
           const agent = this.knownAgents.get(event.name) ?? this.ensureAgentHandle(event.name, 'pty', []);
           (agent as { exitReason?: string }).exitReason = event.reason;
-          this.onAgentExitRequested?.({ name: event.name, reason: event.reason });
+          void this.bus.emit('agentExitRequested', { name: event.name, reason: event.reason });
           break;
         }
         case 'worker_ready': {
@@ -1581,17 +1613,17 @@ export class AgentRelay {
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
-          this.onAgentReady?.(agent);
+          void this.bus.emit('agentReady', agent);
           break;
         }
         case 'channel_subscribed': {
           this.addAgentChannels(event.name, event.channels);
-          this.onChannelSubscribed?.(event.name, event.channels);
+          void this.bus.emit('channelSubscribed', { agent: event.name, channels: event.channels });
           break;
         }
         case 'channel_unsubscribed': {
           this.removeAgentChannels(event.name, event.channels);
-          this.onChannelUnsubscribed?.(event.name, event.channels);
+          void this.bus.emit('channelUnsubscribed', { agent: event.name, channels: event.channels });
           break;
         }
         case 'delivery_queued': {
@@ -1656,7 +1688,7 @@ export class AgentRelay {
         case 'worker_stream': {
           // Agent producing output is no longer idle
           this.idleAgents.delete(event.name);
-          this.onWorkerOutput?.({
+          void this.bus.emit('workerOutput', {
             name: event.name,
             stream: event.stream,
             chunk: event.chunk,
@@ -1668,7 +1700,7 @@ export class AgentRelay {
         case 'agent_idle': {
           this.clearAgentDeliveries(event.name, 'agent_idle');
           this.idleAgents.add(event.name);
-          this.onAgentIdle?.({
+          void this.bus.emit('agentIdle', {
             name: event.name,
             idleSecs: event.idle_secs,
           });
@@ -1679,7 +1711,7 @@ export class AgentRelay {
         }
       }
       if (event.kind.startsWith('delivery_') || event.kind.startsWith('message_delivery_')) {
-        this.onDeliveryUpdate?.(event);
+        void this.bus.emit('deliveryUpdate', event);
       }
     });
   }
@@ -1858,7 +1890,7 @@ export class AgentRelay {
           data: input.data,
           mode: input.mode,
         };
-        relay.onMessageSent?.(msg);
+        void relay.bus.emit('messageSent', msg);
         return msg;
       },
       async subscribe(channelsToAdd: string[]) {

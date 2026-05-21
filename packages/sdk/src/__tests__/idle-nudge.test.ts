@@ -87,7 +87,7 @@ vi.mock('../relay.js', () => ({
     human: vi.fn().mockReturnValue(mockHuman),
     shutdown: vi.fn().mockResolvedValue(undefined),
     onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-    onWorkerOutput: null,
+    addListener: vi.fn(() => () => {}),
     listAgentsRaw: vi.fn().mockResolvedValue([]),
   })),
 }));

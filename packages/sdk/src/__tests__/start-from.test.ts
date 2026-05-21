@@ -61,8 +61,12 @@ let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 
 const mockAgent = {
   name: 'test-agent-abc',
-  get waitForExit() { return waitForExitFn; },
-  get waitForIdle() { return vi.fn().mockImplementation(() => new Promise(() => {})); },
+  get waitForExit() {
+    return waitForExitFn;
+  },
+  get waitForIdle() {
+    return vi.fn().mockImplementation(() => new Promise(() => {}));
+  },
   release: vi.fn().mockResolvedValue(undefined),
 };
 
@@ -70,6 +74,15 @@ const mockHuman = {
   name: 'WorkflowRunner',
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
+
+// Listener registry for the AgentRelay mock — production AgentRelay uses
+// addListener('eventName', handler). Tests fire events via emitRelayEvent.
+const relayListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+function emitRelayEvent(event: string, payload: unknown): void {
+  for (const handler of relayListeners.get(event) ?? []) {
+    handler(payload);
+  }
+}
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
@@ -81,24 +94,22 @@ const mockRelayInstance = {
         ? `STEP_COMPLETE:${stepComplete}\n`
         : 'STEP_COMPLETE:unknown\n';
 
-    queueMicrotask(() => {
-      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-        mockRelayInstance.onWorkerOutput({ name, chunk: output });
-      }
-    });
+    queueMicrotask(() => emitRelayEvent('workerOutput', { name, chunk: output }));
 
     return { ...mockAgent, name };
   }),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentReleased: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
-  onDeliveryUpdate: null as any,
+  addListener: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+    let set = relayListeners.get(event);
+    if (!set) {
+      set = new Set();
+      relayListeners.set(event, set);
+    }
+    set.add(handler);
+    return () => set!.delete(handler);
+  }),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -146,9 +157,7 @@ function makeLinearConfig(): RelayYamlConfig {
     version: '1',
     name: 'test-start-from',
     swarm: { pattern: 'dag' },
-    agents: [
-      { name: 'agent-a', cli: 'claude' },
-    ],
+    agents: [{ name: 'agent-a', cli: 'claude' }],
     workflows: [
       {
         name: 'default',
@@ -168,9 +177,7 @@ function makeDiamondConfig(): RelayYamlConfig {
     version: '1',
     name: 'test-diamond',
     swarm: { pattern: 'dag' },
-    agents: [
-      { name: 'agent-a', cli: 'claude' },
-    ],
+    agents: [{ name: 'agent-a', cli: 'claude' }],
     workflows: [
       {
         name: 'default',
@@ -196,7 +203,7 @@ describe('startFrom', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     waitForExitFn = vi.fn().mockResolvedValue('exited');
-    mockRelayInstance.onWorkerOutput = null;
+    relayListeners.clear();
     tmpDir = mkdtempSync(path.join(os.tmpdir(), 'start-from-'));
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
@@ -204,9 +211,9 @@ describe('startFrom', () => {
 
   it('should throw when startFrom step does not exist', async () => {
     const config = makeLinearConfig();
-    await expect(
-      runner.execute(config, 'default', undefined, { startFrom: 'nonexistent' })
-    ).rejects.toThrow('startFrom step "nonexistent" not found in workflow');
+    await expect(runner.execute(config, 'default', undefined, { startFrom: 'nonexistent' })).rejects.toThrow(
+      'startFrom step "nonexistent" not found in workflow'
+    );
   });
 
   it('should skip predecessor steps in a linear chain', async () => {
@@ -341,6 +348,10 @@ describe('startFrom', () => {
   });
 
   afterEach(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
   });
 });

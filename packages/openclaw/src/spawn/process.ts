@@ -132,7 +132,7 @@ export class ProcessSpawnProvider implements SpawnProvider {
         },
         cwd: workspacePath,
         stdio: ['pipe', 'pipe', 'pipe'],
-      },
+      }
     );
 
     gatewayProcess.stderr?.on('data', (data: Buffer) => {
@@ -176,14 +176,14 @@ export class ProcessSpawnProvider implements SpawnProvider {
         cli: 'node',
         args: [bridgePath],
         channels,
-        task: options.systemPrompt
-          ? `${options.systemPrompt}\n\n${identityTask}`
-          : identityTask,
+        task: options.systemPrompt ? `${options.systemPrompt}\n\n${identityTask}` : identityTask,
       });
 
-      relay.onAgentExited = (agent) => {
-        process.stderr.write(`[spawn:${options.name}] Agent exited: ${agent.name} code=${agent.exitCode ?? 'none'}\n`);
-      };
+      relay.addListener('agentExited', (agent) => {
+        process.stderr.write(
+          `[spawn:${options.name}] Agent exited: ${agent.name} code=${agent.exitCode ?? 'none'}\n`
+        );
+      });
     } catch (err) {
       // If SDK broker spawn fails, clean up gateway and propagate
       gatewayProcess.kill('SIGTERM');
@@ -191,7 +191,7 @@ export class ProcessSpawnProvider implements SpawnProvider {
         await relay.shutdown().catch(() => {});
       }
       throw new Error(
-        `Failed to start broker for "${options.name}": ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to start broker for "${options.name}": ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
