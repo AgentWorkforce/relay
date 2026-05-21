@@ -32,6 +32,7 @@ import { registerPassthroughCommands } from './commands/passthrough.js';
 import { registerNewCommands } from './commands/new.js';
 import { registerRmCommands } from './commands/rm.js';
 import { registerActivityCommands } from './commands/activity.js';
+import { registerLogCommands } from './commands/log.js';
 import { parseVerblessAlias, runVerblessAliasDispatch } from './lib/spawn-and-attach.js';
 
 dotenvConfig({ quiet: true });
@@ -297,6 +298,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   // composition lives on `new --attach` — see `src/cli/commands/new.ts`.
   registerNewCommands(program);
   registerRmCommands(program);
+  registerLogCommands(program);
 
   return program;
 }
