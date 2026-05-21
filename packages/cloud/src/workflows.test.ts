@@ -495,6 +495,10 @@ describe('workflow schedules', () => {
     const result = await scheduleWorkflow(workflowPath, {
       cron: '0 * * * *',
       name: 'Hourly eval',
+      envSecrets: {
+        AI_CLI_UPDATES_DRY_RUN: 'true',
+        AI_CLI_UPDATES_ONLY: 'codex',
+      },
     });
 
     expect(result.id).toBe('sched-1');
@@ -505,6 +509,10 @@ describe('workflow schedules', () => {
       timezone: 'UTC',
       workflowRequest: {
         fileType: 'yaml',
+        envSecrets: {
+          AI_CLI_UPDATES_DRY_RUN: 'true',
+          AI_CLI_UPDATES_ONLY: 'codex',
+        },
       },
     });
     expect(

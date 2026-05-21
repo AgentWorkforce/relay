@@ -685,6 +685,9 @@ export async function scheduleWorkflow(
       workflow: input.workflow,
       fileType: input.fileType,
       ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
+      ...(options.envSecrets && Object.keys(options.envSecrets).length > 0
+        ? { envSecrets: options.envSecrets }
+        : {}),
     },
   };
   if (options.description?.trim()) {
