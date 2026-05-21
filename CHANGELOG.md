@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `@agent-relay/sdk` `AgentRelay` now exposes a typed multi-listener registry — `addListener(event, handler) → unsubscribe` / `removeListener(event, handler)` — replacing the 13 single-callback `on*` fields (`onMessageReceived`, `onMessageSent`, `onAgentSpawned`, `onAgentReleased`, `onAgentExited`, `onAgentReady`, `onWorkerOutput`, `onDeliveryUpdate`, `onAgentExitRequested`, `onAgentIdle`, `onAgentActivityChanged`, `onChannelSubscribed`, `onChannelUnsubscribed`). Channel subscribe / unsubscribe handler args change from `(agent, channels)` to a single `{ agent, channels }` object payload. Migration: `relay.onX = handler;` → `relay.addListener('x', handler);`. New `beforeAgentSpawn` / `afterAgentSpawn` / `beforeAgentRelease` / `afterAgentRelease` call-site hooks fire at the SDK boundary; `beforeAgentSpawn` listeners can return a `SpawnPatch` to mutate the spawn input before POST (e.g. for burn-style session-id preallocation).
 - Broker/SDK wire protocol is now version 2 for delivery terminal events and lifecycle event shape changes.
 - `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
 - `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
@@ -19,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pass `--from` to `agent-relay send` when a script requires a specific sender identity.
 - Handle `success: false` from `relay.spawn()` calls that pass `task`; spawns without a task are unchanged.
 - Set `POSTHOG_PROJECT_KEY` in GitHub Actions repository variables before publishing telemetry-enabled artifacts.
+- Update relay event handlers from field-assignment to `addListener`:
+
+  ```ts
+  // Before
+  relay.onAgentSpawned = (agent) => log(agent.name);
+
+  // After
+  const off = relay.addListener('agentSpawned', (agent) => log(agent.name));
+  // ...later: off();  // unsubscribe
+  ```
+
+  Channel subscribe/unsubscribe handlers receive an object: `({ agent, channels }) => ...`.
 
 ### Added
 
@@ -90,11 +103,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.3] - 2026-05-21
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Detect opencode api key completion (#934) (#934)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.3
 
 ---
@@ -102,11 +119,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.2] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Stop worker stderr from rendering inside agent xterm (#931) (#931)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.2
 
 ---
@@ -114,15 +135,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.1] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Pre-register Claude PTY workers so Relaycast MCP boots fast (#926)
 
 ### Technical Perspective
+
 #### Dependencies & Tooling
+
 - Retrigger flaky macOS Rust Tests
 - Drop change-implying framing from PTY pre-register note
 
 #### Releases
+
 - v6.3.1
 
 ---
@@ -130,7 +156,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.0] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.0
 
 ---
@@ -138,11 +166,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.8] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Tighten PTY chrome scrubbing, document idle override, tame stale-state warning (#930) (#930)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.8
 
 ---
@@ -150,7 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.7] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.7
 
 ---

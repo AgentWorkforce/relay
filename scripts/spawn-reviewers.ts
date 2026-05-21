@@ -11,18 +11,18 @@ async function main() {
   });
 
   // Listen for all events
-  relay.onDeliveryUpdate = (event) => {
+  relay.addListener('deliveryUpdate', (event) => {
     console.log(`[delivery] ${event.kind}:`, JSON.stringify(event));
-  };
-  relay.onMessageReceived = (msg) => {
+  });
+  relay.addListener('messageReceived', (msg) => {
     console.log(`\n[MSG ${msg.from} -> ${msg.to}]: ${msg.text}\n`);
-  };
-  relay.onAgentSpawned = (agent: Agent) => {
+  });
+  relay.addListener('agentSpawned', (agent: Agent) => {
     console.log(`[spawned] ${agent.name}`);
-  };
-  relay.onAgentExited = (agent: Agent, code?: number) => {
+  });
+  relay.addListener('agentExited', (agent: Agent, code?: number) => {
     console.log(`[exited] ${agent.name} code=${code}`);
-  };
+  });
 
   const human = relay.human({ name: 'Human' });
 

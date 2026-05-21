@@ -27,13 +27,13 @@ function wireRelay(relay: AgentRelay, client: ReturnType<typeof createMockFacade
   (relay as any).wireEvents(client);
 }
 
-describe('AgentRelay onAgentActivityChanged', () => {
+describe('AgentRelay agentActivityChanged listener', () => {
   it('emits active on first delivery event', () => {
     const relay = new AgentRelay();
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
 
@@ -53,7 +53,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'delivery_injected', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 2 });
@@ -69,7 +69,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({
@@ -94,7 +94,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'agent_idle', name: 'worker-1', idle_secs: 30 });
@@ -113,7 +113,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'agent_idle', name: 'worker-1', idle_secs: 30 });
@@ -142,7 +142,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd2', event_id: 'e2', timestamp: 2 });
@@ -166,7 +166,7 @@ describe('AgentRelay onAgentActivityChanged', () => {
     const { client, emit } = createMockFacadeClient();
     wireRelay(relay, client);
     const changes: AgentActivityChange[] = [];
-    relay.onAgentActivityChanged = (change) => changes.push(change);
+    relay.addListener('agentActivityChanged', (change) => changes.push(change));
 
     emit({ kind: 'delivery_queued', name: 'worker-1', delivery_id: 'd1', event_id: 'e1', timestamp: 1 });
     emit({ kind: 'agent_exited', name: 'worker-1', code: 0, signal: undefined });

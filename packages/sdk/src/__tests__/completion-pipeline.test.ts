@@ -128,24 +128,36 @@ const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; tas
         : 'STEP_COMPLETE:unknown\n');
 
   queueMicrotask(() => {
-    if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-      mockRelayInstance.onWorkerOutput({ name, chunk: output });
-    }
+    emitRelayEvent('workerOutput', { name, chunk: output });
   });
 
   return { ...mockAgent, name };
 };
+
+const relayListeners = new Map<string, Set<(...args: any[]) => void>>();
+
+function emitRelayEvent(event: string, payload: any) {
+  const set = relayListeners.get(event);
+  if (!set) return;
+  for (const fn of set) fn(payload);
+}
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(defaultSpawnPtyImplementation),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
+  addListener: vi.fn((event: string, fn: (...args: any[]) => void) => {
+    let set = relayListeners.get(event);
+    if (!set) {
+      set = new Set();
+      relayListeners.set(event, set);
+    }
+    set.add(fn);
+    return () => {
+      set!.delete(fn);
+    };
+  }),
   listAgents: vi.fn().mockResolvedValue([]),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
@@ -154,7 +166,7 @@ let relayEventCounter = 0;
 
 function emitRelayChannelMessage(message: { from: string; to: string; text: string }) {
   setTimeout(() => {
-    mockRelayInstance.onMessageReceived?.({
+    emitRelayEvent('messageReceived', {
       eventId: `evt-${++relayEventCounter}`,
       from: message.from,
       to: message.to,
@@ -304,7 +316,7 @@ describe('Completion Pipeline', () => {
     mockSpawnOutputs = [];
     mockAgent.release.mockResolvedValue(undefined);
     mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
-    mockRelayInstance.onWorkerOutput = null;
+    relayListeners.clear();
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -999,9 +1011,7 @@ describe('Completion Pipeline', () => {
                         : 'STEP_COMPLETE:unknown\n';
 
           queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
+            emitRelayEvent('workerOutput', { name, chunk: output });
           });
 
           const agent = { ...mockAgent, name };

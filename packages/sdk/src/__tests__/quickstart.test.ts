@@ -61,10 +61,10 @@ test('facade: spawn → message → list → release → shutdown', async (t) =>
   const receivedMessages: Message[] = [];
   const sentMessages: Message[] = [];
 
-  relay.onAgentSpawned = (agent) => spawnedNames.push(agent.name);
-  relay.onAgentReleased = (agent) => releasedNames.push(agent.name);
-  relay.onMessageReceived = (msg) => receivedMessages.push(msg);
-  relay.onMessageSent = (msg) => sentMessages.push(msg);
+  relay.addListener('agentSpawned', (agent) => spawnedNames.push(agent.name));
+  relay.addListener('agentReleased', (agent) => releasedNames.push(agent.name));
+  relay.addListener('messageReceived', (msg) => receivedMessages.push(msg));
+  relay.addListener('messageSent', (msg) => sentMessages.push(msg));
 
   try {
     // Spawn two agents in parallel
@@ -90,7 +90,7 @@ test('facade: spawn → message → list → release → shutdown', async (t) =>
     assert.equal(msg.from, 'System');
     assert.equal(msg.to, codex.name);
 
-    // onMessageSent should have fired
+    // messageSent listener should have fired
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].text, 'Hello, world!');
 
@@ -138,7 +138,7 @@ test('facade: agent.sendMessage sends from the agent identity', async (t) => {
   });
 
   const sentMessages: Message[] = [];
-  relay.onMessageSent = (msg) => sentMessages.push(msg);
+  relay.addListener('messageSent', (msg) => sentMessages.push(msg));
 
   try {
     const [a, b] = await Promise.all([
