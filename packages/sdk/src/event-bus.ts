@@ -35,8 +35,15 @@ export class EventBus<E extends EventMap> {
     }
     set.add(handler as EventHandler<readonly unknown[]>);
     return () => {
-      set!.delete(handler as EventHandler<readonly unknown[]>);
-      if (set!.size === 0) {
+      // Re-read the current Set from the map so a stale closure can't blow
+      // away the new Set if the caller unsubscribes, re-registers a fresh
+      // handler under the same event, then calls the original `off` again.
+      // Without this identity check the double-`off()` would silently drop
+      // every listener for the event.
+      const current = this.handlers.get(event);
+      if (current !== set) return;
+      current.delete(handler as EventHandler<readonly unknown[]>);
+      if (current.size === 0) {
         this.handlers.delete(event);
       }
     };

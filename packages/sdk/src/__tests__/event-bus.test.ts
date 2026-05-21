@@ -52,6 +52,22 @@ describe('EventBus', () => {
     expect(bus.listenerCount('ping')).toBe(0);
   });
 
+  it('returned unsubscribe is idempotent and does not clobber later registrations', async () => {
+    const bus = new EventBus<Events>();
+    const h1 = vi.fn();
+    const h2 = vi.fn();
+    const off = bus.addListener('ping', h1);
+    off();
+    bus.addListener('ping', h2);
+    // The second call to the original unsubscribe must NOT wipe the
+    // freshly-registered h2 — a stale-closure bug would do exactly that.
+    off();
+    expect(bus.listenerCount('ping')).toBe(1);
+    await bus.emit('ping', { id: 1 });
+    expect(h1).not.toHaveBeenCalled();
+    expect(h2).toHaveBeenCalledTimes(1);
+  });
+
   it('drops the event-name entry when the last listener is removed', () => {
     const bus = new EventBus<Events>();
     const a = vi.fn();

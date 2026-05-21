@@ -20,8 +20,8 @@ async function main() {
   relay.addListener('agentSpawned', (agent: Agent) => {
     console.log(`[spawned] ${agent.name}`);
   });
-  relay.addListener('agentExited', (agent: Agent, code?: number) => {
-    console.log(`[exited] ${agent.name} code=${code}`);
+  relay.addListener('agentExited', (agent: Agent) => {
+    console.log(`[exited] ${agent.name} code=${agent.exitCode ?? 'none'}`);
   });
 
   const human = relay.human({ name: 'Human' });
