@@ -169,6 +169,7 @@ pub fn relaycast_mcp_config_json_with_result(
 /// Later sources override earlier ones (matching Claude's own precedence).
 /// The relaycast entry always wins (prevents stale entries from overriding broker creds).
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 fn merge_relaycast_with_project_mcp(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -417,6 +418,7 @@ pub fn ensure_opencode_config(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn ensure_opencode_config_with_result(
     root: &Path,
     relay_api_key: Option<&str>,
@@ -560,6 +562,7 @@ pub fn ensure_opencode_config_with_result(
 /// Write `.cursor/mcp.json` in the given directory with the Relaycast MCP server
 /// configured with per-agent credentials (name + token).
 /// Returns `true` if the config was created or updated.
+#[allow(clippy::too_many_arguments)]
 pub fn ensure_cursor_mcp_config(
     root: &Path,
     relay_api_key: Option<&str>,
@@ -1003,6 +1006,7 @@ fn gemini_droid_mcp_add_args(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gemini_droid_mcp_add_args_with_result(
     api_key: Option<&str>,
     base_url: Option<&str>,

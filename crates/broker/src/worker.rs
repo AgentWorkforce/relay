@@ -154,6 +154,7 @@ impl WorkerRegistry {
             .map(|(_, v)| v.as_str())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_mcp_args(
         &self,
         cli_name: &str,
@@ -195,6 +196,7 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.child.id())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
         spec: AgentSpec,

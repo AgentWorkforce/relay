@@ -32,6 +32,7 @@ type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::syn
 // Request / State types
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)]
 pub enum ListenApiRequest {
     Spawn {
         name: String,
