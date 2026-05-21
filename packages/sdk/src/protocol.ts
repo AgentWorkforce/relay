@@ -434,7 +434,7 @@ export type BrokerEvent =
       result_id: string;
       data: unknown;
       final: boolean;
-      metadata?: Record<string, unknown> | null;
+      metadata?: unknown;
     }
   | {
       kind: 'agent_blocked_on_send';

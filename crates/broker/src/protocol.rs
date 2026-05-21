@@ -498,6 +498,36 @@ mod tests {
     }
 
     #[test]
+    fn agent_result_event_round_trip_with_metadata() {
+        let event = BrokerToSdk::Event(BrokerEvent::AgentResult {
+            name: "Worker1".into(),
+            result_id: "res_42".into(),
+            data: json!({"answer": 42}),
+            final_result: true,
+            metadata: Some(json!({"latency_ms": 123})),
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        // The `final_result` field MUST serialize as `final` per the SDK wire contract.
+        assert!(encoded.contains("\"final\":true"));
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn agent_result_event_round_trip_without_metadata() {
+        let event = BrokerToSdk::Event(BrokerEvent::AgentResult {
+            name: "Worker2".into(),
+            result_id: "res_7".into(),
+            data: json!("partial"),
+            final_result: false,
+            metadata: None,
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
     fn broker_event_delivery_failed_round_trip() {
         let event = BrokerToSdk::Event(BrokerEvent::DeliveryFailed {
             name: "Worker1".into(),

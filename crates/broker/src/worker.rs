@@ -164,7 +164,12 @@ impl WorkerRegistry {
         skip_relay_prompt: bool,
         agent_result: Option<&AgentResultMcpConfig>,
     ) -> Result<Vec<String>> {
-        if skip_relay_prompt && agent_result.is_none() {
+        // `skip_relay_prompt` is an explicit opt-out: the caller does not want the
+        // relaycast MCP server (messaging/channel/etc. tools) injected, e.g. to
+        // save tokens. We honor that even when `agent_result` is configured —
+        // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
+        // below, so a separately-configured relaycast MCP can pick them up.
+        if skip_relay_prompt {
             return Ok(Vec::new());
         }
         configure_relaycast_mcp_with_result(

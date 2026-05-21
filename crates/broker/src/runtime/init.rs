@@ -335,12 +335,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         );
     }
 
+    let callback_host = match cmd.api_bind.as_str() {
+        "0.0.0.0" | "::" | "[::]" | "" => "127.0.0.1",
+        other => other,
+    };
     let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
         (
             "AGENT_RELAY_RESULT_URL".to_string(),
-            format!("http://{}:{}/api/agent-result", cmd.api_bind, actual_port),
+            format!("http://{}:{}/api/agent-result", callback_host, actual_port),
         ),
         (
             "RELAY_WORKSPACES_JSON".to_string(),

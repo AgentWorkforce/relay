@@ -167,7 +167,8 @@ export interface AgentResultMeta {
   name: string;
   resultId: string;
   final: boolean;
-  metadata?: Record<string, unknown>;
+  /** Optional diagnostic metadata about the result. Any JSON-compatible value. */
+  metadata?: unknown;
 }
 
 export interface AgentResult<T = unknown> extends AgentResultMeta {
@@ -545,7 +546,7 @@ export class AgentRelay {
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
   private readonly resultContracts = new Map<string, InternalAgentResultContract>();
   private readonly lastAgentResults = new Map<string, AgentResult<unknown>>();
-  private readonly resultResolvers = new Map<string, AgentResultResolver>();
+  private readonly resultResolvers = new Map<string, AgentResultResolver[]>();
   private resultResolverSeq = 0;
   private readonly exitResolvers = new Map<
     string,
@@ -1319,6 +1320,15 @@ export class AgentRelay {
       entry.resolve('exited');
     }
     this.idleResolvers.clear();
+    const shutdownError = new Error('AgentRelay shutdown before structured result was submitted');
+    for (const waiters of this.resultResolvers.values()) {
+      for (const waiter of waiters) {
+        waiter.reject(shutdownError);
+      }
+    }
+    this.resultResolvers.clear();
+    this.resultContracts.clear();
+    this.lastAgentResults.clear();
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────
@@ -1633,10 +1643,9 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
-          this.resultResolvers
-            .get(event.name)
-            ?.reject(new Error(`Agent '${event.name}' was released before submitting a result`));
-          this.resultResolvers.delete(event.name);
+          for (const waiter of this.takeResultResolvers(event.name)) {
+            waiter.reject(new Error(`Agent '${event.name}' was released before submitting a result`));
+          }
           break;
         }
         case 'agent_exited': {
@@ -1660,10 +1669,9 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
-          this.resultResolvers
-            .get(event.name)
-            ?.reject(new Error(`Agent '${event.name}' exited before submitting a result`));
-          this.resultResolvers.delete(event.name);
+          for (const waiter of this.takeResultResolvers(event.name)) {
+            waiter.reject(new Error(`Agent '${event.name}' exited before submitting a result`));
+          }
           break;
         }
         case 'agent_exit': {
@@ -1835,6 +1843,13 @@ export class AgentRelay {
     return value as T;
   }
 
+  private takeResultResolvers(name: string): AgentResultResolver[] {
+    const waiters = this.resultResolvers.get(name);
+    if (!waiters || waiters.length === 0) return [];
+    this.resultResolvers.delete(name);
+    return waiters;
+  }
+
   private dispatchAgentResult(name: string, raw: AgentResult<unknown>): void {
     const contract = this.resultContracts.get(name);
     let result: AgentResult<unknown>;
@@ -1843,8 +1858,7 @@ export class AgentRelay {
       result = { ...raw, data };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.resultResolvers.get(name)?.reject(err);
-      this.resultResolvers.delete(name);
+      for (const waiter of this.takeResultResolvers(name)) waiter.reject(err);
       console.warn(`[AgentRelay] structured result from "${name}" failed validation`, err);
       return;
     }
@@ -1856,8 +1870,7 @@ export class AgentRelay {
         console.warn(`[AgentRelay] result("${name}") onResult hook threw`, error);
       });
     }
-    this.resultResolvers.get(name)?.resolve(result);
-    this.resultResolvers.delete(name);
+    for (const waiter of this.takeResultResolvers(name)) waiter.resolve(result);
   }
 
   private waitForAgentResult(name: string, timeoutMs?: number): Promise<AgentResult<unknown>> {
@@ -1865,28 +1878,41 @@ export class AgentRelay {
     if (existing) {
       return Promise.resolve(existing);
     }
+    // Don't register a waiter for an agent we don't know about and haven't
+    // observed a result for — the resolver would never settle.
+    if (!this.knownAgents.has(name) && !this.resultContracts.has(name)) {
+      return Promise.reject(new Error(`Agent '${name}' is not running and has no structured result`));
+    }
     if (timeoutMs === 0) {
       return Promise.reject(new Error(`Timed out waiting for structured result from '${name}'`));
     }
     return new Promise<AgentResult<unknown>>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const token = ++this.resultResolverSeq;
-      this.resultResolvers.set(name, {
-        resolve(result) {
+      const waiter: AgentResultResolver = {
+        resolve: (result) => {
           if (timer) clearTimeout(timer);
           resolve(result);
         },
-        reject(error) {
+        reject: (error) => {
           if (timer) clearTimeout(timer);
           reject(error);
         },
         token,
-      });
+      };
+      const existingWaiters = this.resultResolvers.get(name);
+      if (existingWaiters) {
+        existingWaiters.push(waiter);
+      } else {
+        this.resultResolvers.set(name, [waiter]);
+      }
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
-          const current = this.resultResolvers.get(name);
-          if (current?.token === token) {
-            this.resultResolvers.delete(name);
+          const list = this.resultResolvers.get(name);
+          if (list) {
+            const idx = list.findIndex((w) => w.token === token);
+            if (idx >= 0) list.splice(idx, 1);
+            if (list.length === 0) this.resultResolvers.delete(name);
           }
           reject(new Error(`Timed out waiting for structured result from '${name}' after ${timeoutMs}ms`));
         }, timeoutMs);
@@ -1952,6 +1978,11 @@ export class AgentRelay {
             relay.exitResolvers.delete(name);
             relay.idleResolvers.get(name)?.resolve('exited');
             relay.idleResolvers.delete(name);
+            relay.resultContracts.delete(name);
+            relay.lastAgentResults.delete(name);
+            for (const waiter of relay.takeResultResolvers(name)) {
+              waiter.reject(new Error(`Agent '${name}' was released before submitting a result`));
+            }
             await relay.invokeLifecycleHook(
               releaseOptions.onSuccess,
               releaseContext,
