@@ -115,6 +115,8 @@ Want more than a toy example? Start with:
 - Tooling that lets existing agents communicate without rewriting their runtime
 - Local or remote coordination patterns where multiple agents need shared context
 
+Bundled skills include `adding-swarm-patterns`, `using-agent-relay`, and `running-headless-orchestrator`. For repo-attached cloud swarms, install `spawn-cloud-swarm` from https://github.com/AgentWorkforce/skills with `npx skills add https://github.com/agentworkforce/skills --skill spawn-cloud-swarm`.
+
 Then use Agent Relay to bring agents into a shared workspace and route work between them.
 
 ## Supported agents and runtimes

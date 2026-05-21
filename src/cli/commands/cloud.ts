@@ -30,6 +30,10 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 
+const SPAWN_CLOUD_SWARM_SKILL_NAME = 'spawn-cloud-swarm';
+const SPAWN_CLOUD_SWARM_SKILL_INSTALL_COMMAND =
+  'npx skills add https://github.com/agentworkforce/skills --skill spawn-cloud-swarm';
+
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
   '.relayfile.acl',
@@ -51,6 +55,7 @@ export interface CloudDependencies {
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
+  skillInstalled?: (skillName: string) => boolean;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -85,6 +90,10 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
     return value;
   }
   throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+}
+
+function hasClaudeSkillInstalled(skillName: string): boolean {
+  return fs.existsSync(path.join(os.homedir(), '.claude', 'skills', skillName, 'SKILL.md'));
 }
 
 function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
@@ -328,7 +337,9 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('connect')
-    .description('Connect a provider via interactive SSH session')
+    .description(
+      'Connect a provider via interactive SSH session. Install `spawn-cloud-swarm` from AgentWorkforce/skills before asking Claude to spawn cloud swarms.'
+    )
     .argument('<provider>', `Provider to connect (${getProviderHelpText()})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
@@ -347,6 +358,14 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           io: { log: deps.log, error: deps.error },
         });
         success = result.success;
+        if (success && trackedProvider === 'anthropic') {
+          const skillInstalled = deps.skillInstalled ?? hasClaudeSkillInstalled;
+          if (!skillInstalled(SPAWN_CLOUD_SWARM_SKILL_NAME)) {
+            deps.log(
+              `Install ${SPAWN_CLOUD_SWARM_SKILL_NAME} before spawning cloud swarms: ${SPAWN_CLOUD_SWARM_SKILL_INSTALL_COMMAND}`
+            );
+          }
+        }
       } catch (err) {
         errorClass = errorClassName(err);
         throw err;

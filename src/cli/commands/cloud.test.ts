@@ -9,13 +9,15 @@ const cloudMocks = vi.hoisted(() => ({
   syncWorkflowPatch: vi.fn(),
 }));
 
+const connectProviderMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@agent-relay/cloud', () => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
   REFRESH_WINDOW_MS: 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
   clearStoredAuth: vi.fn(),
-  connectProvider: vi.fn(),
+  connectProvider: (...args: unknown[]) => connectProviderMock(...args),
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
   getProviderHelpText: () =>
@@ -23,6 +25,15 @@ vi.mock('@agent-relay/cloud', () => ({
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
+  normalizeProvider: (provider: string) => {
+    const lower = provider.toLowerCase().trim();
+    const aliases: Record<string, string> = {
+      claude: 'anthropic',
+      codex: 'openai',
+      gemini: 'google',
+    };
+    return aliases[lower] ?? lower;
+  },
   readStoredAuth: vi.fn(),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
@@ -39,7 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function createHarness() {
+function createHarness(overrides: Partial<CloudDependencies> = {}) {
   const exit = vi.fn((code: number) => {
     throw new Error(`exit:${code}`);
   }) as unknown as CloudDependencies['exit'];
@@ -48,6 +59,7 @@ function createHarness() {
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
+    ...overrides,
   };
 
   const program = new Command();
@@ -63,6 +75,7 @@ describe('registerCloudCommands', () => {
     const cloud = program.commands.find((command) => command.name() === 'cloud');
 
     expect(cloud).toBeDefined();
+    expect(cloud?.description()).toContain('workflow commands');
     expect(cloud?.commands.map((command) => command.name())).toEqual([
       'login',
       'logout',
@@ -371,5 +384,53 @@ describe('registerCloudCommands', () => {
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
+  });
+
+  describe('cloud connect spawn-cloud-swarm skill guidance', () => {
+    it('prints the external install command for claude when the skill is missing', async () => {
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program, deps } = createHarness({
+        skillInstalled: vi.fn(() => false),
+      });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude']);
+
+      expect(deps.log).toHaveBeenCalledWith(
+        'Install spawn-cloud-swarm before spawning cloud swarms: npx skills add https://github.com/agentworkforce/skills --skill spawn-cloud-swarm'
+      );
+    });
+
+    it('does not print the install command when the claude skill is already present', async () => {
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program, deps } = createHarness({
+        skillInstalled: vi.fn(() => true),
+      });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude']);
+
+      expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('npx skills add'));
+    });
+
+    it('does not check the claude skill for non-claude providers', async () => {
+      const skillInstalled = vi.fn(() => false);
+      connectProviderMock.mockResolvedValueOnce({ success: true });
+
+      const { program } = createHarness({ skillInstalled });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'codex']);
+
+      expect(skillInstalled).not.toHaveBeenCalled();
+    });
+
+    it('describes the external skill install requirement in `cloud connect --help` text', () => {
+      const { program } = createHarness();
+      const cloud = program.commands.find((command) => command.name() === 'cloud');
+      const connect = cloud?.commands.find((command) => command.name() === 'connect');
+
+      expect(connect?.description()).toContain('spawn-cloud-swarm');
+      expect(connect?.description()).toContain('AgentWorkforce/skills');
+    });
   });
 });
