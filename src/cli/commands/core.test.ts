@@ -205,6 +205,18 @@ describe('registerCoreCommands', () => {
     );
   });
 
+  it('up forwards --broker-name to createRelay', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999', '--broker-name', 'relayfile-dev']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, 'relayfile-dev');
+  });
+
   it('up starts broker and dashboard process', async () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
@@ -214,7 +226,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
       expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
@@ -236,7 +248,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
       expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
@@ -445,7 +457,7 @@ describe('registerCoreCommands', () => {
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     // API port = dashboard port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -457,7 +469,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 

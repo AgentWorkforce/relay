@@ -19,6 +19,7 @@ type UpOptions = {
   reuseExistingBroker?: boolean;
   workspaceKey?: string;
   stateDir?: string;
+  brokerName?: string;
 };
 
 type DownOptions = {
@@ -209,7 +210,8 @@ async function resolveApiPortWithFallback(
 async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
-  deps: CoreDependencies
+  deps: CoreDependencies,
+  brokerName?: string
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   // Resolve a free API port BEFORE spawning the broker.  This avoids
   // spawning (and flocking) multiple --persist brokers during retry,
@@ -217,7 +219,7 @@ async function startBrokerWithPortFallback(
   const startApiPort = dashboardPort + 1;
   const apiPort = await resolveApiPortWithFallback(startApiPort, MAX_API_PORT_ATTEMPTS, deps);
 
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort);
+  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName);
 
   await candidate.getStatus();
   return { relay: candidate, apiPort };
@@ -558,6 +560,9 @@ function childUpArgsForDetachedStart(options: UpOptions, deps: CoreDependencies)
   }
   if (options.workspaceKey && !hasCliOption(args, '--workspace-key')) {
     args.push('--workspace-key', options.workspaceKey);
+  }
+  if (options.brokerName && !hasCliOption(args, '--broker-name')) {
+    args.push('--broker-name', options.brokerName);
   }
   if (options.verbose === true && !args.includes('--verbose')) {
     args.push('--verbose');
@@ -1463,7 +1468,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // files (e.g. user deleted .agent-relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps);
+    const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);
     relay = started.relay;
     apiPort = started.apiPort;
     const dashboardRelayUrl = resolveDashboardRelayUrl(apiPort, deps);
