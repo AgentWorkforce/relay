@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay cloud connect claude` now reminds users to install `spawn-cloud-swarm` from the AgentWorkforce skills repo before repo-attached cloud swarms are used.
 - `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker output events in a human-readable stream with filters and JSON Lines output.
 - `agent-relay view <name>` streams a running agent's PTY without taking control or stopping the agent.
 - `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
