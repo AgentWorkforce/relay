@@ -18,19 +18,78 @@ fn env_flag_value_enabled(value: &str) -> bool {
     )
 }
 
-pub(crate) fn tracing_filter_directive(
-    rust_log: Option<&str>,
-    broker_log_flag: Option<&str>,
-) -> String {
-    if let Some(value) = rust_log.map(str::trim).filter(|value| !value.is_empty()) {
-        return value.to_string();
-    }
+/// Where broker tracing output should be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TracingDestination {
+    /// Disable the tracing subscriber entirely.
+    Off,
+    /// Write to stderr (legacy "print" behavior).
+    Stderr,
+    /// Write to `~/.agentworkforce/relay/logs/{broker_id}.log` (the default).
+    File,
+}
 
-    if broker_log_flag.is_some_and(env_flag_value_enabled) {
-        "info".to_string()
-    } else {
-        "off".to_string()
+/// Parse the `AGENT_RELAY_BROKER_LOG` env var into a destination.
+///
+/// Defaults to [`TracingDestination::File`] when the env var is unset or empty.
+/// Recognised values:
+/// - `off`, `none`, `0`, `false`, `no` → [`TracingDestination::Off`]
+/// - `stderr`, `print` → [`TracingDestination::Stderr`]
+/// - `file`, `1`, `true`, `yes`, `on` → [`TracingDestination::File`]
+///
+/// Unknown values fall back to `File` so a typo never silently loses logs.
+pub(crate) fn tracing_destination(env_value: Option<&str>) -> TracingDestination {
+    let Some(value) = env_value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return TracingDestination::File;
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "off" | "none" | "0" | "false" | "no" => TracingDestination::Off,
+        "stderr" | "print" => TracingDestination::Stderr,
+        _ => TracingDestination::File,
     }
+}
+
+/// Pick the level filter directive for the tracing subscriber.
+///
+/// `RUST_LOG` always wins when set, so callers can use the standard tracing
+/// directive syntax (e.g. `agent_relay::worker::pty=debug`). Otherwise we
+/// default to `info`, which keeps the file log useful without being noisy.
+pub(crate) fn tracing_filter_directive(rust_log: Option<&str>) -> String {
+    rust_log
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "info".to_string())
+}
+
+fn sanitize_filename_segment(value: &str) -> String {
+    let mut out: String = value
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        out.push_str("broker");
+    }
+    out
+}
+
+/// Default log file path: `~/.agentworkforce/relay/logs/{broker_id}.log`.
+///
+/// Returns `None` only when the home directory cannot be resolved.
+pub(crate) fn log_file_path(broker_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".agentworkforce")
+            .join("relay")
+            .join("logs")
+            .join(format!("{}.log", sanitize_filename_segment(broker_id))),
+    )
 }
 
 pub(crate) fn log_startup_phase(enabled: bool, started_at: Instant, message: impl AsRef<str>) {
@@ -50,16 +109,48 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
         .as_secs()
 }
 
-pub(crate) fn init_tracing() {
+/// Initialise the global tracing subscriber for this broker process.
+///
+/// Destination is controlled by `AGENT_RELAY_BROKER_LOG`; level filter by
+/// `RUST_LOG`. See [`tracing_destination`] for accepted env values.
+pub(crate) fn init_tracing(broker_id: &str) {
     let rust_log = std::env::var("RUST_LOG").ok();
-    let broker_log_flag = std::env::var(BROKER_LOG_ENV).ok();
-    let filter_directive =
-        tracing_filter_directive(rust_log.as_deref(), broker_log_flag.as_deref());
-    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
+    let broker_log = std::env::var(BROKER_LOG_ENV).ok();
+    let destination = tracing_destination(broker_log.as_deref());
+
+    if destination == TracingDestination::Off {
+        return;
+    }
+
+    let filter_directive = tracing_filter_directive(rust_log.as_deref());
+
+    let (writer, guard) = match destination {
+        TracingDestination::Stderr => tracing_appender::non_blocking(std::io::stderr()),
+        TracingDestination::File => {
+            let Some(log_path) = log_file_path(broker_id) else {
+                return;
+            };
+            if let Some(parent) = log_path.parent() {
+                if std::fs::create_dir_all(parent).is_err() {
+                    return;
+                }
+            }
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                Ok(file) => tracing_appender::non_blocking(file),
+                Err(_) => return,
+            }
+        }
+        TracingDestination::Off => unreachable!(),
+    };
+
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(filter_directive)
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+            tracing_subscriber::EnvFilter::try_new(&filter_directive)
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(true)
         .with_writer(writer)
@@ -122,26 +213,94 @@ pub(crate) fn delivery_retry_interval() -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::tracing_filter_directive;
+    use super::{
+        log_file_path, sanitize_filename_segment, tracing_destination, tracing_filter_directive,
+        TracingDestination,
+    };
 
     #[test]
-    fn tracing_filter_defaults_to_off() {
-        assert_eq!(tracing_filter_directive(None, None), "off");
-        assert_eq!(tracing_filter_directive(Some(""), Some("0")), "off");
+    fn tracing_destination_defaults_to_file() {
+        assert_eq!(tracing_destination(None), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("")), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("   ")), TracingDestination::File);
     }
 
     #[test]
-    fn tracing_filter_uses_broker_log_flag_for_info() {
-        assert_eq!(tracing_filter_directive(None, Some("1")), "info");
-        assert_eq!(tracing_filter_directive(None, Some("true")), "info");
+    fn tracing_destination_recognises_off_aliases() {
+        for value in ["off", "OFF", "none", "0", "false", "no"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Off,
+                "value `{value}` should disable tracing"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_stderr_aliases() {
+        for value in ["stderr", "STDERR", "print", "Print"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Stderr,
+                "value `{value}` should route to stderr"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_file_aliases() {
+        for value in ["file", "FILE", "1", "true", "yes", "on", "unknown-value"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::File,
+                "value `{value}` should route to file"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_filter_defaults_to_info_when_rust_log_unset() {
+        assert_eq!(tracing_filter_directive(None), "info");
+        assert_eq!(tracing_filter_directive(Some("")), "info");
+        assert_eq!(tracing_filter_directive(Some("   ")), "info");
     }
 
     #[test]
     fn tracing_filter_prefers_rust_log_directive() {
         assert_eq!(
-            tracing_filter_directive(Some("agent_relay::worker::pty=debug"), Some("1")),
+            tracing_filter_directive(Some("agent_relay::worker::pty=debug")),
             "agent_relay::worker::pty=debug"
         );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_replaces_unsafe_chars() {
+        assert_eq!(
+            sanitize_filename_segment("agent name/with:weird*chars"),
+            "agent-name-with-weird-chars"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_keeps_safe_chars() {
+        assert_eq!(sanitize_filename_segment("alpha-Beta_01"), "alpha-Beta_01");
+    }
+
+    #[test]
+    fn sanitize_filename_segment_falls_back_to_broker() {
+        assert_eq!(sanitize_filename_segment(""), "broker");
+        assert_eq!(sanitize_filename_segment("///"), "---");
+    }
+
+    #[test]
+    fn log_file_path_uses_agentworkforce_logs_dir() {
+        if let Some(path) = log_file_path("my-broker") {
+            let path_str = path.to_string_lossy();
+            assert!(
+                path_str.contains(".agentworkforce/relay/logs/my-broker.log"),
+                "unexpected log path: {path_str}"
+            );
+        }
     }
 }
 

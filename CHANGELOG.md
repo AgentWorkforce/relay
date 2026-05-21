@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay history` and `agent-relay replies` now resolve the project broker session even when `AGENT_RELAY_STATE_DIR` points elsewhere.
 - `agent-relay doctor` now fails with an actionable diagnostic for half-started, stale-connection, and unresolved-API-key-template brokers instead of reporting "healthy".
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
-- Broker diagnostic logs are quiet by default; use `AGENT_RELAY_BROKER_LOG=1` or `RUST_LOG=...` to opt in without contaminating PTY streams.
+- Broker diagnostic logs default to `~/.agentworkforce/relay/logs/{brokerId}.log` instead of stderr, keeping PTY streams clean. Set `AGENT_RELAY_BROKER_LOG=off` to disable, `AGENT_RELAY_BROKER_LOG=stderr` to print to stderr, and use `RUST_LOG=...` for finer-grained filters.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
 - Messaging `--limit` values clamp invalid negative inputs.
@@ -91,11 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.2] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Stop worker stderr from rendering inside agent xterm (#931) (#931)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.2
 
 ---
@@ -103,15 +107,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.1] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Pre-register Claude PTY workers so Relaycast MCP boots fast (#926)
 
 ### Technical Perspective
+
 #### Dependencies & Tooling
+
 - Retrigger flaky macOS Rust Tests
 - Drop change-implying framing from PTY pre-register note
 
 #### Releases
+
 - v6.3.1
 
 ---
@@ -119,7 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.0] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.0
 
 ---
@@ -127,11 +138,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.8] - 2026-05-20
 
 ### Product Perspective
+
 #### User-Impacting Fixes
+
 - Tighten PTY chrome scrubbing, document idle override, tame stale-state warning (#930) (#930)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.8
 
 ---
@@ -139,7 +154,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.2.7] - 2026-05-20
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.2.7
 
 ---
