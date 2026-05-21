@@ -1,5 +1,7 @@
 use super::*;
 
+const BROKER_LOG_ENV: &str = "AGENT_RELAY_BROKER_LOG";
+
 pub(crate) fn startup_debug_enabled() -> bool {
     std::env::var("AGENT_RELAY_STARTUP_DEBUG")
         .map(|value| {
@@ -7,6 +9,28 @@ pub(crate) fn startup_debug_enabled() -> bool {
             !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
         })
         .unwrap_or(false)
+}
+
+fn env_flag_value_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+pub(crate) fn tracing_filter_directive(
+    rust_log: Option<&str>,
+    broker_log_flag: Option<&str>,
+) -> String {
+    if let Some(value) = rust_log.map(str::trim).filter(|value| !value.is_empty()) {
+        return value.to_string();
+    }
+
+    if broker_log_flag.is_some_and(env_flag_value_enabled) {
+        "info".to_string()
+    } else {
+        "off".to_string()
+    }
 }
 
 pub(crate) fn log_startup_phase(enabled: bool, started_at: Instant, message: impl AsRef<str>) {
@@ -27,11 +51,15 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
 }
 
 pub(crate) fn init_tracing() {
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let broker_log_flag = std::env::var(BROKER_LOG_ENV).ok();
+    let filter_directive =
+        tracing_filter_directive(rust_log.as_deref(), broker_log_flag.as_deref());
     let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_new(filter_directive)
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
         )
         .with_target(true)
         .with_writer(writer)
@@ -81,8 +109,7 @@ pub(crate) fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id
 pub(crate) fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .is_some_and(|value| env_flag_value_enabled(&value))
 }
 
 pub(crate) fn delivery_retry_interval() -> Duration {
@@ -91,6 +118,31 @@ pub(crate) fn delivery_retry_interval() -> Duration {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_DELIVERY_RETRY_MS);
     Duration::from_millis(ms.max(50))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tracing_filter_directive;
+
+    #[test]
+    fn tracing_filter_defaults_to_off() {
+        assert_eq!(tracing_filter_directive(None, None), "off");
+        assert_eq!(tracing_filter_directive(Some(""), Some("0")), "off");
+    }
+
+    #[test]
+    fn tracing_filter_uses_broker_log_flag_for_info() {
+        assert_eq!(tracing_filter_directive(None, Some("1")), "info");
+        assert_eq!(tracing_filter_directive(None, Some("true")), "info");
+    }
+
+    #[test]
+    fn tracing_filter_prefers_rust_log_directive() {
+        assert_eq!(
+            tracing_filter_directive(Some("agent_relay::worker::pty=debug"), Some("1")),
+            "agent_relay::worker::pty=debug"
+        );
+    }
 }
 
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {

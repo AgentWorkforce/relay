@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay history` and `agent-relay replies` now resolve the project broker session even when `AGENT_RELAY_STATE_DIR` points elsewhere.
 - `agent-relay doctor` now fails with an actionable diagnostic for half-started, stale-connection, and unresolved-API-key-template brokers instead of reporting "healthy".
 - CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
+- Broker diagnostic logs are quiet by default; use `AGENT_RELAY_BROKER_LOG=1` or `RUST_LOG=...` to opt in without contaminating PTY streams.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
 - Messaging `--limit` values clamp invalid negative inputs.
