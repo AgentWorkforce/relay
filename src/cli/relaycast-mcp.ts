@@ -177,19 +177,32 @@ function registerAgentResultTool(server: McpServer, config: AgentResultCallbackC
       },
     },
     async ({ data, final, metadata }) => {
-      const response = await fetch(config.url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          agent: config.agentName,
-          data,
-          final: final ?? true,
-          metadata,
-        }),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      let response: Response;
+      try {
+        response = await fetch(config.url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${config.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            agent: config.agentName,
+            data,
+            final: final ?? true,
+            metadata,
+          }),
+        });
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new Error('Agent Relay result submission timed out after 10000ms');
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
       const responseText = await response.text();
       let payload: Record<string, unknown>;
       try {

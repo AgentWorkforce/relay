@@ -511,6 +511,49 @@ mod tests {
     }
 
     #[test]
+    fn broker_event_agent_result_round_trip_preserves_final_and_metadata() {
+        let event = BrokerToSdk::Event(BrokerEvent::AgentResult {
+            name: "WorkerResult".into(),
+            result_id: "ar_1".into(),
+            data: json!({ "ok": true }),
+            final_result: true,
+            metadata: Some(json!(["trace", 42])),
+        });
+
+        let encoded = serde_json::to_string(&event).unwrap();
+        let raw: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(raw["payload"]["final"], true);
+        assert!(raw["payload"].get("final_result").is_none());
+        assert_eq!(raw["payload"]["metadata"], json!(["trace", 42]));
+
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+
+        let without_metadata = json!({
+            "type": "event",
+            "payload": {
+                "kind": "agent_result",
+                "name": "WorkerResult",
+                "result_id": "ar_2",
+                "data": { "ok": false },
+                "final": false
+            }
+        });
+        let decoded_without_metadata: BrokerToSdk =
+            serde_json::from_value(without_metadata).unwrap();
+        assert_eq!(
+            decoded_without_metadata,
+            BrokerToSdk::Event(BrokerEvent::AgentResult {
+                name: "WorkerResult".into(),
+                result_id: "ar_2".into(),
+                data: json!({ "ok": false }),
+                final_result: false,
+                metadata: None,
+            })
+        );
+    }
+
+    #[test]
     fn agent_spec_defaults_optional_fields() {
         let raw = r#"{"name":"Worker3","runtime":"pty"}"#;
         let spec: AgentSpec = serde_json::from_str(raw).unwrap();

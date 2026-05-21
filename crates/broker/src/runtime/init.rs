@@ -1,5 +1,36 @@
 use super::*;
 
+fn connectable_api_host(bind_host: &str) -> String {
+    let trimmed = bind_host.trim();
+    let host = match trimmed {
+        "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        other => other,
+    };
+    if host.contains(':') && !host.starts_with('[') && !host.ends_with(']') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connectable_api_host;
+
+    #[test]
+    fn connectable_api_host_uses_loopback_for_wildcard_binds() {
+        assert_eq!(connectable_api_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(connectable_api_host("::"), "127.0.0.1");
+        assert_eq!(connectable_api_host("[::]"), "127.0.0.1");
+    }
+
+    #[test]
+    fn connectable_api_host_brackets_ipv6_hosts_for_urls() {
+        assert_eq!(connectable_api_host("::1"), "[::1]");
+        assert_eq!(connectable_api_host("127.0.0.1"), "127.0.0.1");
+    }
+}
+
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
     let startup_debug = startup_debug_enabled();
@@ -335,12 +366,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         );
     }
 
+    let result_callback_host = connectable_api_host(&cmd.api_bind);
     let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
         (
             "AGENT_RELAY_RESULT_URL".to_string(),
-            format!("http://{}:{}/api/agent-result", cmd.api_bind, actual_port),
+            format!(
+                "http://{}:{}/api/agent-result",
+                result_callback_host, actual_port
+            ),
         ),
         (
             "RELAY_WORKSPACES_JSON".to_string(),

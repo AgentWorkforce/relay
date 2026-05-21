@@ -216,6 +216,18 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        let restart_policy = effective_spec.restart_policy.clone();
+                        if let Some(policy) = restart_policy.clone() {
+                            workers.supervisor.register(
+                                &name,
+                                effective_spec.clone(),
+                                Some("Dashboard".to_string()),
+                                effective_task.clone(),
+                                skip_relay_prompt,
+                                agent_result.clone(),
+                                policy,
+                            );
+                        }
                         if let Some(ref task_text) = effective_task {
                             workers
                                 .initial_tasks
@@ -245,7 +257,7 @@ impl BrokerRuntime {
                                         .as_secs(),
                                 ),
                                 spec: Some(effective_spec.clone()),
-                                restart_policy: None,
+                                restart_policy,
                                 initial_task: effective_task,
                             },
                         );

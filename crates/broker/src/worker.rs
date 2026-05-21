@@ -164,7 +164,7 @@ impl WorkerRegistry {
         skip_relay_prompt: bool,
         agent_result: Option<&AgentResultMcpConfig>,
     ) -> Result<Vec<String>> {
-        if skip_relay_prompt && agent_result.is_none() {
+        if skip_relay_prompt {
             return Ok(Vec::new());
         }
         configure_relaycast_mcp_with_result(

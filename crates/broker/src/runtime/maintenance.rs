@@ -305,7 +305,7 @@ impl BrokerRuntime {
                         worker_relay_key,
                         rst.skip_relay_prompt,
                         None,
-                        None,
+                        rst.agent_result.clone(),
                     )
                     .await
                 {

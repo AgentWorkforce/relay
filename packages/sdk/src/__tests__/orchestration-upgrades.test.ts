@@ -619,6 +619,117 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('agent.waitForResult resolves all concurrent waiters', async () => {
+    const { client, emit } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnPty<{ ok: boolean }>({
+        name: 'multi-result-agent',
+        cli: 'claude',
+        channels: ['general'],
+        result: {
+          jsonSchema: { type: 'object' },
+        },
+      });
+
+      const firstWait = agent.waitForResult(1_000);
+      const secondWait = agent.waitForResult(1_000);
+      emit({
+        kind: 'agent_result',
+        name: 'multi-result-agent',
+        result_id: 'ar_multi',
+        data: { ok: true },
+        final: true,
+      });
+
+      await expect(Promise.all([firstWait, secondWait])).resolves.toEqual([
+        expect.objectContaining({ resultId: 'ar_multi', data: { ok: true } }),
+        expect.objectContaining({ resultId: 'ar_multi', data: { ok: true } }),
+      ]);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('agent.waitForResult rejects immediately after the agent exits without a cached result', async () => {
+    const { client, emit } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'no-result-agent',
+        cli: 'claude',
+        channels: ['general'],
+        result: {
+          jsonSchema: { type: 'object' },
+        },
+      });
+
+      emit({
+        kind: 'agent_exited',
+        name: 'no-result-agent',
+        code: 1,
+      });
+
+      await expect(agent.waitForResult()).rejects.toThrow(
+        "Agent 'no-result-agent' is not running and has no structured result"
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('shutdown rejects pending structured result waiters', async () => {
+    const { client } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    const agent = await relay.spawnPty({
+      name: 'shutdown-result-agent',
+      cli: 'claude',
+      channels: ['general'],
+      result: {
+        jsonSchema: { type: 'object' },
+      },
+    });
+    const waitPromise = agent.waitForResult();
+
+    await relay.shutdown();
+
+    await expect(waitPromise).rejects.toThrow('AgentRelay shutdown before structured result was submitted');
+  });
+
+  it('release agent_not_found rejects pending structured result waiters', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnPty({
+        name: 'missing-result-agent',
+        cli: 'claude',
+        channels: ['general'],
+        result: {
+          jsonSchema: { type: 'object' },
+        },
+      });
+      const waitPromise = agent.waitForResult();
+      const rejected = expect(waitPromise).rejects.toThrow(
+        "Agent 'missing-result-agent' was released before submitting a result"
+      );
+      mock.release.mockRejectedValueOnce(
+        new AgentRelayProtocolError({
+          code: 'agent_not_found',
+          message: 'agent not found',
+        })
+      );
+
+      await agent.release();
+      await rejected;
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('waitForAgentMessage waits for relay_inbound from the agent', async () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);

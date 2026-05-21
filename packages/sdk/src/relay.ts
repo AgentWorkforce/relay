@@ -167,7 +167,7 @@ export interface AgentResultMeta {
   name: string;
   resultId: string;
   final: boolean;
-  metadata?: Record<string, unknown>;
+  metadata?: unknown;
 }
 
 export interface AgentResult<T = unknown> extends AgentResultMeta {
@@ -477,7 +477,6 @@ type InternalAgentResultContract<T = unknown> = {
 type AgentResultResolver = {
   resolve: (result: AgentResult<unknown>) => void;
   reject: (error: Error) => void;
-  token: number;
 };
 
 interface AgentActivityState {
@@ -545,8 +544,7 @@ export class AgentRelay {
   private readonly outputListeners = new Map<string, Set<OutputListener>>();
   private readonly resultContracts = new Map<string, InternalAgentResultContract>();
   private readonly lastAgentResults = new Map<string, AgentResult<unknown>>();
-  private readonly resultResolvers = new Map<string, AgentResultResolver>();
-  private resultResolverSeq = 0;
+  private readonly resultResolvers = new Map<string, Set<AgentResultResolver>>();
   private readonly exitResolvers = new Map<
     string,
     { resolve: (reason: 'exited' | 'released') => void; token: number }
@@ -1311,6 +1309,14 @@ export class AgentRelay {
     this.deliveryStates.clear();
     this.agentActivityStates.clear();
     this.outputListeners.clear();
+    for (const waiters of this.resultResolvers.values()) {
+      for (const waiter of waiters) {
+        waiter.reject(new Error('AgentRelay shutdown before structured result was submitted'));
+      }
+    }
+    this.resultResolvers.clear();
+    this.resultContracts.clear();
+    this.lastAgentResults.clear();
     for (const entry of this.exitResolvers.values()) {
       entry.resolve('released');
     }
@@ -1633,10 +1639,10 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
-          this.resultResolvers
-            .get(event.name)
-            ?.reject(new Error(`Agent '${event.name}' was released before submitting a result`));
-          this.resultResolvers.delete(event.name);
+          this.rejectAgentResultWaiters(
+            event.name,
+            new Error(`Agent '${event.name}' was released before submitting a result`)
+          );
           break;
         }
         case 'agent_exited': {
@@ -1660,10 +1666,10 @@ export class AgentRelay {
           this.exitResolvers.delete(event.name);
           this.idleResolvers.get(event.name)?.resolve('exited');
           this.idleResolvers.delete(event.name);
-          this.resultResolvers
-            .get(event.name)
-            ?.reject(new Error(`Agent '${event.name}' exited before submitting a result`));
-          this.resultResolvers.delete(event.name);
+          this.rejectAgentResultWaiters(
+            event.name,
+            new Error(`Agent '${event.name}' exited before submitting a result`)
+          );
           break;
         }
         case 'agent_exit': {
@@ -1835,6 +1841,39 @@ export class AgentRelay {
     return value as T;
   }
 
+  private resolveAgentResultWaiters(name: string, result: AgentResult<unknown>): void {
+    const waiters = this.resultResolvers.get(name);
+    if (!waiters) {
+      return;
+    }
+    this.resultResolvers.delete(name);
+    for (const waiter of waiters) {
+      waiter.resolve(result);
+    }
+  }
+
+  private rejectAgentResultWaiters(name: string, error: Error): void {
+    const waiters = this.resultResolvers.get(name);
+    if (!waiters) {
+      return;
+    }
+    this.resultResolvers.delete(name);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+  }
+
+  private removeAgentResultWaiter(name: string, waiter: AgentResultResolver): void {
+    const waiters = this.resultResolvers.get(name);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this.resultResolvers.delete(name);
+    }
+  }
+
   private dispatchAgentResult(name: string, raw: AgentResult<unknown>): void {
     const contract = this.resultContracts.get(name);
     let result: AgentResult<unknown>;
@@ -1843,8 +1882,7 @@ export class AgentRelay {
       result = { ...raw, data };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      this.resultResolvers.get(name)?.reject(err);
-      this.resultResolvers.delete(name);
+      this.rejectAgentResultWaiters(name, err);
       console.warn(`[AgentRelay] structured result from "${name}" failed validation`, err);
       return;
     }
@@ -1856,8 +1894,7 @@ export class AgentRelay {
         console.warn(`[AgentRelay] result("${name}") onResult hook threw`, error);
       });
     }
-    this.resultResolvers.get(name)?.resolve(result);
-    this.resultResolvers.delete(name);
+    this.resolveAgentResultWaiters(name, result);
   }
 
   private waitForAgentResult(name: string, timeoutMs?: number): Promise<AgentResult<unknown>> {
@@ -1865,13 +1902,15 @@ export class AgentRelay {
     if (existing) {
       return Promise.resolve(existing);
     }
+    if (!this.knownAgents.has(name)) {
+      return Promise.reject(new Error(`Agent '${name}' is not running and has no structured result`));
+    }
     if (timeoutMs === 0) {
       return Promise.reject(new Error(`Timed out waiting for structured result from '${name}'`));
     }
     return new Promise<AgentResult<unknown>>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const token = ++this.resultResolverSeq;
-      this.resultResolvers.set(name, {
+      const waiter: AgentResultResolver = {
         resolve(result) {
           if (timer) clearTimeout(timer);
           resolve(result);
@@ -1880,14 +1919,16 @@ export class AgentRelay {
           if (timer) clearTimeout(timer);
           reject(error);
         },
-        token,
-      });
+      };
+      let waiters = this.resultResolvers.get(name);
+      if (!waiters) {
+        waiters = new Set();
+        this.resultResolvers.set(name, waiters);
+      }
+      waiters.add(waiter);
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
-          const current = this.resultResolvers.get(name);
-          if (current?.token === token) {
-            this.resultResolvers.delete(name);
-          }
+          this.removeAgentResultWaiter(name, waiter);
           reject(new Error(`Timed out waiting for structured result from '${name}' after ${timeoutMs}ms`));
         }, timeoutMs);
       }
@@ -1948,6 +1989,12 @@ export class AgentRelay {
             relay.idleAgents.delete(name);
             relay.knownAgents.delete(name);
             relay.outputListeners.delete(name);
+            relay.resultContracts.delete(name);
+            relay.lastAgentResults.delete(name);
+            relay.rejectAgentResultWaiters(
+              name,
+              new Error(`Agent '${name}' was released before submitting a result`)
+            );
             relay.exitResolvers.get(name)?.resolve('released');
             relay.exitResolvers.delete(name);
             relay.idleResolvers.get(name)?.resolve('exited');
@@ -2222,7 +2269,10 @@ export class AgentRelay {
     this.idleAgents.delete(name);
     this.agentActivityStates.delete(name);
     this.lastAgentResults.delete(name);
-    this.resultResolvers.delete(name);
+    this.rejectAgentResultWaiters(
+      name,
+      new Error(`Agent '${name}' was respawned before submitting a result`)
+    );
   }
 
   private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {
