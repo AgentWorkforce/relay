@@ -25,7 +25,7 @@ pub(crate) enum TracingDestination {
     Off,
     /// Write to stderr (legacy "print" behavior).
     Stderr,
-    /// Write to `~/.agentworkforce/relay/logs/{broker_id}.log` (the default).
+    /// Write to a daily-rotated log file inside [`broker_log_dir`].
     File,
 }
 
@@ -79,17 +79,40 @@ fn sanitize_filename_segment(value: &str) -> String {
     out
 }
 
-/// Default log file path: `~/.agentworkforce/relay/logs/{broker_id}.log`.
+/// Platform-standard directory for broker tracing logs.
 ///
-/// Returns `None` only when the home directory cannot be resolved.
-pub(crate) fn log_file_path(broker_id: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".agentworkforce")
-            .join("relay")
-            .join("logs")
-            .join(format!("{}.log", sanitize_filename_segment(broker_id))),
-    )
+/// - macOS: `~/Library/Logs/agent-relay`
+/// - Linux / other Unix: `$XDG_STATE_HOME/agent-relay/logs` (defaults to
+///   `~/.local/state/agent-relay/logs`)
+/// - Windows: `%LOCALAPPDATA%\agent-relay\Logs`
+///
+/// Returns `None` only when neither the platform-specific directory nor the
+/// home directory can be resolved.
+pub(crate) fn broker_log_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()?;
+        Some(home.join("Library").join("Logs").join("agent-relay"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local = dirs::data_local_dir()?;
+        Some(local.join("agent-relay").join("Logs"))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let state = dirs::state_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))?;
+        Some(state.join("agent-relay").join("logs"))
+    }
+}
+
+/// Filename prefix used for this broker's rolling log file.
+///
+/// `tracing_appender::rolling::daily` appends a `.YYYY-MM-DD` suffix, so files
+/// land as `{broker_id}.log.YYYY-MM-DD` in the log directory.
+pub(crate) fn broker_log_file_prefix(broker_id: &str) -> String {
+    format!("{}.log", sanitize_filename_segment(broker_id))
 }
 
 pub(crate) fn log_startup_phase(enabled: bool, started_at: Instant, message: impl AsRef<str>) {
@@ -127,22 +150,15 @@ pub(crate) fn init_tracing(broker_id: &str) {
     let (writer, guard) = match destination {
         TracingDestination::Stderr => tracing_appender::non_blocking(std::io::stderr()),
         TracingDestination::File => {
-            let Some(log_path) = log_file_path(broker_id) else {
+            let Some(log_dir) = broker_log_dir() else {
                 return;
             };
-            if let Some(parent) = log_path.parent() {
-                if std::fs::create_dir_all(parent).is_err() {
-                    return;
-                }
+            if std::fs::create_dir_all(&log_dir).is_err() {
+                return;
             }
-            match std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                Ok(file) => tracing_appender::non_blocking(file),
-                Err(_) => return,
-            }
+            let appender =
+                tracing_appender::rolling::daily(&log_dir, broker_log_file_prefix(broker_id));
+            tracing_appender::non_blocking(appender)
         }
         TracingDestination::Off => unreachable!(),
     };
@@ -214,8 +230,8 @@ pub(crate) fn delivery_retry_interval() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        log_file_path, sanitize_filename_segment, tracing_destination, tracing_filter_directive,
-        TracingDestination,
+        broker_log_dir, broker_log_file_prefix, sanitize_filename_segment, tracing_destination,
+        tracing_filter_directive, TracingDestination,
     };
 
     #[test]
@@ -293,12 +309,32 @@ mod tests {
     }
 
     #[test]
-    fn log_file_path_uses_agentworkforce_logs_dir() {
-        if let Some(path) = log_file_path("my-broker") {
-            let path_str = path.to_string_lossy();
+    fn broker_log_file_prefix_includes_log_suffix() {
+        assert_eq!(broker_log_file_prefix("my-broker"), "my-broker.log");
+        assert_eq!(broker_log_file_prefix(""), "broker.log");
+    }
+
+    #[test]
+    fn broker_log_dir_uses_platform_standard_layout() {
+        let Some(dir) = broker_log_dir() else {
+            return;
+        };
+        let path_str = dir.to_string_lossy().replace('\\', "/");
+
+        if cfg!(target_os = "macos") {
             assert!(
-                path_str.contains(".agentworkforce/relay/logs/my-broker.log"),
-                "unexpected log path: {path_str}"
+                path_str.contains("/Library/Logs/agent-relay"),
+                "expected macOS Library/Logs path, got: {path_str}"
+            );
+        } else if cfg!(target_os = "windows") {
+            assert!(
+                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
+                "expected Windows LocalAppData layout, got: {path_str}"
+            );
+        } else {
+            assert!(
+                path_str.contains("agent-relay/logs"),
+                "expected Unix state path, got: {path_str}"
             );
         }
     }

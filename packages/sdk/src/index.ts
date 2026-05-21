@@ -23,6 +23,7 @@ export type { RelayCastOptions, ClientOptions } from '@relaycast/sdk';
 export * from './pty.js';
 export * from './relay.js';
 export * from './logs.js';
+export * from './broker-logs.js';
 export * from './consensus.js';
 export * from './shadow.js';
 export * from './relay-adapter.js';
