@@ -16,7 +16,7 @@
  * shadows.bind("Reviewer", "Worker1");
  *
  * // Wire into relay events
- * relay.onMessageReceived = (msg) => {
+ * relay.addListener('messageReceived', (msg) => {
  *   const copies = shadows.intercept(msg.from, msg.to, msg);
  *   for (const copy of copies) {
  *     // Forward shadow copies to the shadow agent
@@ -25,7 +25,7 @@
  *       text: `[Shadow of ${copy.primaryAgent}] ${msg.text}`,
  *     });
  *   }
- * };
+ * });
  * ```
  */
 
@@ -50,7 +50,7 @@ export interface ShadowRelationship extends ShadowConfig {
 export interface ShadowCopy {
   shadowAgent: string;
   primaryAgent: string;
-  direction: "incoming" | "outgoing";
+  direction: 'incoming' | 'outgoing';
 }
 
 // ── Manager ──────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ export class ShadowManager {
       speakOn?: SpeakOnTrigger[];
       receiveIncoming?: boolean;
       receiveOutgoing?: boolean;
-    } = {},
+    } = {}
   ): void {
     // Clean up any existing binding for this shadow
     this.unbind(shadowAgent);
@@ -79,7 +79,7 @@ export class ShadowManager {
     const relationship: ShadowRelationship = {
       shadowAgent,
       primaryAgent,
-      speakOn: options.speakOn ?? ["EXPLICIT_ASK"],
+      speakOn: options.speakOn ?? ['EXPLICIT_ASK'],
       receiveIncoming: options.receiveIncoming ?? true,
       receiveOutgoing: options.receiveOutgoing ?? true,
     };
@@ -139,16 +139,14 @@ export class ShadowManager {
     const rel = shadows.find((s) => s.shadowAgent === shadowAgent);
     if (!rel) return true;
 
-    return (
-      rel.speakOn.includes(trigger) || rel.speakOn.includes("ALL_MESSAGES")
-    );
+    return rel.speakOn.includes(trigger) || rel.speakOn.includes('ALL_MESSAGES');
   }
 
   /**
    * Determine which shadows should receive a copy of a message
    * between `from` and `to`. Returns a list of shadow copies to deliver.
    *
-   * Call this from your `onMessageReceived` / `onMessageSent` hooks
+   * Call this from your `messageReceived` / `messageSent` listeners
    * to fan out shadow copies.
    */
   intercept(from: string, to: string): ShadowCopy[] {
@@ -162,14 +160,14 @@ export class ShadowManager {
           copies.push({
             shadowAgent: s.shadowAgent,
             primaryAgent: from,
-            direction: "outgoing",
+            direction: 'outgoing',
           });
         }
       }
     }
 
     // Incoming shadows of the recipient
-    if (to && to !== "*") {
+    if (to && to !== '*') {
       const recipientShadows = this.shadowsByPrimary.get(to);
       if (recipientShadows) {
         for (const s of recipientShadows) {
@@ -177,7 +175,7 @@ export class ShadowManager {
             copies.push({
               shadowAgent: s.shadowAgent,
               primaryAgent: to,
-              direction: "incoming",
+              direction: 'incoming',
             });
           }
         }
@@ -194,16 +192,10 @@ export class ShadowManager {
    * (e.g. CODE_WRITTEN, REVIEW_REQUEST), call this to find which
    * shadows should receive a notification.
    */
-  emitTrigger(
-    primaryAgent: string,
-    trigger: SpeakOnTrigger,
-  ): string[] {
+  emitTrigger(primaryAgent: string, trigger: SpeakOnTrigger): string[] {
     const shadows = this.shadowsByPrimary.get(primaryAgent) ?? [];
     return shadows
-      .filter(
-        (s) =>
-          s.speakOn.includes(trigger) || s.speakOn.includes("ALL_MESSAGES"),
-      )
+      .filter((s) => s.speakOn.includes(trigger) || s.speakOn.includes('ALL_MESSAGES'))
       .map((s) => s.shadowAgent);
   }
 

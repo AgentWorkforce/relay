@@ -21,7 +21,11 @@ import { fileURLToPath } from 'node:url';
 // from the SDK directory, use the SDK vitest config which includes src/__tests__.
 // From repo root, the aliases resolve correctly.
 import type { WorkflowDb } from '../../packages/sdk/src/workflows/runner.js';
-import type { RelayYamlConfig, WorkflowRunRow, WorkflowStepRow } from '../../packages/sdk/src/workflows/types.js';
+import type {
+  RelayYamlConfig,
+  WorkflowRunRow,
+  WorkflowStepRow,
+} from '../../packages/sdk/src/workflows/types.js';
 
 // ── Mock fetch ──────────────────────────────────────────────────────────────
 
@@ -72,8 +76,12 @@ let mockSpawnOutputs: string[] = [];
 
 const mockAgent = {
   name: 'test-agent-abc',
-  get waitForExit() { return waitForExitFn; },
-  get waitForIdle() { return waitForIdleFn; },
+  get waitForExit() {
+    return waitForExitFn;
+  },
+  get waitForIdle() {
+    return waitForIdleFn;
+  },
   release: vi.fn().mockResolvedValue(undefined),
 };
 
@@ -81,6 +89,12 @@ const mockHuman = {
   name: 'WorkflowRunner',
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
+
+const mockListeners = new Map<string, Set<(...args: any[]) => void>>();
+function emitMockEvent(event: string, ...args: any[]): void {
+  const set = mockListeners.get(event);
+  if (set) for (const cb of set) cb(...args);
+}
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
@@ -96,9 +110,7 @@ const mockRelayInstance = {
           : 'STEP_COMPLETE:unknown\n');
 
     queueMicrotask(() => {
-      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-        mockRelayInstance.onWorkerOutput({ name, chunk: output });
-      }
+      emitMockEvent('workerOutput', { name, chunk: output });
     });
 
     return { ...mockAgent, name };
@@ -106,11 +118,15 @@ const mockRelayInstance = {
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
+  addListener: vi.fn((event: string, cb: (...args: any[]) => void) => {
+    let set = mockListeners.get(event);
+    if (!set) {
+      set = new Set();
+      mockListeners.set(event, set);
+    }
+    set.add(cb);
+    return () => set!.delete(cb);
+  }),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -127,7 +143,9 @@ function makeDb(): WorkflowDb {
   const runs = new Map<string, WorkflowRunRow>();
   const steps = new Map<string, WorkflowStepRow>();
   return {
-    insertRun: vi.fn(async (run: WorkflowRunRow) => { runs.set(run.id, { ...run }); }),
+    insertRun: vi.fn(async (run: WorkflowRunRow) => {
+      runs.set(run.id, { ...run });
+    }),
     updateRun: vi.fn(async (id: string, patch: Partial<WorkflowRunRow>) => {
       const existing = runs.get(id);
       if (existing) runs.set(id, { ...existing, ...patch });
@@ -136,7 +154,9 @@ function makeDb(): WorkflowDb {
       const run = runs.get(id);
       return run ? { ...run } : null;
     }),
-    insertStep: vi.fn(async (step: WorkflowStepRow) => { steps.set(step.id, { ...step }); }),
+    insertStep: vi.fn(async (step: WorkflowStepRow) => {
+      steps.set(step.id, { ...step });
+    }),
     updateStep: vi.fn(async (id: string, patch: Partial<WorkflowStepRow>) => {
       const existing = steps.get(id);
       if (existing) steps.set(id, { ...existing, ...patch });
@@ -185,7 +205,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
     waitForExitFn = vi.fn().mockResolvedValue('exited');
     waitForIdleFn = vi.fn().mockImplementation(() => never());
     mockSpawnOutputs = [];
-    mockRelayInstance.onWorkerOutput = null;
+    mockListeners.clear();
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -207,10 +227,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'team-lead', cli: 'claude', role: 'Lead coordinator for the workflow' },
           { name: 'quality-reviewer', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'hub-owner-test', agent: 'impl-worker', task: 'List 3 benefits' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'hub-owner-test', agent: 'impl-worker', task: 'List 3 benefits' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -233,10 +255,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'lead-bot', cli: 'claude', role: 'lead' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -262,10 +286,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'github-integration', cli: 'claude', role: 'GitHub integration agent' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'github-no-hub', agent: 'specialist', task: 'Test word boundary' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'github-no-hub', agent: 'specialist', task: 'Test word boundary' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -289,10 +315,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'github-bot', cli: 'claude', role: 'github integration' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'specialist', task: 'Do work' }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -360,10 +388,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
     }, 15000);
 
     it('should fail closed when review output is malformed (no REVIEW_DECISION)', async () => {
-      mockSpawnOutputs = [
-        'STEP_COMPLETE:step-1\n',
-        'REVIEW_REASON: this is missing the decision line\n',
-      ];
+      mockSpawnOutputs = ['STEP_COMPLETE:step-1\n', 'REVIEW_REASON: this is missing the decision line\n'];
 
       const run = await runner.execute(makeConfig(), 'default');
       expect(run.status).toBe('failed');
@@ -395,10 +420,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
   describe('Scenario 5: Review timeout budgeting', () => {
     it('should not allocate review timeout longer than parent step timeout', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 30_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -414,10 +441,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
 
     it('should use proportional timeout (1/3) for longer step timeouts', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 900_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 900_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -433,10 +462,12 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
 
     it('should cap review timeout at 600s upper bound', async () => {
       const config = makeConfig({
-        workflows: [{
-          name: 'default',
-          steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 3_600_000 }],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [{ name: 'step-1', agent: 'agent-a', task: 'Do step 1', timeoutMs: 3_600_000 }],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');
@@ -510,14 +541,21 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
           { name: 'worker-2', cli: 'claude', role: 'implementer' },
           { name: 'reviewer-1', cli: 'claude', role: 'reviewer' },
         ],
-        workflows: [{
-          name: 'default',
-          steps: [
-            { name: 'work-1', agent: 'worker-1', task: 'Do task A' },
-            { name: 'work-2', agent: 'worker-2', task: 'Do task B' },
-            { name: 'lead-coord', agent: 'team-lead', task: 'Coordinate workers', dependsOn: ['work-1', 'work-2'] },
-          ],
-        }],
+        workflows: [
+          {
+            name: 'default',
+            steps: [
+              { name: 'work-1', agent: 'worker-1', task: 'Do task A' },
+              { name: 'work-2', agent: 'worker-2', task: 'Do task B' },
+              {
+                name: 'lead-coord',
+                agent: 'team-lead',
+                task: 'Coordinate workers',
+                dependsOn: ['work-1', 'work-2'],
+              },
+            ],
+          },
+        ],
       });
 
       const run = await runner.execute(config, 'default');

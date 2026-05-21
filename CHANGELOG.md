@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `@agent-relay/sdk`: `AgentRelay` events move to a multi-listener registry. Use `relay.addListener('x', handler)` / `removeListener` in place of `relay.onX = handler` — the 13 `on*` fields (`onMessageReceived`, `onMessageSent`, `onAgentSpawned`, `onAgentReleased`, `onAgentExited`, `onAgentReady`, `onWorkerOutput`, `onDeliveryUpdate`, `onAgentExitRequested`, `onAgentIdle`, `onAgentActivityChanged`, `onChannelSubscribed`, `onChannelUnsubscribed`) are removed.
+- `@agent-relay/sdk`: `channelSubscribed` / `channelUnsubscribed` handlers receive a single `{ agent, channels }` object instead of positional `(agent, channels)` args.
+- `@agent-relay/sdk`: new `beforeAgentSpawn` / `afterAgentSpawn` / `beforeAgentRelease` / `afterAgentRelease` call-site hooks. `beforeAgentSpawn` listeners may return a `SpawnPatch` (shallow-merged in registration order) to mutate the spawn input before the broker POST.
 - Broker/SDK wire protocol is now version 2 for delivery terminal events and lifecycle event shape changes.
 - `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
 - `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
@@ -19,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pass `--from` to `agent-relay send` when a script requires a specific sender identity.
 - Handle `success: false` from `relay.spawn()` calls that pass `task`; spawns without a task are unchanged.
 - Set `POSTHOG_PROJECT_KEY` in GitHub Actions repository variables before publishing telemetry-enabled artifacts.
+- Update relay event handlers from field-assignment to `addListener`:
+
+  ```ts
+  // Before
+  relay.onAgentSpawned = (agent) => log(agent.name);
+
+  // After
+  const off = relay.addListener('agentSpawned', (agent) => log(agent.name));
+  // ...later: off();  // unsubscribe
+  ```
+
+  Channel subscribe/unsubscribe handlers receive an object: `({ agent, channels }) => ...`.
 
 ### Added
 
@@ -88,6 +103,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 - PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
+
+## [6.3.6] - 2026-05-21
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Typed multi-listener registry replaces on* callback fields**
+
+#### User-Impacting Fixes
+- Address PR #936 review feedback (#936)
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Revert version bump — release workflow handles versioning
+
+#### Releases
+- v6.3.6
+
+---
+
+## [6.3.5] - 2026-05-21
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Add --broker-name override to `agent-relay up` (#939)** (#939)
+
+### Technical Perspective
+#### Releases
+- v6.3.5
+
+---
+
+## [6.3.4] - 2026-05-21
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **Upload workflow code through cloud storage API (#938)** (#938)
+- **Pass env vars to scheduled workflows (#935)** (#935)
+
+### Technical Perspective
+#### Releases
+- v6.3.4
+
+---
+
+## [6.3.3] - 2026-05-21
+
+### Product Perspective
+
+#### User-Impacting Fixes
+
+- Detect opencode api key completion (#934) (#934)
+
+### Technical Perspective
+
+#### Releases
+
+- v6.3.3
+
+---
 
 ## [6.3.2] - 2026-05-20
 

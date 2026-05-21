@@ -120,19 +120,27 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const mockListeners = new Map<string, Set<(...args: any[]) => void>>();
+function emitMockEvent(event: string, ...args: any[]): void {
+  const set = mockListeners.get(event);
+  if (set) for (const cb of set) cb(...args);
+}
+
 const mockRelayInstance = {
   spawnPty: vi.fn(),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentReleased: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
-  onDeliveryUpdate: null as any,
+  addListener: vi.fn((event: string, cb: (...args: any[]) => void) => {
+    let set = mockListeners.get(event);
+    if (!set) {
+      set = new Set();
+      mockListeners.set(event, set);
+    }
+    set.add(cb);
+    return () => set!.delete(cb);
+  }),
 };
 
 const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
@@ -141,7 +149,7 @@ const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; tas
   const output = queued ?? (stepComplete ? `STEP_COMPLETE:${stepComplete}\n` : 'STEP_COMPLETE:done\n');
 
   queueMicrotask(() => {
-    mockRelayInstance.onWorkerOutput?.({ name, chunk: output });
+    emitMockEvent('workerOutput', { name, chunk: output });
   });
 
   return { ...mockAgent, name };
@@ -308,7 +316,7 @@ beforeEach(() => {
   waitForIdleFn = vi.fn().mockImplementation(() => never());
   mockAgent.release.mockResolvedValue(undefined);
   mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
-  mockRelayInstance.onWorkerOutput = null;
+  mockListeners.clear();
 });
 
 afterEach(() => {

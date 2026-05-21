@@ -94,25 +94,35 @@ const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; tas
         ? `STEP_COMPLETE:${stepComplete}\n`
         : 'STEP_COMPLETE:unknown\n');
 
-  queueMicrotask(() => {
-    if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-      mockRelayInstance.onWorkerOutput({ name, chunk: output });
-    }
-  });
+  queueMicrotask(() => emitRelayEvent('workerOutput', { name, chunk: output }));
 
   return { ...mockAgent, name };
 };
+
+// Listener registry for the AgentRelay mock — the production AgentRelay
+// uses addListener('eventName', handler), so the mock captures handlers
+// here keyed by event name. Tests fire events via `emitRelayEvent`.
+const relayListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+function emitRelayEvent(event: string, payload: unknown): void {
+  for (const handler of relayListeners.get(event) ?? []) {
+    handler(payload);
+  }
+}
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(defaultSpawnPtyImplementation),
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
+  addListener: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+    let set = relayListeners.get(event);
+    if (!set) {
+      set = new Set();
+      relayListeners.set(event, set);
+    }
+    set.add(handler);
+    return () => set!.delete(handler);
+  }),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -214,7 +224,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
     mockSpawnOutputs = [];
     mockAgent.release.mockResolvedValue(undefined);
     mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
-    mockRelayInstance.onWorkerOutput = null;
+    relayListeners.clear();
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -403,11 +413,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
               ? `STEP_COMPLETE:${stepComplete}\n`
               : 'STEP_COMPLETE:unknown\n';
 
-          queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
-          });
+          queueMicrotask(() => emitRelayEvent('workerOutput', { name, chunk: output }));
 
           if (!isReview) {
             return { ...mockAgent, name };
@@ -538,11 +544,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
               : 'worker finished\n';
 
           if (output) {
-            queueMicrotask(() => {
-              if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-                mockRelayInstance.onWorkerOutput({ name, chunk: output });
-              }
-            });
+            queueMicrotask(() => emitRelayEvent('workerOutput', { name, chunk: output }));
           }
 
           return {
@@ -579,11 +581,7 @@ describe('PR #511 E2E: Auto Step Owner + Review Gating', () => {
               : 'worker finished\n';
 
           if (output) {
-            queueMicrotask(() => {
-              if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-                mockRelayInstance.onWorkerOutput({ name, chunk: output });
-              }
-            });
+            queueMicrotask(() => emitRelayEvent('workerOutput', { name, chunk: output }));
           }
 
           return {
