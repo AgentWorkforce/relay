@@ -87,6 +87,23 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
   throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
 }
 
+function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
+  const equalsIndex = value.indexOf('=');
+  if (equalsIndex <= 0) {
+    throw new InvalidArgumentError('Expected environment assignment in KEY=VALUE form.');
+  }
+
+  const key = value.slice(0, equalsIndex).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new InvalidArgumentError(`Invalid environment variable name: ${key || '(empty)'}`);
+  }
+
+  return {
+    ...previous,
+    [key]: value.slice(equalsIndex + 1),
+  };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -421,6 +438,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
     .option('--name <name>', 'Schedule name')
     .option('--description <description>', 'Schedule description')
+    .option(
+      '--env <KEY=VALUE>',
+      'Environment variable to pass to scheduled runs; repeat for multiple variables',
+      parseEnvAssignment,
+      {}
+    )
     .option('--json', 'Print raw JSON response', false)
     .action(
       async (
@@ -433,6 +456,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           timezone?: string;
           name?: string;
           description?: string;
+          env?: Record<string, string>;
           json?: boolean;
         }
       ) => {
@@ -440,7 +464,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         let success = false;
         let errorClass: string | undefined;
         try {
-          const result = await scheduleWorkflow(workflow, options);
+          const { env, ...scheduleOptions } = options;
+          const result = await scheduleWorkflow(workflow, {
+            ...scheduleOptions,
+            ...(env && Object.keys(env).length > 0 ? { envSecrets: env } : {}),
+          });
           if (options.json) {
             deps.log(JSON.stringify(result, null, 2));
           } else {

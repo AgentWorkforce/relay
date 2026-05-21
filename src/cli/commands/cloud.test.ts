@@ -137,6 +137,10 @@ describe('registerCloudCommands', () => {
       '0 * * * *',
       '--name',
       'Hourly eval',
+      '--env',
+      'AI_CLI_UPDATES_DRY_RUN=true',
+      '--env',
+      'AI_CLI_UPDATES_ONLY=codex',
     ]);
 
     expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
@@ -144,9 +148,33 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         cron: '0 * * * *',
         name: 'Hourly eval',
+        envSecrets: {
+          AI_CLI_UPDATES_DRY_RUN: 'true',
+          AI_CLI_UPDATES_ONLY: 'codex',
+        },
       })
     );
     expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-1');
+  });
+
+  it('schedule rejects malformed environment assignments', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'schedule',
+        'workflow.yaml',
+        '--cron',
+        '0 * * * *',
+        '--env',
+        'not-an-assignment',
+      ])
+    ).rejects.toThrow();
+
+    expect(cloudMocks.scheduleWorkflow).not.toHaveBeenCalled();
   });
 
   it('schedule creates one-time workflow schedules', async () => {
