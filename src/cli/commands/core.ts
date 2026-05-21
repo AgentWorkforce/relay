@@ -105,7 +105,7 @@ export interface CoreDependencies {
     missing: BridgeProject[];
   };
   getAgentOutboxTemplate: () => string;
-  createRelay: (cwd: string, apiPort?: number) => CoreRelay | Promise<CoreRelay>;
+  createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
@@ -245,7 +245,7 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
   return null;
 }
 
-async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> {
+async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
   const binaryArgs: AgentRelayBrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
@@ -258,6 +258,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0): Promise<CoreRelay> 
   const client = await createAgentRelayClient({
     cwd,
     binaryArgs,
+    brokerName,
     preferConnect: apiPort > 0,
   });
 
@@ -415,6 +416,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
     .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agent-relay/)')
+    .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
     .action(
       async (options: {
         dashboard?: boolean;
@@ -425,6 +427,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         verbose?: boolean;
         workspaceKey?: string;
         stateDir?: string;
+        brokerName?: string;
       }) => {
         await runUpCommand(options, deps);
       }
