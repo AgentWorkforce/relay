@@ -25,17 +25,23 @@ type ResolvedWorkflowInput = {
 };
 
 type S3Credentials = {
+  backend?: 's3' | 'cloud-api';
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken: string;
   bucket: string;
   prefix: string;
+  cloudApiUrl?: string;
+  cloudApiAccessToken?: string;
 };
 
 type PrepareWorkflowResponse = {
   runId: string;
   s3Credentials: S3Credentials;
   s3CodeKey: string;
+  workflowStorage?: {
+    backend?: 's3' | 'cloud-api';
+  };
 };
 
 type WorkflowPathDefinition = {
@@ -525,7 +531,40 @@ export async function runWorkflow(
     const prepared = prepPayload;
     console.error(`  Prepared in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-    const s3Client = createScopedS3Client(prepared.s3Credentials);
+    let s3Client: S3Client | null = null;
+    const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
+      if (isCloudApiWorkflowStorage(prepared)) {
+        const { response, auth: uploadAuth } = await authorizedApiFetch(
+          auth,
+          workflowStorageObjectPath(prepared.runId, objectKey),
+          {
+            method: 'PUT',
+            headers: {
+              'content-type': 'application/gzip',
+              accept: 'application/json',
+            },
+            body: tarball as unknown as BodyInit,
+          }
+        );
+        auth = uploadAuth;
+        const payload = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
+        }
+        return;
+      }
+
+      s3Client ??= createScopedS3Client(prepared.s3Credentials);
+      const key = scopedCodeKey(prepared.s3Credentials.prefix, objectKey);
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: prepared.s3Credentials.bucket,
+          Key: key,
+          Body: tarball,
+          ContentType: 'application/gzip',
+        })
+      );
+    };
     requestBody.runId = prepared.runId;
 
     const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
@@ -552,15 +591,7 @@ export async function runWorkflow(
         );
 
         const t2 = Date.now();
-        const key = scopedCodeKey(prepared.s3Credentials.prefix, s3CodeKey);
-        await s3Client.send(
-          new PutObjectCommand({
-            Bucket: prepared.s3Credentials.bucket,
-            Key: key,
-            Body: tarball,
-            ContentType: 'application/gzip',
-          })
-        );
+        await uploadCodeObject(s3CodeKey, tarball);
         console.error(`  ${pathDef.name}: uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
         const repo = parseGitHubRemoteForPath(absolutePath);
@@ -595,16 +626,8 @@ export async function runWorkflow(
       );
 
       const t2 = Date.now();
-      console.error('Uploading to S3...');
-      const key = scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey);
-      await s3Client.send(
-        new PutObjectCommand({
-          Bucket: prepared.s3Credentials.bucket,
-          Key: key,
-          Body: tarball,
-          ContentType: 'application/gzip',
-        })
-      );
+      console.error('Uploading to workflow storage...');
+      await uploadCodeObject(prepared.s3CodeKey, tarball);
       console.error(`  Uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
       requestBody.s3CodeKey = prepared.s3CodeKey;
@@ -981,8 +1004,19 @@ function isPrepareWorkflowResponse(payload: unknown): payload is PrepareWorkflow
     typeof creds.secretAccessKey === 'string' &&
     typeof creds.sessionToken === 'string' &&
     typeof creds.bucket === 'string' &&
-    typeof creds.prefix === 'string'
+    typeof creds.prefix === 'string' &&
+    (creds.backend === undefined || creds.backend === 's3' || creds.backend === 'cloud-api')
   );
+}
+
+function isCloudApiWorkflowStorage(prepared: PrepareWorkflowResponse): boolean {
+  return prepared.workflowStorage?.backend === 'cloud-api' || prepared.s3Credentials.backend === 'cloud-api';
+}
+
+function workflowStorageObjectPath(runId: string, objectKey: string): string {
+  const encodedRunId = encodeURIComponent(runId);
+  const encodedKey = objectKey.split('/').map(encodeURIComponent).join('/');
+  return `/api/v1/workflows/runs/${encodedRunId}/storage/${encodedKey}`;
 }
 
 function createScopedS3Client(s3Credentials: S3Credentials): S3Client {
