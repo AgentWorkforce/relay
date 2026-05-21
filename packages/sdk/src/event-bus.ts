@@ -18,22 +18,37 @@
  */
 export type EventMap = Record<string, readonly unknown[]>;
 
-export type EventHandler<Args extends readonly unknown[]> = (...args: Args) => void | Promise<void>;
+/**
+ * Handler signature for an event. The optional `R` generic lets a
+ * specific event widen its return type past `void` — used by the
+ * `beforeAgentSpawn` lifecycle hook, whose handlers may return a
+ * `SpawnPatch` that the dispatcher folds into the spawn input. The
+ * default `R = void` keeps the common case strict.
+ */
+export type EventHandler<Args extends readonly unknown[], R = void> = (...args: Args) => R | Promise<R>;
 
 export class EventBus<E extends EventMap> {
-  private handlers: Map<keyof E, Set<EventHandler<readonly unknown[]>>> = new Map();
+  // Stored type uses `unknown` for `R` so a single Set can hold handlers
+  // from any overload — the dispatcher casts back when it cares about a
+  // non-void return value (see `runBeforeSpawn` in `client.ts`).
+  private handlers: Map<keyof E, Set<EventHandler<readonly unknown[], unknown>>> = new Map();
 
   /**
    * Register a handler for `event`. Returns an unsubscribe function that
    * removes the handler when called.
+   *
+   * The `R` generic is inferred from the handler return type; callers
+   * that don't care about the return get the default `void` shape, while
+   * events like `beforeAgentSpawn` can pass handlers that return a
+   * `SpawnPatch`.
    */
-  addListener<K extends keyof E>(event: K, handler: EventHandler<E[K]>): () => void {
+  addListener<K extends keyof E, R = void>(event: K, handler: EventHandler<E[K], R>): () => void {
     let set = this.handlers.get(event);
     if (!set) {
       set = new Set();
       this.handlers.set(event, set);
     }
-    set.add(handler as EventHandler<readonly unknown[]>);
+    set.add(handler as EventHandler<readonly unknown[], unknown>);
     return () => {
       // Re-read the current Set from the map so a stale closure can't blow
       // away the new Set if the caller unsubscribes, re-registers a fresh
@@ -42,7 +57,7 @@ export class EventBus<E extends EventMap> {
       // every listener for the event.
       const current = this.handlers.get(event);
       if (current !== set) return;
-      current.delete(handler as EventHandler<readonly unknown[]>);
+      current.delete(handler as EventHandler<readonly unknown[], unknown>);
       if (current.size === 0) {
         this.handlers.delete(event);
       }
@@ -50,10 +65,10 @@ export class EventBus<E extends EventMap> {
   }
 
   /** Remove a previously-registered handler. Idempotent. */
-  removeListener<K extends keyof E>(event: K, handler: EventHandler<E[K]>): void {
+  removeListener<K extends keyof E, R = void>(event: K, handler: EventHandler<E[K], R>): void {
     const set = this.handlers.get(event);
     if (!set) return;
-    set.delete(handler as EventHandler<readonly unknown[]>);
+    set.delete(handler as EventHandler<readonly unknown[], unknown>);
     if (set.size === 0) {
       this.handlers.delete(event);
     }
@@ -65,9 +80,9 @@ export class EventBus<E extends EventMap> {
   }
 
   /** Snapshot the handlers for `event` so iteration is safe under concurrent mutation. */
-  listeners<K extends keyof E>(event: K): Array<EventHandler<E[K]>> {
+  listeners<K extends keyof E, R = void>(event: K): Array<EventHandler<E[K], R>> {
     const set = this.handlers.get(event);
-    return set ? (Array.from(set) as Array<EventHandler<E[K]>>) : [];
+    return set ? (Array.from(set) as Array<EventHandler<E[K], R>>) : [];
   }
 
   /**
