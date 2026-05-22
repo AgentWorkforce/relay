@@ -17,19 +17,20 @@ if [ ! -x "$sst_bin" ]; then
 fi
 
 state_file="$(mktemp)"
+arn_file="$(mktemp)"
 cleanup() {
-  rm -f "$state_file"
+  rm -f "$state_file" "$arn_file"
 }
 trap cleanup EXIT
 
 repair_state() {
   local reason="$1"
 
-  echo "Repairing SST state for $cert_target: $reason"
+  echo "Repairing SST state for $cert_target/$validation_target: $reason"
   (
     cd "$web_dir"
     "$sst_bin" state remove "$validation_target" --stage "$stage" || true
-    "$sst_bin" state remove "$cert_target" --stage "$stage"
+    "$sst_bin" state remove "$cert_target" --stage "$stage" || true
     "$sst_bin" state repair --stage "$stage"
   )
 }
@@ -39,30 +40,50 @@ repair_state() {
   "$sst_bin" state export --stage "$stage" > "$state_file"
 )
 
-cert_arn="$(
-  STATE_FILE="$state_file" CERT_TARGET="$cert_target" node <<'NODE'
+STATE_FILE="$state_file" CERT_TARGET="$cert_target" VALIDATION_TARGET="$validation_target" node > "$arn_file" <<'NODE'
 const fs = require("fs");
 
 const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
-const resources =
-  state?.deployment?.resources ??
-  state?.checkpoint?.latest?.resources ??
-  state?.resources ??
-  [];
+const resources = [];
 
-const target = process.env.CERT_TARGET;
-const cert = resources.find((resource) => {
-  if (resource?.type !== "aws:acm/certificate:Certificate") return false;
+function visit(value) {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach(visit);
+    return;
+  }
+  if (typeof value.urn === "string") resources.push(value);
+  Object.values(value).forEach(visit);
+}
+
+function matchesTarget(resource, target) {
   const urn = String(resource.urn ?? "");
-  return urn.endsWith(`::${target}`) || urn.endsWith(`$${target}`);
-});
+  return urn.endsWith("::" + target) || urn.endsWith("$" + target);
+}
 
-process.stdout.write(cert?.id ?? cert?.outputs?.arn ?? "");
+function findCertificateArn(value) {
+  const serialized = JSON.stringify(value ?? {});
+  return serialized.match(/arn:aws:acm:[^"\\\s]+:certificate\/[a-f0-9-]+/)?.[0] ?? "";
+}
+
+visit(state);
+
+const cert = resources.find((resource) => matchesTarget(resource, process.env.CERT_TARGET));
+const validation = resources.find((resource) =>
+  matchesTarget(resource, process.env.VALIDATION_TARGET),
+);
+const arn =
+  cert?.id ||
+  cert?.outputs?.arn ||
+  findCertificateArn(cert) ||
+  findCertificateArn(validation);
+
+process.stdout.write(arn ?? "");
 NODE
-)"
+cert_arn="$(<"$arn_file")"
 
 if [ -z "$cert_arn" ]; then
-  echo "No $cert_target ACM certificate found in SST state; nothing to repair."
+  echo "No ACM certificate ARN found in SST state for $cert_target/$validation_target; nothing to repair."
   exit 0
 fi
 
