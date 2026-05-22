@@ -1,8 +1,13 @@
+'use client';
+
+import { useEffect, useState } from 'react';
 import s from './github-stars.module.css';
 
 type GitHubRepoResponse = {
   stargazers_count?: number;
 };
+
+const RETRY_DELAYS_MS = [0, 1000, 3000];
 
 function GithubIcon() {
   return (
@@ -16,14 +21,12 @@ function formatStarCount(stars: number): string {
   return stars >= 1000 ? `${(stars / 1000).toFixed(1)}k` : String(stars);
 }
 
-async function getGitHubStars(): Promise<string | null> {
+async function fetchGitHubStars(): Promise<string | null> {
   try {
-    const response = await fetch('https://api.github.com/repos/agentworkforce/relay', {
+    const response = await fetch('/api/github-stars', {
       headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'agentrelay-web',
+        Accept: 'application/json',
       },
-      next: { revalidate: 3600 },
     });
 
     if (!response.ok) return null;
@@ -35,8 +38,31 @@ async function getGitHubStars(): Promise<string | null> {
   }
 }
 
-export async function GitHubStarsBadge() {
-  const count = await getGitHubStars();
+async function getGitHubStars(): Promise<string | null> {
+  for (const delay of RETRY_DELAYS_MS) {
+    if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay));
+
+    const stars = await fetchGitHubStars();
+    if (stars) return stars;
+  }
+
+  return null;
+}
+
+export function GitHubStarsBadge() {
+  const [count, setCount] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    getGitHubStars().then((stars) => {
+      if (mounted) setCount(stars);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   return (
     <a
