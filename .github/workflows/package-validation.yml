@@ -94,9 +94,6 @@ jobs:
           echo "=== Auditing bundled package dependencies ==="
           node scripts/audit-bundled-deps.mjs
 
-      - name: Validate npm tarball artifact
-        run: npm run pack:validate
-
       - name: Validate all
         run: |
           echo "=== Validating packages ==="
@@ -197,6 +194,12 @@ jobs:
           # Cleanup through CLI down first, then hard-kill fallback
           node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
+
+      # Keep tarball validation after runtime smoke tests. The tarball
+      # validator removes nested workspace node_modules before packing so the
+      # package cannot accidentally include them.
+      - name: Validate npm tarball artifact
+        run: npm run pack:validate
 
   publish-fresh-install-build:
     name: Publish Fresh Install Build
