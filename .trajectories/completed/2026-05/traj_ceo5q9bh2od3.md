@@ -30,4 +30,4 @@ Added structured spawned-agent result contracts across the broker, MCP tool, and
 
 _Agent: default_
 
-- Implemented structured agent results as a broker-mediated callback token plus MCP tool: Implemented structured agent results as a broker-mediated callback token plus MCP tool
+- Implemented structured agent results as a broker-mediated callback token plus MCP tool

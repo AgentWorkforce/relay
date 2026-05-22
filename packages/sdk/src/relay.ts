@@ -1907,14 +1907,16 @@ export class AgentRelay {
       return;
     }
 
-    this.lastAgentResults.set(name, result);
     void this.bus.emit('agentResult', result);
     if (contract?.onResult) {
       Promise.resolve(contract.onResult(result.data, result)).catch((error) => {
         console.warn(`[AgentRelay] result("${name}") onResult hook threw`, error);
       });
     }
-    for (const waiter of this.takeResultResolvers(name)) waiter.resolve(result);
+    if (result.final) {
+      this.lastAgentResults.set(name, result);
+      for (const waiter of this.takeResultResolvers(name)) waiter.resolve(result);
+    }
   }
 
   private waitForAgentResult(name: string, timeoutMs?: number): Promise<AgentResult<unknown>> {
@@ -2297,7 +2299,9 @@ export class AgentRelay {
     this.idleAgents.delete(name);
     this.agentActivityStates.delete(name);
     this.lastAgentResults.delete(name);
-    this.resultResolvers.delete(name);
+    for (const waiter of this.takeResultResolvers(name)) {
+      waiter.reject(new Error(`Agent '${name}' lifecycle reset before structured result was submitted`));
+    }
   }
 
   private normalizeReleaseOptions(reasonOrOptions?: string | ReleaseOptions): ReleaseOptions {

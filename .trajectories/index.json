@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-22T16:05:12.489Z",
+  "lastUpdated": "2026-05-22T19:13:17.153Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1130,7 +1130,7 @@
       "status": "completed",
       "startedAt": "2026-05-20T21:24:17.929Z",
       "completedAt": "2026-05-20T21:43:51.936Z",
-      "path": "/private/tmp/relay-structured-agent-results/.trajectories/completed/2026-05/traj_ceo5q9bh2od3.json"
+      "path": ".trajectories/completed/2026-05/traj_ceo5q9bh2od3.json"
     },
     "traj_dcl9hgoiuac5": {
       "title": "Verify --broker-name override for agent-relay up",
@@ -1151,7 +1151,14 @@
       "status": "completed",
       "startedAt": "2026-05-22T15:59:25.187Z",
       "completedAt": "2026-05-22T16:05:12.320Z",
-      "path": "/private/tmp/relay-pr-932-review/.trajectories/completed/2026-05/traj_78ytpicts778.json"
+      "path": ".trajectories/completed/2026-05/traj_78ytpicts778.json"
+    },
+    "traj_5k0jtc1g5l33": {
+      "title": "Resolve PR 932 conflicts and review comments",
+      "status": "completed",
+      "startedAt": "2026-05-22T19:13:09.359Z",
+      "completedAt": "2026-05-22T19:13:16.971Z",
+      "path": ".trajectories/completed/2026-05/traj_5k0jtc1g5l33.json"
     }
   }
 }

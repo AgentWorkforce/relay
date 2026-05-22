@@ -25,7 +25,7 @@
         {
           "ts": 1779313428188,
           "type": "decision",
-          "content": "Implemented structured agent results as a broker-mediated callback token plus MCP tool: Implemented structured agent results as a broker-mediated callback token plus MCP tool",
+          "content": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",
           "raw": {
             "question": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",
             "chosen": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",

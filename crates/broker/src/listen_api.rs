@@ -531,6 +531,17 @@ fn unauthorized_error_envelope() -> Value {
     })
 }
 
+fn bearer_token(value: &str) -> Option<&str> {
+    let mut parts = value.trim().splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    let token = parts.next()?.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
+}
+
 async fn listen_api_auth_middleware(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     request: axum::http::Request<axum::body::Body>,
@@ -552,9 +563,7 @@ async fn listen_api_auth_middleware(
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .and_then(bearer_token)
         });
 
     if provided != Some(expected) {
@@ -804,9 +813,7 @@ async fn listen_api_agent_result(
             headers
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .and_then(bearer_token)
                 .map(String::from)
         });
     let Some(token) = token else {
@@ -2368,6 +2375,32 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn api_route_accepts_lowercase_bearer_scheme() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let list_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [] })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("authorization", "bearer secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
     async fn spawn_route_forwards_extended_fields() {
         let (router, mut rx) = test_router(Some("secret"));
         let spawn_replier = tokio::spawn(async move {
@@ -2488,7 +2521,7 @@ mod auth_tests {
                 Request::builder()
                     .uri("/api/agent-result")
                     .method("POST")
-                    .header("authorization", "Bearer arr_test")
+                    .header("authorization", "bearer arr_test")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({

@@ -597,7 +597,24 @@ describe('AgentRelay orchestration handles', () => {
         })
       );
 
-      const waitPromise = agent.waitForResult(1_000);
+      let settled = false;
+      const waitPromise = agent.waitForResult(1_000).then((result) => {
+        settled = true;
+        return result;
+      });
+      emit({
+        kind: 'agent_result',
+        name: 'result-agent',
+        result_id: 'ar_partial',
+        data: { ok: false },
+        final: false,
+      });
+      await Promise.resolve();
+
+      expect(settled).toBe(false);
+      expect(globalResults).toHaveLength(1);
+      expect(callbackResults).toEqual([{ ok: false }]);
+
       emit({
         kind: 'agent_result',
         name: 'result-agent',
@@ -612,8 +629,40 @@ describe('AgentRelay orchestration handles', () => {
         data: { ok: true },
         final: true,
       });
-      expect(globalResults).toHaveLength(1);
-      expect(callbackResults).toEqual([{ ok: true }]);
+      expect(globalResults).toHaveLength(2);
+      expect(callbackResults).toEqual([{ ok: false }, { ok: true }]);
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('reusing an agent name rejects pending structured result waiters', async () => {
+    const { client } = createMockFacadeClient();
+
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnPty<{ ok: boolean }>({
+        name: 'reused-result-agent',
+        cli: 'claude',
+        result: { jsonSchema: true },
+      });
+      const waiter = agent.waitForResult().then(
+        () => undefined,
+        (error) => error as Error
+      );
+
+      await relay.spawnPty<{ ok: boolean }>({
+        name: 'reused-result-agent',
+        cli: 'claude',
+        result: { jsonSchema: true },
+      });
+
+      const error = await waiter;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe(
+        "Agent 'reused-result-agent' lifecycle reset before structured result was submitted"
+      );
     } finally {
       await relay.shutdown();
     }

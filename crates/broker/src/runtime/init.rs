@@ -1,4 +1,5 @@
 use super::*;
+use std::net::{IpAddr, SocketAddr};
 
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
@@ -134,7 +135,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("failed to bind API on {}", bind_addr))?;
-    let actual_port = listener.local_addr()?.port();
+    let local_addr = listener.local_addr()?;
+    let actual_port = local_addr.port();
     log_startup_phase(
         startup_debug,
         broker_start,
@@ -335,10 +337,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         );
     }
 
-    let callback_host = match cmd.api_bind.as_str() {
-        "0.0.0.0" | "::" | "[::]" | "" => "127.0.0.1",
-        other => other,
-    };
+    let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
@@ -501,4 +500,71 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     };
 
     runtime.run().await
+}
+
+fn callback_host_for_url(api_bind: &str, local_addr: SocketAddr) -> String {
+    let host = match unbracket_ipv6(api_bind.trim()) {
+        "" => {
+            if local_addr.is_ipv6() {
+                "::1"
+            } else {
+                "127.0.0.1"
+            }
+        }
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    bracket_ipv6_host(host)
+}
+
+fn unbracket_ipv6(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn bracket_ipv6_host(host: &str) -> String {
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("[{}]", host),
+        _ => host.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn callback_host_uses_family_specific_loopback_for_wildcards() {
+        assert_eq!(
+            callback_host_for_url("0.0.0.0", SocketAddr::from((Ipv4Addr::UNSPECIFIED, 3889))),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            callback_host_for_url("[::]", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("::", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
+            "[::1]"
+        );
+    }
+
+    #[test]
+    fn callback_host_brackets_ipv6_literals() {
+        assert_eq!(
+            callback_host_for_url("::1", SocketAddr::from((Ipv6Addr::LOCALHOST, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("[::1]", SocketAddr::from((Ipv6Addr::LOCALHOST, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("127.0.0.1", SocketAddr::from((Ipv4Addr::LOCALHOST, 3889))),
+            "127.0.0.1"
+        );
+    }
 }
