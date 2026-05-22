@@ -38,6 +38,8 @@ export default handler(async (ctx: WorkforceCtx, event: WorkforceEvent) => {
 
 Fires on a schedule. Use for digests, sweeps, periodic syncs, EOD recaps.
 
+An integration in the persona has two independent roles: declaring `triggers[]` turns it into a radio listener (events fire); listing it under `integrations` *without* `triggers[]` just makes the typed client (`ctx.github`, `ctx.slack`, …) available at runtime. The example below uses the second role — only the cron fires, but the handler still has `ctx.github` and `ctx.slack` for the digest work.
+
 ```json
 {
   "id": "morning-digest",
@@ -106,7 +108,7 @@ export default handler(async (ctx, event) => {
 });
 ```
 
-Each declared integration becomes a typed client on `ctx` (`ctx.github`, `ctx.slack`, `ctx.notion`, `ctx.linear`, `ctx.jira`). Cron-only personas get all integration fields as `undefined`.
+Each declared integration becomes a typed client on `ctx` (`ctx.github`, `ctx.slack`, `ctx.notion`, `ctx.linear`, `ctx.jira`). Personas that declare no integrations at all get those fields as `undefined`.
 
 ### Source scope
 
@@ -198,6 +200,8 @@ Set `memory.enabled: true` on the persona to get `ctx.memory.save(...)` / `ctx.m
 
 - `agent` — only this deployment.
 - `workspace` — all deployments in the workspace.
+
+`ttlDays` is the retention window — saved entries expire (and stop showing up in `recall`) after that many days. Omit it to keep entries indefinitely.
 
 ```json
 "memory": { "enabled": true, "scopes": ["workspace"], "ttlDays": 60 }
