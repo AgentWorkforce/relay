@@ -14,6 +14,7 @@ impl BrokerRuntime {
         let pending_deliveries = &mut self.pending_deliveries;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
+        let agent_result_tokens = &mut self.agent_result_tokens;
         let dm_participants_cache = &mut self.dm_participants_cache;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -107,6 +108,7 @@ impl BrokerRuntime {
                                 "relaycast_release",
                             );
                             delivery_states.remove(&name);
+                            agent_result_tokens.retain(|_, agent| agent != &name);
                             telemetry.track(TelemetryEvent::AgentRelease {
                                 cli: String::new(),
                                 release_reason: "relaycast_release".to_string(),
@@ -285,6 +287,7 @@ impl BrokerRuntime {
                             worker_relay_key.clone(),
                             false,
                             Some(workspace_id.clone()),
+                            None,
                         )
                         .await
                     {
@@ -478,6 +481,7 @@ impl BrokerRuntime {
                                 worker_relay_key.clone(),
                                 false,
                                 Some(workspace_id.clone()),
+                                None,
                             )
                             .await
                         {

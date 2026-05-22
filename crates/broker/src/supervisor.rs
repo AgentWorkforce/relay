@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::AgentSpec;
+use crate::types::AgentResultMcpConfig;
 
 /// Configurable restart policy attached to an agent at spawn time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,7 @@ struct RestartState {
     pub initial_task: Option<String>,
     pub parent: Option<String>,
     pub skip_relay_prompt: bool,
+    pub agent_result: Option<AgentResultMcpConfig>,
 }
 
 /// Decision returned by the supervisor after an agent exits.
@@ -74,6 +76,7 @@ pub struct PendingRestart {
     pub initial_task: Option<String>,
     pub restart_count: u32,
     pub skip_relay_prompt: bool,
+    pub agent_result: Option<AgentResultMcpConfig>,
 }
 
 /// Manages restart state for all supervised agents.
@@ -95,6 +98,7 @@ impl Supervisor {
     }
 
     /// Register an agent for supervision. Called at spawn time.
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &mut self,
         name: &str,
@@ -103,6 +107,7 @@ impl Supervisor {
         initial_task: Option<String>,
         skip_relay_prompt: bool,
         policy: RestartPolicy,
+        agent_result: Option<AgentResultMcpConfig>,
     ) {
         self.states.insert(
             name.to_string(),
@@ -115,6 +120,7 @@ impl Supervisor {
                 initial_task,
                 parent,
                 skip_relay_prompt,
+                agent_result,
             },
         );
     }
@@ -192,6 +198,7 @@ impl Supervisor {
                             initial_task: state.initial_task.clone(),
                             restart_count: state.total_restarts + 1,
                             skip_relay_prompt: state.skip_relay_prompt,
+                            agent_result: state.agent_result.clone(),
                         },
                     ))
                 } else {
@@ -269,6 +276,7 @@ mod tests {
             None,
             false,
             RestartPolicy::default(),
+            None,
         );
         assert!(sup.is_supervised("w1"));
 
@@ -292,6 +300,7 @@ mod tests {
             Some("do stuff".into()),
             true,
             RestartPolicy::default(),
+            None,
         );
 
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
@@ -311,7 +320,7 @@ mod tests {
             max_consecutive_failures: 10, // high so this doesn't trigger
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, false, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy, None);
 
         // First crash -> restart
         assert!(matches!(
@@ -340,7 +349,7 @@ mod tests {
             max_restarts: 10, // high so this doesn't trigger
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, false, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy, None);
 
         // Crash 1 -> consecutive=1, restart
         assert!(matches!(
@@ -368,7 +377,7 @@ mod tests {
             max_restarts: 10,
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, false, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy, None);
 
         // Two crashes
         sup.on_exit("w1", Some(1), None);
@@ -391,7 +400,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, false, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy, None);
 
         let decision = sup.on_exit("w1", Some(1), None).unwrap();
         assert!(matches!(decision, RestartDecision::PermanentlyDead { .. }));
@@ -407,6 +416,7 @@ mod tests {
             None,
             false,
             RestartPolicy::default(),
+            None,
         );
         sup.unregister("w1");
 
@@ -428,6 +438,7 @@ mod tests {
             Some("task".into()),
             true,
             policy,
+            None,
         );
 
         sup.on_exit("w1", Some(1), None);
@@ -449,7 +460,7 @@ mod tests {
             cooldown_ms: 60_000, // 60 seconds
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, false, policy);
+        sup.register("w1", test_spec("w1"), None, None, false, policy, None);
 
         sup.on_exit("w1", Some(1), None);
 
@@ -468,6 +479,7 @@ mod tests {
             None,
             false,
             RestartPolicy::default(),
+            None,
         );
 
         assert_eq!(sup.restart_count("w1"), 0);
@@ -488,7 +500,7 @@ mod tests {
             cooldown_ms: 0,
             ..Default::default()
         };
-        sup.register("w1", test_spec("w1"), None, None, true, policy);
+        sup.register("w1", test_spec("w1"), None, None, true, policy, None);
 
         sup.on_exit("w1", Some(1), None);
 

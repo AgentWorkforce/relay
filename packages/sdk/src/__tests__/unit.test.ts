@@ -82,6 +82,9 @@ function makeFakeAgentWithControls(name: string, exitAfterMs?: number): FakeAgen
       }
       return idlePromise!;
     },
+    waitForResult() {
+      return Promise.reject(new Error(`No structured result for '${name}'`));
+    },
     async sendMessage() {
       return { eventId: 'fake', from: name, to: '', text: '' };
     },
