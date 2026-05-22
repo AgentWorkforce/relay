@@ -71,7 +71,7 @@ export function generateSoulMd(
     '',
     'You are pre-registered by the broker under your assigned worker name.',
     'Do not call mcp__relaycast__agent_register unless a send/reply fails with "Not registered".',
-    'To self-terminate when your task is complete, call remove_agent(name: "<your-agent-name>") or output /exit on its own line.',
+    'Self-termination is not automatic. Only call remove_agent(name: "<your-agent-name>") or output /exit on its own line when explicitly instructed to terminate.',
     '',
     '## Personality',
     '',
