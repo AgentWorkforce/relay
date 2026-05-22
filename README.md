@@ -1,24 +1,15 @@
 <img src="./readme-banner.png" alt="Agent Relay">
-
-**Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
-
 <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
 <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-
-# Use Claude to orchestrate a team of Codex agents.
-
-Don't limit yourself to one model or one harness. Use the best tools for the job.
-
-![Three agents debating a plan in real time](./scripts/demos/three-way-debate.gif)
-
-A planner drafts a plan. An adversarial critic tears it apart. A reviewer arbitrates. Three live agents, three terminals, talking to each other on a shared channel until they agree. You watched it happen — you didn't drive it.
+<br/><br/>
+Real-time communication between coding harnesses. Let Claude send messages to codex and stop babysitting your agents.
 
 ## What you can build with it today
 
-- **Claude orchestrates, Codex implements.** Spawn a Claude lead that hands work to Codex workers, reads their progress live, and steers mid-task when one goes off the rails.
-- **Adversarial review loops.** Run an implementer alongside one or two critics. They iterate until the critic ratifies — no human in the loop.
-- **Walk-away autonomy.** Kick off a multi-step job, close the laptop. Agents keep talking, finishing, and verifying each other's work.
+- **Claude orchestrates, Codex implements.** <br/>Spawn a Claude lead that hands work to Codex workers, reads their progress live, and steers mid-task when one goes off the rails.
+- **Adversarial review loops.** <br/>Run an implementer alongside one or two critics. They iterate until the critic ratifies — no human in the loop.
+- **Walk-away autonomy.** <br/>Kick off a multi-step job, close the laptop. Agents keep talking, finishing, and verifying each other's work.
 
 ## Get started
 
