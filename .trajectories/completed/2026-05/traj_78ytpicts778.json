@@ -1,0 +1,53 @@
+{
+  "id": "traj_78ytpicts778",
+  "version": 1,
+  "task": {
+    "title": "Address PR 932 result callback review findings"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-22T15:59:25.187Z",
+  "completedAt": "2026-05-22T16:05:12.320Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-22T16:04:55.453Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fjkgwh3kotyj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-22T16:04:55.453Z",
+      "endedAt": "2026-05-22T16:05:12.320Z",
+      "events": [
+        {
+          "ts": 1779465895454,
+          "type": "decision",
+          "content": "Do not persist result callback tokens in shared MCP config: Do not persist result callback tokens in shared MCP config",
+          "raw": {
+            "question": "Do not persist result callback tokens in shared MCP config",
+            "chosen": "Do not persist result callback tokens in shared MCP config",
+            "alternatives": [],
+            "reasoning": "The result callback token is per spawn. Gemini/Droid mcp add, opencode.json, and .cursor/mcp.json are shared or persistent surfaces, so those paths now omit AGENT_RELAY_RESULT_* and rely on inline configs or worker process env instead."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Verified PR 932 review findings. Fixed the valid shared-config token persistence issue by omitting AGENT_RELAY_RESULT_* from Gemini/Droid mcp add, opencode.json, and .cursor/mcp.json while retaining inline Codex result env. Skipped the skip_relay_prompt finding because current worker spawn already sets AGENT_RELAY_RESULT_* on the worker process even when MCP prompt injection is skipped.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-pr-932-review",
+  "tags": [],
+  "_trace": {
+    "startRef": "3332e83756f0e905b77ae7f6a111e9787a66cf99",
+    "endRef": "3332e83756f0e905b77ae7f6a111e9787a66cf99"
+  }
+}

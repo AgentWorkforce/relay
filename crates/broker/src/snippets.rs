@@ -427,7 +427,7 @@ pub fn ensure_opencode_config_with_result(
     relay_agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    agent_result: Option<&AgentResultMcpConfig>,
+    _agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
     let path = root.join(OPENCODE_CONFIG);
 
@@ -482,7 +482,6 @@ pub fn ensure_opencode_config_with_result(
             Value::String(dw.to_string()),
         );
     }
-    apply_agent_result_env(&mut env, agent_result);
     if !env.is_empty() {
         mcp_server.insert("environment".into(), Value::Object(env));
     }
@@ -571,7 +570,7 @@ pub fn ensure_cursor_mcp_config(
     relay_agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    agent_result: Option<&AgentResultMcpConfig>,
+    _agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
     let cursor_dir = root.join(".cursor");
     fs::create_dir_all(&cursor_dir)?;
@@ -584,7 +583,7 @@ pub fn ensure_cursor_mcp_config(
         relay_agent_token,
         workspaces_json,
         default_workspace,
-        agent_result,
+        None,
     );
     let mut new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
         io::Error::new(
@@ -863,6 +862,9 @@ pub async fn configure_relaycast_mcp_with_result(
             }
         }
     } else if is_gemini || is_droid {
+        // Result callback tokens are per-spawn secrets. Gemini/Droid, OpenCode,
+        // and Cursor write shared config surfaces, so keep result callback env
+        // limited to the worker process env instead of persisting it in those files.
         if is_gemini {
             ensure_gemini_folder_trusted(cwd);
         }
@@ -875,7 +877,7 @@ pub async fn configure_relaycast_mcp_with_result(
             is_gemini,
             workspaces_json,
             default_workspace,
-            agent_result,
+            None,
         )
         .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
@@ -887,7 +889,7 @@ pub async fn configure_relaycast_mcp_with_result(
             agent_token,
             workspaces_json,
             default_workspace,
-            agent_result,
+            None,
         )
         .with_context(|| {
             "failed to write opencode.json for relaycast MCP. \
@@ -904,7 +906,7 @@ pub async fn configure_relaycast_mcp_with_result(
             agent_token,
             workspaces_json,
             default_workspace,
-            agent_result,
+            None,
         )
         .with_context(|| {
             "failed to write .cursor/mcp.json for relaycast MCP. \
@@ -1015,7 +1017,7 @@ fn gemini_droid_mcp_add_args_with_result(
     is_gemini: bool,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    agent_result: Option<&AgentResultMcpConfig>,
+    _agent_result: Option<&AgentResultMcpConfig>,
 ) -> Vec<String> {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
     let mut args = vec!["mcp".to_string(), "add".to_string()];
@@ -1050,12 +1052,6 @@ fn gemini_droid_mcp_add_args_with_result(
     if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
         args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
-    }
-    if let Some(config) = agent_result {
-        for (key, value) in config.env_pairs() {
-            args.push(env_flag.to_string());
-            args.push(format!("{key}={value}"));
-        }
     }
     args.push("relaycast".to_string());
     // Droid's CLI parser continues parsing options after positional args.
@@ -1171,6 +1167,20 @@ mod tests {
             package.starts_with("@relaycast/mcp"),
             "expected package to start with @relaycast/mcp, got: {package}"
         );
+    }
+
+    fn test_agent_result_config() -> crate::types::AgentResultMcpConfig {
+        crate::types::AgentResultMcpConfig {
+            callback_url: "http://127.0.0.1:3889/api/agent-result".to_string(),
+            token: "arr_test".to_string(),
+            schema: Some(json!({"type": "object"})),
+        }
+    }
+
+    fn assert_agent_result_env_absent(env: &Value) {
+        assert!(env["AGENT_RELAY_RESULT_URL"].is_null());
+        assert!(env["AGENT_RELAY_RESULT_TOKEN"].is_null());
+        assert!(env["AGENT_RELAY_RESULT_SCHEMA"].is_null());
     }
 
     #[test]
@@ -1586,6 +1596,26 @@ mod tests {
         assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_droid_123".to_string()));
     }
 
+    #[test]
+    fn gemini_droid_mcp_add_args_omit_agent_result_env() {
+        let config = test_agent_result_config();
+        let args = super::gemini_droid_mcp_add_args_with_result(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            Some("GeminiWorker"),
+            Some("tok_gem_123"),
+            true,
+            None,
+            None,
+            Some(&config),
+        );
+
+        assert!(
+            !args.iter().any(|arg| arg.contains("AGENT_RELAY_RESULT")),
+            "Gemini/Droid mcp add writes shared config and must not persist per-agent result tokens"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Codex provider tests
     // -----------------------------------------------------------------------
@@ -1674,6 +1704,32 @@ mod tests {
             args.iter()
                 .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
             "Codex must include RELAY_AGENT_TOKEN when provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_includes_agent_result_env_in_inline_config() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_agent_result_config();
+        let args = super::configure_relaycast_mcp_with_result(
+            "codex",
+            "Agent",
+            None,
+            None,
+            &[],
+            temp.path(),
+            None,
+            None,
+            None,
+            Some(&config),
+        )
+        .await
+        .expect("configure codex mcp with result");
+
+        assert!(
+            args.iter()
+                .any(|a| a == "mcp_servers.relaycast.env.AGENT_RELAY_RESULT_TOKEN=\"arr_test\""),
+            "Codex inline config can carry per-agent result callback env"
         );
     }
 
@@ -1782,6 +1838,32 @@ mod tests {
             Some("Agent with Relaycast MCP enabled")
         );
         assert_eq!(agent["tools"]["relaycast_*"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn opencode_result_contract_does_not_persist_callback_env() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_agent_result_config();
+        let args = super::configure_relaycast_mcp_with_result(
+            "opencode",
+            "OcAgent",
+            Some("rk_live_oc"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+            None,
+            None,
+            None,
+            Some(&config),
+        )
+        .await
+        .expect("configure opencode mcp with result");
+
+        assert_eq!(args, vec!["--agent", "relaycast"]);
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+        assert_agent_result_env_absent(&json["mcp"]["relaycast"]["environment"]);
     }
 
     #[tokio::test]
@@ -1897,6 +1979,35 @@ mod tests {
             json["mcpServers"]["relaycast"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
             Some("1")
         );
+    }
+
+    #[tokio::test]
+    async fn cursor_result_contract_does_not_persist_callback_env() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_agent_result_config();
+        let args = super::configure_relaycast_mcp_with_result(
+            "cursor",
+            "CursorAgent",
+            Some("rk_live_cursor"),
+            Some("https://api.relaycast.dev"),
+            &[],
+            temp.path(),
+            None,
+            None,
+            None,
+            Some(&config),
+        )
+        .await
+        .expect("configure cursor mcp with result");
+
+        assert!(
+            args.is_empty(),
+            "cursor should configure MCP via file, not CLI args"
+        );
+        let contents = fs::read_to_string(temp.path().join(".cursor").join("mcp.json"))
+            .expect("read cursor mcp config");
+        let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
+        assert_agent_result_env_absent(&json["mcpServers"]["relaycast"]["env"]);
     }
 
     #[tokio::test]
