@@ -106,6 +106,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 - PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
 
+## [7.0.1] - 2026-05-22
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **AddListener overload accepts BeforeAgentSpawnHandler**
+
+#### User-Impacting Fixes
+- Find stale SST ACM validation state
+- Repair timed-out SST ACM certificate state
+- Pin next via overrides to dedupe duplicate install
+
+### Technical Perspective
+#### Dependencies & Tooling
+- Upgrade @posthog/next 0.1.0 → 0.4.61 (#937)
+
+#### Releases
+- v7.0.1
+
+---
+
 ## [6.3.6] - 2026-05-21
 
 ### Product Perspective
