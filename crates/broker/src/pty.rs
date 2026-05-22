@@ -502,7 +502,7 @@ impl PtySession {
                 Ok(Some(_status)) => {
                     // Child exited and we successfully reaped it.
                     tracing::info!(
-                        target = "agent_relay::worker::pty",
+                        target: "agent_relay::worker::pty",
                         pid = ?self.child_pid,
                         "has_exited: try_wait returned Ok(Some) — child reaped"
                     );
@@ -516,7 +516,7 @@ impl PtySession {
                     // ECHILD or other error — child was already reaped by
                     // someone else (e.g. shutdown() or a signal handler).
                     tracing::info!(
-                        target = "agent_relay::worker::pty",
+                        target: "agent_relay::worker::pty",
                         pid = ?self.child_pid,
                         error = %e,
                         "has_exited: try_wait returned Err — treating as exited"
@@ -545,7 +545,7 @@ impl PtySession {
                 if errno == libc::ESRCH {
                     // No such process — child is gone.
                     tracing::info!(
-                        target = "agent_relay::worker::pty",
+                        target: "agent_relay::worker::pty",
                         pid = pid,
                         "has_exited: kill(0) returned ESRCH — process gone"
                     );
@@ -555,7 +555,7 @@ impl PtySession {
             }
 
             tracing::trace!(
-                target = "agent_relay::worker::pty",
+                target: "agent_relay::worker::pty",
                 pid = pid,
                 "has_exited: child appears alive"
             );
@@ -571,14 +571,14 @@ impl PtySession {
         {
             let count = self.no_pid_alive_checks.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::debug!(
-                target = "agent_relay::worker::pty",
+                target: "agent_relay::worker::pty",
                 consecutive_checks = count,
                 threshold = NO_PID_THRESHOLD,
                 "has_exited: no PID available, try_wait says Ok(None)"
             );
             if count >= NO_PID_THRESHOLD {
                 tracing::warn!(
-                    target = "agent_relay::worker::pty",
+                    target: "agent_relay::worker::pty",
                     consecutive_checks = count,
                     "has_exited: no PID and try_wait stuck at Ok(None) for {} checks — assuming child exited",
                     count
@@ -591,7 +591,7 @@ impl PtySession {
         #[cfg(not(unix))]
         {
             tracing::trace!(
-                target = "agent_relay::worker::pty",
+                target: "agent_relay::worker::pty",
                 pid = ?live_pid,
                 "has_exited: child appears alive"
             );
@@ -630,7 +630,7 @@ impl PtySession {
                         Ok(None) => {
                             if std::time::Instant::now() >= deadline {
                                 tracing::warn!(
-                                    target = "agent_relay::worker::pty",
+                                    target: "agent_relay::worker::pty",
                                     "shutdown: child did not exit within 2s after kill"
                                 );
                                 break;

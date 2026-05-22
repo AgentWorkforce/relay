@@ -1,6 +1,6 @@
 {
   "name": "agent-relay",
-  "version": "6.3.3",
+  "version": "7.0.0",
   "description": "Real-time agent-to-agent communication system",
   "type": "module",
   "main": "dist/index.cjs",
@@ -132,14 +132,14 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "dependencies": {
-    "@agent-relay/cloud": "6.3.3",
-    "@agent-relay/config": "6.3.3",
-    "@agent-relay/hooks": "6.3.3",
-    "@agent-relay/sdk": "6.3.3",
-    "@agent-relay/telemetry": "6.3.3",
-    "@agent-relay/trajectory": "6.3.3",
-    "@agent-relay/user-directory": "6.3.3",
-    "@agent-relay/utils": "6.3.3",
+    "@agent-relay/cloud": "7.0.0",
+    "@agent-relay/config": "7.0.0",
+    "@agent-relay/hooks": "7.0.0",
+    "@agent-relay/sdk": "7.0.0",
+    "@agent-relay/telemetry": "7.0.0",
+    "@agent-relay/trajectory": "7.0.0",
+    "@agent-relay/user-directory": "7.0.0",
+    "@agent-relay/utils": "7.0.0",
     "@aws-sdk/client-s3": "3.1020.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
@@ -203,6 +203,9 @@
   "overrides": {
     "flatted": "^3.4.2",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "@posthog/next": {
+      "next": "15.5.18"
+    }
   }
 }

@@ -63,6 +63,11 @@ const expectedLeafCommands = [
   'cloud logs',
   'cloud sync',
   'cloud cancel',
+  'log path',
+  'log list',
+  'log view',
+  'log rotate',
+  'log clear',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {

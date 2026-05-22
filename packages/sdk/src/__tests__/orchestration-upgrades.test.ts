@@ -1230,9 +1230,9 @@ describe('AgentRelay orchestration handles', () => {
 
     const relay = new AgentRelay();
     const seenFrom: string[] = [];
-    relay.onMessageReceived = (message) => {
+    relay.addListener('messageReceived', (message) => {
       seenFrom.push(message.from);
-    };
+    });
 
     try {
       await relay.listAgents(); // Ensure event wiring is initialized.
@@ -1422,7 +1422,7 @@ describe('Agent.status computed getter', () => {
 
     const relay = new AgentRelay();
     const exitedReasons: Array<string | undefined> = [];
-    relay.onAgentExited = (agent) => exitedReasons.push(agent.exitReason);
+    relay.addListener('agentExited', (agent) => exitedReasons.push(agent.exitReason));
     try {
       await relay.spawnPty({
         name: 'reason-exited',

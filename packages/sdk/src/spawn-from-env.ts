@@ -12,8 +12,8 @@
  * ```
  */
 
-import { AgentRelay } from "./relay.js";
-import { getCliDefinition } from "./cli-registry.js";
+import { AgentRelay } from './relay.js';
+import { getCliDefinition } from './cli-registry.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -83,22 +83,18 @@ function getBypassFlagConfig(cli: string): BypassFlagConfig | undefined {
  * Parse and validate spawn environment variables.
  * Throws with a clear message on missing required keys.
  */
-export function parseSpawnEnv(
-  env: Record<string, string | undefined> = process.env,
-): SpawnEnvInput {
+export function parseSpawnEnv(env: Record<string, string | undefined> = process.env): SpawnEnvInput {
   const AGENT_NAME = env.AGENT_NAME;
   const AGENT_CLI = env.AGENT_CLI;
   const RELAY_API_KEY = env.RELAY_API_KEY;
 
   const missing: string[] = [];
-  if (!AGENT_NAME) missing.push("AGENT_NAME");
-  if (!AGENT_CLI) missing.push("AGENT_CLI");
-  if (!RELAY_API_KEY) missing.push("RELAY_API_KEY");
+  if (!AGENT_NAME) missing.push('AGENT_NAME');
+  if (!AGENT_CLI) missing.push('AGENT_CLI');
+  if (!RELAY_API_KEY) missing.push('RELAY_API_KEY');
 
   if (missing.length > 0) {
-    throw new Error(
-      `[spawn-from-env] Missing required environment variables: ${missing.join(", ")}`,
-    );
+    throw new Error(`[spawn-from-env] Missing required environment variables: ${missing.join(', ')}`);
   }
 
   return {
@@ -124,7 +120,7 @@ export function parseSpawnEnv(
 function parseArgs(raw: string | undefined): string[] {
   if (!raw) return [];
   const trimmed = raw.trim();
-  if (trimmed.startsWith("[")) {
+  if (trimmed.startsWith('[')) {
     try {
       const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) return parsed.map(String);
@@ -142,19 +138,17 @@ function parseArgs(raw: string | undefined): string[] {
 export function resolveSpawnPolicy(input: SpawnEnvInput): SpawnPolicyResult {
   const extraArgs = parseArgs(input.AGENT_ARGS);
   const channels = input.AGENT_CHANNELS
-    ? input.AGENT_CHANNELS.split(",")
+    ? input.AGENT_CHANNELS.split(',')
         .map((c) => c.trim())
         .filter(Boolean)
-    : ["general"];
+    : ['general'];
 
-  const disableBypass = input.AGENT_DISABLE_DEFAULT_BYPASS === "1";
+  const disableBypass = input.AGENT_DISABLE_DEFAULT_BYPASS === '1';
   const bypassConfig = getBypassFlagConfig(input.AGENT_CLI);
 
   let bypassApplied = false;
   const args = [...extraArgs];
-  const bypassValues = bypassConfig
-    ? [bypassConfig.flag, ...(bypassConfig.aliases ?? [])]
-    : [];
+  const bypassValues = bypassConfig ? [bypassConfig.flag, ...(bypassConfig.aliases ?? [])] : [];
   const hasBypassAlready = bypassValues.some((value) => args.includes(value));
 
   if (bypassConfig && !disableBypass && !hasBypassAlready) {
@@ -190,21 +184,18 @@ export function resolveSpawnPolicy(input: SpawnEnvInput): SpawnPolicyResult {
  * Creates a broker, spawns the agent via PTY, and waits for exit.
  * Returns the exit reason and exit code.
  */
-export async function spawnFromEnv(
-  options: SpawnFromEnvOptions = {},
-): Promise<SpawnFromEnvResult> {
-  const env =
-    options.env ?? (process.env as Record<string, string | undefined>);
+export async function spawnFromEnv(options: SpawnFromEnvOptions = {}): Promise<SpawnFromEnvResult> {
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
   const parsed = parseSpawnEnv(env);
   const policy = resolveSpawnPolicy(parsed);
 
   console.log(
     `[spawn-from-env] Spawning agent: name=${policy.name} cli=${policy.cli} ` +
-      `channels=${policy.channels.join(",")} bypass=${policy.bypassApplied}`,
+      `channels=${policy.channels.join(',')} bypass=${policy.bypassApplied}`
   );
   if (policy.task) {
     console.log(
-      `[spawn-from-env] Task: ${policy.task.slice(0, 200)}${policy.task.length > 200 ? "..." : ""}`,
+      `[spawn-from-env] Task: ${policy.task.slice(0, 200)}${policy.task.length > 200 ? '...' : ''}`
     );
   }
 
@@ -216,18 +207,18 @@ export async function spawnFromEnv(
     env: env as NodeJS.ProcessEnv,
   });
 
-  relay.onAgentSpawned = (agent) => {
+  relay.addListener('agentSpawned', (agent) => {
     console.log(`[spawn-from-env] Agent spawned: ${agent.name}`);
-  };
-  relay.onAgentReady = (agent) => {
+  });
+  relay.addListener('agentReady', (agent) => {
     console.log(`[spawn-from-env] Agent ready: ${agent.name}`);
-  };
-  relay.onAgentExited = (agent) => {
+  });
+  relay.addListener('agentExited', (agent) => {
     console.log(
       `[spawn-from-env] Agent exited: ${agent.name} ` +
-        `code=${agent.exitCode ?? "none"} signal=${agent.exitSignal ?? "none"}`,
+        `code=${agent.exitCode ?? 'none'} signal=${agent.exitSignal ?? 'none'}`
     );
-  };
+  });
 
   try {
     const agent = await relay.spawnPty({

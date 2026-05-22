@@ -324,6 +324,40 @@ const { agent, result } = await AgentRelay.waitForAny([agent1, agent2], 60000)
 await relay.shutdown()
 ```
 
+### Broker tracing logs
+
+The broker writes its tracing logs to a platform-standard directory (`~/Library/Logs/agent-relay/` on macOS, `~/.local/state/agent-relay/logs/` on Linux, `%LOCALAPPDATA%\agent-relay\Logs\` on Windows) with daily rotation. These helpers inspect and prune those files from Node without spawning the broker.
+
+```typescript
+import {
+  getBrokerLogDir,
+  listBrokerLogs,
+  tailBrokerLog,
+  pruneBrokerLogs,
+  clearBrokerLogs,
+} from '@agent-relay/sdk';
+
+// Resolve the directory for the current platform.
+const dir = getBrokerLogDir();
+
+// List every {brokerId}.log[.YYYY-MM-DD] file, newest first.
+const files = await listBrokerLogs();
+// files: Array<{ path, name, brokerId, date, size, mtime }>
+
+// Tail the most recent log file for a broker.
+const tail = await tailBrokerLog('myproject', { lines: 500 });
+// tail?.path / tail?.content — null if no log file exists
+
+// Retention: remove rotated files older than 7 days. The active
+// un-suffixed file is never touched.
+const { removed, kept } = await pruneBrokerLogs({ keepDays: 7 });
+
+// Wipe one broker's logs (or pass nothing to wipe everything).
+await clearBrokerLogs({ brokerId: 'myproject' });
+```
+
+These wrap the same logic that powers `agent-relay log {path,list,view,rotate,clear}`.
+
 ---
 
 ## Complete Example

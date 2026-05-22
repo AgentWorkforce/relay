@@ -1131,6 +1131,13 @@
       "startedAt": "2026-05-21T18:56:55.532Z",
       "completedAt": "2026-05-21T19:00:06.831Z",
       "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_dcl9hgoiuac5.json"
+    },
+    "traj_u3loicehnwb4": {
+      "title": "Gate broker diagnostic logs behind env flag",
+      "status": "completed",
+      "startedAt": "2026-05-21T04:14:44.815Z",
+      "completedAt": "2026-05-21T04:14:45.063Z",
+      "path": "/private/tmp/relay-quiet-broker-logs/.trajectories/completed/2026-05/traj_u3loicehnwb4.json"
     }
   }
 }

@@ -94,10 +94,10 @@ describe('AgentRelay channel operations', () => {
     expect(agent.mutedChannels).toEqual([]);
   });
 
-  it('onChannelSubscribed fires on channel_subscribed events', () => {
+  it('channelSubscribed listener fires on channel_subscribed events', () => {
     const { relay, emit } = setupRelay();
     const callback = vi.fn();
-    relay.onChannelSubscribed = callback;
+    relay.addListener('channelSubscribed', callback);
 
     emit({
       kind: 'channel_subscribed',
@@ -105,7 +105,7 @@ describe('AgentRelay channel operations', () => {
       channels: ['ch-a'],
     });
 
-    expect(callback).toHaveBeenCalledWith('worker-1', ['ch-a']);
+    expect(callback).toHaveBeenCalledWith({ agent: 'worker-1', channels: ['ch-a'] });
   });
 
   // TODO(sdk-test-fix): restore when channel mute/unmute exists end-to-end in the broker and SDK.
