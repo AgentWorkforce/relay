@@ -1,6 +1,6 @@
 ---
 title: 'Event handlers'
-description: 'Subscribe to relay events so your app can react to messages, agent lifecycle changes, spawn intercepts, output, and delivery updates.'
+description: 'Subscribe to relay events so your app can react to messages, agent lifecycle changes, structured results, spawn intercepts, output, and delivery updates.'
 ---
 
 Event handlers are the main way to observe what the relay is doing in real time. Register listeners on the `AgentRelay` instance to log activity, update UI, trigger follow-up work, or keep your own state in sync.
@@ -148,6 +148,16 @@ relay.addListener('beforeAgentSpawn', (ctx) => {
 ```
 
 `afterAgentSpawn` exposes the post-patch `resolvedInput` so observers can see exactly what was sent. `beforeAgentRelease` / `afterAgentRelease` are observe-only.
+
+## Structured result events
+
+```typescript
+relay.addListener('agentResult', (result) => {
+  console.log(`result from ${result.name}`, result.resultId, result.data);
+});
+```
+
+`agentResult` fires when a spawned agent submits JSON through the `submit_result` MCP tool. Use it for global observers; use `agent.waitForResult(...)` or the per-spawn `result.onResult` callback when one caller owns a specific agent's result.
 
 ## Output and delivery events
 

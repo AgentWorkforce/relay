@@ -134,7 +134,6 @@ jobs:
               '@agent-relay/config',
               '@agent-relay/hooks',
               '@agent-relay/utils',
-              '@agent-relay/user-directory',
             ];
 
             (async () => {

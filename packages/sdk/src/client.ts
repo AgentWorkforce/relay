@@ -177,6 +177,7 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
   };
 }
 
@@ -200,6 +201,7 @@ function buildSpawnProviderBody(
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
     transport,
   };
 }

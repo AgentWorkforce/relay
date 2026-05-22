@@ -62,6 +62,12 @@ export interface PatchedMcpServerOptions {
 
 type RegistrationSession = Pick<SessionState, 'workspaceKey' | 'agentToken' | 'agentName'>;
 type SessionSetter = (partial: Partial<SessionState>) => void;
+type AgentResultCallbackConfig = {
+  url: string;
+  token: string;
+  schema?: unknown;
+  agentName?: string;
+};
 
 type RegisterAgentWithRebindArgs = {
   session: RegistrationSession;
@@ -112,6 +118,110 @@ export function normalizeAgentType(value: string | undefined): AgentType | undef
   }
 
   return undefined;
+}
+
+function readAgentResultCallbackConfig(agentName?: string): AgentResultCallbackConfig | undefined {
+  const url = resolveEnv('AGENT_RELAY_RESULT_URL');
+  const token = resolveEnv('AGENT_RELAY_RESULT_TOKEN');
+  if (!url || !token) {
+    return undefined;
+  }
+
+  const rawSchema = resolveEnv('AGENT_RELAY_RESULT_SCHEMA');
+  let schema: unknown;
+  if (rawSchema) {
+    try {
+      schema = JSON.parse(rawSchema);
+    } catch {
+      schema = rawSchema;
+    }
+  }
+
+  return { url, token, schema, agentName };
+}
+
+function registerAgentResultTool(server: McpServer, config: AgentResultCallbackConfig | undefined): void {
+  if (!config) {
+    return;
+  }
+
+  const schemaText =
+    config.schema === undefined
+      ? ''
+      : ` Expected JSON schema: ${JSON.stringify(config.schema).slice(0, 4000)}`;
+
+  server.registerTool(
+    'submit_result',
+    {
+      title: 'Submit Result',
+      description:
+        'Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready.' +
+        schemaText,
+      inputSchema: {
+        data: z.unknown().describe('The JSON result payload requested by the spawning SDK caller.'),
+        final: z
+          .boolean()
+          .optional()
+          .describe('Whether this is the final result for the task. Defaults to true.'),
+        metadata: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Optional diagnostic metadata about the result.'),
+      },
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ data, final, metadata }) => {
+      const timeoutMs = Number(resolveEnv('AGENT_RELAY_RESULT_TIMEOUT_MS') ?? 10_000);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let response: Response;
+      try {
+        response = await fetch(config.url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${config.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            agent: config.agentName,
+            data,
+            final: final ?? true,
+            metadata,
+          }),
+        });
+      } catch (err) {
+        if ((err as { name?: string }).name === 'AbortError') {
+          throw new Error(`Agent Relay result submission timed out after ${timeoutMs}ms`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+      const responseText = await response.text();
+      let payload: Record<string, unknown>;
+      try {
+        payload = responseText ? (JSON.parse(responseText) as Record<string, unknown>) : {};
+      } catch {
+        payload = { success: false, error: responseText };
+      }
+      if (!response.ok) {
+        throw new Error(
+          `Agent Relay result submission failed (${response.status}): ${String(payload.error ?? responseText)}`
+        );
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload,
+      };
+    }
+  );
 }
 
 async function createWorkspace(name: string, baseUrl?: string): Promise<Record<string, unknown>> {
@@ -477,6 +587,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
   registerMessagingTools(mcpServer, getAgentClient as never);
   registerFeatureTools(mcpServer, getAgentClient as never);
   registerProgrammabilityTools(mcpServer, getRelay as never, getAgentClient as never);
+  registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
 
   mcpServer.registerPrompt(
     'system',

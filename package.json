@@ -51,7 +51,6 @@
     "build:config": "cd packages/config && npm run build",
     "build:trajectory": "cd packages/trajectory && npm run build",
     "build:hooks": "cd packages/hooks && npm run build",
-    "build:user-directory": "cd packages/user-directory && npm run build",
     "build:sdk": "cd packages/sdk && npm run build",
     "build:telemetry": "cd packages/telemetry && npm run build",
     "build:cjs": "node ./scripts/build-cjs.mjs",
