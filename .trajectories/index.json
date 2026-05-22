@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-22T16:36:20.720Z",
+  "lastUpdated": "2026-05-22T16:57:55.540Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1145,6 +1145,13 @@
       "startedAt": "2026-05-22T16:27:44.927Z",
       "completedAt": "2026-05-22T16:36:20.545Z",
       "path": "/private/tmp/relay-remove-user-directory/.trajectories/completed/2026-05/traj_s5ojo1f4srz4.json"
+    },
+    "traj_bz1a1o15p7px": {
+      "title": "Fix PR 949 CI failure",
+      "status": "completed",
+      "startedAt": "2026-05-22T16:56:55.021Z",
+      "completedAt": "2026-05-22T16:57:55.372Z",
+      "path": "/private/tmp/relay-remove-user-directory/.trajectories/completed/2026-05/traj_bz1a1o15p7px.json"
     }
   }
 }

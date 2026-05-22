@@ -1071,7 +1071,6 @@ jobs:
           - utils
           - trajectory
           - hooks
-          - user-directory
           - cloud
           - sdk
           - telemetry
@@ -1166,7 +1165,6 @@ jobs:
           - sdk
           - telemetry
           - trajectory
-          - user-directory
           - utils
 
     steps:
