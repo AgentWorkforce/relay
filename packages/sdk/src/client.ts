@@ -259,20 +259,38 @@ export class AgentRelayClient {
    * function. Equivalent to `client.eventBus.addListener(...)` but mirrors
    * the `AgentRelay` facade API so direct-client callers don't need to
    * reach through `.eventBus`.
+   *
+   * `beforeAgentSpawn` is the one event whose handler may return a
+   * `SpawnPatch` to mutate the spawn input — the dedicated overload
+   * keeps that contract type-safe without forcing other events to accept
+   * non-void returns.
    */
+  addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
   addListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): () => void;
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.eventBus.addListener(event, handler);
+    return this.eventBus.addListener(
+      event,
+      handler as (...args: AgentRelayEvents[K]) => void | Promise<void>
+    );
   }
 
   /** Remove a previously-registered listener. */
+  removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
   removeListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): void;
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): void {
-    this.eventBus.removeListener(event, handler);
+    this.eventBus.removeListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
   }
 
   /**

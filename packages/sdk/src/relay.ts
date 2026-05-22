@@ -31,7 +31,7 @@ import { RelayCast } from '@relaycast/sdk';
 
 import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
 import { EventBus } from './event-bus.js';
-import type { AgentRelayEvents } from './lifecycle-hooks.js';
+import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import {
   buildPersonaSpawnSpec,
   composePersonaTask,
@@ -466,20 +466,35 @@ export class AgentRelay {
    * can register for the same event; they fire sequentially in
    * registration order. Async handlers are awaited. Handler exceptions
    * are caught and logged; one bad listener never blocks the others.
+   *
+   * `beforeAgentSpawn` is the one event whose handler may return a
+   * `SpawnPatch` to mutate the spawn input before the broker POST — the
+   * dedicated overload below keeps that contract type-safe without
+   * forcing other events to accept non-void returns.
    */
+  addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
   addListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): () => void;
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.bus.addListener(event, handler);
+    return this.bus.addListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
   }
 
   /** Remove a previously-registered listener. Idempotent. */
+  removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
   removeListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): void;
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): void {
-    this.bus.removeListener(event, handler);
+    this.bus.removeListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
   }
 
   // ── Public accessors ────────────────────────────────────────────────────
