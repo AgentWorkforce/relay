@@ -425,6 +425,74 @@ describe('runWorkflow code sync', () => {
     });
     expect((runBodies[0] as { paths?: unknown }).paths).toBeUndefined();
   });
+
+  it('uploads code through the cloud API when prepare returns cloud-api storage', async () => {
+    await writeFile('README.md', 'cloud-api\n');
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(
+      workflowPath,
+      ['version: "1.0"', 'name: cloud-api', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join(
+        '\n'
+      )
+    );
+
+    const runBodies: unknown[] = [];
+    const uploadPaths: string[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      if (requestPath === '/api/v1/workflows/prepare') {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(
+            JSON.stringify({
+              runId: 'run-1',
+              s3Credentials: {
+                ...s3Credentials,
+                backend: 'cloud-api',
+                cloudApiUrl: 'https://agentrelay.com/cloud',
+                cloudApiAccessToken: 'token',
+              },
+              s3CodeKey: 'code.tar.gz',
+              workflowStorage: { backend: 'cloud-api' },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          ),
+        };
+      }
+      if (requestPath === '/api/v1/workflows/runs/run-1/storage/code.tar.gz') {
+        uploadPaths.push(requestPath);
+        expect(init?.method).toBe('PUT');
+        expect(init?.headers).toMatchObject({ 'content-type': 'application/gzip' });
+        expect(init?.body).toBeInstanceOf(Buffer);
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
+      }
+      if (requestPath === '/api/v1/workflows/run') {
+        runBodies.push(JSON.parse(String(init?.body)));
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(JSON.stringify({ runId: 'run-1', status: 'pending' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
+      }
+      throw new Error(`unexpected request: ${requestPath}`);
+    });
+
+    await runWorkflow(workflowPath);
+
+    expect(s3SendMock).not.toHaveBeenCalled();
+    expect(uploadPaths).toEqual(['/api/v1/workflows/runs/run-1/storage/code.tar.gz']);
+    expect(runBodies[0]).toMatchObject({
+      runId: 'run-1',
+      s3CodeKey: 'code.tar.gz',
+    });
+  });
 });
 
 describe('workflow schedules', () => {

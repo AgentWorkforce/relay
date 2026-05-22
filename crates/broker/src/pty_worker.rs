@@ -214,7 +214,7 @@ async fn try_emit_worker_ready(
 
     if timed_out && !startup_ready {
         tracing::warn!(
-            target = "agent_relay::worker::pty",
+            target: "agent_relay::worker::pty",
             worker = %worker_name,
             timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
             "startup readiness timed out; emitting worker_ready fallback"
@@ -476,7 +476,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     Ok(p) if p.rows > 0 && p.cols > 0 => {
                                         if let Err(e) = pty.resize(p.rows, p.cols) {
                                             tracing::warn!(
-                                                target = "agent_relay::worker::pty",
+                                                target: "agent_relay::worker::pty",
                                                 rows = p.rows, cols = p.cols, error = %e,
                                                 "failed to resize pty"
                                             );
@@ -509,7 +509,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     Some(data) => {
                                         if let Err(e) = pty.write_all(data.as_bytes()) {
                                             tracing::warn!(
-                                                target = "agent_relay::worker::pty",
+                                                target: "agent_relay::worker::pty",
                                                 error = %e,
                                                 "failed to write input to pty"
                                             );
@@ -687,7 +687,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
                             tracing::info!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 "agent issued /exit — shutting down"
                             );
                             flush_stream_buffer!();
@@ -734,7 +734,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 parse_continuity_command(&continuity_buffer)
                             {
                                 tracing::info!(
-                                    target = "agent_relay::worker::pty",
+                                    target: "agent_relay::worker::pty",
                                     action = %action.as_str(),
                                     content_len = content.len(),
                                     "detected KIND: continuity command in PTY output"
@@ -840,7 +840,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 let pa = pending_activities.remove(i).unwrap();
                                 if let Some(pattern) = matched {
                                     tracing::debug!(
-                                        target = "agent_relay::worker::pty",
+                                        target: "agent_relay::worker::pty",
                                         delivery_id = %pa.delivery_id,
                                         event_id = %pa.event_id,
                                         pattern = %pattern,
@@ -859,7 +859,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .await;
                                 } else {
                                     tracing::debug!(
-                                        target = "agent_relay::worker::pty",
+                                        target: "agent_relay::worker::pty",
                                         delivery_id = %pa.delivery_id,
                                         event_id = %pa.event_id,
                                         "delivery activity window expired"
@@ -892,7 +892,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         };
                         if !trimmed.is_empty() {
                             tracing::info!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 output_len = trimmed.len(),
                                 "PTY channel closed; captured output available"
                             );
@@ -1153,13 +1153,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     if !late_output.is_empty() {
                         let clean = strip_ansi(&late_output);
                         tracing::warn!(
-                            target = "agent_relay::worker::pty",
+                            target: "agent_relay::worker::pty",
                             output = %clean,
                             "watchdog: captured late output from exiting child"
                         );
                     }
                     tracing::info!(
-                        target = "agent_relay::worker::pty",
+                        target: "agent_relay::worker::pty",
                         "watchdog: child process exited"
                     );
                     let mut exit_payload = json!({
@@ -1189,7 +1189,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             + pending_activities.len();
                         if pending_count > 0 {
                             tracing::debug!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 pending_delivery_count = pending_count,
                                 "watchdog: no PTY output while delivery work is pending — marking blocked_on_send"
@@ -1201,7 +1201,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             })).await;
                         } else {
                             tracing::debug!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 "watchdog: no PTY output for {}s — marking idle",
                                 silent_duration.as_secs()

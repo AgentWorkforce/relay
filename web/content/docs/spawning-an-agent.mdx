@@ -111,7 +111,7 @@ These options are available on the shorthand helpers and on `relay.spawn(...)`:
 
 ### Structured results
 
-TypeScript spawns can include a `result` contract. Agent Relay exposes a `submit_result` MCP tool to the spawned agent, then routes the submitted JSON back through `agent.waitForResult(...)`, the per-spawn `onResult` callback, and `relay.onAgentResult`.
+TypeScript spawns can include a `result` contract. Agent Relay exposes a `submit_result` MCP tool to the spawned agent, then routes the submitted JSON back through `agent.waitForResult(...)`, the per-spawn `onResult` callback, and `relay.addListener('agentResult', ...)`.
 
 ```typescript TypeScript file="spawn-with-result.ts"
 import { z } from 'zod';

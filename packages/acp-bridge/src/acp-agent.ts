@@ -7,12 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import * as acp from '@agentclientprotocol/sdk';
 import { AgentRelay, type Agent, type Message } from '@agent-relay/sdk';
-import type {
-  ACPBridgeConfig,
-  SessionState,
-  RelayMessage,
-  BridgePromptResult,
-} from './types.js';
+import type { ACPBridgeConfig, SessionState, RelayMessage, BridgePromptResult } from './types.js';
 
 /**
  * Bounded circular cache for message deduplication.
@@ -145,7 +140,7 @@ export class RelayACPAgent implements acp.Agent {
   private setupRelayHandlers(): void {
     if (!this.relay) return;
 
-    this.relay.onMessageReceived = (msg: Message) => {
+    this.relay.addListener('messageReceived', (msg: Message) => {
       this.handleRelayMessage({
         id: msg.eventId,
         from: msg.from,
@@ -153,7 +148,7 @@ export class RelayACPAgent implements acp.Agent {
         thread: msg.threadId,
         timestamp: Date.now(),
       });
-    };
+    });
   }
 
   /**
@@ -408,7 +403,7 @@ export class RelayACPAgent implements acp.Agent {
       };
     }
 
-    if (!await this.ensureRelayReady()) {
+    if (!(await this.ensureRelayReady())) {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
@@ -454,7 +449,7 @@ export class RelayACPAgent implements acp.Agent {
 
     // Send "thinking" indicator with target info
     const targetInfo = hasTargets
-      ? `Sending to ${targets.map(t => `@${t}`).join(', ')}...\n\n`
+      ? `Sending to ${targets.map((t) => `@${t}`).join(', ')}...\n\n`
       : 'Broadcasting to all agents...\n\n';
 
     await this.connection.sessionUpdate({
@@ -503,13 +498,13 @@ export class RelayACPAgent implements acp.Agent {
       await this.connection.sessionUpdate({
         sessionId,
         update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: {
-              type: 'text',
-              text: 'Failed to send message to relay agents. Please check the relay broker connection.',
-            },
+          sessionUpdate: 'agent_message_chunk',
+          content: {
+            type: 'text',
+            text: 'Failed to send message to relay agents. Please check the relay broker connection.',
           },
-        });
+        },
+      });
 
       return {
         success: false,
@@ -731,7 +726,7 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!await this.ensureRelayReady()) {
+    if (!(await this.ensureRelayReady())) {
       await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot spawn).');
       return true;
     }
@@ -769,7 +764,7 @@ export class RelayACPAgent implements acp.Agent {
       return true;
     }
 
-    if (!await this.ensureRelayReady()) {
+    if (!(await this.ensureRelayReady())) {
       await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot release).');
       return true;
     }
@@ -794,7 +789,7 @@ export class RelayACPAgent implements acp.Agent {
   }
 
   private async handleListAgentsCommand(sessionId: string): Promise<boolean> {
-    if (!await this.ensureRelayReady()) {
+    if (!(await this.ensureRelayReady())) {
       await this.sendTextUpdate(sessionId, 'Relay broker is not connected (cannot list agents).');
       return true;
     }

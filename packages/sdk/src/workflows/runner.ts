@@ -532,6 +532,7 @@ export class WorkflowRunner {
   private runStartTime?: number;
   /** Unsubscribe handle for broker stderr listener wired during a run. */
   private unsubBrokerStderr?: () => void;
+  private unsubRelayListeners: Array<() => void> = [];
   /** Tracks last idle log time per agent to debounce idle warnings (30s multiples). */
   private readonly lastIdleLog = new Map<string, number>();
   /** Tracks last logged activity type per agent to avoid duplicate status lines. */
@@ -3152,165 +3153,179 @@ export class WorkflowRunner {
         });
 
         // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
-        this.relay.onWorkerOutput = ({ name, chunk }) => {
-          const listener = this.ptyListeners.get(name);
-          if (listener) listener(chunk);
+        this.unsubRelayListeners.push(
+          this.relay.addListener('workerOutput', ({ name, chunk }) => {
+            const listener = this.ptyListeners.get(name);
+            if (listener) listener(chunk);
 
-          // Parse PTY output for high-signal activity
-          const stripped = WorkflowRunner.stripAnsi(chunk);
-          const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-          let activity: string | undefined;
-          if (/Read\(/.test(stripped)) {
-            // Extract filename — path may be truncated at chunk boundary so require
-            // at least a dir separator or 8+ chars to trust the basename.
-            const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
-            if (m) {
-              const base = path.basename(m[1]);
-              activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
-            } else {
-              activity = 'Reading file...';
+            // Parse PTY output for high-signal activity
+            const stripped = WorkflowRunner.stripAnsi(chunk);
+            const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+            let activity: string | undefined;
+            if (/Read\(/.test(stripped)) {
+              // Extract filename — path may be truncated at chunk boundary so require
+              // at least a dir separator or 8+ chars to trust the basename.
+              const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
+              if (m) {
+                const base = path.basename(m[1]);
+                activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
+              } else {
+                activity = 'Reading file...';
+              }
+            } else if (/Edit\(/.test(stripped)) {
+              const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
+              if (m) {
+                const base = path.basename(m[1]);
+                activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
+              } else {
+                activity = 'Editing file...';
+              }
+            } else if (/Bash\(/.test(stripped)) {
+              // Extract a short preview of the command
+              const m = stripped.match(/Bash\(\s*(.{1,40})/);
+              activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
+            } else if (/Explore\(/.test(stripped)) {
+              const m = stripped.match(/Explore\(\s*(.{1,50})/);
+              activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
+            } else if (/Task\(/.test(stripped)) {
+              activity = 'Running sub-agent...';
+            } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
+              const m = stripped.match(/(\d+)s/);
+              activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
             }
-          } else if (/Edit\(/.test(stripped)) {
-            const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
-            if (m) {
-              const base = path.basename(m[1]);
-              activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
-            } else {
-              activity = 'Editing file...';
+            if (activity && this.lastActivity.get(name) !== activity) {
+              this.lastActivity.set(name, activity);
+              this.log(`[${shortName}] ${activity}`);
             }
-          } else if (/Bash\(/.test(stripped)) {
-            // Extract a short preview of the command
-            const m = stripped.match(/Bash\(\s*(.{1,40})/);
-            activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
-          } else if (/Explore\(/.test(stripped)) {
-            const m = stripped.match(/Explore\(\s*(.{1,50})/);
-            activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
-          } else if (/Task\(/.test(stripped)) {
-            activity = 'Running sub-agent...';
-          } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
-            const m = stripped.match(/(\d+)s/);
-            activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
-          }
-          if (activity && this.lastActivity.get(name) !== activity) {
-            this.lastActivity.set(name, activity);
-            this.log(`[${shortName}] ${activity}`);
-          }
-        };
+          })
+        );
 
         // Wire relay event hooks for rich console logging
-        this.relay.onMessageReceived = (msg) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'relay_inbound',
-              event_id: msg.eventId,
-              from: msg.from,
-              target: msg.to,
-              body: msg.text,
-              thread_id: msg.threadId,
-            } as BrokerEvent,
-          });
-          const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
-          const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
-          const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
-          this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
-
-          if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
-            const runtimeAgent = this.runtimeStepAgents.get(msg.from);
-            this.recordChannelEvidence(msg.text, {
-              sender: runtimeAgent?.logicalName ?? msg.from,
-              actor: msg.from,
-              role: runtimeAgent?.role,
-              target: msg.to,
-              origin: 'relay_message',
-              stepName: runtimeAgent?.stepName,
+        this.unsubRelayListeners.push(
+          this.relay.addListener('messageReceived', (msg) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'relay_inbound',
+                event_id: msg.eventId,
+                from: msg.from,
+                target: msg.to,
+                body: msg.text,
+                thread_id: msg.threadId,
+              } as BrokerEvent,
             });
-          }
+            const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
+            const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
+            const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
+            this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
 
-          const supervision = this.supervisedRuntimeAgents.get(msg.from);
-          if (supervision?.role === 'owner') {
-            this.recordStepToolSideEffect(supervision.stepName, {
-              type: 'owner_monitoring',
-              detail: `Owner messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
-              raw: { to: msg.to, text: msg.text },
+            if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
+              const runtimeAgent = this.runtimeStepAgents.get(msg.from);
+              this.recordChannelEvidence(msg.text, {
+                sender: runtimeAgent?.logicalName ?? msg.from,
+                actor: msg.from,
+                role: runtimeAgent?.role,
+                target: msg.to,
+                origin: 'relay_message',
+                stepName: runtimeAgent?.stepName,
+              });
+            }
+
+            const supervision = this.supervisedRuntimeAgents.get(msg.from);
+            if (supervision?.role === 'owner') {
+              this.recordStepToolSideEffect(supervision.stepName, {
+                type: 'owner_monitoring',
+                detail: `Owner messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+                raw: { to: msg.to, text: msg.text },
+              });
+              void this.trajectory?.ownerMonitoringEvent(
+                supervision.stepName,
+                supervision.logicalName,
+                `Messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+                { to: msg.to, text: msg.text }
+              );
+            }
+          })
+        );
+
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentSpawned', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_spawned',
+                name: agent.name,
+                runtime: agent.runtime,
+              } as BrokerEvent,
             });
-            void this.trajectory?.ownerMonitoringEvent(
-              supervision.stepName,
-              supervision.logicalName,
-              `Messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
-              { to: msg.to, text: msg.text }
-            );
-          }
-        };
+            // Skip agents already managed by step execution
+            if (!this.activeAgentHandles.has(agent.name)) {
+              this.log(`[spawned] ${agent.name} (${agent.runtime})`);
+            }
+          })
+        );
 
-        this.relay.onAgentSpawned = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_spawned',
-              name: agent.name,
-              runtime: agent.runtime,
-            } as BrokerEvent,
-          });
-          // Skip agents already managed by step execution
-          if (!this.activeAgentHandles.has(agent.name)) {
-            this.log(`[spawned] ${agent.name} (${agent.runtime})`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentReleased', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_released',
+                name: agent.name,
+              } as BrokerEvent,
+            });
+          })
+        );
 
-        this.relay.onAgentReleased = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_released',
-              name: agent.name,
-            } as BrokerEvent,
-          });
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentExited', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_exited',
+                name: agent.name,
+                code: agent.exitCode,
+                signal: agent.exitSignal,
+              } as BrokerEvent,
+            });
+            this.lastActivity.delete(agent.name);
+            this.lastIdleLog.delete(agent.name);
+            if (!this.activeAgentHandles.has(agent.name)) {
+              this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
+            }
+          })
+        );
 
-        this.relay.onAgentExited = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_exited',
-              name: agent.name,
-              code: agent.exitCode,
-              signal: agent.exitSignal,
-            } as BrokerEvent,
-          });
-          this.lastActivity.delete(agent.name);
-          this.lastIdleLog.delete(agent.name);
-          if (!this.activeAgentHandles.has(agent.name)) {
-            this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('deliveryUpdate', (event) => {
+            this.emit({ type: 'broker:event', runId, event });
+          })
+        );
 
-        this.relay.onDeliveryUpdate = (event) => {
-          this.emit({ type: 'broker:event', runId, event });
-        };
-
-        this.relay.onAgentIdle = ({ name, idleSecs }) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_idle',
-              name,
-              idle_secs: idleSecs,
-            } as BrokerEvent,
-          });
-          // Only log at 30s multiples to avoid watchdog spam
-          const bucket = Math.floor(idleSecs / 30) * 30;
-          if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
-            this.lastIdleLog.set(name, bucket);
-            const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-            this.log(`[idle] ${shortName} silent for ${bucket}s`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentIdle', ({ name, idleSecs }) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_idle',
+                name,
+                idle_secs: idleSecs,
+              } as BrokerEvent,
+            });
+            // Only log at 30s multiples to avoid watchdog spam
+            const bucket = Math.floor(idleSecs / 30) * 30;
+            if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
+              this.lastIdleLog.set(name, bucket);
+              const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+              this.log(`[idle] ${shortName} silent for ${bucket}s`);
+            }
+          })
+        );
 
         this.relaycast = undefined;
         this.relaycastAgent = undefined;
@@ -3451,16 +3466,15 @@ export class WorkflowRunner {
       this.unsubBrokerStderr?.();
       this.unsubBrokerStderr = undefined;
 
-      // Null out relay event hooks to prevent leaks
-      if (this.relay) {
-        this.relay.onMessageReceived = null;
-        this.relay.onAgentSpawned = null;
-        this.relay.onAgentReleased = null;
-        this.relay.onAgentExited = null;
-        this.relay.onAgentIdle = null;
-        this.relay.onWorkerOutput = null;
-        this.relay.onDeliveryUpdate = null;
+      // Unsubscribe relay event listeners to prevent leaks
+      for (const off of this.unsubRelayListeners) {
+        try {
+          off();
+        } catch {
+          /* ignore */
+        }
       }
+      this.unsubRelayListeners = [];
       this.lastIdleLog.clear();
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
