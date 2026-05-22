@@ -32,9 +32,7 @@
       "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
       "@agent-relay/utils/*": ["packages/utils/dist/*"],
       "@agent-relay/cloud": ["packages/cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["packages/cloud/dist/*"],
-      "@agent-relay/user-directory": ["packages/user-directory/dist/index.d.ts"],
-      "@agent-relay/user-directory/*": ["packages/user-directory/dist/*"]
+      "@agent-relay/cloud/*": ["packages/cloud/dist/*"]
     }
   },
   "include": ["src/**/*"],

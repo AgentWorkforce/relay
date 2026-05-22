@@ -1159,6 +1159,20 @@
       "startedAt": "2026-05-22T19:13:09.359Z",
       "completedAt": "2026-05-22T19:13:16.971Z",
       "path": ".trajectories/completed/2026-05/traj_5k0jtc1g5l33.json"
+
+    "traj_s5ojo1f4srz4": {
+      "title": "Remove unused user-directory package",
+      "status": "completed",
+      "startedAt": "2026-05-22T16:27:44.927Z",
+      "completedAt": "2026-05-22T16:36:20.545Z",
+      "path": "/private/tmp/relay-remove-user-directory/.trajectories/completed/2026-05/traj_s5ojo1f4srz4.json"
+    },
+    "traj_bz1a1o15p7px": {
+      "title": "Fix PR 949 CI failure",
+      "status": "completed",
+      "startedAt": "2026-05-22T16:56:55.021Z",
+      "completedAt": "2026-05-22T16:57:55.372Z",
+      "path": "/private/tmp/relay-remove-user-directory/.trajectories/completed/2026-05/traj_bz1a1o15p7px.json"
     }
   }
 }
