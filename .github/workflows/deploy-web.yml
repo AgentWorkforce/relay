@@ -59,6 +59,11 @@ jobs:
       - name: Assert AWS account
         run: bash .github/scripts/assert-aws-account.sh "$AWS_ACCOUNT_ID" "$SST_STAGE" deploy
 
+      - name: Repair failed ACM certificate state
+        env:
+          ACM_REGION: us-east-1
+        run: bash .github/scripts/repair-failed-sst-acm-cert.sh
+
       - name: Deploy production SST app
         working-directory: web
         env:
