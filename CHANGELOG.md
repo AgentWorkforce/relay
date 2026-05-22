@@ -61,8 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agents can switch provider or model at runtime.
 - Prerelease publishing supports staging releases.
 - Broker `--api-bind` configures the HTTP/WS bind address.
+- `agent-relay up --broker-name` overrides the local broker identity instead of deriving it from the project directory.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
 - Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
+- `AgentRelayClient.onBrokerExit()` notifies SDK consumers when a spawned broker process exits, including code, signal, PID, and recent stderr.
 
 ### Changed
 
@@ -104,6 +106,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
 - The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
 - PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
+
+## [7.0.1] - 2026-05-22
+
+### Product Perspective
+#### User-Facing Features & Improvements
+- **AddListener overload accepts BeforeAgentSpawnHandler**
+
+#### User-Impacting Fixes
+- Find stale SST ACM validation state
+- Repair timed-out SST ACM certificate state
+- Pin next via overrides to dedupe duplicate install
+
+### Technical Perspective
+
+#### Dependencies & Tooling
+- Upgrade @posthog/next 0.1.0 → 0.4.61 (#937)
+
+#### Releases
+- v7.0.1
+
+---
 
 ## [6.3.6] - 2026-05-21
 

@@ -1132,6 +1132,13 @@
       "completedAt": "2026-05-20T21:43:51.936Z",
       "path": "/private/tmp/relay-structured-agent-results/.trajectories/completed/2026-05/traj_ceo5q9bh2od3.json"
     },
+    "traj_dcl9hgoiuac5": {
+      "title": "Verify --broker-name override for agent-relay up",
+      "status": "completed",
+      "startedAt": "2026-05-21T18:56:55.532Z",
+      "completedAt": "2026-05-21T19:00:06.831Z",
+      "path": "/Users/khaliqgant/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_dcl9hgoiuac5.json"
+    },
     "traj_u3loicehnwb4": {
       "title": "Gate broker diagnostic logs behind env flag",
       "status": "completed",

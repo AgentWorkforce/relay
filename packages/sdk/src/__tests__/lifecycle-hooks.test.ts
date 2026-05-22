@@ -6,6 +6,7 @@ import type {
   AfterAgentSpawnContext,
   BeforeAgentReleaseContext,
   BeforeAgentSpawnContext,
+  BeforeAgentSpawnHandler,
   SpawnPatch,
 } from '../lifecycle-hooks.js';
 import type { SpawnPtyInput } from '../types.js';
@@ -228,6 +229,34 @@ describe('AgentRelayClient lifecycle hooks', () => {
     client.removeListener('beforeAgentSpawn', fn);
     await client.spawnPty({ name: 'b', cli: 'claude' });
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a BeforeAgentSpawnHandler-typed function without a cast', async () => {
+    // Regression for the addListener overload: a handler that's typed
+    // separately as BeforeAgentSpawnHandler (return: void | SpawnPatch
+    // | Promise<void | SpawnPatch>) must satisfy the addListener signature
+    // without `as` gymnastics. Before the overload landed this assignment
+    // failed with TS2345 because the default `void`-returning shape didn't
+    // cover the SpawnPatch return.
+    const { fetchFn, captures } = makeMockFetch();
+    const client = makeClient(fetchFn);
+
+    const handler: BeforeAgentSpawnHandler = (ctx) => {
+      if (ctx.input.cli !== 'claude') return;
+      return { args: [...(ctx.input.args ?? []), '--from-typed-handler'] };
+    };
+    client.addListener('beforeAgentSpawn', handler);
+
+    await client.spawnPty({ name: 'typed', cli: 'claude', args: ['--orig'] });
+
+    expect(captures[0].body).toMatchObject({
+      args: ['--orig', '--from-typed-handler'],
+    });
+
+    // removeListener must accept the same handler shape without casting.
+    client.removeListener('beforeAgentSpawn', handler);
+    await client.spawnPty({ name: 'typed-2', cli: 'claude', args: ['--orig'] });
+    expect(captures[1].body).toMatchObject({ args: ['--orig'] });
   });
 
   it('patch shape: extending args requires explicit spread', async () => {
