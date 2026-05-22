@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay up --broker-name` overrides the local broker identity instead of deriving it from the project directory.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
 - Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
+- `AgentRelayClient.onBrokerExit()` notifies SDK consumers when a spawned broker process exits, including code, signal, PID, and recent stderr.
 
 ### Changed
 
