@@ -110,8 +110,8 @@ fi
 
 read -r status failure_reason <<< "$describe_output"
 
-if [ "$status" = "FAILED" ] && [ "$failure_reason" = "VALIDATION_TIMED_OUT" ]; then
-  repair_state "certificate $cert_arn is FAILED with VALIDATION_TIMED_OUT"
+if [ "$status" = "VALIDATION_TIMED_OUT" ] || { [ "$status" = "FAILED" ] && [ "$failure_reason" = "VALIDATION_TIMED_OUT" ]; }; then
+  repair_state "certificate $cert_arn status is $status"
   exit 0
 fi
 
