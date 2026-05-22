@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
 
+### Fixed
+
+- `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
+
 ## [7.0.1] - 2026-05-22
 
 ### Added
