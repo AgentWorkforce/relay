@@ -60,8 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agents can switch provider or model at runtime.
 - Prerelease publishing supports staging releases.
 - Broker `--api-bind` configures the HTTP/WS bind address.
+- `agent-relay up --broker-name` overrides the local broker identity instead of deriving it from the project directory.
 - PTY workers accept `write_pty` messages and report bytes written or worker errors.
 - Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
+- `AgentRelayClient.onBrokerExit()` notifies SDK consumers when a spawned broker process exits, including code, signal, PID, and recent stderr.
 
 ### Changed
 
@@ -107,17 +109,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.6] - 2026-05-21
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
-- **Typed multi-listener registry replaces on* callback fields**
+
+- **Typed multi-listener registry replaces on\* callback fields**
 
 #### User-Impacting Fixes
+
 - Address PR #936 review feedback (#936)
 
 ### Technical Perspective
+
 #### Dependencies & Tooling
+
 - Revert version bump — release workflow handles versioning
 
 #### Releases
+
 - v6.3.6
 
 ---
@@ -125,11 +133,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.5] - 2026-05-21
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Add --broker-name override to `agent-relay up` (#939)** (#939)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.5
 
 ---
@@ -137,12 +149,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.4] - 2026-05-21
 
 ### Product Perspective
+
 #### User-Facing Features & Improvements
+
 - **Upload workflow code through cloud storage API (#938)** (#938)
 - **Pass env vars to scheduled workflows (#935)** (#935)
 
 ### Technical Perspective
+
 #### Releases
+
 - v6.3.4
 
 ---

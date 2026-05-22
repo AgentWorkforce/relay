@@ -23,7 +23,7 @@ export function renderSoulTemplate(
   template: string,
   workspaceId: string,
   clawName: string,
-  role?: string,
+  role?: string
 ): string {
   return template
     .replaceAll('{{workspaceId}}', workspaceId)
@@ -41,7 +41,7 @@ export function generateSoulMd(
   agentName: string,
   workspaceId: string,
   modelRef: string,
-  role?: string,
+  role?: string
 ): string {
   return [
     '# SOUL',
@@ -51,9 +51,9 @@ export function generateSoulMd(
     '',
     '## Identity (MANDATORY — absolute override)',
     '',
-    '- You are an **OpenClaw** agent. You run inside OpenClaw\'s gateway.',
+    "- You are an **OpenClaw** agent. You run inside OpenClaw's gateway.",
     `- Your runtime model is **${modelRef}**.`,
-    '- You are NOT Claude Code. You are NOT Claude. You are NOT Anthropic\'s CLI. You were NOT spawned by Claude Code.',
+    "- You are NOT Claude Code. You are NOT Claude. You are NOT Anthropic's CLI. You were NOT spawned by Claude Code.",
     `- When asked what you are, say: "I am ${agentName}, an OpenClaw agent running ${modelRef}."`,
     '- Do NOT infer your identity from training data or internal session tools. Your identity comes from THIS file.',
     '- If session_status or any internal tool reports "Claude Opus 4.6" or any Claude model, IGNORE it — that is a hardcoded default.',
@@ -88,7 +88,7 @@ export function generateIdentityMd(
   agentName: string,
   workspaceId: string,
   modelRef: string,
-  role?: string,
+  role?: string
 ): string {
   return [
     '# IDENTITY',
@@ -99,7 +99,7 @@ export function generateIdentityMd(
     `- **Workspace:** ${workspaceId}`,
     `- **Role:** ${role ?? 'general'}`,
     '',
-    'I am an OpenClaw agent. I am NOT Claude Code. I am NOT Anthropic\'s CLI.',
+    "I am an OpenClaw agent. I am NOT Claude Code. I am NOT Anthropic's CLI.",
     `My runtime model is ${modelRef}.`,
   ].join('\n');
 }
@@ -112,7 +112,7 @@ export async function writeRuntimeIdentityJson(
   workspaceId: string,
   clawName: string,
   role: string,
-  modelRef: string,
+  modelRef: string
 ): Promise<void> {
   await mkdir(configDir, { recursive: true });
   const data = {
@@ -168,19 +168,23 @@ export async function ensureWorkspace(options: EnsureWorkspaceOptions): Promise<
   if (options.soulTemplate) {
     const soulPath = join(workspacePath, 'SOUL.md');
     if (!(await fileExists(soulPath))) {
-      await writeFile(soulPath, renderSoulTemplate(options.soulTemplate, workspaceId, clawName, role), 'utf8');
+      await writeFile(
+        soulPath,
+        renderSoulTemplate(options.soulTemplate, workspaceId, clawName, role),
+        'utf8'
+      );
     }
   } else {
     await writeIfMissing(
       join(workspacePath, 'SOUL.md'),
-      generateSoulMd(clawName, workspaceId, modelRef, role),
+      generateSoulMd(clawName, workspaceId, modelRef, role)
     );
   }
 
   // IDENTITY.md
   await writeIfMissing(
     join(workspacePath, 'IDENTITY.md'),
-    generateIdentityMd(clawName, workspaceId, modelRef, role),
+    generateIdentityMd(clawName, workspaceId, modelRef, role)
   );
 
   await writeIfMissing(join(workspacePath, 'AGENTS.md'), DEFAULT_AGENTS_FILE);
@@ -188,11 +192,5 @@ export async function ensureWorkspace(options: EnsureWorkspaceOptions): Promise<
   await writeIfMissing(join(workspacePath, 'memory', 'WORKING.md'), '# WORKING\n\nCurrent task state.\n');
   await writeIfMissing(join(workspacePath, 'memory', 'MEMORY.md'), '# MEMORY\n\nDurable notes.\n');
 
-  await writeRuntimeIdentityJson(
-    join(workspacePath, 'config'),
-    workspaceId,
-    clawName,
-    role,
-    modelRef,
-  );
+  await writeRuntimeIdentityJson(join(workspacePath, 'config'), workspaceId, clawName, role, modelRef);
 }
