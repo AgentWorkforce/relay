@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
 
+## [7.1.0] - 2026-05-22
+
+### Changed
+
+- Drop user-directory validation references
+- Remove unused user-directory package
+- Avoid persisting result callback tokens
+- Add structured agent result callbacks
+
+### Fixed
+
+- Normalize changelog release notes
+- Resolve clippy regressions for structured result callbacks
+
 ## [7.0.1] - 2026-05-22
 
 ### Added
