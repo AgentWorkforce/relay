@@ -1,5 +1,7 @@
 use super::*;
 
+const BROKER_LOG_ENV: &str = "AGENT_RELAY_BROKER_LOG";
+
 pub(crate) fn startup_debug_enabled() -> bool {
     std::env::var("AGENT_RELAY_STARTUP_DEBUG")
         .map(|value| {
@@ -7,6 +9,110 @@ pub(crate) fn startup_debug_enabled() -> bool {
             !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
         })
         .unwrap_or(false)
+}
+
+fn env_flag_value_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Where broker tracing output should be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TracingDestination {
+    /// Disable the tracing subscriber entirely.
+    Off,
+    /// Write to stderr (legacy "print" behavior).
+    Stderr,
+    /// Write to a daily-rotated log file inside [`broker_log_dir`].
+    File,
+}
+
+/// Parse the `AGENT_RELAY_BROKER_LOG` env var into a destination.
+///
+/// Defaults to [`TracingDestination::File`] when the env var is unset or empty.
+/// Recognised values:
+/// - `off`, `none`, `0`, `false`, `no` → [`TracingDestination::Off`]
+/// - `stderr`, `print` → [`TracingDestination::Stderr`]
+/// - `file`, `1`, `true`, `yes`, `on` → [`TracingDestination::File`]
+///
+/// Unknown values fall back to `File` so a typo never silently loses logs.
+pub(crate) fn tracing_destination(env_value: Option<&str>) -> TracingDestination {
+    let Some(value) = env_value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return TracingDestination::File;
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "off" | "none" | "0" | "false" | "no" => TracingDestination::Off,
+        "stderr" | "print" => TracingDestination::Stderr,
+        _ => TracingDestination::File,
+    }
+}
+
+/// Pick the level filter directive for the tracing subscriber.
+///
+/// `RUST_LOG` always wins when set, so callers can use the standard tracing
+/// directive syntax (e.g. `agent_relay::worker::pty=debug`). Otherwise we
+/// default to `info`, which keeps the file log useful without being noisy.
+pub(crate) fn tracing_filter_directive(rust_log: Option<&str>) -> String {
+    rust_log
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "info".to_string())
+}
+
+fn sanitize_filename_segment(value: &str) -> String {
+    let mut out: String = value
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        out.push_str("broker");
+    }
+    out
+}
+
+/// Platform-standard directory for broker tracing logs.
+///
+/// - macOS: `~/Library/Logs/agent-relay`
+/// - Linux / other Unix: `$XDG_STATE_HOME/agent-relay/logs` (defaults to
+///   `~/.local/state/agent-relay/logs`)
+/// - Windows: `%LOCALAPPDATA%\agent-relay\Logs`
+///
+/// Returns `None` only when neither the platform-specific directory nor the
+/// home directory can be resolved.
+pub(crate) fn broker_log_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()?;
+        Some(home.join("Library").join("Logs").join("agent-relay"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local = dirs::data_local_dir()?;
+        Some(local.join("agent-relay").join("Logs"))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        let state = dirs::state_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))?;
+        Some(state.join("agent-relay").join("logs"))
+    }
+}
+
+/// Filename prefix used for this broker's rolling log file.
+///
+/// `tracing_appender::rolling::daily` appends a `.YYYY-MM-DD` suffix, so files
+/// land as `{broker_id}.log.YYYY-MM-DD` in the log directory.
+pub(crate) fn broker_log_file_prefix(broker_id: &str) -> String {
+    format!("{}.log", sanitize_filename_segment(broker_id))
 }
 
 pub(crate) fn log_startup_phase(enabled: bool, started_at: Instant, message: impl AsRef<str>) {
@@ -26,11 +132,40 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
         .as_secs()
 }
 
-pub(crate) fn init_tracing() {
-    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
+/// Initialise the global tracing subscriber for this broker process.
+///
+/// Destination is controlled by `AGENT_RELAY_BROKER_LOG`; level filter by
+/// `RUST_LOG`. See [`tracing_destination`] for accepted env values.
+pub(crate) fn init_tracing(broker_id: &str) {
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let broker_log = std::env::var(BROKER_LOG_ENV).ok();
+    let destination = tracing_destination(broker_log.as_deref());
+
+    if destination == TracingDestination::Off {
+        return;
+    }
+
+    let filter_directive = tracing_filter_directive(rust_log.as_deref());
+
+    let (writer, guard) = match destination {
+        TracingDestination::Stderr => tracing_appender::non_blocking(std::io::stderr()),
+        TracingDestination::File => {
+            let Some(log_dir) = broker_log_dir() else {
+                return;
+            };
+            if std::fs::create_dir_all(&log_dir).is_err() {
+                return;
+            }
+            let appender =
+                tracing_appender::rolling::daily(&log_dir, broker_log_file_prefix(broker_id));
+            tracing_appender::non_blocking(appender)
+        }
+        TracingDestination::Off => unreachable!(),
+    };
+
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
+            tracing_subscriber::EnvFilter::try_new(&filter_directive)
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(true)
@@ -81,8 +216,7 @@ pub(crate) fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id
 pub(crate) fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .is_some_and(|value| env_flag_value_enabled(&value))
 }
 
 pub(crate) fn delivery_retry_interval() -> Duration {
@@ -91,6 +225,119 @@ pub(crate) fn delivery_retry_interval() -> Duration {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_DELIVERY_RETRY_MS);
     Duration::from_millis(ms.max(50))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        broker_log_dir, broker_log_file_prefix, sanitize_filename_segment, tracing_destination,
+        tracing_filter_directive, TracingDestination,
+    };
+
+    #[test]
+    fn tracing_destination_defaults_to_file() {
+        assert_eq!(tracing_destination(None), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("")), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("   ")), TracingDestination::File);
+    }
+
+    #[test]
+    fn tracing_destination_recognises_off_aliases() {
+        for value in ["off", "OFF", "none", "0", "false", "no"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Off,
+                "value `{value}` should disable tracing"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_stderr_aliases() {
+        for value in ["stderr", "STDERR", "print", "Print"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Stderr,
+                "value `{value}` should route to stderr"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_file_aliases() {
+        for value in ["file", "FILE", "1", "true", "yes", "on", "unknown-value"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::File,
+                "value `{value}` should route to file"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_filter_defaults_to_info_when_rust_log_unset() {
+        assert_eq!(tracing_filter_directive(None), "info");
+        assert_eq!(tracing_filter_directive(Some("")), "info");
+        assert_eq!(tracing_filter_directive(Some("   ")), "info");
+    }
+
+    #[test]
+    fn tracing_filter_prefers_rust_log_directive() {
+        assert_eq!(
+            tracing_filter_directive(Some("agent_relay::worker::pty=debug")),
+            "agent_relay::worker::pty=debug"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_replaces_unsafe_chars() {
+        assert_eq!(
+            sanitize_filename_segment("agent name/with:weird*chars"),
+            "agent-name-with-weird-chars"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_keeps_safe_chars() {
+        assert_eq!(sanitize_filename_segment("alpha-Beta_01"), "alpha-Beta_01");
+    }
+
+    #[test]
+    fn sanitize_filename_segment_falls_back_to_broker() {
+        assert_eq!(sanitize_filename_segment(""), "broker");
+        assert_eq!(sanitize_filename_segment("///"), "---");
+    }
+
+    #[test]
+    fn broker_log_file_prefix_includes_log_suffix() {
+        assert_eq!(broker_log_file_prefix("my-broker"), "my-broker.log");
+        assert_eq!(broker_log_file_prefix(""), "broker.log");
+    }
+
+    #[test]
+    fn broker_log_dir_uses_platform_standard_layout() {
+        let Some(dir) = broker_log_dir() else {
+            return;
+        };
+        let path_str = dir.to_string_lossy().replace('\\', "/");
+
+        if cfg!(target_os = "macos") {
+            assert!(
+                path_str.contains("/Library/Logs/agent-relay"),
+                "expected macOS Library/Logs path, got: {path_str}"
+            );
+        } else if cfg!(target_os = "windows") {
+            assert!(
+                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
+                "expected Windows LocalAppData layout, got: {path_str}"
+            );
+        } else {
+            assert!(
+                path_str.contains("agent-relay/logs"),
+                "expected Unix state path, got: {path_str}"
+            );
+        }
+    }
 }
 
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {

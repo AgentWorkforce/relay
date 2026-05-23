@@ -55,13 +55,7 @@ vi.mock('@relaycast/sdk', () => ({
 const mockRelayInstance = {
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentReleased: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
-  onWorkerOutput: null as any,
-  onDeliveryUpdate: null as any,
+  addListener: vi.fn(() => () => {}),
 };
 
 vi.mock('../relay.js', () => ({

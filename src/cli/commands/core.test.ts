@@ -205,6 +205,18 @@ describe('registerCoreCommands', () => {
     );
   });
 
+  it('up forwards --broker-name to createRelay', async () => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
+    });
+    const { program, deps } = createHarness({ relay });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999', '--broker-name', 'relayfile-dev']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, 'relayfile-dev');
+  });
+
   it('up starts broker and dashboard process', async () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
@@ -214,7 +226,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
       expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
@@ -236,7 +248,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
     expect(deps.spawnProcess).toHaveBeenCalledWith(
       '/usr/local/bin/relay-dashboard-server',
       expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
@@ -445,7 +457,7 @@ describe('registerCoreCommands', () => {
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     // API port = dashboard port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -457,7 +469,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -532,6 +544,8 @@ describe('registerCoreCommands', () => {
       stateDir,
       '--workspace-key',
       'rk_live_custom',
+      '--broker-name',
+      'relayfile-dev',
     ];
 
     const exitCode = await runCommand(program, [
@@ -542,6 +556,8 @@ describe('registerCoreCommands', () => {
       stateDir,
       '--workspace-key',
       'rk_live_custom',
+      '--broker-name',
+      'relayfile-dev',
     ]);
 
     expect(exitCode).toBe(0);
@@ -555,6 +571,8 @@ describe('registerCoreCommands', () => {
         stateDir,
         '--workspace-key',
         'rk_live_custom',
+        '--broker-name',
+        'relayfile-dev',
         '--foreground',
       ],
       {
@@ -618,11 +636,16 @@ describe('registerCoreCommands', () => {
   it('up --no-dashboard exits non-zero when the detached broker never becomes ready', async () => {
     const spawnedProcess = createSpawnedProcessMock();
     let now = 0;
+    let childRunning = true;
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
-      if (pid === 9001 && signal === 0) return;
+      if (pid === 9001 && signal === 0 && childRunning) return;
+      if (pid === 9001 && signal === 'SIGTERM') {
+        childRunning = false;
+        return;
+      }
       throw new Error('unexpected kill check');
     });
     const { program, deps } = createHarness({
@@ -641,10 +664,13 @@ describe('registerCoreCommands', () => {
     expect(deps.error).toHaveBeenCalledWith(
       'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
     );
+    expect(killImpl).toHaveBeenCalledWith(9001, 'SIGTERM');
+    expect(deps.warn).toHaveBeenCalledWith('Cleaning up failed broker start (pid: 9001)');
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
   it('down --force only kills actual orphaned broker executables for the project', async () => {
+    const runningPids = new Set([222, 444, 666]);
     const execCommand = vi.fn(async (command: string) => {
       if (command === 'ps aux') {
         return {
@@ -655,6 +681,8 @@ describe('registerCoreCommands', () => {
             'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
             'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agent-relay --persist',
             'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agent-relay --persist',
+            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay status --wait-for=30',
           ].join('\n'),
           stderr: '',
         };
@@ -665,33 +693,151 @@ describe('registerCoreCommands', () => {
       if (command.includes('-p 333 ')) {
         return { stdout: 'p333\nfcwd\nn/tmp/project-other\n', stderr: '' };
       }
+      if (command.includes('-p 666 ')) {
+        return { stdout: 'p666\nfcwd\nn/tmp/project\n', stderr: '' };
+      }
       throw new Error(`unexpected command: ${command}`);
     });
-    const killImpl = vi.fn(() => undefined);
-    const { program, deps } = createHarness({ execCommand, killImpl });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    let now = 0;
+    const { program, deps } = createHarness({
+      execCommand,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl: vi.fn(async (ms: number) => {
+        now += ms;
+      }),
+    });
 
     const exitCode = await runCommand(program, ['down', '--force']);
 
     expect(exitCode).toBeUndefined();
     expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
     expect(killImpl).toHaveBeenCalledWith(444, 'SIGTERM');
+    expect(killImpl).toHaveBeenCalledWith(666, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(111, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(555, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(777, 'SIGTERM');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 222)');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 444)');
+    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 666)');
     expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
+  });
+
+  it('up --no-dashboard reaps a foreground child orphan before starting cleanly', async () => {
+    const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
+    const runningPids = new Set([777, 9001, 4242]);
+    const fs = createFsMock();
+    let now = 0;
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === 'ps aux') {
+        return {
+          stdout: [
+            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      if (command.includes('-p 777 ')) {
+        return { stdout: 'p777\nfcwd\nn/tmp/project\n', stderr: '' };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      execCommand,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(0);
+    expect(killImpl).toHaveBeenCalledWith(777, 'SIGTERM');
+    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 777)');
+    expect(deps.spawnProcess).toHaveBeenCalledTimes(1);
+    expect(deps.log).toHaveBeenCalledWith('Broker started.');
+    expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
+  });
+
+  it('up --no-dashboard replaces a live broker PID whose API never becomes ready', async () => {
+    const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
+    const runningPids = new Set([3030, 9001, 4242]);
+    const fs = createFsMock({ ['/tmp/project/.agent-relay/connection.json']: connectionFile(3030) });
+    let now = 0;
+    const sleepImpl = vi.fn(async (ms: number) => {
+      now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    sdkStatusClient.getStatus
+      .mockRejectedValueOnce(new Error('503 Service Unavailable'))
+      .mockResolvedValue({ agent_count: 0, pending_delivery_count: 0 });
+    const { program, deps } = createHarness({
+      fs,
+      spawnedProcess,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--no-dashboard']);
+
+    expect(exitCode).toBe(0);
+    expect(killImpl).toHaveBeenCalledWith(3030, 'SIGTERM');
+    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agent-relay/connection.json');
+    expect(deps.warn).toHaveBeenCalledWith(
+      'Broker process is running but the API is not ready; killing half-started broker (pid: 3030).'
+    );
+    expect(deps.spawnProcess).toHaveBeenCalledTimes(1);
+    expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
   });
 
   it('up --no-dashboard reports the broker PID when the detached broker is live but API-unready', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     let now = 0;
-    const fs = createFsMock({ ['/tmp/project/.agent-relay/connection.json']: connectionFile(4242) });
+    const runningPids = new Set([9001, 4242]);
+    const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
+      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
-      if ((pid === 9001 || pid === 4242) && signal === 0) return;
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      if (pid === 9001 || pid === 4242) {
+        runningPids.delete(pid);
+        return;
+      }
       throw new Error('unexpected kill check');
     });
     sdkStatusClient.getStatus.mockRejectedValue(new Error('503 Service Unavailable'));
@@ -710,6 +856,8 @@ describe('registerCoreCommands', () => {
       'Broker background start did not become ready within 10s (pid: 4242).'
     );
     expect(deps.error).toHaveBeenCalledWith('Broker process is running, but the API did not become ready.');
+    expect(killImpl).toHaveBeenCalledWith(9001, 'SIGTERM');
+    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
   });
 
   it('up --no-dashboard reports spawn failures without claiming background success', async () => {

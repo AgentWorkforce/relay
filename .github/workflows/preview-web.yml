@@ -54,20 +54,42 @@ jobs:
         run: bash .github/scripts/assert-aws-account.sh "$AWS_ACCOUNT_ID" "$SST_STAGE" deploy
 
       - name: Deploy SST preview
+        id: deploy
         working-directory: web
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
-        run: ../node_modules/.bin/sst deploy --stage "$SST_STAGE"
+        run: |
+          set -euo pipefail
+
+          deploy_log="$(mktemp)"
+          ../node_modules/.bin/sst deploy --stage "$SST_STAGE" | tee "$deploy_log"
+
+          preview_url="$(awk '/^[[:space:]]+url: https:\/\// { print $2 }' "$deploy_log" | tail -n 1)"
+          if [ -z "$preview_url" ]; then
+            preview_url="$(awk '/^[[:space:]]+Web: https:\/\// { print $2 }' "$deploy_log" | tail -n 1)"
+          fi
+
+          if [ -z "$preview_url" ]; then
+            echo "Unable to determine preview URL from SST output" >&2
+            exit 1
+          fi
+
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
 
       - name: Comment on PR
         continue-on-error: true
         uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
         with:
           script: |
             const prNum = context.payload.pull_request.number;
-            const url = `https://pr-${prNum}.agentrelay.net`;
+            const url = process.env.PREVIEW_URL;
+            if (!url) {
+              throw new Error('Missing preview URL from deploy step');
+            }
             const body = `**Preview deployed!**\n\n` +
               `| Environment | URL |\n` +
               `|-------------|-----|\n` +

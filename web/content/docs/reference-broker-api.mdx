@@ -101,14 +101,16 @@ status on failure.
 
 ### PTY interaction
 
-| Method | Path                 | Purpose                                                           |
-| ------ | -------------------- | ----------------------------------------------------------------- |
-| `POST` | `/api/input/{name}`  | Send raw bytes to an agent's PTY stdin. Body `{ "data": "..." }`. |
-| `POST` | `/api/resize/{name}` | Resize an agent's PTY. Body `{ "rows": <u16>, "cols": <u16> }`.   |
-| `POST` | `/api/send`          | Inject a relay message into an agent.                             |
+| Method | Path                        | Purpose                                                           |
+| ------ | --------------------------- | ----------------------------------------------------------------- |
+| `POST` | `/api/input/{name}`         | Send raw bytes to an agent's PTY stdin. Body `{ "data": "..." }`. |
+| `GET`  | `/api/input/{name}/stream`  | Open a websocket for low-latency PTY stdin streaming.             |
+| `POST` | `/api/resize/{name}`        | Resize an agent's PTY. Body `{ "rows": <u16>, "cols": <u16> }`.   |
+| `POST` | `/api/send`                 | Inject a relay message into an agent.                             |
 
 TypeScript SDK equivalents: `client.sendInput(name, data)`,
-`client.resizePty(name, rows, cols)`, and `client.sendMessage(input)`.
+`client.openInputStream(name)`, `client.resizePty(name, rows, cols)`,
+and `client.sendMessage(input)`.
 
 #### `POST /api/input/{name}`
 
@@ -122,6 +124,36 @@ curl -X POST localhost:3888/api/input/Alice \
 ```
 
 Returns 404 if the agent isn't found.
+
+#### `GET /api/input/{name}/stream`
+
+This websocket is for interactive terminal input where one HTTP request per
+keypress is too expensive. It uses the same broker API-key auth as REST
+routes (`X-API-Key` or `Authorization: Bearer ...`). The broker validates
+that the target exists and is PTY-backed before sending:
+
+```json
+{ "type": "pty_input_ready", "name": "Alice" }
+```
+
+Clients may send raw text websocket frames, binary frames containing UTF-8
+input, or JSON frames when an explicit envelope is easier. Binary frames are
+decoded as UTF-8 and then processed the same way as raw text frames:
+
+```json
+{ "type": "pty_input", "data": "hello\n" }
+```
+
+The broker forwards one frame at a time and waits for the PTY write to be
+accepted before reading the next frame, preserving per-agent ordering and
+applying websocket/TCP backpressure. Each accepted frame receives:
+
+```json
+{ "type": "pty_input_ack", "name": "Alice", "bytes_written": 6 }
+```
+
+If the agent is missing, exits, or cannot accept PTY input, the stream emits
+`pty_input_error` with `code`, `message`, and `statusCode`, then closes.
 
 #### `POST /api/send`
 

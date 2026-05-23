@@ -335,6 +335,43 @@ describe('createPatchedRelayMcpServer', () => {
     });
   });
 
+  it('registers submit_result when a spawned-agent result callback is configured', async () => {
+    vi.stubEnv('AGENT_RELAY_RESULT_URL', 'http://127.0.0.1:3889/api/agent-result');
+    vi.stubEnv('AGENT_RELAY_RESULT_TOKEN', 'arr_test');
+    vi.stubEnv('AGENT_RELAY_RESULT_SCHEMA', '{"type":"object","properties":{"ok":{"type":"boolean"}}}');
+    const { mod, mocks } = await loadRelaycastMcpModule();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ success: true, result_id: 'ar_1' }),
+      }))
+    );
+
+    mod.createPatchedRelayMcpServer({ agentName: 'WorkerA' });
+    const server = mocks.serverInstances[0];
+    const submitResult = server.tools.get('submit_result');
+
+    expect(submitResult).toBeDefined();
+    const result = await submitResult?.handler({ data: { ok: true }, metadata: { source: 'test' } });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3889/api/agent-result',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer arr_test' }),
+        body: JSON.stringify({
+          agent: 'WorkerA',
+          data: { ok: true },
+          final: true,
+          metadata: { source: 'test' },
+        }),
+      })
+    );
+    expect(result?.structuredContent).toEqual({ success: true, result_id: 'ar_1' });
+  });
+
   it('reinitializes the websocket bridge when the workspace changes', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
     mod.createPatchedRelayMcpServer({

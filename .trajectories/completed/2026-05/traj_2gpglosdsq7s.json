@@ -1,0 +1,53 @@
+{
+  "id": "traj_2gpglosdsq7s",
+  "version": 1,
+  "task": {
+    "title": "Fix broker session read paths and agent listing errors"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-19T12:37:18.367Z",
+  "completedAt": "2026-05-19T12:48:50.116Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-19T12:44:57.363Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fxwoou59eukx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-19T12:44:57.363Z",
+      "endedAt": "2026-05-19T12:48:50.116Z",
+      "events": [
+        {
+          "ts": 1779194697364,
+          "type": "decision",
+          "content": "Resolved CLI read surfaces through the project broker connection file: Resolved CLI read surfaces through the project broker connection file",
+          "raw": {
+            "question": "Resolved CLI read surfaces through the project broker connection file",
+            "chosen": "Resolved CLI read surfaces through the project broker connection file",
+            "alternatives": [],
+            "reasoning": "status already reads the project .agent-relay/connection.json; passing that path explicitly prevents AGENT_RELAY_STATE_DIR from redirecting who/agents/history/replies to a stale broker"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed broker read surfaces to use the project broker connection and report agent-list query failures instead of empty lists",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/Projects/AgentWorkforce/relay-worktrees/broker-session-query-and-listagents",
+  "tags": [],
+  "_trace": {
+    "startRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca",
+    "endRef": "f5dd259e2a7009bcdbc1e9aa30c750ac74e5aeca"
+  }
+}

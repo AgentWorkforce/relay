@@ -58,12 +58,53 @@ impl Commands {
             Commands::Wrap { .. } => "wrap",
         }
     }
+
+    /// Identifier used to name this process' tracing log file. For broker-style
+    /// subcommands (init, pty, headless, wrap) we prefer the broker / agent
+    /// name; for short-lived utility subcommands we fall back to a
+    /// `{command}-{pid}` tag so concurrent invocations don't clobber each
+    /// other's log file.
+    fn log_identifier(&self) -> String {
+        let pid = std::process::id();
+        match self {
+            Commands::Init(cmd) => {
+                let name = cmd.name.trim();
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+                std::env::current_dir()
+                    .ok()
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("broker-{pid}"))
+            }
+            Commands::Pty(cmd) => {
+                non_empty_name(cmd.agent_name.as_deref()).unwrap_or_else(|| format!("pty-{pid}"))
+            }
+            Commands::Headless(cmd) => non_empty_name(cmd.agent_name.as_deref())
+                .unwrap_or_else(|| format!("headless-{pid}")),
+            Commands::Wrap { cli, .. } => format!("wrap-{cli}-{pid}"),
+            Commands::McpArgs(_) => format!("mcp_args-{pid}"),
+            Commands::DumpPty(cmd) => format!("dump_pty-{}-{}", cmd.name, pid),
+            Commands::Swarm(_) => format!("swarm-{pid}"),
+        }
+    }
+}
+
+fn non_empty_name(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 pub(crate) async fn run() -> Result<()> {
-    runtime::init_tracing();
-
     let cli = Cli::parse();
+    runtime::init_tracing(&cli.command.log_identifier());
+
     let telemetry = TelemetryClient::new();
     telemetry.track(TelemetryEvent::CliCommandRun {
         command_name: cli.command.telemetry_name().to_string(),

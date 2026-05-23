@@ -38,6 +38,7 @@ export { BrokerTransport, type BrokerTransportOptions, AgentRelayProtocolError }
 export {
   AgentRelayClient,
   type AgentRelayBrokerInitArgs,
+  type BrokerExitInfo,
   type AgentRelayClientOptions,
   type AgentRelaySpawnOptions,
   type SessionInfo,

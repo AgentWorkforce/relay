@@ -1,25 +1,30 @@
 ---
 title: 'Event handlers'
-description: 'Subscribe to relay events so your app can react to messages, agent lifecycle changes, output, and delivery updates.'
+description: 'Subscribe to relay events so your app can react to messages, agent lifecycle changes, structured results, spawn intercepts, output, and delivery updates.'
 ---
 
-Event handlers are the main way to observe what the relay is doing in real time. Attach callbacks to the `AgentRelay` instance to log activity, update UI, trigger follow-up work, or keep your own state in sync.
+Event handlers are the main way to observe what the relay is doing in real time. Register listeners on the `AgentRelay` instance to log activity, update UI, trigger follow-up work, or keep your own state in sync.
 
 ## Basic pattern
 
-Assign a function to subscribe. Set the handler back to `null` / `None` to clear it.
+Use `addListener(event, handler)` to subscribe — it returns an unsubscribe function. Multiple listeners can register for the same event; they fire sequentially in registration order. Async handlers are awaited. Handler exceptions are caught and logged so one bad listener never blocks the others.
 
 <CodeGroup>
 ```typescript TypeScript
 const relay = new AgentRelay();
 
-relay.onMessageReceived = (msg) => {
+const off = relay.addListener('messageReceived', (msg) => {
   console.log(`${msg.from} -> ${msg.to}: ${msg.text}`);
-};
+});
 
-relay.onAgentReady = (agent) => {
+relay.addListener('agentReady', (agent) => {
   console.log(`ready: ${agent.name}`);
-};
+});
+
+// Later, when you want to detach:
+off();
+// or:
+relay.removeListener('messageReceived', myHandler);
 ```
 
 ```python Python
@@ -30,19 +35,19 @@ relay.on_agent_ready = lambda agent: print(f"ready: {agent.name}")
 ```
 </CodeGroup>
 
-## Message handlers
+The TypeScript SDK switched to a multi-listener registry in 7.0; if you're upgrading from 6.x see the [migration block below](#migrating-from-6x).
 
-Use these when you want to react to communication events.
+## Message events
 
 <CodeGroup>
 ```typescript TypeScript
-relay.onMessageReceived = (msg) => {
+relay.addListener('messageReceived', (msg) => {
   console.log('received', msg.threadId, msg.text);
-};
+});
 
-relay.onMessageSent = (msg) => {
+relay.addListener('messageSent', (msg) => {
   console.log('sent', msg.to, msg.text);
-};
+});
 ```
 
 ```python Python
@@ -51,42 +56,40 @@ relay.on_message_sent = lambda msg: print("sent", msg.to, msg.text)
 ```
 </CodeGroup>
 
-- `onMessageReceived` / `on_message_received`: fires when the relay delivers a message into your session.
-- `onMessageSent` / `on_message_sent`: fires after your app or agent sends a message through the relay.
+- `messageReceived` / `on_message_received`: fires when the relay delivers a message into your session.
+- `messageSent` / `on_message_sent`: fires after your app or agent sends a message through the relay.
 
-## Agent lifecycle handlers
-
-Use lifecycle handlers when you care about worker state transitions.
+## Agent lifecycle events
 
 <CodeGroup>
 ```typescript TypeScript
-relay.onAgentSpawned = (agent) => {
+relay.addListener('agentSpawned', (agent) => {
   console.log(`spawned: ${agent.name}`);
-};
+});
 
-relay.onAgentReady = (agent) => {
+relay.addListener('agentReady', (agent) => {
   console.log(`ready: ${agent.name}`);
-};
+});
 
-relay.onAgentReleased = (agent) => {
+relay.addListener('agentReleased', (agent) => {
   console.log(`released: ${agent.name}`);
-};
+});
 
-relay.onAgentExited = (agent) => {
+relay.addListener('agentExited', (agent) => {
   console.log(`exited: ${agent.name}`, agent.exitCode, agent.exitSignal);
-};
+});
 
-relay.onAgentExitRequested = ({ name, reason }) => {
+relay.addListener('agentExitRequested', ({ name, reason }) => {
   console.log(`exit requested: ${name}`, reason);
-};
+});
 
-relay.onAgentIdle = ({ name, idleSecs }) => {
+relay.addListener('agentIdle', ({ name, idleSecs }) => {
   console.log(`idle: ${name}`, idleSecs);
-};
+});
 
-relay.onAgentActivityChanged = ({ name, active, pendingDeliveries, reason }) => {
+relay.addListener('agentActivityChanged', ({ name, active, pendingDeliveries, reason }) => {
   console.log(`activity: ${name}`, { active, pendingDeliveries, reason });
-};
+});
 ```
 
 ```python Python
@@ -99,21 +102,74 @@ relay.on_agent_idle = lambda event: print(f"idle: {event['name']}", event["idleS
 ```
 </CodeGroup>
 
-These hooks are useful for status dashboards, retry logic, timeout nudges, and cleanup when a worker finishes or requests exit.
+These are useful for status dashboards, retry logic, timeout nudges, and cleanup when a worker finishes or requests exit.
 
-## Output and delivery handlers
+## Call-site spawn / release hooks
 
-Use these when you need low-level visibility into what the relay is streaming.
+Unlike the broker-event listeners above (which fire *after* the broker emits an event), the four `before*` / `after*` hooks fire at the SDK call site — before and after the HTTP request to the broker. They're the right place to integrate cost-tracking tools, audit logs, or anything that needs to observe (or modify) the spawn input.
+
+```typescript
+import { randomUUID } from 'node:crypto';
+
+relay.addListener('beforeAgentSpawn', (ctx) => {
+  console.log(`spawning ${ctx.input.name} via ${ctx.input.cli}`);
+});
+
+relay.addListener('afterAgentSpawn', (ctx) => {
+  if (ctx.error) {
+    console.error(`spawn ${ctx.input.name} failed in ${ctx.durationMs}ms`, ctx.error);
+  } else {
+    console.log(`spawn ${ctx.result?.name} resolved in ${ctx.durationMs}ms`);
+  }
+});
+
+relay.addListener('beforeAgentRelease', (ctx) => {
+  console.log(`releasing ${ctx.name}`, ctx.reason);
+});
+
+relay.addListener('afterAgentRelease', (ctx) => {
+  console.log(`released ${ctx.name} in ${ctx.durationMs}ms`);
+});
+```
+
+### Mutating the spawn input
+
+A `beforeAgentSpawn` handler can **return a `SpawnPatch`** to merge into the spawn input before it reaches the broker. Patches are a shallow merge over the resolved input; when multiple handlers return patches they apply in registration order (later wins on conflict). For array fields like `args` / `channels` the patch *replaces* the array — spread the previous value to extend:
+
+```typescript
+relay.addListener('beforeAgentSpawn', (ctx) => {
+  if (ctx.input.cli !== 'claude') return; // observe-only for non-Claude
+  const sessionId = randomUUID();
+  // Preallocate a session id so cost-tracking can stamp it without sidecar matching.
+  return {
+    args: [...(ctx.input.args ?? []), '--session-id', sessionId],
+  };
+});
+```
+
+`afterAgentSpawn` exposes the post-patch `resolvedInput` so observers can see exactly what was sent. `beforeAgentRelease` / `afterAgentRelease` are observe-only.
+
+## Structured result events
+
+```typescript
+relay.addListener('agentResult', (result) => {
+  console.log(`result from ${result.name}`, result.resultId, result.data);
+});
+```
+
+`agentResult` fires when a spawned agent submits JSON through the `submit_result` MCP tool. Use it for global observers; use `agent.waitForResult(...)` or the per-spawn `result.onResult` callback when one caller owns a specific agent's result.
+
+## Output and delivery events
 
 <CodeGroup>
 ```typescript TypeScript
-relay.onWorkerOutput = ({ name, stream, chunk }) => {
+relay.addListener('workerOutput', ({ name, stream, chunk }) => {
   console.log(`[${name}] ${stream}: ${chunk}`);
-};
+});
 
-relay.onDeliveryUpdate = (event) => {
-  console.log('delivery update', event.type, event);
-};
+relay.addListener('deliveryUpdate', (event) => {
+  console.log('delivery update', event.kind, event);
+});
 ```
 
 ```python Python
@@ -122,25 +178,64 @@ relay.on_delivery_update = lambda event: print("delivery update", event["type"])
 ```
 </CodeGroup>
 
-- `onWorkerOutput` / `on_worker_output`: raw stdout or stderr from a worker.
-- `onDeliveryUpdate` / `on_delivery_update`: broker-level delivery events when you need transport visibility.
-- `onAgentActivityChanged`: high-level derived activity signal for UI badges like “thinking” without hand-rolling delivery event inference.
+- `workerOutput` / `on_worker_output`: raw stdout or stderr from a worker.
+- `deliveryUpdate` / `on_delivery_update`: broker-level delivery events when you need transport visibility.
+- `agentActivityChanged`: high-level derived activity signal for UI badges like "thinking" without hand-rolling delivery event inference.
 
 ```typescript
 const thinkingByAgent = new Map<string, boolean>();
 
-relay.onAgentActivityChanged = ({ name, active }) => {
+relay.addListener('agentActivityChanged', ({ name, active }) => {
   thinkingByAgent.set(name, active);
   renderThinkingBadge(name, active);
-};
+});
 ```
 
-## Good uses for handlers
+## Channel subscribe / unsubscribe events
+
+```typescript
+relay.addListener('channelSubscribed', ({ agent, channels }) => {
+  console.log(`${agent} subscribed to ${channels.join(', ')}`);
+});
+
+relay.addListener('channelUnsubscribed', ({ agent, channels }) => {
+  console.log(`${agent} unsubscribed from ${channels.join(', ')}`);
+});
+```
+
+## Migrating from 6.x
+
+The 6.x TypeScript SDK exposed each event as a single nullable callback field:
+
+```ts
+// 6.x style — no longer compiles
+relay.onAgentSpawned = (agent) => log(agent.name);
+relay.onMessageReceived = null;
+```
+
+In 7.0 every event is on a typed multi-listener registry:
+
+```ts
+// 7.0 style
+const off = relay.addListener('agentSpawned', (agent) => log(agent.name));
+off(); // unsubscribe when done
+```
+
+Migration rules:
+
+- `relay.onXxx = handler;` → `relay.addListener('xxx', handler);` (lower-case first letter of the suffix).
+- `relay.onXxx = null;` → either call the unsubscribe function returned from `addListener`, or use `relay.removeListener('xxx', handler)`.
+- `relay.onChannelSubscribed = (agent, channels) => ...` and `relay.onChannelUnsubscribed = ...` now receive a single `{ agent, channels }` object instead of positional args.
+
+Per-call option callbacks like `spawnPersona({ onStart, onSuccess, onError })` are unchanged — those are scoped to a single invocation, not global hooks.
+
+## Good uses for listeners
 
 - Update a UI timeline or status panel without polling.
 - Capture logs and metrics while agents run.
 - Trigger follow-up work when a message arrives or a worker becomes ready.
 - Detect exit conditions and clean up local resources.
+- Integrate cost-tracking or audit tools by pre-stamping spawns from `beforeAgentSpawn`.
 
 ## See also
 
@@ -152,7 +247,7 @@ relay.onAgentActivityChanged = ({ name, active }) => {
     Start workers whose lifecycle you want to observe.
   </Card>
   <Card title="TypeScript SDK" href="/docs/typescript-sdk">
-    Full TypeScript API reference, including hook names and types.
+    Full TypeScript API reference, including event names and payload types.
   </Card>
   <Card title="Python SDK" href="/docs/python-sdk">
     Full Python API reference for the same callbacks.

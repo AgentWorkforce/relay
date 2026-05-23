@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::cli::command_parse::{normalize_cli_name, parse_cli_command};
 use crate::listen_api::{
     broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
     ListenApiRequest, SetInboundDeliveryModeOk,
@@ -41,8 +40,8 @@ use crate::{
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
-        BrokerCommandEvent, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
-        InboundKind, PendingRelayMessage,
+        AgentResultMcpConfig, BrokerCommandEvent, InboundDeliveryDispatch, InboundDeliveryMode,
+        InboundDeliveryState, InboundKind, PendingRelayMessage,
     },
 };
 

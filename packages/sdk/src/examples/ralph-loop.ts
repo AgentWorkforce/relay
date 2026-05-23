@@ -25,9 +25,9 @@
  *   https://github.com/snarktank/ralph
  *   https://ghuntley.com/ralph/
  */
-import fs from "node:fs";
-import { execSync } from "node:child_process";
-import { AgentRelay, type Agent, type Message } from "../relay.js";
+import fs from 'node:fs';
+import { execSync } from 'node:child_process';
+import { AgentRelay, type Agent, type Message } from '../relay.js';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -46,22 +46,22 @@ interface Prd {
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
-const PRD_PATH = process.env.PRD_PATH ?? "prd.json";
-const PROGRESS_PATH = process.env.PROGRESS_PATH ?? "progress.txt";
+const PRD_PATH = process.env.PRD_PATH ?? 'prd.json';
+const PROGRESS_PATH = process.env.PROGRESS_PATH ?? 'progress.txt';
 const MAX_ITERATIONS = Number(process.env.MAX_ITERATIONS ?? 10);
 const MAX_REVIEW_ROUNDS = Number(process.env.MAX_REVIEW_ROUNDS ?? 2);
-const QUALITY_CMD = process.env.QUALITY_CMD ?? "npm run check";
+const QUALITY_CMD = process.env.QUALITY_CMD ?? 'npm run check';
 /** Max time (ms) to wait for both agents per round before releasing them. */
 const ROUND_TIMEOUT_MS = Number(process.env.ROUND_TIMEOUT_MS ?? 5 * 60 * 1000);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function loadPrd(): Prd {
-  return JSON.parse(fs.readFileSync(PRD_PATH, "utf-8"));
+  return JSON.parse(fs.readFileSync(PRD_PATH, 'utf-8'));
 }
 
 function savePrd(prd: Prd): void {
-  fs.writeFileSync(PRD_PATH, JSON.stringify(prd, null, 2) + "\n");
+  fs.writeFileSync(PRD_PATH, JSON.stringify(prd, null, 2) + '\n');
 }
 
 function appendProgress(entry: string): void {
@@ -70,9 +70,7 @@ function appendProgress(entry: string): void {
 }
 
 function readProgress(): string {
-  return fs.existsSync(PROGRESS_PATH)
-    ? fs.readFileSync(PROGRESS_PATH, "utf-8")
-    : "";
+  return fs.existsSync(PROGRESS_PATH) ? fs.readFileSync(PROGRESS_PATH, 'utf-8') : '';
 }
 
 function nextStory(prd: Prd): Story | undefined {
@@ -81,7 +79,7 @@ function nextStory(prd: Prd): Story | undefined {
 
 function runQualityChecks(): { passed: boolean; output: string } {
   try {
-    const output = execSync(QUALITY_CMD, { encoding: "utf-8", stdio: "pipe" });
+    const output = execSync(QUALITY_CMD, { encoding: 'utf-8', stdio: 'pipe' });
     return { passed: true, output };
   } catch (err: unknown) {
     const output = (err as { stdout?: string }).stdout ?? String(err);
@@ -92,7 +90,7 @@ function runQualityChecks(): { passed: boolean; output: string } {
 // ── Prompt builders ─────────────────────────────────────────────────────────
 
 function architectPrompt(story: Story, progress: string): string {
-  const criteria = story.acceptanceCriteria.map((c) => `  - ${c}`).join("\n");
+  const criteria = story.acceptanceCriteria.map((c) => `  - ${c}`).join('\n');
   return [
     `## Architect: ${story.title}`,
     ``,
@@ -111,7 +109,7 @@ function architectPrompt(story: Story, progress: string): string {
     criteria,
     ``,
     `### Previous Learnings`,
-    progress || "(first story)",
+    progress || '(first story)',
     ``,
     `### Your job`,
     `1. Post a concise implementation plan to #general (files, changes, edge cases)`,
@@ -123,11 +121,11 @@ function architectPrompt(story: Story, progress: string): string {
     ``,
     `IMPORTANT: You MUST use Relaycast MCP tools to post messages. This is how`,
     `the orchestrator knows you're done. Post your plan first, then your verdict.`,
-  ].join("\n");
+  ].join('\n');
 }
 
 function builderPrompt(story: Story, progress: string, reviewFeedback?: string): string {
-  const criteria = story.acceptanceCriteria.map((c) => `  - ${c}`).join("\n");
+  const criteria = story.acceptanceCriteria.map((c) => `  - ${c}`).join('\n');
   const sections = [
     `## Builder: ${story.title}`,
     ``,
@@ -147,17 +145,13 @@ function builderPrompt(story: Story, progress: string, reviewFeedback?: string):
   ];
 
   if (reviewFeedback) {
-    sections.push(
-      ``,
-      `### Review Feedback (fix these issues first)`,
-      reviewFeedback,
-    );
+    sections.push(``, `### Review Feedback (fix these issues first)`, reviewFeedback);
   }
 
   sections.push(
     ``,
     `### Previous Learnings`,
-    progress || "(first story)",
+    progress || '(first story)',
     ``,
     `### Your job`,
     `1. Read the Architect's plan from #general`,
@@ -166,10 +160,10 @@ function builderPrompt(story: Story, progress: string, reviewFeedback?: string):
     `4. When done, post exactly "IMPLEMENTATION COMPLETE" to #general`,
     ``,
     `IMPORTANT: You MUST use Relaycast MCP tools to post messages. This is how`,
-    `the orchestrator knows you're done.`,
+    `the orchestrator knows you're done.`
   );
 
-  return sections.join("\n");
+  return sections.join('\n');
 }
 
 // ── Main loop ───────────────────────────────────────────────────────────────
@@ -178,18 +172,18 @@ const relay = new AgentRelay({ env: process.env });
 
 const channelLog: Message[] = [];
 
-relay.onMessageReceived = (msg) => {
+relay.addListener('messageReceived', (msg) => {
   channelLog.push(msg);
   console.log(`  💬 ${msg.from}: "${msg.text.slice(0, 80)}…"`);
-};
+});
 
-relay.onAgentSpawned = (agent) => console.log(`  🟢 ${agent.name} spawned (${agent.runtime})`);
-relay.onAgentReleased = (agent) => console.log(`  🔴 ${agent.name} released`);
-relay.onAgentExited = (agent) => console.log(`  ⚪ ${agent.name} exited`);
-relay.onMessageSent = (msg) => console.log(`  📤 → ${msg.to}: "${msg.text.slice(0, 60)}…"`);
+relay.addListener('agentSpawned', (agent) => console.log(`  🟢 ${agent.name} spawned (${agent.runtime})`));
+relay.addListener('agentReleased', (agent) => console.log(`  🔴 ${agent.name} released`));
+relay.addListener('agentExited', (agent) => console.log(`  ⚪ ${agent.name} exited`));
+relay.addListener('messageSent', (msg) => console.log(`  📤 → ${msg.to}: "${msg.text.slice(0, 60)}…"`));
 
 const prd = loadPrd();
-const orchestrator = relay.human({ name: "Ralph" });
+const orchestrator = relay.human({ name: 'Ralph' });
 
 console.log(`\n══ Ralph Loop (Claude + Codex) ══`);
 console.log(`  branch: ${prd.branchName}`);
@@ -211,7 +205,7 @@ while (iteration < MAX_ITERATIONS) {
   let storyPassed = false;
 
   for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
-    const roundLabel = round === 0 ? "initial" : `fix-${round}`;
+    const roundLabel = round === 0 ? 'initial' : `fix-${round}`;
     const progress = readProgress();
 
     // ── Spawn both agents concurrently ──────────────────────────────────
@@ -220,12 +214,12 @@ while (iteration < MAX_ITERATIONS) {
     const [architect, builder] = await Promise.all([
       relay.claude.spawn({
         name: `Architect-${story.id}-${roundLabel}`,
-        channels: ["general"],
+        channels: ['general'],
       }),
       relay.codex.spawn({
         name: `Builder-${story.id}-${roundLabel}`,
-        args: ["--full-auto"],
-        channels: ["general"],
+        args: ['--full-auto'],
+        channels: ['general'],
       }),
     ]);
 
@@ -258,9 +252,7 @@ while (iteration < MAX_ITERATIONS) {
       const recent = channelLog.slice(startLen);
 
       // Check if Claude posted a review verdict
-      const review = recent.find(
-        (m) => m.text.includes("REVIEW:PASS") || m.text.includes("REVIEW:FAIL"),
-      );
+      const review = recent.find((m) => m.text.includes('REVIEW:PASS') || m.text.includes('REVIEW:FAIL'));
       if (review) {
         verdict = review.text;
         console.log(`  📋 Claude posted verdict`);
@@ -268,7 +260,7 @@ while (iteration < MAX_ITERATIONS) {
       }
 
       // Check if Codex signaled completion (Claude may still be reviewing)
-      const implDone = recent.find((m) => m.text.includes("IMPLEMENTATION COMPLETE"));
+      const implDone = recent.find((m) => m.text.includes('IMPLEMENTATION COMPLETE'));
       if (implDone) {
         console.log(`  📋 Codex finished, waiting for Claude's review…`);
         // Give Claude up to 60s more to post a verdict
@@ -276,10 +268,11 @@ while (iteration < MAX_ITERATIONS) {
         while (Date.now() < reviewDeadline) {
           await new Promise((r) => setTimeout(r, 3000));
           const afterImpl = channelLog.slice(startLen);
-          const rv = afterImpl.find(
-            (m) => m.text.includes("REVIEW:PASS") || m.text.includes("REVIEW:FAIL"),
-          );
-          if (rv) { verdict = rv.text; break; }
+          const rv = afterImpl.find((m) => m.text.includes('REVIEW:PASS') || m.text.includes('REVIEW:FAIL'));
+          if (rv) {
+            verdict = rv.text;
+            break;
+          }
         }
         break;
       }
@@ -287,14 +280,18 @@ while (iteration < MAX_ITERATIONS) {
       // Check if either agent exited on its own
       const archResult = await architect.waitForExit(0);
       const buildResult = await builder.waitForExit(0);
-      if (archResult !== "timeout" && buildResult !== "timeout") break;
+      if (archResult !== 'timeout' && buildResult !== 'timeout') break;
 
       await new Promise((r) => setTimeout(r, 5000));
     }
 
     // Release both agents (they're interactive so won't exit on their own)
     const cleanup = async (agent: Agent) => {
-      try { await agent.release(); } catch { /* already exited */ }
+      try {
+        await agent.release();
+      } catch {
+        /* already exited */
+      }
     };
     await Promise.all([cleanup(architect), cleanup(builder)]);
 
@@ -310,17 +307,15 @@ while (iteration < MAX_ITERATIONS) {
     }
 
     // ── Check verdict ─────────────────────────────────────────────────────
-    if (verdict?.includes("REVIEW:PASS")) {
+    if (verdict?.includes('REVIEW:PASS')) {
       storyPassed = true;
       appendProgress(`✅ ${story.id} — ${story.title} — PASSED (round=${roundLabel})`);
       console.log(`  ✅ story passed!\n`);
       break;
-    } else if (verdict?.includes("REVIEW:FAIL")) {
-      const failText = verdict.replace("REVIEW:FAIL", "").trim();
+    } else if (verdict?.includes('REVIEW:FAIL')) {
+      const failText = verdict.replace('REVIEW:FAIL', '').trim();
       reviewFeedback = failText;
-      appendProgress(
-        `🔄 ${story.id} round=${roundLabel} — review failed: ${reviewFeedback.slice(0, 200)}`,
-      );
+      appendProgress(`🔄 ${story.id} round=${roundLabel} — review failed: ${reviewFeedback.slice(0, 200)}`);
       console.log(`  🔄 review failed, starting new round\n`);
     } else {
       // No verdict from Claude — quality passed so accept it

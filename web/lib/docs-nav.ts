@@ -38,6 +38,7 @@ export const docsNav: NavGroup[] = [
       { title: 'Workflows', slug: 'reference-workflows' },
       { title: 'Cloud', slug: 'cloud' },
       { title: 'Workforce', slug: 'workforce' },
+      { title: 'Proactive agents', slug: 'proactive-agents' },
     ],
   },
   {

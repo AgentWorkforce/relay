@@ -110,9 +110,42 @@ interface Agent {
   waitForReady(timeoutMs?: number): Promise<void>;
   waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
   waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
+  waitForResult(timeoutMs?: number): Promise<AgentResult>;
   onOutput(callback: (chunk: string) => void): () => void; // returns unsubscribe
 }
 ```
+
+### Structured Agent Results
+
+Provide `result` when spawning an agent to expose a `submit_result` MCP tool inside that agent. The tool posts JSON back to the local broker, and the SDK validates it before resolving waiters or hooks.
+
+```typescript file="structured-result.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+import { z } from 'zod';
+
+const relay = new AgentRelay();
+
+const Summary = z.object({
+  status: z.enum(['pass', 'fail']),
+  findings: z.array(z.string()),
+});
+
+const reviewer = await relay.claude.spawn({
+  name: 'Reviewer',
+  task: 'Review the branch and submit the final JSON result.',
+  result: {
+    schema: Summary,
+    onResult: (summary) => {
+      console.log(summary.status, summary.findings.length);
+    },
+  },
+});
+
+const result = await reviewer.waitForResult(120_000);
+console.log(result.data.status);
+```
+
+You can also pass `jsonSchema` directly when you only want to describe the expected payload to the spawned agent. Use `relay.addListener('agentResult', ...)` to observe all structured results globally.
 
 ### `ReleaseOptions`
 
@@ -180,6 +213,7 @@ as `drive`, `view`, and `passthrough`.
 | Method | Broker route | Description |
 | ------ | ------------ | ----------- |
 | `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
+| `client.openInputStream(name, options?)` | `GET /api/input/{name}/stream` | Open a websocket input stream with ordered writes and bounded client-side buffering. |
 | `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
 | `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
 | `client.getInboundDeliveryMode(name)` | `GET /api/spawned/{name}/delivery-mode` | Read `manual_flush` or `auto_inject`. |
@@ -187,6 +221,11 @@ as `drive`, `view`, and `passthrough`.
 | `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `manual_flush` mode. |
 | `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
 | `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
+
+`client.openInputStream` accepts `PtyInputStreamOptions`: `highWaterMarkBytes`
+defaults to 1 MiB of queued and in-flight UTF-8 input, and `openTimeoutMs`
+defaults to 10 seconds. Invalid non-finite or non-positive values are rejected
+before connecting.
 
 ```typescript
 import { AgentRelayClient, type InboundDeliveryMode } from '@agent-relay/sdk';
@@ -204,7 +243,17 @@ try {
   const pending = await client.getPending(name);
   console.log(`Queued messages: ${pending.length}`);
 
-  await client.sendInput(name, 'please continue\n');
+  const input = client.openInputStream(name);
+  try {
+    await input.waitUntilOpen();
+    const result = await input.send('please continue\n');
+    console.log(`Wrote ${result.bytes_written} bytes`);
+  } catch (error) {
+    console.error(`Input stream failed: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    input.close();
+  }
+
   await client.resizePty(name, 40, 120);
   await client.flushPending(name);
 } finally {
@@ -245,20 +294,21 @@ await relay.broadcast('All hands: stand by for new task');
 
 ## Event Hooks
 
-Assign a function to subscribe, `null` to unsubscribe:
+Register listeners with `addListener`; keep the returned function to unsubscribe:
 
 ```typescript
-relay.onMessageReceived = (msg: Message) => { ... }
-relay.onMessageSent    = (msg: Message) => { ... }
-relay.onAgentSpawned   = (agent: Agent) => { ... }
-relay.onAgentReleased  = (agent: Agent) => { ... }
-relay.onAgentExited    = (agent: Agent) => { ... }
-relay.onAgentReady     = (agent: Agent) => { ... }
-relay.onAgentIdle      = ({ name, idleSecs }) => { ... }
-relay.onAgentActivityChanged = ({ name, active, pendingDeliveries, reason }) => { ... }
-relay.onAgentExitRequested = ({ name, reason }) => { ... }
-relay.onWorkerOutput   = ({ name, stream, chunk }) => { ... }
-relay.onDeliveryUpdate = (event: BrokerEvent) => { ... }
+relay.addListener('messageReceived', (msg: Message) => { ... })
+relay.addListener('messageSent', (msg: Message) => { ... })
+relay.addListener('agentSpawned', (agent: Agent) => { ... })
+relay.addListener('agentReleased', (agent: Agent) => { ... })
+relay.addListener('agentExited', (agent: Agent) => { ... })
+relay.addListener('agentReady', (agent: Agent) => { ... })
+relay.addListener('agentIdle', ({ name, idleSecs }) => { ... })
+relay.addListener('agentActivityChanged', ({ name, active, pendingDeliveries, reason }) => { ... })
+relay.addListener('agentExitRequested', ({ name, reason }) => { ... })
+relay.addListener('workerOutput', ({ name, stream, chunk }) => { ... })
+relay.addListener('deliveryUpdate', (event: BrokerEvent) => { ... })
+relay.addListener('agentResult', (result: AgentResult) => { ... })
 ```
 
 **Message type:**
@@ -308,6 +358,40 @@ const { agent, result } = await AgentRelay.waitForAny([agent1, agent2], 60000)
 await relay.shutdown()
 ```
 
+### Broker tracing logs
+
+The broker writes its tracing logs to a platform-standard directory (`~/Library/Logs/agent-relay/` on macOS, `~/.local/state/agent-relay/logs/` on Linux, `%LOCALAPPDATA%\agent-relay\Logs\` on Windows) with daily rotation. These helpers inspect and prune those files from Node without spawning the broker.
+
+```typescript
+import {
+  getBrokerLogDir,
+  listBrokerLogs,
+  tailBrokerLog,
+  pruneBrokerLogs,
+  clearBrokerLogs,
+} from '@agent-relay/sdk';
+
+// Resolve the directory for the current platform.
+const dir = getBrokerLogDir();
+
+// List every {brokerId}.log[.YYYY-MM-DD] file, newest first.
+const files = await listBrokerLogs();
+// files: Array<{ path, name, brokerId, date, size, mtime }>
+
+// Tail the most recent log file for a broker.
+const tail = await tailBrokerLog('myproject', { lines: 500 });
+// tail?.path / tail?.content — null if no log file exists
+
+// Retention: remove rotated files older than 7 days. The active
+// un-suffixed file is never touched.
+const { removed, kept } = await pruneBrokerLogs({ keepDays: 7 });
+
+// Wipe one broker's logs (or pass nothing to wipe everything).
+await clearBrokerLogs({ brokerId: 'myproject' });
+```
+
+These wrap the same logic that powers `agent-relay log {path,list,view,rotate,clear}`.
+
 ---
 
 ## Complete Example
@@ -317,13 +401,13 @@ import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
-relay.onMessageReceived = (msg) => {
+relay.addListener('messageReceived', (msg) => {
   console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
-};
+});
 
-relay.onAgentSpawned = (agent) => {
+relay.addListener('agentSpawned', (agent) => {
   console.log(`Spawned: ${agent.name}`);
-};
+});
 
 // Spawn agents
 const planner = await relay.claude.spawn({

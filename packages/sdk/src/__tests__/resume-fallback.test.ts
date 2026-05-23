@@ -4,13 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
@@ -65,8 +59,12 @@ let waitForExitFn: (ms?: number) => Promise<'exited' | 'timeout' | 'released'>;
 
 const mockAgent = {
   name: 'test-agent-abc',
-  get waitForExit() { return waitForExitFn; },
-  get waitForIdle() { return vi.fn().mockImplementation(() => new Promise(() => {})); },
+  get waitForExit() {
+    return waitForExitFn;
+  },
+  get waitForIdle() {
+    return vi.fn().mockImplementation(() => new Promise(() => {}));
+  },
   release: vi.fn().mockResolvedValue(undefined),
 };
 
@@ -74,6 +72,12 @@ const mockHuman = {
   name: 'WorkflowRunner',
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
+
+const mockListeners = new Map<string, Set<(...args: any[]) => void>>();
+function emitMockEvent(event: string, ...args: any[]): void {
+  const set = mockListeners.get(event);
+  if (set) for (const cb of set) cb(...args);
+}
 
 const mockRelayInstance = {
   spawnPty: vi.fn().mockImplementation(async ({ name, task }: { name: string; task?: string }) => {
@@ -86,9 +90,7 @@ const mockRelayInstance = {
         : 'STEP_COMPLETE:unknown\n';
 
     queueMicrotask(() => {
-      if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-        mockRelayInstance.onWorkerOutput({ name, chunk: output });
-      }
+      emitMockEvent('workerOutput', { name, chunk: output });
     });
 
     return { ...mockAgent, name };
@@ -96,13 +98,15 @@ const mockRelayInstance = {
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentReleased: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
-  onDeliveryUpdate: null as any,
+  addListener: vi.fn((event: string, cb: (...args: any[]) => void) => {
+    let set = mockListeners.get(event);
+    if (!set) {
+      set = new Set();
+      mockListeners.set(event, set);
+    }
+    set.add(cb);
+    return () => set!.delete(cb);
+  }),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -150,9 +154,7 @@ function makeResumeConfig(): RelayYamlConfig {
     version: '1',
     name: 'test-resume-fallback',
     swarm: { pattern: 'dag' },
-    agents: [
-      { name: 'agent-a', cli: 'claude' },
-    ],
+    agents: [{ name: 'agent-a', cli: 'claude' }],
     workflows: [
       {
         name: 'default',
@@ -172,9 +174,7 @@ function makeTemplateConfig(): RelayYamlConfig {
     version: '1',
     name: 'test-resume-template',
     swarm: { pattern: 'dag' },
-    agents: [
-      { name: 'agent-a', cli: 'claude' },
-    ],
+    agents: [{ name: 'agent-a', cli: 'claude' }],
     workflows: [
       {
         name: 'default',
@@ -193,7 +193,11 @@ function makeTemplateConfig(): RelayYamlConfig {
   };
 }
 
-function makeRunRow(runId: string, config: RelayYamlConfig, status: WorkflowRunRow['status'] = 'failed'): WorkflowRunRow {
+function makeRunRow(
+  runId: string,
+  config: RelayYamlConfig,
+  status: WorkflowRunRow['status'] = 'failed'
+): WorkflowRunRow {
   const now = new Date().toISOString();
   return {
     id: runId,
@@ -251,14 +255,18 @@ describe('resume fallback to step-output cache', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     waitForExitFn = vi.fn().mockResolvedValue('exited');
-    mockRelayInstance.onWorkerOutput = null;
+    mockListeners.clear();
     tmpDir = mkdtempSync(path.join(os.tmpdir(), 'resume-fallback-'));
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test', cwd: tmpDir });
   });
 
   afterEach(() => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
   });
 
   it('should reconstruct run from step-output cache when JSONL missing', async () => {
@@ -391,8 +399,14 @@ describe('file-db append diagnostics', () => {
   afterEach(() => {
     try {
       chmodSync(path.join(tmpDir, 'readonly'), 0o755);
-    } catch {}
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    } catch {
+      /* noop */
+    }
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
   });
 
   it('should warn once when append fails', async () => {

@@ -1,0 +1,57 @@
+{
+  "id": "traj_qtmid2nzz0kz",
+  "version": 1,
+  "task": {
+    "title": "Address PR 929 review comments",
+    "source": {
+      "system": "plain",
+      "id": "PR #929"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-20T06:21:54.721Z",
+  "completedAt": "2026-05-20T06:26:56.700Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-20T06:26:47.252Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_jbp0syg7cpzo",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-20T06:26:47.252Z",
+      "endedAt": "2026-05-20T06:26:56.700Z",
+      "events": [
+        {
+          "ts": 1779258407253,
+          "type": "decision",
+          "content": "Accepted PR 929 review fixes: Accepted PR 929 review fixes",
+          "raw": {
+            "question": "Accepted PR 929 review fixes",
+            "chosen": "Accepted PR 929 review fixes",
+            "alternatives": [],
+            "reasoning": "The per-agent ordering concern was valid because independent HTTP and websocket handlers could enqueue PTY writes concurrently. I added a broker-side per-agent serializer shared by POST and websocket input, validated SDK numeric options, and documented binary frames/options/error handling."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed PR #929 review feedback: serialized PTY input per agent, validated stream option bounds, and documented binary frames, options, and error handling.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3fc85d82b2789493f6e008fd253416757d4a625c",
+    "endRef": "3fc85d82b2789493f6e008fd253416757d4a625c"
+  }
+}

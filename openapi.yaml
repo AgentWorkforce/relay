@@ -311,6 +311,37 @@ paths:
         '404':
           description: Agent not found
 
+  /api/input/{name}/stream:
+    get:
+      summary: Stream PTY input over WebSocket
+      description: |
+        Open an authenticated WebSocket for low-latency PTY stdin input.
+        The broker sends `{"type":"pty_input_ready","name":"..."}` after
+        validating that the target exists and is PTY-backed. Clients may
+        send raw text frames, binary frames containing UTF-8 input, or JSON
+        frames shaped as `{"type":"pty_input","data":"..."}`. Each accepted
+        raw text, binary, or `pty_input` frame receives
+        `{"type":"pty_input_ack","name":"...","bytes_written":N}`. Missing
+        agents, exited agents, and unsupported runtimes are reported as
+        `pty_input_error` frames before close.
+      tags:
+        - Agents
+      security:
+        - apiKey: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '101':
+          description: WebSocket upgrade accepted
+        '401':
+          description: Unauthorized
+        '404':
+          description: Agent not found
+
   /messages:
     get:
       summary: Get message history

@@ -127,7 +127,7 @@ fn build_mcp_reminder(
         channel_hint_line,
         "- For thread replies, use mcp__relaycast__message_reply or relaycast.message.reply.".to_string(),
         "- To check unread messages/reactions, use mcp__relaycast__message_inbox_check or relaycast.message.inbox.check.".to_string(),
-        "- To self-terminate when your task is complete, call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line.".to_string(),
+        "- Self-termination is not automatic. Only call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line when explicitly instructed to terminate.".to_string(),
         "</system-reminder>".to_string(),
     ]
     .join("\n")
@@ -267,6 +267,7 @@ mod tests {
         assert!(result.contains("Relaycast MCP tools"));
         assert!(result.contains("pre-registered by the broker"));
         assert!(result.contains("mcp__relaycast__message_dm_send"));
+        assert!(result.contains("Self-termination is not automatic"));
         assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
 

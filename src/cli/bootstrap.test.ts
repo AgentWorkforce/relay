@@ -17,6 +17,7 @@ const expectedLeafCommands = [
   'agents',
   'who',
   'agents:logs',
+  'activity',
   'broker-spawn',
   'release',
   'set-model',
@@ -62,6 +63,11 @@ const expectedLeafCommands = [
   'cloud logs',
   'cloud sync',
   'cloud cancel',
+  'log path',
+  'log list',
+  'log view',
+  'log rotate',
+  'log clear',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -106,6 +112,7 @@ describe('bootstrap CLI', () => {
         'agents',
         'who',
         'agents:logs',
+        'activity',
         'broker-spawn',
         'release',
         'set-model',
