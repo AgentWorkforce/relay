@@ -18,6 +18,7 @@ Resolved current PR 932 changelog conflict and addressed still-valid review comm
 ## Key Decisions
 
 ### Kept PR-specific structured-result changelog entry while accepting current release sections
+
 - **Chose:** Kept PR-specific structured-result changelog entry while accepting current release sections
 - **Reasoning:** Main already compacted older unreleased entries into 7.0.x release sections; retaining only this PR's unreleased user impact avoids duplicate release notes.
 
@@ -26,6 +27,7 @@ Resolved current PR 932 changelog conflict and addressed still-valid review comm
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Kept PR-specific structured-result changelog entry while accepting current release sections
