@@ -65,13 +65,14 @@ An integration in the persona has two independent roles: declaring `triggers[]` 
 import { handler } from '@agentworkforce/runtime';
 
 export default handler(async (ctx, event) => {
-  if (event.source !== 'cron' || event.name !== 'daily') return;
-  const digest = await summarizeOvernightShips(ctx); // your code
-  await ctx.slack!.post('ops-daily', digest);
+  if (event.source === 'cron' && event.name === 'daily') {
+    const digest = await summarizeOvernightShips(ctx); // your code
+    await ctx.slack!.post('ops-daily', digest);
+  }
 });
 ```
 
-`event.name` matches `schedules[].name`. `event.occurredAt` is the firing timestamp (ISO 8601).
+`event.name` matches `schedules[].name`. `event.occurredAt` is the firing timestamp (ISO 8601). The guarded `if` (rather than an early `return` on the inverse) keeps the happy path the thing you read — important once the same handler reacts to multiple listener kinds.
 
 ## Integration-based (radio listener)
 
@@ -102,9 +103,10 @@ Fires when a Relayfile integration emits a normalized event. Use for "open a PR 
 import { handler } from '@agentworkforce/runtime';
 
 export default handler(async (ctx, event) => {
-  if (event.source !== 'github' || event.type !== 'issue.created') return;
-  const { owner, repo, number } = event.payload as { owner: string; repo: string; number: number };
-  await ctx.github!.comment({ owner, repo, number }, 'Triage in progress — thanks for filing.');
+  if (event.source === 'github' && event.type === 'issue.created') {
+    const { owner, repo, number } = event.payload as { owner: string; repo: string; number: number };
+    await ctx.github!.comment({ owner, repo, number }, 'Triage in progress — thanks for filing.');
+  }
 });
 ```
 
