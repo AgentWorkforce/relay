@@ -153,7 +153,12 @@ test('loadPersona throws when persona is missing', () => {
   }
 });
 
-test('loadPersona surfaces persona-kit parse errors with file context', () => {
+test('loadPersona reports "not found" when no valid persona with that id exists', () => {
+  // A malformed file at the conventional name no longer blocks the cascade —
+  // it is treated the same as a malformed sibling file: skipped during the
+  // search, and "not found" is reported if no valid alternative exists. This
+  // is the cascade behavior that lets a higher-priority shadow file with bad
+  // JSON not break a valid lower-priority persona of the same id.
   const fix = makeFixture();
   try {
     const dir = join(fix.cwd, 'agentworkforce', 'personas');
@@ -172,7 +177,7 @@ test('loadPersona surfaces persona-kit parse errors with file context', () => {
     );
     assert.throws(
       () => loadPersona('bad', { cwd: fix.cwd }),
-      /harness/,
+      /not found/,
     );
   } finally {
     fix.cleanup();
@@ -295,6 +300,39 @@ test('AgentRelay.spawnPersona honors constructor personaDirs and executes the pl
     assert.equal(captured.cli, 'codex');
     assert.equal(captured.model, 'openai-codex/gpt-5-codex');
   } finally {
+    fix.cleanup();
+  }
+});
+
+test('AgentRelay.getPersonaSpawnPlan honors options.persona, bypassing the search cascade', () => {
+  const fix = makeFixture();
+  try {
+    const relay = new AgentRelay({ personaDirs: ['/nonexistent'] });
+    const spec = loadPersona('frontend', { cwd: fix.cwd });
+    const plan = relay.getPersonaSpawnPlan('frontend', { persona: spec });
+    assert.equal(plan.cli, 'claude');
+    assert.equal(plan.persona.personaId, 'frontend');
+  } finally {
+    fix.cleanup();
+  }
+});
+
+test('findPersona skips a malformed shadow file at the conventional path', () => {
+  const fix = makeFixture();
+  const otherFix = makeFixture();
+  try {
+    const shadowDir = join(otherFix.cwd, 'agentworkforce', 'personas');
+    // Higher-priority shadow file with the conventional name but bad JSON.
+    writeFileSync(join(shadowDir, 'frontend.json'), '{ not valid json');
+    const found = findPersona('frontend', {
+      cwd: fix.cwd,
+      searchDirs: [shadowDir, join(fix.cwd, 'agentworkforce', 'personas')],
+    });
+    assert.ok(found, 'should fall through to the valid persona in the lower-priority dir');
+    assert.match(found?.path ?? '', /frontend\.json$/);
+    assert.notMatch(found?.path ?? '', new RegExp(shadowDir));
+  } finally {
+    otherFix.cleanup();
     fix.cleanup();
   }
 });

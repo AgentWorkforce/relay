@@ -220,8 +220,14 @@ export function findPersona(
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
     if (candidateBytes !== undefined) {
-      const spec = parsePersonaJson(JSON.parse(candidateBytes), candidate);
-      if (spec.id === id) return { id, path: candidate, spec };
+      try {
+        const spec = parsePersonaJson(JSON.parse(candidateBytes), candidate);
+        if (spec.id === id) return { id, path: candidate, spec };
+      } catch {
+        // A bad shadow file at the conventional path shouldn't block a
+        // valid persona lower in the cascade. The directory-scan fallback
+        // below already tolerates parse failures the same way.
+      }
     }
     let entries: string[];
     try {

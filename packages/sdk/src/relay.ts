@@ -949,10 +949,11 @@ export class AgentRelay {
 
     // Persona-kit's plan.env carries persona-author env + resolved inputs.
     // The broker spawnPty API does not yet accept a per-spawn env; until
-    // that lands, surface any env beyond the harness's defaults so callers
-    // know they're being dropped.
+    // that lands, surface any env beyond the broker's effective ambient
+    // env so callers know they're being dropped.
+    const brokerEnv = this.clientOptions.env ?? process.env;
     const droppedEnv = Object.keys(plan.env ?? {}).filter(
-      (key) => process.env[key] !== plan.env[key],
+      (key) => brokerEnv[key] !== plan.env[key],
     );
     if (droppedEnv.length > 0) {
       console.warn(
@@ -990,7 +991,16 @@ export class AgentRelay {
         onError: options.onError,
       });
     } catch (err) {
-      await handle.dispose();
+      // Reverse persona side effects, but never let a dispose failure mask
+      // the original spawn error — that's the actionable one for callers.
+      try {
+        await handle.dispose();
+      } catch (disposeErr) {
+        const msg = (disposeErr as Error)?.message ?? String(disposeErr);
+        console.warn(
+          `[AgentRelay] persona "${spec.id}" dispose after spawn failure failed: ${msg}`,
+        );
+      }
       throw err;
     }
 
@@ -1010,21 +1020,31 @@ export class AgentRelay {
    * inspect the persona's skill installs, mount policy, sidecars, and
    * harness argv before committing to a spawn.
    *
+   * Honors `options.persona` the same way {@link spawnPersona} does — a
+   * caller-supplied {@link PersonaSpec} short-circuits the search-dir
+   * cascade so dry-runs match what `spawnPersona` would actually execute.
+   *
    * Performs no filesystem writes and spawns no subprocesses.
    */
   getPersonaSpawnPlan(
     personaId: string,
     options: SpawnPersonaOptions<unknown> = {},
   ): PersonaSpawnPlan {
+    const planOptions = {
+      ...(options.skillsInstallRoot !== undefined ? { installRoot: options.skillsInstallRoot } : {}),
+      ...(options.envOverrides !== undefined ? { envOverrides: options.envOverrides } : {}),
+      ...(options.inputValues !== undefined ? { inputValues: options.inputValues } : {}),
+    };
+    if (options.persona) {
+      return buildPersonaSpawnPlan(resolvePersona(options.persona), planOptions);
+    }
     const personaCwd = options.personaCwd ?? options.cwd ?? process.cwd();
     const searchDirs = options.searchDirs ?? this.defaultPersonaDirs;
     const callOptions: PersonaSpawnPlanOptions = {
       cwd: personaCwd,
       ...(searchDirs ? { searchDirs } : {}),
       ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
-      ...(options.skillsInstallRoot !== undefined ? { installRoot: options.skillsInstallRoot } : {}),
-      ...(options.envOverrides !== undefined ? { envOverrides: options.envOverrides } : {}),
-      ...(options.inputValues !== undefined ? { inputValues: options.inputValues } : {}),
+      ...planOptions,
     };
     return getPersonaSpawnPlanImpl(personaId, callOptions);
   }
