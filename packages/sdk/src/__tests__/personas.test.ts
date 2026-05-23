@@ -184,6 +184,23 @@ test('loadPersona reports "not found" when no valid persona with that id exists'
   }
 });
 
+test('resolvePersona rejects handler-style personas missing harness/model/systemPrompt', () => {
+  // persona-kit ≥3.0.20 made these fields optional for onEvent-driven personas.
+  // Relay only spawns interactive personas, so the guard must fire with a
+  // clear error rather than producing a malformed ResolvedPersona.
+  assert.throws(
+    () =>
+      resolvePersona({
+        id: 'handler-only',
+        intent: 'review',
+        description: 'cloud handler persona',
+        skills: [],
+        harnessSettings: { reasoning: 'medium', timeoutSeconds: 900 },
+      } as unknown as Parameters<typeof resolvePersona>[0]),
+    /no harness/,
+  );
+});
+
 test('resolvePersona projects PersonaSpec into a PersonaSelection-shaped ResolvedPersona', () => {
   const fix = makeFixture();
   try {

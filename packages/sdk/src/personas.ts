@@ -274,16 +274,35 @@ export function loadPersona(id: string, options: PersonaLoadOptions = {}): Perso
  * {@link ResolvedPersona} (persona-kit's spawn-input form). Used as glue
  * between {@link loadPersona} and {@link buildPersonaSpawnPlan}.
  *
+ * persona-kit ≥3.0.20 makes `harness` / `model` / `systemPrompt` optional
+ * on {@link PersonaSpec} for handler-style (`onEvent`-driven) personas
+ * that never spawn a harness directly. Relay only spawns interactive
+ * personas, so the missing fields are rejected with a clear error rather
+ * than letting the cast fail silently downstream.
+ *
  * Relay has no routing/selection layer, so the `rationale` field is left
  * empty.
  */
 export function resolvePersona(spec: PersonaSpec): ResolvedPersona {
+  const { harness, model, systemPrompt } = spec;
+  if (!harness) {
+    throw new Error(
+      `Persona "${spec.id}" has no harness — relay only spawns interactive personas. ` +
+        'Handler-style (onEvent-driven) personas should be deployed via the workforce CLI.',
+    );
+  }
+  if (!model) {
+    throw new Error(`Persona "${spec.id}" has no model.`);
+  }
+  if (!systemPrompt) {
+    throw new Error(`Persona "${spec.id}" has no systemPrompt.`);
+  }
   const sidecar = resolveSidecar(spec);
   return {
     personaId: spec.id,
-    harness: spec.harness,
-    model: spec.model,
-    systemPrompt: spec.systemPrompt,
+    harness,
+    model,
+    systemPrompt,
     harnessSettings: spec.harnessSettings,
     skills: spec.skills,
     rationale: '',
