@@ -25,6 +25,7 @@ import {
   Terminal,
   Users,
   Workflow,
+  Zap,
 } from 'lucide-react';
 import { BsChatRightText } from 'react-icons/bs';
 import { FaReact } from 'react-icons/fa';
@@ -55,6 +56,7 @@ const navIcons: Record<string, NavIcon> = {
   'reference-workflows': Workflow,
   cloud: Cloud,
   workforce: Users,
+  'proactive-agents': Zap,
   'relay-dashboard': RiLayout5Line,
   observer: PiBroadcastFill,
   'cli-overview': Terminal,

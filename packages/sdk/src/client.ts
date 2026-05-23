@@ -14,7 +14,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { BrokerTransport, AgentRelayProtocolError } from './transport.js';
+import {
+  BrokerTransport,
+  AgentRelayProtocolError,
+  type PtyInputStream,
+  type PtyInputStreamOptions,
+} from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
 import { instrumentMethod } from './telemetry.js';
 import type {
@@ -37,6 +42,16 @@ import type {
   SendMessageInput,
   ListAgent,
 } from './types.js';
+import { EventBus } from './event-bus.js';
+import type {
+  AfterAgentReleaseContext,
+  AfterAgentSpawnContext,
+  AgentRelayEvents,
+  BeforeAgentReleaseContext,
+  BeforeAgentSpawnContext,
+  BeforeAgentSpawnHandler,
+  SpawnPatch,
+} from './lifecycle-hooks.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -47,6 +62,25 @@ export interface AgentRelayClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Timeout in ms for HTTP requests. Default: 30000. */
   requestTimeoutMs?: number;
+  /**
+   * Shared event bus. When constructed bare, the client owns its own bus
+   * — listeners registered via `addListener` flow only through this
+   * client. When passed in (typically by `AgentRelay`), the client uses
+   * the supplied bus so facade-registered listeners observe call-site
+   * hooks fired here.
+   */
+  eventBus?: EventBus<AgentRelayEvents>;
+}
+
+export interface BrokerExitInfo {
+  /** Exit code, or null when the process was killed by signal. */
+  code: number | null;
+  /** Terminating signal, or null when the process exited normally. */
+  signal: NodeJS.Signals | null;
+  /** PID of the managed broker process that exited. */
+  pid: number | undefined;
+  /** Recent stderr lines captured from the managed broker process. */
+  recentStderr: string[];
 }
 
 export interface AgentRelayBrokerInitArgs {
@@ -79,6 +113,8 @@ export interface AgentRelaySpawnOptions {
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
   requestTimeoutMs?: number;
+  /** Optional shared event bus — see {@link AgentRelayClientOptions.eventBus}. */
+  eventBus?: EventBus<AgentRelayEvents>;
 }
 
 export interface SessionInfo {
@@ -110,12 +146,65 @@ interface BrokerStartupDebugContext {
   stderrLines: string[];
 }
 
+type BrokerExitListener = (info: BrokerExitInfo) => void;
+
 function isHeadlessProvider(value: string): value is HeadlessProvider {
   return value === 'claude' || value === 'opencode';
 }
 
 function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
   return input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+}
+
+/**
+ * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
+ * Factored out of {@link AgentRelayClient.spawnPty} so the same shape can
+ * be applied to the post-`beforeAgentSpawn` resolved input.
+ */
+function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
+  return {
+    name: input.name,
+    cli: input.cli,
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    args: input.args ?? [],
+    ...(input.task !== undefined ? { task: input.task } : {}),
+    channels: input.channels ?? [],
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.team !== undefined ? { team: input.team } : {}),
+    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
+  };
+}
+
+function buildSpawnProviderBody(
+  input: SpawnProviderInput,
+  transport: AgentTransport
+): Record<string, unknown> {
+  return {
+    name: input.name,
+    cli: input.provider,
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    args: input.args ?? [],
+    ...(input.task !== undefined ? { task: input.task } : {}),
+    channels: input.channels ?? [],
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.team !== undefined ? { team: input.team } : {}),
+    ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
+    ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
+    ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
+    ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
+    ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+    ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
+    transport,
+  };
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -172,16 +261,84 @@ export class AgentRelayClient {
   private child: ChildProcess | null = null;
   /** Lease renewal timer (only for spawned brokers). */
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
+  private brokerExitInfo: BrokerExitInfo | null = null;
+  private brokerExitListeners = new Set<BrokerExitListener>();
 
   workspaceKey?: string;
+  /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
+  readonly baseUrl: string;
+  /** Shared multi-listener registry. Created bare when no `eventBus` is passed in. */
+  readonly eventBus: EventBus<AgentRelayEvents>;
 
   constructor(options: AgentRelayClientOptions) {
+    this.baseUrl = options.baseUrl;
+    this.eventBus = options.eventBus ?? new EventBus<AgentRelayEvents>();
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
       fetch: options.fetch,
       requestTimeoutMs: options.requestTimeoutMs,
     });
+  }
+
+  /**
+   * Register a listener on the client's event bus. Returns an unsubscribe
+   * function. Equivalent to `client.eventBus.addListener(...)` but mirrors
+   * the `AgentRelay` facade API so direct-client callers don't need to
+   * reach through `.eventBus`.
+   *
+   * `beforeAgentSpawn` is the one event whose handler may return a
+   * `SpawnPatch` to mutate the spawn input — the dedicated overload
+   * keeps that contract type-safe without forcing other events to accept
+   * non-void returns.
+   */
+  addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): () => void;
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+  ): () => void {
+    return this.eventBus.addListener(
+      event,
+      handler as (...args: AgentRelayEvents[K]) => void | Promise<void>
+    );
+  }
+
+  /** Remove a previously-registered listener. */
+  removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): void;
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+  ): void {
+    this.eventBus.removeListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
+  }
+
+  /**
+   * Fold `beforeAgentSpawn` patches into the input. Listeners run in
+   * registration order; each may return a {@link SpawnPatch} that is
+   * shallow-merged over the running result. Handler exceptions are caught
+   * and logged but do not abort the chain.
+   */
+  private async runBeforeSpawn(ctx: BeforeAgentSpawnContext): Promise<SpawnPtyInput | SpawnProviderInput> {
+    let resolved: SpawnPtyInput | SpawnProviderInput = { ...ctx.input };
+    for (const handler of this.eventBus.listeners('beforeAgentSpawn') as Array<BeforeAgentSpawnHandler>) {
+      try {
+        const patch = await handler({ ...ctx, input: resolved as Readonly<typeof resolved> });
+        if (patch && typeof patch === 'object') {
+          resolved = { ...resolved, ...(patch as SpawnPatch) } as SpawnPtyInput | SpawnProviderInput;
+        }
+      } catch (err) {
+        console.error('[agent-relay] beforeAgentSpawn listener threw:', err);
+      }
+    }
+    return resolved;
   }
 
   /**
@@ -193,7 +350,11 @@ export class AgentRelayClient {
    * @param cwd — project directory (default: process.cwd())
    * @param connectionPath — explicit path to connection.json (overrides cwd)
    */
-  static connect(options?: { cwd?: string; connectionPath?: string }): AgentRelayClient {
+  static connect(options?: {
+    cwd?: string;
+    connectionPath?: string;
+    eventBus?: EventBus<AgentRelayEvents>;
+  }): AgentRelayClient {
     const cwd = options?.cwd ?? process.cwd();
     const stateDir = process.env.AGENT_RELAY_STATE_DIR;
     const connPath =
@@ -225,7 +386,11 @@ export class AgentRelayClient {
       );
     }
 
-    return new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
+    return new AgentRelayClient({
+      baseUrl: conn.url,
+      apiKey: conn.api_key,
+      ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
+    });
   }
 
   /**
@@ -296,8 +461,10 @@ export class AgentRelayClient {
       baseUrl,
       apiKey,
       requestTimeoutMs: options?.requestTimeoutMs,
+      ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
     });
     client.child = child;
+    client.installManagedBrokerExitHandler(child, stderrLines);
 
     // The broker prints "API listening on …" the moment its TCP listener is
     // bound, but it still needs to complete a Relaycast handshake before
@@ -343,20 +510,14 @@ export class AgentRelayClient {
       }
     }
 
-    client.connectEvents();
+    if (!client.brokerExitInfo) {
+      client.connectEvents();
 
-    // Renew the owner lease so the broker doesn't auto-shutdown
-    client.leaseTimer = setInterval(() => {
-      client.renewLease().catch(() => {});
-    }, 60_000);
-
-    child.on('exit', () => {
-      client.disconnectEvents();
-      if (client.leaseTimer) {
-        clearInterval(client.leaseTimer);
-        client.leaseTimer = null;
-      }
-    });
+      // Renew the owner lease so the broker doesn't auto-shutdown
+      client.leaseTimer = setInterval(() => {
+        client.renewLease().catch(() => {});
+      }, 60_000);
+    }
 
     return client;
   }
@@ -392,6 +553,37 @@ export class AgentRelayClient {
     return this.transport.onEvent(listener);
   }
 
+  /**
+   * Subscribe to managed broker child-process exit.
+   *
+   * Clients created with `new AgentRelayClient(...)` or `connect()` do not own a
+   * broker child process, so this is a no-op for them.
+   */
+  onBrokerExit(listener: BrokerExitListener): () => void {
+    if (!this.child && !this.brokerExitInfo) {
+      return () => {};
+    }
+
+    this.brokerExitListeners.add(listener);
+
+    if (this.brokerExitInfo) {
+      const info = cloneBrokerExitInfo(this.brokerExitInfo);
+      queueMicrotask(() => {
+        if (this.brokerExitListeners.has(listener)) {
+          try {
+            listener(info);
+          } catch {
+            // Listener failures should not interfere with SDK cleanup.
+          }
+        }
+      });
+    }
+
+    return () => {
+      this.brokerExitListeners.delete(listener);
+    };
+  }
+
   queryEvents(filter?: { kind?: string; name?: string; since?: number; limit?: number }): BrokerEvent[] {
     return this.transport.queryEvents(filter);
   }
@@ -403,28 +595,28 @@ export class AgentRelayClient {
   // ── Agent lifecycle ────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
-    return trackMethod('AgentRelayClient.spawnPty', () =>
-      this.transport.request('/api/spawn', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: input.name,
-          cli: input.cli,
-          ...(input.model !== undefined ? { model: input.model } : {}),
-          args: input.args ?? [],
-          ...(input.task !== undefined ? { task: input.task } : {}),
-          channels: input.channels ?? [],
-          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.team !== undefined ? { team: input.team } : {}),
-          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-        }),
-      })
-    );
+    return trackMethod('AgentRelayClient.spawnPty', async () => {
+      const beforeCtx: BeforeAgentSpawnContext = {
+        kind: 'pty',
+        input,
+        spawnerPid: process.pid,
+        spawnStartTs: new Date().toISOString(),
+        baseUrl: this.baseUrl,
+      };
+      const t0 = Date.now();
+      const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnPtyInput;
+      try {
+        const result = await this.transport.request<{ name: string; runtime: AgentRuntime }>('/api/spawn', {
+          method: 'POST',
+          body: JSON.stringify(buildSpawnPtyBody(resolvedInput)),
+        });
+        await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
+        return result;
+      } catch (err) {
+        await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
+        throw err;
+      }
+    });
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -435,29 +627,28 @@ export class AgentRelayClient {
       );
     }
 
-    return trackMethod('AgentRelayClient.spawnProvider', () =>
-      this.transport.request('/api/spawn', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: input.name,
-          cli: input.provider,
-          ...(input.model !== undefined ? { model: input.model } : {}),
-          args: input.args ?? [],
-          ...(input.task !== undefined ? { task: input.task } : {}),
-          channels: input.channels ?? [],
-          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.team !== undefined ? { team: input.team } : {}),
-          ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
-          ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
-          ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
-          ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-          ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
-          ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
-          ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-          transport,
-        }),
-      })
-    );
+    return trackMethod('AgentRelayClient.spawnProvider', async () => {
+      const beforeCtx: BeforeAgentSpawnContext = {
+        kind: 'provider',
+        input,
+        spawnerPid: process.pid,
+        spawnStartTs: new Date().toISOString(),
+        baseUrl: this.baseUrl,
+      };
+      const t0 = Date.now();
+      const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnProviderInput;
+      try {
+        const result = await this.transport.request<{ name: string; runtime: AgentRuntime }>('/api/spawn', {
+          method: 'POST',
+          body: JSON.stringify(buildSpawnProviderBody(resolvedInput, transport)),
+        });
+        await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
+        return result;
+      } catch (err) {
+        await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
+        throw err;
+      }
+    });
   }
 
   async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
@@ -477,12 +668,51 @@ export class AgentRelayClient {
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
-    return trackMethod('AgentRelayClient.release', () =>
-      this.transport.request(`/api/spawned/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
-      })
-    );
+    return trackMethod('AgentRelayClient.release', async () => {
+      const beforeCtx: BeforeAgentReleaseContext = { name, reason, baseUrl: this.baseUrl };
+      const t0 = Date.now();
+      await this.eventBus.emit('beforeAgentRelease', beforeCtx);
+      try {
+        const result = await this.transport.request<{ name: string }>(
+          `/api/spawned/${encodeURIComponent(name)}`,
+          {
+            method: 'DELETE',
+            ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+          }
+        );
+        const afterCtx: AfterAgentReleaseContext = {
+          ...beforeCtx,
+          durationMs: Date.now() - t0,
+        };
+        await this.eventBus.emit('afterAgentRelease', afterCtx);
+        return result;
+      } catch (err) {
+        const afterCtx: AfterAgentReleaseContext = {
+          ...beforeCtx,
+          error: err instanceof Error ? err : new Error(String(err)),
+          durationMs: Date.now() - t0,
+        };
+        await this.eventBus.emit('afterAgentRelease', afterCtx);
+        throw err;
+      }
+    });
+  }
+
+  private async emitAfterSpawn(
+    beforeCtx: BeforeAgentSpawnContext,
+    resolvedInput: SpawnPtyInput | SpawnProviderInput,
+    startMs: number,
+    result: { name: string; runtime: AgentRuntime } | undefined,
+    error: unknown
+  ): Promise<void> {
+    const afterCtx: AfterAgentSpawnContext = {
+      ...beforeCtx,
+      resolvedInput,
+      ...(result ? { result } : {}),
+      ...(error !== undefined ? { error: error instanceof Error ? error : new Error(String(error)) } : {}),
+      durationMs: Date.now() - startMs,
+    };
+    await this.eventBus.emit('afterAgentSpawn', afterCtx);
   }
 
   async listAgents(): Promise<ListAgent[]> {
@@ -499,6 +729,10 @@ export class AgentRelayClient {
       method: 'POST',
       body: JSON.stringify({ data }),
     });
+  }
+
+  openInputStream(name: string, options?: PtyInputStreamOptions): PtyInputStream {
+    return this.transport.openInputStream(name, options);
   }
 
   async resizePty(
@@ -773,6 +1007,45 @@ export class AgentRelayClient {
   async getConfig(): Promise<{ workspaceKey?: string }> {
     return this.transport.request('/api/config');
   }
+
+  private notifyBrokerExit(info: BrokerExitInfo): void {
+    if (this.brokerExitInfo) return;
+
+    this.brokerExitInfo = cloneBrokerExitInfo(info);
+    for (const listener of this.brokerExitListeners) {
+      try {
+        listener(cloneBrokerExitInfo(info));
+      } catch {
+        // Listener failures should not interfere with SDK cleanup.
+      }
+    }
+  }
+
+  private installManagedBrokerExitHandler(child: ChildProcess, stderrLines: string[]): void {
+    const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      this.notifyBrokerExit({
+        code,
+        signal,
+        pid: child.pid,
+        recentStderr: [...stderrLines],
+      });
+      this.disconnectEvents();
+      if (this.leaseTimer) {
+        clearInterval(this.leaseTimer);
+        this.leaseTimer = null;
+      }
+      if (this.child === child) {
+        this.child = null;
+      }
+    };
+
+    if (child.exitCode !== null || child.signalCode !== null) {
+      handleExit(child.exitCode, child.signalCode);
+      return;
+    }
+
+    child.once('exit', handleExit);
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -875,6 +1148,13 @@ function pushBufferedLine(lines: string[], line: string): void {
   if (lines.length > 40) {
     lines.splice(0, lines.length - 40);
   }
+}
+
+function cloneBrokerExitInfo(info: BrokerExitInfo): BrokerExitInfo {
+  return {
+    ...info,
+    recentStderr: [...info.recentStderr],
+  };
 }
 
 function formatBrokerStartupError(

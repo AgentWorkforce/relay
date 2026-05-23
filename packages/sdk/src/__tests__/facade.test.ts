@@ -60,7 +60,7 @@ test('facade: spawn with initial task delivers task after worker_ready', async (
   const suffix = Date.now().toString(36);
   const relay = makeRelay(bin);
   const readyNames: string[] = [];
-  relay.onAgentReady = (agent) => readyNames.push(agent.name);
+  relay.addListener('agentReady', (agent) => readyNames.push(agent.name));
 
   try {
     const agent = await relay.spawnPty({
@@ -73,7 +73,7 @@ test('facade: spawn with initial task delivers task after worker_ready', async (
     // Wait a bit for worker_ready event to propagate
     await new Promise((r) => setTimeout(r, 2_000));
 
-    assert.ok(readyNames.includes(agent.name), 'onAgentReady should fire for spawned agent');
+    assert.ok(readyNames.includes(agent.name), 'agentReady listener should fire for spawned agent');
 
     await agent.release();
   } finally {
@@ -81,9 +81,9 @@ test('facade: spawn with initial task delivers task after worker_ready', async (
   }
 });
 
-// ── onAgentReady ────────────────────────────────────────────────────────────
+// ── agentReady listener ─────────────────────────────────────────────────────
 
-test('facade: onAgentReady fires when worker becomes ready', async (t) => {
+test('facade: agentReady listener fires when worker becomes ready', async (t) => {
   if (!requireRelaycast(t)) return;
   const bin = requireBinary(t);
   if (!bin) return;
@@ -92,7 +92,7 @@ test('facade: onAgentReady fires when worker becomes ready', async (t) => {
   const relay = makeRelay(bin);
 
   const readyAgents: Agent[] = [];
-  relay.onAgentReady = (agent) => readyAgents.push(agent);
+  relay.addListener('agentReady', (agent) => readyAgents.push(agent));
 
   try {
     const agent = await relay.spawnPty({
@@ -106,7 +106,7 @@ test('facade: onAgentReady fires when worker becomes ready', async (t) => {
 
     assert.ok(
       readyAgents.some((a) => a.name === agent.name),
-      'onAgentReady should fire with the correct agent'
+      'agentReady listener should fire with the correct agent'
     );
 
     await agent.release();
@@ -125,7 +125,7 @@ test('facade: broadcast sends to all agents', async (t) => {
   const suffix = Date.now().toString(36);
   const relay = makeRelay(bin);
   const sentMessages: Message[] = [];
-  relay.onMessageSent = (msg) => sentMessages.push(msg);
+  relay.addListener('messageSent', (msg) => sentMessages.push(msg));
 
   try {
     const agent = await relay.spawnPty({
@@ -207,7 +207,7 @@ test('facade: waitForAny respects timeout', async (t) => {
 
 // ── exit code ───────────────────────────────────────────────────────────────
 
-test('facade: onAgentExited populates exitCode and exitSignal', async (t) => {
+test('facade: agentExited listener populates exitCode and exitSignal', async (t) => {
   if (!requireRelaycast(t)) return;
   const bin = requireBinary(t);
   if (!bin) return;
@@ -215,7 +215,7 @@ test('facade: onAgentExited populates exitCode and exitSignal', async (t) => {
   const suffix = Date.now().toString(36);
   const relay = makeRelay(bin);
   const exitedAgents: Agent[] = [];
-  relay.onAgentExited = (agent) => exitedAgents.push(agent);
+  relay.addListener('agentExited', (agent) => exitedAgents.push(agent));
 
   try {
     const agent = await relay.spawnPty({

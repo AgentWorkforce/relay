@@ -8,7 +8,7 @@
  * - Event buffering, replay, and query (mirrors stdio client behavior)
  */
 
-import WebSocket from 'ws';
+import WebSocket, { type RawData } from 'ws';
 import type { BrokerEvent } from './protocol.js';
 
 export class AgentRelayProtocolError extends Error {
@@ -44,6 +44,321 @@ export interface BrokerTransportOptions {
   maxBufferSize?: number;
 }
 
+export interface PtyInputStreamOptions {
+  /** Maximum queued + in-flight UTF-8 bytes before send() rejects. Default: 1 MiB. */
+  highWaterMarkBytes?: number;
+  /** Timeout in ms for the websocket open handshake. Default: 10000. */
+  openTimeoutMs?: number;
+}
+
+export interface PtyInputWriteResult {
+  name: string;
+  bytes_written: number;
+}
+
+interface PendingPtyInput {
+  data: string;
+  bytes: number;
+  resolve: (result: PtyInputWriteResult) => void;
+  reject: (error: Error) => void;
+  settled: boolean;
+}
+
+const DEFAULT_INPUT_HIGH_WATER_MARK_BYTES = 1024 * 1024;
+const DEFAULT_INPUT_OPEN_TIMEOUT_MS = 10_000;
+
+export class PtyInputStream {
+  private readonly ws: WebSocket;
+  private readonly queue: PendingPtyInput[] = [];
+  private readonly highWaterMarkBytes: number;
+  private readonly openPromise: Promise<void>;
+  private openResolve?: () => void;
+  private openReject?: (error: Error) => void;
+  private openTimer: ReturnType<typeof setTimeout> | null = null;
+  private inFlight: PendingPtyInput | null = null;
+  private bufferedBytes = 0;
+  private opened = false;
+  private _closed = false;
+  private flushing = false;
+
+  constructor(options: { url: string; apiKey?: string } & PtyInputStreamOptions) {
+    this.highWaterMarkBytes = normalizePositiveIntegerOption(
+      options.highWaterMarkBytes,
+      DEFAULT_INPUT_HIGH_WATER_MARK_BYTES,
+      'highWaterMarkBytes'
+    );
+    const openTimeoutMs = normalizePositiveIntegerOption(
+      options.openTimeoutMs,
+      DEFAULT_INPUT_OPEN_TIMEOUT_MS,
+      'openTimeoutMs'
+    );
+    this.openPromise = new Promise<void>((resolve, reject) => {
+      this.openResolve = resolve;
+      this.openReject = reject;
+    });
+    this.openPromise.catch(() => undefined);
+
+    const headers: Record<string, string> = {};
+    if (options.apiKey) {
+      headers['X-API-Key'] = options.apiKey;
+    }
+
+    this.ws = new WebSocket(options.url, { headers });
+    this.openTimer = setTimeout(() => {
+      const error = new AgentRelayProtocolError({
+        code: 'input_stream_open_timeout',
+        message: 'timed out opening PTY input stream',
+        retryable: true,
+      });
+      this.rejectOpen(error);
+      this.failAll(error);
+      this.close();
+    }, openTimeoutMs);
+
+    this.ws.on('open', () => {
+      // The broker sends pty_input_ready after it verifies the agent exists
+      // and is PTY-backed. Keep queued writes blocked until that handshake.
+    });
+
+    this.ws.on('message', (data) => {
+      this.handleMessage(data);
+    });
+
+    this.ws.on('close', (code, reason) => {
+      this._closed = true;
+      this.clearOpenTimer();
+      const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
+      const error = new AgentRelayProtocolError({
+        code: 'input_stream_closed',
+        message: `PTY input stream closed (${code})${detail}`,
+        retryable: false,
+      });
+      this.rejectOpen(error);
+      this.failAll(error);
+    });
+
+    this.ws.on('error', (cause) => {
+      const error = new AgentRelayProtocolError({
+        code: 'input_stream_error',
+        message: cause instanceof Error ? cause.message : 'PTY input stream failed',
+        retryable: true,
+        data: cause,
+      });
+      this.rejectOpen(error);
+      this.failAll(error);
+    });
+  }
+
+  get closed(): boolean {
+    return this._closed;
+  }
+
+  get bufferedAmountBytes(): number {
+    return this.bufferedBytes;
+  }
+
+  waitUntilOpen(): Promise<void> {
+    return this.openPromise;
+  }
+
+  send(data: string): Promise<PtyInputWriteResult> {
+    if (this._closed) {
+      return Promise.reject(
+        new AgentRelayProtocolError({
+          code: 'input_stream_closed',
+          message: 'PTY input stream is closed',
+          retryable: false,
+        })
+      );
+    }
+
+    const bytes = Buffer.byteLength(data, 'utf8');
+    if (this.bufferedBytes + bytes > this.highWaterMarkBytes) {
+      return Promise.reject(
+        new AgentRelayProtocolError({
+          code: 'input_backpressure',
+          message: `PTY input stream buffered ${this.bufferedBytes} bytes; refusing ${bytes} more over high water mark ${this.highWaterMarkBytes}`,
+          retryable: true,
+        })
+      );
+    }
+
+    return new Promise<PtyInputWriteResult>((resolve, reject) => {
+      const pending: PendingPtyInput = {
+        data,
+        bytes,
+        resolve,
+        reject,
+        settled: false,
+      };
+      this.queue.push(pending);
+      this.bufferedBytes += bytes;
+      this.flush();
+    });
+  }
+
+  close(code?: number, reason?: string): void {
+    if (this._closed) return;
+    this._closed = true;
+    this.clearOpenTimer();
+    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+      this.ws.close(code, reason);
+    }
+    const error = new AgentRelayProtocolError({
+      code: 'input_stream_closed',
+      message: 'PTY input stream closed',
+      retryable: false,
+    });
+    this.rejectOpen(error);
+    this.failAll(error);
+  }
+
+  private async flush(): Promise<void> {
+    if (this.flushing || this.inFlight || this.queue.length === 0 || this._closed) {
+      return;
+    }
+    this.flushing = true;
+    try {
+      await this.openPromise;
+    } catch (error) {
+      this.failAll(asError(error));
+      return;
+    } finally {
+      this.flushing = false;
+    }
+
+    if (this.inFlight || this.queue.length === 0 || this._closed) {
+      return;
+    }
+
+    const next = this.queue.shift();
+    if (!next) return;
+    this.inFlight = next;
+    this.ws.send(next.data, (error) => {
+      if (!error) return;
+      if (this.inFlight === next) {
+        this.inFlight = null;
+      }
+      const protocolError = new AgentRelayProtocolError({
+        code: 'input_stream_send_failed',
+        message: error.message,
+        retryable: true,
+        data: error,
+      });
+      this.settle(next, protocolError);
+      this.failAll(protocolError);
+    });
+  }
+
+  private handleMessage(data: RawData): void {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(rawDataToString(data));
+    } catch {
+      return;
+    }
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+
+    const message = payload as Record<string, unknown>;
+    const type = typeof message.type === 'string' ? message.type : undefined;
+    if (type === 'pty_input_ready') {
+      this.opened = true;
+      this.clearOpenTimer();
+      this.openResolve?.();
+      this.flush();
+      return;
+    }
+
+    if (type === 'pty_input_ack') {
+      const current = this.inFlight;
+      if (!current) return;
+      this.inFlight = null;
+      this.settle(current, {
+        name: typeof message.name === 'string' ? message.name : '',
+        bytes_written: typeof message.bytes_written === 'number' ? message.bytes_written : current.bytes,
+      });
+      this.flush();
+      return;
+    }
+
+    if (type === 'pty_input_error' || type === 'error') {
+      const error = new AgentRelayProtocolError({
+        code: typeof message.code === 'string' ? message.code : 'input_stream_error',
+        message: typeof message.message === 'string' ? message.message : 'PTY input stream failed',
+        retryable: Boolean(message.retryable),
+        status: typeof message.statusCode === 'number' ? message.statusCode : undefined,
+        data: message,
+      });
+      this.rejectOpen(error);
+      this.failAll(error);
+      this.close();
+    }
+  }
+
+  private settle(item: PendingPtyInput, result: PtyInputWriteResult | Error): void {
+    if (item.settled) return;
+    item.settled = true;
+    this.bufferedBytes = Math.max(0, this.bufferedBytes - item.bytes);
+    if (result instanceof Error) {
+      item.reject(result);
+    } else {
+      item.resolve(result);
+    }
+  }
+
+  private failAll(error: Error): void {
+    if (this.inFlight) {
+      this.settle(this.inFlight, error);
+      this.inFlight = null;
+    }
+    while (this.queue.length > 0) {
+      const item = this.queue.shift();
+      if (item) this.settle(item, error);
+    }
+  }
+
+  private rejectOpen(error: Error): void {
+    if (!this.opened) {
+      this.openReject?.(error);
+    }
+  }
+
+  private clearOpenTimer(): void {
+    if (this.openTimer) {
+      clearTimeout(this.openTimer);
+      this.openTimer = null;
+    }
+  }
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function normalizePositiveIntegerOption(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new AgentRelayProtocolError({
+      code: 'invalid_input_stream_options',
+      message: `${name} must be a finite number greater than 0`,
+      retryable: false,
+    });
+  }
+  return Math.floor(resolved);
+}
+
+function rawDataToString(data: RawData): string {
+  if (Array.isArray(data)) {
+    return Buffer.concat(data).toString('utf8');
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(new Uint8Array(data)).toString('utf8');
+  }
+  return Buffer.from(data).toString('utf8');
+}
+
 export class BrokerTransport {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -73,6 +388,10 @@ export class BrokerTransport {
 
   get wsUrl(): string {
     return this.baseUrl.replace(/^http/, 'ws') + '/ws';
+  }
+
+  inputStreamUrl(name: string): string {
+    return `${this.baseUrl.replace(/^http/, 'ws')}/api/input/${encodeURIComponent(name)}/stream`;
   }
 
   // ── HTTP ─────────────────────────────────────────────────────────────
@@ -206,6 +525,14 @@ export class BrokerTransport {
       this.ws = null;
     }
     this._connected = false;
+  }
+
+  openInputStream(name: string, options?: PtyInputStreamOptions): PtyInputStream {
+    return new PtyInputStream({
+      url: this.inputStreamUrl(name),
+      apiKey: this.apiKey,
+      ...options,
+    });
   }
 
   onEvent(listener: (event: BrokerEvent) => void): () => void {

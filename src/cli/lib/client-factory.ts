@@ -5,6 +5,7 @@ export interface CreateAgentRelayClientOptions {
   channels?: string[];
   binaryPath?: string;
   binaryArgs?: AgentRelayBrokerInitArgs;
+  brokerName?: string;
   env?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
 }
@@ -30,6 +31,7 @@ export async function createAgentRelayClient(
     channels = ['general'],
     binaryPath = process.env.AGENT_RELAY_BIN,
     binaryArgs,
+    brokerName,
     env = process.env,
     preferConnect = false,
   } = options;
@@ -45,6 +47,7 @@ export async function createAgentRelayClient(
   return AgentRelayClient.spawn({
     binaryPath: binaryPath || undefined,
     binaryArgs,
+    brokerName,
     channels,
     cwd,
     env: env as Record<string, string>,

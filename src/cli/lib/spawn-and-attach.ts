@@ -38,6 +38,7 @@ import { defaultExit, runSignalHandler } from './exit.js';
 import { spawnAgent, type NewDependencies, type SpawnRequestBody } from '../commands/new.js';
 import { releaseAgent } from '../commands/rm.js';
 import {
+  openPtyInputStream,
   runDriveSession,
   type DriveDependencies,
   type DriveStdin,
@@ -170,6 +171,8 @@ export function buildDefaultAttachChildDeps(): AttachChildDependencies {
     captureAndRenderSnapshot: sharedSnapshot,
     stdin: stdinHandle,
     terminal: terminalHandle,
+    openInputStream: (connection, name, options) =>
+      openPtyInputStream(connection, name, sharedFetch, options),
   };
 
   const passthroughDeps: PassthroughDependencies = {
@@ -184,6 +187,7 @@ export function buildDefaultAttachChildDeps(): AttachChildDependencies {
     captureAndRenderSnapshot: sharedSnapshot,
     stdin: stdinHandle,
     terminal: terminalHandle,
+    openInputStream: (connection, name) => openPtyInputStream(connection, name, sharedFetch),
   };
 
   const viewDeps: ViewDependencies = {

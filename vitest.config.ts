@@ -26,7 +26,6 @@ const workspacePackages = [
   'slack-primitive',
   'telemetry',
   'trajectory',
-  'user-directory',
   'utils',
   'workflow-types',
 ] as const;

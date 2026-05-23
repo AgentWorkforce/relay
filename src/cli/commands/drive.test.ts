@@ -9,6 +9,7 @@ import {
   registerDriveCommands,
   renderStatusLine,
   runDriveSession,
+  type CliPtyInputStream,
   type DriveDependencies,
   type DriveStdin,
   type DriveTerminal,
@@ -132,6 +133,35 @@ class FakeTerminal implements DriveTerminal {
   }
 }
 
+class FakeInputStream implements CliPtyInputStream {
+  readonly writes: string[] = [];
+  closed = false;
+  closeCode?: number;
+  closeReason?: string;
+
+  constructor(
+    private readonly name: string,
+    private readonly openError?: Error,
+    private readonly sendError?: Error
+  ) {}
+
+  async waitUntilOpen(): Promise<void> {
+    if (this.openError) throw this.openError;
+  }
+
+  async send(data: string): Promise<{ name: string; bytes_written: number }> {
+    if (this.sendError) throw this.sendError;
+    this.writes.push(data);
+    return { name: this.name, bytes_written: Buffer.byteLength(data, 'utf8') };
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closed = true;
+    this.closeCode = code;
+    this.closeReason = reason;
+  }
+}
+
 /** Routed fetch — keyed on `${method} ${pathSuffix}`. */
 type FetchRoute = (init?: RequestInit) => Promise<Response>;
 
@@ -150,6 +180,8 @@ interface FetchScript {
    *  pass `null` to simulate "not a TTY" so the resize-forwarding path
    *  short-circuits. */
   terminalSize?: { rows: number; cols: number } | null;
+  inputStreamOpenError?: Error;
+  inputStreamSendError?: Error;
 }
 
 function createHarness(opts: FetchScript = {}): {
@@ -162,12 +194,14 @@ function createHarness(opts: FetchScript = {}): {
   logs: unknown[][];
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   fetchLog: Array<{ url: string; method: string; body?: unknown; headers: Record<string, string> }>;
+  inputStreams: FakeInputStream[];
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
   const logs: unknown[][] = [];
   const signals = new Map<NodeJS.Signals, () => void | Promise<void>>();
   const sockets: FakeWebSocket[] = [];
+  const inputStreams: FakeInputStream[] = [];
   const fetchLog: Array<{
     url: string;
     method: string;
@@ -308,9 +342,14 @@ function createHarness(opts: FetchScript = {}): {
     }) as DriveDependencies['captureAndRenderSnapshot'],
     stdin,
     terminal,
+    openInputStream: vi.fn((_connection, streamName) => {
+      const stream = new FakeInputStream(streamName, opts.inputStreamOpenError, opts.inputStreamSendError);
+      inputStreams.push(stream);
+      return stream;
+    }),
   };
 
-  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog };
+  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
 }
 
 afterEach(() => {
@@ -578,19 +617,35 @@ describe('runDriveSession', () => {
     await sessionPromise;
   });
 
-  it('forwards stdin keystrokes via POST /api/input/{name}', async () => {
-    const { deps, sockets, stdin, fetchLog } = createHarness();
+  it('forwards stdin keystrokes through the SDK PTY input stream', async () => {
+    const { deps, sockets, stdin, fetchLog, inputStreams } = createHarness();
     const sessionPromise = runDriveSession('Alice', {}, deps);
     await openSocket(sockets);
 
     stdin.type(Buffer.from('hello'));
-    // Let the fire-and-forget POST settle.
+    // Let the fire-and-forget stream write settle.
     await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams).toHaveLength(1);
+    expect(inputStreams[0].writes).toEqual(['hello']);
     const input = fetchLog.find((c) => c.method === 'POST' && c.url.includes('/api/input/'));
-    expect(input?.body).toEqual({ data: 'hello' });
+    expect(input).toBeUndefined();
 
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
+    expect(inputStreams[0].closed).toBe(true);
+  });
+
+  it('aborts without raw mode when the SDK PTY input stream does not open', async () => {
+    const { deps, sockets, stdin, errors } = createHarness({
+      inputStreamOpenError: new Error('stream refused'),
+    });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    const code = await sessionPromise;
+    expect(code).toBe(1);
+    expect(stdin.rawModeCalls).toEqual([]);
+    expect(errors.some((args) => String(args[0]).includes('could not open PTY input stream'))).toBe(true);
   });
 
   it('Ctrl+G triggers POST /api/spawned/{name}/flush', async () => {

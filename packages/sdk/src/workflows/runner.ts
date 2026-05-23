@@ -57,7 +57,7 @@ import type { MountHandle } from '../provisioner/mount.js';
 import { collectCliSession, type CliSessionReport } from './cli-session-collector.js';
 import { executeApiStep } from './api-executor.js';
 import { BudgetExceededError, BudgetTracker } from './budget-tracker.js';
-import { ChannelMessenger } from './channel-messenger.js';
+import { ChannelMessenger, scrubForChannel as scrubWorkflowOutputForChannel } from './channel-messenger.js';
 import { InMemoryWorkflowDb } from './memory-db.js';
 import { buildCommand as buildProcessCommand, spawnProcess } from './process-spawner.js';
 import { createProcessBackendExecutor } from './process-backend-executor.js';
@@ -532,6 +532,7 @@ export class WorkflowRunner {
   private runStartTime?: number;
   /** Unsubscribe handle for broker stderr listener wired during a run. */
   private unsubBrokerStderr?: () => void;
+  private unsubRelayListeners: Array<() => void> = [];
   /** Tracks last idle log time per agent to debounce idle warnings (30s multiples). */
   private readonly lastIdleLog = new Map<string, number>();
   /** Tracks last logged activity type per agent to avoid duplicate status lines. */
@@ -2111,7 +2112,7 @@ export class WorkflowRunner {
     const repairRetries =
       existing?.repairRetries ??
       (hasRepairAgentCandidate
-        ? existing?.maxRetries ?? DEFAULT_WORKFLOW_REPAIR_RETRIES
+        ? (existing?.maxRetries ?? DEFAULT_WORKFLOW_REPAIR_RETRIES)
         : existing?.repairRetries);
 
     return {
@@ -2843,7 +2844,10 @@ export class WorkflowRunner {
     this.validateConfig(resolved);
     const runtimeConfig = this.applyReliabilityDefaults(resolved);
 
-    const permissionResult = this.validatePermissions(runtimeConfig.agents, runtimeConfig.permission_profiles);
+    const permissionResult = this.validatePermissions(
+      runtimeConfig.agents,
+      runtimeConfig.permission_profiles
+    );
     if (permissionResult.errors.length > 0) {
       throw new Error(`Permission validation failed:\n  ${permissionResult.errors.join('\n  ')}`);
     }
@@ -3005,7 +3009,9 @@ export class WorkflowRunner {
       throw new Error(`Run "${runId}" is in status "${run.status}" and cannot be resumed`);
     }
 
-    const resolvedConfig = this.applyReliabilityDefaults(vars ? this.resolveVariables(run.config, vars) : run.config);
+    const resolvedConfig = this.applyReliabilityDefaults(
+      vars ? this.resolveVariables(run.config, vars) : run.config
+    );
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
     const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
@@ -3147,165 +3153,179 @@ export class WorkflowRunner {
         });
 
         // Wire PTY output dispatcher — routes chunks to per-agent listeners + activity logging
-        this.relay.onWorkerOutput = ({ name, chunk }) => {
-          const listener = this.ptyListeners.get(name);
-          if (listener) listener(chunk);
+        this.unsubRelayListeners.push(
+          this.relay.addListener('workerOutput', ({ name, chunk }) => {
+            const listener = this.ptyListeners.get(name);
+            if (listener) listener(chunk);
 
-          // Parse PTY output for high-signal activity
-          const stripped = WorkflowRunner.stripAnsi(chunk);
-          const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-          let activity: string | undefined;
-          if (/Read\(/.test(stripped)) {
-            // Extract filename — path may be truncated at chunk boundary so require
-            // at least a dir separator or 8+ chars to trust the basename.
-            const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
-            if (m) {
-              const base = path.basename(m[1]);
-              activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
-            } else {
-              activity = 'Reading file...';
+            // Parse PTY output for high-signal activity
+            const stripped = WorkflowRunner.stripAnsi(chunk);
+            const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+            let activity: string | undefined;
+            if (/Read\(/.test(stripped)) {
+              // Extract filename — path may be truncated at chunk boundary so require
+              // at least a dir separator or 8+ chars to trust the basename.
+              const m = stripped.match(/Read\(\s*~?([^\s)"']{8,})/);
+              if (m) {
+                const base = path.basename(m[1]);
+                activity = base.length >= 3 ? `Reading ${base}` : 'Reading file...';
+              } else {
+                activity = 'Reading file...';
+              }
+            } else if (/Edit\(/.test(stripped)) {
+              const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
+              if (m) {
+                const base = path.basename(m[1]);
+                activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
+              } else {
+                activity = 'Editing file...';
+              }
+            } else if (/Bash\(/.test(stripped)) {
+              // Extract a short preview of the command
+              const m = stripped.match(/Bash\(\s*(.{1,40})/);
+              activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
+            } else if (/Explore\(/.test(stripped)) {
+              const m = stripped.match(/Explore\(\s*(.{1,50})/);
+              activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
+            } else if (/Task\(/.test(stripped)) {
+              activity = 'Running sub-agent...';
+            } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
+              const m = stripped.match(/(\d+)s/);
+              activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
             }
-          } else if (/Edit\(/.test(stripped)) {
-            const m = stripped.match(/Edit\(\s*~?([^\s)"']{8,})/);
-            if (m) {
-              const base = path.basename(m[1]);
-              activity = base.length >= 3 ? `Editing ${base}` : 'Editing file...';
-            } else {
-              activity = 'Editing file...';
+            if (activity && this.lastActivity.get(name) !== activity) {
+              this.lastActivity.set(name, activity);
+              this.log(`[${shortName}] ${activity}`);
             }
-          } else if (/Bash\(/.test(stripped)) {
-            // Extract a short preview of the command
-            const m = stripped.match(/Bash\(\s*(.{1,40})/);
-            activity = m ? `Running: ${m[1].trim()}...` : 'Running command...';
-          } else if (/Explore\(/.test(stripped)) {
-            const m = stripped.match(/Explore\(\s*(.{1,50})/);
-            activity = m ? `Exploring: ${m[1].replace(/\).*/, '').trim()}` : 'Exploring codebase...';
-          } else if (/Task\(/.test(stripped)) {
-            activity = 'Running sub-agent...';
-          } else if (/Sublimating|Thinking|Coalescing|Cultivating/.test(stripped)) {
-            const m = stripped.match(/(\d+)s/);
-            activity = m ? `Thinking... (${m[1]}s)` : 'Thinking...';
-          }
-          if (activity && this.lastActivity.get(name) !== activity) {
-            this.lastActivity.set(name, activity);
-            this.log(`[${shortName}] ${activity}`);
-          }
-        };
+          })
+        );
 
         // Wire relay event hooks for rich console logging
-        this.relay.onMessageReceived = (msg) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'relay_inbound',
-              event_id: msg.eventId,
-              from: msg.from,
-              target: msg.to,
-              body: msg.text,
-              thread_id: msg.threadId,
-            } as BrokerEvent,
-          });
-          const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
-          const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
-          const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
-          this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
-
-          if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
-            const runtimeAgent = this.runtimeStepAgents.get(msg.from);
-            this.recordChannelEvidence(msg.text, {
-              sender: runtimeAgent?.logicalName ?? msg.from,
-              actor: msg.from,
-              role: runtimeAgent?.role,
-              target: msg.to,
-              origin: 'relay_message',
-              stepName: runtimeAgent?.stepName,
+        this.unsubRelayListeners.push(
+          this.relay.addListener('messageReceived', (msg) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'relay_inbound',
+                event_id: msg.eventId,
+                from: msg.from,
+                target: msg.to,
+                body: msg.text,
+                thread_id: msg.threadId,
+              } as BrokerEvent,
             });
-          }
+            const body = msg.text.length > 120 ? msg.text.slice(0, 117) + '...' : msg.text;
+            const fromShort = msg.from.replace(/-[a-f0-9]{6,}$/, '');
+            const toShort = msg.to.replace(/-[a-f0-9]{6,}$/, '');
+            this.log(`[msg] ${fromShort} → ${toShort}: ${body}`);
 
-          const supervision = this.supervisedRuntimeAgents.get(msg.from);
-          if (supervision?.role === 'owner') {
-            this.recordStepToolSideEffect(supervision.stepName, {
-              type: 'owner_monitoring',
-              detail: `Owner messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
-              raw: { to: msg.to, text: msg.text },
+            if (this.channel && (msg.to === this.channel || msg.to === `#${this.channel}`)) {
+              const runtimeAgent = this.runtimeStepAgents.get(msg.from);
+              this.recordChannelEvidence(msg.text, {
+                sender: runtimeAgent?.logicalName ?? msg.from,
+                actor: msg.from,
+                role: runtimeAgent?.role,
+                target: msg.to,
+                origin: 'relay_message',
+                stepName: runtimeAgent?.stepName,
+              });
+            }
+
+            const supervision = this.supervisedRuntimeAgents.get(msg.from);
+            if (supervision?.role === 'owner') {
+              this.recordStepToolSideEffect(supervision.stepName, {
+                type: 'owner_monitoring',
+                detail: `Owner messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+                raw: { to: msg.to, text: msg.text },
+              });
+              void this.trajectory?.ownerMonitoringEvent(
+                supervision.stepName,
+                supervision.logicalName,
+                `Messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
+                { to: msg.to, text: msg.text }
+              );
+            }
+          })
+        );
+
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentSpawned', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_spawned',
+                name: agent.name,
+                runtime: agent.runtime,
+              } as BrokerEvent,
             });
-            void this.trajectory?.ownerMonitoringEvent(
-              supervision.stepName,
-              supervision.logicalName,
-              `Messaged ${msg.to}: ${msg.text.slice(0, 120)}`,
-              { to: msg.to, text: msg.text }
-            );
-          }
-        };
+            // Skip agents already managed by step execution
+            if (!this.activeAgentHandles.has(agent.name)) {
+              this.log(`[spawned] ${agent.name} (${agent.runtime})`);
+            }
+          })
+        );
 
-        this.relay.onAgentSpawned = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_spawned',
-              name: agent.name,
-              runtime: agent.runtime,
-            } as BrokerEvent,
-          });
-          // Skip agents already managed by step execution
-          if (!this.activeAgentHandles.has(agent.name)) {
-            this.log(`[spawned] ${agent.name} (${agent.runtime})`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentReleased', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_released',
+                name: agent.name,
+              } as BrokerEvent,
+            });
+          })
+        );
 
-        this.relay.onAgentReleased = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_released',
-              name: agent.name,
-            } as BrokerEvent,
-          });
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentExited', (agent) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_exited',
+                name: agent.name,
+                code: agent.exitCode,
+                signal: agent.exitSignal,
+              } as BrokerEvent,
+            });
+            this.lastActivity.delete(agent.name);
+            this.lastIdleLog.delete(agent.name);
+            if (!this.activeAgentHandles.has(agent.name)) {
+              this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
+            }
+          })
+        );
 
-        this.relay.onAgentExited = (agent) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_exited',
-              name: agent.name,
-              code: agent.exitCode,
-              signal: agent.exitSignal,
-            } as BrokerEvent,
-          });
-          this.lastActivity.delete(agent.name);
-          this.lastIdleLog.delete(agent.name);
-          if (!this.activeAgentHandles.has(agent.name)) {
-            this.log(`[exited] ${agent.name} (code: ${agent.exitCode ?? '?'})`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('deliveryUpdate', (event) => {
+            this.emit({ type: 'broker:event', runId, event });
+          })
+        );
 
-        this.relay.onDeliveryUpdate = (event) => {
-          this.emit({ type: 'broker:event', runId, event });
-        };
-
-        this.relay.onAgentIdle = ({ name, idleSecs }) => {
-          this.emit({
-            type: 'broker:event',
-            runId,
-            event: {
-              kind: 'agent_idle',
-              name,
-              idle_secs: idleSecs,
-            } as BrokerEvent,
-          });
-          // Only log at 30s multiples to avoid watchdog spam
-          const bucket = Math.floor(idleSecs / 30) * 30;
-          if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
-            this.lastIdleLog.set(name, bucket);
-            const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
-            this.log(`[idle] ${shortName} silent for ${bucket}s`);
-          }
-        };
+        this.unsubRelayListeners.push(
+          this.relay.addListener('agentIdle', ({ name, idleSecs }) => {
+            this.emit({
+              type: 'broker:event',
+              runId,
+              event: {
+                kind: 'agent_idle',
+                name,
+                idle_secs: idleSecs,
+              } as BrokerEvent,
+            });
+            // Only log at 30s multiples to avoid watchdog spam
+            const bucket = Math.floor(idleSecs / 30) * 30;
+            if (bucket >= 30 && this.lastIdleLog.get(name) !== bucket) {
+              this.lastIdleLog.set(name, bucket);
+              const shortName = name.replace(/-[a-f0-9]{6,}$/, '');
+              this.log(`[idle] ${shortName} silent for ${bucket}s`);
+            }
+          })
+        );
 
         this.relaycast = undefined;
         this.relaycastAgent = undefined;
@@ -3446,16 +3466,15 @@ export class WorkflowRunner {
       this.unsubBrokerStderr?.();
       this.unsubBrokerStderr = undefined;
 
-      // Null out relay event hooks to prevent leaks
-      if (this.relay) {
-        this.relay.onMessageReceived = null;
-        this.relay.onAgentSpawned = null;
-        this.relay.onAgentReleased = null;
-        this.relay.onAgentExited = null;
-        this.relay.onAgentIdle = null;
-        this.relay.onWorkerOutput = null;
-        this.relay.onDeliveryUpdate = null;
+      // Unsubscribe relay event listeners to prevent leaks
+      for (const off of this.unsubRelayListeners) {
+        try {
+          off();
+        } catch {
+          /* ignore */
+        }
       }
+      this.unsubRelayListeners = [];
       this.lastIdleLog.clear();
       this.lastActivity.clear();
       this.supervisedRuntimeAgents.clear();
@@ -3728,7 +3747,7 @@ export class WorkflowRunner {
     errorHandling: ErrorHandlingConfig | undefined,
     lifecycle: WorkflowStepLifecycleExecutor<StepState>
   ): Promise<void> {
-    const repairRetries = errorHandling?.strategy === 'retry' ? errorHandling.repairRetries ?? 0 : 0;
+    const repairRetries = errorHandling?.strategy === 'retry' ? (errorHandling.repairRetries ?? 0) : 0;
     const repairAgent =
       repairRetries > 0
         ? this.resolveWorkflowRepairAgent(step, stepStates, agentMap, errorHandling)
@@ -4730,34 +4749,34 @@ export class WorkflowRunner {
                   promptTaskText: ownerTask,
                 }
               : await this.spawnAndWait(effectiveOwner, resolvedStep, timeoutMs, {
-                retryAttempt: attempt,
-                evidenceStepName: step.name,
-                evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
-                preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
-                logicalName: effectiveOwner.name,
-                onSpawned: explicitInteractiveWorker
-                  ? ({ agent }) => {
-                      explicitWorkerHandle = agent;
-                    }
-                  : undefined,
-                onChunk: explicitInteractiveWorker
-                  ? ({ chunk }) => {
-                      explicitWorkerOutput += WorkflowRunner.stripAnsi(chunk);
-                      if (
-                        !explicitWorkerCompleted &&
-                        this.hasExplicitInteractiveWorkerCompletionEvidence(
-                          step,
-                          explicitWorkerOutput,
-                          ownerTask,
-                          resolvedTask
-                        )
-                      ) {
-                        explicitWorkerCompleted = true;
-                        void explicitWorkerHandle?.release().catch(() => undefined);
+                  retryAttempt: attempt,
+                  evidenceStepName: step.name,
+                  evidenceRole: usesOwnerFlow ? 'owner' : 'specialist',
+                  preserveOnIdle: !isHubPattern || !this.isLeadLikeAgent(effectiveOwner) ? false : undefined,
+                  logicalName: effectiveOwner.name,
+                  onSpawned: explicitInteractiveWorker
+                    ? ({ agent }) => {
+                        explicitWorkerHandle = agent;
                       }
-                    }
-                  : undefined,
-              });
+                    : undefined,
+                  onChunk: explicitInteractiveWorker
+                    ? ({ chunk }) => {
+                        explicitWorkerOutput += WorkflowRunner.stripAnsi(chunk);
+                        if (
+                          !explicitWorkerCompleted &&
+                          this.hasExplicitInteractiveWorkerCompletionEvidence(
+                            step,
+                            explicitWorkerOutput,
+                            ownerTask,
+                            resolvedTask
+                          )
+                        ) {
+                          explicitWorkerCompleted = true;
+                          void explicitWorkerHandle?.release().catch(() => undefined);
+                        }
+                      }
+                    : undefined,
+                });
           const output = typeof spawnResult === 'string' ? spawnResult : spawnResult.output;
           promptTaskText =
             typeof spawnResult === 'string'
@@ -7700,101 +7719,7 @@ export class WorkflowRunner {
    * The raw (ANSI-stripped) output is still written to disk for step chaining.
    */
   private static scrubForChannel(text: string): string {
-    // Strip system-reminder blocks (closed or unclosed)
-    const withoutSystemReminders = text
-      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
-      .replace(/<system-reminder>[\s\S]*/giu, '');
-
-    // Normalize CRLF and bare \r before stripping ANSI — PTY output often
-    // contains \r\r\n which leaves stray \r after stripping that confuse line splitting.
-    const normalized = withoutSystemReminders.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const ansiStripped = stripAnsiFn(normalized);
-
-    // Unicode spinner / ornament characters used by Claude TUI animations.
-    // Includes block-element chars (▗▖▘▝) used in the Claude Code header bar.
-    const SPINNER =
-      '\\u2756\\u2738\\u2739\\u273a\\u273b\\u273c\\u273d\\u2731\\u2732\\u2733\\u2734\\u2735\\u2736\\u2737\\u2743\\u2745\\u2746\\u25d6\\u25d7\\u25d8\\u25d9\\u2022\\u25cf\\u25cb\\u25a0\\u25a1\\u25b6\\u25c0\\u23f5\\u23f6\\u23f7\\u23f8\\u23f9\\u25e2\\u25e3\\u25e4\\u25e5\\u2597\\u2596\\u2598\\u259d\\u2bc8\\u2bc7\\u2bc5\\u2bc6\\u00b7' +
-      '\\u2590\\u258c\\u2588\\u2584\\u2580\\u259a\\u259e' + // additional block elements
-      '\\u2b21\\u2b22'; // hex-hollow ⬡ and hex-filled ⬢ (Cursor "Generating" spinner)
-    const spinnerRe = new RegExp(`[${SPINNER}]`, 'gu');
-    const spinnerClassRe = new RegExp(`^[\\s${SPINNER}]*$`, 'u');
-
-    // Line-level filters
-    const boxDrawingOnlyRe = /^[\s\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\-_=~]{3,}$/u;
-    // Broker internal log lines: "2026-02-26T12:45:12.123Z  INFO agent_relay_broker::..."
-    const brokerLogRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+(?:INFO|WARN|ERROR|DEBUG)\s/u;
-    const claudeHeaderRe =
-      /^(?:[\s\u2580-\u259f✢*·▗▖▘▝]+\s*)?(?:Claude\s+Code(?:\s+v?[\d.]+)?|(?:Sonnet|Haiku|Opus)\s*[\d.]+|claude-(?:sonnet|haiku|opus)-[\w.-]+|Running\s+on\s+claude)/iu;
-    // TUI directory breadcrumb lines (e.g. "  ~/Projects/agent-workforce/relay-...")
-    const dirBreadcrumbRe = /^\s*~[\\/]/u;
-    const uiHintRe =
-      /\b(?:Press\s+up\s+to\s+edit|tab\s+to\s+queue|bypass\s+permissions|esc\s+to\s+interrupt)\b/iu;
-    // Any spinner-prefixed word ending in … — catches all Claude thinking animations
-    // regardless of the specific word used (Thinking, Cascading, Flibbertigibbeting, etc.)
-    const thinkingLineRe = new RegExp(`^[\\s${SPINNER}]*\\s*\\w[\\w\\s]*\\u2026\\s*$`, 'u');
-    const cursorOnlyRe = /^[\s❯⎿›»◀▶←→↑↓⟨⟩⟪⟫·]+$/u;
-    // Cursor Agent TUI lines: generating animations, pasted text indicators, UI chrome
-    const cursorAgentRe =
-      /^(?:Cursor Agent|[\s⬡⬢]*Generating[.\s]|\[Pasted text|Auto-run all|Add a follow-up|ctrl\+c to stop|shift\+tab|Auto$|\/\s*commands|@\s*files|!\s*shell|follow-ups?\s|The user ha)/iu;
-    const slashCommandRe = /^\/\w+\s*$/u;
-    const mcpJsonKvRe =
-      /^\s*"(?:type|method|params|result|id|jsonrpc|tool|name|arguments|content|role|metadata)"\s*:/u;
-    const meaningfulContentRe = /[a-zA-Z0-9]/u;
-
-    const countJsonDepth = (line: string): number => {
-      let depth = 0;
-      for (const ch of line) {
-        if (ch === '{' || ch === '[') depth += 1;
-        if (ch === '}' || ch === ']') depth -= 1;
-      }
-      return depth;
-    };
-
-    const lines = ansiStripped.split('\n');
-    const meaningful: string[] = [];
-    let jsonDepth = 0;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      if (jsonDepth > 0) {
-        jsonDepth += countJsonDepth(line);
-        if (jsonDepth <= 0) jsonDepth = 0;
-        continue;
-      }
-
-      if (trimmed.length === 0) continue;
-
-      if (trimmed.startsWith('{') || /^\[\s*\{/.test(trimmed)) {
-        jsonDepth = Math.max(countJsonDepth(line), 0);
-        continue;
-      }
-
-      if (mcpJsonKvRe.test(line)) continue;
-      if (spinnerClassRe.test(trimmed)) continue;
-      if (boxDrawingOnlyRe.test(trimmed)) continue;
-      if (brokerLogRe.test(trimmed)) continue;
-      if (claudeHeaderRe.test(trimmed)) continue;
-      if (dirBreadcrumbRe.test(trimmed)) continue;
-      if (uiHintRe.test(trimmed)) continue;
-      if (thinkingLineRe.test(trimmed)) continue;
-      if (cursorOnlyRe.test(trimmed)) continue;
-      if (cursorAgentRe.test(trimmed)) continue;
-      if (slashCommandRe.test(trimmed)) continue;
-      if (!meaningfulContentRe.test(trimmed)) continue;
-
-      // Drop TUI animation frame fragments: lines where stripping spinners and
-      // whitespace leaves ≤ 3 alphanumeric characters (e.g. "F", "l  b", "i  g").
-      const alphanum = trimmed.replace(spinnerRe, '').replace(/\s+/g, '');
-      if (alphanum.replace(/[^a-zA-Z0-9]/g, '').length <= 3) continue;
-
-      meaningful.push(line);
-    }
-
-    return meaningful
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return scrubWorkflowOutputForChannel(text);
   }
 
   /** Sanitize a workflow name into a valid channel name. */

@@ -18,6 +18,7 @@ impl BrokerRuntime {
         let pending_deliveries = &mut self.pending_deliveries;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
+        let agent_result_tokens = &mut self.agent_result_tokens;
         let dedup = &mut self.dedup;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -45,6 +46,7 @@ impl BrokerRuntime {
                 skip_relay_prompt,
                 restart_policy,
                 agent_token,
+                agent_result_schema,
                 reply,
             } => {
                 let effective_channels = if channels.is_empty() {
@@ -190,6 +192,17 @@ impl BrokerRuntime {
                         .first()
                         .map(|workspace| workspace.workspace_id.clone())
                 });
+                let agent_result = agent_result_schema.map(|schema| AgentResultMcpConfig {
+                    callback_url: workers
+                        .env_value("AGENT_RELAY_RESULT_URL")
+                        .unwrap_or("http://127.0.0.1:3889/api/agent-result")
+                        .to_string(),
+                    token: format!("arr_{}", Uuid::new_v4().simple()),
+                    schema: Some(schema),
+                });
+                if let Some(config) = &agent_result {
+                    agent_result_tokens.insert(config.token.clone(), name.clone());
+                }
                 match workers
                     .spawn(
                         spec,
@@ -198,6 +211,7 @@ impl BrokerRuntime {
                         worker_relay_key.clone(),
                         skip_relay_prompt,
                         spawn_workspace_id.clone(),
+                        agent_result.clone(),
                     )
                     .await
                 {
@@ -278,10 +292,48 @@ impl BrokerRuntime {
                         })));
                     }
                     Err(e) => {
+                        if let Some(config) = &agent_result {
+                            agent_result_tokens.remove(&config.token);
+                        }
                         eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
                         let _ = reply.send(Err(e.to_string()));
                     }
                 }
+            }
+            ListenApiRequest::SubmitAgentResult {
+                token,
+                name,
+                data,
+                final_result,
+                metadata,
+                reply,
+            } => {
+                let Some(agent_name) = agent_result_tokens.get(&token).cloned() else {
+                    let _ = reply.send(Err(listen_api::AgentResultRouteError::InvalidToken));
+                    return;
+                };
+                if let Some(requested_name) = name.as_deref() {
+                    if requested_name != agent_name {
+                        let _ = reply.send(Err(listen_api::AgentResultRouteError::InvalidToken));
+                        return;
+                    }
+                }
+
+                let result_id = format!("ar_{}", Uuid::new_v4().simple());
+                let payload = json!({
+                    "kind": "agent_result",
+                    "name": agent_name,
+                    "result_id": result_id,
+                    "data": data,
+                    "final": final_result,
+                    "metadata": metadata,
+                });
+                let _ = send_event(sdk_out_tx, payload).await;
+                let _ = reply.send(Ok(json!({
+                    "success": true,
+                    "name": agent_name,
+                    "result_id": result_id,
+                })));
             }
             ListenApiRequest::SetModel {
                 name,
@@ -368,6 +420,7 @@ impl BrokerRuntime {
                         }
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
                         delivery_states.remove(&name);
+                        agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);
                         if paths.persist {
                             let _ = state.save(&paths.state);
@@ -902,6 +955,29 @@ impl BrokerRuntime {
                         "name": name,
                         "bytes_written": data.len(),
                     })));
+                }
+            }
+            ListenApiRequest::CheckPtyInputTarget { name, reply } => {
+                match workers
+                    .workers
+                    .get(&name)
+                    .map(|handle| handle.spec.runtime.clone())
+                {
+                    None => {
+                        let _ =
+                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                    }
+                    Some(AgentRuntime::Headless) => {
+                        let _ = reply.send(Err(format!(
+                            "unsupported_runtime: worker '{name}' is headless; pty input streams are only supported on PTY workers"
+                        )));
+                    }
+                    Some(AgentRuntime::Pty) => {
+                        let _ = reply.send(Ok(json!({
+                            "name": name,
+                            "runtime": "pty",
+                        })));
+                    }
                 }
             }
             ListenApiRequest::ResizePty {

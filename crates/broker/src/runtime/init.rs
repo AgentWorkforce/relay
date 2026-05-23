@@ -1,4 +1,5 @@
 use super::*;
+use std::net::{IpAddr, SocketAddr};
 
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
@@ -32,18 +33,43 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let paths = if cmd.persist || custom_state_dir.is_some() {
         ensure_runtime_paths(&runtime_cwd, &resolved_name, custom_state_dir.as_deref())?
     } else {
-        // Warn if a stale .agent-relay/ dir exists from a previous persist run.
-        // Agents can read files from it directly (logs, state) and get confused.
+        // Warn only if there is *actual broker state* in .agent-relay/ from a
+        // prior `--persist` run that could confuse this ephemeral run.
+        //
+        // The SDK workflow runner ALWAYS writes .agent-relay/step-outputs/ and
+        // .agent-relay/team/worker-logs/ regardless of broker mode (those are
+        // durable artifacts, not broker state), so a bare directory check fires
+        // on virtually every workflow run — a noisy false positive.
+        //
+        // The discriminator is the broker's state file. `ensure_runtime_paths`
+        // (the persist-mode helper in runtime/paths.rs) writes it as
+        // `state-{safe_name}.json`, where `safe_name` is the sanitized broker
+        // name — so the exact filename varies by run. Glob for any
+        // `state-*.json` entry in `.agent-relay/` and surface every match so
+        // the user can see exactly what's stale regardless of broker name.
         let stale_dir = runtime_cwd.join(".agent-relay");
-        if stale_dir.exists() {
+        let stale_state_files: Vec<PathBuf> = std::fs::read_dir(&stale_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                name_str.starts_with("state-") && name_str.ends_with(".json")
+            })
+            .map(|entry| entry.path())
+            .collect();
+        if !stale_state_files.is_empty() {
             eprintln!(
-                "[agent-relay] WARNING: stale .agent-relay/ directory found in {}",
-                runtime_cwd.display()
-            );
-            eprintln!(
-                "[agent-relay] WARNING: remove it to avoid confusing spawned agents: rm -rf {}",
+                "[agent-relay] WARNING: this run is ephemeral but {} prior --persist state file(s) remain in {}:",
+                stale_state_files.len(),
                 stale_dir.display()
             );
+            for state_file in &stale_state_files {
+                eprintln!("[agent-relay] WARNING:   {}", state_file.display());
+            }
+            eprintln!("[agent-relay] WARNING: remove them to avoid confusing spawned agents.");
         }
         ensure_ephemeral_paths(&runtime_cwd, &resolved_name)?
     };
@@ -109,7 +135,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("failed to bind API on {}", bind_addr))?;
-    let actual_port = listener.local_addr()?.port();
+    let local_addr = listener.local_addr()?;
+    let actual_port = local_addr.port();
     log_startup_phase(
         startup_debug,
         broker_start,
@@ -310,9 +337,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         );
     }
 
+    let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
+        (
+            "AGENT_RELAY_RESULT_URL".to_string(),
+            format!("http://{}:{}/api/agent-result", callback_host, actual_port),
+        ),
         (
             "RELAY_WORKSPACES_JSON".to_string(),
             relay_workspaces_json.clone(),
@@ -391,6 +423,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // are created lazily on first lookup and removed wherever workers
     // exit (`Release` arm or `reap_exited` sweep).
     let delivery_states: HashMap<String, InboundDeliveryState> = HashMap::new();
+    let agent_result_tokens: HashMap<String, String> = HashMap::new();
     let dm_participants_cache = DmParticipantsCache::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
@@ -455,6 +488,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         terminal_failed_deliveries,
         pending_requests,
         delivery_states,
+        agent_result_tokens,
         dm_participants_cache,
         recent_thread_messages,
         shutdown,
@@ -466,4 +500,71 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     };
 
     runtime.run().await
+}
+
+fn callback_host_for_url(api_bind: &str, local_addr: SocketAddr) -> String {
+    let host = match unbracket_ipv6(api_bind.trim()) {
+        "" => {
+            if local_addr.is_ipv6() {
+                "::1"
+            } else {
+                "127.0.0.1"
+            }
+        }
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    bracket_ipv6_host(host)
+}
+
+fn unbracket_ipv6(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn bracket_ipv6_host(host: &str) -> String {
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("[{}]", host),
+        _ => host.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn callback_host_uses_family_specific_loopback_for_wildcards() {
+        assert_eq!(
+            callback_host_for_url("0.0.0.0", SocketAddr::from((Ipv4Addr::UNSPECIFIED, 3889))),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            callback_host_for_url("[::]", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("::", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
+            "[::1]"
+        );
+    }
+
+    #[test]
+    fn callback_host_brackets_ipv6_literals() {
+        assert_eq!(
+            callback_host_for_url("::1", SocketAddr::from((Ipv6Addr::LOCALHOST, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("[::1]", SocketAddr::from((Ipv6Addr::LOCALHOST, 3889))),
+            "[::1]"
+        );
+        assert_eq!(
+            callback_host_for_url("127.0.0.1", SocketAddr::from((Ipv4Addr::LOCALHOST, 3889))),
+            "127.0.0.1"
+        );
+    }
 }

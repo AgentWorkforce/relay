@@ -1,0 +1,232 @@
+---
+title: 'Proactive agents'
+description: 'Build personas that wake up on a cron, on an integration event, or both — running unattended in the cloud sandbox.'
+---
+
+A proactive agent is a persona with one or more *listeners* that fire without a human in the loop. There are three listener kinds:
+
+- **Clock** — cron schedules. `schedules[]` on the persona.
+- **Radio** — integration events (GitHub PR opened, Notion page created, etc.). `integrations[provider].triggers[]`.
+- **Inbox** — targeted DMs from another agent or user. Today this is the default delivery surface — the same `onEvent` handler receives them.
+
+All three deliver the same `WorkforceEvent` to a single `onEvent` handler in your persona. The handler discriminates on `event.source` (`'cron'` / a provider id like `'github'`) and `event.name` / `event.type`.
+
+## Anatomy
+
+A proactive agent is two files plus a deploy:
+
+```
+my-agent/
+  persona.json   # declarative — listeners, integrations, harness, inputs
+  agent.ts       # imperative — the handler that runs on every event
+```
+
+`persona.json` declares listeners; `agent.ts` reacts to them.
+
+```ts
+// agent.ts
+import { handler, type WorkforceCtx, type WorkforceEvent } from '@agentworkforce/runtime';
+
+export default handler(async (ctx: WorkforceCtx, event: WorkforceEvent) => {
+  if (event.source === 'cron') return onTick(ctx, event);
+  if (event.source === 'github') return onGithub(ctx, event);
+  ctx.log('warn', 'unhandled.event', { source: event.source });
+});
+```
+
+## Cron-based (clock listener)
+
+Fires on a schedule. Use for digests, sweeps, periodic syncs, EOD recaps.
+
+An integration in the persona has two independent roles: declaring `triggers[]` turns it into a radio listener (events fire); listing it under `integrations` *without* `triggers[]` just makes the typed client (`ctx.github`, `ctx.slack`, …) available at runtime. The example below uses the second role — only the cron fires, but the handler still has `ctx.github` and `ctx.slack` for the digest work.
+
+```json
+{
+  "id": "morning-digest",
+  "intent": "documentation",
+  "tags": ["documentation"],
+  "description": "Daily ship recap.",
+  "harness": "claude",
+  "model": "claude-sonnet-4-6",
+  "cloud": true,
+  "integrations": {
+    "github": { "source": { "kind": "workspace" } },
+    "slack":  { "source": { "kind": "workspace" } }
+  },
+  "schedules": [
+    { "name": "daily", "cron": "0 6 * * *", "tz": "America/New_York" }
+  ],
+  "onEvent": "./agent.ts"
+}
+```
+
+```ts
+// agent.ts
+import { handler } from '@agentworkforce/runtime';
+
+export default handler(async (ctx, event) => {
+  if (event.source !== 'cron' || event.name !== 'daily') return;
+  const digest = await summarizeOvernightShips(ctx); // your code
+  await ctx.slack!.post('ops-daily', digest);
+});
+```
+
+`event.name` matches `schedules[].name`. `event.occurredAt` is the firing timestamp (ISO 8601).
+
+## Integration-based (radio listener)
+
+Fires when a Relayfile integration emits a normalized event. Use for "open a PR when a Notion page lands", "comment on issues when X is mentioned", etc.
+
+```json
+{
+  "id": "issue-greeter",
+  "intent": "documentation",
+  "tags": ["documentation"],
+  "description": "Welcome new GitHub issues with a triage comment.",
+  "harness": "claude",
+  "model": "claude-sonnet-4-6",
+  "cloud": true,
+  "integrations": {
+    "github": {
+      "source": { "kind": "workspace" },
+      "scope":  { "repo": "AgentWorkforce/workforce" },
+      "triggers": [{ "on": "issue.created" }]
+    }
+  },
+  "onEvent": "./agent.ts"
+}
+```
+
+```ts
+// agent.ts
+import { handler } from '@agentworkforce/runtime';
+
+export default handler(async (ctx, event) => {
+  if (event.source !== 'github' || event.type !== 'issue.created') return;
+  const { owner, repo, number } = event.payload as { owner: string; repo: string; number: number };
+  await ctx.github!.comment({ owner, repo, number }, 'Triage in progress — thanks for filing.');
+});
+```
+
+Each declared integration becomes a typed client on `ctx` (`ctx.github`, `ctx.slack`, `ctx.notion`, `ctx.linear`, `ctx.jira`). Personas that declare no integrations at all get those fields as `undefined`.
+
+### Source scope
+
+The `source` field discriminates which credential the cloud resolves at dispatch time:
+
+- `{ kind: 'workspace' }` — workspace-shared connection. Pick this when the integration represents a team-level account (the most common case).
+- `{ kind: 'deployer_user' }` *(default)* — the deploying user's personal connection.
+- `{ kind: 'workspace_service_account', name: 'release-bot' }` — a named service account on the workspace.
+
+The runtime dispatcher reads from the matching table; the deploy CLI's preflight reads from the same table. They must agree. If you're not sure, start with `workspace`.
+
+## Combined (clock + radio)
+
+Combine both — the same handler discriminates on `event.source`:
+
+```json
+{
+  "id": "release-watcher",
+  "intent": "documentation",
+  "tags": ["documentation"],
+  "description": "Reacts to GitHub releases live; reconciles drift on a nightly cron.",
+  "harness": "claude",
+  "model": "claude-sonnet-4-6",
+  "cloud": true,
+  "integrations": {
+    "github": {
+      "source": { "kind": "workspace" },
+      "triggers": [{ "on": "release.published" }]
+    },
+    "slack": { "source": { "kind": "workspace" } }
+  },
+  "schedules": [
+    { "name": "nightly", "cron": "0 3 * * *", "tz": "UTC" }
+  ],
+  "onEvent": "./agent.ts"
+}
+```
+
+```ts
+import { handler } from '@agentworkforce/runtime';
+
+export default handler(async (ctx, event) => {
+  if (event.source === 'github' && event.type === 'release.published') {
+    return announceRelease(ctx, event.payload);
+  }
+  if (event.source === 'cron' && event.name === 'nightly') {
+    return reconcileMissedReleases(ctx, event.occurredAt);
+  }
+});
+```
+
+Both surfaces share `ctx.memory` (persistent across firings) and any declared integration clients — so nightly reconciliation can read what the live handler stored.
+
+## Inputs
+
+Deploy-time configuration goes in `persona.json` under `inputs`. The CLI resolves the value per input from (1) `--input KEY=value`, (2) `WORKFORCE_INPUT_<KEY>` env var, (3) the declared `default`:
+
+```json
+"inputs": {
+  "DAILY_DIGEST_CHANNEL": {
+    "description": "Slack channel for the digest.",
+    "env": "DAILY_DIGEST_CHANNEL",
+    "default": "ops-daily"
+  }
+}
+```
+
+Read at runtime via `ctx.persona.inputs.DAILY_DIGEST_CHANNEL`.
+
+## Deploy
+
+```sh
+# Validate the persona without side effects.
+agentworkforce deploy ./my-agent/persona.json --dry-run
+
+# Deploy to cloud. First time runs OAuth for each declared integration.
+agentworkforce deploy ./my-agent/persona.json --mode cloud
+
+# Override inputs at deploy time.
+agentworkforce deploy ./my-agent/persona.json --mode cloud \
+  --input DAILY_DIGEST_CHANNEL=ops-daily-test
+```
+
+`--mode dev` runs the same bundle locally as a long-lived process — pipe an NDJSON envelope on stdin to fire the handler once. Useful for smoke tests before cutting over to cloud.
+
+## Memory
+
+Set `memory.enabled: true` on the persona to get `ctx.memory.save(...)` / `ctx.memory.recall(...)` across firings. Scopes:
+
+- `agent` — only this deployment.
+- `workspace` — all deployments in the workspace.
+
+`ttlDays` is the retention window — saved entries expire (and stop showing up in `recall`) after that many days. Omit it to keep entries indefinitely.
+
+```json
+"memory": { "enabled": true, "scopes": ["workspace"], "ttlDays": 60 }
+```
+
+```ts
+await ctx.memory.save(`Daily ship ${dateStamp} posted`, {
+  tags: ['daily-ship', `date:${dateStamp}`],
+  scope: 'workspace',
+});
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Scheduling" href="/docs/scheduling">
+    RelayCron mechanics behind clock listeners.
+  </Card>
+  <Card title="Workforce" href="/docs/workforce">
+    How proactive agents fit into multi-agent teams.
+  </Card>
+  <Card title="Cloud" href="/docs/cloud">
+    The runtime that hosts deployed personas.
+  </Card>
+  <Card title="Authentication" href="/docs/authentication">
+    Integration OAuth + scope resolution for `ctx.<provider>` clients.
+  </Card>
+</CardGroup>

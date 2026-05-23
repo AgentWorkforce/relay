@@ -4,6 +4,7 @@ import { getProjectPaths } from '@agent-relay/config';
 
 import { defaultExit } from '../lib/exit.js';
 import { parseSince, sanitizeForTerminal, sanitizeForTerminalLine } from '../lib/formatting.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 
 type ExitFn = (code: number) => never;
 const MAX_DM_FETCH_LIMIT = 1000;
@@ -799,7 +800,7 @@ function sortConversationsMostRecentFirst(conversations: DmConversationSummary[]
 async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> {
   // Connect to an existing broker if one is running, otherwise spawn
   try {
-    const client = AgentRelayClient.connect({ cwd });
+    const client = connectProjectBrokerClient(cwd);
     return client as unknown as MessagingBrokerClient;
   } catch {
     const client = await AgentRelayClient.spawn({ cwd });
@@ -815,7 +816,7 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
 
   let client: AgentRelayClient;
   try {
-    client = AgentRelayClient.connect({ cwd });
+    client = connectProjectBrokerClient(cwd);
   } catch {
     throw new Error(
       'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'

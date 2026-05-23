@@ -22,6 +22,7 @@
 import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
 import type { SpawnPtyInput, SendMessageInput } from './types.js';
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
+import type { PtyInputStream, PtyInputStreamOptions } from './transport.js';
 
 const WORKFLOW_BOOTSTRAP_TASK =
   'You are connected to Agent Relay. Do not reply to this message and wait for relay messages and respond using Relaycast MCP tools.';
@@ -270,6 +271,11 @@ export class RelayAdapter {
   async sendInput(name: string, data: string): Promise<void> {
     await this.start();
     await this.ensureClient().sendInput(name, data);
+  }
+
+  async openInputStream(name: string, options?: PtyInputStreamOptions): Promise<PtyInputStream> {
+    await this.start();
+    return this.ensureClient().openInputStream(name, options);
   }
 
   async interruptAgent(name: string): Promise<boolean> {

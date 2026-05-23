@@ -1,33 +1,55 @@
-![Agent Relay](./readme-banner.png)
-
-
-
-<div align="center">
-
-  
-
-[![Featured on OSSCAR](https://osscar.dev/api/badge?slug=agentworkforce)](https://osscar.dev/org/agentworkforce)
-
-Agent Relay is real-time communication infrastructure for agent-to-agent work. Spawn agents from code, give them shared channels, direct messages, threads, reactions, and presence, and let them coordinate in the same workspace.
-
-It is not a framework or a harness. Your agents keep running however they already run. Agent Relay is the communication layer that helps them talk to each other and take action together.
+<img src="./readme-banner.png" alt="Agent Relay" height="392">
 
 **Website:** [agentrelay.com](https://agentrelay.com) · **Docs:** [agentrelay.com/docs](https://agentrelay.com/docs)
 
-  <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
-  <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+<a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
+<a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
+<a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+
 </div>
 
+## Multi Agent Orchestration
 
-## Why Agent Relay
+Enable your Claude Code, Codex, OpenCode agent spawn agent teams that can communicate and collaborate. Not subagents, but real agents who
+could spawn their own subagents. This allows for powerful AI cross-collaboration so you can get the best harnesses + models working
+together.
 
-- **Built for real-time coordination**: channels, messages, inboxes, reactions, and presence for agents that need to collaborate.
-- **Works with terminal-native agents**: use Claude Code, Codex, Gemini CLI, OpenCode, and other supported runtimes without changing how they run.
-- **SDK-first**: spawn agents programmatically, route work, wait for readiness, and manage lifecycles from TypeScript or Python.
-- **Useful from both code and tools**: wire Relay into apps, scripts, plugins, and local workflows.
+## Benefits Over Subagents
 
-## Install
+1. The agent orchestrating has full insight what the spawned agents are doing. It can read the logs and steer mid turn if needed
+2. Enables advanced swarm techniques as each agent can communicate with each other and coordinate to form agent teams for different types: review/fix loops, adversarial/debate pairs, fan-out -> pipeline -> gather, or lead + workers to name a few
+3. Diversity of thought and implementation. Codex implement, Claude review, Gemini do the final verification leads to better results as different models + harnesses excel in different things.
+4. Review happens as a conversation between the live reviewer and the live implementer, not as a report handed back to the parent after each one finishes.
+5. Audit trail exists outside the agent and outside the parent. With the [Agent Relay Observer](https://agentrelay.com/observer) you get full auditability into every single DM and group message sent by the agents.
+
+## Get Started
+
+1. Install the agent-relay cli
+
+```
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+
+```
+
+2. Install the skill
+
+```
+npx skills add https://github.com/agentworkforce/skills --skill orchestrating-agent-relay
+```
+
+3. Tell your agent to use it
+
+```
+use the orchestrating-agent-relay skill to spawn a claude and codex agent and [YOUR_TASK]
+```
+
+For single, well-scoped, one-shot tasks, subagents still win. Agent relay's advantages compound when work is multi-step, multi-role, long-running or needs independent verification.
+
+## SDK
+
+Use the Agent Relay SDK to spawn and control agents programmatically.
+
+### Install
 
 **TypeScript / Node.js**
 
@@ -45,7 +67,7 @@ pip install agent-relay-sdk
 
 See the [Python SDK](./packages/sdk-py) for Python usage and adapters.
 
-## Quick example
+### Quick example
 
 ```typescript
 import { AgentRelay, Models } from '@agent-relay/sdk';
@@ -82,52 +104,16 @@ await relay.shutdown();
 
 Want more than a toy example? Start with:
 
-- [Introduction](./docs/introduction.md)
-- [CLI on the Relay](./docs/cli-on-the-relay.md)
-- [Examples](./examples/README.md)
-- [TypeScript SDK README](./packages/sdk/README.md)
-- [Python SDK README](./packages/sdk-py/README.md)
+- [Introduction](https://agentrelay.com/docs/introduction)
+- [TypeScript SDK README](https://agentrelay.com/docs/typescript-sdk)
+- [Python SDK README](https://agentrelay.com/docs/python-sdk)
 
-## What you can build
+### What you can build
 
 - Multi-agent coding flows with shared channels and worker handoffs
 - Agent inboxes for status updates, blockers, and review loops
 - Tooling that lets existing agents communicate without rewriting their runtime
 - Local or remote coordination patterns where multiple agents need shared context
-
-## Claude Code plugin
-
-Use Agent Relay directly inside Claude Code, no SDK required. The plugin adds multi-agent coordination via slash commands or natural language.
-
-```text
-/plugin marketplace add Agentworkforce/skills
-/plugin install claude-relay-plugin
-```
-
-Once installed, you can coordinate teams of agents with built-in skills:
-
-```text
-> /relay-team Refactor the auth module, split the middleware, update tests, and update docs
-> /relay-fanout Run linting fixes across all packages in the monorepo
-> /relay-pipeline Analyze the API logs, generate a summary report, then draft an email
-```
-
-Or just describe what you want in plain language:
-
-```text
-> Use relay fan-out to lint all packages in parallel
-> Split the migration into three relay workers, one for the schema, one for the API, and one for the frontend
-```
-
-See [docs/plugin-claude-code.md](./docs/plugin-claude-code.md) and the [plugin README](https://github.com/AgentWorkforce/skills/tree/main/plugins/claude-relay-plugin) for more.
-
-## Agent Relay CLI
-
-Install the CLI with:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
-```
 
 Then use Agent Relay to bring agents into a shared workspace and route work between them.
 
@@ -142,7 +128,7 @@ Agent Relay is designed for terminal-native agents and SDK-driven workflows. Thi
 
 The broader SDK and workflow surface also includes additional integrations in the codebase. See the package docs for details.
 
-## Development
+### Development
 
 If you want to work on the repo itself:
 
@@ -154,7 +140,6 @@ npm test
 
 Useful references:
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [CHANGELOG.md](./CHANGELOG.md)
 - [GitHub Issues](https://github.com/AgentWorkforce/relay/issues)
 

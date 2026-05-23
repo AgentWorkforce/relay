@@ -6,7 +6,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { WorkflowDb } from '../workflows/runner.js';
@@ -77,6 +85,12 @@ const mockHuman = {
   sendMessage: vi.fn().mockResolvedValue(undefined),
 };
 
+const mockListeners = new Map<string, Set<(...args: any[]) => void>>();
+function emitMockEvent(event: string, ...args: any[]): void {
+  const set = mockListeners.get(event);
+  if (set) for (const cb of set) cb(...args);
+}
+
 const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; task?: string }) => {
   const queued = mockSpawnOutputs.shift();
   const stepComplete = task?.match(/STEP_COMPLETE:([^\n]+)/)?.[1]?.trim();
@@ -90,9 +104,7 @@ const defaultSpawnPtyImplementation = async ({ name, task }: { name: string; tas
         : 'STEP_COMPLETE:unknown\n');
 
   queueMicrotask(() => {
-    if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-      mockRelayInstance.onWorkerOutput({ name, chunk: output });
-    }
+    emitMockEvent('workerOutput', { name, chunk: output });
   });
 
   return { ...mockAgent, name };
@@ -103,11 +115,15 @@ const mockRelayInstance = {
   human: vi.fn().mockReturnValue(mockHuman),
   shutdown: vi.fn().mockResolvedValue(undefined),
   onBrokerStderr: vi.fn().mockReturnValue(() => {}),
-  onWorkerOutput: null as ((frame: { name: string; chunk: string }) => void) | null,
-  onMessageReceived: null as any,
-  onAgentSpawned: null as any,
-  onAgentExited: null as any,
-  onAgentIdle: null as any,
+  addListener: vi.fn((event: string, cb: (...args: any[]) => void) => {
+    let set = mockListeners.get(event);
+    if (!set) {
+      set = new Set();
+      mockListeners.set(event, set);
+    }
+    set.add(cb);
+    return () => set!.delete(cb);
+  }),
   listAgentsRaw: vi.fn().mockResolvedValue([]),
 };
 
@@ -225,7 +241,7 @@ describe('WorkflowRunner', () => {
     mockSpawnOutputs = [];
     mockAgent.release.mockResolvedValue(undefined);
     mockRelayInstance.spawnPty.mockImplementation(defaultSpawnPtyImplementation);
-    mockRelayInstance.onWorkerOutput = null;
+    mockListeners.clear();
     db = makeDb();
     runner = new WorkflowRunner({ db, workspaceId: 'ws-test' });
   });
@@ -755,9 +771,7 @@ agents:
 
           const output = mockSpawnOutputs.shift() ?? 'LEAD_DONE\n';
           queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
+            emitMockEvent('workerOutput', { name, chunk: output });
           });
 
           return { ...mockAgent, name };
@@ -974,9 +988,7 @@ agents:
           const output = isOwner ? 'owner checking\n' : 'worker finished\n';
 
           queueMicrotask(() => {
-            if (typeof mockRelayInstance.onWorkerOutput === 'function') {
-              mockRelayInstance.onWorkerOutput({ name, chunk: output });
-            }
+            emitMockEvent('workerOutput', { name, chunk: output });
           });
 
           if (isOwner) {

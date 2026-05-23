@@ -32,6 +32,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi};
+use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
 use base64::Engine;
@@ -213,7 +214,7 @@ async fn try_emit_worker_ready(
 
     if timed_out && !startup_ready {
         tracing::warn!(
-            target = "agent_relay::worker::pty",
+            target: "agent_relay::worker::pty",
             worker = %worker_name,
             timeout_secs = STARTUP_READY_TIMEOUT.as_secs(),
             "startup readiness timed out; emitting worker_ready fallback"
@@ -336,6 +337,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // Bounded to avoid unbounded memory growth; continuity blocks are small.
     let mut continuity_buffer = String::new();
     const CONTINUITY_BUFFER_MAX: usize = 4096;
+    // Streaming UTF-8 decoder. PTY reads can split multi-byte codepoints
+    // across chunks; the decoder holds incomplete trailing bytes for the
+    // next chunk instead of corrupting them into U+FFFD.
+    let mut utf8_decoder = Utf8StreamDecoder::new();
     // Rate-limited buffering for worker_stream emissions.
     // Chunks are accumulated and flushed at most every 100ms or when buffer exceeds threshold.
     let mut stream_buffer = String::new();
@@ -471,7 +476,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     Ok(p) if p.rows > 0 && p.cols > 0 => {
                                         if let Err(e) = pty.resize(p.rows, p.cols) {
                                             tracing::warn!(
-                                                target = "agent_relay::worker::pty",
+                                                target: "agent_relay::worker::pty",
                                                 rows = p.rows, cols = p.cols, error = %e,
                                                 "failed to resize pty"
                                             );
@@ -489,6 +494,37 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             "code": "invalid_payload",
                                             "message": e.to_string(),
                                             "retryable": false
+                                        })).await;
+                                    }
+                                }
+                            }
+                            "write_pty" => {
+                                // Raw input forwarded by the broker (typically
+                                // from POST /api/input/{name} via
+                                // `client.sendInput()`). The payload is
+                                // `{ "data": "<bytes-as-utf8-string>" }`; we
+                                // write those bytes verbatim to the PTY so the
+                                // child process sees the keystrokes.
+                                match frame.payload.get("data").and_then(Value::as_str) {
+                                    Some(data) => {
+                                        if let Err(e) = pty.write_all(data.as_bytes()) {
+                                            tracing::warn!(
+                                                target: "agent_relay::worker::pty",
+                                                error = %e,
+                                                "failed to write input to pty"
+                                            );
+                                            let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                                "code": "pty_write_failed",
+                                                "message": e.to_string(),
+                                                "retryable": true,
+                                            })).await;
+                                        }
+                                    }
+                                    None => {
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "invalid_payload",
+                                            "message": "write_pty payload must include 'data' string",
+                                            "retryable": false,
                                         })).await;
                                     }
                                 }
@@ -563,9 +599,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         reported_idle = false;
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
-                        let text = String::from_utf8_lossy(&chunk).to_string();
-                        let clean_text = strip_ansi(&text);
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
+                        let text = utf8_decoder.decode(&chunk);
+                        if text.is_empty() {
+                            // Whole chunk was an incomplete UTF-8 prefix held
+                            // back for the next read; nothing to emit yet.
+                            continue;
+                        }
+                        let clean_text = strip_ansi(&text);
                         append_bounded(
                             &mut startup_output,
                             &clean_text,
@@ -646,7 +687,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
                             tracing::info!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 "agent issued /exit — shutting down"
                             );
                             flush_stream_buffer!();
@@ -693,7 +734,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 parse_continuity_command(&continuity_buffer)
                             {
                                 tracing::info!(
-                                    target = "agent_relay::worker::pty",
+                                    target: "agent_relay::worker::pty",
                                     action = %action.as_str(),
                                     content_len = content.len(),
                                     "detected KIND: continuity command in PTY output"
@@ -799,7 +840,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 let pa = pending_activities.remove(i).unwrap();
                                 if let Some(pattern) = matched {
                                     tracing::debug!(
-                                        target = "agent_relay::worker::pty",
+                                        target: "agent_relay::worker::pty",
                                         delivery_id = %pa.delivery_id,
                                         event_id = %pa.event_id,
                                         pattern = %pattern,
@@ -818,7 +859,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .await;
                                 } else {
                                     tracing::debug!(
-                                        target = "agent_relay::worker::pty",
+                                        target: "agent_relay::worker::pty",
                                         delivery_id = %pa.delivery_id,
                                         event_id = %pa.event_id,
                                         "delivery activity window expired"
@@ -829,7 +870,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                     None => {
                         // PTY reader closed — child likely exited. Flush
-                        // any buffered stream output before sending
+                        // any incomplete trailing UTF-8 bytes (no further
+                        // chunks will arrive to complete them) before the
+                        // stream_buffer flush so they reach worker_stream
+                        // and echo_buffer like normal output.
+                        let tail = utf8_decoder.flush();
+                        if !tail.is_empty() {
+                            stream_buffer.push_str(&tail);
+                            echo_buffer.push_str(&tail);
+                        }
+                        // Flush any buffered stream output before sending
                         // agent_exit to preserve output ordering.
                         flush_stream_buffer!();
                         // Emit agent_exit with any echo_buffer tail so the
@@ -842,7 +892,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         };
                         if !trimmed.is_empty() {
                             tracing::info!(
-                                target = "agent_relay::worker::pty",
+                                target: "agent_relay::worker::pty",
                                 output_len = trimmed.len(),
                                 "PTY channel closed; captured output available"
                             );
@@ -1080,23 +1130,36 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     flush_stream_buffer!();
                     let mut late_output = String::new();
                     while let Ok(chunk) = pty_rx.try_recv() {
-                        let text = String::from_utf8_lossy(&chunk).to_string();
+                        let text = utf8_decoder.decode(&chunk);
+                        if text.is_empty() {
+                            continue;
+                        }
                         late_output.push_str(&text);
                         let _ = send_frame(&out_tx, "worker_stream", None, json!({
                             "stream": "stdout",
                             "chunk": text,
                         })).await;
                     }
+                    // Stream is closing; flush any incomplete trailing bytes
+                    // as U+FFFD rather than silently dropping them.
+                    let tail = utf8_decoder.flush();
+                    if !tail.is_empty() {
+                        late_output.push_str(&tail);
+                        let _ = send_frame(&out_tx, "worker_stream", None, json!({
+                            "stream": "stdout",
+                            "chunk": tail,
+                        })).await;
+                    }
                     if !late_output.is_empty() {
                         let clean = strip_ansi(&late_output);
                         tracing::warn!(
-                            target = "agent_relay::worker::pty",
+                            target: "agent_relay::worker::pty",
                             output = %clean,
                             "watchdog: captured late output from exiting child"
                         );
                     }
                     tracing::info!(
-                        target = "agent_relay::worker::pty",
+                        target: "agent_relay::worker::pty",
                         "watchdog: child process exited"
                     );
                     let mut exit_payload = json!({
@@ -1125,8 +1188,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             + pending_verifications.len()
                             + pending_activities.len();
                         if pending_count > 0 {
-                            tracing::warn!(
-                                target = "agent_relay::worker::pty",
+                            tracing::debug!(
+                                target: "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 pending_delivery_count = pending_count,
                                 "watchdog: no PTY output while delivery work is pending — marking blocked_on_send"
@@ -1137,8 +1200,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 "pending_delivery_count": pending_count,
                             })).await;
                         } else {
-                            tracing::info!(
-                                target = "agent_relay::worker::pty",
+                            tracing::debug!(
+                                target: "agent_relay::worker::pty",
                                 silent_secs = silent_duration.as_secs(),
                                 "watchdog: no PTY output for {}s — marking idle",
                                 silent_duration.as_secs()

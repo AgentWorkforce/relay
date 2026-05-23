@@ -70,6 +70,7 @@ permissions:
 env:
   NPM_CONFIG_FUND: false
   AGENT_RELAY_TELEMETRY_DISABLED: 1
+  WITHDRAWN_STABLE_TAG_PATTERN: '^(v6\.3\.6)$'
 
 jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)
@@ -1071,7 +1072,6 @@ jobs:
           - utils
           - trajectory
           - hooks
-          - user-directory
           - cloud
           - sdk
           - telemetry
@@ -1166,7 +1166,6 @@ jobs:
           - sdk
           - telemetry
           - trajectory
-          - user-directory
           - utils
 
     steps:
@@ -1915,8 +1914,14 @@ jobs:
             exit 0
           fi
 
-          # Get last stable tag (semver only, excluding prerelease tags like v2.1.0-beta.1)
-          LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          # Get last published stable tag (semver only, excluding prerelease
+          # tags like v2.1.0-beta.1 and withdrawn stable tags).
+          LAST_TAG=$(
+            git tag -l --sort=-v:refname |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              grep -Ev "$WITHDRAWN_STABLE_TAG_PATTERN" |
+              head -n1
+          )
           if [ -z "$LAST_TAG" ]; then
             echo "No previous tag found, skipping changelog generation"
             exit 0
@@ -1941,110 +1946,140 @@ jobs:
           }
 
           const commits = log.split('\0').filter(Boolean).map(record => {
-            const idx = record.indexOf('|');
-            const idx2 = record.indexOf('|', idx + 1);
+            const normalized = record.trimStart();
+            const idx = normalized.indexOf('|');
+            const idx2 = normalized.indexOf('|', idx + 1);
+            const hash = normalized.slice(0, 8);
+            const files = execSync(`git show --pretty=format: --name-only ${hash}`, {
+              encoding: 'utf-8',
+            })
+              .split('\n')
+              .map(file => file.trim())
+              .filter(Boolean);
             return {
-              hash: record.slice(0, 8),
-              subject: record.slice(idx + 1, idx2).trim(),
-              body: record.slice(idx2 + 1).trim(),
+              hash,
+              subject: normalized.slice(idx + 1, idx2).trim(),
+              body: normalized.slice(idx2 + 1).trim(),
+              files,
             };
           });
 
-          function extractPR(subject, body) {
-            const m = (subject + ' ' + body).match(/#(\d+)/);
-            return m ? `(#${m[1]})` : '';
+          function parseSubject(subject) {
+            const conventional = subject.match(
+              /^(feat|fix|refactor|perf|chore|test|ci|docs|build|style|security|deprecate|deprecated|remove|removed)(\(([^)]+)\))?(!)?:\s*(.*)$/i
+            );
+
+            if (!conventional) {
+              return {
+                type: 'changed',
+                scope: '',
+                title: cleanTitle(subject),
+                breaking: false,
+              };
+            }
+
+            const [, typeRaw, , scopeRaw = '', bang = '', titleRaw] = conventional;
+            const type = typeRaw.toLowerCase();
+            return {
+              type,
+              scope: scopeRaw.toLowerCase(),
+              title: cleanTitle(titleRaw),
+              breaking: bang === '!',
+            };
           }
 
-          function formatTitle(subject) {
-            const cleaned = subject.replace(
-              /^(feat|fix|refactor|perf|chore|test|ci|docs|build|style)(\([^)]+\))?!?:\s*/i,
-              ''
-            );
+          function cleanTitle(title) {
+            const cleaned = title
+              .replace(/\s*\(#[0-9]+(?:[^)]*)?\)/g, '')
+              .replace(/\s+#\d+\b/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
             return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
           }
 
-          function getType(subject) {
-            const m = subject.match(/^(feat|fix|refactor|perf|chore|test|ci|docs|build|style)(\([^)]+\))?(!)?:/i);
-            if (!m) return 'other';
-            const type = m[1].toLowerCase();
-            const scope = (m[2] || '').replace(/[()]/g, '');
-            const breaking = m[3] === '!';
-            if (breaking) return 'breaking';
-            if (type === 'feat') return 'feat';
-            if (type === 'fix') return 'fix';
-            if (type === 'refactor' || type === 'perf' || type === 'build') return 'arch';
-            if (type === 'test' || type === 'ci') return 'reliability';
-            if (type === 'chore' && scope === 'deps') return 'deps';
-            if (type === 'chore' && scope === 'release') return 'release';
-            if (type === 'chore') return 'deps';
-            return 'other';
+          function isWebOnlyCommit(files) {
+            const webOrLockfile = file =>
+              file === 'web' || file.startsWith('web/') || file === 'package-lock.json';
+            return files.length > 0 && files.some(file => file === 'web' || file.startsWith('web/')) && files.every(webOrLockfile);
           }
 
-          const cats = { breaking: [], feat: [], fix: [], arch: [], reliability: [], deps: [], release: [] };
+          function isWebRelatedTitle(text) {
+            return (
+              text.includes('@posthog/next') ||
+              text.includes('opennext') ||
+              text.includes('sst') ||
+              /\bnext\b/.test(text)
+            );
+          }
+
+          function shouldSkip({ type, scope, title }, files) {
+            const text = title.toLowerCase();
+            if (type === 'chore' && (scope === 'release' || scope === 'prerelease')) return true;
+            if (scope === 'web' || isWebOnlyCommit(files)) return true;
+            if (isWebRelatedTitle(text)) return true;
+            if (scope === 'trajectories' || scope === 'comments') return true;
+            if (text.includes('compact trajectories')) return true;
+            if (text.includes('record ') && text.includes('trajectory')) return true;
+            if (text.includes('address pr review')) return true;
+            if (text.includes('review feedback')) return true;
+            if (text.includes('retrigger flaky')) return true;
+            if (text === 'clean up skills' || text === 'bump skills') return true;
+            if (
+              (type === 'chore' || type === 'style') &&
+              (text.startsWith('auto-format ') || text.startsWith('format '))
+            ) {
+              return true;
+            }
+            if (text.startsWith('revert version bump')) return true;
+            return title.length === 0;
+          }
+
+          function sectionFor(commit) {
+            if (commit.breaking) return 'Breaking Changes';
+            if (commit.type === 'feat') return 'Added';
+            if (commit.type === 'fix') return 'Fixed';
+            if (commit.type === 'security') return 'Security';
+            if (commit.type === 'deprecate' || commit.type === 'deprecated') return 'Deprecated';
+            if (commit.type === 'remove' || commit.type === 'removed') return 'Removed';
+            return 'Changed';
+          }
+
+          const sections = new Map([
+            ['Breaking Changes', []],
+            ['Added', []],
+            ['Changed', []],
+            ['Deprecated', []],
+            ['Removed', []],
+            ['Fixed', []],
+            ['Security', []],
+          ]);
 
           for (const c of commits) {
-            const type = getType(c.subject);
-            const title = formatTitle(c.subject);
-            const pr = extractPR(c.subject, c.body);
-            if (cats[type]) cats[type].push({ title, pr });
+            const parsed = parseSubject(c.subject);
+            if (shouldSkip(parsed, c.files)) continue;
+            const section = sectionFor(parsed);
+            const entries = sections.get(section);
+            if (!entries.includes(parsed.title)) entries.push(parsed.title);
+          }
+
+          if ([...sections.values()].every(entries => entries.length === 0)) {
+            console.log('No changelog-worthy commits since last tag, skipping changelog');
+            process.exit(0);
           }
 
           const lines = [];
           lines.push(`## [${newVersion}] - ${today}`);
           lines.push('');
 
-          const hasProd = cats.breaking.length + cats.feat.length + cats.fix.length > 0;
-          const hasTech = cats.arch.length + cats.reliability.length + cats.deps.length > 0;
-
-          if (hasProd) {
-            lines.push('### Product Perspective');
-            if (cats.breaking.length > 0) {
-              lines.push('#### Breaking Changes');
-              for (const c of cats.breaking) lines.push(`- **${c.title}** ${c.pr}`.trimEnd());
-              lines.push('');
-            }
-            if (cats.feat.length > 0) {
-              lines.push('#### User-Facing Features & Improvements');
-              for (const c of cats.feat) lines.push(`- **${c.title}** ${c.pr}`.trimEnd());
-              lines.push('');
-            }
-            if (cats.fix.length > 0) {
-              lines.push('#### User-Impacting Fixes');
-              for (const c of cats.fix) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
-              lines.push('');
-            }
+          for (const [section, entries] of sections) {
+            if (entries.length === 0) continue;
+            lines.push(`### ${section}`);
+            lines.push('');
+            for (const entry of entries) lines.push(`- ${entry}`);
+            lines.push('');
           }
 
-          if (hasTech) {
-            lines.push('### Technical Perspective');
-            if (cats.arch.length > 0) {
-              lines.push('#### Architecture & API Changes');
-              for (const c of cats.arch) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
-              lines.push('');
-            }
-            if (cats.reliability.length > 0) {
-              lines.push('#### Performance & Reliability');
-              for (const c of cats.reliability) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
-              lines.push('');
-            }
-            if (cats.deps.length > 0) {
-              lines.push('#### Dependencies & Tooling');
-              for (const c of cats.deps) lines.push(`- ${c.title} ${c.pr}`.trimEnd());
-              lines.push('');
-            }
-          }
-
-          if (!hasTech) {
-            lines.push('### Technical Perspective');
-          }
-          lines.push('#### Releases');
-          lines.push(`- v${newVersion}`);
-          lines.push('');
-          lines.push('---');
-          lines.push('');
-          lines.push('');
-
-          const newEntry = lines.join('\n');
+          const newEntry = lines.join('\n').trimEnd() + '\n\n';
           const changelog = readFileSync('CHANGELOG.md', 'utf-8');
 
           // Insert after the [Unreleased] block, before the first versioned entry
@@ -2065,7 +2100,12 @@ jobs:
       - name: Compact trajectories
         run: |
           if command -v npx &>/dev/null && [ -d ".trajectories" ]; then
-            LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+            LAST_TAG=$(
+              git tag -l --sort=-v:refname |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+                grep -Ev "$WITHDRAWN_STABLE_TAG_PATTERN" |
+                head -n1
+            )
             if [ -n "$LAST_TAG" ]; then
               RELEASE_COMMITS=$(git log "${LAST_TAG}..HEAD" --format=%H | paste -sd, -)
               if [ -n "$RELEASE_COMMITS" ]; then
