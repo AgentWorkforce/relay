@@ -96,7 +96,7 @@ export default handler(async (ctx, event) => {
 What each `ctx` call does in this example:
 
 - `ctx.persona.inputs.<KEY>` — resolved deploy-time inputs (see [Inputs](#inputs)).
-- `ctx.harness.run({ prompt })` — spawn the persona's configured harness (here `claude`) inside the sandbox. The harness sees the Relayfile mount and can read `/github/...`, `/slack/...`, etc. directly. Returns `{ output, exitCode, durationMs }`.
+- `ctx.harness.run({ prompt })` — spawn the persona's configured harness (here `claude`) inside the sandbox. The harness sees the Relayfile mount and can read `/github/...`, `/slack/...`, etc. directly. Returns `{ output, exitCode, durationMs, usage? }` — destructure the fields you need.
 - `ctx.slack.post(channel, text)` / `ctx.github.comment(...)` — typed integration clients backed by the Relayfile writeback worker. Use them whenever you can; they're auth-managed and retryable.
 - `ctx.log(level, message, attrs)` — structured logger; every line is forwarded to the gateway and visible via `agentworkforce deployments logs <agent>`.
 - `ctx.memory.save(content, opts)` — persistent across firings when `memory.enabled` is set on the persona. See [Memory](#memory).
