@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@agent-relay/workflow-types": "7.1.0",
-    "@slack/web-api": "^7.15.2"
+    "@slack/web-api": "^7.16.0"
   },
   "devDependencies": {
     "@agent-relay/github-primitive": "7.1.0",
