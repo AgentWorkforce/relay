@@ -75,10 +75,15 @@ jobs:
         id: cache-modules
         uses: actions/cache@v4
         with:
+          # Include nested workspace node_modules so unhoisted deps
+          # (e.g. @slack/web-api under packages/slack-primitive) survive
+          # a cache hit — otherwise the cache restores only the root tree
+          # and skipping `npm ci` leaves the bundler unable to resolve
+          # them.
           path: |
             node_modules
             packages/*/node_modules
-          key: modules-${{ hashFiles('package-lock.json') }}
+          key: modules-v2-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-modules.outputs.cache-hit != 'true'
