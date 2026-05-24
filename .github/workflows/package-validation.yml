@@ -66,12 +66,18 @@ jobs:
         with:
           node-version: '22'
 
-      # Cache node_modules - skip npm ci entirely if unchanged
+      # Cache node_modules - skip npm ci entirely if unchanged.
+      # Workspace packages with pinned deps (e.g. packages/telemetry pins
+      # its own posthog-node) install into packages/*/node_modules, so we
+      # have to cache those too — otherwise the build can't resolve them
+      # on a cache hit and `npm ci` is skipped.
       - name: Cache node_modules
         id: cache-modules
         uses: actions/cache@v4
         with:
-          path: node_modules
+          path: |
+            node_modules
+            packages/*/node_modules
           key: modules-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies

@@ -33,7 +33,9 @@ jobs:
         id: cache-modules
         uses: actions/cache@v4
         with:
-          path: node_modules
+          path: |
+            node_modules
+            packages/*/node_modules
           key: modules-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
