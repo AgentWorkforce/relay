@@ -232,6 +232,7 @@ mod tests {
             cli: Some("claude".to_string()),
             model: None,
             cwd: None,
+            session_id: None,
             team: None,
             shadow_of: None,
             shadow_mode: None,

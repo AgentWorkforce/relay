@@ -70,6 +70,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 cli: Some("cat".to_string()),
                 model: None,
                 cwd: None,
+                session_id: None,
                 team: None,
                 shadow_of: None,
                 shadow_mode: None,
