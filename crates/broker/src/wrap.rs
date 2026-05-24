@@ -599,7 +599,6 @@ pub(crate) async fn run_wrap(
         strict_name,
         agent_type: None,
         read_mcp_identity: true,
-        ensure_mcp_config: true,
         runtime_cwd: &runtime_cwd,
     })
     .await?;

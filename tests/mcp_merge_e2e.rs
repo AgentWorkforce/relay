@@ -225,7 +225,7 @@ async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
             "mcpServers": {
                 "relaycast": {
                     "command": "npx",
-                    "args": ["-y", "@relaycast/mcp"],
+                    "args": ["-y", "agent-relay", "mcp"],
                     "env": {
                         "RELAY_API_KEY": "rk_stale_old_key",
                         "RELAY_AGENT_NAME": "old-agent-name",

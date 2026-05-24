@@ -122,6 +122,7 @@ function propagateVersionsToChildren(): void {
 // `telemetry` is here so enable/disable/status never triggers PostHog init on
 // the very run that's toggling the preference.
 const TELEMETRY_MANAGEMENT_COMMANDS = new Set(['telemetry']);
+const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
@@ -300,6 +301,14 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerRmCommands(program);
   registerLogCommands(program);
 
+  program
+    .command('mcp')
+    .description('Run the Agent Relay MCP stdio server')
+    .action(async () => {
+      const mod = await import('./relaycast-mcp.js');
+      await mod.startAgentRelayMcpStdio(mod.optionsFromEnv());
+    });
+
   return program;
 }
 
@@ -311,7 +320,9 @@ function maybeRunUpdateCheck(version: string, argv: string[]): void {
 
 function shouldSkipTelemetryInit(argv: string[]): boolean {
   const commandName = argv[2];
-  return Boolean(commandName && TELEMETRY_MANAGEMENT_COMMANDS.has(commandName));
+  return Boolean(
+    commandName && (TELEMETRY_MANAGEMENT_COMMANDS.has(commandName) || STDIO_SERVER_COMMANDS.has(commandName))
+  );
 }
 
 /**

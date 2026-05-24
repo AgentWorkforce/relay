@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
+- `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
 
 ### Fixed
