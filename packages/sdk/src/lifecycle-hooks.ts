@@ -5,8 +5,8 @@
  *
  * 1. **Broker events** — `agentSpawned`, `agentReleased`, `agentExited`,
  *    `agentReady`, `agentIdle`, `agentExitRequested`,
- *    `agentActivityChanged`, `messageReceived`, `messageSent`,
- *    `workerOutput`, `deliveryUpdate`, `channelSubscribed`,
+ *    `agentActivityChanged`, `agentResult`, `messageReceived`,
+ *    `messageSent`, `workerOutput`, `deliveryUpdate`, `channelSubscribed`,
  *    `channelUnsubscribed`. These fire when the broker emits the
  *    corresponding event over the WS stream.
  * 2. **Call-site hooks** — `beforeAgentSpawn`, `afterAgentSpawn`,
@@ -27,7 +27,7 @@
  */
 
 import type { AgentRuntime, BrokerEvent } from './protocol.js';
-import type { Agent, AgentActivityChange, Message } from './relay.js';
+import type { Agent, AgentActivityChange, AgentResult, Message } from './relay.js';
 import type { SpawnPtyInput, SpawnProviderInput } from './types.js';
 
 // ── SpawnPatch ─────────────────────────────────────────────────────────────
@@ -154,6 +154,7 @@ export type AgentRelayEvents = {
   deliveryUpdate: [BrokerEvent];
   agentExitRequested: [AgentExitRequestedPayload];
   agentIdle: [AgentIdlePayload];
+  agentResult: [AgentResult];
   agentActivityChanged: [AgentActivityChange];
   channelSubscribed: [ChannelSubscriptionPayload];
   channelUnsubscribed: [ChannelSubscriptionPayload];

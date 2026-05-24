@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::protocol::MessageInjectionMode;
 
@@ -212,6 +213,30 @@ pub struct InjectRequest {
 pub struct InboundDeliveryState {
     pub mode: InboundDeliveryMode,
     pub pending: std::collections::VecDeque<PendingRelayMessage>,
+}
+
+/// Per-spawn structured result callback configuration. The broker generates a
+/// token for agents spawned with a result contract and injects this into that
+/// agent's MCP server environment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentResultMcpConfig {
+    pub callback_url: String,
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+impl AgentResultMcpConfig {
+    pub fn env_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut pairs = vec![
+            ("AGENT_RELAY_RESULT_URL", self.callback_url.clone()),
+            ("AGENT_RELAY_RESULT_TOKEN", self.token.clone()),
+        ];
+        if let Some(schema) = &self.schema {
+            pairs.push(("AGENT_RELAY_RESULT_SCHEMA", schema.to_string()));
+        }
+        pairs
+    }
 }
 
 /// Per-worker cap on the pending queue. Prevents unbounded growth when a

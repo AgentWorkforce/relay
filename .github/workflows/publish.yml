@@ -70,6 +70,7 @@ permissions:
 env:
   NPM_CONFIG_FUND: false
   AGENT_RELAY_TELEMETRY_DISABLED: 1
+  WITHDRAWN_STABLE_TAG_PATTERN: '^(v6\.3\.6)$'
 
 jobs:
   # Build Rust broker binary for all platforms (needed by SDK's AgentRelayClient)
@@ -1071,7 +1072,6 @@ jobs:
           - utils
           - trajectory
           - hooks
-          - user-directory
           - cloud
           - sdk
           - telemetry
@@ -1166,7 +1166,6 @@ jobs:
           - sdk
           - telemetry
           - trajectory
-          - user-directory
           - utils
 
     steps:
@@ -1915,8 +1914,14 @@ jobs:
             exit 0
           fi
 
-          # Get last stable tag (semver only, excluding prerelease tags like v2.1.0-beta.1)
-          LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          # Get last published stable tag (semver only, excluding prerelease
+          # tags like v2.1.0-beta.1 and withdrawn stable tags).
+          LAST_TAG=$(
+            git tag -l --sort=-v:refname |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+              grep -Ev "$WITHDRAWN_STABLE_TAG_PATTERN" |
+              head -n1
+          )
           if [ -z "$LAST_TAG" ]; then
             echo "No previous tag found, skipping changelog generation"
             exit 0
@@ -1941,12 +1946,21 @@ jobs:
           }
 
           const commits = log.split('\0').filter(Boolean).map(record => {
-            const idx = record.indexOf('|');
-            const idx2 = record.indexOf('|', idx + 1);
+            const normalized = record.trimStart();
+            const idx = normalized.indexOf('|');
+            const idx2 = normalized.indexOf('|', idx + 1);
+            const hash = normalized.slice(0, 8);
+            const files = execSync(`git show --pretty=format: --name-only ${hash}`, {
+              encoding: 'utf-8',
+            })
+              .split('\n')
+              .map(file => file.trim())
+              .filter(Boolean);
             return {
-              hash: record.slice(0, 8),
-              subject: record.slice(idx + 1, idx2).trim(),
-              body: record.slice(idx2 + 1).trim(),
+              hash,
+              subject: normalized.slice(idx + 1, idx2).trim(),
+              body: normalized.slice(idx2 + 1).trim(),
+              files,
             };
           });
 
@@ -1983,9 +1997,26 @@ jobs:
             return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
           }
 
-          function shouldSkip({ type, scope, title }) {
+          function isWebOnlyCommit(files) {
+            const webOrLockfile = file =>
+              file === 'web' || file.startsWith('web/') || file === 'package-lock.json';
+            return files.length > 0 && files.some(file => file === 'web' || file.startsWith('web/')) && files.every(webOrLockfile);
+          }
+
+          function isWebRelatedTitle(text) {
+            return (
+              text.includes('@posthog/next') ||
+              text.includes('opennext') ||
+              text.includes('sst') ||
+              /\bnext\b/.test(text)
+            );
+          }
+
+          function shouldSkip({ type, scope, title }, files) {
             const text = title.toLowerCase();
             if (type === 'chore' && (scope === 'release' || scope === 'prerelease')) return true;
+            if (scope === 'web' || isWebOnlyCommit(files)) return true;
+            if (isWebRelatedTitle(text)) return true;
             if (scope === 'trajectories' || scope === 'comments') return true;
             if (text.includes('compact trajectories')) return true;
             if (text.includes('record ') && text.includes('trajectory')) return true;
@@ -1993,11 +2024,15 @@ jobs:
             if (text.includes('review feedback')) return true;
             if (text.includes('retrigger flaky')) return true;
             if (text === 'clean up skills' || text === 'bump skills') return true;
-            if (text.startsWith('auto-format ') || text.startsWith('format ')) return true;
+            if (
+              (type === 'chore' || type === 'style') &&
+              (text.startsWith('auto-format ') || text.startsWith('format '))
+            ) {
+              return true;
+            }
             if (text.startsWith('revert version bump')) return true;
             return title.length === 0;
           }
-
           function sectionFor(commit) {
             if (commit.breaking) return 'Breaking Changes';
             if (commit.type === 'feat') return 'Added';
@@ -2020,7 +2055,7 @@ jobs:
 
           for (const c of commits) {
             const parsed = parseSubject(c.subject);
-            if (shouldSkip(parsed)) continue;
+            if (shouldSkip(parsed, c.files)) continue;
             const section = sectionFor(parsed);
             const entries = sections.get(section);
             if (!entries.includes(parsed.title)) entries.push(parsed.title);
@@ -2064,7 +2099,12 @@ jobs:
       - name: Compact trajectories
         run: |
           if command -v npx &>/dev/null && [ -d ".trajectories" ]; then
-            LAST_TAG=$(git tag -l --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+            LAST_TAG=$(
+              git tag -l --sort=-v:refname |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+                grep -Ev "$WITHDRAWN_STABLE_TAG_PATTERN" |
+                head -n1
+            )
             if [ -n "$LAST_TAG" ]; then
               RELEASE_COMMITS=$(git log "${LAST_TAG}..HEAD" --format=%H | paste -sd, -)
               if [ -n "$RELEASE_COMMITS" ]; then

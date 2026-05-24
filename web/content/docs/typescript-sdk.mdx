@@ -110,9 +110,42 @@ interface Agent {
   waitForReady(timeoutMs?: number): Promise<void>;
   waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
   waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
+  waitForResult(timeoutMs?: number): Promise<AgentResult>;
   onOutput(callback: (chunk: string) => void): () => void; // returns unsubscribe
 }
 ```
+
+### Structured Agent Results
+
+Provide `result` when spawning an agent to expose a `submit_result` MCP tool inside that agent. The tool posts JSON back to the local broker, and the SDK validates it before resolving waiters or hooks.
+
+```typescript file="structured-result.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+import { z } from 'zod';
+
+const relay = new AgentRelay();
+
+const Summary = z.object({
+  status: z.enum(['pass', 'fail']),
+  findings: z.array(z.string()),
+});
+
+const reviewer = await relay.claude.spawn({
+  name: 'Reviewer',
+  task: 'Review the branch and submit the final JSON result.',
+  result: {
+    schema: Summary,
+    onResult: (summary) => {
+      console.log(summary.status, summary.findings.length);
+    },
+  },
+});
+
+const result = await reviewer.waitForResult(120_000);
+console.log(result.data.status);
+```
+
+You can also pass `jsonSchema` directly when you only want to describe the expected payload to the spawned agent. Use `relay.addListener('agentResult', ...)` to observe all structured results globally.
 
 ### `ReleaseOptions`
 
@@ -261,20 +294,21 @@ await relay.broadcast('All hands: stand by for new task');
 
 ## Event Hooks
 
-Assign a function to subscribe, `null` to unsubscribe:
+Register listeners with `addListener`; keep the returned function to unsubscribe:
 
 ```typescript
-relay.onMessageReceived = (msg: Message) => { ... }
-relay.onMessageSent    = (msg: Message) => { ... }
-relay.onAgentSpawned   = (agent: Agent) => { ... }
-relay.onAgentReleased  = (agent: Agent) => { ... }
-relay.onAgentExited    = (agent: Agent) => { ... }
-relay.onAgentReady     = (agent: Agent) => { ... }
-relay.onAgentIdle      = ({ name, idleSecs }) => { ... }
-relay.onAgentActivityChanged = ({ name, active, pendingDeliveries, reason }) => { ... }
-relay.onAgentExitRequested = ({ name, reason }) => { ... }
-relay.onWorkerOutput   = ({ name, stream, chunk }) => { ... }
-relay.onDeliveryUpdate = (event: BrokerEvent) => { ... }
+relay.addListener('messageReceived', (msg: Message) => { ... })
+relay.addListener('messageSent', (msg: Message) => { ... })
+relay.addListener('agentSpawned', (agent: Agent) => { ... })
+relay.addListener('agentReleased', (agent: Agent) => { ... })
+relay.addListener('agentExited', (agent: Agent) => { ... })
+relay.addListener('agentReady', (agent: Agent) => { ... })
+relay.addListener('agentIdle', ({ name, idleSecs }) => { ... })
+relay.addListener('agentActivityChanged', ({ name, active, pendingDeliveries, reason }) => { ... })
+relay.addListener('agentExitRequested', ({ name, reason }) => { ... })
+relay.addListener('workerOutput', ({ name, stream, chunk }) => { ... })
+relay.addListener('deliveryUpdate', (event: BrokerEvent) => { ... })
+relay.addListener('agentResult', (result: AgentResult) => { ... })
 ```
 
 **Message type:**
@@ -367,13 +401,13 @@ import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay();
 
-relay.onMessageReceived = (msg) => {
+relay.addListener('messageReceived', (msg) => {
   console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
-};
+});
 
-relay.onAgentSpawned = (agent) => {
+relay.addListener('agentSpawned', (agent) => {
   console.log(`Spawned: ${agent.name}`);
-};
+});
 
 // Spawn agents
 const planner = await relay.claude.spawn({

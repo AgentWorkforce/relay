@@ -43,6 +43,9 @@ Use Keep a Changelog sections (`Added`, `Changed`, `Deprecated`, `Removed`,
 `Fixed`, `Security`), plus `Breaking Changes` and `Migration Guidance` when a
 SemVer-major change needs explicit callouts. Do not use generated perspective
 sections such as "Product Perspective", "Technical Perspective", or "Releases".
+Do not add web-only changes to the changelog. Omit unpublished or withdrawn
+versions as release headings; move their shipped user-visible changes into the
+corrected published release.
 
 ## .trajectories Must Be Tracked
 

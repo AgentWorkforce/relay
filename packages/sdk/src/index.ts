@@ -11,6 +11,7 @@ export {
 export {
   AgentRelayClient,
   type AgentRelayBrokerInitArgs,
+  type BrokerExitInfo,
   type AgentRelayClientOptions,
   type AgentRelaySpawnOptions,
   type SetInboundDeliveryModeResult,

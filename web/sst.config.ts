@@ -15,7 +15,7 @@ export default $config({
     const NEXT_PUBLIC_POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.com';
     const NEXT_PUBLIC_POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '';
 
-    new sst.aws.Nextjs('Web', {
+    const web = new sst.aws.Nextjs('Web', {
       path: '.',
       openNextVersion: '3.9.16',
       environment: {
@@ -23,9 +23,13 @@ export default $config({
         NEXT_PUBLIC_POSTHOG_KEY,
       },
       // Production deploys land on origin.agentrelay.net; SEO canonicals are set in Next metadata.
-      domain: { name: domain, dns: sst.cloudflare.dns({ proxy: true }) },
-      // PR previews should not allocate one custom CloudFront cache policy per stage.
+      ...(isPreview ? {} : { domain: { name: domain, dns: sst.cloudflare.dns({ proxy: true }) } }),
+      // PR previews use CloudFront's generated URL and should not allocate one custom cache policy per stage.
       ...(isPreview ? { cachePolicy: AWS_MANAGED_CACHING_DISABLED_CACHE_POLICY_ID } : {}),
     });
+
+    return {
+      url: web.url,
+    };
   },
 });

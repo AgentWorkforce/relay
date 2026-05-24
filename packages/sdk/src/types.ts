@@ -13,6 +13,8 @@ import type { HarnessDefinition } from '@agent-relay/workflow-types';
 
 export type { HarnessDefinition } from '@agent-relay/workflow-types';
 
+export type JsonSchema = Record<string, unknown> | boolean;
+
 export interface SpawnPtyInput {
   name: string;
   cli: string;
@@ -29,6 +31,7 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
@@ -46,6 +49,7 @@ export interface SpawnHeadlessInput {
   channels?: string[];
   task?: string;
   skipRelayPrompt?: boolean;
+  agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
@@ -75,6 +79,7 @@ export interface SpawnProviderInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   skipRelayPrompt?: boolean;
+  agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP

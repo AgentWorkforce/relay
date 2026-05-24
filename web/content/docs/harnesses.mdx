@@ -1,0 +1,201 @@
+---
+title: Harnesses
+description: Define custom agent CLI adapters for Agent Relay spawning and workflows.
+---
+
+A harness tells Relay how to start an agent CLI: which binary to execute, how to render model flags, which Relay MCP arguments to inject, and which extra paths to search when the command is not on `PATH`.
+
+Relay includes built-in harnesses for the common CLIs. Define a custom harness when you want to spawn a CLI that Relay does not ship yet, or when your local install needs different binary names, flags, or search paths.
+
+<Note>
+Harnesses are used by real `agent-relay` spawning. They are not limited to workflow execution. SDK spawn calls send the resolved harness to the broker with the spawn request.
+</Note>
+
+## TypeScript spawn
+
+Register harnesses on `AgentRelay` when several spawns should share the same adapter:
+
+```typescript TypeScript file="spawn-qwen.ts"
+import { AgentRelay, type HarnessDefinition } from '@agent-relay/sdk';
+
+const qwenHarness: HarnessDefinition = {
+  binary: 'qwen',
+  interactiveArgs: ['run', '{modelArgs}', '{mcpArgs}', '{args}', '{sessionArgs}'],
+  nonInteractiveArgs: ['run', '--prompt', '{task}', '{args}'],
+  modelArgs: ['-m', '{model}'],
+  bypassFlag: '--yes',
+  searchPaths: ['~/.local/bin'],
+};
+
+const relay = new AgentRelay({
+  channels: ['dev'],
+  harnesses: {
+    qwen: qwenHarness,
+  },
+});
+
+const reviewer = await relay.spawn('QwenReviewer', 'qwen', 'Review the latest diff.', {
+  model: 'qwen3-coder',
+  channels: ['dev'],
+  args: ['--verbose'],
+});
+
+await reviewer.waitForReady();
+```
+
+You can also attach a harness to one spawn:
+
+```typescript TypeScript file="spawn-local-agent.ts"
+const agent = await relay.spawn('LocalAgent', 'local-agent', 'Inspect the repo.', {
+  model: 'local-large',
+  harness: {
+    binary: 'local-agent',
+    interactiveArgs: ['serve', '{modelArgs}', '{mcpArgs}', '{args}'],
+    modelArgs: ['--model-id', '{model}'],
+    searchPaths: ['~/bin', '~/.local/bin'],
+  },
+});
+```
+
+For direct broker control, pass the same shape to the low-level client:
+
+```typescript TypeScript file="client-spawn.ts"
+import { AgentRelayClient } from '@agent-relay/sdk';
+
+const client = AgentRelayClient.connect({ cwd: '/repo' });
+
+await client.spawnPty({
+  name: 'CustomWorker',
+  cli: 'custom-agent',
+  model: 'fast',
+  task: 'Summarize the worktree state.',
+  harness: {
+    binaries: ['custom-agent', 'custom'],
+    modelArgs: ['--model', '{model}'],
+    searchPaths: ['~/.custom/bin'],
+  },
+});
+```
+
+## Python spawn
+
+Python accepts the same serializable harness definition. Use snake_case fields on the dataclass; the SDK serializes them to the broker format.
+
+```python Python file="spawn_qwen.py"
+from agent_relay import AgentRelay, HarnessDefinition, SpawnOptions
+
+relay = AgentRelay(
+    channels=["dev"],
+    harnesses={
+        "qwen": HarnessDefinition(
+            binary="qwen",
+            interactive_args=["run", "{modelArgs}", "{mcpArgs}", "{args}", "{sessionArgs}"],
+            non_interactive_args=["run", "--prompt", "{task}", "{args}"],
+            model_args=["-m", "{model}"],
+            bypass_flag="--yes",
+            search_paths=["~/.local/bin"],
+        )
+    },
+)
+
+reviewer = await relay.spawn(
+    "QwenReviewer",
+    "qwen",
+    "Review the latest diff.",
+    SpawnOptions(
+        model="qwen3-coder",
+        channels=["dev"],
+        args=["--verbose"],
+    ),
+)
+
+await reviewer.wait_for_ready()
+```
+
+Use `register_harness()` when you want to add an adapter after constructing the relay:
+
+```python Python file="register_harness.py"
+relay.register_harness(
+    "local-agent",
+    {
+        "binary": "local-agent",
+        "interactiveArgs": ["serve", "{modelArgs}", "{mcpArgs}", "{args}"],
+        "modelArgs": ["--model-id", "{model}"],
+    },
+)
+```
+
+## Workflow YAML
+
+Workflow YAML uses the same `harnesses` map. Interactive workflow agents use the harness for broker spawning. Non-interactive agents use `nonInteractiveArgs` to run a one-shot command.
+
+```yaml file="workflow.yaml"
+version: "1.0"
+name: custom-harness-review
+
+harnesses:
+  qwen:
+    binary: qwen
+    interactiveArgs: ["run", "{modelArgs}", "{mcpArgs}", "{args}", "{sessionArgs}"]
+    nonInteractiveArgs: ["run", "--prompt", "{task}", "{args}"]
+    modelArgs: ["-m", "{model}"]
+    bypassFlag: "--yes"
+    searchPaths: ["~/.local/bin"]
+
+agents:
+  - name: reviewer
+    cli: qwen
+    role: "Reviews implementation diffs"
+    constraints:
+      model: qwen3-coder
+
+workflows:
+  - name: default
+    steps:
+      - name: review
+        agent: reviewer
+        task: "Review the current branch and list blockers."
+```
+
+## Harness fields
+
+| Field | Description |
+| --- | --- |
+| `binary` | Primary executable. Shorthand for `binaries: [binary]`. |
+| `binaries` | Executables to try in order. Defaults to the harness name. |
+| `interactiveArgs` | Argv template for PTY-backed broker spawning. Defaults to `['{bypass}', '{modelArgs}', '{mcpArgs}', '{args}', '{sessionArgs}']`. |
+| `nonInteractiveArgs` | Argv template for one-shot workflow process execution. Defaults to `['{task}', '{args}']`. |
+| `modelArgs` | Argv template for a model id. Defaults to `['--model', '{model}']`. |
+| `bypassFlag` | Permission-bypass flag Relay may inject for unattended spawned agents. |
+| `bypassAliases` | Alternate bypass flags that should suppress injecting `bypassFlag` when already present in `args`. |
+| `searchPaths` | Extra install directories checked before `PATH`. `~` expands to the user's home directory. |
+| `ignoreExitCode` | Treat non-zero one-shot workflow exits as captured output instead of failure. |
+| `proxyProvider` | Credential proxy provider for agents using proxied credentials. Supported values are `openai`, `anthropic`, and `openrouter`. |
+| `aliases` | Additional names that should resolve to the same adapter in the TypeScript registry. |
+
+## Template placeholders
+
+Use placeholders as whole argv items when they expand to multiple arguments:
+
+| Placeholder | Where it applies | Expansion |
+| --- | --- | --- |
+| `{modelArgs}` | `interactiveArgs` | The rendered `modelArgs` vector. |
+| `{mcpArgs}` | `interactiveArgs` | Relay's MCP and protocol arguments for the spawned agent. |
+| `{args}` | `interactiveArgs`, `nonInteractiveArgs` | Extra args from the spawn call or workflow agent. |
+| `{sessionArgs}` | `interactiveArgs` | Session resume arguments when Relay has them. |
+| `{bypass}` | `interactiveArgs` | The configured `bypassFlag`, omitted when not applicable. |
+| `{task}` | `nonInteractiveArgs` | The workflow step task for one-shot process execution. |
+| `{model}` | `modelArgs` | The requested model id. |
+
+The `{{placeholder}}` form is also accepted. For vector placeholders such as `{mcpArgs}` and `{args}`, keep the placeholder as its own array item so it can expand to zero or more argv items.
+
+<Note>
+If you override `interactiveArgs`, include `{mcpArgs}` unless the CLI does not need Relay messaging. Omitting it prevents Relay from passing the MCP configuration and protocol prompt into the spawned process.
+</Note>
+
+## See Also
+
+- [Spawning an agent](/docs/spawning-an-agent) - High-level spawn APIs
+- [Workflow Reference](/docs/reference-workflows) - YAML and builder workflow APIs
+- [TypeScript SDK Reference](/docs/typescript-sdk) - `AgentRelay` and `AgentRelayClient`
+- [Python SDK Reference](/docs/python-sdk) - Python facade and builder exports

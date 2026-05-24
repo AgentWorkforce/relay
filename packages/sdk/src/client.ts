@@ -71,6 +71,17 @@ export interface AgentRelayClientOptions {
   eventBus?: EventBus<AgentRelayEvents>;
 }
 
+export interface BrokerExitInfo {
+  /** Exit code, or null when the process was killed by signal. */
+  code: number | null;
+  /** Terminating signal, or null when the process exited normally. */
+  signal: NodeJS.Signals | null;
+  /** PID of the managed broker process that exited. */
+  pid: number | undefined;
+  /** Recent stderr lines captured from the managed broker process. */
+  recentStderr: string[];
+}
+
 export interface AgentRelayBrokerInitArgs {
   /** Optional HTTP API port for dashboard proxy (0 = disabled). */
   apiPort?: number;
@@ -140,6 +151,8 @@ interface BrokerStartupDebugContext {
   stderrLines: string[];
 }
 
+type BrokerExitListener = (info: BrokerExitInfo) => void;
+
 function isHeadlessProvider(value: string): value is HeadlessProvider {
   return value === 'claude' || value === 'opencode';
 }
@@ -171,6 +184,7 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
   };
 }
 
@@ -195,6 +209,7 @@ function buildSpawnProviderBody(
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
+    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
     transport,
   };
 }
@@ -244,6 +259,8 @@ export class AgentRelayClient {
   private child: ChildProcess | null = null;
   /** Lease renewal timer (only for spawned brokers). */
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
+  private brokerExitInfo: BrokerExitInfo | null = null;
+  private brokerExitListeners = new Set<BrokerExitListener>();
 
   workspaceKey?: string;
   /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
@@ -267,20 +284,38 @@ export class AgentRelayClient {
    * function. Equivalent to `client.eventBus.addListener(...)` but mirrors
    * the `AgentRelay` facade API so direct-client callers don't need to
    * reach through `.eventBus`.
+   *
+   * `beforeAgentSpawn` is the one event whose handler may return a
+   * `SpawnPatch` to mutate the spawn input — the dedicated overload
+   * keeps that contract type-safe without forcing other events to accept
+   * non-void returns.
    */
+  addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
   addListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): () => void;
+  addListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.eventBus.addListener(event, handler);
+    return this.eventBus.addListener(
+      event,
+      handler as (...args: AgentRelayEvents[K]) => void | Promise<void>
+    );
   }
 
   /** Remove a previously-registered listener. */
+  removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
   removeListener<K extends keyof AgentRelayEvents>(
     event: K,
     handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+  ): void;
+  removeListener<K extends keyof AgentRelayEvents>(
+    event: K,
+    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): void {
-    this.eventBus.removeListener(event, handler);
+    this.eventBus.removeListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
   }
 
   /**
@@ -427,6 +462,7 @@ export class AgentRelayClient {
       ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
     });
     client.child = child;
+    client.installManagedBrokerExitHandler(child, stderrLines);
 
     // The broker prints "API listening on …" the moment its TCP listener is
     // bound, but it still needs to complete a Relaycast handshake before
@@ -472,20 +508,14 @@ export class AgentRelayClient {
       }
     }
 
-    client.connectEvents();
+    if (!client.brokerExitInfo) {
+      client.connectEvents();
 
-    // Renew the owner lease so the broker doesn't auto-shutdown
-    client.leaseTimer = setInterval(() => {
-      client.renewLease().catch(() => {});
-    }, 60_000);
-
-    child.on('exit', () => {
-      client.disconnectEvents();
-      if (client.leaseTimer) {
-        clearInterval(client.leaseTimer);
-        client.leaseTimer = null;
-      }
-    });
+      // Renew the owner lease so the broker doesn't auto-shutdown
+      client.leaseTimer = setInterval(() => {
+        client.renewLease().catch(() => {});
+      }, 60_000);
+    }
 
     return client;
   }
@@ -519,6 +549,37 @@ export class AgentRelayClient {
 
   onEvent(listener: (event: BrokerEvent) => void): () => void {
     return this.transport.onEvent(listener);
+  }
+
+  /**
+   * Subscribe to managed broker child-process exit.
+   *
+   * Clients created with `new AgentRelayClient(...)` or `connect()` do not own a
+   * broker child process, so this is a no-op for them.
+   */
+  onBrokerExit(listener: BrokerExitListener): () => void {
+    if (!this.child && !this.brokerExitInfo) {
+      return () => {};
+    }
+
+    this.brokerExitListeners.add(listener);
+
+    if (this.brokerExitInfo) {
+      const info = cloneBrokerExitInfo(this.brokerExitInfo);
+      queueMicrotask(() => {
+        if (this.brokerExitListeners.has(listener)) {
+          try {
+            listener(info);
+          } catch {
+            // Listener failures should not interfere with SDK cleanup.
+          }
+        }
+      });
+    }
+
+    return () => {
+      this.brokerExitListeners.delete(listener);
+    };
   }
 
   queryEvents(filter?: { kind?: string; name?: string; since?: number; limit?: number }): BrokerEvent[] {
@@ -588,15 +649,11 @@ export class AgentRelayClient {
     return this.spawnProvider({ ...input, transport: 'headless' });
   }
 
-  async spawnClaude(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<SpawnAgentResult> {
+  async spawnClaude(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'claude' });
   }
 
-  async spawnOpencode(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<SpawnAgentResult> {
+  async spawnOpencode(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'opencode' });
   }
 
@@ -934,6 +991,45 @@ export class AgentRelayClient {
   async getConfig(): Promise<{ workspaceKey?: string }> {
     return this.transport.request('/api/config');
   }
+
+  private notifyBrokerExit(info: BrokerExitInfo): void {
+    if (this.brokerExitInfo) return;
+
+    this.brokerExitInfo = cloneBrokerExitInfo(info);
+    for (const listener of this.brokerExitListeners) {
+      try {
+        listener(cloneBrokerExitInfo(info));
+      } catch {
+        // Listener failures should not interfere with SDK cleanup.
+      }
+    }
+  }
+
+  private installManagedBrokerExitHandler(child: ChildProcess, stderrLines: string[]): void {
+    const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      this.notifyBrokerExit({
+        code,
+        signal,
+        pid: child.pid,
+        recentStderr: [...stderrLines],
+      });
+      this.disconnectEvents();
+      if (this.leaseTimer) {
+        clearInterval(this.leaseTimer);
+        this.leaseTimer = null;
+      }
+      if (this.child === child) {
+        this.child = null;
+      }
+    };
+
+    if (child.exitCode !== null || child.signalCode !== null) {
+      handleExit(child.exitCode, child.signalCode);
+      return;
+    }
+
+    child.once('exit', handleExit);
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -1036,6 +1132,13 @@ function pushBufferedLine(lines: string[], line: string): void {
   if (lines.length > 40) {
     lines.splice(0, lines.length - 40);
   }
+}
+
+function cloneBrokerExitInfo(info: BrokerExitInfo): BrokerExitInfo {
+  return {
+    ...info,
+    recentStderr: [...info.recentStderr],
+  };
 }
 
 function formatBrokerStartupError(

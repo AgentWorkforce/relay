@@ -305,7 +305,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     )]);
 
     let mut final_outcome = None;
-    for retry_index in 1..=MAX_DELIVERY_RETRIES {
+    for retry_index in 1..=MAX_DELIVERY_RETRIES + 1 {
         match retry_pending_delivery(
             "del_blip",
             &mut workers,
@@ -323,6 +323,16 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                 final_outcome = Some(outcome);
                 break;
             }
+            Ok(DeliveryAttemptOutcome::Attempted { attempts, .. }) => {
+                assert!(
+                    attempts <= MAX_DELIVERY_RETRIES,
+                    "retry attempts must stay within the retry cap"
+                );
+                assert!(
+                    retry_index <= MAX_DELIVERY_RETRIES,
+                    "the retry after the cap should return a terminal failure"
+                );
+            }
             Ok(DeliveryAttemptOutcome::Noop) => {
                 assert!(
                     retry_index < MAX_DELIVERY_RETRIES,
@@ -338,7 +348,6 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                     .unwrap_or_default()
                     .contains("failed writing frame to worker 'worker-blip'"));
             }
-            Ok(other) => panic!("closed worker stdin should not report {other:?}"),
             Err(error) => panic!("transient delivery write errors should stay queued: {error}"),
         }
     }
@@ -369,10 +378,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         frame.payload["attempts"].as_u64(),
         Some(u64::from(MAX_DELIVERY_RETRIES))
     );
-    assert!(frame.payload["lastError"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("failed writing frame to worker 'worker-blip'"));
+    let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
+    assert!(
+        last_error.contains("failed writing frame to worker 'worker-blip'")
+            || last_error.contains("max delivery retries exceeded")
+    );
     assert!(
         frame.payload.get("last_error").is_none(),
         "wire event should use the typed lastError field only"

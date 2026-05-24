@@ -106,6 +106,11 @@ const client = await AgentRelayClient.spawn({
   channels: ['general'],
 });
 
+const unsubscribeBrokerExit = client.onBrokerExit((info) => {
+  console.error('broker exited', info.code, info.signal, info.recentStderr);
+  unsubscribeBrokerExit();
+});
+
 // Or connect to an already-running broker (reads connection.json)
 // const client = AgentRelayClient.connect({ cwd: '/my/project' });
 

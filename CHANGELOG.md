@@ -9,19 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
 - `@agent-relay/sdk`: spawn calls and workflow configs can declare harness adapters so custom agent CLIs define their own binaries, interactive/non-interactive argument templates, model flags, and process behavior without Relay changes.
 
 ### Changed
 
 - `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
 - `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
-- Release workflow changelog generation now writes concise Keep a Changelog sections and skips release-only, trajectory, PR-review, and placeholder entries.
 - `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
+- Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
 
 ### Fixed
 
-- `web`: PR preview SST deploys reuse AWS's managed disabled cache policy instead of creating one custom CloudFront cache policy per preview stage.
-- `web`: production SST deploys target `origin.agentrelay.net` again.
+- `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
+
+### Security
+
+- `@agent-relay/slack-primitive` bumps `@slack/web-api` to `^7.16.0`, which raises its transitive `axios` floor to `^1.16.0` and clears GHSA-q8qp-cvcw-x6jj (prototype pollution gadgets in HTTP adapter allowing credential injection) and GHSA-3w6x-2g7m-8v23 (invisible JSON response tampering via `parseReviver`).
+- `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
+
+## [7.1.0] - 2026-05-22
+
+### Changed
+
+- Drop user-directory validation references
+- Remove unused user-directory package
+- Avoid persisting result callback tokens
+- Add structured agent result callbacks
+
+### Fixed
+
+- Normalize changelog release notes
+- Resolve clippy regressions for structured result callbacks
 
 ## [7.0.1] - 2026-05-22
 
@@ -33,21 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `web`: deploy tooling can repair stale SST ACM certificate validation state before continuing.
-- `web`: `@posthog/next` upgraded to the current 0.4.x line.
 - Relay self-termination guidance now points agents at direct process exit instead of broker shutdown paths.
 
-### Fixed
-
-- `web`: Next is pinned through overrides so deploy builds do not install duplicate Next versions.
-
 ## [7.0.0] - 2026-05-21
-
-### Changed
-
-- `agent-relay` and `@agent-relay/*` packages moved to the 7.x release line for the SDK listener API changes. The code-level changes also appeared in the immediately preceding 6.3.6 build, so 7.0.0 is the corrected major-version release line.
-
-## [6.3.6] - 2026-05-21
 
 ### Breaking Changes
 
@@ -128,7 +135,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `web`: Next moved from 15.5.14 to 15.5.18.
 - Deprecated `uuid` usage was removed from install-time dependencies.
 
 ### Fixed
@@ -155,7 +161,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Spawned workers receive idle thresholds consistently.
-- Docs navigation uses Next links.
 - Broker runtime review issues in request handling and stale-state reporting were addressed.
 
 ## [6.2.2] - 2026-05-18
@@ -767,16 +772,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add initial Swift SDK and harden workflow output
 
-### Changed
-
-- Rename SST app to relay-web
-
-### Fixed
-
-- Make og image compatible with OpenNext
-- Track generated SST resource types
-- Avoid generated SST type dependency
-
 ## [3.2.13] - 2026-03-20
 
 ### Fixed
@@ -1174,7 +1169,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bundled dependencies ensure tarball includes all `@agent-relay` packages.
 - macOS CI runners updated (macos-13 → macos-15-large, macos-12 for Intel x64).
 - Dashboard publishing removed from relay monorepo (moved to relay-cloud).
-- PostHog analytics added to docs site.
 
 ### Fixed
 
@@ -1202,7 +1196,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale agent cleanup prevents ghost entries when processes exit uncleanly.
 - CLI tests no longer conflict with a running local daemon.
 - Dashboard publishing workflow removed; package cleanup across workspaces.
-- PostHog analytics added to documentation site.
 - npx fallback added for dashboard startup in CLI.
 
 ### Fixed

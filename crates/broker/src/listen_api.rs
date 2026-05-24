@@ -32,6 +32,7 @@ type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::syn
 // Request / State types
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)]
 pub enum ListenApiRequest {
     Spawn {
         name: String,
@@ -51,6 +52,7 @@ pub enum ListenApiRequest {
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
         agent_token: Option<String>,
+        agent_result_schema: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -176,6 +178,16 @@ pub enum ListenApiRequest {
         name: String,
         reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
     },
+    /// `POST /api/agent-result` — accepts structured result payloads from the
+    /// per-agent MCP tool using a callback token minted at spawn time.
+    SubmitAgentResult {
+        token: String,
+        name: Option<String>,
+        data: Value,
+        final_result: bool,
+        metadata: Option<Value>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, AgentResultRouteError>>,
+    },
 }
 
 /// Typed errors for the inbound-delivery-mode HTTP routes. Keeps the broker arm's
@@ -200,6 +212,21 @@ impl std::fmt::Display for DeliveryRouteError {
 }
 
 impl std::error::Error for DeliveryRouteError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentResultRouteError {
+    InvalidToken,
+}
+
+impl std::fmt::Display for AgentResultRouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentResultRouteError::InvalidToken => write!(f, "invalid_result_token"),
+        }
+    }
+}
+
+impl std::error::Error for AgentResultRouteError {}
 
 /// Reply payload for [`ListenApiRequest::SetInboundDeliveryMode`]. `flushed`
 /// is the number of pending messages drained during the transition
@@ -394,6 +421,7 @@ fn listen_api_router_with_auth(
 
     Router::new()
         .route("/health", routing::get(listen_api_health))
+        .route("/api/agent-result", routing::post(listen_api_agent_result))
         .merge(protected)
         .with_state(state.clone())
 }
@@ -504,6 +532,17 @@ fn unauthorized_error_envelope() -> Value {
     })
 }
 
+fn bearer_token(value: &str) -> Option<&str> {
+    let mut parts = value.trim().splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    let token = parts.next()?.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
+}
+
 async fn listen_api_auth_middleware(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     request: axum::http::Request<axum::body::Body>,
@@ -525,9 +564,7 @@ async fn listen_api_auth_middleware(
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .and_then(bearer_token)
         });
 
     if provided != Some(expected) {
@@ -634,6 +671,11 @@ async fn listen_api_spawn(
         .or_else(|| body.get("agentToken"))
         .and_then(Value::as_str)
         .map(String::from);
+    let agent_result_schema = body
+        .get("agent_result_schema")
+        .or_else(|| body.get("agentResultSchema"))
+        .or_else(|| body.get("resultSchema"))
+        .cloned();
 
     if name.is_empty() {
         return (
@@ -663,6 +705,7 @@ async fn listen_api_spawn(
             skip_relay_prompt,
             restart_policy,
             agent_token,
+            agent_result_schema,
             reply: reply_tx,
         })
         .await
@@ -771,6 +814,82 @@ async fn listen_api_threads(
     match reply_rx.await {
         Ok(Ok(val)) => axum::Json(val),
         _ => axum::Json(json!({ "threads": [] })),
+    }
+}
+
+async fn listen_api_agent_result(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token = headers
+        .get("x-agent-result-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(bearer_token)
+                .map(String::from)
+        });
+    let Some(token) = token else {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({ "success": false, "error": "missing_result_token" })),
+        );
+    };
+
+    let Some(data) = body.get("data").or_else(|| body.get("result")).cloned() else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "success": false, "error": "Missing required field: data" })),
+        );
+    };
+    let name = body
+        .get("name")
+        .or_else(|| body.get("agent"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let final_result = body
+        .get("final")
+        .or_else(|| body.get("final_result"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let metadata = body.get("metadata").cloned();
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SubmitAgentResult {
+            token,
+            name,
+            data,
+            final_result,
+            metadata,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(AgentResultRouteError::InvalidToken)) => (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({ "success": false, "error": "invalid_result_token" })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
     }
 }
 
@@ -2275,6 +2394,32 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn api_route_accepts_lowercase_bearer_scheme() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let list_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [] })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("authorization", "bearer secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
     async fn spawn_route_forwards_extended_fields() {
         let (router, mut rx) = test_router(Some("secret"));
         let spawn_replier = tokio::spawn(async move {
@@ -2297,6 +2442,7 @@ mod auth_tests {
                     skip_relay_prompt: _,
                     restart_policy: _,
                     agent_token: _,
+                    agent_result_schema,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
@@ -2321,6 +2467,10 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
+                    assert_eq!(
+                        agent_result_schema,
+                        Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+                    );
                     let _ = reply.send(Ok(
                         json!({ "success": true, "name": "worker-a", "pid": 42 }),
                     ));
@@ -2356,6 +2506,7 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
+                            "resultSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
                         })
                         .to_string(),
                     ))
@@ -2369,6 +2520,77 @@ mod auth_tests {
         assert_eq!(body["success"], json!(true));
 
         spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn agent_result_route_accepts_callback_token_without_broker_auth() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SubmitAgentResult {
+                    token,
+                    name,
+                    data,
+                    final_result,
+                    metadata,
+                    reply,
+                }) => {
+                    assert_eq!(token, "arr_test");
+                    assert_eq!(name.as_deref(), Some("worker-a"));
+                    assert_eq!(data, json!({"ok": true}));
+                    assert!(final_result);
+                    assert_eq!(metadata, Some(json!({"source": "test"})));
+                    let _ = reply.send(Ok(json!({"success": true, "result_id": "ar_1"})));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent-result")
+                    .method("POST")
+                    .header("authorization", "bearer arr_test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "agent": "worker-a",
+                            "data": {"ok": true},
+                            "metadata": {"source": "test"}
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result_id"], json!("ar_1"));
+
+        replier.await.expect("result replier should complete");
+    }
+
+    #[tokio::test]
+    async fn agent_result_route_rejects_missing_callback_token() {
+        let (router, _rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent-result")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"data": {"ok": true}}).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

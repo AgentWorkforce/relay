@@ -4,7 +4,9 @@ pub(crate) mod dm_participants;
 pub(crate) mod workspace;
 pub(crate) mod ws;
 
-pub(crate) use crate::snippets::configure_relaycast_mcp_with_token;
+pub(crate) use crate::snippets::{
+    configure_relaycast_mcp_with_result, configure_relaycast_mcp_with_token,
+};
 pub(crate) use auth::AuthClient;
 pub(crate) use bridge::{map_ws_broker_command, map_ws_event};
 pub(crate) use dm_participants::{resolve_dm_participants_cached, DmParticipantsCache};

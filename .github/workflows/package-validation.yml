@@ -71,8 +71,15 @@ jobs:
         id: cache-modules
         uses: actions/cache@v4
         with:
-          path: node_modules
-          key: modules-${{ hashFiles('package-lock.json') }}
+          # Include nested workspace node_modules so unhoisted deps
+          # (e.g. @slack/web-api under packages/slack-primitive) survive
+          # a cache hit — otherwise the cache restores only the root tree
+          # and skipping `npm ci` leaves the bundler unable to resolve
+          # them.
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: modules-v2-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-modules.outputs.cache-hit != 'true'
@@ -93,9 +100,6 @@ jobs:
         run: |
           echo "=== Auditing bundled package dependencies ==="
           node scripts/audit-bundled-deps.mjs
-
-      - name: Validate npm tarball artifact
-        run: npm run pack:validate
 
       - name: Validate all
         run: |
@@ -134,7 +138,6 @@ jobs:
               '@agent-relay/config',
               '@agent-relay/hooks',
               '@agent-relay/utils',
-              '@agent-relay/user-directory',
             ];
 
             (async () => {
@@ -198,6 +201,12 @@ jobs:
           # Cleanup through CLI down first, then hard-kill fallback
           node dist/src/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
+
+      # Keep tarball validation after runtime smoke tests. The tarball
+      # validator removes nested workspace node_modules before packing so the
+      # package cannot accidentally include them.
+      - name: Validate npm tarball artifact
+        run: npm run pack:validate
 
   publish-fresh-install-build:
     name: Publish Fresh Install Build
