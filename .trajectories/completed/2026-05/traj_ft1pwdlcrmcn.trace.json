@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "id": "672b9fc7-be82-421b-8103-a18cdd0f914f",
+  "timestamp": "2026-05-22T01:34:57.507Z",
+  "trajectory": "traj_ft1pwdlcrmcn",
+  "files": [
+    {
+      "path": ".github/scripts/repair-failed-sst-acm-cert.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 17,
+              "end_line": 36,
+              "revision": "898b8ee37197075913578fdb1c2fe4139b2ac562"
+            },
+            {
+              "start_line": 40,
+              "end_line": 89,
+              "revision": "898b8ee37197075913578fdb1c2fe4139b2ac562"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

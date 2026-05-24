@@ -331,6 +331,7 @@ class AgentRelayClient:
         channels: Optional[list[str]] = None,
         task: Optional[str] = None,
         model: Optional[str] = None,
+        harness: Optional[dict[str, Any]] = None,
         cwd: Optional[str] = None,
         team: Optional[str] = None,
         shadow_of: Optional[str] = None,
@@ -348,6 +349,7 @@ class AgentRelayClient:
         }
         if task is not None: payload["task"] = task
         if model is not None: payload["model"] = model
+        if harness is not None: payload["harness"] = harness
         if cwd is not None: payload["cwd"] = cwd
         if team is not None: payload["team"] = team
         if shadow_of is not None: payload["shadowOf"] = shadow_of
@@ -368,6 +370,7 @@ class AgentRelayClient:
         channels: Optional[list[str]] = None,
         task: Optional[str] = None,
         model: Optional[str] = None,
+        harness: Optional[dict[str, Any]] = None,
         cwd: Optional[str] = None,
         team: Optional[str] = None,
         shadow_of: Optional[str] = None,
@@ -392,6 +395,7 @@ class AgentRelayClient:
         }
         if task is not None: payload["task"] = task
         if model is not None: payload["model"] = model
+        if harness is not None: payload["harness"] = harness
         if cwd is not None: payload["cwd"] = cwd
         if team is not None: payload["team"] = team
         if shadow_of is not None: payload["shadowOf"] = shadow_of

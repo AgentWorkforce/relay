@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    env,
+    ffi::OsString,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -7,7 +9,10 @@ use std::{
 
 use crate::{
     metrics::MetricsCollector,
-    protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
+    protocol::{
+        AgentRuntime, AgentSpec, HarnessDefinition, ProtocolEnvelope, RelayDelivery,
+        PROTOCOL_VERSION,
+    },
     relaycast::configure_relaycast_mcp_with_token,
     supervisor::Supervisor,
 };
@@ -132,6 +137,7 @@ impl WorkerRegistry {
                     "provider": handle.spec.provider.clone(),
                     "cli": handle.spec.cli,
                     "model": handle.spec.model,
+                    "sessionId": handle.spec.session_id,
                     "team": handle.spec.team,
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
@@ -217,8 +223,10 @@ impl WorkerRegistry {
         match spec.runtime {
             AgentRuntime::Pty => {
                 let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
-                let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
+                let harness = spec.harness.clone();
+                let (parsed_cli, inline_cli_args) = parse_cli_command(cli)
                     .with_context(|| format!("invalid CLI command '{cli}'"))?;
+                let resolved_cli = resolve_harness_command(&parsed_cli, harness.as_ref());
                 let normalized_cli = normalize_cli_name(&resolved_cli);
                 let mut effective_args = inline_cli_args;
                 effective_args.extend(spec.args.clone());
@@ -244,28 +252,77 @@ impl WorkerRegistry {
                 {
                     spec.model = Some(model);
                 }
+                let mut harness_session_args = Vec::new();
+                if is_claude {
+                    spec.session_id = prepare_claude_session_args(&mut effective_args);
+                } else if is_codex {
+                    match codex_session_reference(&effective_args) {
+                        CodexSessionReference::Known(thread_id) => {
+                            spec.session_id = Some(thread_id);
+                        }
+                        CodexSessionReference::Unknown => {}
+                        CodexSessionReference::None => {
+                            if codex_has_positional_arg(&effective_args) {
+                                tracing::debug!(
+                                    worker = %spec.name,
+                                    "not pre-creating Codex session because args contain a positional prompt or subcommand"
+                                );
+                            } else {
+                                let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
+                                let thread_id =
+                                    crate::codex_session::create_resumable_codex_thread(
+                                        &resolved_cli,
+                                        cwd,
+                                        &self.worker_env,
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "failed to create resumable Codex session for '{}'",
+                                            spec.name
+                                        )
+                                    })?;
+                                tracing::info!(
+                                    worker = %spec.name,
+                                    session_id = %thread_id,
+                                    "created resumable Codex session for spawned PTY"
+                                );
+                                spec.session_id = Some(thread_id.clone());
+                                harness_session_args.push("resume".to_string());
+                                harness_session_args.push(thread_id);
+                            }
+                        }
+                    }
+                }
                 // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
                 // This means any actor who can trigger agent.add gets agents with no permission
                 // guardrails. Future work should make this an explicit opt-in per step/agent.
-                let bypass_flag: Option<&str> = if is_claude
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-skip-permissions"))
-                {
-                    Some("--dangerously-skip-permissions")
-                } else if is_codex
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
-                {
-                    Some("--dangerously-bypass-approvals-and-sandbox")
-                } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
-                    Some("--yolo")
-                } else {
-                    None
-                };
+                let bypass_flag: Option<String> = harness
+                    .as_ref()
+                    .and_then(|definition| harness_bypass_flag(definition, &effective_args))
+                    .or_else(|| {
+                        if is_claude
+                            && !effective_args
+                                .iter()
+                                .any(|a| a.contains("dangerously-skip-permissions"))
+                        {
+                            Some("--dangerously-skip-permissions".to_string())
+                        } else if is_codex
+                            && !effective_args.iter().any(|a| {
+                                a.contains("dangerously-bypass") || a.contains("full-auto")
+                            })
+                        {
+                            Some("--dangerously-bypass-approvals-and-sandbox".to_string())
+                        } else if is_gemini
+                            && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
+                        {
+                            Some("--yolo".to_string())
+                        } else {
+                            None
+                        }
+                    });
 
-                if let Some(flag) = bypass_flag {
+                if let Some(flag) = bypass_flag.as_deref() {
                     tracing::warn!(
                         worker = %spec.name,
                         flag = %flag,
@@ -284,35 +341,66 @@ impl WorkerRegistry {
                     )
                     .await?;
 
-                let model_flag = resolve_model_flag_for_cli(
-                    &resolved_cli,
-                    &cli_lower,
-                    &spec.name,
-                    spec.model.as_deref(),
-                    &effective_args,
-                )
-                .await;
-                if let Some(ref model) = model_flag {
-                    spec.model = Some(model.clone());
-                }
+                let model_args = if let Some(definition) = harness.as_ref() {
+                    match resolve_harness_model_args(
+                        definition,
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &effective_args,
+                    )
+                    .await
+                    {
+                        Some((model, args)) => {
+                            spec.model = Some(model);
+                            args
+                        }
+                        None => Vec::new(),
+                    }
+                } else {
+                    let model_flag = resolve_model_flag_for_cli(
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &effective_args,
+                    )
+                    .await;
+                    if let Some(ref model) = model_flag {
+                        spec.model = Some(model.clone());
+                    }
+                    model_flag
+                        .map(|model| vec!["--model".to_string(), model])
+                        .unwrap_or_default()
+                };
 
-                let has_extra = bypass_flag.is_some()
-                    || model_flag.is_some()
-                    || !effective_args.is_empty()
-                    || !mcp_args.is_empty();
+                let extra_args = if let Some(definition) = harness.as_ref() {
+                    render_harness_interactive_args(
+                        definition,
+                        bypass_flag.as_deref(),
+                        spec.model.as_deref(),
+                        &model_args,
+                        &mcp_args,
+                        &effective_args,
+                        &harness_session_args,
+                    )
+                } else {
+                    let mut args = Vec::new();
+                    if let Some(flag) = bypass_flag {
+                        args.push(flag);
+                    }
+                    args.extend(model_args);
+                    args.extend(mcp_args);
+                    args.extend(effective_args);
+                    args.extend(harness_session_args);
+                    args
+                };
+
+                let has_extra = !extra_args.is_empty();
                 if has_extra {
                     command.arg("--");
-                    if let Some(flag) = bypass_flag {
-                        command.arg(flag);
-                    }
-                    if let Some(ref model) = model_flag {
-                        command.arg("--model");
-                        command.arg(model);
-                    }
-                    for arg in &mcp_args {
-                        command.arg(arg);
-                    }
-                    for arg in &effective_args {
+                    for arg in &extra_args {
                         command.arg(arg);
                     }
                 }
@@ -676,10 +764,448 @@ impl WorkerRegistry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexSessionReference {
+    Known(String),
+    Unknown,
+    None,
+}
+
+fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
+    if let Some(session_id) = cli_flag_value(args, "--session-id") {
+        return Some(session_id);
+    }
+    if cli_flag_present(args, &["--session-id"]) {
+        return None;
+    }
+    if let Some(session_id) =
+        cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
+    {
+        return Some(session_id);
+    }
+    if cli_flag_present(args, &["--resume", "-r", "--continue", "-c"]) {
+        return None;
+    }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    args.push("--session-id".to_string());
+    args.push(session_id.clone());
+    Some(session_id)
+}
+
+fn codex_session_reference(args: &[String]) -> CodexSessionReference {
+    let mut index = 0;
+    let mut skip_next = false;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if skip_next {
+            skip_next = false;
+            index += 1;
+            continue;
+        }
+        if arg == "--" {
+            return CodexSessionReference::None;
+        }
+        if codex_flag_consumes_next_arg(arg) {
+            skip_next = true;
+            index += 1;
+            continue;
+        }
+        if arg == "resume" || arg == "fork" {
+            let Some(next) = args.get(index + 1).map(String::as_str) else {
+                return CodexSessionReference::Unknown;
+            };
+            if next == "--last" || next.starts_with('-') {
+                return CodexSessionReference::Unknown;
+            }
+            return CodexSessionReference::Known(next.to_string());
+        }
+        index += 1;
+    }
+    CodexSessionReference::None
+}
+
+fn codex_has_positional_arg(args: &[String]) -> bool {
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--" {
+            return true;
+        }
+        if codex_flag_consumes_next_arg(arg) {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn codex_flag_consumes_next_arg(arg: &str) -> bool {
+    if arg.contains('=') {
+        return false;
+    }
+    matches!(
+        arg,
+        "--model"
+            | "-m"
+            | "--profile"
+            | "--config"
+            | "-c"
+            | "--sandbox"
+            | "-s"
+            | "--ask-for-approval"
+            | "--approval-policy"
+            | "--cd"
+            | "--cwd"
+    )
+}
+
+fn cli_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let equals_prefix = format!("{flag}=");
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == flag {
+            return args
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .cloned();
+        }
+        if let Some(value) = arg.strip_prefix(&equals_prefix) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn cli_flag_present(args: &[String], flags: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        let arg = arg.as_str();
+        flags.iter().any(|flag| {
+            arg == *flag
+                || arg
+                    .strip_prefix(*flag)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+    })
+}
+
 fn args_include_model_override(args: &[String]) -> bool {
     args.iter().any(|arg| {
         arg == "--model" || arg.starts_with("--model=") || arg == "-m" || arg.starts_with("-m=")
     })
+}
+
+fn canonicalize_display(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .ok()
+        .and_then(|resolved| resolved.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+fn expand_home_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn fallback_path_env() -> OsString {
+    #[cfg(unix)]
+    {
+        let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
+        OsString::from(format!(
+            "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+        ))
+    }
+    #[cfg(windows)]
+    {
+        OsString::from(r"C:\Windows\System32;C:\Windows")
+    }
+}
+
+fn resolve_command_with_paths(command: &str, search_paths: &[String]) -> String {
+    if command.contains('/') || command.contains('\\') || command.starts_with('.') {
+        return canonicalize_display(Path::new(command));
+    }
+
+    for dir in search_paths {
+        let candidate = expand_home_path(dir).join(command);
+        if candidate.is_file() {
+            return canonicalize_display(&candidate);
+        }
+    }
+
+    let path_env = env::var_os("PATH")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(fallback_path_env);
+    for dir in env::split_paths(&path_env) {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return canonicalize_display(&candidate);
+        }
+    }
+
+    command.to_string()
+}
+
+fn resolve_harness_command(default_command: &str, harness: Option<&HarnessDefinition>) -> String {
+    let Some(harness) = harness else {
+        return default_command.to_string();
+    };
+
+    let candidates: Vec<&str> = if harness.binaries.is_empty() {
+        harness
+            .binary
+            .as_deref()
+            .map(|binary| vec![binary])
+            .unwrap_or_else(|| vec![default_command])
+    } else {
+        harness.binaries.iter().map(String::as_str).collect()
+    };
+
+    for candidate in candidates.iter().copied() {
+        let resolved = resolve_command_with_paths(candidate, &harness.search_paths);
+        if resolved != candidate || Path::new(&resolved).is_file() {
+            return resolved;
+        }
+    }
+
+    candidates
+        .first()
+        .copied()
+        .unwrap_or(default_command)
+        .to_string()
+}
+
+fn arg_matches_flag(arg: &str, flag: &str) -> bool {
+    arg == flag
+        || arg
+            .strip_prefix(flag)
+            .is_some_and(|rest| rest.starts_with('='))
+}
+
+fn harness_bypass_flag(harness: &HarnessDefinition, existing_args: &[String]) -> Option<String> {
+    let flag = harness.bypass_flag.as_deref()?.trim();
+    if flag.is_empty() {
+        return None;
+    }
+
+    let mut flags = vec![flag];
+    flags.extend(
+        harness
+            .bypass_aliases
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty()),
+    );
+    if existing_args.iter().any(|arg| {
+        flags
+            .iter()
+            .any(|candidate| arg_matches_flag(arg, candidate))
+    }) {
+        return None;
+    }
+
+    Some(flag.to_string())
+}
+
+fn is_exact_placeholder(value: &str, name: &str) -> bool {
+    value == format!("{{{name}}}") || value == format!("{{{{{name}}}}}")
+}
+
+fn replace_scalar_placeholders(
+    template: &str,
+    bypass: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    template
+        .replace("{{bypass}}", bypass.unwrap_or(""))
+        .replace("{bypass}", bypass.unwrap_or(""))
+        .replace("{{model}}", model.unwrap_or(""))
+        .replace("{model}", model.unwrap_or(""))
+}
+
+fn render_harness_arg_template(
+    template: &[String],
+    bypass: Option<&str>,
+    model: Option<&str>,
+    model_args: &[String],
+    mcp_args: &[String],
+    args: &[String],
+    session_args: &[String],
+) -> Vec<String> {
+    let mut rendered = Vec::new();
+    for entry in template {
+        if is_exact_placeholder(entry, "args") {
+            rendered.extend(args.iter().cloned());
+            continue;
+        }
+        if is_exact_placeholder(entry, "modelArgs") {
+            rendered.extend(model_args.iter().cloned());
+            continue;
+        }
+        if is_exact_placeholder(entry, "mcpArgs") {
+            rendered.extend(mcp_args.iter().cloned());
+            continue;
+        }
+        if is_exact_placeholder(entry, "sessionArgs") {
+            rendered.extend(session_args.iter().cloned());
+            continue;
+        }
+        if is_exact_placeholder(entry, "bypass") {
+            if let Some(flag) = bypass {
+                rendered.push(flag.to_string());
+            }
+            continue;
+        }
+        if is_exact_placeholder(entry, "model") {
+            if let Some(model) = model {
+                rendered.push(model.to_string());
+            }
+            continue;
+        }
+
+        rendered.push(replace_scalar_placeholders(entry, bypass, model));
+    }
+    rendered
+}
+
+fn render_harness_interactive_args(
+    harness: &HarnessDefinition,
+    bypass: Option<&str>,
+    model: Option<&str>,
+    model_args: &[String],
+    mcp_args: &[String],
+    args: &[String],
+    session_args: &[String],
+) -> Vec<String> {
+    let default_template;
+    let template = if harness.interactive_args.is_empty() {
+        default_template = vec![
+            "{bypass}".to_string(),
+            "{modelArgs}".to_string(),
+            "{mcpArgs}".to_string(),
+            "{args}".to_string(),
+            "{sessionArgs}".to_string(),
+        ];
+        &default_template
+    } else {
+        &harness.interactive_args
+    };
+
+    render_harness_arg_template(
+        template,
+        bypass,
+        model,
+        model_args,
+        mcp_args,
+        args,
+        session_args,
+    )
+}
+
+fn render_harness_model_args(harness: &HarnessDefinition, model: &str) -> Vec<String> {
+    let default_template;
+    let template = if harness.model_args.is_empty() {
+        default_template = vec!["--model".to_string(), "{model}".to_string()];
+        &default_template
+    } else {
+        &harness.model_args
+    };
+
+    render_harness_arg_template(template, None, Some(model), &[], &[], &[], &[])
+}
+
+fn model_arg_markers(harness: &HarnessDefinition) -> Vec<String> {
+    let default_template;
+    let template = if harness.model_args.is_empty() {
+        default_template = vec!["--model".to_string(), "{model}".to_string()];
+        &default_template
+    } else {
+        &harness.model_args
+    };
+
+    let mut markers = Vec::new();
+    for (index, entry) in template.iter().enumerate() {
+        if is_exact_placeholder(entry, "model") {
+            if let Some(previous) = index.checked_sub(1).and_then(|i| template.get(i)) {
+                if previous.starts_with('-') {
+                    markers.push(previous.clone());
+                }
+            }
+            continue;
+        }
+
+        let model_token = entry.find("{model}").or_else(|| entry.find("{{model}}"));
+        if let Some(pos) = model_token {
+            let marker = entry[..pos].trim_end_matches('=');
+            if marker.starts_with('-') && !marker.is_empty() {
+                markers.push(marker.to_string());
+            }
+        }
+    }
+    markers.sort();
+    markers.dedup();
+    markers
+}
+
+fn harness_model_override_present(harness: &HarnessDefinition, existing_args: &[String]) -> bool {
+    let markers = model_arg_markers(harness);
+    if markers.is_empty() {
+        return args_include_model_override(existing_args);
+    }
+    existing_args.iter().any(|arg| {
+        markers
+            .iter()
+            .any(|marker| arg_matches_flag(arg.as_str(), marker.as_str()))
+    })
+}
+
+async fn resolve_harness_model_args(
+    harness: &HarnessDefinition,
+    resolved_cli: &str,
+    normalized_cli: &str,
+    worker_name: &str,
+    requested_model: Option<&str>,
+    existing_args: &[String],
+) -> Option<(String, Vec<String>)> {
+    let requested = requested_model?.trim();
+    if requested.is_empty() || harness_model_override_present(harness, existing_args) {
+        return None;
+    }
+
+    let model = if normalized_cli.eq_ignore_ascii_case("codex") {
+        codex_local_fallback_model(resolved_cli, requested)
+            .await
+            .map(|fallback| {
+                tracing::warn!(
+                    worker = %worker_name,
+                    requested_model = %requested,
+                    fallback_model = %fallback,
+                    "local Codex CLI model catalog does not confirm requested model; using fallback"
+                );
+                fallback
+            })
+            .unwrap_or(requested)
+    } else {
+        requested
+    };
+
+    Some((model.to_string(), render_harness_model_args(harness, model)))
 }
 
 async fn apply_codex_model_arg_fallback(
@@ -992,6 +1518,84 @@ fn spawn_worker_reader<R>(
 }
 
 #[cfg(test)]
+mod harness_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn harness_interactive_args_expand_vector_placeholders() {
+        let harness = HarnessDefinition {
+            interactive_args: vec![
+                "run".to_string(),
+                "{bypass}".to_string(),
+                "{modelArgs}".to_string(),
+                "{args}".to_string(),
+                "{sessionArgs}".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let args = render_harness_interactive_args(
+            &harness,
+            Some("--yes"),
+            Some("qwen3-coder"),
+            &["-m".to_string(), "qwen3-coder".to_string()],
+            &[],
+            &["--verbose".to_string()],
+            &["resume".to_string(), "session-1".to_string()],
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--yes",
+                "-m",
+                "qwen3-coder",
+                "--verbose",
+                "resume",
+                "session-1"
+            ]
+        );
+    }
+
+    #[test]
+    fn harness_model_args_dedup_custom_model_flag() {
+        let harness = HarnessDefinition {
+            model_args: vec!["--model-id".to_string(), "{model}".to_string()],
+            ..Default::default()
+        };
+
+        assert!(harness_model_override_present(
+            &harness,
+            &["--model-id".to_string(), "existing".to_string()]
+        ));
+        assert!(harness_model_override_present(
+            &harness,
+            &["--model-id=existing".to_string()]
+        ));
+        assert!(!harness_model_override_present(
+            &harness,
+            &["--other".to_string()]
+        ));
+    }
+
+    #[test]
+    fn harness_bypass_uses_aliases_for_dedup() {
+        let harness = HarnessDefinition {
+            bypass_flag: Some("--yes".to_string()),
+            bypass_aliases: vec!["-y".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            harness_bypass_flag(&harness, &["--verbose".to_string()]),
+            Some("--yes".to_string())
+        );
+        assert_eq!(harness_bypass_flag(&harness, &["-y".to_string()]), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1037,6 +1641,81 @@ mod tests {
     fn routing_workers_empty_when_no_workers() {
         let reg = make_registry(vec![]);
         assert!(reg.routing_workers().is_empty());
+    }
+
+    #[test]
+    fn prepare_claude_session_args_generates_uuid_session_id() {
+        let mut args = Vec::new();
+        let session_id = prepare_claude_session_args(&mut args).expect("session id");
+
+        assert!(uuid::Uuid::parse_str(&session_id).is_ok());
+        assert_eq!(args, vec!["--session-id".to_string(), session_id]);
+    }
+
+    #[test]
+    fn prepare_claude_session_args_preserves_explicit_session_id() {
+        let mut args = vec![
+            "--session-id".to_string(),
+            "session-1".to_string(),
+            "--print".to_string(),
+        ];
+        let session_id = prepare_claude_session_args(&mut args);
+
+        assert_eq!(session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            args,
+            vec![
+                "--session-id".to_string(),
+                "session-1".to_string(),
+                "--print".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_claude_session_args_uses_resume_id_without_injecting() {
+        let mut args = vec!["--resume=session-2".to_string()];
+        let session_id = prepare_claude_session_args(&mut args);
+
+        assert_eq!(session_id.as_deref(), Some("session-2"));
+        assert_eq!(args, vec!["--resume=session-2".to_string()]);
+    }
+
+    #[test]
+    fn codex_session_reference_detects_resume_and_fork_ids() {
+        assert_eq!(
+            codex_session_reference(&[
+                "--model".into(),
+                "gpt-5.4".into(),
+                "resume".into(),
+                "thread-1".into()
+            ]),
+            CodexSessionReference::Known("thread-1".to_string())
+        );
+        assert_eq!(
+            codex_session_reference(&["fork".into(), "thread-2".into()]),
+            CodexSessionReference::Known("thread-2".to_string())
+        );
+        assert_eq!(
+            codex_session_reference(&["resume".into(), "--last".into()]),
+            CodexSessionReference::Unknown
+        );
+    }
+
+    #[test]
+    fn codex_has_positional_arg_ignores_known_global_flag_values() {
+        assert!(!codex_has_positional_arg(&[
+            "--model".into(),
+            "gpt-5.4".into(),
+            "--config".into(),
+            "model_provider=default".into(),
+        ]));
+        assert!(codex_has_positional_arg(&[
+            "--model".into(),
+            "gpt-5.4".into(),
+            "Fix the bug".into(),
+        ]));
+        assert!(codex_has_positional_arg(&["exec".into()]));
     }
 
     #[test]

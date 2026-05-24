@@ -21,6 +21,7 @@
 
 import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
 import type { SpawnPtyInput, SendMessageInput } from './types.js';
+import type { HarnessDefinition } from '@agent-relay/workflow-types';
 import type { BrokerEvent, BrokerStats, BrokerStatus, CrashInsightsResponse } from './protocol.js';
 import type { PtyInputStream, PtyInputStreamOptions } from './transport.js';
 
@@ -86,6 +87,7 @@ export interface RelaySpawnRequest {
   team?: string;
   cwd?: string;
   model?: string;
+  harness?: HarnessDefinition;
   interactive?: boolean;
   shadowMode?: string;
   shadowOf?: string;
@@ -198,6 +200,7 @@ export class RelayAdapter {
         task: buildSpawnTask(req.task, req.includeWorkflowConventions),
         channels: ['general'],
         model: req.model,
+        harness: req.harness,
         cwd: req.cwd,
         team: req.team,
         shadowOf: req.shadowOf,

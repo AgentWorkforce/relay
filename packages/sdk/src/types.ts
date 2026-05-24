@@ -9,6 +9,9 @@ import type {
   MessageInjectionMode,
   RestartPolicy,
 } from './protocol.js';
+import type { HarnessDefinition } from '@agent-relay/workflow-types';
+
+export type { HarnessDefinition } from '@agent-relay/workflow-types';
 
 export interface SpawnPtyInput {
   name: string;
@@ -17,6 +20,7 @@ export interface SpawnPtyInput {
   channels?: string[];
   task?: string;
   model?: string;
+  harness?: HarnessDefinition;
   cwd?: string;
   team?: string;
   shadowOf?: string;
@@ -62,6 +66,7 @@ export interface SpawnProviderInput {
   channels?: string[];
   task?: string;
   model?: string;
+  harness?: HarnessDefinition;
   cwd?: string;
   team?: string;
   shadowOf?: string;
@@ -98,6 +103,7 @@ export interface ListAgent {
   provider?: HeadlessProvider;
   cli?: string;
   model?: string;
+  sessionId?: string;
   team?: string;
   channels: string[];
   parent?: string;

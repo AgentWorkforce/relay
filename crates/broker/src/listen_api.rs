@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    protocol::MessageInjectionMode,
+    protocol::{HarnessDefinition, MessageInjectionMode},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -38,6 +38,7 @@ pub enum ListenApiRequest {
         cli: String,
         transport: Option<String>,
         model: Option<String>,
+        harness: Option<HarnessDefinition>,
         args: Vec<String>,
         task: Option<String>,
         channels: Vec<String>,
@@ -611,6 +612,23 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
+    let harness = match body
+        .get("harness")
+        .cloned()
+        .map(serde_json::from_value::<HarnessDefinition>)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("Invalid field: harness ({err})")
+                })),
+            );
+        }
+    };
     let agent_token = body
         .get("agent_token")
         .or_else(|| body.get("agentToken"))
@@ -632,6 +650,7 @@ async fn listen_api_spawn(
             cli,
             transport,
             model,
+            harness,
             args,
             task,
             channels,
@@ -2265,6 +2284,7 @@ mod auth_tests {
                     cli,
                     transport,
                     model,
+                    harness,
                     args,
                     task,
                     channels,
@@ -2283,6 +2303,12 @@ mod auth_tests {
                     assert_eq!(cli, "codex");
                     assert_eq!(transport.as_deref(), Some("headless"));
                     assert_eq!(model.as_deref(), Some("o3"));
+                    assert_eq!(
+                        harness
+                            .as_ref()
+                            .and_then(|definition| definition.binary.as_deref()),
+                        Some("qwen")
+                    );
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
                     assert_eq!(
@@ -2316,6 +2342,11 @@ mod auth_tests {
                             "cli": "codex",
                             "transport": "headless",
                             "model": "o3",
+                            "harness": {
+                                "binary": "qwen",
+                                "interactiveArgs": ["run", "{modelArgs}", "{args}"],
+                                "modelArgs": ["-m", "{model}"],
+                            },
                             "args": ["--fast"],
                             "task": "Ship it",
                             "channels": ["general", "engineering"],

@@ -234,6 +234,33 @@ verification:
   description: "Agent confirms completion (optional fast-path)"
 ```
 
+### Custom Harnesses
+
+Workflows can define CLI harness adapters locally instead of waiting for Relay
+to add the harness to its built-in registry. The same serializable adapter is
+passed through to interactive `agent-relay` spawning:
+
+```yaml
+harnesses:
+  qwen:
+    binary: qwen
+    interactiveArgs: ["run", "{modelArgs}", "{args}"]
+    nonInteractiveArgs: ["run", "--prompt", "{task}", "{args}"]
+    modelArgs: ["-m", "{model}"]
+    searchPaths: ["~/.local/bin"]
+
+agents:
+  - name: reviewer
+    cli: qwen
+    interactive: false
+    constraints:
+      model: qwen3-coder
+```
+
+`{task}` expands to the step prompt, `{model}` expands to the configured model,
+`{modelArgs}` expands to the rendered model arguments, and `{args}` expands to
+Relay's extra argument list.
+
 ### Completion Decision Pipeline
 
 The runner uses a multi-signal pipeline to decide step completion:

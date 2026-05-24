@@ -40,6 +40,7 @@ public struct AgentSpec: Codable, Sendable {
     public var channels: [String]?
     public var model: String?
     public var cwd: String?
+    public var sessionId: String?
     public var team: String?
     public var shadowOf: String?
     public var shadowMode: String?
@@ -47,6 +48,7 @@ public struct AgentSpec: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case name, runtime, provider, cli, args, channels, model, cwd, team
+        case sessionId = "session_id"
         case shadowOf = "shadow_of"
         case shadowMode = "shadow_mode"
         case restartPolicy = "restart_policy"
@@ -61,6 +63,7 @@ public struct AgentSpec: Codable, Sendable {
         channels: [String]? = nil,
         model: String? = nil,
         cwd: String? = nil,
+        sessionId: String? = nil,
         team: String? = nil,
         shadowOf: String? = nil,
         shadowMode: String? = nil,
@@ -74,6 +77,7 @@ public struct AgentSpec: Codable, Sendable {
         self.channels = channels
         self.model = model
         self.cwd = cwd
+        self.sessionId = sessionId
         self.team = team
         self.shadowOf = shadowOf
         self.shadowMode = shadowMode
@@ -382,7 +386,7 @@ extension OutboundMessage: Encodable {
     }
 }
 
-public struct AgentSpawnedEvent: Codable, Sendable { public var kind: String = "agent_spawned"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var parent: String?; public var pid: Int?; public var source: String? }
+public struct AgentSpawnedEvent: Codable, Sendable { public var kind: String = "agent_spawned"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String?; public var parent: String?; public var pid: Int?; public var source: String? }
 public struct AgentReleasedEvent: Codable, Sendable { public var kind: String = "agent_released"; public var name: String }
 public struct AgentExitRequestedEvent: Codable, Sendable { public var kind: String = "agent_exit"; public var name: String; public var reason: String }
 public struct AgentExitedEvent: Codable, Sendable { public var kind: String = "agent_exited"; public var name: String; public var code: Int?; public var signal: String? }
@@ -392,7 +396,7 @@ public struct DeliveryRetryEvent: Codable, Sendable { public var kind: String = 
 public struct DeliveryDroppedEvent: Codable, Sendable { public var kind: String = "delivery_dropped"; public var name: String; public var count: Int; public var reason: String }
 public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; enum CodingKeys: String, CodingKey { case kind, name; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct DeliveryFailedEvent: Codable, Sendable { public var kind: String = "delivery_failed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, name, reason; case deliveryId = "delivery_id"; case eventId = "event_id" } }
-public struct WorkerReadyEvent: Codable, Sendable { public var kind: String = "worker_ready"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String? }
+public struct WorkerReadyEvent: Codable, Sendable { public var kind: String = "worker_ready"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String? }
 public struct WorkerErrorEvent: Codable, Sendable { public var kind: String = "worker_error"; public var name: String; public var code: String; public var message: String }
 public struct RelaycastPublishedEvent: Codable, Sendable { public var kind: String = "relaycast_published"; public var eventId: String; public var to: String; public var targetType: String; enum CodingKeys: String, CodingKey { case kind, to; case eventId = "event_id"; case targetType = "target_type" } }
 public struct RelaycastPublishFailedEvent: Codable, Sendable { public var kind: String = "relaycast_publish_failed"; public var eventId: String; public var to: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, to, reason; case eventId = "event_id" } }

@@ -11,7 +11,6 @@ import { accessSync, constants as constantsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import type { AgentCli } from './workflows/types.js';
 import { getCliDefinition, COMMON_SEARCH_PATHS } from './cli-registry.js';
 
 const execFileAsync = promisify(execFile);
@@ -54,7 +53,7 @@ function expandHome(p: string): string {
  *
  * Results are memoized. Returns `undefined` if the binary cannot be found.
  */
-export async function resolveCli(cli: AgentCli): Promise<ResolvedCli | undefined> {
+export async function resolveCli(cli: string): Promise<ResolvedCli | undefined> {
   if (resolveCache.has(cli)) {
     return resolveCache.get(cli) ?? undefined;
   }
@@ -106,7 +105,7 @@ export async function resolveCli(cli: AgentCli): Promise<ResolvedCli | undefined
  * Synchronous version of `resolveCli`. Uses `which` via execFileSync
  * and synchronous fs.accessSync. Prefer the async version when possible.
  */
-export function resolveCliSync(cli: AgentCli): ResolvedCli | undefined {
+export function resolveCliSync(cli: string): ResolvedCli | undefined {
   if (resolveCache.has(cli)) {
     return resolveCache.get(cli) ?? undefined;
   }

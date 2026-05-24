@@ -11,6 +11,7 @@
  */
 
 import { buildCommand } from './process-spawner.js';
+import { buildModelArgs } from '../cli-registry.js';
 import type { ProcessBackend, AgentDefinition, WorkflowStep, RunnerStepExecutor } from './types.js';
 
 function shellEscape(value: string): string {
@@ -48,7 +49,7 @@ export function createProcessBackendExecutor(
         );
       }
 
-      const extraArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
+      const extraArgs = buildModelArgs(agentDef.cli, agentDef.constraints?.model);
       const argv = buildCommand(agentDef.cli, extraArgs, resolvedTask);
       const commandString = commandToShell(argv);
 

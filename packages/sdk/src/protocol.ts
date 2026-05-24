@@ -1,3 +1,6 @@
+import type { HarnessDefinition } from '@agent-relay/workflow-types';
+export type { HarnessDefinition } from '@agent-relay/workflow-types';
+
 export const PROTOCOL_VERSION = 2 as const;
 
 export type AgentRuntime = 'pty' | 'headless';
@@ -21,6 +24,8 @@ export interface AgentSpec {
   channels?: string[];
   model?: string;
   cwd?: string;
+  session_id?: string;
+  harness?: HarnessDefinition;
   team?: string;
   shadow_of?: string;
   shadow_mode?: string;
@@ -257,6 +262,7 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
       parent?: string;
       pid?: number;
       source?: string;
@@ -397,6 +403,7 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
     }
   | {
       kind: 'worker_error';

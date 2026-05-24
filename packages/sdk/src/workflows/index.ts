@@ -47,6 +47,14 @@ export { executeApiStep, type ApiExecutorOptions } from './api-executor.js';
 export type { CloudRunOptions } from './cloud-runner.js';
 export * from './proxy-env.js';
 export * from './budget-tracker.js';
+export {
+  defineHarnessAdapter,
+  getHarnessDefinition,
+  getHarnessAdapter,
+  registerHarnessAdapter,
+  registerHarnessAdapters,
+  type HarnessAdapter,
+} from '../cli-registry.js';
 export { applySiblingLinks, buildSiblingLinkScript } from './sibling-links.js';
 export type { SiblingLink, SiblingLinkOptions } from './sibling-links.js';
 export {

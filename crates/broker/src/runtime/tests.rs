@@ -70,6 +70,8 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 cli: Some("cat".to_string()),
                 model: None,
                 cwd: None,
+                session_id: None,
+                harness: None,
                 team: None,
                 shadow_of: None,
                 shadow_mode: None,
@@ -1916,6 +1918,7 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
         "codex".to_string(),
         None,
         Some("o3".to_string()),
+        None,
         vec!["--fast".to_string()],
         vec!["general".to_string()],
         Some("/tmp/project".to_string()),
@@ -1933,12 +1936,42 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
 }
 
 #[test]
+fn http_api_spawn_spec_carries_harness_definition() {
+    let spec = build_http_api_spawn_spec(
+        "worker-a".to_string(),
+        "qwen".to_string(),
+        None,
+        Some("qwen3-coder".to_string()),
+        Some(crate::protocol::HarnessDefinition {
+            binary: Some("qwen".to_string()),
+            interactive_args: vec!["run".to_string(), "{modelArgs}".to_string()],
+            model_args: vec!["-m".to_string(), "{model}".to_string()],
+            ..Default::default()
+        }),
+        vec![],
+        vec!["general".to_string()],
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("spec should build");
+
+    let harness = spec.harness.expect("harness should be retained");
+    assert_eq!(harness.binary.as_deref(), Some("qwen"));
+    assert_eq!(harness.interactive_args, vec!["run", "{modelArgs}"]);
+    assert_eq!(harness.model_args, vec!["-m", "{model}"]);
+}
+
+#[test]
 fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
     let spec = build_http_api_spawn_spec(
         "worker-a".to_string(),
         "opencode".to_string(),
         Some("headless".to_string()),
         Some("ignored".to_string()),
+        None,
         vec![],
         vec!["general".to_string()],
         None,
@@ -1998,6 +2031,7 @@ fn http_api_spawn_spec_rejects_unknown_headless_providers() {
         "worker-a".to_string(),
         "codex".to_string(),
         Some("headless".to_string()),
+        None,
         None,
         vec![],
         vec!["general".to_string()],

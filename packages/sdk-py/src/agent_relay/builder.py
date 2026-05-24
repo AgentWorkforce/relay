@@ -36,6 +36,7 @@ from .types import (
     ConsensusStrategy,
     ErrorOptions,
     ErrorStrategy,
+    HarnessDefinition,
     IdleNudgeConfig,
     RunCancelledEvent,
     RunCompletedEvent,
@@ -82,6 +83,7 @@ class WorkflowBuilder:
         self._timeout_ms: int | None = None
         self._channel: str | None = None
         self._idle_nudge: dict[str, Any] | None = None
+        self._harnesses: dict[str, dict[str, Any]] | None = None
         self._agents: list[dict[str, Any]] = []
         self._steps: list[dict[str, Any]] = []
         self._error_handling: dict[str, Any] | None = None
@@ -127,6 +129,22 @@ class WorkflowBuilder:
             escalate_after_ms=escalate_after_ms,
             max_nudges=max_nudges,
         ).to_dict()
+        return self
+
+    def harness(
+        self,
+        name: str,
+        definition: HarnessDefinition | dict[str, Any],
+    ) -> WorkflowBuilder:
+        """Register a workflow-local harness adapter."""
+        key = name.strip()
+        if not key:
+            raise ValueError("harness name must be non-empty")
+        if isinstance(definition, HarnessDefinition):
+            serialized = definition.to_dict()
+        else:
+            serialized = copy.deepcopy(dict(definition))
+        self._harnesses = {**(self._harnesses or {}), key: serialized}
         return self
 
     def coordination(
@@ -373,6 +391,8 @@ class WorkflowBuilder:
 
         if self._description is not None:
             config["description"] = self._description
+        if self._harnesses:
+            config["harnesses"] = copy.deepcopy(self._harnesses)
         if self._error_handling is not None:
             config["errorHandling"] = dict(self._error_handling)
         if self._coordination is not None:

@@ -19,6 +19,53 @@ pub enum HeadlessProvider {
     Opencode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binaries: Vec<String>,
+    #[serde(
+        default,
+        alias = "interactive_args",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub interactive_args: Vec<String>,
+    #[serde(
+        default,
+        alias = "non_interactive_args",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub non_interactive_args: Vec<String>,
+    #[serde(default, alias = "model_args", skip_serializing_if = "Vec::is_empty")]
+    pub model_args: Vec<String>,
+    #[serde(
+        default,
+        alias = "bypass_flag",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bypass_flag: Option<String>,
+    #[serde(
+        default,
+        alias = "bypass_aliases",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub bypass_aliases: Vec<String>,
+    #[serde(default, alias = "search_paths", skip_serializing_if = "Vec::is_empty")]
+    pub search_paths: Vec<String>,
+    #[serde(default, alias = "ignore_exit_code")]
+    pub ignore_exit_code: bool,
+    #[serde(
+        default,
+        alias = "proxy_provider",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub proxy_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
     pub name: String,
@@ -31,6 +78,10 @@ pub struct AgentSpec {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,6 +208,8 @@ pub enum BrokerEvent {
         parent: Option<String>,
         cli: Option<String>,
         model: Option<String>,
+        #[serde(default, rename = "sessionId")]
+        session_id: Option<String>,
         pid: Option<u32>,
         source: Option<String>,
     },
@@ -445,6 +498,7 @@ mod tests {
             parent: Some("Lead".into()),
             cli: None,
             model: None,
+            session_id: None,
             pid: None,
             source: None,
         });

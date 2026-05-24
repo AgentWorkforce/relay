@@ -19,6 +19,14 @@ interface WorkerInfo {
   name: string;
   runtime?: string;
   pid?: number;
+  sessionId?: string;
+}
+
+interface SpawnAgentResult {
+  name?: string;
+  runtime?: string;
+  pid?: number;
+  sessionId?: string;
 }
 
 interface SetModelResult {
@@ -410,7 +418,7 @@ export function registerAgentManagementCommands(
         const continueFrom = options.continueFrom ?? (options.continue ? name : undefined);
 
         try {
-          await client.spawnPty({
+          const spawnResult = (await client.spawnPty({
             name,
             cli,
             channels: ['general'],
@@ -422,7 +430,7 @@ export function registerAgentManagementCommands(
             shadowMode: options.shadowMode as ShadowMode | undefined,
             continueFrom,
             skipRelayPrompt: options.skipRelayPrompt,
-          });
+          })) as SpawnAgentResult | undefined;
           let agents: WorkerInfo[] = [];
           try {
             agents = await client.listAgents();
@@ -431,8 +439,13 @@ export function registerAgentManagementCommands(
             deps.error(`Warning: spawned ${name}, but failed to refresh agent list: ${detail}`);
           }
           const spawned = agents.find((agent) => agent.name === name);
-          if (spawned?.pid) {
+          const sessionId = spawnResult?.sessionId ?? spawned?.sessionId;
+          if (spawned?.pid && sessionId) {
+            deps.log(`Spawned agent: ${name} (pid: ${spawned.pid}, session: ${sessionId})`);
+          } else if (spawned?.pid) {
             deps.log(`Spawned agent: ${name} (pid: ${spawned.pid})`);
+          } else if (sessionId) {
+            deps.log(`Spawned agent: ${name} (session: ${sessionId})`);
           } else {
             deps.log(`Spawned agent: ${name}`);
           }

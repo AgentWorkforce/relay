@@ -29,7 +29,12 @@ import path from 'node:path';
 
 import { RelayCast } from '@relaycast/sdk';
 
-import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
+import {
+  AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
+  type AgentRelaySpawnOptions,
+  type SpawnAgentResult,
+} from './client.js';
 import { EventBus } from './event-bus.js';
 import type { AgentRelayEvents } from './lifecycle-hooks.js';
 import {
@@ -43,7 +48,8 @@ import {
   type ResolvedPersona,
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
-import type { SendMessageInput, SpawnPtyInput } from './types.js';
+import type { HarnessDefinition, SendMessageInput, SpawnPtyInput } from './types.js';
+import { getHarnessDefinition, registerHarnessAdapter, registerHarnessAdapters } from './cli-registry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -118,6 +124,26 @@ function generateWorkspaceId(): string {
   }
 
   return `${WORKSPACE_ID_PREFIX}${suffix}`;
+}
+
+function cloneHarnessDefinition(definition: HarnessDefinition): HarnessDefinition {
+  return {
+    ...definition,
+    ...(definition.binaries ? { binaries: [...definition.binaries] } : {}),
+    ...(definition.interactiveArgs ? { interactiveArgs: [...definition.interactiveArgs] } : {}),
+    ...(definition.nonInteractiveArgs ? { nonInteractiveArgs: [...definition.nonInteractiveArgs] } : {}),
+    ...(definition.modelArgs ? { modelArgs: [...definition.modelArgs] } : {}),
+    ...(definition.bypassAliases ? { bypassAliases: [...definition.bypassAliases] } : {}),
+    ...(definition.searchPaths ? { searchPaths: [...definition.searchPaths] } : {}),
+    ...(definition.aliases ? { aliases: [...definition.aliases] } : {}),
+  };
+}
+
+function cloneHarnessMap(harnesses: Record<string, HarnessDefinition> | undefined): Record<string, HarnessDefinition> {
+  if (!harnesses) return {};
+  return Object.fromEntries(
+    Object.entries(harnesses).map(([name, definition]) => [name, cloneHarnessDefinition(definition)])
+  );
 }
 
 function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
@@ -208,6 +234,7 @@ export interface SpawnLifecycleContext {
 
 export interface SpawnLifecycleSuccessContext extends SpawnLifecycleContext {
   runtime: AgentRuntime;
+  sessionId?: string;
 }
 
 export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
@@ -243,6 +270,7 @@ export interface SpawnOptions extends SpawnLifecycleHooks {
   args?: string[];
   channels?: string[];
   model?: string;
+  harness?: HarnessDefinition;
   cwd?: string;
   team?: string;
   shadowOf?: string;
@@ -301,6 +329,7 @@ type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayloa
 export interface Agent {
   readonly name: string;
   readonly runtime: AgentRuntime;
+  readonly sessionId?: string;
   readonly channels: string[];
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
@@ -362,6 +391,7 @@ export interface SpawnerSpawnOptions extends SpawnLifecycleHooks {
   channels?: string[];
   task?: string;
   model?: string;
+  harness?: HarnessDefinition;
   cwd?: string;
   idleThresholdSecs?: number;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
@@ -387,6 +417,8 @@ export interface AgentRelayOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
+  /** User-defined harness adapters available to spawnPty/spawn calls. */
+  harnesses?: Record<string, HarnessDefinition>;
   /**
    * Relaycast workspace ID. Auto-generated when omitted. This is the id used
    * for relaycast key lookup and surfaced via `RELAY_WORKSPACE_ID` /
@@ -428,6 +460,7 @@ type OutputListener = {
 
 type InternalAgent = Agent & {
   _setChannels: (channels: string[]) => void;
+  _setSessionId: (sessionId: string) => void;
 };
 
 interface AgentActivityState {
@@ -507,6 +540,7 @@ export class AgentRelay {
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
   private readonly defaultPersonaDirs?: string[];
+  private readonly harnesses: Record<string, HarnessDefinition>;
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
@@ -537,6 +571,8 @@ export class AgentRelay {
     this.defaultChannels = options.channels ?? ['general'];
     this.requestedWorkspaceId = requestedWorkspaceId;
     this.workspaceName = options.workspaceName;
+    this.harnesses = cloneHarnessMap(options.harnesses);
+    registerHarnessAdapters(this.harnesses);
     if (options.workspaceName && !options.workspaceId) {
       console.warn(
         '[AgentRelay] workspaceName without workspaceId is deprecated and will be removed in a future major version. ' +
@@ -559,6 +595,24 @@ export class AgentRelay {
     this.claude = this.createSpawner('claude', 'Claude', 'pty');
     this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
     this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
+  }
+
+  registerHarness(name: string, definition: HarnessDefinition): this {
+    const key = name.trim();
+    if (!key) {
+      throw new Error('registerHarness() expects a non-empty harness name');
+    }
+    this.harnesses[key] = cloneHarnessDefinition(definition);
+    registerHarnessAdapter(key, definition);
+    return this;
+  }
+
+  private resolveHarnessForSpawn(cli: string, explicit?: HarnessDefinition): HarnessDefinition | undefined {
+    if (explicit) return cloneHarnessDefinition(explicit);
+    const baseCli = cli.trim().split(':')[0];
+    const local = this.harnesses[baseCli];
+    if (local) return cloneHarnessDefinition(local);
+    return getHarnessDefinition(cli);
   }
 
   private getWorkspaceRegistryPath(): string {
@@ -708,7 +762,7 @@ export class AgentRelay {
       task: input.task,
     };
     await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
-    let result: { name: string; runtime: AgentRuntime };
+    let result: SpawnAgentResult;
     try {
       result = await client.spawnPty({
         name: input.name,
@@ -717,6 +771,7 @@ export class AgentRelay {
         channels,
         task: input.task,
         model: input.model,
+        harness: this.resolveHarnessForSpawn(input.cli, input.harness),
         cwd: input.cwd,
         team: input.team,
         agentToken: input.agentToken,
@@ -738,7 +793,7 @@ export class AgentRelay {
       throw error;
     }
     this.resetAgentLifecycleState(result.name);
-    const agent = this.makeAgent(result.name, result.runtime, channels);
+    const agent = this.makeAgent(result.name, result.runtime, channels, result.sessionId);
     this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
       input.onSuccess,
@@ -746,6 +801,7 @@ export class AgentRelay {
         ...lifecycleContext,
         name: result.name,
         runtime: result.runtime,
+        sessionId: result.sessionId,
       },
       `spawnPty("${input.name}") onSuccess`
     );
@@ -760,6 +816,7 @@ export class AgentRelay {
       args: options?.args,
       channels: options?.channels,
       model: options?.model,
+      harness: options?.harness,
       cwd: options?.cwd,
       team: options?.team,
       agentToken: options?.agentToken,
@@ -835,6 +892,7 @@ export class AgentRelay {
         ...(task !== undefined ? { task } : {}),
         channels: options.channels,
         model: spec.model,
+        harness: options.harness,
         cwd: spawnCwd,
         team: options.team,
         agentToken: options.agentToken,
@@ -991,7 +1049,7 @@ export class AgentRelay {
     return list.map((entry) => {
       const existing = this.knownAgents.get(entry.name);
       if (existing) return existing;
-      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels);
+      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry.sessionId);
       this.knownAgents.set(agent.name, agent);
       return agent;
     });
@@ -1268,12 +1326,20 @@ export class AgentRelay {
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  private ensureAgentHandle(name: string, runtime: AgentRuntime = 'pty', channels: string[] = []): Agent {
+  private ensureAgentHandle(
+    name: string,
+    runtime: AgentRuntime = 'pty',
+    channels: string[] = [],
+    sessionId?: string
+  ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
+      if (sessionId) {
+        (existing as InternalAgent)._setSessionId(sessionId);
+      }
       return existing;
     }
-    const agent = this.makeAgent(name, runtime, channels);
+    const agent = this.makeAgent(name, runtime, channels, sessionId);
     this.knownAgents.set(name, agent);
     return agent;
   }
@@ -1556,7 +1622,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_spawned': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
@@ -1609,7 +1675,7 @@ export class AgentRelay {
           break;
         }
         case 'worker_ready': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
@@ -1716,13 +1782,17 @@ export class AgentRelay {
     });
   }
 
-  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent {
+  private makeAgent(name: string, runtime: AgentRuntime, channels: string[], sessionId?: string): Agent {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
+    let agentSessionId = sessionId;
     const agent: InternalAgent = {
       name,
       runtime,
+      get sessionId() {
+        return agentSessionId;
+      },
       get channels() {
         return [...agentChannels];
       },
@@ -1924,6 +1994,9 @@ export class AgentRelay {
       _setChannels(nextChannels: string[]) {
         agentChannels = [...nextChannels];
       },
+      _setSessionId(nextSessionId: string) {
+        agentSessionId = nextSessionId;
+      },
     };
     return agent;
   }
@@ -1944,6 +2017,7 @@ export class AgentRelay {
             channels,
             task,
             model: options?.model,
+            harness: this.resolveHarnessForSpawn(cli, options?.harness),
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
@@ -1962,7 +2036,7 @@ export class AgentRelay {
           task,
         };
         await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
-        let result: { name: string; runtime: AgentRuntime };
+        let result: SpawnAgentResult;
         try {
           result = await client.spawnProvider({
             name,
@@ -1972,6 +2046,7 @@ export class AgentRelay {
             channels,
             task,
             model: options?.model,
+            harness: this.resolveHarnessForSpawn(cli, options?.harness),
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
             agentToken: options?.agentToken,
@@ -1990,7 +2065,7 @@ export class AgentRelay {
         }
 
         this.resetAgentLifecycleState(result.name);
-        const agent = this.makeAgent(result.name, result.runtime, channels);
+        const agent = this.makeAgent(result.name, result.runtime, channels, result.sessionId);
         this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
           options?.onSuccess,
@@ -1998,6 +2073,7 @@ export class AgentRelay {
             ...lifecycleContext,
             name: result.name,
             runtime: result.runtime,
+            sessionId: result.sessionId,
           },
           `spawn("${name}") onSuccess`
         );

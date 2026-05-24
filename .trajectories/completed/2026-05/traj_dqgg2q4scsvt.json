@@ -1,0 +1,53 @@
+{
+  "id": "traj_dqgg2q4scsvt",
+  "version": 1,
+  "task": {
+    "title": "Assess PR 932 event listener need"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-22T01:05:44.531Z",
+  "completedAt": "2026-05-22T01:07:31.036Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-22T01:07:27.231Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lq1hef4cotfp",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-22T01:07:27.231Z",
+      "endedAt": "2026-05-22T01:07:31.036Z",
+      "events": [
+        {
+          "ts": 1779412047232,
+          "type": "decision",
+          "content": "Expose structured agent results through AgentRelay addListener registry: Expose structured agent results through AgentRelay addListener registry",
+          "raw": {
+            "question": "Expose structured agent results through AgentRelay addListener registry",
+            "chosen": "Expose structured agent results through AgentRelay addListener registry",
+            "alternatives": [],
+            "reasoning": "PR 936 removed single on* callback fields and made AgentRelayEvents the typed multi-listener surface; PR 932 introduces a new broker event and global observer, so it should be agentResult in addListener rather than relay.onAgentResult."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Assessed PR 932 against recent listener changes. Recommendation: keep a global structured-result listener, but expose it as relay.addListener('agentResult', handler) in AgentRelayEvents, not relay.onAgentResult; PR needs rebase over PR 936 listener registry.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "866d36df85d6f84ccfb1d84e116d4ca51e2a4a0b",
+    "endRef": "866d36df85d6f84ccfb1d84e116d4ca51e2a4a0b"
+  }
+}

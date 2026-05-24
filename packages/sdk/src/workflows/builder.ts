@@ -10,6 +10,7 @@ import type {
   CoordinationConfig,
   DryRunReport,
   ErrorHandlingConfig,
+  HarnessDefinition,
   IdleNudgeConfig,
   PathDefinition,
   RelayYamlConfig,
@@ -149,10 +150,25 @@ export interface WorkflowRunOptions {
   cloudApiToken?: string;
   /** Environment secrets to forward to cloud agents. */
   envSecrets?: Record<string, string>;
+  /** User-defined harness adapters available to this run. */
+  harnesses?: Record<string, HarnessDefinition>;
   /** Polling interval in ms for cloud run status checks. */
   cloudPollIntervalMs?: number;
   /** Callback invoked when the cloud run status changes. */
   onCloudStatusChange?: (status: string, runId: string) => void;
+}
+
+function cloneHarnessDefinition(definition: HarnessDefinition): HarnessDefinition {
+  return {
+    ...definition,
+    ...(definition.binaries ? { binaries: [...definition.binaries] } : {}),
+    ...(definition.interactiveArgs ? { interactiveArgs: [...definition.interactiveArgs] } : {}),
+    ...(definition.nonInteractiveArgs ? { nonInteractiveArgs: [...definition.nonInteractiveArgs] } : {}),
+    ...(definition.modelArgs ? { modelArgs: [...definition.modelArgs] } : {}),
+    ...(definition.bypassAliases ? { bypassAliases: [...definition.bypassAliases] } : {}),
+    ...(definition.searchPaths ? { searchPaths: [...definition.searchPaths] } : {}),
+    ...(definition.aliases ? { aliases: [...definition.aliases] } : {}),
+  };
 }
 
 // ── WorkflowBuilder ─────────────────────────────────────────────────────────
@@ -181,6 +197,7 @@ export class WorkflowBuilder {
   private _channel?: string;
   private _idleNudge?: IdleNudgeConfig;
   private _paths?: PathDefinition[];
+  private _harnesses?: Record<string, HarnessDefinition>;
   private _agents: AgentDefinition[] = [];
   private _steps: WorkflowStep[] = [];
   private _errorHandling?: ErrorHandlingConfig;
@@ -296,6 +313,28 @@ export class WorkflowBuilder {
       seen.add(p.name);
     }
     this._paths = paths.map((p) => ({ ...p }));
+    return this;
+  }
+
+  /**
+   * Register a workflow-local harness adapter.
+   *
+   * The adapter is serialized into `harnesses` so YAML and SDK-created
+   * workflows can use `agent(..., { cli: name })` without Relay adding that
+   * harness to its built-in registry.
+   */
+  harness(name: string, definition: HarnessDefinition): this {
+    const key = name.trim();
+    if (!key) {
+      throw new Error('.harness() expects a non-empty harness name');
+    }
+    if (!definition || typeof definition !== 'object' || Array.isArray(definition)) {
+      throw new Error('.harness() expects a HarnessDefinition object');
+    }
+    this._harnesses = {
+      ...(this._harnesses ?? {}),
+      [key]: cloneHarnessDefinition(definition),
+    };
     return this;
   }
 
@@ -461,6 +500,11 @@ export class WorkflowBuilder {
     if (this._paths !== undefined && this._paths.length > 0) {
       config.paths = this._paths.map((p) => ({ ...p }));
     }
+    if (this._harnesses !== undefined && Object.keys(this._harnesses).length > 0) {
+      config.harnesses = Object.fromEntries(
+        Object.entries(this._harnesses).map(([name, harness]) => [name, cloneHarnessDefinition(harness)])
+      );
+    }
     if (this._maxConcurrency !== undefined) config.swarm.maxConcurrency = this._maxConcurrency;
     if (this._timeoutMs !== undefined) config.swarm.timeoutMs = this._timeoutMs;
     if (this._channel !== undefined) config.swarm.channel = this._channel;
@@ -497,6 +541,7 @@ export class WorkflowBuilder {
       relay: options.relay,
       executor: options.executor,
       envSecrets: options.envSecrets,
+      harnesses: options.harnesses,
       db,
     });
 

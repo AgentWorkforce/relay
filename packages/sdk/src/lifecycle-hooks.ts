@@ -52,7 +52,10 @@ import type { SpawnPtyInput, SpawnProviderInput } from './types.js';
  * the same key.
  */
 export type SpawnPatch = Partial<
-  Pick<SpawnPtyInput & SpawnProviderInput, 'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken'>
+  Pick<
+    SpawnPtyInput & SpawnProviderInput,
+    'args' | 'channels' | 'task' | 'model' | 'harness' | 'team' | 'agentToken'
+  >
 >;
 
 // ── Call-site contexts ─────────────────────────────────────────────────────
@@ -78,7 +81,7 @@ export interface AfterAgentSpawnContext extends BeforeAgentSpawnContext {
   /** Final input that was sent to the broker — original input merged with every handler's patch. */
   resolvedInput: SpawnPtyInput | SpawnProviderInput;
   /** Broker reply on success. */
-  result?: { name: string; runtime: AgentRuntime };
+  result?: { name: string; runtime: AgentRuntime; sessionId?: string };
   /** Set when the broker call rejected. Mutually exclusive with `result`. */
   error?: Error;
   /** Wall-clock duration from `beforeAgentSpawn` start to here. */

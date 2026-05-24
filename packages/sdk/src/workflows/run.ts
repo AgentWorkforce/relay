@@ -1,5 +1,5 @@
 import type { AgentRelayOptions } from '../relay.js';
-import type { DryRunReport, TrajectoryConfig, WorkflowRunRow } from './types.js';
+import type { DryRunReport, HarnessDefinition, TrajectoryConfig, WorkflowRunRow } from './types.js';
 import { WorkflowRunner, type WorkflowEventListener } from './runner.js';
 import { createDefaultEventLogger } from './default-logger.js';
 import { formatDryRunReport } from './dry-run-format.js';
@@ -29,6 +29,8 @@ export interface RunWorkflowOptions {
   startFrom?: string;
   /** Previous run ID whose cached step outputs are used with startFrom. */
   previousRunId?: string;
+  /** User-defined harness adapters available to this run. */
+  harnesses?: Record<string, HarnessDefinition>;
 }
 
 /**
@@ -54,6 +56,7 @@ export async function runWorkflow(
   const runner = new WorkflowRunner({
     cwd: options.cwd,
     relay: options.relay,
+    harnesses: options.harnesses,
   });
 
   const config = await runner.parseYamlFile(yamlPath);

@@ -32,7 +32,20 @@ SwarmPattern = Literal[
     "review-loop",
 ]
 
-AgentCli = Literal["claude", "codex", "gemini", "aider", "goose", "opencode", "droid", "cursor", "cursor-agent", "agent"]
+KnownAgentCli = Literal[
+    "claude",
+    "codex",
+    "gemini",
+    "aider",
+    "goose",
+    "opencode",
+    "droid",
+    "cursor",
+    "cursor-agent",
+    "agent",
+    "api",
+]
+AgentCli: TypeAlias = str
 AgentStatus = Literal["healthy", "restarting", "dead", "released"]
 CrashCategory = Literal["oom", "segfault", "error", "signal", "unknown"]
 WorkflowOnError = Literal["fail", "skip", "retry"]
@@ -182,6 +195,49 @@ class AgentDefinition:
 
 
 @dataclass
+class HarnessDefinition:
+    """Serializable harness adapter config for spawning and workflows."""
+
+    binary: str | None = None
+    binaries: list[str] | None = None
+    interactive_args: list[str] | None = None
+    non_interactive_args: list[str] | None = None
+    model_args: list[str] | None = None
+    bypass_flag: str | None = None
+    bypass_aliases: list[str] | None = None
+    search_paths: list[str] | None = None
+    ignore_exit_code: bool | None = None
+    proxy_provider: Literal["openai", "anthropic", "openrouter"] | None = None
+    aliases: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.binary is not None:
+            result["binary"] = self.binary
+        if self.binaries is not None:
+            result["binaries"] = self.binaries
+        if self.interactive_args is not None:
+            result["interactiveArgs"] = self.interactive_args
+        if self.non_interactive_args is not None:
+            result["nonInteractiveArgs"] = self.non_interactive_args
+        if self.model_args is not None:
+            result["modelArgs"] = self.model_args
+        if self.bypass_flag is not None:
+            result["bypassFlag"] = self.bypass_flag
+        if self.bypass_aliases is not None:
+            result["bypassAliases"] = self.bypass_aliases
+        if self.search_paths is not None:
+            result["searchPaths"] = self.search_paths
+        if self.ignore_exit_code is not None:
+            result["ignoreExitCode"] = self.ignore_exit_code
+        if self.proxy_provider is not None:
+            result["proxyProvider"] = self.proxy_provider
+        if self.aliases is not None:
+            result["aliases"] = self.aliases
+        return result
+
+
+@dataclass
 class VerificationCheck:
     type: Literal["output_contains", "exit_code", "file_exists", "custom"]
     value: str
@@ -317,6 +373,7 @@ class RelayYamlConfig:
     version: str = "1.0"
     description: str | None = None
     paths: list[PathDefinition] | None = None
+    harnesses: dict[str, HarnessDefinition | dict[str, Any]] | None = None
     workflows: list[WorkflowDefinition] | None = None
     coordination: CoordinationConfig | None = None
     state: StateConfig | None = None
@@ -334,6 +391,11 @@ class RelayYamlConfig:
             result["description"] = self.description
         if self.paths is not None:
             result["paths"] = [p.to_dict() for p in self.paths]
+        if self.harnesses is not None:
+            result["harnesses"] = {
+                name: harness.to_dict() if isinstance(harness, HarnessDefinition) else dict(harness)
+                for name, harness in self.harnesses.items()
+            }
         if self.workflows is not None:
             result["workflows"] = [workflow.to_dict() for workflow in self.workflows]
         if self.coordination is not None:

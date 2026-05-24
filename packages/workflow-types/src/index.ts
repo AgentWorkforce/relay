@@ -85,6 +85,10 @@ export interface AgentDefinition {
 }
 
 export type AgentCli =
+  | KnownAgentCli
+  | (string & {});
+
+export type KnownAgentCli =
   | 'claude'
   | 'codex'
   | 'gemini'
@@ -96,6 +100,47 @@ export type AgentCli =
   | 'cursor-agent'
   | 'agent'
   | 'api';
+
+/**
+ * Serializable harness adapter config.
+ *
+ * SDK and workflow authors can define harnesses without changing Relay's
+ * built-in CLI registry. `interactiveArgs`, `nonInteractiveArgs`, and
+ * `modelArgs` are argv templates. Supported placeholders include `{task}`,
+ * `{{task}}`, `{model}`, `{{model}}`, `{args}`, `{{args}}`, `{modelArgs}`,
+ * `{mcpArgs}`, `{sessionArgs}`, and `{bypass}` where applicable; vector
+ * placeholders expand to argument arrays instead of a single string.
+ */
+export interface HarnessDefinition {
+  /** Primary binary to execute. Shorthand for `binaries: [binary]`. */
+  binary?: string;
+  /** Binary names to try, in preference order. Defaults to the harness name. */
+  binaries?: string[];
+  /**
+   * Interactive PTY argv template used by `agent-relay` spawning. Defaults to
+   * `['{bypass}', '{modelArgs}', '{mcpArgs}', '{args}', '{sessionArgs}']`.
+   */
+  interactiveArgs?: string[];
+  /**
+   * Non-interactive argv template. Defaults to `['{task}', '{args}']`, which
+   * runs the binary with the task followed by any model/extra args.
+   */
+  nonInteractiveArgs?: string[];
+  /** Model argv template. Defaults to `['--model', '{model}']`. */
+  modelArgs?: string[];
+  /** Bypass flag used by spawn-from-env and unattended helpers. */
+  bypassFlag?: string;
+  /** Alternative bypass flags accepted by the harness. */
+  bypassAliases?: string[];
+  /** Extra install locations to check before common fallback paths. */
+  searchPaths?: string[];
+  /** Treat non-zero process exits as successful output capture. */
+  ignoreExitCode?: boolean;
+  /** Credential proxy provider used when credentials.proxy is enabled. */
+  proxyProvider?: 'openai' | 'anthropic' | 'openrouter';
+  /** Additional harness names that should resolve to this adapter. */
+  aliases?: string[];
+}
 
 /** Resource and behavioral constraints for an agent. */
 export interface AgentConstraints {

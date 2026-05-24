@@ -10,6 +10,7 @@ export type {
   AccessPreset,
   AgentCli,
   AgentDefinition,
+  HarnessDefinition,
   AgentPermissions,
   AgentPreset,
   NetworkPermission,
@@ -24,6 +25,7 @@ export type {
 import type {
   AccessPreset,
   AgentDefinition,
+  HarnessDefinition,
   AgentPermissions,
   NetworkPermission,
   PermissionProfileDefinition,
@@ -48,6 +50,8 @@ export interface RelayYamlConfig {
   paths?: PathDefinition[];
   swarm: SwarmConfig;
   agents: AgentDefinition[];
+  /** User-defined harness adapters keyed by `agents[].cli`. */
+  harnesses?: Record<string, HarnessDefinition>;
   workflows?: WorkflowDefinition[];
   coordination?: CoordinationConfig;
   state?: StateConfig;

@@ -33,6 +33,13 @@
         "$ref": "#/definitions/PathDefinition"
       }
     },
+    "harnesses": {
+      "type": "object",
+      "description": "Workflow-local harness adapters keyed by agent cli name.",
+      "additionalProperties": {
+        "$ref": "#/definitions/HarnessDefinition"
+      }
+    },
     "swarm": {
       "$ref": "#/definitions/SwarmConfig"
     },
@@ -245,18 +252,24 @@
     },
     "AgentCli": {
       "type": "string",
-      "enum": [
-        "claude",
-        "codex",
-        "gemini",
-        "aider",
-        "goose",
-        "opencode",
-        "droid",
-        "cursor",
-        "cursor-agent",
-        "agent"
-      ]
+      "description": "Built-in CLI or a key from top-level harnesses."
+    },
+    "HarnessDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "binary": { "type": "string" },
+        "binaries": { "type": "array", "items": { "type": "string" } },
+        "interactiveArgs": { "type": "array", "items": { "type": "string" } },
+        "nonInteractiveArgs": { "type": "array", "items": { "type": "string" } },
+        "modelArgs": { "type": "array", "items": { "type": "string" } },
+        "bypassFlag": { "type": "string" },
+        "bypassAliases": { "type": "array", "items": { "type": "string" } },
+        "searchPaths": { "type": "array", "items": { "type": "string" } },
+        "ignoreExitCode": { "type": "boolean" },
+        "proxyProvider": { "type": "string", "enum": ["openai", "anthropic", "openrouter"] },
+        "aliases": { "type": "array", "items": { "type": "string" } }
+      }
     },
     "PermissionProfile": {
       "type": "object",

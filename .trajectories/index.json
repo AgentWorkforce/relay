@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-21T04:14:45.258Z",
+  "lastUpdated": "2026-05-24T17:02:55.026Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1131,6 +1131,40 @@
       "startedAt": "2026-05-21T04:14:44.815Z",
       "completedAt": "2026-05-21T04:14:45.063Z",
       "path": "/private/tmp/relay-quiet-broker-logs/.trajectories/completed/2026-05/traj_u3loicehnwb4.json"
+    },
+    "traj_pjadgfw0mtw4": {
+      "title": "Review package dependencies",
+      "status": "completed",
+      "startedAt": "2026-05-21T20:27:44.911Z",
+      "completedAt": "2026-05-21T20:31:49.784Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_pjadgfw0mtw4.json"
+    },
+    "traj_dqgg2q4scsvt": {
+      "title": "Assess PR 932 event listener need",
+      "status": "completed",
+      "startedAt": "2026-05-22T01:05:44.531Z",
+      "completedAt": "2026-05-22T01:07:31.036Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_dqgg2q4scsvt.json"
+    },
+    "traj_r3eic6rt84pq": {
+      "title": "Fix PR 932 structured result listener surface",
+      "status": "completed",
+      "startedAt": "2026-05-22T01:09:21.137Z",
+      "completedAt": "2026-05-22T01:21:02.199Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_r3eic6rt84pq.json"
+    },
+    "traj_ft1pwdlcrmcn": {
+      "title": "Fix CI run 26262957675",
+      "status": "completed",
+      "startedAt": "2026-05-22T01:31:45.965Z",
+      "completedAt": "2026-05-22T01:34:57.413Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_ft1pwdlcrmcn.json"
+    },
+    "traj_4b2d63f6ljvh": {
+      "title": "Fix CI run 26263517444",
+      "status": "active",
+      "startedAt": "2026-05-22T01:47:08.312Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/active/traj_4b2d63f6ljvh.json"
     }
   }
 }

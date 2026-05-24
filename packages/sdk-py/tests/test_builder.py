@@ -3,6 +3,7 @@
 import yaml
 import pytest
 from agent_relay import (
+    HarnessDefinition,
     PipelineStage,
     TemplateAgent,
     TemplateStep,
@@ -105,6 +106,30 @@ def test_to_yaml_roundtrip():
     assert parsed["swarm"]["pattern"] == "fan-out"
     assert parsed["agents"][0]["name"] == "a"
     assert parsed["workflows"][0]["steps"][0]["task"] == "Do something"
+
+
+def test_builder_serializes_custom_harness():
+    config = (
+        workflow("custom-harness")
+        .harness(
+            "unit-harness",
+            HarnessDefinition(
+                binary="unit-agent",
+                non_interactive_args=["run", "{task}", "{args}"],
+                model_args=["-m", "{model}"],
+            ),
+        )
+        .agent("worker", cli="unit-harness", interactive=False, model="model-1")
+        .step("work", agent="worker", task="Do work")
+        .to_config()
+    )
+
+    assert config["harnesses"]["unit-harness"] == {
+        "binary": "unit-agent",
+        "nonInteractiveArgs": ["run", "{task}", "{args}"],
+        "modelArgs": ["-m", "{model}"],
+    }
+    assert config["agents"][0]["cli"] == "unit-harness"
 
 
 def test_empty_agents_raises():

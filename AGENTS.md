@@ -26,13 +26,23 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
-## Changelog Style
+## Changelog
+
+Curate `[Unreleased]` in `CHANGELOG.md` as you land PRs. The root changelog is
+the cross-package, user-facing release narrative for Relay. It follows
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
+Versioning.
 
 Changelog entries should be concise and impact-first. Prefer one short bullet
-per user-visible change: name the command, API, or schema touched and the
-practical effect. Drop issue/PR links, internal review notes, implementation
-backstory, and "foundation for..." phrasing unless that text clearly explains
-the shipped impact.
+per user-visible change: name the command, API, schema, or package touched and
+the practical effect. Drop issue/PR links, internal review notes,
+implementation backstory, release-only entries, and "foundation for..." phrasing
+unless that text clearly explains the shipped impact.
+
+Use Keep a Changelog sections (`Added`, `Changed`, `Deprecated`, `Removed`,
+`Fixed`, `Security`), plus `Breaking Changes` and `Migration Guidance` when a
+SemVer-major change needs explicit callouts. Do not use generated perspective
+sections such as "Product Perspective", "Technical Perspective", or "Releases".
 
 ## .trajectories Must Be Tracked
 

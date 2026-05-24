@@ -61,7 +61,7 @@ features.codex_hooks = true
 
 [mcp_servers.relaycast]
 command = "npx"
-args = ["-y", "@relaycast/mcp"]
+args = ["-y", "agent-relay", "mcp"]
 env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://api.relaycast.dev", RELAY_AGENT_TYPE = "agent" }
 ```
 

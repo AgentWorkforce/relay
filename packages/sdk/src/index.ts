@@ -15,6 +15,7 @@ export {
   type AgentRelaySpawnOptions,
   type SetInboundDeliveryModeResult,
   type SessionInfo,
+  type SpawnAgentResult,
   type WorkerStreamSubscriptionOptions,
 } from './client.js';
 export { EventBus, type EventHandler, type EventMap } from './event-bus.js';

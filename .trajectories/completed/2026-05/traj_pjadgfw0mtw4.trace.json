@@ -1,0 +1,101 @@
+{
+  "version": "1.0.0",
+  "id": "7daa40cf-b98c-4790-b1d4-06c1fc4607ff",
+  "timestamp": "2026-05-21T20:31:49.878Z",
+  "trajectory": "traj_pjadgfw0mtw4",
+  "files": [
+    {
+      "path": "packages/sdk/src/__tests__/lifecycle-hooks.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 12,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            },
+            {
+              "start_line": 231,
+              "end_line": 264,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 259,
+              "end_line": 296,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/event-bus.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 18,
+              "end_line": 54,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            },
+            {
+              "start_line": 57,
+              "end_line": 63,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            },
+            {
+              "start_line": 65,
+              "end_line": 74,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            },
+            {
+              "start_line": 80,
+              "end_line": 88,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/relay.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 31,
+              "end_line": 37,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            },
+            {
+              "start_line": 466,
+              "end_line": 500,
+              "revision": "c13ee3189b10c83fc52c4d017e268eedb5119f48"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

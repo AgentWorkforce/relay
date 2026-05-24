@@ -1,10 +1,10 @@
 import { spawn as cpSpawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 
-import { getCliDefinition } from '../cli-registry.js';
+import { buildModelArgs, getCliDefinition } from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
 import { runVerification } from './verification.js';
-import type { AgentCli, AgentDefinition, VerificationCheck } from './types.js';
+import type { AgentDefinition, VerificationCheck } from './types.js';
 
 export interface SpawnOutcome {
   output: string;
@@ -40,7 +40,7 @@ export interface ProcessSpawner {
   buildCommand(agent: AgentDefinition, task: string): SpawnCommand;
 }
 
-function resolveNonInteractiveCli(cli: AgentCli): AgentCli {
+function resolveNonInteractiveCli(cli: string): string {
   if (cli !== 'cursor') {
     return cli;
   }
@@ -49,7 +49,7 @@ function resolveNonInteractiveCli(cli: AgentCli): AgentCli {
   return (resolved?.binary as 'cursor-agent' | 'agent' | undefined) ?? 'agent';
 }
 
-export function buildCommand(cli: AgentCli, extraArgs: string[] = [], task: string): string[] {
+export function buildCommand(cli: string, extraArgs: string[] = [], task: string): string[] {
   if (cli === 'api') {
     throw new Error('cli "api" uses direct API calls, not a subprocess command');
   }
@@ -179,7 +179,7 @@ async function runCommand(command: SpawnCommand, opts: ShellOpts): Promise<Spawn
 
 export function createProcessSpawner(deps: ProcessSpawnerDeps): ProcessSpawner {
   const buildAgentCommand = (agent: AgentDefinition, task: string): SpawnCommand => {
-    const extraArgs = agent.constraints?.model ? ['--model', agent.constraints.model] : [];
+    const extraArgs = buildModelArgs(agent.cli, agent.constraints?.model);
     const [bin, ...args] = buildCommand(agent.cli, extraArgs, task);
     return { bin, args };
   };

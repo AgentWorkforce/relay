@@ -58,6 +58,23 @@ const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
   model: 'gpt-4o',
 });
 
+// Custom harnesses can be supplied without changing Relay itself
+const customRelay = new AgentRelay({
+  harnesses: {
+    qwen: {
+      binary: 'qwen',
+      interactiveArgs: ['run', '{modelArgs}', '{args}'],
+      modelArgs: ['-m', '{model}'],
+      bypassFlag: '--yes',
+      searchPaths: ['~/.local/bin'],
+    },
+  },
+});
+
+await customRelay.spawn('QwenWorker', 'qwen', 'Review the diff', {
+  model: 'qwen3-coder',
+});
+
 // Wait for agent to finish (go idle or exit)
 const result = await agent.waitForIdle(120_000);
 
@@ -100,6 +117,18 @@ await client.spawnPty({
   cli: 'claude',
   channels: ['general'],
   task: 'Implement user authentication',
+});
+
+await client.spawnPty({
+  name: 'QwenWorker',
+  cli: 'qwen',
+  task: 'Review the diff',
+  model: 'qwen3-coder',
+  harness: {
+    binary: 'qwen',
+    interactiveArgs: ['run', '{modelArgs}', '{args}'],
+    modelArgs: ['-m', '{model}'],
+  },
 });
 
 const agents = await client.listAgents();

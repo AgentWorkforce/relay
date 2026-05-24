@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
-const RELAYCAST_MCP_PACKAGE: &str = "@relaycast/mcp";
+const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
+const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
 
 const MCP_FILE: &str = ".mcp.json";
 const RELAYCAST_SERVER: &str = "relaycast";
@@ -239,7 +240,7 @@ fn relaycast_server_config(
 ) -> Value {
     let mut server = Map::new();
     // Allow overriding the MCP command for local development/testing.
-    // e.g. RELAYCAST_MCP_COMMAND="node /path/to/relaycast/packages/mcp/dist/stdio.js"
+    // e.g. RELAYCAST_MCP_COMMAND="node /path/to/agent-relay/dist/src/cli/relaycast-mcp.js"
     if let Ok(custom_cmd) = std::env::var("RELAYCAST_MCP_COMMAND") {
         let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
         if let Some((cmd, args_slice)) = parts.split_first() {
@@ -260,7 +261,8 @@ fn relaycast_server_config(
             "args".into(),
             Value::Array(vec![
                 Value::String("-y".into()),
-                Value::String(RELAYCAST_MCP_PACKAGE.into()),
+                Value::String(AGENT_RELAY_MCP_PACKAGE.into()),
+                Value::String(AGENT_RELAY_MCP_SUBCOMMAND.into()),
             ]),
         );
     }
@@ -370,7 +372,8 @@ pub fn ensure_opencode_config(
         Value::Array(vec![
             Value::String("npx".into()),
             Value::String("-y".into()),
-            Value::String(RELAYCAST_MCP_PACKAGE.into()),
+            Value::String(AGENT_RELAY_MCP_PACKAGE.into()),
+            Value::String(AGENT_RELAY_MCP_SUBCOMMAND.into()),
         ]),
     );
     let mut env = Map::new();
@@ -680,7 +683,7 @@ pub async fn configure_relaycast_mcp_with_token(
             "--config".to_string(),
             "mcp_servers.relaycast.command=\"npx\"".to_string(),
             "--config".to_string(),
-            "mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]".to_string(),
+            "mcp_servers.relaycast.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string(),
         ]);
         if let Some(key) = api_key {
             args.extend([
@@ -848,7 +851,7 @@ fn gemini_droid_manual_mcp_add_cmd(cli: &str, is_gemini: bool) -> String {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
     let cmd_separator = if is_gemini { "" } else { " --" };
     format!(
-        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast{cmd_separator} npx -y @relaycast/mcp"
+        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast{cmd_separator} npx -y agent-relay mcp"
     )
 }
 
@@ -903,7 +906,8 @@ fn gemini_droid_mcp_add_args(
     }
     args.push("npx".to_string());
     args.push("-y".to_string());
-    args.push(RELAYCAST_MCP_PACKAGE.to_string());
+    args.push(AGENT_RELAY_MCP_PACKAGE.to_string());
+    args.push(AGENT_RELAY_MCP_SUBCOMMAND.to_string());
     args
 }
 
@@ -1001,12 +1005,11 @@ mod tests {
 
     use super::ensure_relaycast_mcp_config;
 
-    fn assert_is_reaycast_mcp_package(value: Option<&str>) {
-        let package = value.expect("expected relaycast mcp package string");
-        assert!(
-            package.starts_with("@relaycast/mcp"),
-            "expected package to start with @relaycast/mcp, got: {package}"
-        );
+    fn assert_is_agent_relay_mcp_args(args: Option<&Vec<Value>>) {
+        let args = args.expect("expected relaycast mcp args");
+        assert_eq!(args.get(0).and_then(Value::as_str), Some("-y"));
+        assert_eq!(args.get(1).and_then(Value::as_str), Some("agent-relay"));
+        assert_eq!(args.get(2).and_then(Value::as_str), Some("mcp"));
     }
 
     #[test]
@@ -1026,19 +1029,7 @@ mod tests {
             json["mcpServers"]["relaycast"]["command"].as_str(),
             Some("npx")
         );
-        assert_eq!(
-            json["mcpServers"]["relaycast"]["args"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(Value::as_str),
-            Some("-y")
-        );
-        assert_is_reaycast_mcp_package(
-            json["mcpServers"]["relaycast"]["args"]
-                .as_array()
-                .and_then(|a| a.get(1))
-                .and_then(Value::as_str),
-        );
+        assert_is_agent_relay_mcp_args(json["mcpServers"]["relaycast"]["args"].as_array());
     }
 
     #[test]
@@ -1174,7 +1165,8 @@ mod tests {
             .as_array()
             .expect("args array");
         assert_eq!(mcp_args[0].as_str(), Some("-y"));
-        assert_is_reaycast_mcp_package(mcp_args[1].as_str());
+        assert_eq!(mcp_args[1].as_str(), Some("agent-relay"));
+        assert_eq!(mcp_args[2].as_str(), Some("mcp"));
     }
 
     #[tokio::test]
@@ -1353,11 +1345,8 @@ mod tests {
         assert_eq!(args[relaycast_idx + 1], "--");
         assert_eq!(args[relaycast_idx + 2], "npx");
         assert_eq!(args[relaycast_idx + 3], "-y");
-        assert!(
-            args[relaycast_idx + 4].starts_with("@relaycast/mcp"),
-            "expected relaycast package name, got: {}",
-            args[relaycast_idx + 4]
-        );
+        assert_eq!(args[relaycast_idx + 4], "agent-relay");
+        assert_eq!(args[relaycast_idx + 5], "mcp");
     }
 
     #[test]
@@ -1394,11 +1383,11 @@ mod tests {
     #[test]
     fn droid_manual_mcp_add_command_uses_option_separator() {
         let droid_cmd = super::gemini_droid_manual_mcp_add_cmd("droid", false);
-        assert!(droid_cmd.contains("relaycast -- npx -y @relaycast/mcp"));
+        assert!(droid_cmd.contains("relaycast -- npx -y agent-relay mcp"));
 
         let gemini_cmd = super::gemini_droid_manual_mcp_add_cmd("gemini", true);
-        assert!(!gemini_cmd.contains("relaycast -- npx -y @relaycast/mcp"));
-        assert!(gemini_cmd.contains("relaycast npx -y @relaycast/mcp"));
+        assert!(!gemini_cmd.contains("relaycast -- npx -y agent-relay mcp"));
+        assert!(gemini_cmd.contains("relaycast npx -y agent-relay mcp"));
     }
 
     #[test]
@@ -1594,7 +1583,8 @@ mod tests {
         let cmd = mcp["command"].as_array().expect("command array");
         assert_eq!(cmd[0].as_str(), Some("npx"));
         assert_eq!(cmd[1].as_str(), Some("-y"));
-        assert_is_reaycast_mcp_package(cmd[2].as_str());
+        assert_eq!(cmd[2].as_str(), Some("agent-relay"));
+        assert_eq!(cmd[3].as_str(), Some("mcp"));
 
         // Environment (note: opencode uses "environment" not "env")
         let oc_env = &mcp["environment"];
@@ -2056,7 +2046,7 @@ mod tests {
                     },
                     "relaycast": {
                         "command": "npx",
-                        "args": ["-y", "@relaycast/mcp"],
+                        "args": ["-y", "agent-relay", "mcp"],
                         "env": { "RELAY_API_KEY": "old_stale_key" }
                     }
                 }

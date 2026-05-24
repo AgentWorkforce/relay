@@ -221,6 +221,8 @@ impl BrokerRuntime {
                         cli: Some(cli.clone()),
                         model: None,
                         cwd: None,
+                        session_id: None,
+                        harness: None,
                         team: None,
                         shadow_of: None,
                         shadow_mode: None,
@@ -231,7 +233,7 @@ impl BrokerRuntime {
                     let effective_task = normalize_initial_task(task.clone());
 
                     // Pre-register an agent token for every spawned worker.
-                    // `@relaycast/mcp` needs RELAY_AGENT_TOKEN +
+                    // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
                     // RELAY_SKIP_BOOTSTRAP=1 in its environment to expose
                     // tools immediately; otherwise it runs network
                     // registration before responding to the MCP initialize
@@ -332,6 +334,7 @@ impl BrokerRuntime {
                                     "runtime": "pty",
                                     "cli": cli,
                                     "model": effective_spec.model.clone(),
+                                    "sessionId": effective_spec.session_id.clone(),
                                     "pid": pid,
                                     "source": "relaycast_ws",
                                     "pre_registered": worker_relay_key.is_some(),
@@ -430,6 +433,8 @@ impl BrokerRuntime {
                             cli: Some(cli.clone()),
                             model: None,
                             cwd: None,
+                            session_id: None,
+                            harness: None,
                             team: None,
                             shadow_of: None,
                             shadow_mode: None,
@@ -525,6 +530,7 @@ impl BrokerRuntime {
                                         "runtime": "pty",
                                         "cli": cli,
                                         "model": effective_spec.model.clone(),
+                                        "sessionId": effective_spec.session_id.clone(),
                                         "pid": pid,
                                         "source": "relaycast_ws_fallback",
                                         "pre_registered": worker_relay_key.is_some(),

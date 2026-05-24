@@ -28,7 +28,7 @@ import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
-import { getCliDefinition } from '../cli-registry.js';
+import { buildModelArgs, getCliDefinition, registerHarnessAdapters } from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
 import {
   buildNormalizedProxyEnv,
@@ -75,8 +75,8 @@ import {
 } from './template-resolver.js';
 import type {
   AccessPreset,
-  AgentCli,
   AgentDefinition,
+  HarnessDefinition,
   AgentPermissions,
   AgentPreset,
   CompletionEvidenceChannelOrigin,
@@ -310,6 +310,8 @@ export interface WorkflowRunnerOptions {
    * When neither is set, the broker spawns local child processes (default).
    */
   processBackend?: ProcessBackend;
+  /** User-defined harness adapters available to this runner. */
+  harnesses?: Record<string, HarnessDefinition>;
 }
 
 // ── Internal step state ─────────────────────────────────────────────────────
@@ -440,7 +442,7 @@ function resolveCursorCli(): 'cursor-agent' | 'agent' {
   return (resolved?.binary as 'cursor-agent' | 'agent') ?? 'agent';
 }
 
-function getWorkflowSdkSpawner(relay: AgentRelay, cli: AgentCli): AgentSpawner | null {
+function getWorkflowSdkSpawner(relay: AgentRelay, cli: string): AgentSpawner | null {
   switch (cli) {
     case 'claude':
       return relay.claude;
@@ -555,6 +557,7 @@ export class WorkflowRunner {
   private budgetTracker?: BudgetTracker;
   private static readonly PTY_TASK_ARG_SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB
   private readonly processBackend?: ProcessBackend;
+  private readonly harnesses?: Record<string, HarnessDefinition>;
 
   constructor(options: WorkflowRunnerOptions = {}) {
     this.db = options.db ?? new InMemoryWorkflowDb();
@@ -565,6 +568,8 @@ export class WorkflowRunner {
     this.workersPath = path.join(this.cwd, '.agent-relay', 'team', 'workers.json');
     this.executor = options.executor;
     this.processBackend = options.processBackend;
+    this.harnesses = options.harnesses;
+    registerHarnessAdapters(this.harnesses);
     this.envSecrets = options.envSecrets;
     if (!this.executor && this.processBackend) {
       this.executor = createProcessBackendExecutor(this.processBackend, {
@@ -1746,6 +1751,15 @@ export class WorkflowRunner {
       }
     }
 
+    const harnessProxyProvider = getCliDefinition(agentDef.cli)?.proxyProvider;
+    if (
+      harnessProxyProvider === 'openai' ||
+      harnessProxyProvider === 'anthropic' ||
+      harnessProxyProvider === 'openrouter'
+    ) {
+      return harnessProxyProvider;
+    }
+
     switch (agentDef.cli) {
       case 'claude':
         return 'anthropic';
@@ -2072,7 +2086,13 @@ export class WorkflowRunner {
     this.validateConfig(parsed, source);
     const config = this.normalizeLegacyPermissionConfig(parsed as RelayYamlConfig);
     config.agents ??= [];
+    this.registerConfigHarnesses(config);
     return config;
+  }
+
+  private registerConfigHarnesses(config?: RelayYamlConfig): void {
+    registerHarnessAdapters(this.harnesses);
+    registerHarnessAdapters(config?.harnesses);
   }
 
   private normalizeLegacyPermissionConfig(config: RelayYamlConfig): RelayYamlConfig {
@@ -2182,6 +2202,53 @@ export class WorkflowRunner {
         throw new Error(`${source}: "permissions.profiles" must be an object when provided`);
       }
     }
+    if (
+      c.harnesses !== undefined &&
+      (typeof c.harnesses !== 'object' || c.harnesses === null || Array.isArray(c.harnesses))
+    ) {
+      throw new Error(`${source}: "harnesses" must be an object when provided`);
+    }
+    for (const [name, harness] of Object.entries((c.harnesses ?? {}) as Record<string, unknown>)) {
+      if (!name.trim()) {
+        throw new Error(`${source}: harness names must not be empty`);
+      }
+      if (typeof harness !== 'object' || harness === null || Array.isArray(harness)) {
+        throw new Error(`${source}: harness "${name}" must be an object`);
+      }
+      const h = harness as Record<string, unknown>;
+      const validateHarnessStringArray = (value: unknown, field: string): void => {
+        if (value === undefined) return;
+        if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+          throw new Error(`${source}: harness "${name}".${field} must be an array of strings`);
+        }
+      };
+      if (h.binary !== undefined && typeof h.binary !== 'string') {
+        throw new Error(`${source}: harness "${name}".binary must be a string when provided`);
+      }
+      validateHarnessStringArray(h.binaries, 'binaries');
+      validateHarnessStringArray(h.interactiveArgs, 'interactiveArgs');
+      validateHarnessStringArray(h.nonInteractiveArgs, 'nonInteractiveArgs');
+      validateHarnessStringArray(h.modelArgs, 'modelArgs');
+      validateHarnessStringArray(h.bypassAliases, 'bypassAliases');
+      validateHarnessStringArray(h.searchPaths, 'searchPaths');
+      validateHarnessStringArray(h.aliases, 'aliases');
+      if (h.bypassFlag !== undefined && typeof h.bypassFlag !== 'string') {
+        throw new Error(`${source}: harness "${name}".bypassFlag must be a string when provided`);
+      }
+      if (h.ignoreExitCode !== undefined && typeof h.ignoreExitCode !== 'boolean') {
+        throw new Error(`${source}: harness "${name}".ignoreExitCode must be a boolean when provided`);
+      }
+      if (
+        h.proxyProvider !== undefined &&
+        h.proxyProvider !== 'openai' &&
+        h.proxyProvider !== 'anthropic' &&
+        h.proxyProvider !== 'openrouter'
+      ) {
+        throw new Error(
+          `${source}: harness "${name}".proxyProvider must be one of openai, anthropic, openrouter`
+        );
+      }
+    }
 
     for (const agent of c.agents ?? []) {
       if (typeof agent !== 'object' || agent === null) {
@@ -2220,6 +2287,7 @@ export class WorkflowRunner {
     let resolved: RelayYamlConfig;
     try {
       this.validateConfig(config);
+      this.registerConfigHarnesses(config);
       resolved = vars ? this.resolveVariables(config, vars) : config;
       resolved = this.applyPermissionProfiles(resolved);
     } catch (err) {
@@ -2839,10 +2907,12 @@ export class WorkflowRunner {
     this.paused = false;
 
     const resolved = this.applyPermissionProfiles(vars ? this.resolveVariables(config, vars) : config);
+    this.registerConfigHarnesses(resolved);
 
     // Validate config (catches cycles, missing deps, invalid steps, etc.)
     this.validateConfig(resolved);
     const runtimeConfig = this.applyReliabilityDefaults(resolved);
+    this.registerConfigHarnesses(runtimeConfig);
 
     const permissionResult = this.validatePermissions(
       runtimeConfig.agents,
@@ -3012,6 +3082,7 @@ export class WorkflowRunner {
     const resolvedConfig = this.applyReliabilityDefaults(
       vars ? this.resolveVariables(run.config, vars) : run.config
     );
+    this.registerConfigHarnesses(resolvedConfig);
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
     const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
@@ -3146,6 +3217,11 @@ export class WorkflowRunner {
           brokerName,
           channels: relaycastDisabled ? [] : [channel],
           env: this.getRelayEnv(),
+          harnesses: {
+            ...(this.relayOptions.harnesses ?? {}),
+            ...(this.harnesses ?? {}),
+            ...(config.harnesses ?? {}),
+          },
           // Workflows spawn agents across multiple waves; each spawn requires a PTY +
           // Relaycast registration. 60s is too tight when the broker is saturated with
           // long-running PTY processes from earlier steps. 120s gives room to breathe.
@@ -6320,7 +6396,7 @@ export class WorkflowRunner {
    * Delegates to the consolidated CLI registry for per-CLI arg formats.
    */
   static buildNonInteractiveCommand(
-    cli: AgentCli,
+    cli: string,
     task: string,
     extraArgs: string[] = []
   ): { cmd: string; args: string[] } {
@@ -6337,7 +6413,7 @@ export class WorkflowRunner {
    */
   private static resolveAgentDef(def: AgentDefinition): AgentDefinition {
     // Resolve "cursor" alias to whichever cursor agent binary is in PATH
-    const resolvedCli: AgentCli = def.cli === 'cursor' ? resolveCursorCli() : def.cli;
+    const resolvedCli: string = def.cli === 'cursor' ? resolveCursorCli() : def.cli;
 
     if (!def.preset) return resolvedCli !== def.cli ? { ...def, cli: resolvedCli } : def;
     const nonInteractivePresets: AgentPreset[] = ['worker', 'reviewer', 'analyst'];
@@ -6391,7 +6467,7 @@ export class WorkflowRunner {
     timeoutMs?: number
   ): Promise<SpawnResult> {
     const agentName = `${step.name}-${this.generateShortId()}`;
-    const modelArgs = agentDef.constraints?.model ? ['--model', agentDef.constraints.model] : [];
+    const modelArgs = buildModelArgs(agentDef.cli, agentDef.constraints?.model);
 
     // Append strict deliverable enforcement — non-interactive agents MUST produce
     // clear, structured output since there's no opportunity for follow-up or clarification.

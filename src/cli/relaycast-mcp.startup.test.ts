@@ -7,6 +7,7 @@ type LoadOptions = {
 };
 
 type RelayBehavior = {
+  createWorkspaceImpl: (name: string) => Promise<Record<string, unknown>>;
   inboxImpl: (token: string) => Promise<unknown>;
   registerImpl: (input: { name: string; type?: string }) => Promise<{ name?: string; token: string }>;
 };
@@ -25,41 +26,59 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   }
 
   const serverInstances: FakeMcpServer[] = [];
-  const wsBridgeInstances: FakeWsBridge[] = [];
-  const subscriptionInstances: FakeSubscriptionManager[] = [];
-  const channelToolGetters: Array<() => unknown> = [];
-  const resourceGetters: Array<{ getAgentClient: () => unknown; getRelay: () => unknown }> = [];
-  const telemetry = { capture: vi.fn() };
-  const behavior: RelayBehavior = {
-    inboxImpl: vi.fn(async () => ({ items: [] })),
-    registerImpl: vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
-  };
+  const wsClientInstances: FakeWsClient[] = [];
   const relayInstances: Array<{
     config: Record<string, unknown>;
-    origin: Record<string, unknown>;
-    inbox: ReturnType<typeof vi.fn>;
     registerOrRotate: ReturnType<typeof vi.fn>;
+    agentsList: ReturnType<typeof vi.fn>;
+    spawn: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
     as: ReturnType<typeof vi.fn>;
   }> = [];
+  const behavior: RelayBehavior = {
+    createWorkspaceImpl: vi.fn(async () => ({
+      apiKey: 'rk_live_created',
+      workspaceName: 'Test Workspace',
+    })),
+    inboxImpl: vi.fn(async () => ({
+      unreadChannels: [],
+      mentions: [],
+      unreadDms: [],
+      recentReactions: [],
+    })),
+    registerImpl: vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
+  };
 
-  class FakeSubscriptionManager {
-    clear = vi.fn();
-
-    constructor() {
-      subscriptionInstances.push(this);
-    }
+  class FakeResourceTemplate {
+    constructor(
+      public readonly template: string,
+      public readonly options: unknown
+    ) {}
   }
 
-  class FakeWsBridge {
-    start = vi.fn();
-    stop = vi.fn();
+  class FakeWsClient {
+    readonly handlers = new Map<string, Set<(event: unknown) => void>>();
+    readonly connect = vi.fn();
+    readonly disconnect = vi.fn();
 
-    constructor(
-      public readonly client: unknown,
-      public readonly subscriptions: FakeSubscriptionManager,
-      public readonly onResourceUpdated: (uri: string) => void
-    ) {
-      wsBridgeInstances.push(this);
+    constructor(public readonly config: Record<string, unknown>) {
+      if (options.wsClientThrows) {
+        throw new Error('ws init failed');
+      }
+      wsClientInstances.push(this);
+    }
+
+    on(event: string, handler: (event: unknown) => void): () => void {
+      const handlers = this.handlers.get(event) ?? new Set();
+      handlers.add(handler);
+      this.handlers.set(event, handlers);
+      return () => handlers.delete(handler);
+    }
+
+    emit(event: unknown): void {
+      for (const handler of this.handlers.get('*') ?? []) {
+        handler(event);
+      }
     }
   }
 
@@ -68,16 +87,17 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
   class FakeMcpServer {
     readonly tools = new Map<string, { config: unknown; handler: (input: any) => Promise<any> }>();
     readonly prompts = new Map<string, { config: unknown; handler: () => Promise<any> }>();
+    readonly resources = new Map<
+      string,
+      { uriOrTemplate: unknown; config: unknown; handler: (...args: any[]) => Promise<any> }
+    >();
     readonly connect = vi.fn(async (_transport: unknown) => {
       if (options.connectThrows) {
         throw new Error('stdio connect failed');
       }
     });
     readonly server: {
-      _requestHandlers: Map<
-        string,
-        (req: unknown, extra: unknown) => Promise<{ tools?: Array<Record<string, unknown>> }>
-      >;
+      _requestHandlers: Map<string, (req: unknown, extra: unknown) => Promise<any>>;
       setRequestHandler: ReturnType<typeof vi.fn>;
       sendResourceUpdated: ReturnType<typeof vi.fn>;
     };
@@ -91,7 +111,7 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
             vi.fn(async () => ({
               tools: [
                 {
-                  name: 'post_message',
+                  name: 'message.post',
                   title: 'Post Message',
                   execution: { hidden: true },
                   outputSchema: { type: 'object' },
@@ -103,8 +123,15 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
           ],
         ]),
         setRequestHandler: vi.fn(
-          (_schema: unknown, handler: (req: unknown, extra: unknown) => Promise<any>) => {
-            this.listToolsHandler = handler;
+          (schema: unknown, handler: (req: unknown, extra: unknown) => Promise<any>) => {
+            const method =
+              (schema as { method?: string; type?: string }).method ?? (schema as { type?: string }).type;
+            if (method) {
+              this.server._requestHandlers.set(method, handler);
+            }
+            if (method === 'tools/list') {
+              this.listToolsHandler = handler;
+            }
           }
         ),
         sendResourceUpdated: vi.fn(async (_payload: unknown) => undefined),
@@ -119,70 +146,88 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
     registerPrompt(name: string, config: unknown, handler: () => Promise<any>): void {
       this.prompts.set(name, { config, handler });
     }
+
+    registerResource(
+      name: string,
+      uriOrTemplate: unknown,
+      config: unknown,
+      handler: (...args: any[]) => Promise<any>
+    ): void {
+      this.resources.set(name, { uriOrTemplate, config, handler });
+    }
   }
 
-  const createInternalRelayCast = vi.fn(
-    (config: Record<string, unknown>, origin: Record<string, unknown>) => {
-      const inbox = vi.fn(async (token?: string) => behavior.inboxImpl(String(token ?? '')));
-      const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) =>
-        behavior.registerImpl(input)
-      );
-      const as = vi.fn((token: string) => ({
-        inbox: vi.fn(async () => behavior.inboxImpl(token)),
-        token,
-      }));
-      relayInstances.push({ config, origin, inbox, registerOrRotate, as });
-      return {
-        agents: { registerOrRotate },
-        as,
-      };
-    }
-  );
-
-  const createInternalWsClient = vi.fn((config: Record<string, unknown>, origin: Record<string, unknown>) => {
-    if (options.wsClientThrows) {
-      throw new Error('ws init failed');
-    }
-    return { config, origin };
+  const createAgentClient = (token: string) => ({
+    token,
+    send: vi.fn(async (channel: string, text: string) => ({ id: 'msg_1', channel, text })),
+    messages: vi.fn(async () => []),
+    reply: vi.fn(async (messageId: string, text: string) => ({ id: 'reply_1', messageId, text })),
+    thread: vi.fn(async () => ({ parent: {}, replies: [] })),
+    dm: vi.fn(async (to: string, text: string) => ({ id: 'dm_1', to, text })),
+    dms: {
+      conversations: vi.fn(async () => []),
+      messages: vi.fn(async () => []),
+      createGroup: vi.fn(async () => ({ id: 'group_1' })),
+      sendMessage: vi.fn(async () => ({ id: 'group_msg_1' })),
+    },
+    channels: {
+      create: vi.fn(async (data: unknown) => data),
+      list: vi.fn(async () => []),
+      join: vi.fn(async () => ({})),
+      leave: vi.fn(async () => ({})),
+      invite: vi.fn(async () => ({})),
+      setTopic: vi.fn(async (channel: string, topic: string) => ({ channel, topic })),
+      archive: vi.fn(async () => ({})),
+    },
+    react: vi.fn(async () => ({})),
+    unreact: vi.fn(async () => ({})),
+    search: vi.fn(async () => []),
+    inbox: vi.fn(async () => behavior.inboxImpl(token)),
+    markRead: vi.fn(async () => ({})),
+    readers: vi.fn(async () => []),
   });
 
-  const enablePiggyback = vi.fn();
-  const registerResourceDefinitions = vi.fn(
-    (_server: unknown, getAgentClient: () => unknown, getRelay: () => unknown) => {
-      resourceGetters.push({ getAgentClient, getRelay });
-    }
-  );
-  const registerChannelTools = vi.fn((_server: unknown, getAgentClient: () => unknown) => {
-    channelToolGetters.push(getAgentClient);
-  });
-  const registerMessagingTools = vi.fn();
-  const registerFeatureTools = vi.fn();
-  const registerProgrammabilityTools = vi.fn();
-  const createMcpTelemetry = vi.fn(() => telemetry);
-  const createInitialSession = vi.fn((initial: Record<string, unknown>) => ({
-    ...initial,
-    wsBridge: null,
-    subscriptions: null,
-    wsInitAttempted: false,
+  const RelayCast = vi.fn(function (this: unknown, config: Record<string, unknown>) {
+    const registerOrRotate = vi.fn(async (input: { name: string; type?: string }) =>
+      behavior.registerImpl(input)
+    );
+    const agentsList = vi.fn(async () => []);
+    const spawn = vi.fn(async (input: unknown) => ({ spawned: true, input }));
+    const release = vi.fn(async (input: { name: string; reason?: string; deleteAgent?: boolean }) => ({
+      name: input.name,
+      released: true,
+      deleted: Boolean(input.deleteAgent),
+      reason: input.reason ?? null,
+    }));
+    const as = vi.fn((token: string) => createAgentClient(token));
+    relayInstances.push({ config, registerOrRotate, agentsList, spawn, release, as });
+    return {
+      agents: {
+        registerOrRotate,
+        list: agentsList,
+        spawn,
+        release,
+      },
+      as,
+    };
+  }) as any;
+  RelayCast.createWorkspace = vi.fn((name: string) => behavior.createWorkspaceImpl(name));
+
+  vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
+    McpServer: FakeMcpServer,
+    ResourceTemplate: FakeResourceTemplate,
   }));
-
-  vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({ McpServer: FakeMcpServer }));
   vi.doMock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: FakeTransport }));
-  vi.doMock('@modelcontextprotocol/sdk/types.js', () => ({ ListToolsRequestSchema: { type: 'tools/list' } }));
-  vi.doMock('@relaycast/sdk/internal', () => ({ createInternalRelayCast, createInternalWsClient }));
-  vi.doMock('@relaycast/mcp', () => ({ MCP_VERSION: 'test-mcp-version' }));
-  vi.doMock('@relaycast/mcp/dist/piggyback.js', () => ({ enablePiggyback }));
-  vi.doMock('@relaycast/mcp/dist/resources/definitions.js', () => ({ registerResourceDefinitions }));
-  vi.doMock('@relaycast/mcp/dist/resources/subscriptions.js', () => ({
-    SubscriptionManager: FakeSubscriptionManager,
+  vi.doMock('@modelcontextprotocol/sdk/types.js', () => ({
+    ListToolsRequestSchema: { method: 'tools/list' },
+    SubscribeRequestSchema: { method: 'resources/subscribe' },
+    UnsubscribeRequestSchema: { method: 'resources/unsubscribe' },
   }));
-  vi.doMock('@relaycast/mcp/dist/tools/channels.js', () => ({ registerChannelTools }));
-  vi.doMock('@relaycast/mcp/dist/tools/features.js', () => ({ registerFeatureTools }));
-  vi.doMock('@relaycast/mcp/dist/tools/messaging.js', () => ({ registerMessagingTools }));
-  vi.doMock('@relaycast/mcp/dist/tools/programmability.js', () => ({ registerProgrammabilityTools }));
-  vi.doMock('@relaycast/mcp/dist/telemetry.js', () => ({ createMcpTelemetry }));
-  vi.doMock('@relaycast/mcp/dist/types.js', () => ({ createInitialSession }));
-  vi.doMock('@relaycast/mcp/dist/resources/ws-bridge.js', () => ({ WsBridge: FakeWsBridge }));
+  vi.doMock('@relaycast/sdk', () => ({
+    RelayCast,
+    WsClient: FakeWsClient,
+    SDK_VERSION: 'test-sdk-version',
+  }));
 
   const mod = await import('./relaycast-mcp.js');
   if (options.forceEntrypoint) {
@@ -195,20 +240,8 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
       behavior,
       serverInstances,
       relayInstances,
-      wsBridgeInstances,
-      subscriptionInstances,
-      channelToolGetters,
-      resourceGetters,
-      telemetry,
-      createInternalRelayCast,
-      createInternalWsClient,
-      enablePiggyback,
-      registerResourceDefinitions,
-      registerChannelTools,
-      registerMessagingTools,
-      registerFeatureTools,
-      registerProgrammabilityTools,
-      createInitialSession,
+      wsClientInstances,
+      RelayCast,
       FakeTransport,
     },
   };
@@ -230,6 +263,7 @@ describe('relaycast-mcp startup helpers', () => {
     vi.stubEnv('RELAY_CLAW_NAME', 'FallbackClaw');
     vi.stubEnv('RELAY_AGENT_TYPE', 'human');
     vi.stubEnv('RELAY_STRICT_AGENT_NAME', ' yes ');
+    vi.stubEnv('RELAY_SKIP_BOOTSTRAP', '1');
 
     expect(mod.normalizeBaseUrl('https://api.relaycast.dev///')).toBe('https://api.relaycast.dev');
     expect(mod.envFlagEnabled(' on ')).toBe(true);
@@ -243,59 +277,48 @@ describe('relaycast-mcp startup helpers', () => {
       agentName: 'FallbackClaw',
       agentType: 'human',
       strictAgentName: true,
+      skipBootstrap: true,
     });
   });
 });
 
 describe('createPatchedRelayMcpServer', () => {
-  it('registers startup tools, prompt text, and strips execution metadata from tools/list', async () => {
+  it('registers owned tools, resources, prompt text, and strips execution metadata from tools/list', async () => {
     const { mod, mocks } = await loadRelaycastMcpModule();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        json: async () => ({
-          ok: true,
-          data: { api_key: 'rk_live_created', workspace_name: 'Test Workspace' },
-        }),
-      }))
-    );
 
     mod.createPatchedRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
     const server = mocks.serverInstances[0];
-    const registerTool = server.tools.get('register');
-    const createWorkspaceTool = server.tools.get('create_workspace');
-    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
-    const prompt = server.prompts.get('system');
 
-    expect(registerTool).toBeDefined();
-    expect(createWorkspaceTool).toBeDefined();
-    expect(setWorkspaceKeyTool).toBeDefined();
-    expect(prompt).toBeDefined();
-    expect(mocks.enablePiggyback).toHaveBeenCalledTimes(1);
-    expect(mocks.registerChannelTools).toHaveBeenCalledTimes(1);
-    expect(mocks.registerMessagingTools).toHaveBeenCalledTimes(1);
-    expect(mocks.registerFeatureTools).toHaveBeenCalledTimes(1);
-    expect(mocks.registerProgrammabilityTools).toHaveBeenCalledTimes(1);
+    expect(server.tools.get('workspace.create')).toBeDefined();
+    expect(server.tools.get('create_workspace')).toBeDefined();
+    expect(server.tools.get('agent.register')).toBeDefined();
+    expect(server.tools.get('register')).toBeDefined();
+    expect(server.tools.get('agent.list')).toBeDefined();
+    expect(server.tools.get('message.post')).toBeDefined();
+    expect(server.tools.get('agent.add')).toBeDefined();
+    expect(server.resources.get('inbox')).toBeDefined();
+    expect(server.resources.get('channel-messages')).toBeDefined();
+    expect(server.prompts.get('system')).toBeDefined();
 
-    expect(() => mocks.resourceGetters[0].getRelay()).toThrow(
-      'Workspace key not configured. Set RELAY_API_KEY at startup, or call "create_workspace" or "set_workspace_key" first.'
+    await expect(server.resources.get('agents')?.handler(new URL('relay://agents'))).rejects.toThrow(
+      'Workspace key not configured. Set RELAY_API_KEY at startup, or call "workspace.create" or "workspace.set_key" first.'
     );
-    expect(() => mocks.channelToolGetters[0]()).toThrow('Not registered. Call the "register" tool first.');
-    await expect(registerTool?.handler({ name: 'WorkerA' })).rejects.toThrow(
-      'Workspace key not configured. Call "create_workspace" or "set_workspace_key" first.'
+    await expect(server.tools.get('agent.register')?.handler({ name: 'WorkerA' })).rejects.toThrow(
+      'Workspace key not configured. Call "workspace.create" or "workspace.set_key" first.'
     );
 
-    const workspaceResult = await createWorkspaceTool?.handler({ name: 'Coverage Workspace' });
-    expect(fetch).toHaveBeenCalledWith(
-      'https://api.relaycast.dev/v1/workspaces',
-      expect.objectContaining({ method: 'POST' })
-    );
+    const workspaceResult = await server.tools
+      .get('workspace.create')
+      ?.handler({ name: 'Coverage Workspace' });
+    expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledWith('Coverage Workspace', {
+      baseUrl: 'https://api.relaycast.dev/',
+    });
     expect(workspaceResult.structuredContent).toEqual({
-      api_key: 'rk_live_created',
-      workspace_name: 'Test Workspace',
+      apiKey: 'rk_live_created',
+      workspaceName: 'Test Workspace',
     });
 
-    const registerResult = await registerTool?.handler({
+    const registerResult = await server.tools.get('agent.register')?.handler({
       name: 'WorkerA',
       type: 'human',
       persona: 'Coverage tester',
@@ -315,23 +338,37 @@ describe('createPatchedRelayMcpServer', () => {
       registered_name: 'WorkerA',
     });
 
-    const agentClient = mocks.channelToolGetters[0]();
-    expect(agentClient).toMatchObject({ token: 'at_live_WorkerA' });
-
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
-        name: 'post_message',
+        name: 'message.post',
         title: 'Post Message',
         description: 'Send a channel message',
       },
     ]);
 
-    const promptResult = await prompt?.handler();
-    expect(promptResult.messages[0].content.text).toContain('create_workspace');
-    expect(mocks.telemetry.capture).toHaveBeenCalledWith('relaycast_mcp_server_started', {
-      source_surface: 'mcp',
-      transport: 'unknown',
+    const promptResult = await server.prompts.get('system')?.handler();
+    expect(promptResult.messages[0].content.text).toContain('workspace.create');
+  });
+
+  it('dispatches websocket resource callbacks only to subscribed resources', async () => {
+    const { mod, mocks } = await loadRelaycastMcpModule();
+    mod.createPatchedRelayMcpServer({
+      apiKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+      baseUrl: 'https://api.relaycast.dev',
+    });
+
+    const server = mocks.serverInstances[0];
+    const ws = mocks.wsClientInstances[0];
+    const subscribe = server.server._requestHandlers.get('resources/subscribe');
+    await subscribe?.({ params: { uri: 'relay://inbox' } }, {});
+
+    ws.emit({ type: 'message.created', channel: 'general' });
+    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relay://inbox' });
+    expect(server.server.sendResourceUpdated).not.toHaveBeenCalledWith({
+      uri: 'relay://channels/general/messages',
     });
   });
 
@@ -345,20 +382,18 @@ describe('createPatchedRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    const bridge = mocks.wsBridgeInstances[0];
-    const subscriptions = mocks.subscriptionInstances[0];
-    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
+    const ws = mocks.wsClientInstances[0];
+    const setWorkspaceKeyTool = server.tools.get('workspace.set_key');
 
-    expect(bridge?.start).toHaveBeenCalledTimes(1);
+    expect(ws.connect).toHaveBeenCalledTimes(1);
     await expect(setWorkspaceKeyTool?.handler({ api_key: 'bad_key' })).rejects.toThrow(
       'Workspace key must start with "rk_live_"'
     );
 
     const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_other' });
-    expect(bridge?.stop).toHaveBeenCalledTimes(1);
-    expect(subscriptions?.clear).toHaveBeenCalledTimes(1);
+    expect(ws.disconnect).toHaveBeenCalledTimes(1);
     expect(result.structuredContent).toEqual({
-      message: 'Workspace key set. Previous agent session was cleared; call "register" again.',
+      message: 'Workspace key set. Call "agent.register" to join this workspace.',
     });
   });
 
@@ -372,16 +407,19 @@ describe('createPatchedRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    const bridge = mocks.wsBridgeInstances[0];
-    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
+    const ws = mocks.wsClientInstances[0];
+    const setWorkspaceKeyTool = server.tools.get('workspace.set_key');
 
     const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_existing' });
 
-    expect(bridge?.stop).not.toHaveBeenCalled();
+    expect(ws.disconnect).not.toHaveBeenCalled();
     expect(result.structuredContent).toEqual({
       message: 'Workspace key set.',
     });
-    expect(mocks.channelToolGetters[0]()).toMatchObject({ token: 'at_live_existing' });
+
+    await server.tools.get('message.inbox.check')?.handler({});
+    const agentRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
+    expect(agentRelay?.as).toHaveBeenCalledWith('at_live_existing', { autoHeartbeatMs: false });
   });
 
   it('marks websocket initialization attempted even when bridge setup fails', async () => {
@@ -392,12 +430,7 @@ describe('createPatchedRelayMcpServer', () => {
       agentName: 'PinnedWorker',
     });
 
-    expect(mocks.createInternalWsClient).toHaveBeenCalledTimes(1);
-    expect(mocks.wsBridgeInstances).toHaveLength(0);
-    expect(mocks.telemetry.capture).toHaveBeenCalledWith('relaycast_mcp_session_authenticated', {
-      source_surface: 'mcp',
-      agent_name: 'PinnedWorker',
-    });
+    expect(mocks.wsClientInstances).toHaveLength(0);
   });
 
   it('swallows websocket resource update emission failures', async () => {
@@ -409,13 +442,15 @@ describe('createPatchedRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    const bridge = mocks.wsBridgeInstances[0];
+    const ws = mocks.wsClientInstances[0];
+    const subscribe = server.server._requestHandlers.get('resources/subscribe');
+    await subscribe?.({ params: { uri: 'relay://inbox' } }, {});
     server.server.sendResourceUpdated.mockRejectedValueOnce(new Error('emit failed'));
 
-    bridge?.onResourceUpdated('relaycast://channels/general');
+    ws.emit({ type: 'reaction.added' });
     await Promise.resolve();
 
-    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relaycast://channels/general' });
+    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relay://inbox' });
   });
 });
 
@@ -440,9 +475,20 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
     const result = await mod.resolvePatchedStdioBootstrapOptions(options);
 
     expect(result).toEqual(options);
-    // No probe — D1 read-replica lag can spuriously 401 a fresh token, and
-    // rotating UPDATEs the tokenHash, permanently killing the original.
     expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
+    expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
+  });
+
+  it('respects explicit bootstrap skipping', async () => {
+    const { mod, mocks } = await loadRelaycastMcpModule();
+    const options = {
+      apiKey: 'rk_live_workspace',
+      agentName: 'WorkerA',
+      agentToken: 'jwt_or_external_token',
+      skipBootstrap: true,
+    };
+
+    await expect(mod.resolvePatchedStdioBootstrapOptions(options)).resolves.toEqual(options);
     expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
   });
 
@@ -456,12 +502,10 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
     const result = await mod.resolvePatchedStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
-      // A relayauth RS256 JWT, as `relay on start` plumbs into RELAY_AGENT_TOKEN.
       agentToken: 'eyJhbGciOiJSUzI1NiJ9.payload.sig',
       agentType: 'human',
     });
 
-    expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
     expect(mocks.behavior.registerImpl).toHaveBeenCalledWith({
       name: 'WorkerA',
       type: 'human',
@@ -487,7 +531,6 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       agentType: 'agent',
     });
 
-    expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
     expect(mocks.behavior.registerImpl).toHaveBeenCalledWith({
       name: 'WorkerA',
       type: 'agent',
@@ -509,10 +552,6 @@ describe('startPatchedStdio', () => {
     const server = mocks.serverInstances[0];
     expect(server.connect).toHaveBeenCalledTimes(1);
     expect(server.connect.mock.calls[0][0]).toBeInstanceOf(mocks.FakeTransport);
-    expect(mocks.telemetry.capture).toHaveBeenCalledWith('relaycast_mcp_server_started', {
-      source_surface: 'mcp',
-      transport: 'stdio',
-    });
   });
 
   it('reports entrypoint startup failures to stderr and exits', async () => {

@@ -1,3 +1,5 @@
+const AWS_MANAGED_CACHING_DISABLED_CACHE_POLICY_ID = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad';
+
 export default $config({
   app(input) {
     return {
@@ -6,8 +8,9 @@ export default $config({
       removal: input?.stage === 'production' ? 'retain' : 'remove',
     };
   },
-  run() {
+  async run() {
     const isProd = $app.stage === 'production';
+    const isPreview = $app.stage.startsWith('pr-');
     const domain = isProd ? 'origin.agentrelay.net' : `${$app.stage}.agentrelay.net`;
     const NEXT_PUBLIC_POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? 'https://i.agentrelay.com';
     const NEXT_PUBLIC_POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '';
@@ -21,6 +24,8 @@ export default $config({
       },
       // Production deploys land on origin.agentrelay.net; SEO canonicals are set in Next metadata.
       domain: { name: domain, dns: sst.cloudflare.dns({ proxy: true }) },
+      // PR previews should not allocate one custom CloudFront cache policy per stage.
+      ...(isPreview ? { cachePolicy: AWS_MANAGED_CACHING_DISABLED_CACHE_POLICY_ID } : {}),
     });
   },
 });

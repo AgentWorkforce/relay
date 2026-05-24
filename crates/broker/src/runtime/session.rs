@@ -110,8 +110,6 @@ pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) agent_type: Option<&'a str>,
     /// Read .mcp.json for additional self-name identities
     pub(crate) read_mcp_identity: bool,
-    /// Write relaycast server entry to .mcp.json
-    pub(crate) ensure_mcp_config: bool,
     pub(crate) runtime_cwd: &'a Path,
 }
 
@@ -156,7 +154,6 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         .default_session()
         .or_else(|| sessions.memberships.first())
         .context("no relaycast memberships were initialized")?;
-    let relay_workspace_key = default_session.credentials.api_key.clone();
     let self_agent_id = default_session.credentials.agent_id.clone();
     let agent_name = default_session
         .credentials
@@ -197,17 +194,6 @@ timestamp='{}'
             "[agent-relay] WARNING: registered as '{}' (requested '{}')",
             agent_name, opts.requested_name
         );
-    }
-
-    if opts.ensure_mcp_config {
-        if let Err(error) = ensure_relaycast_mcp_config(
-            opts.runtime_cwd,
-            Some(relay_workspace_key.as_str()),
-            Some(http_base.as_str()),
-            None,
-        ) {
-            tracing::warn!("failed to ensure .mcp.json: {error}");
-        }
     }
 
     log_startup_phase(

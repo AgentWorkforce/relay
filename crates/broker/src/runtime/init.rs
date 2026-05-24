@@ -185,7 +185,6 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         strict_name: cmd.persist,
         agent_type: Some(agent_type_ref),
         read_mcp_identity: true,
-        ensure_mcp_config: cmd.persist,
         runtime_cwd: &runtime_cwd,
     })
     .await?;

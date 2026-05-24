@@ -4,6 +4,7 @@ pub mod snippets;
 pub(crate) mod broker;
 pub(crate) mod cli;
 pub(crate) mod cli_mcp_args;
+pub(crate) mod codex_session;
 #[allow(dead_code)]
 pub(crate) mod config;
 pub(crate) mod control;
