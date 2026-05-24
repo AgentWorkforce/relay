@@ -454,10 +454,11 @@ export function registerAgentManagementCommands(
           }
           const spawned = agents.find((agent) => agent.name === name);
           const sessionId = spawnResult?.sessionId ?? spawned?.sessionId;
-          if (spawned?.pid && sessionId) {
-            deps.log(`Spawned agent: ${name} (pid: ${spawned.pid}, session: ${sessionId})`);
-          } else if (spawned?.pid) {
-            deps.log(`Spawned agent: ${name} (pid: ${spawned.pid})`);
+          const pid = spawned?.pid ?? spawnResult?.pid;
+          if (pid && sessionId) {
+            deps.log(`Spawned agent: ${name} (pid: ${pid}, session: ${sessionId})`);
+          } else if (pid) {
+            deps.log(`Spawned agent: ${name} (pid: ${pid})`);
           } else if (sessionId) {
             deps.log(`Spawned agent: ${name} (session: ${sessionId})`);
           } else {

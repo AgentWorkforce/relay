@@ -273,27 +273,32 @@ impl WorkerRegistry {
                                 );
                             } else {
                                 let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
-                                let thread_id =
-                                    crate::codex_session::create_resumable_codex_thread(
-                                        &resolved_cli,
-                                        cwd,
-                                        &self.worker_env,
-                                    )
-                                    .await
-                                    .with_context(|| {
-                                        format!(
-                                            "failed to create resumable Codex session for '{}'",
-                                            spec.name
-                                        )
-                                    })?;
-                                tracing::info!(
-                                    worker = %spec.name,
-                                    session_id = %thread_id,
-                                    "created resumable Codex session for spawned PTY"
-                                );
-                                spec.session_id = Some(thread_id.clone());
-                                harness_session_args.push("resume".to_string());
-                                harness_session_args.push(thread_id);
+                                match crate::codex_session::create_resumable_codex_thread(
+                                    &resolved_cli,
+                                    cwd,
+                                    &self.worker_env,
+                                    &effective_args,
+                                )
+                                .await
+                                {
+                                    Ok(thread_id) => {
+                                        tracing::info!(
+                                            worker = %spec.name,
+                                            session_id = %thread_id,
+                                            "created resumable Codex session for spawned PTY"
+                                        );
+                                        spec.session_id = Some(thread_id.clone());
+                                        harness_session_args.push("resume".to_string());
+                                        harness_session_args.push(thread_id);
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            worker = %spec.name,
+                                            error = %err,
+                                            "failed to pre-create resumable Codex session; spawning without sessionId"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -784,6 +789,9 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
             return CodexSessionReference::None;
         }
         if codex_flag_consumes_next_arg(arg) {
+            if args.get(index + 1).is_none() {
+                return CodexSessionReference::Unknown;
+            }
             skip_next = true;
             index += 1;
             continue;
@@ -1295,6 +1303,12 @@ mod tests {
         );
         assert_eq!(
             codex_session_reference(&["resume".into(), "--last".into()]),
+            CodexSessionReference::Unknown
+        );
+        // Trailing value-taking flag without a value -> Unknown (don't blindly
+        // pre-create a Codex session for malformed CLI input).
+        assert_eq!(
+            codex_session_reference(&["--profile".into()]),
             CodexSessionReference::Unknown
         );
     }

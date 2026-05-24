@@ -14,10 +14,11 @@ pub(crate) async fn create_resumable_codex_thread(
     codex_bin: &str,
     cwd: &Path,
     env: &[(String, String)],
+    cli_args: &[String],
 ) -> Result<String> {
     timeout(
         CODEX_BOOTSTRAP_TIMEOUT,
-        create_resumable_codex_thread_inner(codex_bin, cwd, env),
+        create_resumable_codex_thread_inner(codex_bin, cwd, env, cli_args),
     )
     .await
     .with_context(|| {
@@ -29,6 +30,7 @@ async fn create_resumable_codex_thread_inner(
     codex_bin: &str,
     cwd: &Path,
     env: &[(String, String)],
+    cli_args: &[String],
 ) -> Result<String> {
     let thread_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut command = Command::new(codex_bin);
@@ -36,10 +38,14 @@ async fn create_resumable_codex_thread_inner(
         .arg("app-server")
         .arg("--listen")
         .arg("stdio://")
+        .kill_on_drop(true)
         .current_dir(&thread_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for arg in codex_app_server_passthrough_args(cli_args) {
+        command.arg(arg);
+    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -132,6 +138,58 @@ async fn create_resumable_codex_thread_inner(
     let _ = child.wait().await;
 
     result
+}
+
+/// Forward Codex CLI flags that the `app-server` honors, so the pre-created
+/// thread is bootstrapped under the same profile/config context that the PTY
+/// will later resume into. Positional arguments and runtime-only flags are
+/// dropped here — the PTY spawn already passes those through.
+fn codex_app_server_passthrough_args(cli_args: &[String]) -> Vec<String> {
+    const PASSTHROUGH_VALUE_FLAGS: &[&str] = &[
+        "--profile",
+        "--config",
+        "-c",
+        "--cd",
+        "--cwd",
+        "--sandbox",
+        "-s",
+        "--ask-for-approval",
+        "--approval-policy",
+    ];
+    const PASSTHROUGH_BOOL_FLAGS: &[&str] =
+        &["--dangerously-bypass-approvals-and-sandbox", "--full-auto"];
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < cli_args.len() {
+        let arg = cli_args[index].as_str();
+        if arg == "--" {
+            break;
+        }
+        if let Some((flag, _)) = arg.split_once('=') {
+            if PASSTHROUGH_VALUE_FLAGS.contains(&flag) {
+                out.push(arg.to_string());
+            }
+            index += 1;
+            continue;
+        }
+        if PASSTHROUGH_VALUE_FLAGS.contains(&arg) {
+            if let Some(value) = cli_args.get(index + 1) {
+                out.push(arg.to_string());
+                out.push(value.clone());
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+        if PASSTHROUGH_BOOL_FLAGS.contains(&arg) {
+            out.push(arg.to_string());
+            index += 1;
+            continue;
+        }
+        index += 1;
+    }
+    out
 }
 
 async fn json_rpc_request(
@@ -232,10 +290,44 @@ while read line; do :; done
             fake_codex.to_str().expect("utf-8 fake codex path"),
             dir.path(),
             &[],
+            &[],
         )
         .await
         .expect("thread id");
 
         assert_eq!(thread_id, "thread-test");
+    }
+
+    #[test]
+    fn passthrough_args_keep_profile_config_and_cwd() {
+        let args = vec![
+            "--profile".to_string(),
+            "team".to_string(),
+            "--config".to_string(),
+            "trust_level=trusted".to_string(),
+            "-c".to_string(),
+            "key=value".to_string(),
+            "--cd=/tmp/elsewhere".to_string(),
+            "--full-auto".to_string(),
+            "resume".to_string(),
+            "abc-123".to_string(),
+            "--".to_string(),
+            "--profile".to_string(),
+            "ignored".to_string(),
+        ];
+        let out = codex_app_server_passthrough_args(&args);
+        assert_eq!(
+            out,
+            vec![
+                "--profile".to_string(),
+                "team".to_string(),
+                "--config".to_string(),
+                "trust_level=trusted".to_string(),
+                "-c".to_string(),
+                "key=value".to_string(),
+                "--cd=/tmp/elsewhere".to_string(),
+                "--full-auto".to_string(),
+            ]
+        );
     }
 }

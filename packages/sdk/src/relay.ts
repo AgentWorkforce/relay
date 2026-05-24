@@ -1096,13 +1096,9 @@ export class AgentRelay {
   async listAgents(): Promise<Agent[]> {
     const client = await this.ensureStarted();
     const list = await client.listAgents();
-    return list.map((entry) => {
-      const existing = this.knownAgents.get(entry.name);
-      if (existing) return existing;
-      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry.sessionId);
-      this.knownAgents.set(agent.name, agent);
-      return agent;
-    });
+    return list.map((entry) =>
+      this.ensureAgentHandle(entry.name, entry.runtime, entry.channels, entry.sessionId)
+    );
   }
 
   /** Pre-register a batch of agents with Relaycast before steps execute. */
