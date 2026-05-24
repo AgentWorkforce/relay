@@ -65,13 +65,41 @@ An integration in the persona has two independent roles: declaring `triggers[]` 
 import { handler } from '@agentworkforce/runtime';
 
 export default handler(async (ctx, event) => {
-  if (event.source !== 'cron' || event.name !== 'daily') return;
-  const digest = await summarizeOvernightShips(ctx); // your code
-  await ctx.slack!.post('ops-daily', digest);
+  if (event.source === 'cron' && event.name === 'daily') {
+    const since = new Date(event.occurredAt);
+    since.setUTCHours(since.getUTCHours() - 24);
+    const dateStamp = event.occurredAt.slice(0, 10);
+    const channel = ctx.persona.inputs.DAILY_DIGEST_CHANNEL ?? 'ops-daily';
+
+    // Drive the harness over the Relayfile mount. Claude reads
+    // /github/repos/<owner>/<repo>/pulls/*.json directly and
+    // synthesizes the digest from PRs merged since `since`.
+    const { output, exitCode } = await ctx.harness.run({
+      prompt: `Summarize GitHub PRs merged across the workspace since ${since.toISOString()}. Group by repo; include #number, author, one-line impact. Slack mrkdwn, no preamble.`,
+    });
+    if (exitCode !== 0 || !output.trim()) {
+      ctx.log('warn', 'digest.empty-or-failed', { exitCode });
+      return;
+    }
+
+    await ctx.slack!.post(channel, `*Daily ship — ${dateStamp}*\n${output.trim()}`);
+    await ctx.memory.save(`Daily ship ${dateStamp} posted to #${channel}`, {
+      tags: ['daily-digest', `date:${dateStamp}`],
+      scope: 'workspace',
+    });
+  }
 });
 ```
 
-`event.name` matches `schedules[].name`. `event.occurredAt` is the firing timestamp (ISO 8601).
+`event.name` matches `schedules[].name`. `event.occurredAt` is the firing timestamp (ISO 8601). The guarded `if` (rather than an early `return` on the inverse) keeps the happy path the thing you read — important once the same handler reacts to multiple listener kinds.
+
+What each `ctx` call does in this example:
+
+- `ctx.persona.inputs.<KEY>` — resolved deploy-time inputs (see [Inputs](#inputs)).
+- `ctx.harness.run({ prompt })` — spawn the persona's configured harness (here `claude`) inside the sandbox. The harness sees the Relayfile mount and can read `/github/...`, `/slack/...`, etc. directly. Returns `{ output, exitCode, durationMs, usage? }` — destructure the fields you need.
+- `ctx.slack.post(channel, text)` / `ctx.github.comment(...)` — typed integration clients backed by the Relayfile writeback worker. Use them whenever you can; they're auth-managed and retryable.
+- `ctx.log(level, message, attrs)` — structured logger; every line is forwarded to the gateway and visible via `agentworkforce deployments logs <agent>`.
+- `ctx.memory.save(content, opts)` — persistent across firings when `memory.enabled` is set on the persona. See [Memory](#memory).
 
 ## Integration-based (radio listener)
 
@@ -102,9 +130,10 @@ Fires when a Relayfile integration emits a normalized event. Use for "open a PR 
 import { handler } from '@agentworkforce/runtime';
 
 export default handler(async (ctx, event) => {
-  if (event.source !== 'github' || event.type !== 'issue.created') return;
-  const { owner, repo, number } = event.payload as { owner: string; repo: string; number: number };
-  await ctx.github!.comment({ owner, repo, number }, 'Triage in progress — thanks for filing.');
+  if (event.source === 'github' && event.type === 'issue.created') {
+    const { owner, repo, number } = event.payload as { owner: string; repo: string; number: number };
+    await ctx.github!.comment({ owner, repo, number }, 'Triage in progress — thanks for filing.');
+  }
 });
 ```
 
