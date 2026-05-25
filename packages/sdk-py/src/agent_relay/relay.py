@@ -646,6 +646,9 @@ class AgentRelay:
             name = entry.get("name", "")
             existing = self._known_agents.get(name)
             if existing:
+                session_id = entry.get("sessionId")
+                if session_id:
+                    existing._session_id = session_id
                 agents.append(existing)
             else:
                 agent = Agent(

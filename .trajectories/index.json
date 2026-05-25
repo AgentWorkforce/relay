@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-25T01:45:42.089Z",
+  "lastUpdated": "2026-05-25T11:42:29.659Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1204,35 +1204,42 @@
       "status": "completed",
       "startedAt": "2026-05-21T20:27:44.911Z",
       "completedAt": "2026-05-21T20:31:49.784Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_pjadgfw0mtw4.json"
+      "path": ".trajectories/completed/2026-05/traj_pjadgfw0mtw4.json"
     },
     "traj_dqgg2q4scsvt": {
       "title": "Assess PR 932 event listener need",
       "status": "completed",
       "startedAt": "2026-05-22T01:05:44.531Z",
       "completedAt": "2026-05-22T01:07:31.036Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_dqgg2q4scsvt.json"
+      "path": ".trajectories/completed/2026-05/traj_dqgg2q4scsvt.json"
     },
     "traj_r3eic6rt84pq": {
       "title": "Fix PR 932 structured result listener surface",
       "status": "completed",
       "startedAt": "2026-05-22T01:09:21.137Z",
       "completedAt": "2026-05-22T01:21:02.199Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_r3eic6rt84pq.json"
+      "path": ".trajectories/completed/2026-05/traj_r3eic6rt84pq.json"
     },
     "traj_ft1pwdlcrmcn": {
       "title": "Fix CI run 26262957675",
       "status": "completed",
       "startedAt": "2026-05-22T01:31:45.965Z",
       "completedAt": "2026-05-22T01:34:57.413Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_ft1pwdlcrmcn.json"
+      "path": ".trajectories/completed/2026-05/traj_ft1pwdlcrmcn.json"
     },
     "traj_4b2d63f6ljvh": {
       "title": "Fix CI run 26263517444",
       "status": "completed",
       "startedAt": "2026-05-22T01:47:08.312Z",
       "completedAt": "2026-05-25T01:45:41.710Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4b2d63f6ljvh.json"
+      "path": ".trajectories/completed/2026-05/traj_4b2d63f6ljvh.json"
+    },
+    "traj_q97ei72svf2f": {
+      "title": "Address PR 978 review comments",
+      "status": "completed",
+      "startedAt": "2026-05-25T02:33:51.921Z",
+      "completedAt": "2026-05-25T11:42:29.529Z",
+      "path": ".trajectories/completed/2026-05/traj_q97ei72svf2f.json"
     }
   }
 }

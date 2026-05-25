@@ -347,17 +347,28 @@ class AgentRelayClient:
             "args": args or [],
             "channels": channels or [],
         }
-        if task is not None: payload["task"] = task
-        if model is not None: payload["model"] = model
-        if harness is not None: payload["harness"] = harness
-        if cwd is not None: payload["cwd"] = cwd
-        if team is not None: payload["team"] = team
-        if shadow_of is not None: payload["shadowOf"] = shadow_of
-        if shadow_mode is not None: payload["shadowMode"] = shadow_mode
-        if idle_threshold_secs is not None: payload["idleThresholdSecs"] = idle_threshold_secs
-        if restart_policy is not None: payload["restartPolicy"] = restart_policy
-        if continue_from is not None: payload["continueFrom"] = continue_from
-        if skip_relay_prompt is not None: payload["skipRelayPrompt"] = skip_relay_prompt
+        if task is not None:
+            payload["task"] = task
+        if model is not None:
+            payload["model"] = model
+        if harness is not None:
+            payload["harness"] = harness
+        if cwd is not None:
+            payload["cwd"] = cwd
+        if team is not None:
+            payload["team"] = team
+        if shadow_of is not None:
+            payload["shadowOf"] = shadow_of
+        if shadow_mode is not None:
+            payload["shadowMode"] = shadow_mode
+        if idle_threshold_secs is not None:
+            payload["idleThresholdSecs"] = idle_threshold_secs
+        if restart_policy is not None:
+            payload["restartPolicy"] = restart_policy
+        if continue_from is not None:
+            payload["continueFrom"] = continue_from
+        if skip_relay_prompt is not None:
+            payload["skipRelayPrompt"] = skip_relay_prompt
         return await self._request("POST", "/api/spawn", json=payload)
 
     async def spawn_provider(

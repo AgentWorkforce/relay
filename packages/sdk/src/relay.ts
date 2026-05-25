@@ -51,12 +51,7 @@ import {
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { HarnessDefinition, JsonSchema, SendMessageInput, SpawnPtyInput } from './types.js';
-import {
-  defineHarnessDefinition,
-  getHarnessDefinition,
-  registerHarnessAdapter,
-  registerHarnessAdapters,
-} from './cli-registry.js';
+import { defineHarnessDefinition, getHarnessDefinition } from './cli-registry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -649,7 +644,6 @@ export class AgentRelay {
     this.requestedWorkspaceId = requestedWorkspaceId;
     this.workspaceName = options.workspaceName;
     this.harnesses = cloneHarnessMap(options.harnesses);
-    registerHarnessAdapters(this.harnesses);
     if (options.workspaceName && !options.workspaceId) {
       console.warn(
         '[AgentRelay] workspaceName without workspaceId is deprecated and will be removed in a future major version. ' +
@@ -681,7 +675,6 @@ export class AgentRelay {
     }
     const resolved = defineHarnessDefinition(key, definition);
     this.harnesses[key] = cloneHarnessDefinition(resolved);
-    registerHarnessAdapter(key, resolved);
     return this;
   }
 
@@ -1160,7 +1153,12 @@ export class AgentRelay {
     const list = await client.listAgents();
     return list.map((entry) => {
       const existing = this.knownAgents.get(entry.name);
-      if (existing) return existing;
+      if (existing) {
+        if (entry.sessionId) {
+          (existing as InternalAgent)._setSessionId(entry.sessionId);
+        }
+        return existing;
+      }
       const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry.sessionId);
       this.knownAgents.set(agent.name, agent);
       return agent;

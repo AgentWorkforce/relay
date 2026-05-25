@@ -42,16 +42,14 @@
     "approach": "Standard approach",
     "confidence": 0.78
   },
-  "commits": [
-    "c13ee318"
-  ],
+  "commits": ["c13ee318"],
   "filesChanged": [
     "packages/sdk/src/__tests__/lifecycle-hooks.test.ts",
     "packages/sdk/src/client.ts",
     "packages/sdk/src/event-bus.ts",
     "packages/sdk/src/relay.ts"
   ],
-  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "projectId": "relay",
   "tags": [],
   "_trace": {
     "startRef": "23e07f08a24c2913a918aee2a0c9af9c54e4d40d",

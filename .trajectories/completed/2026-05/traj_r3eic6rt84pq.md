@@ -9,6 +9,6 @@
 
 ## Summary
 
-Updated PR 932 after PR 936 by merging current main, replacing relay.onAgentResult with relay.addListener('agentResult', ...), documenting the listener, and validating SDK focused tests plus repo typecheck before pushing codex/structured-agent-results.
+Updated PR 932 after PR 936 by merging current main, replacing relay.onAgentResult with relay.addListener('agentResult', ...), documenting the listener, and validating SDK-focused tests plus repo typecheck before pushing codex/structured-agent-results.
 
 **Approach:** Standard approach

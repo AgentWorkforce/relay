@@ -1,0 +1,53 @@
+{
+  "id": "traj_q97ei72svf2f",
+  "version": 1,
+  "task": {
+    "title": "Address PR 978 review comments"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T02:33:51.921Z",
+  "completedAt": "2026-05-25T11:42:29.529Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T11:40:55.530Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_v8c0suy2xbs4",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T11:40:55.530Z",
+      "endedAt": "2026-05-25T11:42:29.529Z",
+      "events": [
+        {
+          "ts": 1779709255531,
+          "type": "decision",
+          "content": "Scoped SDK-provided harnesses to relay/workflow instances and used temporary registry snapshots for workflow execution.: Scoped SDK-provided harnesses to relay/workflow instances and used temporary registry snapshots for workflow execution.",
+          "raw": {
+            "question": "Scoped SDK-provided harnesses to relay/workflow instances and used temporary registry snapshots for workflow execution.",
+            "chosen": "Scoped SDK-provided harnesses to relay/workflow instances and used temporary registry snapshots for workflow execution.",
+            "alternatives": [],
+            "reasoning": "Review comments called out cross-instance and YAML parse leaks; explicit registerHarnessAdapter remains the opt-in global path, while instance/YAML harnesses are serialized to the broker or installed only during execution."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed PR 978 review comments for harness adapter scoping, executable validation, SDK event/session fixes, MCP command setup, and CI failures.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7a265d5a9880642fd887796627ce75a24fa978ee",
+    "endRef": "7a265d5a9880642fd887796627ce75a24fa978ee"
+  }
+}

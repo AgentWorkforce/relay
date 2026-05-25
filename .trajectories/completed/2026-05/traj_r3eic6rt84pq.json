@@ -10,13 +10,13 @@
   "agents": [],
   "chapters": [],
   "retrospective": {
-    "summary": "Updated PR 932 after PR 936 by merging current main, replacing relay.onAgentResult with relay.addListener('agentResult', ...), documenting the listener, and validating SDK focused tests plus repo typecheck before pushing codex/structured-agent-results.",
+    "summary": "Updated PR 932 after PR 936 by merging current main, replacing relay.onAgentResult with relay.addListener('agentResult', ...), documenting the listener, and validating SDK-focused tests plus repo typecheck before pushing codex/structured-agent-results.",
     "approach": "Standard approach",
     "confidence": 0.92
   },
   "commits": [],
   "filesChanged": [],
-  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "projectId": "relay",
   "tags": [],
   "_trace": {
     "startRef": "866d36df85d6f84ccfb1d84e116d4ca51e2a4a0b",

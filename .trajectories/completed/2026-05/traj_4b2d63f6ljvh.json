@@ -371,7 +371,7 @@
     "web/lib/docs-nav.ts",
     "web/sst.config.ts"
   ],
-  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "projectId": "relay",
   "tags": [],
   "_trace": {
     "startRef": "898b8ee37197075913578fdb1c2fe4139b2ac562",

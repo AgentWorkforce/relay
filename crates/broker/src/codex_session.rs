@@ -39,7 +39,8 @@ async fn create_resumable_codex_thread_inner(
         .current_dir(&thread_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     for (key, value) in env {
         command.env(key, value);
     }

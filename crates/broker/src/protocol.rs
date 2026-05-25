@@ -137,6 +137,7 @@ pub struct ProtocolEnvelope<T> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum SdkToBroker {
     Hello {
         client_name: String,
@@ -365,6 +366,7 @@ pub enum BrokerEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum BrokerToWorker {
     InitWorker {
         agent: AgentSpec,

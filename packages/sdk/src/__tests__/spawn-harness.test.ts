@@ -86,6 +86,18 @@ describe('spawn harness adapters', () => {
     );
   });
 
+  it('keeps constructor harnesses scoped to that relay instance', () => {
+    new AgentRelay({
+      harnesses: {
+        'instance-only-harness': {
+          binary: 'instance-agent',
+        },
+      },
+    });
+
+    expect(getHarnessDefinition('instance-only-harness')).toBeUndefined();
+  });
+
   it('attaches built-in harness definitions from the facade spawn API', async () => {
     const spawnPty = vi.fn(async (input: { name: string }) => ({
       name: input.name,

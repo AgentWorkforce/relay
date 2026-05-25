@@ -76,7 +76,7 @@ interface SessionState {
   agentName: string | null;
   agents: Map<string, RegisteredAgent>;
   wsBridge: RealtimeResourceBridge | null;
-  subscriptions: SubscriptionManager | null;
+  subscriptions: SubscriptionManager;
   wsInitAttempted: boolean;
 }
 
@@ -158,7 +158,7 @@ function createInitialSession(options: {
     agentName,
     agents,
     wsBridge: null,
-    subscriptions: null,
+    subscriptions: new SubscriptionManager(),
     wsInitAttempted: false,
   };
 }
@@ -1322,7 +1322,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
   };
 
   const notifySubscribers = () => {
-    const uris = session.subscriptions?.getAll() ?? [];
+    const uris = session.subscriptions.getAll();
     for (const uri of uris) {
       mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
     }
@@ -1336,9 +1336,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
     if (switchingWorkspace || changingToken) {
       notifySubscribers();
       session.wsBridge?.stop();
-      session.subscriptions?.clear();
       session.wsBridge = null;
-      session.subscriptions = null;
       session.wsInitAttempted = false;
     }
 
@@ -1346,21 +1344,18 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
 
     if (session.agentToken && !session.wsBridge && !session.wsInitAttempted) {
       try {
-        const subscriptions = new SubscriptionManager();
         const wsClient = new WsClient({
           token: session.agentToken,
           baseUrl: options.baseUrl,
         });
-        const wsBridge = new RealtimeResourceBridge(wsClient, subscriptions, (uri) => {
+        const wsBridge = new RealtimeResourceBridge(wsClient, session.subscriptions, (uri) => {
           mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
         });
         wsBridge.start();
         session.wsBridge = wsBridge;
-        session.subscriptions = subscriptions;
         session.wsInitAttempted = true;
       } catch {
         session.wsBridge = null;
-        session.subscriptions = null;
         session.wsInitAttempted = true;
       }
     }
@@ -1393,11 +1388,11 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
   enableInboxPiggyback(mcpServer, getSession, getAgentClient);
   registerResourceDefinitions(mcpServer, getAgentClient, getRelay);
   mcpServer.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
-    session.subscriptions?.subscribe(req.params.uri);
+    session.subscriptions.subscribe(req.params.uri);
     return {};
   });
   mcpServer.server.setRequestHandler(UnsubscribeRequestSchema, async (req) => {
-    session.subscriptions?.unsubscribe(req.params.uri);
+    session.subscriptions.unsubscribe(req.params.uri);
     return {};
   });
   registerAgentRelayTools(

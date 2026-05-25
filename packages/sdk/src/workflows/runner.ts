@@ -28,7 +28,14 @@ import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
-import { buildModelArgs, getCliDefinition, registerHarnessAdapters } from '../cli-registry.js';
+import {
+  buildModelArgs,
+  getCliDefinition,
+  registerHarnessAdapters,
+  restoreHarnessAdapters,
+  snapshotHarnessAdapters,
+  type HarnessRegistrySnapshot,
+} from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
 import {
   buildNormalizedProxyEnv,
@@ -569,7 +576,6 @@ export class WorkflowRunner {
     this.executor = options.executor;
     this.processBackend = options.processBackend;
     this.harnesses = options.harnesses;
-    registerHarnessAdapters(this.harnesses);
     this.envSecrets = options.envSecrets;
     if (!this.executor && this.processBackend) {
       this.executor = createProcessBackendExecutor(this.processBackend, {
@@ -1744,13 +1750,6 @@ export class WorkflowRunner {
       return 'openai';
     }
 
-    if (configuredProviders.length === 1) {
-      const [onlyProvider] = configuredProviders;
-      if (onlyProvider === 'openai' || onlyProvider === 'anthropic' || onlyProvider === 'openrouter') {
-        return onlyProvider;
-      }
-    }
-
     const harnessProxyProvider = getCliDefinition(agentDef.cli)?.proxyProvider;
     if (
       harnessProxyProvider === 'openai' ||
@@ -1758,6 +1757,13 @@ export class WorkflowRunner {
       harnessProxyProvider === 'openrouter'
     ) {
       return harnessProxyProvider;
+    }
+
+    if (configuredProviders.length === 1) {
+      const [onlyProvider] = configuredProviders;
+      if (onlyProvider === 'openai' || onlyProvider === 'anthropic' || onlyProvider === 'openrouter') {
+        return onlyProvider;
+      }
     }
 
     switch (agentDef.cli) {
@@ -2086,13 +2092,23 @@ export class WorkflowRunner {
     this.validateConfig(parsed, source);
     const config = this.normalizeLegacyPermissionConfig(parsed as RelayYamlConfig);
     config.agents ??= [];
-    this.registerConfigHarnesses(config);
     return config;
   }
 
-  private registerConfigHarnesses(config?: RelayYamlConfig): void {
-    registerHarnessAdapters(this.harnesses);
-    registerHarnessAdapters(config?.harnesses);
+  private installConfigHarnesses(config?: RelayYamlConfig): HarnessRegistrySnapshot {
+    const snapshot = snapshotHarnessAdapters();
+    try {
+      registerHarnessAdapters(this.harnesses);
+      registerHarnessAdapters(config?.harnesses);
+      return snapshot;
+    } catch (err) {
+      restoreHarnessAdapters(snapshot);
+      throw err;
+    }
+  }
+
+  private restoreConfigHarnesses(snapshot: HarnessRegistrySnapshot): void {
+    restoreHarnessAdapters(snapshot);
   }
 
   private normalizeLegacyPermissionConfig(config: RelayYamlConfig): RelayYamlConfig {
@@ -2287,7 +2303,6 @@ export class WorkflowRunner {
     let resolved: RelayYamlConfig;
     try {
       this.validateConfig(config);
-      this.registerConfigHarnesses(config);
       resolved = vars ? this.resolveVariables(config, vars) : config;
       resolved = this.applyPermissionProfiles(resolved);
     } catch (err) {
@@ -2907,12 +2922,11 @@ export class WorkflowRunner {
     this.paused = false;
 
     const resolved = this.applyPermissionProfiles(vars ? this.resolveVariables(config, vars) : config);
-    this.registerConfigHarnesses(resolved);
 
     // Validate config (catches cycles, missing deps, invalid steps, etc.)
     this.validateConfig(resolved);
     const runtimeConfig = this.applyReliabilityDefaults(resolved);
-    this.registerConfigHarnesses(runtimeConfig);
+    this.validateConfig(runtimeConfig);
 
     const permissionResult = this.validatePermissions(
       runtimeConfig.agents,
@@ -3082,7 +3096,7 @@ export class WorkflowRunner {
     const resolvedConfig = this.applyReliabilityDefaults(
       vars ? this.resolveVariables(run.config, vars) : run.config
     );
-    this.registerConfigHarnesses(resolvedConfig);
+    this.validateConfig(resolvedConfig);
 
     // Resolve path definitions (same as execute()) so workdir lookups work on resume
     const pathResult = this.resolvePathDefinitions(resolvedConfig.paths, this.cwd);
@@ -3151,6 +3165,7 @@ export class WorkflowRunner {
 
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
+    const harnessSnapshot = this.installConfigHarnesses(config);
 
     try {
       await this.updateRunStatus(runId, 'running');
@@ -3532,6 +3547,7 @@ export class WorkflowRunner {
         });
       }
     } finally {
+      this.restoreConfigHarnesses(harnessSnapshot);
       this.lastFailedStepOutput.clear();
       this.lastCustomVerificationFailure.clear();
       for (const stream of this.ptyLogStreams.values()) stream.end();

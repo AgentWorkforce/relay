@@ -1,11 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { buildModelArgs, registerHarnessAdapter } from '../../cli-registry.js';
+import {
+  buildModelArgs,
+  registerHarnessAdapter,
+  restoreHarnessAdapters,
+  snapshotHarnessAdapters,
+} from '../../cli-registry.js';
 import { WorkflowBuilder } from '../builder.js';
 import { buildCommand } from '../process-spawner.js';
 import { WorkflowRunner } from '../runner.js';
 
+const registrySnapshot = snapshotHarnessAdapters();
+
 describe('workflow harness adapters', () => {
+  afterEach(() => {
+    restoreHarnessAdapters(registrySnapshot);
+  });
+
   it('builds built-in commands from declarative harness config', () => {
     expect(buildCommand('codex', [], 'do the work')).toEqual([
       'codex',
@@ -52,7 +63,7 @@ describe('workflow harness adapters', () => {
     });
   });
 
-  it('registers harnesses declared in parsed YAML', () => {
+  it('keeps harnesses declared in parsed YAML scoped to workflow execution', () => {
     const runner = new WorkflowRunner({ cwd: process.cwd() });
     runner.parseYamlString(`
 version: "1.0"
@@ -76,12 +87,32 @@ workflows:
         task: do it
 `);
 
-    expect(buildCommand('unit-harness-c', buildModelArgs('unit-harness-c', 'model-c'), 'do it')).toEqual([
-      'unit-c',
+    expect(buildModelArgs('unit-harness-c', 'model-c')).toEqual(['--model', 'model-c']);
+    expect(() => buildCommand('unit-harness-c', [], 'do it')).toThrow(
+      'Unknown or non-executable CLI: unit-harness-c'
+    );
+  });
+
+  it('lets binary override inherited adapter binaries', () => {
+    registerHarnessAdapter('company-codex-wrapper', {
+      adapter: 'codex',
+      binary: 'company-codex',
+      searchPaths: ['~/company/bin'],
+    });
+
+    expect(buildCommand('company-codex-wrapper', [], 'do the work')).toEqual([
+      'company-codex',
       'exec',
-      'do it',
-      '--m',
-      'model-c',
+      '--dangerously-bypass-approvals-and-sandbox',
+      'do the work',
     ]);
+  });
+
+  it('rejects empty base harness keys after model suffix normalization', () => {
+    expect(() =>
+      registerHarnessAdapter(':bad', {
+        binary: 'bad',
+      })
+    ).toThrow('Harness name must be a non-empty string');
   });
 });

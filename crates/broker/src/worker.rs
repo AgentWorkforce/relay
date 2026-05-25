@@ -1,7 +1,10 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
     env,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -1076,11 +1079,16 @@ fn merge_harness_definitions(
     base: HarnessDefinition,
     override_definition: HarnessDefinition,
 ) -> HarnessDefinition {
+    let overrides_binary = override_definition.binary.is_some();
     HarnessDefinition {
         adapter: override_definition.adapter.or(base.adapter),
         binary: override_definition.binary.or(base.binary),
         binaries: if override_definition.binaries.is_empty() {
-            base.binaries
+            if overrides_binary {
+                Vec::new()
+            } else {
+                base.binaries
+            }
         } else {
             override_definition.binaries
         },
@@ -1164,12 +1172,16 @@ fn harness_adapter_key(resolved_cli: &str, harness: Option<&HarnessDefinition>) 
 
 fn resolve_command_with_paths(command: &str, search_paths: &[String]) -> String {
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
-        return canonicalize_display(Path::new(command));
+        let candidate = expand_home_path(command);
+        if is_executable_file(&candidate) {
+            return canonicalize_display(&candidate);
+        }
+        return command.to_string();
     }
 
     for dir in search_paths {
         let candidate = expand_home_path(dir).join(command);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return canonicalize_display(&candidate);
         }
     }
@@ -1179,7 +1191,7 @@ fn resolve_command_with_paths(command: &str, search_paths: &[String]) -> String 
         .unwrap_or_else(fallback_path_env);
     for dir in env::split_paths(&path_env) {
         let candidate = dir.join(command);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return canonicalize_display(&candidate);
         }
     }
@@ -1204,7 +1216,7 @@ fn resolve_harness_command(default_command: &str, harness: Option<&HarnessDefini
 
     for candidate in candidates.iter().copied() {
         let resolved = resolve_command_with_paths(candidate, &harness.search_paths);
-        if resolved != candidate || Path::new(&resolved).is_file() {
+        if resolved != candidate || is_executable_file(Path::new(&resolved)) {
             return resolved;
         }
     }
@@ -1214,6 +1226,23 @@ fn resolve_harness_command(default_command: &str, harness: Option<&HarnessDefini
         .copied()
         .unwrap_or(default_command)
         .to_string()
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn arg_matches_flag(arg: &str, flag: &str) -> bool {
@@ -1417,14 +1446,13 @@ async fn resolve_harness_model_args(
     let model = if normalized_cli.eq_ignore_ascii_case("codex") {
         codex_local_fallback_model(resolved_cli, requested)
             .await
-            .map(|fallback| {
+            .inspect(|&fallback| {
                 tracing::warn!(
                     worker = %worker_name,
                     requested_model = %requested,
                     fallback_model = %fallback,
                     "local Codex CLI model catalog does not confirm requested model; using fallback"
                 );
-                fallback
             })
             .unwrap_or(requested)
     } else {
@@ -1779,6 +1807,52 @@ mod harness_adapter_tests {
         assert_eq!(
             harness.bypass_flag.as_deref(),
             Some("--dangerously-bypass-approvals-and-sandbox")
+        );
+    }
+
+    #[test]
+    fn binary_override_replaces_inherited_adapter_binaries() {
+        let harness = resolve_harness_definition(
+            "company-cursor",
+            Some(HarnessDefinition {
+                adapter: Some("cursor".to_string()),
+                binary: Some("company-cursor".to_string()),
+                ..Default::default()
+            }),
+        )
+        .expect("custom cursor harness");
+
+        assert_eq!(harness.binary.as_deref(), Some("company-cursor"));
+        assert!(harness.binaries.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_harness_command_skips_non_executable_search_path_candidates() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let non_executable = temp.path().join("relay-non-executable");
+        let executable = temp.path().join("relay-executable");
+        fs::write(&non_executable, "#!/bin/sh\n").expect("write non-executable");
+        fs::write(&executable, "#!/bin/sh\n").expect("write executable");
+        fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o644))
+            .expect("chmod non-executable");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("chmod executable");
+
+        let harness = HarnessDefinition {
+            binaries: vec![
+                "relay-non-executable".to_string(),
+                "relay-executable".to_string(),
+            ],
+            search_paths: vec![temp.path().to_string_lossy().to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_harness_command("fallback", Some(&harness)),
+            canonicalize_display(&executable)
         );
     }
 

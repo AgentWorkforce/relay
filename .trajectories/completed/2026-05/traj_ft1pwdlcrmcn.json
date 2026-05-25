@@ -42,15 +42,9 @@
     "approach": "Standard approach",
     "confidence": 0.82
   },
-  "commits": [
-    "898b8ee3",
-    "adb6d6b9",
-    "e5554b50"
-  ],
-  "filesChanged": [
-    ".github/scripts/repair-failed-sst-acm-cert.sh"
-  ],
-  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "commits": ["898b8ee3", "adb6d6b9", "e5554b50"],
+  "filesChanged": [".github/scripts/repair-failed-sst-acm-cert.sh"],
+  "projectId": "relay",
   "tags": [],
   "_trace": {
     "startRef": "0d716e468654c8d98b867df09298aafce0b23604",

@@ -139,18 +139,23 @@ const CLI_REGISTRY: Record<KnownAgentCli, CliDefinition> = {
 const USER_CLI_REGISTRY = new Map<string, CliDefinition>();
 const USER_HARNESS_CONFIGS = new Map<string, HarnessDefinition>();
 
-function normalizeCliKey(cli: string): string {
+function normalizedBaseCliKey(cli: string): string | undefined {
   const trimmed = cli.trim();
-  if (!trimmed) {
+  if (!trimmed) return undefined;
+  const base = (trimmed.includes(':') ? trimmed.split(':')[0] : trimmed).trim();
+  return base || undefined;
+}
+
+function normalizeCliKey(cli: string): string {
+  const base = normalizedBaseCliKey(cli);
+  if (!base) {
     throw new Error('Harness name must be a non-empty string');
   }
-  return trimmed.includes(':') ? trimmed.split(':')[0] : trimmed;
+  return base;
 }
 
 function lookupCliKey(cli: string): string | undefined {
-  const trimmed = cli.trim();
-  if (!trimmed) return undefined;
-  return trimmed.includes(':') ? trimmed.split(':')[0] : trimmed;
+  return normalizedBaseCliKey(cli);
 }
 
 function validateStringArray(value: readonly string[] | undefined, label: string): string[] | undefined {
@@ -183,7 +188,7 @@ function mergeHarnessDefinitions(base: HarnessDefinition, override: HarnessDefin
     binary: override.binary ?? base.binary,
     ...(override.binaries
       ? { binaries: [...override.binaries] }
-      : base.binaries
+      : base.binaries && override.binary === undefined
         ? { binaries: [...base.binaries] }
         : {}),
     ...(override.interactiveArgs
@@ -380,6 +385,42 @@ export function registerHarnessAdapters(adapters: Record<string, HarnessAdapter>
   if (!adapters) return;
   for (const [name, adapter] of Object.entries(adapters)) {
     registerHarnessAdapter(name, adapter);
+  }
+}
+
+export interface HarnessRegistrySnapshot {
+  cliRegistry: Map<string, CliDefinition>;
+  harnessConfigs: Map<string, HarnessDefinition>;
+}
+
+function cloneCliDefinition(definition: CliDefinition): CliDefinition {
+  return {
+    ...definition,
+    binaries: [...definition.binaries],
+    bypassAliases: definition.bypassAliases ? [...definition.bypassAliases] : undefined,
+    searchPaths: definition.searchPaths ? [...definition.searchPaths] : undefined,
+  };
+}
+
+export function snapshotHarnessAdapters(): HarnessRegistrySnapshot {
+  return {
+    cliRegistry: new Map(
+      [...USER_CLI_REGISTRY].map(([key, definition]) => [key, cloneCliDefinition(definition)])
+    ),
+    harnessConfigs: new Map(
+      [...USER_HARNESS_CONFIGS].map(([key, config]) => [key, cloneHarnessDefinition(config)])
+    ),
+  };
+}
+
+export function restoreHarnessAdapters(snapshot: HarnessRegistrySnapshot): void {
+  USER_CLI_REGISTRY.clear();
+  USER_HARNESS_CONFIGS.clear();
+  for (const [key, definition] of snapshot.cliRegistry) {
+    USER_CLI_REGISTRY.set(key, cloneCliDefinition(definition));
+  }
+  for (const [key, config] of snapshot.harnessConfigs) {
+    USER_HARNESS_CONFIGS.set(key, cloneHarnessDefinition(config));
   }
 }
 

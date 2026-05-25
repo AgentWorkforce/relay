@@ -649,22 +649,20 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
-    let harness = match body
-        .get("harness")
-        .cloned()
-        .map(serde_json::from_value::<HarnessDefinition>)
-        .transpose()
-    {
-        Ok(value) => value,
-        Err(err) => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::Json(json!({
-                    "success": false,
-                    "error": format!("Invalid field: harness ({err})")
-                })),
-            );
-        }
+    let harness = match body.get("harness").cloned() {
+        None | Some(Value::Null) => None,
+        Some(value) => match serde_json::from_value::<HarnessDefinition>(value) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({
+                        "success": false,
+                        "error": format!("Invalid field: harness ({err})")
+                    })),
+                );
+            }
+        },
     };
     let agent_token = body
         .get("agent_token")
