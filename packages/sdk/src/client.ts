@@ -120,6 +120,7 @@ export interface SpawnAgentResult {
   name: string;
   runtime: AgentRuntime;
   sessionId?: string;
+  pid?: number;
 }
 
 export interface SessionInfo {

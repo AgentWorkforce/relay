@@ -337,13 +337,20 @@ function adapterFromConfig(name: string, config: HarnessDefinition): CliDefiniti
   };
 }
 
-export type HarnessAdapter = CliDefinition | HarnessDefinition;
+export type CLIHarnessAdapter = CliDefinition | HarnessDefinition;
 
-function isCliDefinition(adapter: HarnessAdapter): adapter is CliDefinition {
+/**
+ * @deprecated Use {@link CLIHarnessAdapter}. This type describes the
+ * serializable/function-backed CLI command adapter used to build harness
+ * argv, not the runtime harness lifecycle contract.
+ */
+export type HarnessAdapter = CLIHarnessAdapter;
+
+function isCliDefinition(adapter: CLIHarnessAdapter): adapter is CliDefinition {
   return typeof (adapter as { nonInteractiveArgs?: unknown }).nonInteractiveArgs === 'function';
 }
 
-export function defineHarnessAdapter(name: string, adapter: HarnessAdapter): CliDefinition {
+export function defineHarnessAdapter(name: string, adapter: CLIHarnessAdapter): CliDefinition {
   if (isCliDefinition(adapter)) {
     return {
       ...adapter,
@@ -362,7 +369,7 @@ export function defineHarnessAdapter(name: string, adapter: HarnessAdapter): Cli
  * Programmatic adapters can provide functions; YAML/workflow configs should
  * use the serializable {@link HarnessDefinition} shape.
  */
-export function registerHarnessAdapter(name: string, adapter: HarnessAdapter): void {
+export function registerHarnessAdapter(name: string, adapter: CLIHarnessAdapter): void {
   const key = normalizeCliKey(name);
   const definition = defineHarnessAdapter(key, adapter);
   USER_CLI_REGISTRY.set(key, definition);
@@ -384,7 +391,7 @@ export function registerHarnessAdapter(name: string, adapter: HarnessAdapter): v
 /** Backward-compatible name for callers that think in CLI definitions. */
 export const registerCliDefinition = registerHarnessAdapter;
 
-export function registerHarnessAdapters(adapters: Record<string, HarnessAdapter> | undefined): void {
+export function registerHarnessAdapters(adapters: Record<string, CLIHarnessAdapter> | undefined): void {
   if (!adapters) return;
   for (const [name, adapter] of Object.entries(adapters)) {
     registerHarnessAdapter(name, adapter);

@@ -86,6 +86,34 @@ describe('spawn harness adapters', () => {
     );
   });
 
+  it('exposes broker spawn pid on facade agent handles and success hooks', async () => {
+    const spawnPty = vi.fn(async (input: { name: string }) => ({
+      name: input.name,
+      runtime: 'pty' as const,
+      sessionId: 'session-pid',
+      pid: 4321,
+    }));
+    const relay = new AgentRelay();
+    (relay as any).client = { spawnPty };
+    const onSuccess = vi.fn();
+
+    const agent = await relay.spawn('worker-pid', 'codex', 'ship it', {
+      channels: ['general'],
+      onSuccess,
+    });
+
+    expect(agent.sessionId).toBe('session-pid');
+    expect(agent.pid).toBe(4321);
+    expect(onSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'worker-pid',
+        runtime: 'pty',
+        sessionId: 'session-pid',
+        pid: 4321,
+      })
+    );
+  });
+
   it('keeps constructor harnesses scoped to that relay instance', () => {
     new AgentRelay({
       harnesses: {

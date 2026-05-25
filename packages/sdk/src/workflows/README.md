@@ -23,26 +23,26 @@ agent-relay run workflow.yaml --workflow deploy
 ### TypeScript
 
 ```typescript
-import { workflow } from "@agent-relay/sdk/workflows";
+import { workflow } from '@agent-relay/sdk/workflows';
 
-const result = await workflow("ship-feature")
-  .pattern("dag")
-  .agent("planner", { cli: "claude", role: "Plans implementation" })
-  .agent("developer", { cli: "codex", role: "Writes code" })
-  .agent("reviewer", { cli: "claude", role: "Reviews code" })
-  .step("plan", {
-    agent: "planner",
-    task: "Create implementation plan for user authentication",
+const result = await workflow('ship-feature')
+  .pattern('dag')
+  .agent('planner', { cli: 'claude', role: 'Plans implementation' })
+  .agent('developer', { cli: 'codex', role: 'Writes code' })
+  .agent('reviewer', { cli: 'claude', role: 'Reviews code' })
+  .step('plan', {
+    agent: 'planner',
+    task: 'Create implementation plan for user authentication',
   })
-  .step("implement", {
-    agent: "developer",
-    task: "Implement the plan",
-    dependsOn: ["plan"],
+  .step('implement', {
+    agent: 'developer',
+    task: 'Implement the plan',
+    dependsOn: ['plan'],
   })
-  .step("review", {
-    agent: "reviewer",
-    task: "Review the implementation",
-    dependsOn: ["implement"],
+  .step('review', {
+    agent: 'reviewer',
+    task: 'Review the implementation',
+    dependsOn: ['implement'],
   })
   .run();
 
@@ -86,10 +86,14 @@ export async function POST(req: Request) {
   const { prompt, escalate, repo } = await req.json();
 
   const relay = new Relay('AppLead');
-  const relaySession = onRelay({
-    name: 'AppLead',
-    instructions: 'You are the customer-facing lead. Keep the user updated and delegate implementation via Relay when needed.',
-  }, relay);
+  const relaySession = onRelay(
+    {
+      name: 'AppLead',
+      instructions:
+        'You are the customer-facing lead. Keep the user updated and delegate implementation via Relay when needed.',
+    },
+    relay
+  );
 
   const model = wrapLanguageModel({
     model: openai('gpt-4o-mini'),
@@ -127,20 +131,20 @@ A compact end-to-end example app for this pattern lives in `examples/ai-sdk-rela
 Workflows are defined as `relay.yaml` files:
 
 ```yaml
-version: "1.0"
+version: '1.0'
 name: my-workflow
-description: "Optional description"
+description: 'Optional description'
 
 swarm:
-  pattern: dag            # Execution pattern (see Patterns below)
-  maxConcurrency: 3       # Max agents running in parallel
-  timeoutMs: 3600000      # Global timeout (1 hour)
-  channel: my-channel     # Relay channel for agent communication
+  pattern: dag # Execution pattern (see Patterns below)
+  maxConcurrency: 3 # Max agents running in parallel
+  timeoutMs: 3600000 # Global timeout (1 hour)
+  channel: my-channel # Relay channel for agent communication
 
 agents:
   - name: backend
-    cli: claude            # claude | codex | gemini | aider | goose | opencode | droid
-    role: "Backend engineer"
+    cli: claude # claude | codex | gemini | aider | goose | opencode | droid
+    role: 'Backend engineer'
     constraints:
       model: opus
       timeoutMs: 600000
@@ -148,33 +152,33 @@ agents:
 
   - name: tester
     cli: codex
-    role: "Test engineer"
-    interactive: false     # Non-interactive: runs as subprocess, no PTY/messaging
+    role: 'Test engineer'
+    interactive: false # Non-interactive: runs as subprocess, no PTY/messaging
 
 workflows:
   - name: build-and-test
-    onError: retry         # fail | skip | retry
+    onError: retry # fail | skip | retry
     steps:
       - name: build-api
         agent: backend
-        task: "Build the REST API endpoints for user management"
+        task: 'Build the REST API endpoints for user management'
         verification:
           type: file_exists
-          value: "src/api/users.ts"
+          value: 'src/api/users.ts'
         retries: 1
 
       - name: write-tests
         agent: tester
-        task: "Write integration tests for: {{steps.build-api.output}}"
+        task: 'Write integration tests for: {{steps.build-api.output}}'
         dependsOn: [build-api]
 
       - name: run-tests
         agent: tester
-        task: "Run the test suite and report results"
+        task: 'Run the test suite and report results'
         dependsOn: [write-tests]
         verification:
           type: exit_code
-          value: "0"
+          value: '0'
 
 errorHandling:
   strategy: retry
@@ -193,19 +197,19 @@ Use `{{variable}}` for user-provided values and `{{steps.STEP_NAME.output}}` for
 steps:
   - name: plan
     agent: planner
-    task: "Plan implementation for: {{task}}"     # User variable
+    task: 'Plan implementation for: {{task}}' # User variable
 
   - name: implement
     agent: developer
     dependsOn: [plan]
-    task: "Implement: {{steps.plan.output}}"      # Previous step output
+    task: 'Implement: {{steps.plan.output}}' # Previous step output
 ```
 
 User variables are passed via the CLI or programmatically:
 
 ```typescript
-await runWorkflow("workflow.yaml", {
-  vars: { task: "Add OAuth2 support" },
+await runWorkflow('workflow.yaml', {
+  vars: { task: 'Add OAuth2 support' },
 });
 ```
 
@@ -213,12 +217,12 @@ await runWorkflow("workflow.yaml", {
 
 Each step can include a verification check. Verification is one input to the runner's **completion decision pipeline** — when verification passes, the step completes even without a sentinel marker.
 
-| Type | Description |
-|------|-------------|
-| `exit_code` | Agent must exit with the specified code (preferred for code-editing steps) |
-| `file_exists` | A file must exist at the specified path after the step |
-| `output_contains` | Step output must contain the specified string (optional accelerator) |
-| `custom` | No-op in the runner; handled by external callers |
+| Type              | Description                                                                |
+| ----------------- | -------------------------------------------------------------------------- |
+| `exit_code`       | Agent must exit with the specified code (preferred for code-editing steps) |
+| `file_exists`     | A file must exist at the specified path after the step                     |
+| `output_contains` | Step output must contain the specified string (optional accelerator)       |
+| `custom`          | No-op in the runner; handled by external callers                           |
 
 ```yaml
 # Preferred — deterministic verification
@@ -238,16 +242,19 @@ verification:
 
 Workflows can define CLI harness adapters locally instead of waiting for Relay
 to add the harness to its built-in registry. The same serializable adapter is
-passed through to interactive `agent-relay` spawning:
+passed through to interactive `agent-relay` spawning. In TypeScript, this
+serializable command-template shape is exported as `CLIHarnessAdapter`; the
+runtime-facing lifecycle contract for future stdio/HTTP harnesses is exported
+as `HarnessRuntimeAdapter`.
 
 ```yaml
 harnesses:
   qwen:
     binary: qwen
-    interactiveArgs: ["run", "{modelArgs}", "{args}"]
-    nonInteractiveArgs: ["run", "--prompt", "{task}", "{args}"]
-    modelArgs: ["-m", "{model}"]
-    searchPaths: ["~/.local/bin"]
+    interactiveArgs: ['run', '{modelArgs}', '{args}']
+    nonInteractiveArgs: ['run', '--prompt', '{task}', '{args}']
+    modelArgs: ['-m', '{model}']
+    searchPaths: ['~/.local/bin']
 
 agents:
   - name: reviewer
@@ -270,15 +277,15 @@ The runner uses a multi-signal pipeline to decide step completion:
 3. **Evidence-based completion** — channel messages, file artifacts, and exit codes are collected as evidence (`completed_by_evidence`)
 4. **Marker fast-path** — `STEP_COMPLETE:<step-name>` still works as an accelerator but is never required
 
-| Completion State | Meaning |
-|---|---|
-| `completed_verified` | Deterministic verification passed |
-| `completed_by_owner_decision` | Owner approved the step |
-| `completed_by_evidence` | Evidence-based completion |
-| `retry_requested_by_owner` | Owner requested retry |
-| `failed_verification` | Verification explicitly failed |
-| `failed_owner_decision` | Owner rejected the step |
-| `failed_no_evidence` | No verification, no owner decision, no evidence |
+| Completion State              | Meaning                                         |
+| ----------------------------- | ----------------------------------------------- |
+| `completed_verified`          | Deterministic verification passed               |
+| `completed_by_owner_decision` | Owner approved the step                         |
+| `completed_by_evidence`       | Evidence-based completion                       |
+| `retry_requested_by_owner`    | Owner requested retry                           |
+| `failed_verification`         | Verification explicitly failed                  |
+| `failed_owner_decision`       | Owner rejected the step                         |
+| `failed_no_evidence`          | No verification, no owner decision, no evidence |
 
 **Review parsing is tolerant:** The runner accepts semantically equivalent outputs like "Approved", "Complete", "LGTM" — not just exact `REVIEW_DECISION: APPROVE` strings.
 
@@ -288,80 +295,80 @@ The `swarm.pattern` field controls how agents are coordinated:
 
 ### Core Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `dag` | Directed acyclic graph — steps run based on dependency edges (default) |
-| `fan-out` | All agents run in parallel |
-| `pipeline` | Sequential chaining of steps |
-| `hub-spoke` | Central hub coordinates spoke agents |
-| `consensus` | Agents vote on decisions |
-| `mesh` | Full communication graph between agents |
-| `handoff` | Sequential handoff between agents |
-| `cascade` | Waterfall with phase gates |
-| `debate` | Agents propose and counter-argue |
-| `hierarchical` | Multi-level reporting structure |
+| Pattern        | Description                                                            |
+| -------------- | ---------------------------------------------------------------------- |
+| `dag`          | Directed acyclic graph — steps run based on dependency edges (default) |
+| `fan-out`      | All agents run in parallel                                             |
+| `pipeline`     | Sequential chaining of steps                                           |
+| `hub-spoke`    | Central hub coordinates spoke agents                                   |
+| `consensus`    | Agents vote on decisions                                               |
+| `mesh`         | Full communication graph between agents                                |
+| `handoff`      | Sequential handoff between agents                                      |
+| `cascade`      | Waterfall with phase gates                                             |
+| `debate`       | Agents propose and counter-argue                                       |
+| `hierarchical` | Multi-level reporting structure                                        |
 
 ### Data Processing Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `map-reduce` | Split work into chunks (mappers), process in parallel, aggregate results (reducers) |
-| `scatter-gather` | Fan out requests to workers, collect and synthesize responses |
+| Pattern          | Description                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `map-reduce`     | Split work into chunks (mappers), process in parallel, aggregate results (reducers) |
+| `scatter-gather` | Fan out requests to workers, collect and synthesize responses                       |
 
 ### Supervision & Quality Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `supervisor` | Monitor agent monitors workers, restarts on failure, manages health |
+| Pattern      | Description                                                               |
+| ------------ | ------------------------------------------------------------------------- |
+| `supervisor` | Monitor agent monitors workers, restarts on failure, manages health       |
 | `reflection` | Agent produces output, critic reviews and provides feedback for iteration |
-| `verifier` | Producer agents submit work to verifier agents for validation |
+| `verifier`   | Producer agents submit work to verifier agents for validation             |
 
 ### Adversarial & Validation Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `red-team` | Attacker agents probe for weaknesses, defender agents respond |
-| `auction` | Auctioneer broadcasts tasks, agents bid based on capability/cost |
+| Pattern    | Description                                                      |
+| ---------- | ---------------------------------------------------------------- |
+| `red-team` | Attacker agents probe for weaknesses, defender agents respond    |
+| `auction`  | Auctioneer broadcasts tasks, agents bid based on capability/cost |
 
 ### Resilience Patterns
 
-| Pattern | Description |
-|---------|-------------|
-| `escalation` | Start with fast/cheap agents, escalate to more capable on failure |
-| `saga` | Distributed transactions with compensating actions on failure |
-| `circuit-breaker` | Primary agent with fallback chain, fail fast and recover |
+| Pattern           | Description                                                       |
+| ----------------- | ----------------------------------------------------------------- |
+| `escalation`      | Start with fast/cheap agents, escalate to more capable on failure |
+| `saga`            | Distributed transactions with compensating actions on failure     |
+| `circuit-breaker` | Primary agent with fallback chain, fail fast and recover          |
 
 ### Collaborative Patterns
 
-| Pattern | Description |
-|---------|-------------|
+| Pattern      | Description                                                          |
+| ------------ | -------------------------------------------------------------------- |
 | `blackboard` | Shared workspace where agents contribute incrementally to a solution |
-| `swarm` | Emergent behavior from simple agent rules (neighbor communication) |
+| `swarm`      | Emergent behavior from simple agent rules (neighbor communication)   |
 
 ### Auto-Selection by Role
 
 When `swarm.pattern` is omitted, the coordinator auto-selects based on agent roles.
 Patterns are checked in priority order below (first match wins):
 
-| Priority | Pattern | Required Roles/Config |
-|----------|---------|----------------------|
-| 1 | `dag` | Steps with `dependsOn` |
-| 2 | `consensus` | Uses `coordination.consensusStrategy` config |
-| 3 | `map-reduce` | `mapper` + `reducer` |
-| 4 | `red-team` | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
-| 5 | `reflection` | `critic` |
-| 6 | `escalation` | `tier-1`, `tier-2`, etc. |
-| 7 | `auction` | `auctioneer` |
-| 8 | `saga` | `saga-orchestrator` OR `compensate-handler` |
-| 9 | `circuit-breaker` | `fallback`, `backup`, OR `primary` |
-| 10 | `blackboard` | `blackboard` OR `shared-workspace` |
-| 11 | `swarm` | `hive-mind` OR `swarm-agent` |
-| 12 | `verifier` | `verifier` |
-| 13 | `supervisor` | `supervisor` |
-| 14 | `hierarchical` | `lead` (with 4+ agents) |
-| 15 | `hub-spoke` | `hub` OR `coordinator` |
-| 16 | `pipeline` | Unique agents per step, 3+ steps |
-| 17 | `fan-out` | Default fallback |
+| Priority | Pattern           | Required Roles/Config                                    |
+| -------- | ----------------- | -------------------------------------------------------- |
+| 1        | `dag`             | Steps with `dependsOn`                                   |
+| 2        | `consensus`       | Uses `coordination.consensusStrategy` config             |
+| 3        | `map-reduce`      | `mapper` + `reducer`                                     |
+| 4        | `red-team`        | (`attacker` OR `red-team`) + (`defender` OR `blue-team`) |
+| 5        | `reflection`      | `critic`                                                 |
+| 6        | `escalation`      | `tier-1`, `tier-2`, etc.                                 |
+| 7        | `auction`         | `auctioneer`                                             |
+| 8        | `saga`            | `saga-orchestrator` OR `compensate-handler`              |
+| 9        | `circuit-breaker` | `fallback`, `backup`, OR `primary`                       |
+| 10       | `blackboard`      | `blackboard` OR `shared-workspace`                       |
+| 11       | `swarm`           | `hive-mind` OR `swarm-agent`                             |
+| 12       | `verifier`        | `verifier`                                               |
+| 13       | `supervisor`      | `supervisor`                                             |
+| 14       | `hierarchical`    | `lead` (with 4+ agents)                                  |
+| 15       | `hub-spoke`       | `hub` OR `coordinator`                                   |
+| 16       | `pipeline`        | Unique agents per step, 3+ steps                         |
+| 17       | `fan-out`         | Default fallback                                         |
 
 ## Error Handling
 
@@ -371,20 +378,20 @@ Patterns are checked in priority order below (first match wins):
 steps:
   - name: risky-step
     agent: worker
-    task: "Do something that might fail"
-    retries: 3          # Retry up to 3 times on failure
-    timeoutMs: 300000   # 5 minute timeout
+    task: 'Do something that might fail'
+    retries: 3 # Retry up to 3 times on failure
+    timeoutMs: 300000 # 5 minute timeout
 ```
 
 ### Workflow-Level
 
 The `onError` field on a workflow controls what happens when a step fails:
 
-| Value | Behavior |
-|-------|----------|
-| `fail` / `fail-fast` | Stop immediately, skip downstream steps |
-| `skip` / `continue` | Skip downstream dependents, continue independent steps |
-| `retry` | Retry the step; deterministic gates ask a workflow agent to repair before each retry when an agent is available |
+| Value                | Behavior                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `fail` / `fail-fast` | Stop immediately, skip downstream steps                                                                         |
+| `skip` / `continue`  | Skip downstream dependents, continue independent steps                                                          |
+| `retry`              | Retry the step; deterministic gates ask a workflow agent to repair before each retry when an agent is available |
 
 ### Global
 
@@ -404,19 +411,19 @@ Retry-mode workflows are repair-aware by default. Deterministic step failures, v
 
 Six pre-built workflow templates are included:
 
-| Template | Pattern | Description |
-|----------|---------|-------------|
-| `feature-dev` | hub-spoke | Plan, implement, review, and finalize a feature |
-| `bug-fix` | hub-spoke | Investigate, patch, validate, and document a bug fix |
-| `code-review` | fan-out | Parallel multi-reviewer assessment with consolidated findings |
-| `security-audit` | pipeline | Scan, triage, remediate, and verify security issues |
-| `refactor` | hierarchical | Analyze, plan, execute, and validate a refactor |
-| `documentation` | handoff | Research, draft, review, and publish documentation |
+| Template         | Pattern      | Description                                                   |
+| ---------------- | ------------ | ------------------------------------------------------------- |
+| `feature-dev`    | hub-spoke    | Plan, implement, review, and finalize a feature               |
+| `bug-fix`        | hub-spoke    | Investigate, patch, validate, and document a bug fix          |
+| `code-review`    | fan-out      | Parallel multi-reviewer assessment with consolidated findings |
+| `security-audit` | pipeline     | Scan, triage, remediate, and verify security issues           |
+| `refactor`       | hierarchical | Analyze, plan, execute, and validate a refactor               |
+| `documentation`  | handoff      | Research, draft, review, and publish documentation            |
 
 ### Using Templates
 
 ```typescript
-import { TemplateRegistry } from "@agent-relay/sdk/workflows";
+import { TemplateRegistry } from '@agent-relay/sdk/workflows';
 
 const registry = new TemplateRegistry();
 
@@ -424,17 +431,14 @@ const registry = new TemplateRegistry();
 const templates = await registry.listTemplates();
 
 // Load and run a template
-const config = await registry.loadTemplate("feature-dev");
+const config = await registry.loadTemplate('feature-dev');
 const runner = new WorkflowRunner();
 const result = await runner.execute(config, undefined, {
-  task: "Add WebSocket support to the API",
+  task: 'Add WebSocket support to the API',
 });
 
 // Install a custom template from a URL
-await registry.installExternalTemplate(
-  "https://example.com/my-template.yaml",
-  "my-template"
-);
+await registry.installExternalTemplate('https://example.com/my-template.yaml', 'my-template');
 ```
 
 ## TypeScript Builder API
@@ -442,50 +446,50 @@ await registry.installExternalTemplate(
 The builder constructs a `RelayYamlConfig` object and can run it, export it as YAML, or return the raw config.
 
 ```typescript
-import { workflow } from "@agent-relay/sdk/workflows";
+import { workflow } from '@agent-relay/sdk/workflows';
 
 // Build and run
-const result = await workflow("my-workflow")
-  .pattern("dag")
+const result = await workflow('my-workflow')
+  .pattern('dag')
   .maxConcurrency(3)
   .timeout(60 * 60 * 1000)
-  .channel("my-channel")
-  .agent("backend", {
-    cli: "claude",
-    role: "Backend engineer",
-    model: "opus",
+  .channel('my-channel')
+  .agent('backend', {
+    cli: 'claude',
+    role: 'Backend engineer',
+    model: 'opus',
     retries: 2,
   })
-  .agent("frontend", {
-    cli: "codex",
-    role: "Frontend engineer",
-    interactive: false,       // Non-interactive subprocess mode
+  .agent('frontend', {
+    cli: 'codex',
+    role: 'Frontend engineer',
+    interactive: false, // Non-interactive subprocess mode
   })
-  .step("api", {
-    agent: "backend",
-    task: "Build REST API",
-    verification: { type: "output_contains", value: "API_READY" },
+  .step('api', {
+    agent: 'backend',
+    task: 'Build REST API',
+    verification: { type: 'output_contains', value: 'API_READY' },
   })
-  .step("ui", {
-    agent: "frontend",
-    task: "Build the UI",
-    dependsOn: ["api"],
+  .step('ui', {
+    agent: 'frontend',
+    task: 'Build the UI',
+    dependsOn: ['api'],
   })
-  .onError("retry", { maxRetries: 2, retryDelayMs: 5000 })
+  .onError('retry', { maxRetries: 2, retryDelayMs: 5000 })
   .run();
 
 // Or export to YAML
-const yaml = workflow("my-workflow")
-  .pattern("dag")
-  .agent("worker", { cli: "claude" })
-  .step("task1", { agent: "worker", task: "Do something" })
+const yaml = workflow('my-workflow')
+  .pattern('dag')
+  .agent('worker', { cli: 'claude' })
+  .step('task1', { agent: 'worker', task: 'Do something' })
   .toYaml();
 
 // Or get the raw config object
-const config = workflow("my-workflow")
-  .pattern("dag")
-  .agent("worker", { cli: "claude" })
-  .step("task1", { agent: "worker", task: "Do something" })
+const config = workflow('my-workflow')
+  .pattern('dag')
+  .agent('worker', { cli: 'claude' })
+  .step('task1', { agent: 'worker', task: 'Do something' })
   .toConfig();
 ```
 
@@ -541,11 +545,11 @@ config = (
 For full control, use the `WorkflowRunner` directly:
 
 ```typescript
-import { WorkflowRunner } from "@agent-relay/sdk/workflows";
+import { WorkflowRunner } from '@agent-relay/sdk/workflows';
 
 const runner = new WorkflowRunner({
-  cwd: "/path/to/project",       // Working directory (default: process.cwd())
-  relay: { port: 3000 },         // AgentRelay options (optional)
+  cwd: '/path/to/project', // Working directory (default: process.cwd())
+  relay: { port: 3000 }, // AgentRelay options (optional)
 });
 
 // Listen to events (broker:event fires frequently — filter it out for cleaner output)
@@ -555,9 +559,9 @@ runner.on((event) => {
 });
 
 // Parse and execute
-const config = await runner.parseYamlFile("workflow.yaml");
-const run = await runner.execute(config, "workflow-name", {
-  task: "Build the feature",
+const config = await runner.parseYamlFile('workflow.yaml');
+const run = await runner.execute(config, 'workflow-name', {
+  task: 'Build the feature',
 });
 
 // Pause / resume / abort
@@ -572,11 +576,11 @@ const resumed = await runner.resume(run.id);
 ### Zero-Config Convenience Function
 
 ```typescript
-import { runWorkflow } from "@agent-relay/sdk/workflows";
+import { runWorkflow } from '@agent-relay/sdk/workflows';
 
-const result = await runWorkflow("workflow.yaml", {
-  workflow: "deploy",
-  vars: { environment: "staging" },
+const result = await runWorkflow('workflow.yaml', {
+  workflow: 'deploy',
+  vars: { environment: 'staging' },
   onEvent: (event) => {
     if (event.type !== 'broker:event') console.log(event.type);
   },
@@ -595,7 +599,7 @@ coordination:
     - name: all-reviews-done
       waitFor: [review-arch, review-security, review-correctness]
       timeoutMs: 900000
-  consensusStrategy: majority    # majority | unanimous | quorum
+  consensusStrategy: majority # majority | unanimous | quorum
 ```
 
 ### Shared State
@@ -604,22 +608,22 @@ Agents can share state during execution:
 
 ```yaml
 state:
-  backend: memory    # memory | redis | database
+  backend: memory # memory | redis | database
   ttlMs: 86400000
   namespace: my-workflow
 ```
 
 ## Supported Agent CLIs
 
-| CLI | Description |
-|-----|-------------|
-| `claude` | Claude Code (Anthropic) |
-| `codex` | Codex CLI (OpenAI) |
-| `gemini` | Gemini CLI (Google) |
-| `aider` | Aider coding assistant |
-| `goose` | Goose AI assistant |
-| `opencode` | OpenCode CLI |
-| `droid` | Droid CLI |
+| CLI        | Description             |
+| ---------- | ----------------------- |
+| `claude`   | Claude Code (Anthropic) |
+| `codex`    | Codex CLI (OpenAI)      |
+| `gemini`   | Gemini CLI (Google)     |
+| `aider`    | Aider coding assistant  |
+| `goose`    | Goose AI assistant      |
+| `opencode` | OpenCode CLI            |
+| `droid`    | Droid CLI               |
 
 ## Non-Interactive Agents
 
@@ -631,55 +635,55 @@ By default, agents run in interactive PTY mode with full relay messaging. For wo
 agents:
   - name: lead
     cli: claude
-    role: "Coordinates work"
+    role: 'Coordinates work'
     # interactive: true (default) — full PTY, relay messaging, /exit detection
 
   - name: worker
     cli: codex
-    role: "Executes tasks"
-    interactive: false    # Runs "codex exec <task>", captures stdout
+    role: 'Executes tasks'
+    interactive: false # Runs "codex exec <task>", captures stdout
 ```
 
 ### TypeScript
 
 ```typescript
-workflow("fan-out-analysis")
-  .pattern("fan-out")
-  .agent("lead", { cli: "claude", role: "Coordinator" })
-  .agent("worker-1", { cli: "codex", interactive: false, role: "Analyst" })
-  .agent("worker-2", { cli: "codex", interactive: false, role: "Analyst" })
-  .step("analyze-1", { agent: "worker-1", task: "Analyze module A" })
-  .step("analyze-2", { agent: "worker-2", task: "Analyze module B" })
-  .step("synthesize", {
-    agent: "lead",
-    task: "Combine: {{steps.analyze-1.output}} + {{steps.analyze-2.output}}",
-    dependsOn: ["analyze-1", "analyze-2"],
+workflow('fan-out-analysis')
+  .pattern('fan-out')
+  .agent('lead', { cli: 'claude', role: 'Coordinator' })
+  .agent('worker-1', { cli: 'codex', interactive: false, role: 'Analyst' })
+  .agent('worker-2', { cli: 'codex', interactive: false, role: 'Analyst' })
+  .step('analyze-1', { agent: 'worker-1', task: 'Analyze module A' })
+  .step('analyze-2', { agent: 'worker-2', task: 'Analyze module B' })
+  .step('synthesize', {
+    agent: 'lead',
+    task: 'Combine: {{steps.analyze-1.output}} + {{steps.analyze-2.output}}',
+    dependsOn: ['analyze-1', 'analyze-2'],
   })
   .run();
 ```
 
 ### How It Works
 
-| Aspect | Interactive (default) | Non-Interactive |
-|--------|----------------------|-----------------|
-| Execution | Full PTY with stdin/stdout | `child_process.spawn()` with piped stdio |
-| CLI invocation | Standard interactive session | One-shot mode (`claude -p`, `codex exec`, etc.) |
-| Relay messaging | Can send/receive messages | No messaging — excluded from topology edges |
-| Self-termination | Must output `/exit` | Process exits naturally when done |
-| Output capture | PTY output buffer | stdout capture |
-| Overhead | Higher (PTY, echo verification, SIGWINCH) | Lower (simple subprocess) |
+| Aspect           | Interactive (default)                     | Non-Interactive                                 |
+| ---------------- | ----------------------------------------- | ----------------------------------------------- |
+| Execution        | Full PTY with stdin/stdout                | `child_process.spawn()` with piped stdio        |
+| CLI invocation   | Standard interactive session              | One-shot mode (`claude -p`, `codex exec`, etc.) |
+| Relay messaging  | Can send/receive messages                 | No messaging — excluded from topology edges     |
+| Self-termination | Must output `/exit`                       | Process exits naturally when done               |
+| Output capture   | PTY output buffer                         | stdout capture                                  |
+| Overhead         | Higher (PTY, echo verification, SIGWINCH) | Lower (simple subprocess)                       |
 
 ### Non-Interactive CLI Commands
 
-| CLI | Command | Notes |
-|-----|---------|-------|
-| `claude` | `claude -p "<task>"` | Print mode, exits after response |
-| `codex` | `codex exec "<task>"` | One-shot execution |
-| `gemini` | `gemini -p "<task>"` | Prompt mode |
-| `opencode` | `opencode --prompt "<task>"` | One-shot prompt |
-| `droid` | `droid exec "<task>"` | One-shot execution |
-| `aider` | `aider --message "<task>" --yes-always --no-git` | Auto-approve, skip git |
-| `goose` | `goose run --text "<task>" --no-session` | Text mode, no session file |
+| CLI        | Command                                          | Notes                            |
+| ---------- | ------------------------------------------------ | -------------------------------- |
+| `claude`   | `claude -p "<task>"`                             | Print mode, exits after response |
+| `codex`    | `codex exec "<task>"`                            | One-shot execution               |
+| `gemini`   | `gemini -p "<task>"`                             | Prompt mode                      |
+| `opencode` | `opencode --prompt "<task>"`                     | One-shot prompt                  |
+| `droid`    | `droid exec "<task>"`                            | One-shot execution               |
+| `aider`    | `aider --message "<task>" --yes-always --no-git` | Auto-approve, skip git           |
+| `goose`    | `goose run --text "<task>" --no-session`         | Text mode, no session file       |
 
 ### When to Use
 
@@ -736,9 +740,9 @@ Add `idleNudge` to your swarm config:
 swarm:
   pattern: hub-spoke
   idleNudge:
-    nudgeAfterMs: 120000      # 2 min before first nudge (default)
-    escalateAfterMs: 120000   # 2 min after nudge before force-release (default)
-    maxNudges: 1              # Nudges before escalation (default)
+    nudgeAfterMs: 120000 # 2 min before first nudge (default)
+    escalateAfterMs: 120000 # 2 min after nudge before force-release (default)
+    maxNudges: 1 # Nudges before escalation (default)
 ```
 
 All built-in templates include idle nudging with these defaults.
@@ -754,9 +758,9 @@ All built-in templates include idle nudging with these defaults.
 
 The runner emits two new events for idle nudging:
 
-| Event | Description |
-|-------|-------------|
-| `step:nudged` | Fired when a nudge message is sent to an idle agent |
+| Event                 | Description                                                   |
+| --------------------- | ------------------------------------------------------------- |
+| `step:nudged`         | Fired when a nudge message is sent to an idle agent           |
 | `step:force-released` | Fired when an agent is force-released after exhausting nudges |
 
 ## Automatic Step Owner and Review

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   buildModelArgs,
@@ -9,7 +9,9 @@ import {
 import { WorkflowBuilder } from '../builder.js';
 import { buildCommand } from '../process-spawner.js';
 import { WorkflowRunner } from '../runner.js';
+import type { HarnessRuntimeAdapter } from '../../harness-runtime.js';
 import type { ProcessBackend } from '../types.js';
+import type { CLIHarnessAdapter } from '../../cli-registry.js';
 
 const registrySnapshot = snapshotHarnessAdapters();
 
@@ -25,6 +27,22 @@ describe('workflow harness adapters', () => {
       '--dangerously-bypass-approvals-and-sandbox',
       'do the work',
     ]);
+  });
+
+  it('types CLI adapters separately from runtime harness adapters', () => {
+    const cliAdapter: CLIHarnessAdapter = {
+      binary: 'unit-agent',
+      nonInteractiveArgs: ['run', '{task}'],
+    };
+    const runtimeAdapter: HarnessRuntimeAdapter = {
+      kind: 'http',
+      initHarness: async () => ({ sessionId: 's1', pid: 123 }),
+      receiveMessage: async () => undefined,
+      sendMessage: async () => undefined,
+    };
+
+    expectTypeOf(cliAdapter).toMatchTypeOf<CLIHarnessAdapter>();
+    expectTypeOf(runtimeAdapter).toMatchTypeOf<HarnessRuntimeAdapter>();
   });
 
   it('lets SDK callers register a harness command adapter', () => {

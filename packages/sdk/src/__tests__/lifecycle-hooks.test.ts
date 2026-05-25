@@ -71,6 +71,24 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(captures[0].path).toBe('/api/spawn');
   });
 
+  it('preserves broker spawn pid in the result and afterAgentSpawn context', async () => {
+    const { fetchFn } = makeMockFetch([
+      () => ({ name: 'agent-pid', runtime: 'pty', sessionId: 'session-1', pid: 4242 }),
+    ]);
+    const client = makeClient(fetchFn);
+    const after = vi.fn();
+    client.addListener('afterAgentSpawn', after);
+
+    const result = await client.spawnPty({ name: 'agent-pid', cli: 'codex' });
+
+    expect(result).toEqual({ name: 'agent-pid', runtime: 'pty', sessionId: 'session-1', pid: 4242 });
+    expect(after).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: { name: 'agent-pid', runtime: 'pty', sessionId: 'session-1', pid: 4242 },
+      })
+    );
+  });
+
   it('folds beforeAgentSpawn patches into resolvedInput before POST', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);

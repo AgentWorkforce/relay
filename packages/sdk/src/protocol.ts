@@ -404,6 +404,7 @@ export type BrokerEvent =
       cli?: string;
       model?: string;
       sessionId?: string;
+      pid?: number;
     }
   | {
       kind: 'worker_error';
@@ -511,7 +512,7 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider };
+      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; pid?: number };
     }
   | {
       type: 'delivery_ack';

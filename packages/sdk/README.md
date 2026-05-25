@@ -75,6 +75,10 @@ await customRelay.spawn('QwenWorker', 'qwen', 'Review the diff', {
   model: 'qwen3-coder',
 });
 
+// Spawn results expose broker-controlled process metadata
+const localAgent = await customRelay.spawn('LocalWorker', 'codex', 'Plan the change');
+console.log(localAgent.sessionId, localAgent.pid);
+
 // Wait for agent to finish (go idle or exit)
 const result = await agent.waitForIdle(120_000);
 

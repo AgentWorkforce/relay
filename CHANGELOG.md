@@ -10,13 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
-- `@agent-relay/sdk`: spawn calls and workflow configs can declare harness adapters so custom agent CLIs define their own binaries, interactive/non-interactive argument templates, model flags, and process behavior without Relay changes; built-in coding harnesses now use the same serializable config shape by default.
+- `@agent-relay/sdk`: spawn calls and workflow configs can declare `CLIHarnessAdapter` configs so custom agent CLIs define their own binaries, interactive/non-interactive argument templates, model flags, and process behavior without Relay changes; built-in coding harnesses now use the same serializable config shape by default.
+- `@agent-relay/sdk`: `HarnessRuntimeAdapter` types define the lifecycle surface for non-CLI harness control boundaries such as stdio or HTTP adapters.
 
 ### Changed
 
 - `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
 - `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
 - `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
+- `@agent-relay/sdk`: facade agent handles and spawn lifecycle hooks now expose the broker-returned spawn `pid`.
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
 
 ### Fixed

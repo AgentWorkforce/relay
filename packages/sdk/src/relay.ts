@@ -270,6 +270,7 @@ export interface SpawnLifecycleContext {
 export interface SpawnLifecycleSuccessContext extends SpawnLifecycleContext {
   runtime: AgentRuntime;
   sessionId?: string;
+  pid?: number;
 }
 
 export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
@@ -370,6 +371,7 @@ export interface Agent<TAgentResult = unknown> {
   readonly name: string;
   readonly runtime: AgentRuntime;
   readonly sessionId?: string;
+  readonly pid?: number;
   readonly channels: string[];
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
@@ -502,6 +504,7 @@ type OutputListener = {
 type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
   _setSessionId: (sessionId: string) => void;
+  _setPid: (pid: number) => void;
 };
 
 type InternalAgentResultContract<T = unknown> = {
@@ -882,7 +885,8 @@ export class AgentRelay {
       result.name,
       result.runtime,
       channels,
-      result.sessionId
+      result.sessionId,
+      result.pid
     ) as Agent<TAgentResult>;
     this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
@@ -892,6 +896,7 @@ export class AgentRelay {
         name: result.name,
         runtime: result.runtime,
         sessionId: result.sessionId,
+        pid: result.pid,
       },
       `spawnPty("${input.name}") onSuccess`
     );
@@ -1157,9 +1162,12 @@ export class AgentRelay {
         if (entry.sessionId) {
           (existing as InternalAgent)._setSessionId(entry.sessionId);
         }
+        if (entry.pid !== undefined) {
+          (existing as InternalAgent)._setPid(entry.pid);
+        }
         return existing;
       }
-      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry.sessionId);
+      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry.sessionId, entry.pid);
       this.knownAgents.set(agent.name, agent);
       return agent;
     });
@@ -1449,16 +1457,20 @@ export class AgentRelay {
     name: string,
     runtime: AgentRuntime = 'pty',
     channels: string[] = [],
-    sessionId?: string
+    sessionId?: string,
+    pid?: number
   ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
       if (sessionId) {
         (existing as InternalAgent)._setSessionId(sessionId);
       }
+      if (pid !== undefined) {
+        (existing as InternalAgent)._setPid(pid);
+      }
       return existing;
     }
-    const agent = this.makeAgent(name, runtime, channels, sessionId);
+    const agent = this.makeAgent(name, runtime, channels, sessionId, pid);
     this.knownAgents.set(name, agent);
     return agent;
   }
@@ -1741,7 +1753,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_spawned': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId, event.pid);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
@@ -1802,7 +1814,7 @@ export class AgentRelay {
           break;
         }
         case 'worker_ready': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId, event.pid);
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
@@ -2047,17 +2059,22 @@ export class AgentRelay {
     name: string,
     runtime: AgentRuntime,
     channels: string[],
-    sessionId?: string
+    sessionId?: string,
+    pid?: number
   ): Agent<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
     let agentSessionId = sessionId;
+    let agentPid = pid;
     const agent: InternalAgent = {
       name,
       runtime,
       get sessionId() {
         return agentSessionId;
+      },
+      get pid() {
+        return agentPid;
       },
       get channels() {
         return [...agentChannels];
@@ -2271,6 +2288,9 @@ export class AgentRelay {
       _setSessionId(nextSessionId: string) {
         agentSessionId = nextSessionId;
       },
+      _setPid(nextPid: number) {
+        agentPid = nextPid;
+      },
     };
     return agent;
   }
@@ -2356,7 +2376,8 @@ export class AgentRelay {
           result.name,
           result.runtime,
           channels,
-          result.sessionId
+          result.sessionId,
+          result.pid
         ) as Agent<TAgentResult>;
         this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
@@ -2366,6 +2387,7 @@ export class AgentRelay {
             name: result.name,
             runtime: result.runtime,
             sessionId: result.sessionId,
+            pid: result.pid,
           },
           `spawn("${name}") onSuccess`
         );

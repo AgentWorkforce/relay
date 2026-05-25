@@ -53,8 +53,19 @@ export {
   getHarnessAdapter,
   registerHarnessAdapter,
   registerHarnessAdapters,
+  type CLIHarnessAdapter,
   type HarnessAdapter,
 } from '../cli-registry.js';
+export type {
+  HarnessInitContext,
+  HarnessInitResult,
+  HarnessMessageContext,
+  HarnessRegistrationContext,
+  HarnessRegistrationResult,
+  HarnessReleaseContext,
+  HarnessRelayMessage,
+  HarnessRuntimeAdapter,
+} from '../harness-runtime.js';
 export { applySiblingLinks, buildSiblingLinkScript } from './sibling-links.js';
 export type { SiblingLink, SiblingLinkOptions } from './sibling-links.js';
 export {

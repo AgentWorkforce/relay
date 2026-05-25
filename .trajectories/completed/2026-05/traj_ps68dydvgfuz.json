@@ -1,0 +1,53 @@
+{
+  "id": "traj_ps68dydvgfuz",
+  "version": 1,
+  "task": {
+    "title": "Add SDK harness adapter abstraction"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T14:04:38.337Z",
+  "completedAt": "2026-05-25T14:19:16.978Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T14:10:38.799Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ey367c3i3qdl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T14:10:38.799Z",
+      "endedAt": "2026-05-25T14:19:16.978Z",
+      "events": [
+        {
+          "ts": 1779718238800,
+          "type": "decision",
+          "content": "Split CLI harness config from runtime harness control types: Split CLI harness config from runtime harness control types",
+          "raw": {
+            "question": "Split CLI harness config from runtime harness control types",
+            "chosen": "Split CLI harness config from runtime harness control types",
+            "alternatives": [],
+            "reasoning": "The SDK already uses HarnessAdapter for serializable CLI command templates consumed by the Rust broker. A non-CLI harness needs a runtime contract over a serializable boundary, so this pass adds explicit runtime-facing types while preserving existing CLI registration behavior."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added SDK harness runtime adapter types, clarified CLI harness adapter naming, and propagated broker spawn pid through SDK spawn results, agent handles, lifecycle hooks, and worker_ready events.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "77dc58139ff2674c08aee13bdb2d3ae0db2201a8",
+    "endRef": "77dc58139ff2674c08aee13bdb2d3ae0db2201a8"
+  }
+}

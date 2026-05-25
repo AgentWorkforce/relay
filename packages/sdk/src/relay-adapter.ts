@@ -208,10 +208,12 @@ export class RelayAdapter {
       };
       const result = await client.spawnPty(input);
 
-      let pid: number | undefined;
+      let pid = result.pid;
       try {
-        const agents = await client.listAgents();
-        pid = agents.find((a) => a.name === req.name)?.pid;
+        if (pid === undefined) {
+          const agents = await client.listAgents();
+          pid = agents.find((a) => a.name === req.name)?.pid;
+        }
       } catch {
         // Non-fatal
       }
