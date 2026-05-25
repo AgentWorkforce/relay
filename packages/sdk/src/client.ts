@@ -118,6 +118,7 @@ export interface AgentRelaySpawnOptions {
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
+const optionalNumber = z.preprocess((value) => (value === null ? undefined : value), z.number().optional());
 
 export const SpawnAgentResultSchema = z
   .object({
@@ -125,7 +126,7 @@ export const SpawnAgentResultSchema = z
     name: z.string(),
     runtime: z.enum(['pty', 'headless']),
     model: z.string().nullable().optional(),
-    pid: z.number().optional(),
+    pid: optionalNumber,
     pre_registered: z.boolean().optional(),
     warning: z.string().nullable().optional(),
     sessionId: optionalString,

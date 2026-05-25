@@ -1,0 +1,53 @@
+{
+  "id": "traj_l67sex3nkzfq",
+  "version": 1,
+  "task": {
+    "title": "Fix failing harness PR e2e tests"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T23:22:50.714Z",
+  "completedAt": "2026-05-25T23:32:19.352Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T23:32:15.085Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8194bsxpmfsk",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T23:32:15.085Z",
+      "endedAt": "2026-05-25T23:32:19.352Z",
+      "events": [
+        {
+          "ts": 1779751935086,
+          "type": "decision",
+          "content": "Normalize null spawn pid in SDK schema: Normalize null spawn pid in SDK schema",
+          "raw": {
+            "question": "Normalize null spawn pid in SDK schema",
+            "chosen": "Normalize null spawn pid in SDK schema",
+            "alternatives": [],
+            "reasoning": "CI showed /api/spawn can return pid:null before the PTY worker emits worker_ready with the harness PID; the SDK public type already treats pid as optional, so null should parse as undefined like sessionId."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed the SDK spawn result schema so broker pid:null responses parse as undefined, added a regression test, and validated SDK checks/build plus daemon-only E2E smoke.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "af884f5961dbc9a62b751e2d29994e5755cc3552",
+    "endRef": "af884f5961dbc9a62b751e2d29994e5755cc3552"
+  }
+}

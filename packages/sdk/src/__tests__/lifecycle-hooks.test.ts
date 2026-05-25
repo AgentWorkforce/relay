@@ -87,6 +87,15 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(result.sessionId).toBeUndefined();
   });
 
+  it('normalizes null spawn pid to undefined', async () => {
+    const { fetchFn } = makeMockFetch([() => ({ name: 'agent-null-pid', runtime: 'pty', pid: null })]);
+    const client = makeClient(fetchFn);
+
+    const result = await client.spawnPty({ name: 'agent-null-pid', cli: 'claude' });
+
+    expect(result.pid).toBeUndefined();
+  });
+
   it('folds beforeAgentSpawn patches into resolvedInput before POST', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
