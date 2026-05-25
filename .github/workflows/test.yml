@@ -129,6 +129,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Check formatting
+        run: npm run format:check
+
   rust-test:
     name: Rust Tests (agent-relay-broker)
     needs: changes
