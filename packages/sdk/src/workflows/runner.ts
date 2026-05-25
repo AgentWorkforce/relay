@@ -28,14 +28,7 @@ import { parse as parseYaml } from 'yaml';
 import { stripAnsi as stripAnsiFn } from '../pty.js';
 import type { BrokerEvent } from '../protocol.js';
 import { resolveSpawnPolicy } from '../spawn-from-env.js';
-import {
-  buildModelArgs,
-  getCliDefinition,
-  registerHarnessAdapters,
-  restoreHarnessAdapters,
-  snapshotHarnessAdapters,
-  type HarnessRegistrySnapshot,
-} from '../cli-registry.js';
+import { defineHarnessAdapter, getCliDefinition, type CliDefinition } from '../cli-registry.js';
 import { resolveCliSync } from '../cli-resolver.js';
 import {
   buildNormalizedProxyEnv,
@@ -449,6 +442,13 @@ function resolveCursorCli(): 'cursor-agent' | 'agent' {
   return (resolved?.binary as 'cursor-agent' | 'agent') ?? 'agent';
 }
 
+function normalizeWorkflowHarnessKey(cli: string): string | undefined {
+  const trimmed = cli.trim();
+  if (!trimmed) return undefined;
+  const base = (trimmed.includes(':') ? trimmed.split(':')[0] : trimmed).trim();
+  return base || undefined;
+}
+
 function getWorkflowSdkSpawner(relay: AgentRelay, cli: string): AgentSpawner | null {
   switch (cli) {
     case 'claude':
@@ -580,6 +580,12 @@ export class WorkflowRunner {
     if (!this.executor && this.processBackend) {
       this.executor = createProcessBackendExecutor(this.processBackend, {
         env: this.envSecrets,
+        buildCommand: (agentDef, resolvedTask) =>
+          this.buildWorkflowProcessCommand(
+            agentDef.cli,
+            this.buildWorkflowModelArgs(agentDef.cli, agentDef.constraints?.model),
+            resolvedTask
+          ),
       });
     }
     this.templateResolver = new TemplateResolver();
@@ -1750,7 +1756,7 @@ export class WorkflowRunner {
       return 'openai';
     }
 
-    const harnessProxyProvider = getCliDefinition(agentDef.cli)?.proxyProvider;
+    const harnessProxyProvider = this.getWorkflowCliDefinition(agentDef.cli)?.proxyProvider;
     if (
       harnessProxyProvider === 'openai' ||
       harnessProxyProvider === 'anthropic' ||
@@ -2095,20 +2101,72 @@ export class WorkflowRunner {
     return config;
   }
 
-  private installConfigHarnesses(config?: RelayYamlConfig): HarnessRegistrySnapshot {
-    const snapshot = snapshotHarnessAdapters();
-    try {
-      registerHarnessAdapters(this.harnesses);
-      registerHarnessAdapters(config?.harnesses);
-      return snapshot;
-    } catch (err) {
-      restoreHarnessAdapters(snapshot);
-      throw err;
+  private getScopedHarnessDefinition(
+    cli: string
+  ): { name: string; definition: HarnessDefinition } | undefined {
+    const base = normalizeWorkflowHarnessKey(cli);
+    if (!base) return undefined;
+
+    const harnessMaps = [this.currentConfig?.harnesses, this.harnesses, this.relayOptions.harnesses];
+    for (const harnesses of harnessMaps) {
+      if (!harnesses) continue;
+
+      const direct = harnesses[base];
+      if (direct) {
+        return { name: base, definition: direct };
+      }
+
+      for (const [name, definition] of Object.entries(harnesses)) {
+        for (const alias of definition.aliases ?? []) {
+          if (normalizeWorkflowHarnessKey(alias) === base) {
+            return { name, definition };
+          }
+        }
+      }
     }
+
+    return undefined;
   }
 
-  private restoreConfigHarnesses(snapshot: HarnessRegistrySnapshot): void {
-    restoreHarnessAdapters(snapshot);
+  private getScopedCliDefinition(cli: string): CliDefinition | undefined {
+    const match = this.getScopedHarnessDefinition(cli);
+    return match ? defineHarnessAdapter(match.name, match.definition) : undefined;
+  }
+
+  private getWorkflowCliDefinition(cli: string): CliDefinition | undefined {
+    return this.getScopedCliDefinition(cli) ?? getCliDefinition(cli);
+  }
+
+  private buildWorkflowModelArgs(cli: string, model: string | undefined): string[] {
+    if (!model) return [];
+    return this.getWorkflowCliDefinition(cli)?.modelArgs?.(model) ?? ['--model', model];
+  }
+
+  private buildWorkflowProcessCommand(cli: string, extraArgs: string[] = [], task: string): string[] {
+    if (cli === 'api') {
+      throw new Error('cli "api" uses direct API calls, not a subprocess command');
+    }
+
+    const scopedDefinition = this.getScopedCliDefinition(cli);
+    const resolvedCli = !scopedDefinition && cli === 'cursor' ? resolveCursorCli() : cli;
+    const definition = scopedDefinition ?? this.getWorkflowCliDefinition(resolvedCli);
+    if (!definition || definition.binaries.length === 0) {
+      throw new Error(`Unknown or non-executable CLI: ${resolvedCli}`);
+    }
+
+    return [definition.binaries[0], ...definition.nonInteractiveArgs(task, extraArgs)];
+  }
+
+  private buildWorkflowNonInteractiveCommand(
+    cli: string,
+    task: string,
+    extraArgs: string[] = []
+  ): { cmd: string; args: string[] } {
+    const [cmd, ...args] = this.buildWorkflowProcessCommand(cli, extraArgs, task);
+    return {
+      cmd,
+      args,
+    };
   }
 
   private normalizeLegacyPermissionConfig(config: RelayYamlConfig): RelayYamlConfig {
@@ -3165,10 +3223,7 @@ export class WorkflowRunner {
 
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
-    let harnessSnapshot: HarnessRegistrySnapshot | undefined;
-
     try {
-      harnessSnapshot = this.installConfigHarnesses(config);
       await this.updateRunStatus(runId, 'running');
       if (!isResume) {
         this.emit({ type: 'run:started', runId });
@@ -3548,9 +3603,6 @@ export class WorkflowRunner {
         });
       }
     } finally {
-      if (harnessSnapshot) {
-        this.restoreConfigHarnesses(harnessSnapshot);
-      }
       this.lastFailedStepOutput.clear();
       this.lastCustomVerificationFailure.clear();
       for (const stream of this.ptyLogStreams.values()) stream.end();
@@ -6486,7 +6538,7 @@ export class WorkflowRunner {
     timeoutMs?: number
   ): Promise<SpawnResult> {
     const agentName = `${step.name}-${this.generateShortId()}`;
-    const modelArgs = buildModelArgs(agentDef.cli, agentDef.constraints?.model);
+    const modelArgs = this.buildWorkflowModelArgs(agentDef.cli, agentDef.constraints?.model);
 
     // Append strict deliverable enforcement — non-interactive agents MUST produce
     // clear, structured output since there's no opportunity for follow-up or clarification.
@@ -6511,7 +6563,7 @@ export class WorkflowRunner {
       '- Skip steps or leave work incomplete\n' +
       '- Output only status messages without the actual deliverable content';
 
-    const { cmd, args } = WorkflowRunner.buildNonInteractiveCommand(
+    const { cmd, args } = this.buildWorkflowNonInteractiveCommand(
       agentDef.cli,
       taskWithDeliverable,
       modelArgs
@@ -6664,7 +6716,7 @@ export class WorkflowRunner {
             return;
           }
 
-          const cliDef = getCliDefinition(agentDef.cli);
+          const cliDef = this.getWorkflowCliDefinition(agentDef.cli);
           if (code !== 0 && code !== null && !cliDef?.ignoreExitCode) {
             const stderr = stderrChunks.join('');
             reject(

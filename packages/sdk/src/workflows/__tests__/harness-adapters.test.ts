@@ -9,6 +9,7 @@ import {
 import { WorkflowBuilder } from '../builder.js';
 import { buildCommand } from '../process-spawner.js';
 import { WorkflowRunner } from '../runner.js';
+import type { ProcessBackend } from '../types.js';
 
 const registrySnapshot = snapshotHarnessAdapters();
 
@@ -93,17 +94,81 @@ workflows:
     );
   });
 
+  it('uses workflow-scoped harnesses for process backend command resolution', async () => {
+    const commands: string[] = [];
+    const backend: ProcessBackend = {
+      async createEnvironment(label) {
+        return {
+          id: label,
+          homeDir: '/tmp',
+          async exec(command) {
+            commands.push(command);
+            return { output: 'done', exitCode: 0 };
+          },
+          async uploadFile() {},
+          async destroy() {},
+        };
+      },
+    };
+    const runner = new WorkflowRunner({ cwd: process.cwd(), processBackend: backend });
+    const config = runner.parseYamlString(`
+version: "1.0"
+name: yaml-harness-run
+trajectories: false
+swarm:
+  pattern: dag
+harnesses:
+  unit-harness-c:
+    binary: unit-c
+    nonInteractiveArgs: ["exec", "{task}", "{args}"]
+    modelArgs: ["--m", "{model}"]
+agents:
+  - name: worker
+    cli: unit-harness-c
+    interactive: false
+    constraints:
+      model: model-c
+workflows:
+  - name: main
+    steps:
+      - name: work
+        agent: worker
+        task: do it
+`);
+
+    await runner.execute(config);
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toContain('unit-c exec');
+    expect(commands[0]).toContain('--m model-c');
+    expect(buildModelArgs('unit-harness-c', 'model-c')).toEqual(['--model', 'model-c']);
+  });
+
   it('lets binary override inherited adapter binaries', () => {
-    registerHarnessAdapter('company-codex-wrapper', {
-      adapter: 'codex',
-      binary: 'company-codex',
+    registerHarnessAdapter('company-cursor-wrapper', {
+      adapter: 'cursor',
+      binary: 'company-cursor',
       searchPaths: ['~/company/bin'],
     });
 
-    expect(buildCommand('company-codex-wrapper', [], 'do the work')).toEqual([
-      'company-codex',
-      'exec',
-      '--dangerously-bypass-approvals-and-sandbox',
+    expect(buildCommand('company-cursor-wrapper', [], 'do the work')).toEqual([
+      'company-cursor',
+      '--force',
+      '-p',
+      'do the work',
+    ]);
+  });
+
+  it('ignores blank binary overrides when inheriting adapter binaries', () => {
+    registerHarnessAdapter('company-cursor-wrapper', {
+      adapter: 'cursor',
+      binary: '   ',
+    });
+
+    expect(buildCommand('company-cursor-wrapper', [], 'do the work')).toEqual([
+      'cursor-agent',
+      '--force',
+      '-p',
       'do the work',
     ]);
   });

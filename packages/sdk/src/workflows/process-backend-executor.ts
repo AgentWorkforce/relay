@@ -27,6 +27,8 @@ function commandToShell(argv: string[]): string {
 export interface ProcessBackendExecutorOptions {
   /** Env vars injected into every step (e.g. auth tokens, relayfile config). */
   env?: Record<string, string>;
+  /** Optional command builder for runner-scoped harness definitions. */
+  buildCommand?: (agentDef: AgentDefinition, task: string) => string[];
 }
 
 export function createProcessBackendExecutor(
@@ -49,8 +51,9 @@ export function createProcessBackendExecutor(
         );
       }
 
-      const extraArgs = buildModelArgs(agentDef.cli, agentDef.constraints?.model);
-      const argv = buildCommand(agentDef.cli, extraArgs, resolvedTask);
+      const argv =
+        options.buildCommand?.(agentDef, resolvedTask) ??
+        buildCommand(agentDef.cli, buildModelArgs(agentDef.cli, agentDef.constraints?.model), resolvedTask);
       const commandString = commandToShell(argv);
 
       const env = await backend.createEnvironment(step.name);

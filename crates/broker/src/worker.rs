@@ -1079,10 +1079,17 @@ fn merge_harness_definitions(
     base: HarnessDefinition,
     override_definition: HarnessDefinition,
 ) -> HarnessDefinition {
-    let overrides_binary = override_definition.binary.is_some();
+    let override_binary = override_definition.binary.and_then(|binary| {
+        if binary.trim().is_empty() {
+            None
+        } else {
+            Some(binary)
+        }
+    });
+    let overrides_binary = override_binary.is_some();
     HarnessDefinition {
         adapter: override_definition.adapter.or(base.adapter),
-        binary: override_definition.binary.or(base.binary),
+        binary: override_binary.or(base.binary),
         binaries: if override_definition.binaries.is_empty() {
             if overrides_binary {
                 Vec::new()
@@ -1824,6 +1831,25 @@ mod harness_adapter_tests {
 
         assert_eq!(harness.binary.as_deref(), Some("company-cursor"));
         assert!(harness.binaries.is_empty());
+    }
+
+    #[test]
+    fn blank_binary_override_does_not_clear_inherited_adapter_binaries() {
+        let harness = resolve_harness_definition(
+            "company-cursor",
+            Some(HarnessDefinition {
+                adapter: Some("cursor".to_string()),
+                binary: Some("   ".to_string()),
+                ..Default::default()
+            }),
+        )
+        .expect("custom cursor harness");
+
+        assert_eq!(harness.binary, None);
+        assert_eq!(
+            harness.binaries,
+            vec!["cursor-agent".to_string(), "agent".to_string()]
+        );
     }
 
     #[cfg(unix)]

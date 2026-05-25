@@ -181,16 +181,19 @@ function cloneHarnessDefinition(config: HarnessDefinition): HarnessDefinition {
 }
 
 function mergeHarnessDefinitions(base: HarnessDefinition, override: HarnessDefinition): HarnessDefinition {
+  const overrideBinary = override.binary?.trim() ? override.binary : undefined;
   return {
     ...cloneHarnessDefinition(base),
     ...cloneHarnessDefinition(override),
     adapter: override.adapter ?? base.adapter,
-    binary: override.binary ?? base.binary,
+    binary: overrideBinary ?? base.binary,
     ...(override.binaries
       ? { binaries: [...override.binaries] }
-      : base.binaries && override.binary === undefined
-        ? { binaries: [...base.binaries] }
-        : {}),
+      : overrideBinary !== undefined
+        ? { binaries: undefined }
+        : base.binaries
+          ? { binaries: [...base.binaries] }
+          : {}),
     ...(override.interactiveArgs
       ? { interactiveArgs: [...override.interactiveArgs] }
       : base.interactiveArgs
