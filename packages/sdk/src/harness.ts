@@ -81,21 +81,7 @@ export interface StaticHeadlessAppServerHarnessDefinition {
 }
 
 export type StaticHarnessDefinition = StaticPtyHarnessDefinition | StaticHeadlessAppServerHarnessDefinition;
-
-export interface HarnessResolveContext {
-  name: string;
-  cli: string;
-  task?: string;
-  args: string[];
-  model?: string;
-  cwd?: string;
-  env: Record<string, string>;
-}
-
-export type AttachedHarnessResolver = (
-  context: HarnessResolveContext
-) => ResolvedHarnessConfig | Promise<ResolvedHarnessConfig>;
-export type HarnessDefinition = StaticHarnessDefinition | AttachedHarnessResolver;
+export type HarnessDefinition = StaticHarnessDefinition;
 
 export interface ResolveStaticHarnessInput {
   name: string;
@@ -110,10 +96,6 @@ export interface ResolveStaticHarnessInput {
 
 const DEFAULT_PTY_ARGS = ['{args}'] as const;
 const DEFAULT_MODEL_ARGS = ['--model', '{model}'] as const;
-
-export function isAttachedHarnessResolver(value: HarnessDefinition): value is AttachedHarnessResolver {
-  return typeof value === 'function';
-}
 
 export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): ResolvedHarnessConfig {
   const { definition } = input;

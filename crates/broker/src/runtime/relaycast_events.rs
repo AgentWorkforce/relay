@@ -15,6 +15,7 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
+        let harness_configs = &self.harness_configs;
         let dm_participants_cache = &mut self.dm_participants_cache;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -204,6 +205,30 @@ impl BrokerRuntime {
                     let cli = event.agent.cli;
                     let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());
                     let channel = event.agent.channel;
+                    let harness_config =
+                        match relaycast_harness_config_selection(&ws_value, harness_configs) {
+                            Ok(config) => config,
+                            Err(error) => {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "rejecting relaycast spawn with invalid harness selection"
+                                );
+                                eprintln!(
+                                    "[agent-relay] rejecting spawn request for '{}': {}",
+                                    name, error
+                                );
+                                return;
+                            }
+                        };
+                    let runtime = harness_config
+                        .as_ref()
+                        .map(ResolvedHarnessConfig::runtime)
+                        .unwrap_or(AgentRuntime::Pty);
+                    let session_id = harness_config
+                        .as_ref()
+                        .and_then(ResolvedHarnessConfig::session_id)
+                        .map(ToOwned::to_owned);
 
                     tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
                     let channels = channel
@@ -218,11 +243,11 @@ impl BrokerRuntime {
                         .unwrap_or_else(default_spawn_channels);
                     let spec = AgentSpec {
                         name: name.clone(),
-                        runtime: AgentRuntime::Pty,
+                        runtime: runtime.clone(),
                         provider: None,
                         cli: Some(cli.clone()),
-                        session_id: None,
-                        harness_config: None,
+                        session_id,
+                        harness_config,
                         model: None,
                         cwd: None,
                         team: None,
@@ -311,7 +336,7 @@ impl BrokerRuntime {
                             state.agents.insert(
                                 name.clone(),
                                 broker::PersistedAgent {
-                                    runtime: AgentRuntime::Pty,
+                                    runtime: effective_spec.runtime.clone(),
                                     parent: Some("Relaycast".to_string()),
                                     channels,
                                     pid: workers.worker_pid(&name),
@@ -334,7 +359,7 @@ impl BrokerRuntime {
                                 json!({
                                     "kind": "agent_spawned",
                                     "name": name,
-                                    "runtime": "pty",
+                                    "runtime": runtime_label(&effective_spec.runtime),
                                     "cli": cli,
                                     "model": effective_spec.model.clone(),
                                     "pid": pid,
@@ -428,13 +453,39 @@ impl BrokerRuntime {
                                 chs
                             })
                             .unwrap_or_else(default_spawn_channels);
+                        let harness_config = match relaycast_harness_config_selection(
+                            &ws_value,
+                            harness_configs,
+                        ) {
+                            Ok(config) => config,
+                            Err(error) => {
+                                tracing::warn!(
+                                    worker = %name,
+                                    error = %error,
+                                    "rejecting relaycast fallback spawn with invalid harness selection"
+                                );
+                                eprintln!(
+                                    "[agent-relay] rejecting spawn request for '{}': {}",
+                                    name, error
+                                );
+                                return;
+                            }
+                        };
+                        let runtime = harness_config
+                            .as_ref()
+                            .map(ResolvedHarnessConfig::runtime)
+                            .unwrap_or(AgentRuntime::Pty);
+                        let session_id = harness_config
+                            .as_ref()
+                            .and_then(ResolvedHarnessConfig::session_id)
+                            .map(ToOwned::to_owned);
                         let spec = AgentSpec {
                             name: name.clone(),
-                            runtime: AgentRuntime::Pty,
+                            runtime: runtime.clone(),
                             provider: None,
                             cli: Some(cli.clone()),
-                            session_id: None,
-                            harness_config: None,
+                            session_id,
+                            harness_config,
                             model: None,
                             cwd: None,
                             team: None,
@@ -507,7 +558,7 @@ impl BrokerRuntime {
                                 state.agents.insert(
                                     name.clone(),
                                     broker::PersistedAgent {
-                                        runtime: AgentRuntime::Pty,
+                                        runtime: effective_spec.runtime.clone(),
                                         parent: Some("Relaycast".to_string()),
                                         channels,
                                         pid: workers.worker_pid(&name),
@@ -530,7 +581,7 @@ impl BrokerRuntime {
                                     json!({
                                         "kind": "agent_spawned",
                                         "name": name,
-                                        "runtime": "pty",
+                                        "runtime": runtime_label(&effective_spec.runtime),
                                         "cli": cli,
                                         "model": effective_spec.model.clone(),
                                         "pid": pid,
@@ -879,5 +930,119 @@ impl BrokerRuntime {
                 "relaycast ws event ignored by inbound mapper"
             );
         }
+    }
+}
+
+fn relaycast_harness_id(value: &Value) -> Option<String> {
+    let agent = value.get("agent");
+    agent
+        .and_then(|agent| {
+            agent
+                .get("harnessId")
+                .or_else(|| agent.get("harness_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("harnessId")
+                .or_else(|| value.get("harness_id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+    let agent = value.get("agent");
+    let raw = agent
+        .and_then(|agent| {
+            agent
+                .get("harnessConfig")
+                .or_else(|| agent.get("harness_config"))
+        })
+        .or_else(|| {
+            value
+                .get("harnessConfig")
+                .or_else(|| value.get("harness_config"))
+        });
+
+    match raw {
+        Some(config) => serde_json::from_value::<ResolvedHarnessConfig>(config.clone())
+            .map(Some)
+            .map_err(|error| format!("Invalid harnessConfig: {error}")),
+        None => Ok(None),
+    }
+}
+
+fn relaycast_harness_config_selection(
+    value: &Value,
+    registry: &HashMap<String, ResolvedHarnessConfig>,
+) -> Result<Option<ResolvedHarnessConfig>, String> {
+    let harness_id = relaycast_harness_id(value);
+    let harness_config = relaycast_harness_config(value)?;
+    resolve_harness_config_selection(harness_id.as_deref(), harness_config, registry)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PtyHarnessConfig;
+
+    fn pty_config(command: &str) -> ResolvedHarnessConfig {
+        ResolvedHarnessConfig::Pty(PtyHarnessConfig {
+            command: command.to_string(),
+            args: vec![],
+            cwd: None,
+            env: None,
+            session_id: None,
+            delivery: None,
+            metadata: None,
+        })
+    }
+
+    #[test]
+    fn relaycast_harness_selection_resolves_agent_harness_id() {
+        let mut registry = HashMap::new();
+        registry.insert("company-claude".to_string(), pty_config("claude"));
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "ClaudeReviewer",
+                "cli": "company-claude",
+                "harnessId": "company-claude"
+            }
+        });
+
+        let config = relaycast_harness_config_selection(&value, &registry)
+            .expect("selection should resolve")
+            .expect("selection should return config");
+
+        assert_eq!(config.runtime(), AgentRuntime::Pty);
+    }
+
+    #[test]
+    fn relaycast_harness_selection_rejects_both_id_and_inline_config() {
+        let mut registry = HashMap::new();
+        registry.insert("company-claude".to_string(), pty_config("claude"));
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "ClaudeReviewer",
+                "cli": "company-claude",
+                "harnessId": "company-claude",
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "claude",
+                    "args": []
+                }
+            }
+        });
+
+        let error = relaycast_harness_config_selection(&value, &registry)
+            .expect_err("conflicting selection should fail");
+
+        assert!(error.contains("provide either harnessId or harnessConfig"));
     }
 }

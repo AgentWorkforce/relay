@@ -58,6 +58,8 @@ The only route exempt from auth is `GET /health`.
 | `GET`  | `/api/history/stats`  | Stub message-history counters.                                    |
 | `POST` | `/api/preflight`      | Check that each `{ name, cli }` agent can be spawned.             |
 | `POST` | `/api/shutdown`       | Graceful broker shutdown.                                         |
+| `GET`  | `/api/harnesses`      | List named in-memory harness configs.                             |
+| `PUT`  | `/api/harnesses/{id}` | Register or replace a named harness config.                       |
 
 ### Agent lifecycle
 
@@ -91,13 +93,16 @@ Body (fields accept both camelCase and snake_case):
   "idleThresholdSecs": 0,
   "skipRelayPrompt": false,
   "restartPolicy": null,
+  "harnessId": null,
+  "harnessConfig": null,
   "agentToken": null
 }
 ```
 
-`name` and `cli` are required. Returns `{ "success": true, ... }` on
-success or `{ "success": false, "error": "..." }` with a non-2xx
-status on failure.
+`name` and `cli` are required. `harnessId` references a config registered with
+`/api/harnesses/{id}`. `harnessConfig` sends a one-off concrete config. Provide
+at most one of them. Returns `{ "success": true, ... }` on success or
+`{ "success": false, "error": "..." }` with a non-2xx status on failure.
 
 ### PTY interaction
 

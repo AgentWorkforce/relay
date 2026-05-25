@@ -477,6 +477,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         worker_event_rx,
         worker_events_open: true,
         workers,
+        harness_configs: HashMap::new(),
         crash_insights,
         crash_insights_path,
         sdk_lines,

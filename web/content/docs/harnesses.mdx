@@ -1,198 +1,179 @@
 ---
 title: Harnesses
-description: Define custom PTY and headless harness adapters in the SDK.
+description: Define custom PTY and headless harness configs in the SDK.
 ---
 
-A harness adapter is a named SDK definition that turns `relay.spawn(...)` into a
-broker-executable harness config. The broker only runs durable configs; SDK code
-can prepare those configs before spawn.
+A harness is the thing Relay controls for an agent. The broker only executes
+serializable `HarnessConfig` data. SDK "adapters" should be small helpers that
+return configs; they are not durable callback code that the broker calls later.
 
-Relay supports two public runtime categories:
+Relay supports two runtime categories:
 
-| Runtime | Use For | Broker Capabilities |
+| Runtime | Use for | Broker capabilities |
 | --- | --- | --- |
 | `pty` | Terminal-backed CLIs such as Codex or Claude Code | stream, input, resize, snapshot, delivery, release |
-| `headless` | Non-terminal agents such as app-server sessions | delivery and release |
+| `headless` | Non-terminal sessions such as OpenCode app-server | delivery, release |
 
-`app_server` is not a third runtime. It is a `headless` driver for sessions
-controlled over HTTP. When `runtime` is `headless`, `driver` defaults to
-`app_server`.
+When `runtime` is `headless`, `driver` defaults to `app_server`.
 
 ## Naming
 
-Use these names when building or reading harness code:
-
 | Name | Meaning |
 | --- | --- |
-| Harness definition | The value registered in `new AgentRelay({ harnesses })` |
-| Harness resolver | A dynamic function that receives spawn context |
-| Harness config | The concrete `pty` or `headless` object returned by a definition or resolver |
-| `harnessConfig` | The one-off spawn field for passing a concrete config directly |
+| Harness config | Concrete `pty` or `headless` JSON the broker can validate and run |
+| Harness adapter | SDK helper that returns a harness config |
+| `harnessId` | Name of a config stored in the broker's in-memory harness registry |
+| `harnessConfig` | One-off config sent directly on a spawn |
 
-The broker runs harness configs. It does not run SDK resolver functions or
-placeholder templates.
+Use `harnessId` when every relevant broker has the same named config registered.
+Use inline `harnessConfig` when the spawn must be portable across brokers.
 
-## Static PTY Adapter
+## Claude PTY Config
 
-Use a static adapter when a CLI only needs a command, args, env, and optional
-model mapping. Static adapters are JSON-compatible and work with attached or
-detached brokers.
+Register a named config when the command is stable across spawns:
 
 ```typescript file="claude-harness.ts"
-import { AgentRelay } from '@agent-relay/sdk';
+import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
+
+function companyClaude(): ResolvedHarnessConfig {
+  return {
+    runtime: 'pty',
+    command: 'claude',
+    args: [
+      '--dangerously-skip-permissions',
+      '--append-system-prompt',
+      'Follow the company review rubric.',
+    ],
+    env: {
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    },
+  };
+}
 
 const relay = new AgentRelay({
   harnesses: {
-    'company-claude': {
-      runtime: 'pty',
-      command: 'claude',
-      args: [
-        '--dangerously-skip-permissions',
-        '--append-system-prompt',
-        'Follow the company review rubric.',
-        '{modelArgs}',
-        '{args}',
-      ],
-      modelArgs: ['--model', '{model}'],
-      env: {
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      },
-    },
+    'company-claude': companyClaude(),
   },
 });
 
-await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.', {
-  model: 'opus',
-  args: ['--verbose'],
-});
+await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.');
 ```
 
-When you provide a PTY harness config, Relay runs that config as written. Built-in
-CLI defaults such as Claude permission bypass flags are not auto-injected.
+The SDK registers `company-claude` with the broker before spawning. Later
+Relaycast spawns can send only `{ "harnessId": "company-claude" }`.
 
-Supported placeholders:
+## Codex Per-Spawn Config
 
-| Placeholder | Expands To |
-| --- | --- |
-| `{args}` | Spawn `args` |
-| `{modelArgs}` | Rendered `modelArgs`, only when a model is set |
-| `{model}` | Spawn `model` |
-| `{task}` | Spawn task text |
+Use inline `harnessConfig` when setup produces a different config for each
+spawn, such as creating or resuming a Codex session:
 
-## Dynamic PTY Adapter
+```typescript file="codex-harness.ts"
+import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
 
-Use a dynamic resolver when spawn needs SDK-side setup. This is attached-only:
-the SDK process is part of the control path.
-
-```typescript file="codex-resume-harness.ts"
-import { AgentRelay } from '@agent-relay/sdk';
-
-const relay = new AgentRelay({
-  broker: { lifetime: 'attached' },
-  harnesses: {
-    'codex-resume': async (ctx) => {
-      const sessionId = await createCodexSession({
-        cwd: ctx.cwd,
-        task: ctx.task,
-      });
-
-      return {
-        runtime: 'pty',
-        command: 'codex',
-        args: ['resume', sessionId, ...ctx.args],
-        cwd: ctx.cwd,
-        env: {
-          PATH: ctx.env.PATH ?? '',
-          CODEX_HOME: ctx.env.CODEX_HOME ?? '',
-        },
-        sessionId,
-      };
+function codexResume(sessionId: string, cwd: string): ResolvedHarnessConfig {
+  return {
+    runtime: 'pty',
+    command: 'codex',
+    args: ['resume', sessionId],
+    cwd,
+    env: {
+      PATH: process.env.PATH ?? '',
+      CODEX_HOME: process.env.CODEX_HOME ?? '',
     },
-  },
-});
+    sessionId,
+  };
+}
 
-await relay.spawn('CodexReviewer', 'codex-resume', 'Review the current diff.');
+const relay = new AgentRelay();
+const cwd = process.cwd();
+const sessionId = await createCodexSession({ cwd, task: 'Review the current diff.' });
+
+await relay.spawn('CodexReviewer', 'codex', 'Review the current diff.', {
+  cwd,
+  harnessConfig: codexResume(sessionId, cwd),
+});
 ```
 
-Do not forward `ctx.env` wholesale. It is the SDK process environment and may
-contain secrets. Pass only the keys the harness actually needs.
+Do not copy the whole process environment into `env`. Pass only the keys the
+harness needs.
 
-Detached brokers should use static adapters, built-in broker behavior, HTTP
-webhooks, or another durable extension host instead of in-process resolver
-functions.
+## OpenCode Headless Config
 
-## Headless App-Server Adapter
+Use `headless` for an agent that already exists inside an app-server session.
+OpenCode `serve` is the first supported protocol:
 
-Use a headless adapter when the agent already lives in a server session.
-OpenCode `serve` is the first supported protocol.
+```typescript file="opencode-harness.ts"
+import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
 
-```typescript file="opencode-server-harness.ts"
-import { AgentRelay } from '@agent-relay/sdk';
+function opencodeSession(input: {
+  endpoint: string;
+  sessionId: string;
+  pid?: number;
+}): ResolvedHarnessConfig {
+  return {
+    runtime: 'headless',
+    protocol: 'opencode',
+    endpoint: input.endpoint,
+    sessionId: input.sessionId,
+    host: { ownership: 'attached', pid: input.pid },
+    release: 'abort',
+  };
+}
 
 const relay = new AgentRelay({
   harnesses: {
-    'opencode-server': {
-      runtime: 'headless',
-      protocol: 'opencode',
+    'opencode-current': opencodeSession({
       endpoint: 'http://127.0.0.1:4096',
       sessionId: 'ses_123',
-      host: { ownership: 'attached', pid: 34567 },
-      release: 'abort',
-    },
+      pid: 34567,
+    }),
   },
 });
 
-await relay.spawn('OpenCodeWorker', 'opencode-server', 'Inspect the repo.');
+await relay.spawn('OpenCodeWorker', 'opencode-current', 'Inspect the repo.');
 ```
 
 For OpenCode, Relay delivers messages to `POST /session/:id/prompt_async`.
-Release behavior is controlled by `release`: `abort`, `detach`, or `delete`.
-`host.pid` is reported as the harness PID when the server is local and known.
+For now, app-server configs must use `protocol: 'opencode'`, an `http` or
+`https` endpoint, a non-empty `sessionId`, and attached host ownership.
+`broker-owned` app-server hosts are reserved for later broker supervision.
 
-Static app-server adapters attach to a known session. For per-spawn sessions,
-create the session in a dynamic resolver and return the concrete config:
+## Relaycast Spawns
 
-```typescript file="opencode-dynamic-harness.ts"
-const relay = new AgentRelay({
-  broker: { lifetime: 'attached' },
-  harnesses: {
-    'opencode-new-session': async (ctx) => {
-      const session = await createOpenCodeSession({ cwd: ctx.cwd, task: ctx.task });
+Agent-crafted spawns can reference a registered config:
 
-      return {
-        runtime: 'headless',
-        protocol: 'opencode',
-        endpoint: session.endpoint,
-        sessionId: session.id,
-        host: { ownership: 'attached', pid: session.pid },
-        release: 'detach',
-      };
-    },
-  },
-});
+```json
+{
+  "agent": {
+    "name": "ClaudeReviewer",
+    "cli": "company-claude",
+    "task": "Review the current diff.",
+    "harnessId": "company-claude"
+  }
+}
 ```
 
-For now, app-server configs must use `protocol: 'opencode'`, an `http` or `https`
-endpoint, a non-empty `sessionId`, and attached host ownership. `broker-owned`
-app-server hosts are reserved for a later broker-supervised mode.
+Or they can send the whole config when the receiving broker may not have the
+same registry:
 
-## One-Off Configs
-
-You can bypass named registration and pass a config directly for a single spawn:
-
-```typescript file="one-off-codex.ts"
-await relay.spawnPty({
-  name: 'CodexOneOff',
-  cli: 'codex',
-  harnessConfig: {
-    runtime: 'pty',
-    command: 'codex',
-    args: ['--model', 'gpt-5.4'],
-  },
-});
+```json
+{
+  "agent": {
+    "name": "CodexReviewer",
+    "cli": "codex",
+    "task": "Review the current diff.",
+    "harnessConfig": {
+      "runtime": "pty",
+      "command": "codex",
+      "args": ["resume", "session_123"],
+      "sessionId": "session_123"
+    }
+  }
+}
 ```
 
-Use named adapters when more than one spawn should share the same behavior.
+The broker rejects spawn payloads that provide both `harnessId` and
+`harnessConfig`.
 
 ## See Also
 

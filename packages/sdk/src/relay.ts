@@ -35,7 +35,6 @@ import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOp
 import { EventBus } from './event-bus.js';
 import {
   harnessLookupKeys,
-  isAttachedHarnessResolver,
   resolveStaticHarnessConfig,
   type HarnessDefinition,
   type ResolvedHarnessConfig,
@@ -289,6 +288,7 @@ export interface SpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHook
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  harnessId?: string;
   harnessConfig?: ResolvedHarnessConfig;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
@@ -416,6 +416,7 @@ export interface SpawnerSpawnOptions<TAgentResult = unknown> extends SpawnLifecy
   model?: string;
   cwd?: string;
   idleThresholdSecs?: number;
+  harnessId?: string;
   harnessConfig?: ResolvedHarnessConfig;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
@@ -471,11 +472,11 @@ export interface AgentRelayOptions {
    */
   personaDirs?: string[];
   /**
-   * Named harness definitions. Static definitions resolve to broker-executable
-   * JSON configs; function resolvers are only valid for attached brokers.
+   * Named harness definitions. Definitions are rendered to broker-executable
+   * configs and stored in the broker's in-memory harness registry.
    */
   harnesses?: Record<string, HarnessDefinition>;
-  /** Broker lifetime boundary for dynamic harness resolvers and hooks. */
+  /** Broker lifetime. Ephemeral attached brokers shut down when the SDK lease expires. */
   broker?: {
     lifetime?: 'attached' | 'detached';
   };
@@ -598,7 +599,6 @@ export class AgentRelay {
   private readonly relaycastBaseUrl?: string;
   private readonly defaultPersonaDirs?: string[];
   private readonly harnesses: Record<string, HarnessDefinition>;
-  private readonly brokerLifetime: 'attached' | 'detached';
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
@@ -642,7 +642,6 @@ export class AgentRelay {
     this.relaycastBaseUrl = options.relaycastBaseUrl;
     if (options.personaDirs) this.defaultPersonaDirs = [...options.personaDirs];
     this.harnesses = { ...(options.harnesses ?? {}) };
-    this.brokerLifetime = options.broker?.lifetime ?? 'attached';
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -742,71 +741,47 @@ export class AgentRelay {
     );
   }
 
-  registerHarness(name: string, definition: HarnessDefinition): void {
+  async registerHarness(name: string, definition: HarnessDefinition): Promise<void> {
     const key = name.trim();
     if (!key) {
       throw new Error('registerHarness() expects a non-empty harness name');
     }
     this.harnesses[key] = definition;
+    if (this.client) {
+      await this.client.registerHarness(key, this.resolveRegisteredHarnessConfig(key, definition));
+    }
   }
 
-  private findHarnessDefinition(cli: string): HarnessDefinition | undefined {
+  private findHarnessDefinition(cli: string): { id: string; definition: HarnessDefinition } | undefined {
     for (const key of harnessLookupKeys(cli)) {
       const definition = this.harnesses[key];
-      if (definition) return definition;
+      if (definition) return { id: key, definition };
     }
     return undefined;
   }
 
-  private buildHarnessContext(input: SpawnPtyInput): {
-    name: string;
-    cli: string;
-    task?: string;
-    args: string[];
-    model?: string;
-    cwd?: string;
-    env: Record<string, string>;
-  } {
-    const envSource = this.clientOptions.env ?? process.env;
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(envSource)) {
-      if (value !== undefined) env[key] = String(value);
-    }
-    return {
-      name: input.name,
-      cli: input.cli,
-      task: input.task,
-      args: input.args ?? [],
-      model: input.model,
-      cwd: input.cwd ?? this.clientOptions.cwd ?? process.cwd(),
-      env,
-    };
+  private resolveRegisteredHarnessConfig(name: string, definition: HarnessDefinition): ResolvedHarnessConfig {
+    return resolveStaticHarnessConfig({
+      name,
+      cli: name,
+      definition,
+    });
   }
 
-  private async resolveHarnessConfig(input: SpawnPtyInput): Promise<ResolvedHarnessConfig | undefined> {
-    if (input.harnessConfig) return input.harnessConfig;
-    const definition = this.findHarnessDefinition(input.cli);
-    if (!definition) return undefined;
+  private resolveHarnessId(input: {
+    cli: string;
+    harnessId?: string;
+    harnessConfig?: ResolvedHarnessConfig;
+  }): string | undefined {
+    if (input.harnessConfig) return undefined;
+    if (input.harnessId) return input.harnessId;
+    return this.findHarnessDefinition(input.cli)?.id;
+  }
 
-    const context = this.buildHarnessContext(input);
-    if (isAttachedHarnessResolver(definition)) {
-      if (this.brokerLifetime !== 'attached') {
-        throw new Error(
-          `Harness '${input.cli}' uses a dynamic resolver, which requires broker.lifetime = 'attached'`
-        );
-      }
-      return definition(context);
+  private async syncHarnessRegistry(client: AgentRelayClient): Promise<void> {
+    for (const [name, definition] of Object.entries(this.harnesses)) {
+      await client.registerHarness(name, this.resolveRegisteredHarnessConfig(name, definition));
     }
-
-    return resolveStaticHarnessConfig({
-      name: context.name,
-      cli: context.cli,
-      definition,
-      args: context.args,
-      task: context.task,
-      model: context.model,
-      cwd: context.cwd,
-    });
   }
 
   private applyWorkspaceEnv(workspaceId: string, apiKey: string): void {
@@ -881,7 +856,7 @@ export class AgentRelay {
       this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
     }
     try {
-      const harnessConfig = await this.resolveHarnessConfig(input);
+      const harnessId = this.resolveHarnessId(input);
       result = await client.spawnPty({
         name: input.name,
         cli: input.cli,
@@ -896,7 +871,8 @@ export class AgentRelay {
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
-        harnessConfig,
+        harnessId,
+        harnessConfig: input.harnessConfig,
         skipRelayPrompt: input.skipRelayPrompt,
         agentResultSchema: resultContract?.jsonSchema,
       });
@@ -957,6 +933,7 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      harnessId: options?.harnessId,
       harnessConfig: options?.harnessConfig,
       skipRelayPrompt: options?.skipRelayPrompt,
       result: options?.result,
@@ -1042,6 +1019,7 @@ export class AgentRelay {
         shadowMode: options.shadowMode,
         idleThresholdSecs: options.idleThresholdSecs,
         restartPolicy: options.restartPolicy,
+        harnessId: options.harnessId,
         harnessConfig: options.harnessConfig,
         skipRelayPrompt: options.skipRelayPrompt,
         result: options.result,
@@ -1741,7 +1719,7 @@ export class AgentRelay {
           },
         })
       )
-      .then((c) => {
+      .then(async (c) => {
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
         if (c.workspaceKey) {
@@ -1756,6 +1734,7 @@ export class AgentRelay {
             }
           }
         }
+        await this.syncHarnessRegistry(c);
         this.wireEvents(c);
         this.client = c;
         this.startPromise = undefined;
@@ -2366,6 +2345,7 @@ export class AgentRelay {
             model: options?.model,
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
+            harnessId: options?.harnessId,
             harnessConfig: options?.harnessConfig,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
@@ -2390,28 +2370,24 @@ export class AgentRelay {
           this.resultContracts.set(name, resultContract as InternalAgentResultContract);
         }
         try {
-          const harnessConfig =
-            options?.harnessConfig ??
-            (await this.resolveHarnessConfig({
-              name,
-              cli,
-              args,
-              channels,
-              task,
-              model: options?.model,
-              cwd: options?.cwd,
-            }));
+          const harnessEntry = options?.harnessConfig ? undefined : this.findHarnessDefinition(cli);
+          const harnessId = options?.harnessId ?? harnessEntry?.id;
+          const registeredHarnessConfig = harnessEntry
+            ? this.resolveRegisteredHarnessConfig(harnessEntry.id, harnessEntry.definition)
+            : undefined;
+          const transport = options?.harnessConfig?.runtime ?? registeredHarnessConfig?.runtime ?? 'headless';
           result = await client.spawnProvider({
             name,
             provider: cli as HeadlessProvider,
-            transport: harnessConfig?.runtime ?? 'headless',
+            transport,
             args,
             channels,
             task,
             model: options?.model,
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
-            harnessConfig,
+            harnessId,
+            harnessConfig: options?.harnessConfig,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             agentResultSchema: resultContract?.jsonSchema,

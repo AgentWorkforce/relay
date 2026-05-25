@@ -26,6 +26,7 @@ export interface SpawnPtyInput {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  harnessId?: string;
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
@@ -81,6 +82,7 @@ export interface SpawnProviderInput {
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  harnessId?: string;
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;

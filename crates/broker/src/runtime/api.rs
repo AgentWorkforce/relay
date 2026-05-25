@@ -19,6 +19,7 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
+        let harness_configs = &mut self.harness_configs;
         let dedup = &mut self.dedup;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -45,6 +46,7 @@ impl BrokerRuntime {
                 idle_threshold_secs,
                 skip_relay_prompt,
                 restart_policy,
+                harness_id,
                 harness_config,
                 agent_token,
                 agent_result_schema,
@@ -54,6 +56,17 @@ impl BrokerRuntime {
                     default_spawn_channels()
                 } else {
                     channels.clone()
+                };
+                let harness_config = match resolve_harness_config_selection(
+                    harness_id.as_deref(),
+                    harness_config,
+                    harness_configs,
+                ) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                        return;
+                    }
                 };
                 let spec = match build_http_api_spawn_spec(
                     name.clone(),
@@ -387,6 +400,24 @@ impl BrokerRuntime {
                         let _ = reply.send(Err(error.to_string()));
                     }
                 }
+            }
+            ListenApiRequest::RegisterHarness {
+                name,
+                config,
+                reply,
+            } => {
+                harness_configs.insert(name.clone(), config.clone());
+                let _ = reply.send(Ok(json!({
+                    "success": true,
+                    "name": name,
+                    "harnessConfig": config,
+                })));
+            }
+            ListenApiRequest::ListHarnesses { reply } => {
+                let _ = reply.send(Ok(json!({
+                    "success": true,
+                    "harnesses": harness_configs.clone(),
+                })));
             }
             ListenApiRequest::Release {
                 name,

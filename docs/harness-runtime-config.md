@@ -3,9 +3,9 @@
 ## Goal
 
 Harnesses should be user-extensible without requiring Rust changes for normal
-agent CLIs. The Rust broker should own durable runtime execution, lifecycle
-tracking, routing, delivery queues, retries, and observability. SDKs should be
-able to define named harnesses that resolve to broker-executable JSON configs.
+agent CLIs. The durable boundary is data: the Rust broker validates and executes
+`HarnessConfig` objects. SDKs may help users build those objects, but the broker
+does not call back into SDK-defined functions after the SDK process exits.
 
 ## Core Model
 
@@ -14,25 +14,16 @@ The broker has two public runtime categories:
 - `pty`: runs a command inside a PTY and manages terminal-oriented delivery.
 - `headless`: controls a non-terminal agent through a driver.
 
-The first headless drivers are:
-
-- `provider_command`: the existing broker-owned one-shot headless path for
-  built-in providers such as Claude and OpenCode.
-- `app_server`: a session-backed HTTP driver for attached agent servers.
-
-Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
-those executable configs. `driver` defaults to `app_server` when `runtime` is
+The first headless driver is `app_server`, used for session-backed HTTP agents
+such as OpenCode. `driver` defaults to `app_server` when `runtime` is
 `headless`.
 
-## Naming
+Names in this design:
 
-- A harness definition is the static or dynamic value registered by the SDK.
-- A harness resolver is a dynamic SDK function that receives spawn context.
 - A harness config is the concrete `pty` or `headless` object the broker runs.
-- `harnessConfig` is the spawn field for a one-off concrete config.
-
-This keeps ownership clear: SDKs resolve definitions into configs, and the
-broker executes configs durably.
+- A harness adapter is SDK/userland code that returns a harness config.
+- `harnessId` references a config in the broker's in-memory registry.
+- `harnessConfig` is the spawn field for sending a one-off concrete config.
 
 ## Config Shapes
 
@@ -54,8 +45,7 @@ type PtyHarnessConfig = {
 };
 ```
 
-Headless app-server configs are session backed. They are still `headless` workers;
-`driver: 'app_server'` explains how the broker talks to the worker:
+Headless app-server configs are session backed:
 
 ```ts
 type HeadlessAppServerHarnessConfig = {
@@ -79,83 +69,121 @@ type HeadlessAppServerHarnessConfig = {
 };
 ```
 
-The broker runs the returned config. It does not need to understand arbitrary
-TypeScript or Python logic.
+For now, `app_server` configs are attach-only. `host.ownership:
+'broker-owned'` is reserved and rejected until the broker owns app-server
+lifecycle supervision. When `host.pid` is provided, the broker reports that as
+the harness PID.
 
-For now, `app_server` configs are attach-only. `host.ownership: 'broker-owned'`
-is reserved and rejected until the broker owns app-server lifecycle supervision.
-When `host.pid` is provided, the broker reports that as the harness PID.
+Config `env` and `auth` values are visible to the broker. Adapters should return
+explicit allowlists instead of copying whole process environments.
 
-Config `env` and `auth` values are visible to the broker and may be included in
-runtime state. SDK resolvers should return explicit allowlists and avoid copying
-the whole process environment.
+## SDK Adapters
 
-## Harness Definition Classes
-
-Static harness definitions are JSON-compatible and work in attached or detached
-brokers:
+An SDK adapter is a helper that returns data:
 
 ```ts
-const harnesses = {
-  'company-claude': {
+function companyClaude(): ResolvedHarnessConfig {
+  return {
     runtime: 'pty',
     command: 'claude',
-    args: [
-      '--dangerously-skip-permissions',
-      '--append-system-prompt',
-      'Follow the company review rubric.',
-      '{modelArgs}',
-      '{args}',
-    ],
-    modelArgs: ['--model', '{model}'],
-  },
-};
-```
-
-Custom PTY harnesses own their CLI flags. Broker built-in permission bypass
-defaults are not injected into caller-provided harness configs.
-
-Dynamic harness resolvers are SDK functions and are attached-only. They can run
-pre-spawn logic, such as creating a provider session, then return a concrete
-config:
-
-```ts
-const harnesses = {
-  codex: async (ctx) => {
-    const sessionId = await createCodexSession(ctx);
-    return {
-      runtime: 'pty',
-      command: 'codex',
-      args: ['resume', sessionId, ...ctx.args],
-      env: {
-        PATH: ctx.env.PATH ?? '',
-        CODEX_HOME: ctx.env.CODEX_HOME ?? '',
-      },
-      sessionId,
-    };
-  },
-};
-```
-
-Detached brokers must reject dynamic in-process resolvers because the SDK
-process may exit while the broker and agents continue.
-
-## Broker Lifetime
-
-Broker lifetime should be explicit:
-
-```ts
-broker: {
-  lifetime: 'attached' | 'detached';
+    args: ['--dangerously-skip-permissions', '--append-system-prompt', 'Follow the company review rubric.'],
+  };
 }
 ```
 
-Attached brokers are owned by the SDK process. Dynamic resolvers and in-process
-decision hooks are allowed because the broker exits if the SDK control
-connection exits.
+Register stable configs by name:
 
-Detached brokers survive SDK callers. They only accept static harness configs,
-built-in Rust adapters, and durable extension hosts.
+```ts
+const relay = new AgentRelay({
+  harnesses: {
+    'company-claude': companyClaude(),
+  },
+});
+```
+
+The SDK registers those configs with the broker's in-memory registry on start.
+Future spawns can use `harnessId: 'company-claude'`.
+
+Use inline configs for per-spawn setup:
+
+```ts
+const sessionId = await createCodexSession({ cwd, task });
+
+await relay.spawn('CodexReviewer', 'codex', task, {
+  harnessConfig: {
+    runtime: 'pty',
+    command: 'codex',
+    args: ['resume', sessionId],
+    cwd,
+    sessionId,
+  },
+});
+```
+
+This avoids pretending that SDK callbacks are durable. If the SDK process exits,
+the broker can still execute registered or inline configs because it already has
+the data.
+
+## Broker Registry
+
+The broker keeps an in-memory map:
+
+```ts
+Record<string, ResolvedHarnessConfig>;
+```
+
+HTTP/SDK API:
+
+- `PUT /api/harnesses/:name` registers or replaces a config.
+- `GET /api/harnesses` lists registered configs.
+- `POST /api/spawn` accepts either `harnessId` or `harnessConfig`.
+
+Resolution rules:
+
+- `harnessConfig` is already concrete and runs as supplied.
+- `harnessId` resolves against the receiving broker's registry.
+- Providing both is rejected.
+- Unknown `harnessId` is rejected.
+
+Registry state is intentionally runtime-local for now. In multi-broker
+environments, use inline `harnessConfig` or ensure every broker registers the
+same named configs before agents send `harnessId` spawns.
+
+## Relaycast Spawns
+
+Agent-crafted Relaycast spawns can send a registry reference:
+
+```json
+{
+  "agent": {
+    "name": "ClaudeReviewer",
+    "cli": "company-claude",
+    "task": "Review the current diff.",
+    "harnessId": "company-claude"
+  }
+}
+```
+
+Or a portable inline config:
+
+```json
+{
+  "agent": {
+    "name": "CodexReviewer",
+    "cli": "codex",
+    "task": "Review the current diff.",
+    "harnessConfig": {
+      "runtime": "pty",
+      "command": "codex",
+      "args": ["resume", "session_123"],
+      "sessionId": "session_123"
+    }
+  }
+}
+```
+
+The broker validates the selected config and then uses the same spawn path as
+SDK-submitted configs.
 
 ## Broker Responsibilities
 
@@ -169,62 +197,26 @@ The broker owns:
 - Capability checks for PTY-only routes.
 - Event emission, metrics, logs, and replay buffers.
 
-The broker does not own custom user logic unless that logic is built into Rust.
+The broker does not own arbitrary user logic unless that logic is built into
+Rust or represented as validated config data.
 
-## PTY Runtime
+## Runtime Notes
 
 The PTY executor consumes a concrete PTY config. It handles process spawn,
 terminal streaming, raw input, resize, snapshot, release, and PTY message
 injection.
 
-This lets users add a CLI wrapper locally with config only. A Rust
-contribution is only needed when Relay wants a built-in with tested defaults or
-the CLI needs broker-side behavior.
-
-## Headless Runtime
-
 The headless runtime covers non-PTY workers. Provider-command headless workers
-run a command per delivery, for example `claude -p` or `opencode run`.
-App-server headless workers attach to a session server instead.
-
-For OpenCode app-server harnesses, the SDK creates or selects a session and
-returns its endpoint and session id. The broker attaches to that local or remote
-`opencode serve` endpoint, delivers Relay messages through the session message
-API, and releases by aborting, detaching, or deleting the session.
-
-Headless runtimes do not expose PTY input, resize, or snapshot capabilities.
-
-## Hooks
-
-Event hooks are non-blocking subscriptions:
-
-```ts
-relay.addListener('agentSpawned', async (agent) => {
-  await posthog.capture({
-    distinctId: agent.name,
-    event: 'agent_spawned',
-    properties: { runtime: agent.runtime },
-  });
-});
-```
-
-Decision hooks are request-response calls over an attached SDK control
-connection:
-
-- `resolveHarnessConfig`
-- `beforeSpawn`
-- `authorizeSpawn`
-
-Detached brokers must use static config, built-in sinks, HTTP webhooks, or a
-durable extension host for decision-making.
+remain the built-in path for existing providers. App-server headless workers
+attach to a session server instead. Headless runtimes do not expose PTY input,
+resize, or snapshot capabilities.
 
 ## Implementation Phases
 
 1. Add shared config schema and SDK types.
-2. Add static SDK harness resolution to PTY configs.
-3. Teach the broker to accept and execute resolved PTY configs.
-4. Add a headless app-server config path with an OpenCode protocol driver.
-5. Add capability-aware runtime checks for PTY-only operations.
-6. Add attached broker control RPCs for dynamic resolvers.
-7. Add detached-mode validation for dynamic resolvers and in-process decision hooks.
-8. Document static Claude, dynamic Codex, and OpenCode headless app-server examples.
+2. Teach the broker to accept and execute resolved PTY configs.
+3. Add a headless app-server config path with an OpenCode protocol driver.
+4. Add an in-memory broker harness registry and `harnessId` spawn selection.
+5. Allow Relaycast spawn events to carry `harnessId` or inline `harnessConfig`.
+6. Add capability-aware runtime checks for PTY-only operations.
+7. Document Claude PTY, Codex inline PTY, and OpenCode headless examples.

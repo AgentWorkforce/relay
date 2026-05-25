@@ -7,6 +7,26 @@ pub(crate) fn runtime_label(runtime: &AgentRuntime) -> &'static str {
     }
 }
 
+pub(crate) fn resolve_harness_config_selection(
+    harness_id: Option<&str>,
+    harness_config: Option<ResolvedHarnessConfig>,
+    registry: &HashMap<String, ResolvedHarnessConfig>,
+) -> Result<Option<ResolvedHarnessConfig>> {
+    let harness_id = harness_id.map(str::trim).filter(|value| !value.is_empty());
+
+    match (harness_id, harness_config) {
+        (Some(_), Some(_)) => {
+            anyhow::bail!("provide either harnessId or harnessConfig, not both")
+        }
+        (Some(id), None) => registry
+            .get(id)
+            .cloned()
+            .map(Some)
+            .with_context(|| format!("unknown harnessId '{id}'")),
+        (None, config) => Ok(config),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_http_api_spawn_spec(
     name: String,

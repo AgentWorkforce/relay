@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
-- `@agent-relay/sdk` harness definitions resolve named agent runtimes into broker-executable `pty` or `headless` configs, so custom CLIs can be configured without Rust changes.
+- `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, named in-memory harness registration, and `harnessId` spawn selection for custom CLIs without Rust changes.
 - `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
 
 ### Changed

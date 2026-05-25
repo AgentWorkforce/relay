@@ -29,6 +29,7 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 | `channels`         | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
 | `cwd`              | `string`            | Working directory for the broker and spawned agents  | `process.cwd()`             |
 | `env`              | `NodeJS.ProcessEnv` | Environment variables passed to the broker          | Inherited                   |
+| `harnesses`        | `Record<string, HarnessDefinition>` | Named harness configs registered with the broker | `{}`                        |
 | `workspaceName`    | `string`            | Name for the auto-created Relaycast workspace       | Random                      |
 | `relaycastBaseUrl` | `string`            | Base URL for the Relaycast API                      | `https://api.relaycast.dev` |
 
@@ -199,6 +200,8 @@ const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
 | `client.spawnProvider(input)` | `POST /api/spawn` | Spawn by provider and transport. |
 | `client.spawnClaude(input)` | `POST /api/spawn` | Spawn a Claude worker. |
 | `client.spawnOpencode(input)` | `POST /api/spawn` | Spawn an OpenCode worker. |
+| `client.registerHarness(name, config)` | `PUT /api/harnesses/{name}` | Register a named harness config. |
+| `client.listHarnesses()` | `GET /api/harnesses` | List named harness configs. |
 | `client.release(name, reason?)` | `DELETE /api/spawned/{name}` | Release a worker. |
 | `client.listAgents()` | `GET /api/spawned` | List running workers. |
 | `client.sendMessage(input)` | `POST /api/send` | Inject a relay message. |
