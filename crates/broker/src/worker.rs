@@ -540,10 +540,7 @@ impl WorkerRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in &self.worker_env {
-            if suppress_worker_env
-                .iter()
-                .any(|blocked| key.as_str() == *blocked)
-            {
+            if suppress_worker_env.contains(&key.as_str()) {
                 continue;
             }
             command.env(key, value);

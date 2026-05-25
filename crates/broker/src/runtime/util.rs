@@ -227,119 +227,6 @@ pub(crate) fn delivery_retry_interval() -> Duration {
     Duration::from_millis(ms.max(50))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        broker_log_dir, broker_log_file_prefix, sanitize_filename_segment, tracing_destination,
-        tracing_filter_directive, TracingDestination,
-    };
-
-    #[test]
-    fn tracing_destination_defaults_to_file() {
-        assert_eq!(tracing_destination(None), TracingDestination::File);
-        assert_eq!(tracing_destination(Some("")), TracingDestination::File);
-        assert_eq!(tracing_destination(Some("   ")), TracingDestination::File);
-    }
-
-    #[test]
-    fn tracing_destination_recognises_off_aliases() {
-        for value in ["off", "OFF", "none", "0", "false", "no"] {
-            assert_eq!(
-                tracing_destination(Some(value)),
-                TracingDestination::Off,
-                "value `{value}` should disable tracing"
-            );
-        }
-    }
-
-    #[test]
-    fn tracing_destination_recognises_stderr_aliases() {
-        for value in ["stderr", "STDERR", "print", "Print"] {
-            assert_eq!(
-                tracing_destination(Some(value)),
-                TracingDestination::Stderr,
-                "value `{value}` should route to stderr"
-            );
-        }
-    }
-
-    #[test]
-    fn tracing_destination_recognises_file_aliases() {
-        for value in ["file", "FILE", "1", "true", "yes", "on", "unknown-value"] {
-            assert_eq!(
-                tracing_destination(Some(value)),
-                TracingDestination::File,
-                "value `{value}` should route to file"
-            );
-        }
-    }
-
-    #[test]
-    fn tracing_filter_defaults_to_info_when_rust_log_unset() {
-        assert_eq!(tracing_filter_directive(None), "info");
-        assert_eq!(tracing_filter_directive(Some("")), "info");
-        assert_eq!(tracing_filter_directive(Some("   ")), "info");
-    }
-
-    #[test]
-    fn tracing_filter_prefers_rust_log_directive() {
-        assert_eq!(
-            tracing_filter_directive(Some("agent_relay::worker::pty=debug")),
-            "agent_relay::worker::pty=debug"
-        );
-    }
-
-    #[test]
-    fn sanitize_filename_segment_replaces_unsafe_chars() {
-        assert_eq!(
-            sanitize_filename_segment("agent name/with:weird*chars"),
-            "agent-name-with-weird-chars"
-        );
-    }
-
-    #[test]
-    fn sanitize_filename_segment_keeps_safe_chars() {
-        assert_eq!(sanitize_filename_segment("alpha-Beta_01"), "alpha-Beta_01");
-    }
-
-    #[test]
-    fn sanitize_filename_segment_falls_back_to_broker() {
-        assert_eq!(sanitize_filename_segment(""), "broker");
-        assert_eq!(sanitize_filename_segment("///"), "---");
-    }
-
-    #[test]
-    fn broker_log_file_prefix_includes_log_suffix() {
-        assert_eq!(broker_log_file_prefix("my-broker"), "my-broker.log");
-        assert_eq!(broker_log_file_prefix(""), "broker.log");
-    }
-
-    #[test]
-    fn broker_log_dir_uses_platform_standard_layout() {
-        let Some(dir) = broker_log_dir() else {
-            return;
-        };
-        let path_str = dir.to_string_lossy().replace('\\', "/");
-
-        if cfg!(target_os = "macos") {
-            assert!(
-                path_str.contains("/Library/Logs/agent-relay"),
-                "expected macOS Library/Logs path, got: {path_str}"
-            );
-        } else if cfg!(target_os = "windows") {
-            assert!(
-                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
-                "expected Windows LocalAppData layout, got: {path_str}"
-            );
-        } else {
-            assert!(
-                path_str.contains("agent-relay/logs"),
-                "expected Unix state path, got: {path_str}"
-            );
-        }
-    }
-}
-
 pub(crate) fn http_api_local_delivery_timeout() -> Duration {
     let ms = std::env::var("AGENT_RELAY_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS")
         .ok()
@@ -462,4 +349,117 @@ pub(crate) fn extract_mcp_message_ids(buffer: &str) -> Vec<String> {
         search_start = abs_pos;
     }
     ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        broker_log_dir, broker_log_file_prefix, sanitize_filename_segment, tracing_destination,
+        tracing_filter_directive, TracingDestination,
+    };
+
+    #[test]
+    fn tracing_destination_defaults_to_file() {
+        assert_eq!(tracing_destination(None), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("")), TracingDestination::File);
+        assert_eq!(tracing_destination(Some("   ")), TracingDestination::File);
+    }
+
+    #[test]
+    fn tracing_destination_recognises_off_aliases() {
+        for value in ["off", "OFF", "none", "0", "false", "no"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Off,
+                "value `{value}` should disable tracing"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_stderr_aliases() {
+        for value in ["stderr", "STDERR", "print", "Print"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::Stderr,
+                "value `{value}` should route to stderr"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_destination_recognises_file_aliases() {
+        for value in ["file", "FILE", "1", "true", "yes", "on", "unknown-value"] {
+            assert_eq!(
+                tracing_destination(Some(value)),
+                TracingDestination::File,
+                "value `{value}` should route to file"
+            );
+        }
+    }
+
+    #[test]
+    fn tracing_filter_defaults_to_info_when_rust_log_unset() {
+        assert_eq!(tracing_filter_directive(None), "info");
+        assert_eq!(tracing_filter_directive(Some("")), "info");
+        assert_eq!(tracing_filter_directive(Some("   ")), "info");
+    }
+
+    #[test]
+    fn tracing_filter_prefers_rust_log_directive() {
+        assert_eq!(
+            tracing_filter_directive(Some("agent_relay::worker::pty=debug")),
+            "agent_relay::worker::pty=debug"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_replaces_unsafe_chars() {
+        assert_eq!(
+            sanitize_filename_segment("agent name/with:weird*chars"),
+            "agent-name-with-weird-chars"
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_segment_keeps_safe_chars() {
+        assert_eq!(sanitize_filename_segment("alpha-Beta_01"), "alpha-Beta_01");
+    }
+
+    #[test]
+    fn sanitize_filename_segment_falls_back_to_broker() {
+        assert_eq!(sanitize_filename_segment(""), "broker");
+        assert_eq!(sanitize_filename_segment("///"), "---");
+    }
+
+    #[test]
+    fn broker_log_file_prefix_includes_log_suffix() {
+        assert_eq!(broker_log_file_prefix("my-broker"), "my-broker.log");
+        assert_eq!(broker_log_file_prefix(""), "broker.log");
+    }
+
+    #[test]
+    fn broker_log_dir_uses_platform_standard_layout() {
+        let Some(dir) = broker_log_dir() else {
+            return;
+        };
+        let path_str = dir.to_string_lossy().replace('\\', "/");
+
+        if cfg!(target_os = "macos") {
+            assert!(
+                path_str.contains("/Library/Logs/agent-relay"),
+                "expected macOS Library/Logs path, got: {path_str}"
+            );
+        } else if cfg!(target_os = "windows") {
+            assert!(
+                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
+                "expected Windows LocalAppData layout, got: {path_str}"
+            );
+        } else {
+            assert!(
+                path_str.contains("agent-relay/logs"),
+                "expected Unix state path, got: {path_str}"
+            );
+        }
+    }
 }

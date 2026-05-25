@@ -272,7 +272,7 @@ pub enum SdkToBroker {
         client_version: String,
     },
     SpawnAgent {
-        agent: AgentSpec,
+        agent: Box<AgentSpec>,
     },
     SendMessage {
         to: String,
@@ -496,7 +496,7 @@ pub enum BrokerEvent {
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum BrokerToWorker {
     InitWorker {
-        agent: AgentSpec,
+        agent: Box<AgentSpec>,
     },
     DeliverRelay(RelayDelivery),
     ShutdownWorker {
