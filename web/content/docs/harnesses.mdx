@@ -1,14 +1,14 @@
 ---
 title: Harnesses
-description: Define agent CLI adapters for Agent Relay spawning and workflows.
+description: Define CLI and runtime harness adapters for Agent Relay spawning and workflows.
 ---
 
-A harness is Relay's adapter for an agent CLI. It tells the broker which binary to run, how to render arguments, how to inject Relay MCP arguments, which bypass/model flags the CLI understands, and which lifecycle adapter should handle built-in behavior such as sessions.
+A harness tells Relay how to control an agent runtime. The production path today is a CLI harness: serializable config that tells the Rust broker which binary to run, how to render arguments, how to inject Relay MCP arguments, which bypass/model flags the CLI understands, and which lifecycle adapter should handle built-in behavior such as sessions.
 
 Relay ships built-in harnesses for common coding agents, including `codex`, `claude`, `opencode`, `gemini`, `goose`, `aider`, `droid`, and Cursor Agent. Those built-ins are defined with the same `HarnessDefinition` shape that you use for custom harnesses.
 
 <Note>
-Harnesses are used by real `agent-relay` spawning. They are not limited to workflow execution. SDK spawn calls send the resolved harness definition to the broker with the spawn request.
+Harnesses are used by real `agent-relay` spawning. They are not limited to workflow execution. SDK spawn calls send the resolved harness definition to the broker with the spawn request, and the broker returns the provider `sessionId` plus the spawned process `pid` when available.
 </Note>
 
 ## Built-in harnesses
@@ -151,6 +151,22 @@ await reviewer.wait_for_ready()
 ```
 </CodeGroup>
 
+For TypeScript registry extensions, `CLIHarnessAdapter` is the SDK type for CLI command adapters. It accepts either a serializable `HarnessDefinition` or a function-backed `CliDefinition`:
+
+```typescript file="register-local-cli.ts"
+import { registerHarnessAdapter, type CLIHarnessAdapter } from '@agent-relay/sdk';
+
+const localCli: CLIHarnessAdapter = {
+  binaries: ['local-agent'],
+  nonInteractiveArgs: (task, extraArgs = []) => ['run', '--prompt', task, ...extraArgs],
+  modelArgs: (model) => ['--model-id', model],
+};
+
+registerHarnessAdapter('local-agent', localCli);
+```
+
+Use `HarnessDefinition` for YAML, Python, per-spawn `harness`, and `AgentRelay({ harnesses })` config. Use `CLIHarnessAdapter` when registering adapters in TypeScript code. The older `HarnessAdapter` export is kept as a deprecated alias for `CLIHarnessAdapter`.
+
 You can also attach a harness to one spawn:
 
 <CodeGroup>
@@ -185,6 +201,21 @@ agent = await relay.spawn(
 )
 ```
 </CodeGroup>
+
+## Spawn metadata
+
+When the broker starts a harness, the TypeScript `Agent` handle keeps both the native/provider session id and the OS process id when the broker reports them:
+
+```typescript file="spawn-metadata.ts"
+const agent = await relay.spawn('Reviewer', 'codex', 'Review the current branch.');
+
+await agent.waitForReady();
+
+console.log(agent.sessionId);
+console.log(agent.pid);
+```
+
+`sessionId` is useful for resumable harnesses such as Codex or Claude. `pid` is the broker-controlled harness process id, which is useful for diagnostics, process correlation, and lifecycle hooks.
 
 ## Extend a built-in lifecycle
 
@@ -251,7 +282,55 @@ The `adapter` field is what selects broker-owned lifecycle behavior. The executa
 Custom harnesses do not need Rust when they only need different binaries, args, model flags, bypass flags, search paths, or non-interactive workflow behavior. A new broker lifecycle adapter is only needed when the CLI requires custom broker-side work, such as writing a config file, minting a session before spawn, or translating Relay MCP config into a CLI-specific format. Built-in lifecycle adapters live in the broker so all SDKs and agent-initiated spawns get the same behavior.
 </Note>
 
-### Lifecycle hooks and events
+## Runtime adapter surface
+
+CLI harness config is the surface the broker consumes today. The TypeScript SDK also exports `HarnessRuntimeAdapter` to name the lifecycle contract for non-CLI or bridge-backed harnesses:
+
+```typescript file="web-harness.ts"
+import type { HarnessRuntimeAdapter } from '@agent-relay/sdk';
+
+export const webHarness: HarnessRuntimeAdapter = {
+  kind: 'http',
+  async initHarness(context) {
+    const response = await fetch('http://127.0.0.1:8787/harness/init', {
+      method: 'POST',
+      body: JSON.stringify(context),
+    });
+
+    return response.json();
+  },
+  async register(context) {
+    await fetch('http://127.0.0.1:8787/harness/register', {
+      method: 'POST',
+      body: JSON.stringify(context),
+    });
+  },
+  async receiveMessage(message, context) {
+    await fetch('http://127.0.0.1:8787/harness/messages', {
+      method: 'POST',
+      body: JSON.stringify({ message, context }),
+    });
+  },
+  async sendMessage(message, context) {
+    await fetch('http://127.0.0.1:8787/relay/messages', {
+      method: 'POST',
+      body: JSON.stringify({ message, context }),
+    });
+  },
+  async releaseHarness(context) {
+    await fetch('http://127.0.0.1:8787/harness/release', {
+      method: 'POST',
+      body: JSON.stringify(context),
+    });
+  },
+};
+```
+
+`initHarness` returns `{ sessionId, pid }` or `{ sessionId, processId }` when the adapter starts a process. `receiveMessage` delivers Relay messages to the harness. `sendMessage` emits harness-originated messages back through Relay. `releaseHarness` gives the adapter a cleanup hook.
+
+The Rust broker cannot call in-memory TypeScript functions directly, so a runtime adapter still needs a concrete serializable boundary such as a CLI/stdio worker or an HTTP service. The method names above are the control surface that boundary should expose.
+
+## Lifecycle hooks and events
 
 Harness lifecycle runs inside the broker after the spawn request is accepted. SDK event handlers are separate:
 

@@ -1,0 +1,25 @@
+{
+  "id": "traj_yh2ml7b0fze1",
+  "version": 1,
+  "task": {
+    "title": "Update harnesses docs page for harness adapters"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T14:35:45.053Z",
+  "completedAt": "2026-05-25T14:35:51.965Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Updated the website harnesses page to reflect CLIHarnessAdapter, HarnessRuntimeAdapter, and spawned session/process metadata.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8d30ceceac8e9464c2cfb8ba54fb47620bf278ab",
+    "endRef": "8d30ceceac8e9464c2cfb8ba54fb47620bf278ab"
+  }
+}
