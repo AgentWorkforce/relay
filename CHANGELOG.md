@@ -14,11 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
+- `sdk-swift`: renamed the broker client class `RelayCast` → `AgentRelayClient` to stop conflating it with the unrelated Relaycast cloud service. `RelayCast` remains as a deprecated typealias.
 
 ### Fixed
 
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
-- `sdk-swift`: `RelayCast` now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
+- `sdk-swift`: broker client now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
 
 ### Security
 

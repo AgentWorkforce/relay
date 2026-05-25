@@ -2,6 +2,10 @@
 
 Native Swift SDK for the Agent Relay broker.
 
+This SDK talks to a local or remote `agent-relay-broker` over its `/ws` event
+stream and `/api/*` HTTP endpoints. It is **not** a client for the separate
+Relaycast cloud service (`api.relaycast.dev`).
+
 ## Installation
 
 Add the package in Swift Package Manager:
@@ -19,8 +23,10 @@ Then depend on `AgentRelaySDK`.
 ```swift
 import AgentRelaySDK
 
-let relay = RelayCast(apiKey: "rk_live_...")
-let channel = relay.channel("wf-my-workflow")
+// Point at a local broker started with `agent-relay up` (defaults to
+// http://localhost:3889) or pass `baseURL:` for a remote broker.
+let client = AgentRelayClient(apiKey: "rk_live_...")
+let channel = client.channel("wf-my-workflow")
 try await channel.subscribe()
 try await channel.post("Hello from Swift")
 
@@ -31,9 +37,15 @@ for await event in channel.events {
 
 ## API
 
-- `RelayCast(apiKey:baseURL:)`
+- `AgentRelayClient(apiKey:baseURL:)` — broker client
 - `channel(_:) -> Channel`
+- `spawnAgent(_:initialTask:skipRelayPrompt:)`
+- `releaseAgent(name:reason:)`
 - `registerOrRotate(name:)`
 - `AgentRegistration.asClient()`
 - `AgentClient.post(to:message:)`
 - `AgentClient.dm(to:message:)`
+
+> The previous class name `RelayCast` is preserved as a deprecated typealias
+> for `AgentRelayClient`. It was renamed because it conflated this broker
+> client with the unrelated Relaycast cloud service.

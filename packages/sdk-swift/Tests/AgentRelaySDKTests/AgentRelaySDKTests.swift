@@ -2,21 +2,29 @@ import XCTest
 @testable import AgentRelaySDK
 
 final class AgentRelaySDKTests: XCTestCase {
-    func testRelayCastInit() {
-        let relay = RelayCast(apiKey: "rk_test_key")
-        XCTAssertEqual(relay.apiKey, "rk_test_key")
+    func testAgentRelayClientInit() {
+        let client = AgentRelayClient(apiKey: "rk_test_key")
+        XCTAssertEqual(client.apiKey, "rk_test_key")
     }
 
     func testChannelCreation() {
-        let relay = RelayCast(apiKey: "rk_test_key")
-        let channel = relay.channel("test-channel")
+        let client = AgentRelayClient(apiKey: "rk_test_key")
+        let channel = client.channel("test-channel")
         XCTAssertEqual(channel.name, "test-channel")
     }
 
-    func testRelayCastUsesDefaultLocalBrokerURL() {
-        let relay = RelayCast(apiKey: "rk_test_key")
-        XCTAssertEqual(relay.baseURL.host, "localhost")
-        XCTAssertEqual(relay.baseURL.port, 3889)
+    func testDefaultLocalBrokerURL() {
+        let client = AgentRelayClient(apiKey: "rk_test_key")
+        XCTAssertEqual(client.baseURL.host, "localhost")
+        XCTAssertEqual(client.baseURL.port, 3889)
+    }
+
+    /// Old name still resolves to the same type — guards against accidentally
+    /// removing the back-compat typealias.
+    @available(*, deprecated)
+    func testRelayCastTypealiasResolves() {
+        let legacy: RelayCast = AgentRelayClient(apiKey: "rk_test_key")
+        XCTAssertEqual(legacy.apiKey, "rk_test_key")
     }
 
     /// v7 broker emits each event as a bare `{kind: ...}` JSON object on `/ws`.
