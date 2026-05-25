@@ -1,66 +1,100 @@
 ---
 title: Harnesses
-description: Define custom PTY and headless harnesses for Agent Relay.
+description: Define custom PTY and headless harness adapters in the SDK.
 ---
 
-A harness tells Relay how to control an agent runtime. The broker exposes two
-runtime categories: `pty` for terminal-backed agents and `headless` for agents
-without a terminal. Named harnesses such as `codex`, `qwen`, or
-`opencode-server` resolve to one of those plans.
+A harness adapter is a named SDK definition that turns `relay.spawn(...)` into a
+broker-executable plan. The broker only runs durable plans; SDK code can prepare
+those plans before spawn.
 
-Headless is the public runtime. App-server is only a headless driver: it says
-the broker should deliver messages to a session server over HTTP instead of
-typing into a PTY or spawning a one-shot provider command.
+Relay supports two public runtime categories:
 
-The important boundary is that the Rust broker runs durable execution plans. SDKs
-can define names and resolve them into JSON, but the broker should not depend on
-an in-memory SDK callback unless the broker lifetime is explicitly attached to
-that SDK process.
+| Runtime | Use For | Broker Capabilities |
+| --- | --- | --- |
+| `pty` | Terminal-backed CLIs such as Codex or Claude Code | stream, input, resize, snapshot, delivery, release |
+| `headless` | Non-terminal agents such as app-server sessions | delivery and release |
 
-## Static PTY Harnesses
+`app_server` is not a third runtime. It is a `headless` driver for sessions
+controlled over HTTP.
 
-Most CLI agents only need a PTY plan. Static harnesses are JSON-compatible and
-work with attached or detached brokers.
+## Static PTY Adapter
 
-```typescript file="qwen-harness.ts"
+Use a static adapter when a CLI only needs a command, args, env, and optional
+model mapping. Static adapters are JSON-compatible and work with attached or
+detached brokers.
+
+```typescript file="claude-harness.ts"
 import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({
   harnesses: {
-    qwen: {
+    'company-claude': {
       runtime: 'pty',
-      command: 'qwen',
-      args: ['run', '{modelArgs}', '{args}'],
-      modelArgs: ['-m', '{model}'],
-      searchPaths: ['~/.local/bin'],
+      command: 'claude',
+      args: ['--append-system-prompt', 'Follow the company review rubric.', '{modelArgs}', '{args}'],
+      modelArgs: ['--model', '{model}'],
+      env: {
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      },
     },
   },
 });
 
-await relay.spawn('QwenReviewer', 'qwen', 'Review the current diff.', {
-  model: 'qwen3-coder',
+await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.', {
+  model: 'opus',
   args: ['--verbose'],
-  channels: ['dev'],
 });
 ```
 
-The SDK resolves that definition to a broker-executable plan:
+Supported placeholders:
 
-```json
-{
-  "runtime": "pty",
-  "command": "qwen",
-  "args": ["run", "-m", "qwen3-coder", "--verbose"]
-}
+| Placeholder | Expands To |
+| --- | --- |
+| `{args}` | Spawn `args` |
+| `{modelArgs}` | Rendered `modelArgs`, only when a model is set |
+| `{model}` | Spawn `model` |
+| `{task}` | Spawn task text |
+
+## Dynamic PTY Adapter
+
+Use a dynamic resolver when spawn needs SDK-side setup. This is attached-only:
+the SDK process is part of the control path.
+
+```typescript file="codex-resume-harness.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  broker: { lifetime: 'attached' },
+  harnesses: {
+    'codex-resume': async (ctx) => {
+      const sessionId = await createCodexSession({
+        cwd: ctx.cwd,
+        task: ctx.task,
+      });
+
+      return {
+        runtime: 'pty',
+        command: 'codex',
+        args: ['resume', sessionId, ...ctx.args],
+        cwd: ctx.cwd,
+        env: ctx.env,
+        sessionId,
+      };
+    },
+  },
+});
+
+await relay.spawn('CodexReviewer', 'codex-resume', 'Review the current diff.');
 ```
 
-The broker owns the PTY process, terminal stream, raw input, resize, snapshot,
-release, and Relay message injection.
+Detached brokers should use static adapters, built-in broker behavior, HTTP
+webhooks, or another durable extension host instead of in-process resolver
+functions.
 
-## Headless App-Server Harnesses
+## Headless App-Server Adapter
 
-Headless app-server harnesses control a session through HTTP. OpenCode's
-`opencode serve` mode is the first target driver.
+Use a headless app-server adapter when the agent already lives in a server
+session. OpenCode `serve` is the first supported protocol driver.
 
 ```typescript file="opencode-server-harness.ts"
 import { AgentRelay } from '@agent-relay/sdk';
@@ -78,69 +112,29 @@ const relay = new AgentRelay({
   },
 });
 
-await relay.spawn('OpenCodeServerWorker', 'opencode-server', 'Inspect the repo.');
+await relay.spawn('OpenCodeWorker', 'opencode-server', 'Inspect the repo.');
 ```
 
-For headless app-server plans, `sessionId` identifies the native runtime
-session. `pid` only exists when the broker owns a local server process; remote
-or already running servers may not have one.
+For OpenCode, Relay delivers messages to `POST /session/:id/prompt_async`.
+Release behavior is controlled by `release`: `abort`, `detach`, or `delete`.
 
-## Dynamic Resolvers
+## One-Off Plans
 
-Some harnesses need pre-spawn work. Codex PTY spawning is the motivating
-example: a resolver can call Codex app-server to create a resumable thread, then
-return a PTY plan that resumes that thread.
+You can bypass named registration and pass a plan directly for a single spawn:
 
-```typescript file="codex-resolver.ts"
-const relay = new AgentRelay({
-  broker: { lifetime: 'attached' },
-  harnesses: {
-    codex: async (ctx) => {
-      const sessionId = await createCodexSession(ctx);
-
-      return {
-        runtime: 'pty',
-        command: 'codex',
-        args: ['resume', sessionId, ...ctx.args],
-        env: ctx.env,
-        sessionId,
-      };
-    },
+```typescript file="one-off-codex.ts"
+await relay.spawnPty({
+  name: 'CodexOneOff',
+  cli: 'codex',
+  harnessPlan: {
+    runtime: 'pty',
+    command: 'codex',
+    args: ['--model', 'gpt-5.4'],
   },
 });
 ```
 
-Dynamic resolvers require an attached broker because the SDK process is part of
-the control path. Detached brokers should use static plans, built-in Rust
-adapters, HTTP webhooks, or a durable extension host.
-
-## Runtime Capabilities
-
-Harness capabilities determine which broker routes are valid.
-
-| Capability | PTY | Headless app server |
-| --- | --- | --- |
-| Relay message delivery | Yes | Yes |
-| Release | Yes | Yes |
-| Fork | No | Protocol-dependent |
-| Terminal stream | Yes | No |
-| Raw PTY input | Yes | No |
-| PTY resize | Yes | No |
-| PTY snapshot | Yes | No |
-| Session messages | No | Protocol-dependent |
-
-PTY-only routes such as `sendInput`, `resizePty`, and `snapshotPty` fail when
-the target harness does not expose PTY capabilities.
-
-## Broker Lifetime
-
-Attached brokers are owned by the SDK process. They can use in-process dynamic
-resolvers and decision hooks because the broker exits when the SDK control
-connection exits.
-
-Detached brokers survive SDK callers. They can be reached later by another SDK,
-the CLI, the dashboard, or agent-triggered spawn requests, so they require
-durable plans and durable hooks.
+Use named adapters when more than one spawn should share the same behavior.
 
 ## See Also
 

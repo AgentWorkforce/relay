@@ -21,7 +21,7 @@ The first headless drivers are:
 - `app_server`: a session-backed HTTP driver for existing or broker-owned agent
   servers.
 
-Named harnesses such as `codex`, `qwen`, or `opencode-server` resolve to one of
+Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
 those executable plans.
 
 ## Plan Shapes
@@ -79,12 +79,11 @@ brokers:
 
 ```ts
 const harnesses = {
-  qwen: {
+  'company-claude': {
     runtime: 'pty',
-    command: 'qwen',
-    args: ['run', '{modelArgs}', '{args}'],
-    modelArgs: ['-m', '{model}'],
-    searchPaths: ['~/.local/bin'],
+    command: 'claude',
+    args: ['--append-system-prompt', 'Follow the company review rubric.', '{modelArgs}', '{args}'],
+    modelArgs: ['--model', '{model}'],
   },
 };
 ```
@@ -148,7 +147,7 @@ The PTY executor consumes a concrete PTY plan. It handles process spawn,
 terminal streaming, raw input, resize, snapshot, release, and PTY message
 injection.
 
-This lets users add a CLI like Qwen Code locally with config only. A Rust
+This lets users add a CLI wrapper locally with config only. A Rust
 contribution is only needed when Relay wants a built-in with tested defaults or
 the CLI needs broker-side behavior.
 
@@ -194,4 +193,4 @@ durable extension host for decision-making.
 5. Add capability-aware runtime checks for PTY-only operations.
 6. Add attached broker control RPCs for dynamic resolvers.
 7. Add detached-mode validation for dynamic resolvers and in-process decision hooks.
-8. Document static Qwen, dynamic Codex, and OpenCode headless app-server examples.
+8. Document static Claude, dynamic Codex, and OpenCode headless app-server examples.
