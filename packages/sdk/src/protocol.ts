@@ -21,6 +21,7 @@ export interface AgentSpec {
   channels?: string[];
   model?: string;
   cwd?: string;
+  session_id?: string;
   team?: string;
   shadow_of?: string;
   shadow_mode?: string;
@@ -257,6 +258,7 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
       parent?: string;
       pid?: number;
       source?: string;
@@ -397,6 +399,7 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
     }
   | {
       kind: 'worker_error';

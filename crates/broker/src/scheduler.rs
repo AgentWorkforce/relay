@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::ids::MessageTarget;
 use crate::types::{InjectRequest, RelayPriority};
 
 #[derive(Debug, Clone)]
@@ -23,7 +24,7 @@ pub struct Scheduler {
     coalesce_window: Duration,
     max_hold: Duration,
     last_human_keypress: Option<Instant>,
-    pending: HashMap<(String, String), CoalesceState>,
+    pending: HashMap<(String, MessageTarget), CoalesceState>,
 }
 
 impl Scheduler {
@@ -96,7 +97,7 @@ impl Scheduler {
     }
 
     pub fn drain_ready(&mut self, now: Instant) -> Vec<InjectRequest> {
-        let ready_keys: Vec<(String, String)> = self
+        let ready_keys: Vec<(String, MessageTarget)> = self
             .pending
             .iter()
             .filter_map(|(key, state)| {

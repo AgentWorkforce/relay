@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::ids::{AgentId, MessageTargetKind};
 use crate::types::{InboundKind, InboundRelayEvent};
 
 use crate::runtime::normalize_channel;
@@ -7,22 +8,22 @@ use crate::runtime::normalize_channel;
 #[derive(Clone)]
 pub(crate) struct RoutingWorker<'a> {
     pub(crate) name: &'a str,
-    pub(crate) channels: &'a [String],
+    pub(crate) channels: &'a [crate::ids::ChannelName],
     pub(crate) workspace_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeliveryPlan {
-    pub(crate) workspace_id: String,
+    pub(crate) workspace_id: crate::ids::WorkspaceId,
     pub(crate) targets: Vec<String>,
-    pub(crate) display_target: String,
+    pub(crate) display_target: crate::ids::MessageTarget,
     pub(crate) needs_dm_resolution: bool,
 }
 
 pub(crate) fn is_self_echo(
     event: &InboundRelayEvent,
     self_names: &HashSet<String>,
-    self_agent_ids: &HashSet<String>,
+    self_agent_ids: &HashSet<AgentId>,
     has_local_target: bool,
 ) -> bool {
     let from_self = self_names.contains(&event.from)
@@ -71,7 +72,11 @@ pub(crate) fn resolve_delivery_targets(
 ) -> DeliveryPlan {
     let ws_id = Some(event.workspace_id.as_str());
 
-    if event.target.starts_with('#') {
+    // Dispatch on the structural shape of the target rather than hand-rolled
+    // prefix checks. The Channel / Thread / DM / Worker discrimination lives
+    // in `MessageTarget::kind()` so future routing changes only touch one
+    // place.
+    if matches!(event.target.kind(), MessageTargetKind::Channel(_)) {
         let targets = worker_names_for_channel_delivery(workers, &event.target, &event.from, ws_id);
         tracing::debug!(
             target = "broker::routing",
@@ -93,7 +98,9 @@ pub(crate) fn resolve_delivery_targets(
     // (except the sender) that belong to the same workspace. The WS only
     // delivers thread.reply to channel subscribers so every matching local
     // worker is a valid recipient.
-    if matches!(event.kind, InboundKind::ThreadReply) && event.target == "thread" {
+    if matches!(event.kind, InboundKind::ThreadReply)
+        && matches!(event.target.kind(), MessageTargetKind::Thread)
+    {
         let targets: Vec<String> = workers
             .iter()
             .filter(|w| {
@@ -111,7 +118,7 @@ pub(crate) fn resolve_delivery_targets(
         return DeliveryPlan {
             workspace_id: event.workspace_id.clone(),
             targets,
-            display_target: "thread".to_string(),
+            display_target: crate::ids::MessageTarget::thread_sentinel(),
             needs_dm_resolution: false,
         };
     }
@@ -255,14 +262,17 @@ mod tests {
     #[derive(Debug)]
     struct WorkerFixture {
         name: String,
-        channels: Vec<String>,
+        channels: Vec<crate::ids::ChannelName>,
     }
 
     impl WorkerFixture {
         fn new(name: &str, channels: &[&str]) -> Self {
             Self {
                 name: name.to_string(),
-                channels: channels.iter().map(|channel| channel.to_string()).collect(),
+                channels: channels
+                    .iter()
+                    .map(|channel| crate::ids::ChannelName::from(*channel))
+                    .collect(),
             }
         }
     }
@@ -286,14 +296,14 @@ mod tests {
         };
 
         InboundRelayEvent {
-            event_id: "evt_1".to_string(),
-            workspace_id: "ws_test".to_string(),
-            workspace_alias: Some("test".to_string()),
+            event_id: crate::ids::EventId::new("evt_1"),
+            workspace_id: crate::ids::WorkspaceId::new("ws_test"),
+            workspace_alias: Some(crate::ids::WorkspaceAlias::new("test")),
             kind,
             from: from.to_string(),
             sender_agent_id: None,
             sender_kind: SenderKind::Agent,
-            target: target.to_string(),
+            target: crate::ids::MessageTarget::new(target),
             text: "hello".to_string(),
             thread_id: None,
             priority,
@@ -313,10 +323,10 @@ mod tests {
     #[test]
     fn self_echo_detected_by_agent_id() {
         let self_names = HashSet::new();
-        let mut self_agent_ids = HashSet::new();
-        self_agent_ids.insert("agt_self".to_string());
+        let mut self_agent_ids: HashSet<crate::ids::AgentId> = HashSet::new();
+        self_agent_ids.insert(crate::ids::AgentId::new("agt_self"));
         let mut event = inbound_event(InboundKind::MessageCreated, "Other", "#general");
-        event.sender_agent_id = Some("agt_self".to_string());
+        event.sender_agent_id = Some(crate::ids::AgentId::new("agt_self"));
 
         assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
     }
@@ -459,12 +469,12 @@ mod tests {
 
         // Event from ws_a should only reach Alpha (but Alpha is the sender, so no targets)
         let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
-        event.workspace_id = "ws_a".to_string();
+        event.workspace_id = crate::ids::WorkspaceId::new("ws_a");
         let plan = resolve_delivery_targets(&event, &routing_workers);
         assert_eq!(plan.targets, vec!["Alpha".to_string()]);
 
         // Event from ws_b should only reach Bravo
-        event.workspace_id = "ws_b".to_string();
+        event.workspace_id = crate::ids::WorkspaceId::new("ws_b");
         let plan = resolve_delivery_targets(&event, &routing_workers);
         assert_eq!(plan.targets, vec!["Bravo".to_string()]);
     }
@@ -491,12 +501,12 @@ mod tests {
 
         // Event from ws_a: Alpha matches (no ws filter), Bravo doesn't (ws_b != ws_a)
         let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
-        event.workspace_id = "ws_a".to_string();
+        event.workspace_id = crate::ids::WorkspaceId::new("ws_a");
         let plan = resolve_delivery_targets(&event, &routing_workers);
         assert_eq!(plan.targets, vec!["Alpha".to_string()]);
 
         // Event from ws_b: both match
-        event.workspace_id = "ws_b".to_string();
+        event.workspace_id = crate::ids::WorkspaceId::new("ws_b");
         let plan = resolve_delivery_targets(&event, &routing_workers);
         assert_eq!(plan.targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
     }

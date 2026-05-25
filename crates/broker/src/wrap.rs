@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use crate::{
     control::{can_release_child, is_human_sender},
     dedup::DedupCache,
+    ids::{DeliveryId, EventId, MessageTarget, WorkspaceAlias, WorkspaceId},
     pty::PtySession,
     relaycast::{
         agent_name_eq, is_self_name, map_ws_broker_command, map_ws_event,
@@ -55,11 +56,11 @@ const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone)]
 pub(crate) struct PendingWrapInjection {
     pub(crate) from: String,
-    pub(crate) event_id: String,
-    pub(crate) workspace_id: Option<String>,
-    pub(crate) workspace_alias: Option<String>,
+    pub(crate) event_id: EventId,
+    pub(crate) workspace_id: Option<WorkspaceId>,
+    pub(crate) workspace_alias: Option<WorkspaceAlias>,
     pub(crate) body: String,
-    pub(crate) target: String,
+    pub(crate) target: MessageTarget,
     pub(crate) queued_at: Instant,
 }
 
@@ -621,7 +622,7 @@ pub(crate) async fn run_wrap(
             ws
         })
         .collect();
-    let workspace_lookup: std::collections::HashMap<String, RelayWorkspace> = workspaces
+    let workspace_lookup: std::collections::HashMap<WorkspaceId, RelayWorkspace> = workspaces
         .iter()
         .cloned()
         .map(|workspace| (workspace.workspace_id.clone(), workspace))
@@ -1245,7 +1246,7 @@ pub(crate) async fn run_wrap(
 
                     // Push to pending verifications for echo verification
                     pending_verifications.push_back(PendingVerification {
-                        delivery_id: format!("wrap_{}", pending.event_id),
+                        delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                         event_id: pending.event_id,
                         expected_echo: injection,
                         injected_at: Instant::now(),
