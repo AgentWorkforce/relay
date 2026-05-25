@@ -27,12 +27,6 @@ packages/hooks/src/
 - Write hook output to stdout as JSON
 - Exit with appropriate code (0 = success, non-zero = error)
 
-## Shell Wrapper
-
-- `check-inbox.sh` wraps the TypeScript hook for Claude Code
-- Must be executable: `chmod +x`
-- Handles Node.js execution and error output
-
 ## Testing
 
 - Test utility functions in isolation
