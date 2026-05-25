@@ -1,0 +1,53 @@
+{
+  "id": "traj_gkxajksmwoea",
+  "version": 1,
+  "task": {
+    "title": "Document owned MCP tool table"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T22:17:18.278Z",
+  "completedAt": "2026-05-25T22:19:29.639Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T22:19:23.888Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0ms8pccwgud8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T22:19:23.888Z",
+      "endedAt": "2026-05-25T22:19:29.639Z",
+      "events": [
+        {
+          "ts": 1779747563889,
+          "type": "decision",
+          "content": "Document MCP tool surface in README: Document MCP tool surface in README",
+          "raw": {
+            "question": "Document MCP tool surface in README",
+            "chosen": "Document MCP tool surface in README",
+            "alternatives": [],
+            "reasoning": "The owned MCP tool names changed in this PR, so the root README should include a canonical table generated from the registered tools and the existing Claude plugin docs should match it."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added a root README table covering all owned agent-relay mcp tools and descriptions, refreshed the Claude plugin docs table, formatted the docs, and verified the README table has no missing or extra registered tools.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-owned-mcp",
+  "tags": [],
+  "_trace": {
+    "startRef": "2233f91abc5c64037a2d6d39fad23b899eac57e0",
+    "endRef": "2233f91abc5c64037a2d6d39fad23b899eac57e0"
+  }
+}
