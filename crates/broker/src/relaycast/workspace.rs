@@ -56,7 +56,11 @@ impl MultiWorkspaceSession {
 
         for session in sessions.memberships {
             let workspace_id = WorkspaceId::new(session.credentials.workspace_id.clone());
-            let workspace_alias = session.credentials.workspace_alias.clone().map(WorkspaceAlias::from);
+            let workspace_alias = session
+                .credentials
+                .workspace_alias
+                .clone()
+                .map(WorkspaceAlias::from);
             let relay_workspace_key = session.credentials.api_key.clone();
             let self_agent_id = AgentId::new(session.credentials.agent_id.clone());
             let self_token = session.token.clone();

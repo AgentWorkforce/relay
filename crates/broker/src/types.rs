@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{
-    AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias,
-    WorkspaceId,
+    AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
 };
 use crate::protocol::MessageInjectionMode;
 

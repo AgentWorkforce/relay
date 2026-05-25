@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use crate::ids::{AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
+use crate::ids::{
+    AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId,
+};
 use crate::types::{
     BrokerCommandEvent, BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest,
     RelayPriority, ReleaseParams, SenderKind, SpawnParams,

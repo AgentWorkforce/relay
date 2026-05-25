@@ -165,7 +165,9 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     if !workers.has_worker(worker_name) {
         return InboundQueueOutcome::WorkerMissing;
     }
-    let state = delivery_states.entry(WorkerName::from(worker_name)).or_default();
+    let state = delivery_states
+        .entry(WorkerName::from(worker_name))
+        .or_default();
     let should_drain = state.should_drain_immediately();
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {

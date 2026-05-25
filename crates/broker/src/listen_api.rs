@@ -1646,7 +1646,10 @@ async fn listen_api_get_pending(
                     });
                     let obj = payload.as_object_mut().expect("payload object built above");
                     if let Some(thread_id) = m.thread_id {
-                        obj.insert("thread_id".to_string(), Value::String(thread_id.into_string()));
+                        obj.insert(
+                            "thread_id".to_string(),
+                            Value::String(thread_id.into_string()),
+                        );
                     }
                     if let Some(workspace_id) = m.workspace_id {
                         obj.insert(
@@ -1661,7 +1664,10 @@ async fn listen_api_get_pending(
                         );
                     }
                     if let Some(event_id) = m.event_id {
-                        obj.insert("event_id".to_string(), Value::String(event_id.into_string()));
+                        obj.insert(
+                            "event_id".to_string(),
+                            Value::String(event_id.into_string()),
+                        );
                     }
                     payload
                 })

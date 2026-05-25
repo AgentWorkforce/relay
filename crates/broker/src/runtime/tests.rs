@@ -360,9 +360,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
-    emit_delivery_attempt_outcome(
-        &sdk_out_tx,
-        &DeliveryId::new("del_blip"), true, outcome)
+    emit_delivery_attempt_outcome(&sdk_out_tx, &DeliveryId::new("del_blip"), true, outcome)
         .await
         .expect("failed outcome should emit to sdk_out_tx");
 
