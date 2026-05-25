@@ -10,20 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
+- `@agent-relay/sdk` adds `AgentRelay.getPersonaSpawnPlan(id)` and a `getPersonaSpawnPlan` export for dry-run inspection of a persona's resolved harness argv, skill installs, mount policy, sidecars, and inputs.
 
 ### Changed
 
 - `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
 - `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
-- `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
+- `@agent-relay/sdk` `spawnPersona` now runs the full `@agentworkforce/persona-kit` lifecycle (skill installs, mount policy, `CLAUDE.md` / `AGENTS.md` sidecars, persona inputs) before launching the harness, and reverses every side effect when the agent exits. Previously it only translated the harness argv and silently dropped the rest of the schema.
 
 ### Breaking Changes
 
+- `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
 - `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
+- `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
 
 ### Migration Guidance
 
+- Personas relying on `tiers.*` need to be flattened to a single top-level `harness` / `model` / `systemPrompt`. The shape that persona-kit (and the `agentworkforce` CLI) consumes is now the only supported shape.
+- Callers that previously used `spawnPersona` to "just launch the harness" — without persona-kit's skill / mount / sidecar side effects — should use `AgentRelay.getPersonaSpawnPlan(id)` to inspect the plan and call `spawnPty` with the plan's `cli` + `args` themselves.
 - Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, …}` instead of `String`. Each newtype impls `From<String>` / `From<&str>` and `Deref<Target = str>`, so most string-handling code keeps compiling; only construction sites (`HashMap` keys, struct literals, channel sends) need updates.
 - Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
 
