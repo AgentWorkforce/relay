@@ -2,7 +2,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::{util::ansi::strip_ansi, worker::detection::ActivityDetector};
+use crate::{
+    ids::{DeliveryId, EventId, MessageTarget, RequestId, WorkspaceAlias, WorkspaceId},
+    util::ansi::strip_ansi,
+    worker::detection::ActivityDetector,
+};
 
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
@@ -65,8 +69,8 @@ impl ThrottleState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingActivity {
-    pub delivery_id: String,
-    pub event_id: String,
+    pub delivery_id: DeliveryId,
+    pub event_id: EventId,
     pub expected_echo: String,
     pub verified_at: Instant,
     pub output_buffer: String,
@@ -85,18 +89,18 @@ pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration:
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
 pub(crate) struct PendingVerification {
-    pub delivery_id: String,
-    pub event_id: String,
+    pub delivery_id: DeliveryId,
+    pub event_id: EventId,
     pub expected_echo: String,
     pub injected_at: std::time::Instant,
     pub attempts: usize,
     pub max_attempts: usize,
-    pub request_id: Option<String>,
-    pub workspace_id: Option<String>,
-    pub workspace_alias: Option<String>,
+    pub request_id: Option<RequestId>,
+    pub workspace_id: Option<WorkspaceId>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub from: String,
     pub body: String,
-    pub target: String,
+    pub target: MessageTarget,
 }
 
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).

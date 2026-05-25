@@ -267,6 +267,7 @@ impl BrokerRuntime {
                                 "provider": effective_spec.provider.clone(),
                                 "cli": effective_spec.cli.clone(),
                                 "model": effective_spec.model.clone(),
+                                "sessionId": effective_spec.session_id.clone(),
                                 "pid":pid,
                                 "source":"http_api",
                                 "pre_registered": worker_relay_key.is_some(),
@@ -286,6 +287,7 @@ impl BrokerRuntime {
                             "name": name,
                             "runtime": runtime_label(&effective_spec.runtime),
                             "model": effective_spec.model.clone(),
+                            "sessionId": effective_spec.session_id.clone(),
                             "pid": pid,
                             "pre_registered": worker_relay_key.is_some(),
                             "warning": preregistration_warning,
@@ -944,7 +946,7 @@ impl BrokerRuntime {
                     .send_to_worker(
                         &name,
                         "write_pty",
-                        Some(format!("api_{}", Uuid::new_v4().simple())),
+                        Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
                         json!({ "data": data }),
                     )
                     .await
@@ -993,7 +995,7 @@ impl BrokerRuntime {
                     .send_to_worker(
                         &name,
                         "resize_pty",
-                        Some(format!("api_{}", Uuid::new_v4().simple())),
+                        Some(RequestId::new(format!("api_{}", Uuid::new_v4().simple()))),
                         json!({ "rows": rows, "cols": cols }),
                     )
                     .await
@@ -1046,7 +1048,7 @@ impl BrokerRuntime {
                                     ));
                     }
                     Some(AgentRuntime::Pty) => {
-                        let request_id = format!("req_{}", Uuid::new_v4().simple());
+                        let request_id = RequestId::new(format!("req_{}", Uuid::new_v4().simple()));
                         if let Err(err) = workers
                             .send_to_worker(&name, &kind, Some(request_id.clone()), payload)
                             .await
@@ -1056,10 +1058,10 @@ impl BrokerRuntime {
                             ));
                         } else {
                             pending_requests.insert(
-                                request_id,
+                                request_id.into_string(),
                                 worker_request::PendingRequest {
                                     kind,
-                                    worker_name: name,
+                                    worker_name: name.into_string(),
                                     reply,
                                     deadline: Instant::now() + timeout,
                                 },
@@ -1471,7 +1473,7 @@ impl BrokerRuntime {
 
 fn workspace_for_channel_update<'a>(
     workspace_id: Option<&str>,
-    workspace_lookup: &'a HashMap<String, RelayWorkspace>,
+    workspace_lookup: &'a HashMap<WorkspaceId, RelayWorkspace>,
     default_workspace_id: Option<&str>,
     default_workspace: &'a RelayWorkspace,
 ) -> &'a RelayWorkspace {
@@ -1488,10 +1490,10 @@ fn effective_channel_workspace_id<'a>(
     workspace_id.or(default_workspace_id)
 }
 
-fn channel_in_list(channels: &[String], channel: &str) -> bool {
+fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
     channels
         .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(channel))
+        .any(|existing| existing.as_str().eq_ignore_ascii_case(channel))
 }
 
 fn persist_agent_channels(
@@ -1500,13 +1502,13 @@ fn persist_agent_channels(
     parent: Option<String>,
     mut spec: AgentSpec,
     pid: Option<u32>,
-    channels: Vec<String>,
+    channels: Vec<ChannelName>,
 ) {
     spec.channels = channels.clone();
     let runtime = spec.runtime.clone();
     let agent = state
         .agents
-        .entry(name.to_string())
+        .entry(WorkerName::from(name))
         .or_insert_with(|| broker::PersistedAgent {
             runtime: runtime.clone(),
             parent: parent.clone(),

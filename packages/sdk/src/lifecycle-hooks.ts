@@ -78,7 +78,7 @@ export interface AfterAgentSpawnContext extends BeforeAgentSpawnContext {
   /** Final input that was sent to the broker — original input merged with every handler's patch. */
   resolvedInput: SpawnPtyInput | SpawnProviderInput;
   /** Broker reply on success. */
-  result?: { name: string; runtime: AgentRuntime };
+  result?: { name: string; runtime: AgentRuntime; sessionId?: string };
   /** Set when the broker call rejected. Mutually exclusive with `result`. */
   error?: Error;
   /** Wall-clock duration from `beforeAgentSpawn` start to here. */

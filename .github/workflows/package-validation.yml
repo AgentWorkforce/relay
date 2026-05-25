@@ -66,17 +66,41 @@ jobs:
         with:
           node-version: '22'
 
-      # Cache node_modules - skip npm ci entirely if unchanged
-      - name: Cache node_modules
+      # Restore node_modules — skip npm ci entirely if unchanged. Split
+      # restore/save (instead of actions/cache@v4) so the cache is saved
+      # right after `npm ci` produces a clean tree; otherwise the implicit
+      # post-job save runs after `pack:validate`, which deletes
+      # `packages/*/node_modules` and poisons the cache for the next run
+      # (broker fails at runtime with `Cannot find package 'posthog-node'`
+      # because the cached telemetry workspace has no nested deps).
+      - name: Restore node_modules
         id: cache-modules
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          path: node_modules
-          key: modules-${{ hashFiles('package-lock.json') }}
+          # Include nested workspace node_modules so unhoisted deps
+          # (e.g. @slack/web-api under packages/slack-primitive) survive
+          # a cache hit — otherwise the cache restores only the root tree
+          # and skipping `npm ci` leaves the bundler unable to resolve
+          # them.
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: modules-v3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      # Save the freshly-installed node_modules immediately, before any
+      # later step (notably `pack:validate`) mutates the tree.
+      - name: Save node_modules
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: modules-v3-${{ hashFiles('package-lock.json') }}
 
       # Cache turbo build outputs for incremental builds
       - name: Cache turbo

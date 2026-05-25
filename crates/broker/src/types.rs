@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ids::{
+    AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+};
 use crate::protocol::MessageInjectionMode;
 
 /// Per-worker inbound delivery mode controlling how inbound relay messages are
@@ -64,18 +67,18 @@ pub struct PendingRelayMessage {
     /// name, or sentinel like `"thread"`. Used as the `target` arg to
     /// `queue_and_try_delivery_raw` on drain so the re-injected
     /// message matches the original routing.
-    pub target: String,
+    pub target: MessageTarget,
     /// Original thread id, when the inbound was a thread reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
+    pub thread_id: Option<ThreadId>,
     /// Original workspace id, when known. Channel + DM routing both
     /// depend on this; dropping it would attribute the flushed
     /// message to the wrong workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
+    pub workspace_id: Option<WorkspaceId>,
     /// Original workspace alias (display name), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     /// Original delivery priority. 0 = P0, …, 4 = P4. Defaults to 2
     /// (P2) when the source didn't carry a priority.
     #[serde(default = "default_priority")]
@@ -89,7 +92,7 @@ pub struct PendingRelayMessage {
     /// Inbound event_id when the source carried one. Preserved for
     /// telemetry / dedup parity with the auto-inject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
+    pub event_id: Option<EventId>,
 }
 
 fn default_priority() -> u8 {
@@ -139,17 +142,17 @@ pub enum SenderKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundRelayEvent {
-    pub event_id: String,
-    pub workspace_id: String,
+    pub event_id: EventId,
+    pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub kind: InboundKind,
     pub from: String,
-    pub sender_agent_id: Option<String>,
+    pub sender_agent_id: Option<AgentId>,
     pub sender_kind: SenderKind,
-    pub target: String,
+    pub target: MessageTarget,
     pub text: String,
-    pub thread_id: Option<String>,
+    pub thread_id: Option<ThreadId>,
     pub priority: RelayPriority,
 }
 
@@ -160,21 +163,21 @@ pub struct InboundRelayEvent {
 pub struct BrokerCommandEvent {
     /// The slash command name (e.g. "/spawn", "/release").
     pub command: String,
-    pub workspace_id: String,
-    pub workspace_alias: Option<String>,
+    pub workspace_id: WorkspaceId,
+    pub workspace_alias: Option<WorkspaceAlias>,
     /// Channel the command was invoked in.
-    pub channel: String,
+    pub channel: ChannelName,
     /// Agent ID or name of the invoker.
     pub invoked_by: String,
     /// Target command handler agent ID, when provided by Relaycast.
-    pub handler_agent_id: Option<String>,
+    pub handler_agent_id: Option<AgentId>,
     /// Structured parameters for the command.
     pub payload: BrokerCommandPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnParams {
-    pub name: String,
+    pub name: WorkerName,
     pub cli: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -182,7 +185,7 @@ pub struct SpawnParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseParams {
-    pub name: String,
+    pub name: WorkerName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,11 +197,11 @@ pub enum BrokerCommandPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectRequest {
     pub id: String,
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub from: String,
-    pub target: String,
+    pub target: MessageTarget,
     pub body: String,
     pub priority: RelayPriority,
     pub attempts: u32,
@@ -328,7 +331,7 @@ mod inbound_delivery_tests {
             // Target defaults to the sender's name in tests that don't
             // care about routing — the gating logic only inspects mode
             // / queue length, not the routing fields.
-            target: "worker".to_string(),
+            target: MessageTarget::new("worker"),
             thread_id: None,
             workspace_id: None,
             workspace_alias: None,
@@ -371,14 +374,14 @@ mod inbound_delivery_tests {
         let queued = PendingRelayMessage {
             from: "Bob".to_string(),
             body: "ship it".to_string(),
-            target: "#general".to_string(),
-            thread_id: Some("thr_abc".to_string()),
-            workspace_id: Some("ws_demo".to_string()),
-            workspace_alias: Some("Demo".to_string()),
+            target: MessageTarget::new("#general"),
+            thread_id: Some(ThreadId::new("thr_abc")),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            workspace_alias: Some(WorkspaceAlias::new("Demo")),
             priority: 1,
             mode: MessageInjectionMode::Steer,
             queued_at_ms: 123_456,
-            event_id: Some("evt_xyz".to_string()),
+            event_id: Some(EventId::new("evt_xyz")),
         };
         let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         state.accept_inbound(queued.clone());

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-relay-sdk"
-version = "7.1.0"
+version = "7.1.1"
 description = "Python SDK for Agent Relay workflows"
 readme = "README.md"
 license = "Apache-2.0"
@@ -21,7 +21,6 @@ openai-agents = ["openai-agents>=0.1"]
 claude-sdk = ["claude-agent-sdk>=0.1"]
 google-adk = ["google-adk>=0.1"]
 agno = ["agno>=0.1"]
-swarms = ["swarms>=0.1"]
 crewai = ["crewai>=0.1"]
 dev = [
     "aiohttp>=3.9",

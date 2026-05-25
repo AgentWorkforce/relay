@@ -103,6 +103,7 @@ export interface ListAgent {
   provider?: HeadlessProvider;
   cli?: string;
   model?: string;
+  sessionId?: string;
   team?: string;
   channels: string[];
   parent?: string;

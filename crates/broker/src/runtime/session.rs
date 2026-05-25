@@ -3,20 +3,20 @@ use super::*;
 /// Shared Relaycast connection state used by run_init and run_wrap.
 #[derive(Clone)]
 pub(crate) struct RelayWorkspace {
-    pub(crate) workspace_id: String,
-    pub(crate) workspace_alias: Option<String>,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) workspace_alias: Option<WorkspaceAlias>,
     pub(crate) relay_workspace_key: String,
     pub(crate) self_name: String,
-    pub(crate) self_agent_id: String,
+    pub(crate) self_agent_id: AgentId,
     pub(crate) self_names: HashSet<String>,
-    pub(crate) self_agent_ids: HashSet<String>,
+    pub(crate) self_agent_ids: HashSet<AgentId>,
     pub(crate) http_client: RelaycastHttpClient,
     pub(crate) ws_control_tx: mpsc::Sender<WsControl>,
 }
 
 pub(crate) struct RelaySession {
     pub(crate) http_base: String,
-    pub(crate) default_workspace_id: Option<String>,
+    pub(crate) default_workspace_id: Option<WorkspaceId>,
     pub(crate) workspaces: Vec<RelayWorkspace>,
     pub(crate) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
 }
@@ -25,7 +25,7 @@ pub(crate) struct RelaySession {
 pub(crate) struct RelayReadyState {
     pub(super) workspace_key: String,
     pub(super) memberships: Vec<WorkspaceMembershipSummary>,
-    pub(super) default_workspace_id: Option<String>,
+    pub(super) default_workspace_id: Option<WorkspaceId>,
 }
 
 pub(crate) async fn serve_startup_api_until_ready(
