@@ -1,12 +1,16 @@
 ---
 title: Harnesses
-description: Define custom PTY and app-server harnesses for Agent Relay.
+description: Define custom PTY and headless harnesses for Agent Relay.
 ---
 
-A harness tells Relay how to control an agent runtime. The broker executes two
-runtime shapes: `pty` for terminal-backed agents and `app_server` for
-session-backed agent servers. Named harnesses such as `codex`, `qwen`, or
-`opencode-server` resolve to one of those shapes.
+A harness tells Relay how to control an agent runtime. The broker exposes two
+runtime categories: `pty` for terminal-backed agents and `headless` for agents
+without a terminal. Named harnesses such as `codex`, `qwen`, or
+`opencode-server` resolve to one of those plans.
+
+Headless is the public runtime. App-server is only a headless driver: it says
+the broker should deliver messages to a session server over HTTP instead of
+typing into a PTY or spawning a one-shot provider command.
 
 The important boundary is that the Rust broker runs durable execution plans. SDKs
 can define names and resolve them into JSON, but the broker should not depend on
@@ -53,10 +57,10 @@ The SDK resolves that definition to a broker-executable plan:
 The broker owns the PTY process, terminal stream, raw input, resize, snapshot,
 release, and Relay message injection.
 
-## App-Server Harnesses
+## Headless App-Server Harnesses
 
-App-server harnesses control a session through HTTP instead of typing into a
-terminal. OpenCode's `opencode serve` mode is the first target shape.
+Headless app-server harnesses control a session through HTTP. OpenCode's
+`opencode serve` mode is the first target driver.
 
 ```typescript file="opencode-server-harness.ts"
 import { AgentRelay } from '@agent-relay/sdk';
@@ -64,7 +68,8 @@ import { AgentRelay } from '@agent-relay/sdk';
 const relay = new AgentRelay({
   harnesses: {
     'opencode-server': {
-      runtime: 'app_server',
+      runtime: 'headless',
+      driver: 'app_server',
       protocol: 'opencode',
       endpoint: 'http://127.0.0.1:4096',
       sessionId: 'ses_123',
@@ -76,9 +81,9 @@ const relay = new AgentRelay({
 await relay.spawn('OpenCodeServerWorker', 'opencode-server', 'Inspect the repo.');
 ```
 
-For app-server plans, `sessionId` identifies the native runtime session. `pid`
-only exists when the broker owns a local server process; remote or already
-running servers may not have one.
+For headless app-server plans, `sessionId` identifies the native runtime
+session. `pid` only exists when the broker owns a local server process; remote
+or already running servers may not have one.
 
 ## Dynamic Resolvers
 
@@ -113,7 +118,7 @@ adapters, HTTP webhooks, or a durable extension host.
 
 Harness capabilities determine which broker routes are valid.
 
-| Capability | PTY | App server |
+| Capability | PTY | Headless app server |
 | --- | --- | --- |
 | Relay message delivery | Yes | Yes |
 | Release | Yes | Yes |

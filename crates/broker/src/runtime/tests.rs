@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::protocol::{
-    AgentSpec, AppServerHarnessPlan, HarnessReleasePolicy, MessageInjectionMode, RelayDelivery,
-    ResolvedHarnessPlan,
+    AgentSpec, HarnessReleasePolicy, HeadlessHarnessDriver, HeadlessHarnessPlan,
+    MessageInjectionMode, RelayDelivery, ResolvedHarnessPlan,
 };
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -1976,8 +1976,9 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
 }
 
 #[test]
-fn http_api_spawn_spec_uses_app_server_runtime_from_harness_plan() {
-    let harness_plan = ResolvedHarnessPlan::AppServer(AppServerHarnessPlan {
+fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_plan() {
+    let harness_plan = ResolvedHarnessPlan::Headless(HeadlessHarnessPlan {
+        driver: HeadlessHarnessDriver::AppServer,
         protocol: "opencode".to_string(),
         endpoint: "http://127.0.0.1:4096".to_string(),
         session_id: "ses_123".to_string(),
@@ -2001,23 +2002,24 @@ fn http_api_spawn_spec_uses_app_server_runtime_from_harness_plan() {
         None,
         Some(harness_plan),
     )
-    .expect("app-server harness spec should build");
+    .expect("headless app-server harness spec should build");
 
-    assert!(matches!(spec.runtime, AgentRuntime::AppServer));
+    assert!(matches!(spec.runtime, AgentRuntime::Headless));
+    assert!(spec.provider.is_none());
     assert_eq!(spec.cli.as_deref(), Some("opencode-server"));
     assert_eq!(spec.session_id.as_deref(), Some("ses_123"));
     assert!(matches!(
         spec.harness_plan,
-        Some(ResolvedHarnessPlan::AppServer(_))
+        Some(ResolvedHarnessPlan::Headless(_))
     ));
 }
 
 #[test]
-fn http_api_spawn_spec_rejects_app_server_without_harness_plan() {
+fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_plan() {
     let error = build_http_api_spawn_spec(
         "worker-a".to_string(),
         "opencode-server".to_string(),
-        Some("app_server".to_string()),
+        Some("headless".to_string()),
         None,
         vec![],
         vec!["general".to_string()],
@@ -2028,10 +2030,12 @@ fn http_api_spawn_spec_rejects_app_server_without_harness_plan() {
         None,
         None,
     )
-    .expect_err("app-server spec without harness plan should fail");
+    .expect_err("custom headless provider without harness plan should fail");
 
     assert!(
-        error.to_string().contains("requires harnessPlan"),
+        error
+            .to_string()
+            .contains("does not support headless transport"),
         "unexpected error: {error}"
     );
 }

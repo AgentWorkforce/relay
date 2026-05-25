@@ -4,8 +4,9 @@ import path from 'node:path';
 
 import type { AgentRuntime } from './protocol.js';
 
-export type HarnessRuntime = Extract<AgentRuntime, 'pty' | 'app_server'>;
+export type HarnessRuntime = Extract<AgentRuntime, 'pty' | 'headless'>;
 export type HarnessReleasePolicy = 'abort' | 'detach' | 'delete';
+export type HeadlessHarnessDriver = 'app_server';
 
 export interface PtyHarnessDelivery {
   mode?: 'pty-injection';
@@ -35,8 +36,9 @@ export interface AppServerHarnessHost {
   pid?: number;
 }
 
-export interface AppServerHarnessPlan {
-  runtime: 'app_server';
+export interface HeadlessAppServerHarnessPlan {
+  runtime: 'headless';
+  driver: HeadlessHarnessDriver;
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;
@@ -46,7 +48,7 @@ export interface AppServerHarnessPlan {
   metadata?: Record<string, unknown>;
 }
 
-export type ResolvedHarnessPlan = PtyHarnessPlan | AppServerHarnessPlan;
+export type ResolvedHarnessPlan = PtyHarnessPlan | HeadlessAppServerHarnessPlan;
 
 export interface StaticPtyHarnessDefinition {
   runtime: 'pty';
@@ -61,8 +63,9 @@ export interface StaticPtyHarnessDefinition {
   metadata?: Record<string, unknown>;
 }
 
-export interface StaticAppServerHarnessDefinition {
-  runtime: 'app_server';
+export interface StaticHeadlessAppServerHarnessDefinition {
+  runtime: 'headless';
+  driver: HeadlessHarnessDriver;
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;
@@ -72,7 +75,7 @@ export interface StaticAppServerHarnessDefinition {
   metadata?: Record<string, unknown>;
 }
 
-export type StaticHarnessDefinition = StaticPtyHarnessDefinition | StaticAppServerHarnessDefinition;
+export type StaticHarnessDefinition = StaticPtyHarnessDefinition | StaticHeadlessAppServerHarnessDefinition;
 
 export interface HarnessResolveContext {
   name: string;
@@ -109,9 +112,10 @@ export function isAttachedHarnessResolver(value: HarnessDefinition): value is At
 
 export function resolveStaticHarnessPlan(input: ResolveStaticHarnessInput): ResolvedHarnessPlan {
   const { definition } = input;
-  if (definition.runtime === 'app_server') {
+  if (definition.runtime === 'headless') {
     return {
-      runtime: 'app_server',
+      runtime: 'headless',
+      driver: definition.driver,
       protocol: definition.protocol,
       endpoint: definition.endpoint,
       sessionId: definition.sessionId,

@@ -4,7 +4,6 @@ pub(crate) fn runtime_label(runtime: &AgentRuntime) -> &'static str {
     match runtime {
         AgentRuntime::Pty => "pty",
         AgentRuntime::Headless => "headless",
-        AgentRuntime::AppServer => "app_server",
     }
 }
 
@@ -32,11 +31,8 @@ pub(crate) fn build_http_api_spawn_spec(
         None => AgentRuntime::Pty,
         Some(value) if value == "pty" => AgentRuntime::Pty,
         Some(value) if value == "headless" => AgentRuntime::Headless,
-        Some(value) if value == "app_server" || value == "app-server" => AgentRuntime::AppServer,
         Some(other) => {
-            anyhow::bail!(
-                "unsupported transport '{other}' (expected 'pty', 'headless', or 'app_server')"
-            )
+            anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
         }
     };
     let harness_runtime = harness_plan.as_ref().map(ResolvedHarnessPlan::runtime);
@@ -58,9 +54,6 @@ pub(crate) fn build_http_api_spawn_spec(
         }
         (_, None) => requested_runtime,
     };
-    if matches!(runtime, AgentRuntime::AppServer) && harness_plan.is_none() {
-        anyhow::bail!("app_server transport requires harnessPlan.runtime = 'app_server'");
-    }
     let parsed_restart_policy = match restart_policy {
         Some(v) => Some(serde_json::from_value(v).context("invalid restart_policy")?),
         None => None,
@@ -68,15 +61,17 @@ pub(crate) fn build_http_api_spawn_spec(
 
     let (provider, cli_command, model) = match runtime {
         AgentRuntime::Pty => (None, Some(cli), model),
-        AgentRuntime::Headless => {
-            let provider = headless_provider_from_cli(&cli).with_context(|| {
-                format!(
-                    "provider '{cli}' does not support headless transport (supported: claude, opencode)"
-                )
-            })?;
-            (Some(provider), None, model)
-        }
-        AgentRuntime::AppServer => (None, Some(cli), model),
+        AgentRuntime::Headless => match harness_plan.as_ref() {
+            Some(ResolvedHarnessPlan::Headless(_)) => (None, Some(cli), model),
+            _ => {
+                let provider = headless_provider_from_cli(&cli).with_context(|| {
+                    format!(
+                        "provider '{cli}' does not support headless transport (supported: claude, opencode)"
+                    )
+                })?;
+                (Some(provider), None, model)
+            }
+        },
     };
     let session_id = harness_plan
         .as_ref()

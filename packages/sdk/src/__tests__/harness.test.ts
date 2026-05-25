@@ -29,12 +29,13 @@ describe('harness plans', () => {
     });
   });
 
-  it('resolves static app-server harnesses without process args', () => {
+  it('resolves static headless app-server harnesses without process args', () => {
     const plan = resolveStaticHarnessPlan({
       name: 'OpenCodeServerWorker',
       cli: 'opencode-server',
       definition: {
-        runtime: 'app_server',
+        runtime: 'headless',
+        driver: 'app_server',
         protocol: 'opencode',
         endpoint: 'http://127.0.0.1:4096',
         sessionId: 'ses_123',
@@ -43,7 +44,8 @@ describe('harness plans', () => {
     });
 
     expect(plan).toEqual({
-      runtime: 'app_server',
+      runtime: 'headless',
+      driver: 'app_server',
       protocol: 'opencode',
       endpoint: 'http://127.0.0.1:4096',
       sessionId: 'ses_123',

@@ -8,8 +8,8 @@ use std::{
 use crate::{
     metrics::MetricsCollector,
     protocol::{
-        AgentRuntime, AgentSpec, AppServerAuthType, HarnessReleasePolicy, ProtocolEnvelope,
-        RelayDelivery, ResolvedHarnessPlan, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, AppServerAuthType, HarnessReleasePolicy, HeadlessHarnessDriver,
+        ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan, PROTOCOL_VERSION,
     },
     relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
@@ -306,9 +306,12 @@ impl WorkerRegistry {
                     }
                 }
             }
-            Some(ResolvedHarnessPlan::AppServer(plan)) => {
-                spec.runtime = AgentRuntime::AppServer;
+            Some(ResolvedHarnessPlan::Headless(plan)) => {
+                spec.runtime = AgentRuntime::Headless;
                 spec.session_id = Some(plan.session_id.clone());
+                match &plan.driver {
+                    HeadlessHarnessDriver::AppServer => {}
+                }
 
                 command.arg("app-server");
                 command.arg("--agent-name").arg(&spec.name);
@@ -501,9 +504,6 @@ impl WorkerRegistry {
                         }
                     }
                 }
-                AgentRuntime::AppServer => {
-                    anyhow::bail!("app_server runtime requires a resolved harnessPlan");
-                }
             },
         }
 
@@ -522,7 +522,7 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && !matches!(spec.runtime, AgentRuntime::Headless) {
+        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }

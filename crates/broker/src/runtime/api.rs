@@ -958,11 +958,6 @@ impl BrokerRuntime {
                             "unsupported_runtime: worker '{name}' is headless; pty input is only supported on PTY workers"
                         )));
                     }
-                    Some(AgentRuntime::AppServer) => {
-                        let _ = reply.send(Err(format!(
-                            "unsupported_runtime: worker '{name}' is app_server; pty input is only supported on PTY workers"
-                        )));
-                    }
                     Some(AgentRuntime::Pty) => {
                         if let Err(err) = workers
                             .send_to_worker(
@@ -998,11 +993,6 @@ impl BrokerRuntime {
                             "unsupported_runtime: worker '{name}' is headless; pty input streams are only supported on PTY workers"
                         )));
                     }
-                    Some(AgentRuntime::AppServer) => {
-                        let _ = reply.send(Err(format!(
-                            "unsupported_runtime: worker '{name}' is app_server; pty input streams are only supported on PTY workers"
-                        )));
-                    }
                     Some(AgentRuntime::Pty) => {
                         let _ = reply.send(Ok(json!({
                             "name": name,
@@ -1033,11 +1023,6 @@ impl BrokerRuntime {
                         Some(AgentRuntime::Headless) => {
                             let _ = reply.send(Err(format!(
                                 "unsupported_runtime: worker '{name}' is headless; resize_pty is only supported on PTY workers"
-                            )));
-                        }
-                        Some(AgentRuntime::AppServer) => {
-                            let _ = reply.send(Err(format!(
-                                "unsupported_runtime: worker '{name}' is app_server; resize_pty is only supported on PTY workers"
                             )));
                         }
                         Some(AgentRuntime::Pty) => {
@@ -1099,13 +1084,6 @@ impl BrokerRuntime {
                                             format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
                                         ),
                                     ));
-                    }
-                    Some(AgentRuntime::AppServer) => {
-                        let _ = reply.send(Err(
-                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
-                                "worker '{name}' is app_server; {kind} is only supported on PTY workers"
-                            )),
-                        ));
                     }
                     Some(AgentRuntime::Pty) => {
                         let request_id = format!("req_{}", Uuid::new_v4().simple());

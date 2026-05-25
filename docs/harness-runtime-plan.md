@@ -9,13 +9,20 @@ able to define named harnesses that resolve to broker-executable JSON plans.
 
 ## Core Model
 
-The broker supports two runtime executors first:
+The broker has two public runtime categories:
 
 - `pty`: runs a command inside a PTY and manages terminal-oriented delivery.
-- `app_server`: talks to an existing or broker-owned app-server session.
+- `headless`: controls a non-terminal agent through a driver.
+
+The first headless drivers are:
+
+- `provider_command`: the existing broker-owned one-shot headless path for
+  built-in providers such as Claude and OpenCode.
+- `app_server`: a session-backed HTTP driver for existing or broker-owned agent
+  servers.
 
 Named harnesses such as `codex`, `qwen`, or `opencode-server` resolve to one of
-those executable shapes.
+those executable plans.
 
 ## Plan Shapes
 
@@ -37,11 +44,13 @@ type PtyHarnessPlan = {
 };
 ```
 
-App-server plans are session backed:
+Headless app-server plans are session backed. They are still `headless` workers;
+`driver: 'app_server'` explains how the broker talks to the worker:
 
 ```ts
-type AppServerHarnessPlan = {
-  runtime: 'app_server';
+type HeadlessAppServerHarnessPlan = {
+  runtime: 'headless';
+  driver: 'app_server';
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;
@@ -143,14 +152,18 @@ This lets users add a CLI like Qwen Code locally with config only. A Rust
 contribution is only needed when Relay wants a built-in with tested defaults or
 the CLI needs broker-side behavior.
 
-## App-Server Runtime
+## Headless Runtime
 
-The app-server executor consumes an app-server plan. For OpenCode, the adapter
-can attach to a local or remote `opencode serve` endpoint, create or receive a
-session id, deliver Relay messages through the session message API, and release
-by aborting, detaching, or deleting the session.
+The headless runtime covers non-PTY workers. Provider-command headless workers
+run a command per delivery, for example `claude -p` or `opencode run`.
+App-server headless workers attach to a session server instead.
 
-App-server runtimes do not expose PTY input, resize, or snapshot capabilities.
+For OpenCode app-server harnesses, the broker can attach to a local or remote
+`opencode serve` endpoint, create or receive a session id, deliver Relay
+messages through the session message API, and release by aborting, detaching, or
+deleting the session.
+
+Headless runtimes do not expose PTY input, resize, or snapshot capabilities.
 
 ## Hooks
 
@@ -177,8 +190,8 @@ durable extension host for decision-making.
 1. Add shared plan schema and SDK types.
 2. Add static SDK harness resolution to PTY plans.
 3. Teach the broker to accept and execute resolved PTY plans.
-4. Add an app-server plan path with an OpenCode protocol driver.
+4. Add a headless app-server plan path with an OpenCode protocol driver.
 5. Add capability-aware runtime checks for PTY-only operations.
 6. Add attached broker control RPCs for dynamic resolvers.
 7. Add detached-mode validation for dynamic resolvers and in-process decision hooks.
-8. Document static Qwen, dynamic Codex, and OpenCode app-server examples.
+8. Document static Qwen, dynamic Codex, and OpenCode headless app-server examples.

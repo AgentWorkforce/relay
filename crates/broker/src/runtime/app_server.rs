@@ -78,7 +78,8 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                     frame.request_id,
                     json!({
                         "name": &worker_name,
-                        "runtime": "app_server",
+                        "runtime": "headless",
+                        "driver": "app_server",
                         "sessionId": &session_id,
                     }),
                 )

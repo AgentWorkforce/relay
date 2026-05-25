@@ -614,7 +614,7 @@ export class AgentRelayClient {
 
   async spawnProvider(input: SpawnProviderInput): Promise<SpawnAgentResult> {
     const transport = resolveSpawnTransport(input);
-    if (transport === 'headless' && !isHeadlessProvider(input.provider)) {
+    if (transport === 'headless' && !isHeadlessProvider(input.provider) && !input.harnessPlan) {
       throw new Error(
         `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
       );

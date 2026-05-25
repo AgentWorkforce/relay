@@ -58,7 +58,7 @@ export interface SpawnHeadlessInput {
   agentToken?: string;
 }
 
-export type AgentTransport = 'pty' | 'headless' | 'app_server';
+export type AgentTransport = 'pty' | 'headless';
 
 export interface SpawnAgentResult {
   name: string;

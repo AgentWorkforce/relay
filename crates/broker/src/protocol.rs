@@ -12,7 +12,6 @@ pub const PROTOCOL_VERSION: u32 = 2;
 pub enum AgentRuntime {
     Pty,
     Headless,
-    AppServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,9 +106,16 @@ pub enum HarnessReleasePolicy {
     Delete,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadlessHarnessDriver {
+    AppServer,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppServerHarnessPlan {
+pub struct HeadlessHarnessPlan {
+    pub driver: HeadlessHarnessDriver,
     pub protocol: String,
     pub endpoint: String,
     pub session_id: String,
@@ -127,21 +133,21 @@ pub struct AppServerHarnessPlan {
 #[serde(tag = "runtime", rename_all = "snake_case")]
 pub enum ResolvedHarnessPlan {
     Pty(PtyHarnessPlan),
-    AppServer(AppServerHarnessPlan),
+    Headless(HeadlessHarnessPlan),
 }
 
 impl ResolvedHarnessPlan {
     pub(crate) fn runtime(&self) -> AgentRuntime {
         match self {
             Self::Pty(_) => AgentRuntime::Pty,
-            Self::AppServer(_) => AgentRuntime::AppServer,
+            Self::Headless(_) => AgentRuntime::Headless,
         }
     }
 
     pub(crate) fn session_id(&self) -> Option<&str> {
         match self {
             Self::Pty(plan) => plan.session_id.as_deref(),
-            Self::AppServer(plan) => Some(plan.session_id.as_str()),
+            Self::Headless(plan) => Some(plan.session_id.as_str()),
         }
     }
 }
@@ -754,9 +760,10 @@ mod tests {
     }
 
     #[test]
-    fn app_server_harness_plan_round_trips() {
+    fn headless_app_server_harness_plan_round_trips() {
         let raw = json!({
-            "runtime": "app_server",
+            "runtime": "headless",
+            "driver": "app_server",
             "protocol": "opencode",
             "endpoint": "http://127.0.0.1:4096",
             "sessionId": "ses_123",
@@ -769,11 +776,12 @@ mod tests {
         });
 
         let plan: ResolvedHarnessPlan = serde_json::from_value(raw).unwrap();
-        assert_eq!(plan.runtime(), AgentRuntime::AppServer);
+        assert_eq!(plan.runtime(), AgentRuntime::Headless);
         assert_eq!(plan.session_id(), Some("ses_123"));
 
         let encoded = serde_json::to_string(&plan).unwrap();
-        assert!(encoded.contains("\"runtime\":\"app_server\""));
+        assert!(encoded.contains("\"runtime\":\"headless\""));
+        assert!(encoded.contains("\"driver\":\"app_server\""));
         assert!(encoded.contains("\"sessionId\":\"ses_123\""));
         let decoded: ResolvedHarnessPlan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.session_id(), Some("ses_123"));

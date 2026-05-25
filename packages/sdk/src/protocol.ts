@@ -1,6 +1,6 @@
 export const PROTOCOL_VERSION = 2 as const;
 
-export type AgentRuntime = 'pty' | 'headless' | 'app_server';
+export type AgentRuntime = 'pty' | 'headless';
 export type HeadlessProvider = 'claude' | 'opencode';
 export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
 export type SnapshotFormat = 'plain' | 'ansi';
