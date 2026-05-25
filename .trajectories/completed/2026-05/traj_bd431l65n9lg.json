@@ -1,0 +1,25 @@
+{
+  "id": "traj_bd431l65n9lg",
+  "version": 1,
+  "task": {
+    "title": "Remove broker harness registry footgun"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T21:55:14.197Z",
+  "completedAt": "2026-05-25T22:02:22.902Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Removed broker harness registry and harnessId from the PR. SDK named harnesses now resolve to inline harnessConfig before spawn; broker and Relaycast reject harnessId and require concrete configs for custom harness behavior.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4fdda79ad264412bfc725e4d22a611a78b50df21",
+    "endRef": "4fdda79ad264412bfc725e4d22a611a78b50df21"
+  }
+}

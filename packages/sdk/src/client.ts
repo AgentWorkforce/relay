@@ -52,7 +52,6 @@ import type {
   BeforeAgentSpawnHandler,
   SpawnPatch,
 } from './lifecycle-hooks.js';
-import type { ResolvedHarnessConfig } from './harness.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -178,7 +177,6 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessId !== undefined ? { harnessId: input.harnessId } : {}),
     ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
@@ -204,7 +202,6 @@ function buildSpawnProviderBody(
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessId !== undefined ? { harnessId: input.harnessId } : {}),
     ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
@@ -590,28 +587,6 @@ export class AgentRelayClient {
     return this.transport.getLastEvent(kind, name);
   }
 
-  async registerHarness(name: string, harnessConfig: ResolvedHarnessConfig): Promise<void> {
-    const key = name.trim();
-    if (!key) {
-      throw new Error('registerHarness() expects a non-empty harness name');
-    }
-    await this.transport.request<{ success: boolean; name: string }>(
-      `/api/harnesses/${encodeURIComponent(key)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ harnessConfig }),
-      }
-    );
-  }
-
-  async listHarnesses(): Promise<Record<string, ResolvedHarnessConfig>> {
-    const result = await this.transport.request<{
-      success: boolean;
-      harnesses?: Record<string, ResolvedHarnessConfig>;
-    }>('/api/harnesses', { method: 'GET' });
-    return result.harnesses ?? {};
-  }
-
   // ── Agent lifecycle ────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<SpawnAgentResult> {
@@ -651,7 +626,6 @@ export class AgentRelayClient {
     if (
       transport === 'headless' &&
       !isHeadlessProvider(resolvedInput.provider) &&
-      !resolvedInput.harnessId &&
       !resolvedInput.harnessConfig
     ) {
       throw new Error(

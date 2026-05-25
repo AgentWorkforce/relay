@@ -4,8 +4,8 @@ description: Define custom PTY and headless harness configs in the SDK.
 ---
 
 A harness is the thing Relay controls for an agent. The broker only executes
-serializable `HarnessConfig` data. SDK "adapters" should be small helpers that
-return configs; they are not durable callback code that the broker calls later.
+serializable `HarnessConfig` data. SDK "adapters" are helpers that return those
+configs before a spawn request is sent.
 
 Relay supports two runtime categories:
 
@@ -22,49 +22,52 @@ When `runtime` is `headless`, `driver` defaults to `app_server`.
 | --- | --- |
 | Harness config | Concrete `pty` or `headless` JSON the broker can validate and run |
 | Harness adapter | SDK helper that returns a harness config |
-| `harnessId` | Name of a config stored in the broker's in-memory harness registry |
-| `harnessConfig` | One-off config sent directly on a spawn |
+| Named harness | SDK-side shortcut in `new AgentRelay({ harnesses })` |
+| `harnessConfig` | Spawn field carrying the concrete config to the broker |
 
-Use `harnessId` when every relevant broker has the same named config registered.
-Use inline `harnessConfig` when the spawn must be portable across brokers.
+The broker boundary is always explicit config data. Named harnesses are resolved
+by the SDK before spawn; Relaycast and multi-broker spawns should send
+`harnessConfig` directly.
 
 ## Claude PTY Config
 
-Register a named config when the command is stable across spawns:
+Use a named harness when the command is stable across spawns:
 
 ```typescript file="claude-harness.ts"
-import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
-
-function companyClaude(): ResolvedHarnessConfig {
-  return {
-    runtime: 'pty',
-    command: 'claude',
-    args: [
-      '--dangerously-skip-permissions',
-      '--append-system-prompt',
-      'Follow the company review rubric.',
-    ],
-    env: {
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-    },
-  };
-}
+import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({
   harnesses: {
-    'company-claude': companyClaude(),
+    'company-claude': {
+      runtime: 'pty',
+      command: 'claude',
+      args: [
+        '--dangerously-skip-permissions',
+        '--append-system-prompt',
+        'Follow the company review rubric.',
+        '{modelArgs}',
+        '{args}',
+      ],
+      modelArgs: ['--model', '{model}'],
+      env: {
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      },
+    },
   },
 });
 
-await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.');
+await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.', {
+  model: 'opus',
+  args: ['--verbose'],
+});
 ```
 
-The SDK registers `company-claude` with the broker before spawning. Later
-Relaycast spawns can send only `{ "harnessId": "company-claude" }`.
+The SDK turns `company-claude` into an inline `harnessConfig` for that spawn.
+The broker does not keep a named harness registry.
 
 ## Codex Per-Spawn Config
 
-Use inline `harnessConfig` when setup produces a different config for each
+Use direct `harnessConfig` when setup produces a different config for each
 spawn, such as creating or resuming a Codex session:
 
 ```typescript file="codex-harness.ts"
@@ -86,9 +89,10 @@ function codexResume(sessionId: string, cwd: string): ResolvedHarnessConfig {
 
 const relay = new AgentRelay();
 const cwd = process.cwd();
-const sessionId = await createCodexSession({ cwd, task: 'Review the current diff.' });
+const task = 'Review the current diff.';
+const sessionId = await createCodexSession({ cwd, task });
 
-await relay.spawn('CodexReviewer', 'codex', 'Review the current diff.', {
+await relay.spawn('CodexReviewer', 'codex', task, {
   cwd,
   harnessConfig: codexResume(sessionId, cwd),
 });
@@ -120,17 +124,15 @@ function opencodeSession(input: {
   };
 }
 
-const relay = new AgentRelay({
-  harnesses: {
-    'opencode-current': opencodeSession({
-      endpoint: 'http://127.0.0.1:4096',
-      sessionId: 'ses_123',
-      pid: 34567,
-    }),
-  },
-});
+const relay = new AgentRelay();
 
-await relay.spawn('OpenCodeWorker', 'opencode-current', 'Inspect the repo.');
+await relay.spawn('OpenCodeWorker', 'opencode', 'Inspect the repo.', {
+  harnessConfig: opencodeSession({
+    endpoint: 'http://127.0.0.1:4096',
+    sessionId: 'ses_123',
+    pid: 34567,
+  }),
+});
 ```
 
 For OpenCode, Relay delivers messages to `POST /session/:id/prompt_async`.
@@ -140,21 +142,7 @@ For now, app-server configs must use `protocol: 'opencode'`, an `http` or
 
 ## Relaycast Spawns
 
-Agent-crafted spawns can reference a registered config:
-
-```json
-{
-  "agent": {
-    "name": "ClaudeReviewer",
-    "cli": "company-claude",
-    "task": "Review the current diff.",
-    "harnessId": "company-claude"
-  }
-}
-```
-
-Or they can send the whole config when the receiving broker may not have the
-same registry:
+Agent-crafted spawns should send the full config:
 
 ```json
 {
@@ -172,8 +160,9 @@ same registry:
 }
 ```
 
-The broker rejects spawn payloads that provide both `harnessId` and
-`harnessConfig`.
+Relay intentionally avoids a broker-local harness registry for now. A spawn
+request should be self-contained so behavior does not depend on hidden runtime
+state or which broker receives it.
 
 ## See Also
 

@@ -54,7 +54,7 @@ import type { SpawnAgentResult, SpawnPtyInput, SpawnProviderInput } from './type
 export type SpawnPatch = Partial<
   Pick<
     SpawnPtyInput & SpawnProviderInput,
-    'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken' | 'harnessId' | 'harnessConfig'
+    'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken' | 'harnessConfig'
   >
 >;
 

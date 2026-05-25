@@ -5,7 +5,8 @@
 Harnesses should be user-extensible without requiring Rust changes for normal
 agent CLIs. The durable boundary is data: the Rust broker validates and executes
 `HarnessConfig` objects. SDKs may help users build those objects, but the broker
-does not call back into SDK-defined functions after the SDK process exits.
+does not call back into SDK functions and does not depend on broker-local named
+config state.
 
 ## Core Model
 
@@ -22,8 +23,8 @@ Names in this design:
 
 - A harness config is the concrete `pty` or `headless` object the broker runs.
 - A harness adapter is SDK/userland code that returns a harness config.
-- `harnessId` references a config in the broker's in-memory registry.
-- `harnessConfig` is the spawn field for sending a one-off concrete config.
+- A named harness is an SDK-side shortcut in `new AgentRelay({ harnesses })`.
+- `harnessConfig` is the spawn field that carries concrete config to the broker.
 
 ## Config Shapes
 
@@ -91,7 +92,7 @@ function companyClaude(): ResolvedHarnessConfig {
 }
 ```
 
-Register stable configs by name:
+Register stable configs by name in the SDK:
 
 ```ts
 const relay = new AgentRelay({
@@ -101,8 +102,10 @@ const relay = new AgentRelay({
 });
 ```
 
-The SDK registers those configs with the broker's in-memory registry on start.
-Future spawns can use `harnessId: 'company-claude'`.
+This name is local SDK ergonomics. Before spawn, the SDK resolves it to a
+concrete `harnessConfig` and sends that config to the broker. The broker does
+not keep an in-memory harness registry, because broker-local names become a
+multi-broker footgun.
 
 Use inline configs for per-spawn setup:
 
@@ -120,51 +123,28 @@ await relay.spawn('CodexReviewer', 'codex', task, {
 });
 ```
 
-This avoids pretending that SDK callbacks are durable. If the SDK process exits,
-the broker can still execute registered or inline configs because it already has
-the data.
+This avoids pretending SDK callbacks are durable. If the SDK process exits, the
+broker can still execute the agent because it already received the concrete
+config.
 
-## Broker Registry
+## Broker API
 
-The broker keeps an in-memory map:
-
-```ts
-Record<string, ResolvedHarnessConfig>;
-```
-
-HTTP/SDK API:
-
-- `PUT /api/harnesses/:name` registers or replaces a config.
-- `GET /api/harnesses` lists registered configs.
-- `POST /api/spawn` accepts either `harnessId` or `harnessConfig`.
+`POST /api/spawn` accepts optional `harnessConfig`.
 
 Resolution rules:
 
-- `harnessConfig` is already concrete and runs as supplied.
-- `harnessId` resolves against the receiving broker's registry.
-- Providing both is rejected.
-- Unknown `harnessId` is rejected.
+- `harnessConfig` is concrete and runs as supplied after validation.
+- SDK names are resolved before this API call.
+- Relaycast spawns that need custom behavior send full `harnessConfig`.
+- `harnessId` is not accepted in broker or Relaycast spawn payloads.
 
-Registry state is intentionally runtime-local for now. In multi-broker
-environments, use inline `harnessConfig` or ensure every broker registers the
-same named configs before agents send `harnessId` spawns.
+That keeps every spawn request self-contained. It avoids bugs where behavior
+depends on registration order, stale broker process memory, or whether two
+brokers agree on what a mutable name means.
 
 ## Relaycast Spawns
 
-Agent-crafted Relaycast spawns can send a registry reference:
-
-```json
-{
-  "agent": {
-    "name": "ClaudeReviewer",
-    "cli": "company-claude",
-    "task": "Review the current diff.",
-    "harnessId": "company-claude"
-  }
-}
-```
-
-Or a portable inline config:
+Agent-crafted Relaycast spawns should send a portable inline config:
 
 ```json
 {
@@ -182,7 +162,7 @@ Or a portable inline config:
 }
 ```
 
-The broker validates the selected config and then uses the same spawn path as
+The broker validates the config and then uses the same spawn path as
 SDK-submitted configs.
 
 ## Broker Responsibilities
@@ -216,7 +196,7 @@ resize, or snapshot capabilities.
 1. Add shared config schema and SDK types.
 2. Teach the broker to accept and execute resolved PTY configs.
 3. Add a headless app-server config path with an OpenCode protocol driver.
-4. Add an in-memory broker harness registry and `harnessId` spawn selection.
-5. Allow Relaycast spawn events to carry `harnessId` or inline `harnessConfig`.
+4. Resolve named SDK harnesses to inline `harnessConfig` before spawn.
+5. Allow Relaycast spawn events to carry inline `harnessConfig`.
 6. Add capability-aware runtime checks for PTY-only operations.
 7. Document Claude PTY, Codex inline PTY, and OpenCode headless examples.

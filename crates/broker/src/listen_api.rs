@@ -50,18 +50,9 @@ pub enum ListenApiRequest {
         idle_threshold_secs: Option<u64>,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
-        harness_id: Option<String>,
         harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
         agent_result_schema: Option<Value>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    RegisterHarness {
-        name: String,
-        config: ResolvedHarnessConfig,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    ListHarnesses {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
@@ -367,11 +358,6 @@ fn listen_api_router_with_auth(
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
-        .route("/api/harnesses", routing::get(listen_api_list_harnesses))
-        .route(
-            "/api/harnesses/{name}",
-            routing::put(listen_api_register_harness).post(listen_api_register_harness),
-        )
         .route("/api/spawned", routing::get(listen_api_list))
         .route(
             "/api/spawned/{name}/model",
@@ -609,84 +595,6 @@ fn extract_harness_config(body: &Value) -> Result<Option<ResolvedHarnessConfig>,
     }
 }
 
-async fn listen_api_register_harness(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-    axum::extract::Path(name): axum::extract::Path<String>,
-    axum::Json(body): axum::Json<Value>,
-) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let name = name.trim().to_string();
-    if name.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({ "success": false, "error": "Missing required field: name" })),
-        );
-    }
-
-    let config_value = body
-        .get("config")
-        .or_else(|| body.get("harnessConfig"))
-        .or_else(|| body.get("harness_config"))
-        .cloned()
-        .unwrap_or(body);
-    let config = match parse_harness_config_value(config_value) {
-        Ok(config) => config,
-        Err(error) => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::Json(json!({ "success": false, "error": error })),
-            );
-        }
-    };
-
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::RegisterHarness {
-            name: name.clone(),
-            config,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
-        );
-    }
-
-    match reply_rx.await {
-        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
-        Ok(Err(err)) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "name": name, "error": err })),
-        ),
-        Err(_) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
-        ),
-    }
-}
-
-async fn listen_api_list_harnesses(
-    axum::extract::State(state): axum::extract::State<ListenApiState>,
-) -> axum::Json<Value> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if state
-        .tx
-        .send(ListenApiRequest::ListHarnesses { reply: reply_tx })
-        .await
-        .is_err()
-    {
-        return axum::Json(json!({ "success": false, "harnesses": {} }));
-    }
-
-    match reply_rx.await {
-        Ok(Ok(val)) => axum::Json(val),
-        _ => axum::Json(json!({ "success": false, "harnesses": {} })),
-    }
-}
-
 async fn listen_api_spawn(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::Json(body): axum::Json<Value>,
@@ -759,13 +667,19 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
-    let harness_id = body
+    if body
         .get("harness_id")
         .or_else(|| body.get("harnessId"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(String::from);
+        .is_some()
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "success": false,
+                "error": "harnessId is not supported by the broker API; send harnessConfig"
+            })),
+        );
+    }
     let harness_config = match extract_harness_config(&body) {
         Ok(config) => config,
         Err(error) => {
@@ -778,15 +692,6 @@ async fn listen_api_spawn(
             );
         }
     };
-    if harness_id.is_some() && harness_config.is_some() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(json!({
-                "success": false,
-                "error": "provide either harnessId or harnessConfig, not both"
-            })),
-        );
-    }
     let agent_token = body
         .get("agent_token")
         .or_else(|| body.get("agentToken"))
@@ -824,7 +729,6 @@ async fn listen_api_spawn(
             idle_threshold_secs,
             skip_relay_prompt,
             restart_policy,
-            harness_id,
             harness_config,
             agent_token,
             agent_result_schema,
@@ -2562,7 +2466,6 @@ mod auth_tests {
                     idle_threshold_secs,
                     skip_relay_prompt: _,
                     restart_policy: _,
-                    harness_id,
                     harness_config,
                     agent_token: _,
                     agent_result_schema,
@@ -2584,7 +2487,6 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
-                    assert_eq!(harness_id.as_deref(), None);
                     assert!(harness_config.is_some());
                     assert_eq!(
                         agent_result_schema,
@@ -2642,41 +2544,20 @@ mod auth_tests {
     }
 
     #[tokio::test]
-    async fn harness_register_route_forwards_named_config() {
-        let (router, mut rx) = test_router(Some("secret"));
-        let replier = tokio::spawn(async move {
-            match rx.recv().await {
-                Some(ListenApiRequest::RegisterHarness {
-                    name,
-                    config,
-                    reply,
-                }) => {
-                    assert_eq!(name, "company-claude");
-                    assert_eq!(config.runtime(), crate::protocol::AgentRuntime::Pty);
-                    let _ = reply.send(Ok(json!({
-                        "success": true,
-                        "name": name,
-                        "harnessConfig": config,
-                    })));
-                }
-                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
-            }
-        });
-
+    async fn spawn_route_rejects_harness_id() {
+        let (router, _rx) = test_router(Some("secret"));
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/harnesses/company-claude")
-                    .method("PUT")
+                    .uri("/api/spawn")
+                    .method("POST")
                     .header("x-api-key", "secret")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
-                            "harnessConfig": {
-                                "runtime": "pty",
-                                "command": "claude",
-                                "args": ["--dangerously-skip-permissions"]
-                            }
+                            "name": "worker-a",
+                            "cli": "company-claude",
+                            "harnessId": "company-claude"
                         })
                         .to_string(),
                     ))
@@ -2685,12 +2566,12 @@ mod auth_tests {
             .await
             .expect("request should succeed");
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = response_json(response).await;
-        assert_eq!(body["success"], json!(true));
-        assert_eq!(body["name"], json!("company-claude"));
-
-        replier.await.expect("register replier should complete");
+        assert!(body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("harnessId is not supported"));
     }
 
     #[tokio::test]

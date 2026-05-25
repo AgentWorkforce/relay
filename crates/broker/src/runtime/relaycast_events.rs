@@ -15,7 +15,6 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
-        let harness_configs = &self.harness_configs;
         let dm_participants_cache = &mut self.dm_participants_cache;
         let recent_thread_messages = &mut self.recent_thread_messages;
         let delivery_retry_interval = self.delivery_retry_interval;
@@ -205,22 +204,21 @@ impl BrokerRuntime {
                     let cli = event.agent.cli;
                     let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());
                     let channel = event.agent.channel;
-                    let harness_config =
-                        match relaycast_harness_config_selection(&ws_value, harness_configs) {
-                            Ok(config) => config,
-                            Err(error) => {
-                                tracing::warn!(
-                                    worker = %name,
-                                    error = %error,
-                                    "rejecting relaycast spawn with invalid harness selection"
-                                );
-                                eprintln!(
-                                    "[agent-relay] rejecting spawn request for '{}': {}",
-                                    name, error
-                                );
-                                return;
-                            }
-                        };
+                    let harness_config = match relaycast_harness_config(&ws_value) {
+                        Ok(config) => config,
+                        Err(error) => {
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "rejecting relaycast spawn with invalid harness config"
+                            );
+                            eprintln!(
+                                "[agent-relay] rejecting spawn request for '{}': {}",
+                                name, error
+                            );
+                            return;
+                        }
+                    };
                     let runtime = harness_config
                         .as_ref()
                         .map(ResolvedHarnessConfig::runtime)
@@ -453,16 +451,13 @@ impl BrokerRuntime {
                                 chs
                             })
                             .unwrap_or_else(default_spawn_channels);
-                        let harness_config = match relaycast_harness_config_selection(
-                            &ws_value,
-                            harness_configs,
-                        ) {
+                        let harness_config = match relaycast_harness_config(&ws_value) {
                             Ok(config) => config,
                             Err(error) => {
                                 tracing::warn!(
                                     worker = %name,
                                     error = %error,
-                                    "rejecting relaycast fallback spawn with invalid harness selection"
+                                    "rejecting relaycast fallback spawn with invalid harness config"
                                 );
                                 eprintln!(
                                     "[agent-relay] rejecting spawn request for '{}': {}",
@@ -933,9 +928,9 @@ impl BrokerRuntime {
     }
 }
 
-fn relaycast_harness_id(value: &Value) -> Option<String> {
+fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
-    agent
+    let harness_id = agent
         .and_then(|agent| {
             agent
                 .get("harnessId")
@@ -949,12 +944,13 @@ fn relaycast_harness_id(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
         })
         .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(ToOwned::to_owned)
-}
+        .filter(|id| !id.is_empty());
+    if harness_id.is_some() {
+        return Err(
+            "harnessId is not supported by Relaycast spawns; send harnessConfig".to_string(),
+        );
+    }
 
-fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
-    let agent = value.get("agent");
     let raw = agent
         .and_then(|agent| {
             agent
@@ -975,37 +971,34 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
     }
 }
 
-fn relaycast_harness_config_selection(
-    value: &Value,
-    registry: &HashMap<String, ResolvedHarnessConfig>,
-) -> Result<Option<ResolvedHarnessConfig>, String> {
-    let harness_id = relaycast_harness_id(value);
-    let harness_config = relaycast_harness_config(value)?;
-    resolve_harness_config_selection(harness_id.as_deref(), harness_config, registry)
-        .map_err(|error| error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::PtyHarnessConfig;
 
-    fn pty_config(command: &str) -> ResolvedHarnessConfig {
-        ResolvedHarnessConfig::Pty(PtyHarnessConfig {
-            command: command.to_string(),
-            args: vec![],
-            cwd: None,
-            env: None,
-            session_id: None,
-            delivery: None,
-            metadata: None,
-        })
+    #[test]
+    fn relaycast_harness_config_accepts_inline_config() {
+        let value = json!({
+            "type": "agent.spawn_requested",
+            "agent": {
+                "name": "ClaudeReviewer",
+                "cli": "company-claude",
+                "harnessConfig": {
+                    "runtime": "pty",
+                    "command": "claude",
+                    "args": []
+                }
+            }
+        });
+
+        let config = relaycast_harness_config(&value)
+            .expect("inline config should parse")
+            .expect("inline config should return config");
+
+        assert_eq!(config.runtime(), AgentRuntime::Pty);
     }
 
     #[test]
-    fn relaycast_harness_selection_resolves_agent_harness_id() {
-        let mut registry = HashMap::new();
-        registry.insert("company-claude".to_string(), pty_config("claude"));
+    fn relaycast_harness_config_rejects_harness_id() {
         let value = json!({
             "type": "agent.spawn_requested",
             "agent": {
@@ -1015,34 +1008,8 @@ mod tests {
             }
         });
 
-        let config = relaycast_harness_config_selection(&value, &registry)
-            .expect("selection should resolve")
-            .expect("selection should return config");
+        let error = relaycast_harness_config(&value).expect_err("harnessId should fail");
 
-        assert_eq!(config.runtime(), AgentRuntime::Pty);
-    }
-
-    #[test]
-    fn relaycast_harness_selection_rejects_both_id_and_inline_config() {
-        let mut registry = HashMap::new();
-        registry.insert("company-claude".to_string(), pty_config("claude"));
-        let value = json!({
-            "type": "agent.spawn_requested",
-            "agent": {
-                "name": "ClaudeReviewer",
-                "cli": "company-claude",
-                "harnessId": "company-claude",
-                "harnessConfig": {
-                    "runtime": "pty",
-                    "command": "claude",
-                    "args": []
-                }
-            }
-        });
-
-        let error = relaycast_harness_config_selection(&value, &registry)
-            .expect_err("conflicting selection should fail");
-
-        assert!(error.contains("provide either harnessId or harnessConfig"));
+        assert!(error.contains("harnessId is not supported"));
     }
 }
