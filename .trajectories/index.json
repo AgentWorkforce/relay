@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-25T17:14:53.614Z",
+  "lastUpdated": "2026-05-25T17:53:06.564Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1142,6 +1142,13 @@
       "startedAt": "2026-05-25T17:14:45.927Z",
       "completedAt": "2026-05-25T17:14:53.457Z",
       "path": ".trajectories/completed/2026-05/traj_0d1efjk6aeo2.json"
+    },
+    "traj_9dj3qiugt26j": {
+      "title": "Fix harness runtime review issues",
+      "status": "completed",
+      "startedAt": "2026-05-25T17:41:16.384Z",
+      "completedAt": "2026-05-25T17:53:06.394Z",
+      "path": ".trajectories/completed/2026-05/traj_9dj3qiugt26j.json"
     }
   }
 }

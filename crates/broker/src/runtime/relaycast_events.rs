@@ -307,7 +307,7 @@ impl BrokerRuntime {
                                 has_task: effective_task.is_some(),
                                 is_shadow: false,
                             });
-                            let pid = workers.worker_pid(&name).unwrap_or(0);
+                            let pid = workers.harness_pid(&name);
                             state.agents.insert(
                                 name.clone(),
                                 broker::PersistedAgent {
@@ -350,7 +350,7 @@ impl BrokerRuntime {
                                 Some("relaycast_spawn"),
                             )
                             .await;
-                            tracing::info!(child = %name, pid, "spawned worker via relaycast WS");
+                            tracing::info!(child = %name, pid = ?pid, "spawned worker via relaycast WS");
                             eprintln!("[agent-relay] spawned worker '{}' via relaycast", name);
                         }
                         Err(e) => {
@@ -503,7 +503,7 @@ impl BrokerRuntime {
                                     has_task: effective_task.is_some(),
                                     is_shadow: false,
                                 });
-                                let pid = workers.worker_pid(&name).unwrap_or(0);
+                                let pid = workers.harness_pid(&name);
                                 state.agents.insert(
                                     name.clone(),
                                     broker::PersistedAgent {

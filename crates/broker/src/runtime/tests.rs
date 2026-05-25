@@ -86,6 +86,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             workspace_id: Some("ws_demo".to_string()),
             child,
             stdin,
+            harness_pid: None,
             spawned_at: Instant::now(),
             last_activity_at: Instant::now(),
             context_budget_pct: None,

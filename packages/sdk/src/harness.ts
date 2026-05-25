@@ -32,7 +32,12 @@ export interface AppServerHarnessAuth {
 }
 
 export interface AppServerHarnessHost {
+  /**
+   * `broker-owned` is reserved for a future broker-supervised app-server mode.
+   * Current broker releases accept attached hosts only.
+   */
   ownership?: 'broker-owned' | 'attached';
+  /** Local app-server host PID to report as the harness PID when known. */
   pid?: number;
 }
 

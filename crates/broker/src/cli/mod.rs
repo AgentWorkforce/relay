@@ -285,6 +285,9 @@ pub(crate) struct AppServerCommand {
     #[arg(long = "session-id")]
     pub(crate) session_id: String,
 
+    #[arg(long = "host-pid")]
+    pub(crate) host_pid: Option<u32>,
+
     #[arg(long, default_value = "detach")]
     pub(crate) release: String,
 

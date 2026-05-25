@@ -18,8 +18,7 @@ The first headless drivers are:
 
 - `provider_command`: the existing broker-owned one-shot headless path for
   built-in providers such as Claude and OpenCode.
-- `app_server`: a session-backed HTTP driver for existing or broker-owned agent
-  servers.
+- `app_server`: a session-backed HTTP driver for attached agent servers.
 
 Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
 those executable plans.
@@ -72,6 +71,14 @@ type HeadlessAppServerHarnessPlan = {
 The broker runs the returned plan. It does not need to understand arbitrary
 TypeScript or Python logic.
 
+For now, `app_server` plans are attach-only. `host.ownership: 'broker-owned'`
+is reserved and rejected until the broker owns app-server lifecycle supervision.
+When `host.pid` is provided, the broker reports that as the harness PID.
+
+Plan `env` and `auth` values are visible to the broker and may be included in
+runtime state. SDK resolvers should return explicit allowlists and avoid copying
+the whole process environment.
+
 ## Harness Definition Classes
 
 Static harness definitions are JSON-compatible and work in attached or detached
@@ -82,11 +89,20 @@ const harnesses = {
   'company-claude': {
     runtime: 'pty',
     command: 'claude',
-    args: ['--append-system-prompt', 'Follow the company review rubric.', '{modelArgs}', '{args}'],
+    args: [
+      '--dangerously-skip-permissions',
+      '--append-system-prompt',
+      'Follow the company review rubric.',
+      '{modelArgs}',
+      '{args}',
+    ],
     modelArgs: ['--model', '{model}'],
   },
 };
 ```
+
+Custom PTY harnesses own their CLI flags. Broker built-in permission bypass
+defaults are not injected into caller-provided harness plans.
 
 Dynamic harness resolvers are SDK functions and are attached-only. They can run
 pre-spawn logic, such as creating a provider session, then return a concrete
@@ -100,7 +116,10 @@ const harnesses = {
       runtime: 'pty',
       command: 'codex',
       args: ['resume', sessionId, ...ctx.args],
-      env: ctx.env,
+      env: {
+        PATH: ctx.env.PATH ?? '',
+        CODEX_HOME: ctx.env.CODEX_HOME ?? '',
+      },
       sessionId,
     };
   },
@@ -157,10 +176,10 @@ The headless runtime covers non-PTY workers. Provider-command headless workers
 run a command per delivery, for example `claude -p` or `opencode run`.
 App-server headless workers attach to a session server instead.
 
-For OpenCode app-server harnesses, the broker can attach to a local or remote
-`opencode serve` endpoint, create or receive a session id, deliver Relay
-messages through the session message API, and release by aborting, detaching, or
-deleting the session.
+For OpenCode app-server harnesses, the SDK creates or selects a session and
+returns its endpoint and session id. The broker attaches to that local or remote
+`opencode serve` endpoint, delivers Relay messages through the session message
+API, and releases by aborting, detaching, or deleting the session.
 
 Headless runtimes do not expose PTY input, resize, or snapshot capabilities.
 

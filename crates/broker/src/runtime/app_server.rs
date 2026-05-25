@@ -14,6 +14,7 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
     let protocol = cmd.protocol.trim().to_ascii_lowercase();
     let endpoint = cmd.endpoint.trim().trim_end_matches('/').to_string();
     let session_id = cmd.session_id.clone();
+    let host_pid = cmd.host_pid;
     let release = cmd.release.trim().to_ascii_lowercase();
     let auth = app_server_auth_from_env();
     let http = reqwest::Client::builder()
@@ -86,6 +87,7 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                         "runtime": "headless",
                         "driver": "app_server",
                         "sessionId": &session_id,
+                        "pid": host_pid,
                     }),
                 )
                 .await;
@@ -128,19 +130,6 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                 )
                 .await;
 
-                let _ = send_frame(
-                    &out_tx,
-                    "delivery_injected",
-                    None,
-                    json!({
-                        "delivery_id": &delivery_id,
-                        "event_id": &event_id,
-                        "agent": &worker_name,
-                        "timestamp": timestamp,
-                    }),
-                )
-                .await;
-
                 let result = match protocol.as_str() {
                     "opencode" => {
                         send_opencode_prompt(&http, &endpoint, &session_id, &text, auth.as_ref())
@@ -155,18 +144,20 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                     Ok(()) => {
                         let _ = send_frame(
                             &out_tx,
-                            "delivery_ack",
-                            request_id.clone(),
+                            "delivery_injected",
+                            None,
                             json!({
                                 "delivery_id": &delivery_id,
                                 "event_id": &event_id,
+                                "agent": &worker_name,
+                                "timestamp": timestamp,
                             }),
                         )
                         .await;
                         let _ = send_frame(
                             &out_tx,
-                            "delivery_verified",
-                            None,
+                            "delivery_ack",
+                            request_id.clone(),
                             json!({
                                 "delivery_id": &delivery_id,
                                 "event_id": &event_id,

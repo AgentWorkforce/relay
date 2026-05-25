@@ -316,16 +316,25 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("runtime"))
                             .and_then(Value::as_str)
                             .unwrap_or("pty");
+                        let payload_pid = value
+                            .get("payload")
+                            .and_then(|p| p.get("pid"))
+                            .and_then(Value::as_u64)
+                            .filter(|pid| *pid <= u32::MAX as u64)
+                            .map(|pid| pid as u32);
                         let (provider_val, cli_val, model_val, session_id_val, pid_val) = workers
                             .workers
-                            .get(&name)
+                            .get_mut(&name)
                             .map(|h| {
+                                if let Some(pid) = payload_pid {
+                                    h.harness_pid = Some(pid);
+                                }
                                 (
                                     h.spec.provider.clone(),
                                     h.spec.cli.clone(),
                                     h.spec.model.clone(),
                                     h.spec.session_id.clone(),
-                                    h.child.id(),
+                                    h.harness_pid,
                                 )
                             })
                             .unwrap_or((None, None, None, None, None));

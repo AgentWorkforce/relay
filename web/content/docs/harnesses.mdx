@@ -31,7 +31,13 @@ const relay = new AgentRelay({
     'company-claude': {
       runtime: 'pty',
       command: 'claude',
-      args: ['--append-system-prompt', 'Follow the company review rubric.', '{modelArgs}', '{args}'],
+      args: [
+        '--dangerously-skip-permissions',
+        '--append-system-prompt',
+        'Follow the company review rubric.',
+        '{modelArgs}',
+        '{args}',
+      ],
       modelArgs: ['--model', '{model}'],
       env: {
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -45,6 +51,9 @@ await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.'
   args: ['--verbose'],
 });
 ```
+
+When you provide a PTY harness plan, Relay runs that plan as written. Built-in
+CLI defaults such as Claude permission bypass flags are not auto-injected.
 
 Supported placeholders:
 
@@ -77,7 +86,10 @@ const relay = new AgentRelay({
         command: 'codex',
         args: ['resume', sessionId, ...ctx.args],
         cwd: ctx.cwd,
-        env: ctx.env,
+        env: {
+          PATH: ctx.env.PATH ?? '',
+          CODEX_HOME: ctx.env.CODEX_HOME ?? '',
+        },
         sessionId,
       };
     },
@@ -86,6 +98,9 @@ const relay = new AgentRelay({
 
 await relay.spawn('CodexReviewer', 'codex-resume', 'Review the current diff.');
 ```
+
+Do not forward `ctx.env` wholesale. It is the SDK process environment and may
+contain secrets. Pass only the keys the harness actually needs.
 
 Detached brokers should use static adapters, built-in broker behavior, HTTP
 webhooks, or another durable extension host instead of in-process resolver
@@ -107,6 +122,7 @@ const relay = new AgentRelay({
       protocol: 'opencode',
       endpoint: 'http://127.0.0.1:4096',
       sessionId: 'ses_123',
+      host: { ownership: 'attached', pid: 34567 },
       release: 'abort',
     },
   },
@@ -117,6 +133,35 @@ await relay.spawn('OpenCodeWorker', 'opencode-server', 'Inspect the repo.');
 
 For OpenCode, Relay delivers messages to `POST /session/:id/prompt_async`.
 Release behavior is controlled by `release`: `abort`, `detach`, or `delete`.
+`host.pid` is reported as the harness PID when the server is local and known.
+
+Static app-server adapters attach to a known session. For per-spawn sessions,
+create the session in a dynamic resolver and return the concrete plan:
+
+```typescript file="opencode-dynamic-harness.ts"
+const relay = new AgentRelay({
+  broker: { lifetime: 'attached' },
+  harnesses: {
+    'opencode-new-session': async (ctx) => {
+      const session = await createOpenCodeSession({ cwd: ctx.cwd, task: ctx.task });
+
+      return {
+        runtime: 'headless',
+        driver: 'app_server',
+        protocol: 'opencode',
+        endpoint: session.endpoint,
+        sessionId: session.id,
+        host: { ownership: 'attached', pid: session.pid },
+        release: 'detach',
+      };
+    },
+  },
+});
+```
+
+For now, app-server plans must use `protocol: 'opencode'`, an `http` or `https`
+endpoint, a non-empty `sessionId`, and attached host ownership. `broker-owned`
+app-server hosts are reserved for a later broker-supervised mode.
 
 ## One-Off Plans
 

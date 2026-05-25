@@ -8,8 +8,9 @@ use std::{
 use crate::{
     metrics::MetricsCollector,
     protocol::{
-        AgentRuntime, AgentSpec, AppServerAuthType, HarnessReleasePolicy, HeadlessHarnessDriver,
-        ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan, PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
+        HeadlessHarnessDriver, HeadlessHarnessPlan, ProtocolEnvelope, RelayDelivery,
+        ResolvedHarnessPlan, PROTOCOL_VERSION,
     },
     relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
@@ -38,6 +39,8 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
     "AGENT_RELAY_APP_SERVER_AUTH_USERNAME",
     "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
 ];
+const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
+const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
 pub(crate) mod detection;
 
@@ -48,6 +51,7 @@ pub(crate) struct WorkerHandle {
     pub(crate) workspace_id: Option<String>,
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
+    pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
     pub(crate) last_activity_at: Instant,
     pub(crate) context_budget_pct: Option<u8>,
@@ -147,7 +151,8 @@ impl WorkerRegistry {
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
                     "sessionId": handle.spec.session_id,
-                    "pid": handle.child.id(),
+                    "pid": handle.harness_pid,
+                    "workerPid": handle.child.id(),
                     "last_activity_ms": handle.last_activity_at.elapsed().as_millis() as u64,
                     "last_activity_at": chrono::Utc::now()
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
@@ -207,6 +212,10 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.child.id())
     }
 
+    pub(crate) fn harness_pid(&self, name: &str) -> Option<u32> {
+        self.workers.get(name).and_then(|h| h.harness_pid)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
@@ -237,6 +246,7 @@ impl WorkerRegistry {
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
         let mut harness_env: Vec<(String, String)> = Vec::new();
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
+        let mut initial_harness_pid: Option<u32> = None;
 
         match spec.harness_plan.clone() {
             Some(ResolvedHarnessPlan::Pty(plan)) => {
@@ -315,8 +325,10 @@ impl WorkerRegistry {
                 }
             }
             Some(ResolvedHarnessPlan::Headless(plan)) => {
+                validate_app_server_plan(&plan)?;
                 spec.runtime = AgentRuntime::Headless;
                 spec.session_id = Some(plan.session_id.clone());
+                initial_harness_pid = plan.host.as_ref().and_then(|host| host.pid);
                 match &plan.driver {
                     HeadlessHarnessDriver::AppServer => {}
                 }
@@ -326,6 +338,9 @@ impl WorkerRegistry {
                 command.arg("--protocol").arg(&plan.protocol);
                 command.arg("--endpoint").arg(&plan.endpoint);
                 command.arg("--session-id").arg(&plan.session_id);
+                if let Some(pid) = initial_harness_pid {
+                    command.arg("--host-pid").arg(pid.to_string());
+                }
                 command
                     .arg("--release")
                     .arg(release_policy_arg(plan.release.as_ref()));
@@ -585,6 +600,7 @@ impl WorkerRegistry {
             workspace_id,
             child,
             stdin,
+            harness_pid: initial_harness_pid,
             spawned_at: Instant::now(),
             last_activity_at: Instant::now(),
             context_budget_pct: None,
@@ -671,19 +687,20 @@ impl WorkerRegistry {
             .workers
             .remove(name)
             .with_context(|| format!("unknown worker '{name}'"))?;
+        let release_grace = release_grace_for_spec(&handle.spec);
 
         let shutdown_frame = ProtocolEnvelope {
             v: PROTOCOL_VERSION,
             msg_type: "shutdown_worker".to_string(),
             request_id: None,
-            payload: json!({"reason":"release","grace_ms":2000}),
+            payload: json!({"reason":"release","grace_ms": release_grace.as_millis() as u64}),
         };
         let encoded = serde_json::to_string(&shutdown_frame)?;
         let _ = handle.stdin.write_all(encoded.as_bytes()).await;
         let _ = handle.stdin.write_all(b"\n").await;
         let _ = handle.stdin.flush().await;
 
-        let result = terminate_child(&mut handle.child, Duration::from_secs(2)).await;
+        let result = terminate_child(&mut handle.child, release_grace).await;
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -848,6 +865,91 @@ fn app_server_auth_type_arg(auth_type: &AppServerAuthType) -> &'static str {
         AppServerAuthType::Basic => "basic",
         AppServerAuthType::None => "none",
     }
+}
+
+fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
+    match spec.harness_plan.as_ref() {
+        Some(ResolvedHarnessPlan::Headless(plan))
+            if matches!(&plan.driver, HeadlessHarnessDriver::AppServer) =>
+        {
+            APP_SERVER_RELEASE_GRACE
+        }
+        _ => DEFAULT_RELEASE_GRACE,
+    }
+}
+
+fn validate_app_server_plan(plan: &HeadlessHarnessPlan) -> Result<()> {
+    if !matches!(&plan.driver, HeadlessHarnessDriver::AppServer) {
+        anyhow::bail!("unsupported headless harness driver");
+    }
+
+    let protocol = plan.protocol.trim().to_ascii_lowercase();
+    if protocol != "opencode" {
+        anyhow::bail!(
+            "unsupported app_server protocol '{}' (supported: opencode)",
+            plan.protocol
+        );
+    }
+
+    let endpoint = plan.endpoint.trim();
+    if endpoint.is_empty() {
+        anyhow::bail!("app_server endpoint is required");
+    }
+    let parsed_endpoint = reqwest::Url::parse(endpoint)
+        .with_context(|| format!("invalid app_server endpoint '{}'", plan.endpoint))?;
+    match parsed_endpoint.scheme() {
+        "http" | "https" => {}
+        scheme => anyhow::bail!(
+            "invalid app_server endpoint scheme '{}' (expected http or https)",
+            scheme
+        ),
+    }
+
+    if plan.session_id.trim().is_empty() {
+        anyhow::bail!("app_server sessionId is required");
+    }
+
+    if plan
+        .host
+        .as_ref()
+        .and_then(|host| host.ownership.as_ref())
+        .is_some_and(|ownership| matches!(ownership, AppServerHostOwnership::BrokerOwned))
+    {
+        anyhow::bail!("broker-owned app_server hosts are not supported yet");
+    }
+
+    if let Some(auth) = plan.auth.as_ref() {
+        match auth.auth_type {
+            AppServerAuthType::Bearer => {
+                if auth
+                    .token
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server bearer auth requires token");
+                }
+            }
+            AppServerAuthType::Basic => {
+                if auth
+                    .username
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server basic auth requires username");
+                }
+                if auth
+                    .password
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server basic auth requires password");
+                }
+            }
+            AppServerAuthType::None => {}
+        }
+    }
+
+    Ok(())
 }
 
 fn args_include_model_override(args: &[String]) -> bool {
@@ -1168,6 +1270,7 @@ fn spawn_worker_reader<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost};
 
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -1205,6 +1308,89 @@ mod tests {
         let reg = make_registry(env);
         assert_eq!(reg.env_value("KEY"), Some("val"));
         assert_eq!(reg.env_value("MISSING"), None);
+    }
+
+    fn make_app_server_plan() -> HeadlessHarnessPlan {
+        HeadlessHarnessPlan {
+            driver: HeadlessHarnessDriver::AppServer,
+            protocol: "opencode".to_string(),
+            endpoint: "http://127.0.0.1:4096".to_string(),
+            session_id: "ses_123".to_string(),
+            auth: None,
+            host: Some(AppServerHarnessHost {
+                ownership: Some(AppServerHostOwnership::Attached),
+                pid: Some(12345),
+            }),
+            release: Some(HarnessReleasePolicy::Detach),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn app_server_plan_validation_accepts_attached_opencode_plan() {
+        let plan = make_app_server_plan();
+        validate_app_server_plan(&plan).expect("valid app-server plan");
+    }
+
+    #[test]
+    fn app_server_plan_validation_rejects_missing_bearer_token() {
+        let mut plan = make_app_server_plan();
+        plan.auth = Some(AppServerHarnessAuth {
+            auth_type: AppServerAuthType::Bearer,
+            token: None,
+            username: None,
+            password: None,
+        });
+
+        let error = validate_app_server_plan(&plan).expect_err("missing token rejected");
+        assert!(error.to_string().contains("bearer auth requires token"));
+    }
+
+    #[test]
+    fn app_server_plan_validation_rejects_broker_owned_host() {
+        let mut plan = make_app_server_plan();
+        plan.host = Some(AppServerHarnessHost {
+            ownership: Some(AppServerHostOwnership::BrokerOwned),
+            pid: None,
+        });
+
+        let error = validate_app_server_plan(&plan).expect_err("broker-owned host rejected");
+        assert!(error
+            .to_string()
+            .contains("broker-owned app_server hosts are not supported yet"));
+    }
+
+    #[test]
+    fn app_server_plan_validation_rejects_unsupported_protocol() {
+        let mut plan = make_app_server_plan();
+        plan.protocol = "custom".to_string();
+
+        let error = validate_app_server_plan(&plan).expect_err("unsupported protocol rejected");
+        assert!(error
+            .to_string()
+            .contains("unsupported app_server protocol"));
+    }
+
+    #[test]
+    fn app_server_release_uses_extended_grace() {
+        let spec = AgentSpec {
+            name: "opencode-app".to_string(),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: Some("ses_123".to_string()),
+            harness_plan: Some(ResolvedHarnessPlan::Headless(make_app_server_plan())),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+
+        assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
     }
 
     #[test]

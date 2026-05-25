@@ -232,7 +232,7 @@ impl BrokerRuntime {
                             is_shadow: effective_spec.shadow_of.is_some()
                                 || effective_spec.shadow_mode.is_some(),
                         });
-                        let pid = workers.worker_pid(&name).unwrap_or(0);
+                        let pid = workers.harness_pid(&name);
                         state.agents.insert(
                             name.clone(),
                             broker::PersistedAgent {
@@ -269,7 +269,7 @@ impl BrokerRuntime {
                                 "provider": effective_spec.provider.clone(),
                                 "cli": effective_spec.cli.clone(),
                                 "model": effective_spec.model.clone(),
-                                "pid":pid,
+                                "pid": pid,
                                 "sessionId": effective_spec.session_id.clone(),
                                 "source":"http_api",
                                 "pre_registered": worker_relay_key.is_some(),
