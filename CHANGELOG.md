@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
+- `sdk-swift`: `RelayCast` now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
 
 ### Security
 
