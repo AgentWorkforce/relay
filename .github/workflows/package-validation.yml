@@ -79,7 +79,7 @@ jobs:
           path: |
             node_modules
             packages/*/node_modules
-          key: modules-v2-${{ hashFiles('package-lock.json') }}
+          key: modules-v3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-modules.outputs.cache-hit != 'true'

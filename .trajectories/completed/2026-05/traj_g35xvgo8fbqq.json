@@ -1,0 +1,25 @@
+{
+  "id": "traj_g35xvgo8fbqq",
+  "version": 1,
+  "task": {
+    "title": "Fix package validation cache key"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T12:24:38.508Z",
+  "completedAt": "2026-05-25T12:24:47.132Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Bumped the Package Validation node_modules cache key to force npm ci and refresh nested workspace dependencies after the stale cache missed telemetry's posthog-node dependency.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b5387872b677403c2d4d0d0346ea574e27b71900",
+    "endRef": "b5387872b677403c2d4d0d0346ea574e27b71900"
+  }
+}
