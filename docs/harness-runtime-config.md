@@ -23,6 +23,16 @@ The first headless drivers are:
 Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
 those executable configs.
 
+## Naming
+
+- A harness definition is the static or dynamic value registered by the SDK.
+- A harness resolver is a dynamic SDK function that receives spawn context.
+- A harness config is the concrete `pty` or `headless` object the broker runs.
+- `harnessConfig` is the spawn field for a one-off concrete config.
+
+This keeps ownership clear: SDKs resolve definitions into configs, and the
+broker executes configs durably.
+
 ## Config Shapes
 
 PTY configs are process and terminal backed:
@@ -200,7 +210,7 @@ relay.addListener('agentSpawned', async (agent) => {
 Decision hooks are request-response calls over an attached SDK control
 connection:
 
-- `resolveHarness`
+- `resolveHarnessConfig`
 - `beforeSpawn`
 - `authorizeSpawn`
 

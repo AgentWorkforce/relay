@@ -17,6 +17,20 @@ Relay supports two public runtime categories:
 `app_server` is not a third runtime. It is a `headless` driver for sessions
 controlled over HTTP.
 
+## Naming
+
+Use these names when building or reading harness code:
+
+| Name | Meaning |
+| --- | --- |
+| Harness definition | The value registered in `new AgentRelay({ harnesses })` |
+| Harness resolver | A dynamic function that receives spawn context |
+| Harness config | The concrete `pty` or `headless` object returned by a definition or resolver |
+| `harnessConfig` | The one-off spawn field for passing a concrete config directly |
+
+The broker runs harness configs. It does not run SDK resolver functions or
+placeholder templates.
+
 ## Static PTY Adapter
 
 Use a static adapter when a CLI only needs a command, args, env, and optional
