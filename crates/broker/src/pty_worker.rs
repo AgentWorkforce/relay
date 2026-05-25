@@ -55,6 +55,11 @@ const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
 const RELAYCAST_BOOT_MARKER: &str = "booting mcp server: relaycast";
+/// Gap between atoms when paced-injecting a message body into the worker
+/// PTY. Matches the headless-terminal default and is well under any human
+/// keystroke cadence — fast enough to feel instant, slow enough that the
+/// child reliably reads every chunk between writes.
+const INJECT_PACE_MS: u64 = 20;
 
 /// Detect the relaycast MCP boot marker in output. Different CLIs emit
 /// different boot messages:
@@ -890,17 +895,28 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     if include_mcp_reminder {
                         last_mcp_reminder_at = Some(Instant::now());
                     }
-                    if let Err(e) = pty.write_all(injection.as_bytes()) {
+                    // Paced injection: write one atom (ASCII byte / full
+                    // UTF-8 codepoint / full CSI/SS3/OSC sequence) at a time
+                    // with a small gap so the child has room to consume each
+                    // chunk between read calls. Closes the "Claude
+                    // occasionally batches/eats characters" class of bug from
+                    // bulk write_all + sleep + \r. The trailing \r is part of
+                    // the same paced stream so the prompt-detector inside the
+                    // CLI sees a complete keystroke sequence end-to-end.
+                    let mut paced = injection.as_bytes().to_vec();
+                    paced.push(b'\r');
+                    if let Err(e) = pty
+                        .write_paced(&paced, Duration::from_millis(INJECT_PACE_MS))
+                        .await
+                    {
                         tracing::warn!(
                             delivery_id = %pending.delivery.delivery_id,
                             error = %e,
-                            "PTY injection write failed, re-queuing delivery"
+                            "PTY paced injection write failed, re-queuing delivery"
                         );
                         pending_worker_injections.push_front(pending);
                         continue;
                     }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    let _ = pty.write_all(b"\r");
                     let _ = send_frame(
                         &out_tx,
                         "delivery_injected",

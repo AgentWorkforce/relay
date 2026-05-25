@@ -8,6 +8,7 @@ use std::{
         mpsc as std_mpsc, Arc,
     },
     thread,
+    time::Duration,
 };
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -243,6 +244,105 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
     }
 }
 
+/// Length of the next "atom" at the start of `bytes` — the largest prefix
+/// that must not be split across paced writes. Atoms are:
+///
+/// - a single ASCII byte (control or printable), OR
+/// - a complete UTF-8 codepoint (1–4 bytes), OR
+/// - a full VT control sequence introduced by `ESC` (CSI `ESC [ … final`,
+///   SS3 `ESC O final`, OSC `ESC ] … BEL|ST`, or a 2-byte `ESC X` escape).
+///
+/// Splitting a multi-byte codepoint corrupts the rune; splitting a CSI/SS3
+/// sequence turns arrow keys / function keys into stray printable text;
+/// splitting an OSC string leaks the payload onto the screen. We keep them
+/// whole.
+///
+/// If the buffer ends mid-sequence (truncated CSI/SS3/OSC, partial UTF-8
+/// codepoint), the whole remaining slice is returned as a single atom — the
+/// caller is committing to write what they have, so there's nothing to be
+/// gained by splitting an incomplete sequence further.
+///
+/// Ported from `escapeSeqEnd` in
+/// <https://github.com/montanaflynn/headless-terminal/blob/main/internal/session/session.go>.
+pub(crate) fn next_atom_end(bytes: &[u8]) -> usize {
+    debug_assert!(!bytes.is_empty(), "next_atom_end called on empty slice");
+
+    let first = bytes[0];
+
+    // ESC-introduced sequences. ESC alone, or with no recognised
+    // follow-on byte, is treated as a 2-byte escape ("ESC X") so we
+    // never split between ESC and the next byte.
+    if first == 0x1B {
+        if bytes.len() < 2 {
+            return bytes.len();
+        }
+        match bytes[1] {
+            // CSI: ESC [ ... final byte (0x40–0x7E)
+            b'[' => {
+                let mut i = 2;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if (0x40..=0x7E).contains(&b) {
+                        return i + 1;
+                    }
+                    i += 1;
+                }
+                bytes.len()
+            }
+            // SS3: ESC O <final>
+            b'O' => {
+                if bytes.len() >= 3 {
+                    3
+                } else {
+                    bytes.len()
+                }
+            }
+            // OSC: ESC ] ... terminator. Terminator is either BEL (0x07)
+            // or ST (ESC \).
+            b']' => {
+                let mut i = 2;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    if b == 0x07 {
+                        return i + 1;
+                    }
+                    if b == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        return i + 2;
+                    }
+                    i += 1;
+                }
+                bytes.len()
+            }
+            // Any other ESC-prefixed escape: 2 bytes.
+            _ => 2,
+        }
+    } else if first < 0x80 {
+        // ASCII byte (control or printable).
+        1
+    } else {
+        // UTF-8 leading byte; emit the whole codepoint atomically.
+        let cp_len = utf8_codepoint_len(first);
+        cp_len.min(bytes.len())
+    }
+}
+
+/// Expected length of a UTF-8 codepoint given its leading byte. Falls back
+/// to 1 for invalid lead bytes so a malformed stream still makes forward
+/// progress one byte at a time.
+fn utf8_codepoint_len(lead: u8) -> usize {
+    if lead < 0x80 {
+        1
+    } else if lead & 0xE0 == 0xC0 {
+        2
+    } else if lead & 0xF0 == 0xE0 {
+        3
+    } else if lead & 0xF8 == 0xF0 {
+        4
+    } else {
+        1
+    }
+}
+
 impl PtySession {
     pub fn spawn(
         command: &str,
@@ -379,6 +479,34 @@ impl PtySession {
                 "pty write drainer exited before acknowledging queued write"
             )),
         }
+    }
+
+    /// Paced variant of [`write_all`]: writes one "atom" at a time (single
+    /// ASCII byte, full UTF-8 codepoint, or full CSI/SS3/OSC sequence) with
+    /// `rate` between atoms. Closes the "Claude eats characters" class of
+    /// bugs we see when bulk-writing an entire injection in one shot — the
+    /// child has time to consume each atom between reads, and escape
+    /// sequences are never split mid-stream.
+    ///
+    /// Each atom is enqueued through the same FIFO write queue as
+    /// [`write_all`], so paced writes interleave correctly with terminal
+    /// query replies. A `rate` of zero degrades to back-to-back enqueues
+    /// (no sleep), still atom-by-atom so escape sequences remain intact.
+    ///
+    /// Returns the first write error encountered — partial writes leave the
+    /// already-flushed prefix in the PTY, the caller treats this the same
+    /// as a bulk `write_all` failure (re-queue or drop).
+    pub async fn write_paced(&self, bytes: &[u8], rate: Duration) -> Result<()> {
+        let mut i = 0;
+        while i < bytes.len() {
+            let atom = next_atom_end(&bytes[i..]);
+            self.write_all(&bytes[i..i + atom])?;
+            i += atom;
+            if i < bytes.len() && !rate.is_zero() {
+                tokio::time::sleep(rate).await;
+            }
+        }
+        Ok(())
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
@@ -1075,6 +1203,154 @@ mod tests {
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    // ---- next_atom_end / paced injection atomicity ----
+
+    use super::next_atom_end;
+
+    /// Walk `bytes` the same way `write_paced` would, returning the chunk
+    /// boundaries it would write.
+    fn atomize(bytes: &[u8]) -> Vec<&[u8]> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let end = next_atom_end(&bytes[i..]);
+            out.push(&bytes[i..i + end]);
+            i += end;
+        }
+        out
+    }
+
+    #[test]
+    fn atomizes_plain_ascii_byte_by_byte() {
+        assert_eq!(
+            atomize(b"abc"),
+            vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()],
+        );
+    }
+
+    #[test]
+    fn atomizes_csi_sequence_as_one_chunk() {
+        // Up arrow: ESC [ A — final byte at index 2.
+        assert_eq!(atomize(b"\x1b[A"), vec![b"\x1b[A".as_slice()]);
+        // Parameterised CSI: cursor position ESC [ 12 ; 34 H.
+        assert_eq!(atomize(b"\x1b[12;34H"), vec![b"\x1b[12;34H".as_slice()]);
+        // Color attr SGR: ESC [ 1 ; 31 m.
+        assert_eq!(atomize(b"\x1b[1;31m"), vec![b"\x1b[1;31m".as_slice()]);
+    }
+
+    #[test]
+    fn atomizes_ss3_sequence_as_three_bytes() {
+        // F1 in application keypad mode: ESC O P.
+        assert_eq!(atomize(b"\x1bOP"), vec![b"\x1bOP".as_slice()]);
+    }
+
+    #[test]
+    fn atomizes_osc_terminated_by_bel() {
+        // Set window title: ESC ] 0 ; t i t l e BEL.
+        let osc = b"\x1b]0;title\x07";
+        assert_eq!(atomize(osc), vec![osc.as_slice()]);
+    }
+
+    #[test]
+    fn atomizes_osc_terminated_by_st() {
+        // Same payload, but ST (ESC \) terminator.
+        let osc = b"\x1b]0;title\x1b\\";
+        assert_eq!(atomize(osc), vec![osc.as_slice()]);
+    }
+
+    #[test]
+    fn atomizes_multibyte_utf8_codepoint_as_one_chunk() {
+        // "héllo🚀" — é is 2 bytes, 🚀 is 4 bytes, the rest ASCII.
+        let s = "héllo🚀".as_bytes();
+        let chunks = atomize(s);
+        // h, é (2), l, l, o, 🚀 (4) → 6 atoms.
+        assert_eq!(chunks.len(), 6);
+        assert_eq!(chunks[0], b"h");
+        assert_eq!(chunks[1], "é".as_bytes());
+        assert_eq!(chunks[1].len(), 2);
+        assert_eq!(chunks[5], "🚀".as_bytes());
+        assert_eq!(chunks[5].len(), 4);
+        // Reassembling all atoms must reproduce the input exactly.
+        let mut rebuilt = Vec::new();
+        for c in &chunks {
+            rebuilt.extend_from_slice(c);
+        }
+        assert_eq!(rebuilt, s);
+    }
+
+    #[test]
+    fn atomizes_mixed_payload_keeps_sequences_intact() {
+        // What an injection actually looks like: plain text, a CSI color
+        // wrap, multibyte UTF-8, then a CR. None of the escape sequences
+        // or codepoints should be split.
+        let payload = b"hi \x1b[32mok\x1b[0m \xf0\x9f\x9a\x80\r";
+        let chunks = atomize(payload);
+        assert!(
+            chunks.iter().any(|c| *c == b"\x1b[32m"),
+            "ESC[32m must appear as one atom; got {chunks:?}"
+        );
+        assert!(
+            chunks.iter().any(|c| *c == b"\x1b[0m"),
+            "ESC[0m must appear as one atom; got {chunks:?}"
+        );
+        assert!(
+            chunks.iter().any(|c| *c == "🚀".as_bytes()),
+            "rocket codepoint must appear as one 4-byte atom; got {chunks:?}"
+        );
+        // CR is a plain ASCII byte and lands alone at the end.
+        assert_eq!(chunks.last().copied(), Some(b"\r".as_slice()));
+
+        let mut rebuilt = Vec::new();
+        for c in &chunks {
+            rebuilt.extend_from_slice(c);
+        }
+        assert_eq!(rebuilt.as_slice(), payload);
+    }
+
+    #[test]
+    fn truncated_csi_returns_remaining_bytes() {
+        // Unfinished CSI at end of buffer: ESC [ 1 2 ; — caller is committing
+        // to write what they have; we don't make up a terminator. Should
+        // return as a single chunk so the next write picks up from after it.
+        let truncated = b"\x1b[12;";
+        assert_eq!(atomize(truncated), vec![truncated.as_slice()]);
+    }
+
+    #[test]
+    fn lone_esc_does_not_split_with_following_byte() {
+        // Steer-mode prefix is two raw ESCs back-to-back — each must come
+        // out as its own 1-byte (well, ESC X = 2 bytes if there's a
+        // follower) atom rather than getting glued to whatever comes next.
+        // For ESC ESC: first atom is "ESC ESC" (2-byte ESC X form).
+        assert_eq!(atomize(b"\x1b\x1b"), vec![b"\x1b\x1b".as_slice()]);
+    }
+
+    #[tokio::test]
+    async fn write_paced_writes_an_atom_at_a_time_with_zero_rate() {
+        // Validates the integration: feed a real PTY a payload via
+        // write_paced(0ms) and assert the bytes round-trip through `cat`
+        // intact — proves we never corrupt a sequence by splitting it.
+        let (pty, mut rx) = PtySession::spawn("cat", &[], 24, 80).unwrap();
+        let payload = "hello \u{1f680}\r"; // includes a 4-byte UTF-8 codepoint
+        pty.write_paced(payload.as_bytes(), Duration::from_millis(0))
+            .await
+            .unwrap();
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&collected).contains("hello \u{1f680}") {
+                break;
+            }
+        }
+        let echoed = String::from_utf8_lossy(&collected);
+        assert!(
+            echoed.contains("hello \u{1f680}"),
+            "paced write must round-trip multibyte UTF-8 intact; got {echoed:?}"
+        );
+        let _ = pty.shutdown();
     }
 
     #[test]
