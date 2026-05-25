@@ -316,7 +316,7 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("runtime"))
                             .and_then(Value::as_str)
                             .unwrap_or("pty");
-                        let (provider_val, cli_val, model_val) = workers
+                        let (provider_val, cli_val, model_val, session_id_val) = workers
                             .workers
                             .get(&name)
                             .map(|h| {
@@ -324,9 +324,10 @@ impl BrokerRuntime {
                                     h.spec.provider.clone(),
                                     h.spec.cli.clone(),
                                     h.spec.model.clone(),
+                                    h.spec.session_id.clone(),
                                 )
                             })
-                            .unwrap_or((None, None, None));
+                            .unwrap_or((None, None, None, None));
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
@@ -336,6 +337,7 @@ impl BrokerRuntime {
                                 "provider": provider_val,
                                 "cli": cli_val,
                                 "model": model_val,
+                                "sessionId": session_id_val,
                             }),
                         )
                         .await;

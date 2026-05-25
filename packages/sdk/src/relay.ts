@@ -31,7 +31,12 @@ import { RelayCast } from '@relaycast/sdk';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
+import {
+  AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
+  type AgentRelaySpawnOptions,
+  type SpawnAgentResult,
+} from './client.js';
 import { EventBus } from './event-bus.js';
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import {
@@ -244,6 +249,7 @@ export interface SpawnLifecycleContext {
 
 export interface SpawnLifecycleSuccessContext extends SpawnLifecycleContext {
   runtime: AgentRuntime;
+  sessionId?: string;
 }
 
 export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
@@ -357,6 +363,7 @@ type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayloa
 export interface Agent<TAgentResult = unknown> {
   readonly name: string;
   readonly runtime: AgentRuntime;
+  readonly sessionId?: string;
   readonly channels: string[];
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
@@ -485,6 +492,7 @@ type OutputListener = {
 
 type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
+  _setSessionId: (sessionId: string) => void;
 };
 
 type InternalAgentResultContract<T = unknown> = {
@@ -798,7 +806,7 @@ export class AgentRelay {
       task: input.task,
     };
     await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
-    let result: { name: string; runtime: AgentRuntime };
+    let result: SpawnAgentResult;
     const resultContract = this.prepareAgentResultContract(input.result);
     if (resultContract) {
       this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
@@ -840,7 +848,7 @@ export class AgentRelay {
       this.resultContracts.delete(input.name);
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
-    const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
+    const agent = this.makeAgent(result.name, result.runtime, channels, result.sessionId) as Agent<TAgentResult>;
     this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
       input.onSuccess,
@@ -848,6 +856,7 @@ export class AgentRelay {
         ...lifecycleContext,
         name: result.name,
         runtime: result.runtime,
+        sessionId: result.sessionId,
       },
       `spawnPty("${input.name}") onSuccess`
     );
@@ -1176,13 +1185,9 @@ export class AgentRelay {
   async listAgents(): Promise<Agent[]> {
     const client = await this.ensureStarted();
     const list = await client.listAgents();
-    return list.map((entry) => {
-      const existing = this.knownAgents.get(entry.name);
-      if (existing) return existing;
-      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels);
-      this.knownAgents.set(agent.name, agent);
-      return agent;
-    });
+    return list.map((entry) =>
+      this.ensureAgentHandle(entry.name, entry.runtime, entry.channels, entry.sessionId)
+    );
   }
 
   /** Pre-register a batch of agents with Relaycast before steps execute. */
@@ -1465,12 +1470,20 @@ export class AgentRelay {
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  private ensureAgentHandle(name: string, runtime: AgentRuntime = 'pty', channels: string[] = []): Agent {
+  private ensureAgentHandle(
+    name: string,
+    runtime: AgentRuntime = 'pty',
+    channels: string[] = [],
+    sessionId?: string
+  ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
+      if (sessionId) {
+        (existing as InternalAgent)._setSessionId(sessionId);
+      }
       return existing;
     }
-    const agent = this.makeAgent(name, runtime, channels);
+    const agent = this.makeAgent(name, runtime, channels, sessionId);
     this.knownAgents.set(name, agent);
     return agent;
   }
@@ -1753,7 +1766,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_spawned': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
@@ -1814,7 +1827,7 @@ export class AgentRelay {
           break;
         }
         case 'worker_ready': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
@@ -2055,13 +2068,22 @@ export class AgentRelay {
     });
   }
 
-  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent<unknown> {
+  private makeAgent(
+    name: string,
+    runtime: AgentRuntime,
+    channels: string[],
+    sessionId?: string
+  ): Agent<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
+    let agentSessionId = sessionId;
     const agent: InternalAgent = {
       name,
       runtime,
+      get sessionId() {
+        return agentSessionId;
+      },
       get channels() {
         return [...agentChannels];
       },
@@ -2271,6 +2293,9 @@ export class AgentRelay {
       _setChannels(nextChannels: string[]) {
         agentChannels = [...nextChannels];
       },
+      _setSessionId(nextSessionId: string) {
+        agentSessionId = nextSessionId;
+      },
     };
     return agent;
   }
@@ -2310,7 +2335,7 @@ export class AgentRelay {
           task,
         };
         await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
-        let result: { name: string; runtime: AgentRuntime };
+        let result: SpawnAgentResult;
         const resultContract = this.prepareAgentResultContract(options?.result);
         if (resultContract) {
           this.resultContracts.set(name, resultContract as InternalAgentResultContract);
@@ -2350,7 +2375,7 @@ export class AgentRelay {
           this.resultContracts.delete(name);
           this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
         }
-        const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
+        const agent = this.makeAgent(result.name, result.runtime, channels, result.sessionId) as Agent<TAgentResult>;
         this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
           options?.onSuccess,
@@ -2358,6 +2383,7 @@ export class AgentRelay {
             ...lifecycleContext,
             name: result.name,
             runtime: result.runtime,
+            sessionId: result.sessionId,
           },
           `spawn("${name}") onSuccess`
         );

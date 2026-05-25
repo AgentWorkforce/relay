@@ -58,6 +58,7 @@ pub(crate) fn build_http_api_spawn_spec(
         cli: cli_command,
         model,
         cwd,
+        session_id: None,
         team,
         shadow_of,
         shadow_mode,
