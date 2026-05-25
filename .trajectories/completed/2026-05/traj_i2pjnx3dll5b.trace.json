@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "id": "bb0dfc23-cfa6-4d25-9d72-4d0448733f1f",
+  "timestamp": "2026-05-25T16:22:35.421Z",
+  "trajectory": "traj_i2pjnx3dll5b",
+  "files": [
+    {
+      "path": "docs/harness-runtime-plan.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 184,
+              "revision": "8ddc2f9d9e9fcf0504ad4bd76e8d7e0b1da8d299"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/content/docs/harnesses.mdx",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 144,
+              "revision": "8ddc2f9d9e9fcf0504ad4bd76e8d7e0b1da8d299"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "web/lib/docs-nav.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 26,
+              "revision": "8ddc2f9d9e9fcf0504ad4bd76e8d7e0b1da8d299"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

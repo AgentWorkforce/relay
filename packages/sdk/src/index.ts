@@ -42,6 +42,7 @@ export * from './broker-logs.js';
 export * from './consensus.js';
 export * from './shadow.js';
 export * from './relay-adapter.js';
+export * from './harness.js';
 export * from './workflows/index.js';
 export * from './spawn-from-env.js';
 export * from './cli-registry.js';

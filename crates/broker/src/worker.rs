@@ -7,7 +7,10 @@ use std::{
 
 use crate::{
     metrics::MetricsCollector,
-    protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
+    protocol::{
+        AgentRuntime, AgentSpec, AppServerAuthType, HarnessReleasePolicy, ProtocolEnvelope,
+        RelayDelivery, ResolvedHarnessPlan, PROTOCOL_VERSION,
+    },
     relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
     types::AgentResultMcpConfig,
@@ -136,6 +139,7 @@ impl WorkerRegistry {
                     "team": handle.spec.team,
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
+                    "sessionId": handle.spec.session_id,
                     "pid": handle.child.id(),
                     "last_activity_ms": handle.last_activity_at.elapsed().as_millis() as u64,
                     "last_activity_at": chrono::Utc::now()
@@ -224,15 +228,26 @@ impl WorkerRegistry {
 
         let mut command =
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
+        let mut harness_env: Vec<(String, String)> = Vec::new();
 
-        match spec.runtime {
-            AgentRuntime::Pty => {
-                let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
-                let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
-                    .with_context(|| format!("invalid CLI command '{cli}'"))?;
+        match spec.harness_plan.clone() {
+            Some(ResolvedHarnessPlan::Pty(plan)) => {
+                spec.runtime = AgentRuntime::Pty;
+                if spec.session_id.is_none() {
+                    spec.session_id = plan.session_id.clone();
+                }
+                if spec.cwd.is_none() {
+                    spec.cwd = plan.cwd.clone();
+                }
+                if let Some(env) = plan.env {
+                    harness_env.extend(env);
+                }
+
+                let (resolved_cli, inline_cli_args) = parse_cli_command(&plan.command)
+                    .with_context(|| format!("invalid harness command '{}'", plan.command))?;
                 let normalized_cli = normalize_cli_name(&resolved_cli);
                 let mut effective_args = inline_cli_args;
-                effective_args.extend(spec.args.clone());
+                effective_args.extend(plan.args.clone());
 
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
@@ -242,9 +257,6 @@ impl WorkerRegistry {
                 command.arg(&resolved_cli);
 
                 let cli_lower = normalized_cli.to_lowercase();
-                let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
-                let is_codex = cli_lower == "codex";
-                let is_gemini = cli_lower == "gemini";
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -255,38 +267,10 @@ impl WorkerRegistry {
                 {
                     spec.model = Some(model);
                 }
-                // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
-                // This means any actor who can trigger agent.add gets agents with no permission
-                // guardrails. Future work should make this an explicit opt-in per step/agent.
-                let bypass_flag: Option<&str> = if is_claude
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-skip-permissions"))
-                {
-                    Some("--dangerously-skip-permissions")
-                } else if is_codex
-                    && !effective_args
-                        .iter()
-                        .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
-                {
-                    Some("--dangerously-bypass-approvals-and-sandbox")
-                } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
-                    Some("--yolo")
-                } else {
-                    None
-                };
-
-                if let Some(flag) = bypass_flag {
-                    tracing::warn!(
-                        worker = %spec.name,
-                        flag = %flag,
-                        "auto-injecting permission-bypass flag for spawned agent"
-                    );
-                }
 
                 let mcp_args = self
                     .build_mcp_args(
-                        cli,
+                        &resolved_cli,
                         &spec.name,
                         &effective_args,
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
@@ -308,15 +292,8 @@ impl WorkerRegistry {
                     spec.model = Some(model.clone());
                 }
 
-                let has_extra = bypass_flag.is_some()
-                    || model_flag.is_some()
-                    || !effective_args.is_empty()
-                    || !mcp_args.is_empty();
-                if has_extra {
+                if model_flag.is_some() || !effective_args.is_empty() || !mcp_args.is_empty() {
                     command.arg("--");
-                    if let Some(flag) = bypass_flag {
-                        command.arg(flag);
-                    }
                     if let Some(ref model) = model_flag {
                         command.arg("--model");
                         command.arg(model);
@@ -329,64 +306,205 @@ impl WorkerRegistry {
                     }
                 }
             }
-            AgentRuntime::Headless => {
-                let provider = spec
-                    .provider
-                    .as_ref()
-                    .context("headless runtime requires `provider`")?;
-                command.arg("headless");
+            Some(ResolvedHarnessPlan::AppServer(plan)) => {
+                spec.runtime = AgentRuntime::AppServer;
+                spec.session_id = Some(plan.session_id.clone());
+
+                command.arg("app-server");
                 command.arg("--agent-name").arg(&spec.name);
-                let provider_cli = headless_provider_cli_name(provider);
-                command.arg(provider_cli);
-                if let Some(model) = apply_codex_model_arg_fallback(
-                    provider_cli,
-                    provider_cli,
-                    &spec.name,
-                    &mut spec.args,
-                )
-                .await
-                {
-                    spec.model = Some(model);
-                }
+                command.arg("--protocol").arg(&plan.protocol);
+                command.arg("--endpoint").arg(&plan.endpoint);
+                command.arg("--session-id").arg(&plan.session_id);
+                command
+                    .arg("--release")
+                    .arg(release_policy_arg(plan.release.as_ref()));
 
-                let mcp_args = self
-                    .build_mcp_args(
-                        provider_cli,
-                        &spec.name,
-                        &spec.args,
-                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
-                        worker_relay_api_key.as_deref(),
-                        skip_relay_prompt,
-                        agent_result.as_ref(),
-                    )
-                    .await?;
-
-                let model_arg = resolve_model_flag_for_cli(
-                    provider_cli,
-                    provider_cli,
-                    &spec.name,
-                    spec.model.as_deref(),
-                    &spec.args,
-                )
-                .await;
-                if let Some(ref model) = model_arg {
-                    spec.model = Some(model.clone());
-                }
-
-                if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
-                    command.arg("--");
-                    if let Some(model) = model_arg {
-                        command.arg("--model");
-                        command.arg(model);
+                if let Some(auth) = plan.auth {
+                    harness_env.push((
+                        "AGENT_RELAY_APP_SERVER_AUTH_TYPE".to_string(),
+                        app_server_auth_type_arg(&auth.auth_type).to_string(),
+                    ));
+                    if let Some(token) = auth.token {
+                        harness_env.push(("AGENT_RELAY_APP_SERVER_AUTH_TOKEN".to_string(), token));
                     }
-                    for arg in &mcp_args {
-                        command.arg(arg);
+                    if let Some(username) = auth.username {
+                        harness_env
+                            .push(("AGENT_RELAY_APP_SERVER_AUTH_USERNAME".to_string(), username));
                     }
-                    for arg in &spec.args {
-                        command.arg(arg);
+                    if let Some(password) = auth.password {
+                        harness_env
+                            .push(("AGENT_RELAY_APP_SERVER_AUTH_PASSWORD".to_string(), password));
                     }
                 }
             }
+            None => match spec.runtime {
+                AgentRuntime::Pty => {
+                    let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
+                    let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
+                        .with_context(|| format!("invalid CLI command '{cli}'"))?;
+                    let normalized_cli = normalize_cli_name(&resolved_cli);
+                    let mut effective_args = inline_cli_args;
+                    effective_args.extend(spec.args.clone());
+
+                    command.arg("pty");
+                    command.arg("--agent-name").arg(&spec.name);
+                    if let Some(secs) = idle_threshold_secs {
+                        command.arg("--idle-threshold-secs").arg(secs.to_string());
+                    }
+                    command.arg(&resolved_cli);
+
+                    let cli_lower = normalized_cli.to_lowercase();
+                    let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
+                    let is_codex = cli_lower == "codex";
+                    let is_gemini = cli_lower == "gemini";
+                    if let Some(model) = apply_codex_model_arg_fallback(
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        &mut effective_args,
+                    )
+                    .await
+                    {
+                        spec.model = Some(model);
+                    }
+                    // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
+                    // This means any actor who can trigger agent.add gets agents with no permission
+                    // guardrails. Future work should make this an explicit opt-in per step/agent.
+                    let bypass_flag: Option<&str> = if is_claude
+                        && !effective_args
+                            .iter()
+                            .any(|a| a.contains("dangerously-skip-permissions"))
+                    {
+                        Some("--dangerously-skip-permissions")
+                    } else if is_codex
+                        && !effective_args
+                            .iter()
+                            .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
+                    {
+                        Some("--dangerously-bypass-approvals-and-sandbox")
+                    } else if is_gemini
+                        && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
+                    {
+                        Some("--yolo")
+                    } else {
+                        None
+                    };
+
+                    if let Some(flag) = bypass_flag {
+                        tracing::warn!(
+                            worker = %spec.name,
+                            flag = %flag,
+                            "auto-injecting permission-bypass flag for spawned agent"
+                        );
+                    }
+
+                    let mcp_args = self
+                        .build_mcp_args(
+                            cli,
+                            &spec.name,
+                            &effective_args,
+                            Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                            worker_relay_api_key.as_deref(),
+                            skip_relay_prompt,
+                            agent_result.as_ref(),
+                        )
+                        .await?;
+
+                    let model_flag = resolve_model_flag_for_cli(
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &effective_args,
+                    )
+                    .await;
+                    if let Some(ref model) = model_flag {
+                        spec.model = Some(model.clone());
+                    }
+
+                    let has_extra = bypass_flag.is_some()
+                        || model_flag.is_some()
+                        || !effective_args.is_empty()
+                        || !mcp_args.is_empty();
+                    if has_extra {
+                        command.arg("--");
+                        if let Some(flag) = bypass_flag {
+                            command.arg(flag);
+                        }
+                        if let Some(ref model) = model_flag {
+                            command.arg("--model");
+                            command.arg(model);
+                        }
+                        for arg in &mcp_args {
+                            command.arg(arg);
+                        }
+                        for arg in &effective_args {
+                            command.arg(arg);
+                        }
+                    }
+                }
+                AgentRuntime::Headless => {
+                    let provider = spec
+                        .provider
+                        .as_ref()
+                        .context("headless runtime requires `provider`")?;
+                    command.arg("headless");
+                    command.arg("--agent-name").arg(&spec.name);
+                    let provider_cli = headless_provider_cli_name(provider);
+                    command.arg(provider_cli);
+                    if let Some(model) = apply_codex_model_arg_fallback(
+                        provider_cli,
+                        provider_cli,
+                        &spec.name,
+                        &mut spec.args,
+                    )
+                    .await
+                    {
+                        spec.model = Some(model);
+                    }
+
+                    let mcp_args = self
+                        .build_mcp_args(
+                            provider_cli,
+                            &spec.name,
+                            &spec.args,
+                            Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                            worker_relay_api_key.as_deref(),
+                            skip_relay_prompt,
+                            agent_result.as_ref(),
+                        )
+                        .await?;
+
+                    let model_arg = resolve_model_flag_for_cli(
+                        provider_cli,
+                        provider_cli,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &spec.args,
+                    )
+                    .await;
+                    if let Some(ref model) = model_arg {
+                        spec.model = Some(model.clone());
+                    }
+
+                    if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
+                        command.arg("--");
+                        if let Some(model) = model_arg {
+                            command.arg("--model");
+                            command.arg(model);
+                        }
+                        for arg in &mcp_args {
+                            command.arg(arg);
+                        }
+                        for arg in &spec.args {
+                            command.arg(arg);
+                        }
+                    }
+                }
+                AgentRuntime::AppServer => {
+                    anyhow::bail!("app_server runtime requires a resolved harnessPlan");
+                }
+            },
         }
 
         command
@@ -394,6 +512,9 @@ impl WorkerRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in &self.worker_env {
+            command.env(key, value);
+        }
+        for (key, value) in &harness_env {
             command.env(key, value);
         }
         if let Some(config) = &agent_result {
@@ -691,6 +812,22 @@ impl WorkerRegistry {
             trimmed.eq_ignore_ascii_case(worker_name)
                 || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
         })
+    }
+}
+
+fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
+    match policy {
+        Some(HarnessReleasePolicy::Abort) => "abort",
+        Some(HarnessReleasePolicy::Delete) => "delete",
+        Some(HarnessReleasePolicy::Detach) | None => "detach",
+    }
+}
+
+fn app_server_auth_type_arg(auth_type: &AppServerAuthType) -> &'static str {
+    match auth_type {
+        AppServerAuthType::Bearer => "bearer",
+        AppServerAuthType::Basic => "basic",
+        AppServerAuthType::None => "none",
     }
 }
 

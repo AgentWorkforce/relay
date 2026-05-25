@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -10,6 +12,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 pub enum AgentRuntime {
     Pty,
     Headless,
+    AppServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +23,130 @@ pub enum HeadlessProvider {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PtyHarnessDeliveryMode {
+    PtyInjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PtyHarnessDeliveryFormat {
+    RelayBlock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyHarnessDelivery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PtyHarnessDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<PtyHarnessDeliveryFormat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyHarnessPlan {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<PtyHarnessDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppServerAuthType {
+    Bearer,
+    Basic,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppServerHarnessAuth {
+    #[serde(rename = "type")]
+    pub auth_type: AppServerAuthType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppServerHostOwnership {
+    BrokerOwned,
+    Attached,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppServerHarnessHost {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<AppServerHostOwnership>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessReleasePolicy {
+    Abort,
+    #[default]
+    Detach,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppServerHarnessPlan {
+    pub protocol: String,
+    pub endpoint: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AppServerHarnessAuth>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<AppServerHarnessHost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<HarnessReleasePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "runtime", rename_all = "snake_case")]
+pub enum ResolvedHarnessPlan {
+    Pty(PtyHarnessPlan),
+    AppServer(AppServerHarnessPlan),
+}
+
+impl ResolvedHarnessPlan {
+    pub(crate) fn runtime(&self) -> AgentRuntime {
+        match self {
+            Self::Pty(_) => AgentRuntime::Pty,
+            Self::AppServer(_) => AgentRuntime::AppServer,
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::Pty(plan) => plan.session_id.as_deref(),
+            Self::AppServer(plan) => Some(plan.session_id.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentSpec {
     pub name: String,
     pub runtime: AgentRuntime,
@@ -27,6 +154,14 @@ pub struct AgentSpec {
     pub provider: Option<HeadlessProvider>,
     #[serde(default)]
     pub cli: Option<String>,
+    #[serde(default, alias = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(
+        default,
+        alias = "harnessPlan",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub harness_plan: Option<ResolvedHarnessPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,6 +293,8 @@ pub enum BrokerEvent {
         cli: Option<String>,
         model: Option<String>,
         pid: Option<u32>,
+        #[serde(default)]
+        session_id: Option<String>,
         source: Option<String>,
     },
     AgentReleased {
@@ -369,7 +506,8 @@ mod tests {
 
     use super::{
         AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessProvider,
-        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, WorkerToBroker, PROTOCOL_VERSION,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan, WorkerToBroker,
+        PROTOCOL_VERSION,
     };
 
     #[test]
@@ -455,6 +593,7 @@ mod tests {
             cli: None,
             model: None,
             pid: None,
+            session_id: None,
             source: None,
         });
         let encoded = serde_json::to_string(&event).unwrap();
@@ -548,6 +687,8 @@ mod tests {
         assert_eq!(spec.runtime, AgentRuntime::Pty);
         assert_eq!(spec.provider, None);
         assert_eq!(spec.cli, None);
+        assert_eq!(spec.session_id, None);
+        assert_eq!(spec.harness_plan, None);
         assert_eq!(spec.model, None);
         assert_eq!(spec.cwd, None);
         assert_eq!(spec.team, None);
@@ -567,6 +708,75 @@ mod tests {
         let encoded = serde_json::to_string(&spec).unwrap();
         let decoded: AgentSpec = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.provider, Some(HeadlessProvider::Opencode));
+    }
+
+    #[test]
+    fn agent_spec_accepts_camel_case_harness_plan() {
+        let raw = r#"{
+          "name": "QwenWorker",
+          "runtime": "pty",
+          "cli": "qwen",
+          "sessionId": "native-session",
+          "harnessPlan": {
+            "runtime": "pty",
+            "command": "qwen",
+            "args": ["run", "-m", "qwen3-coder"],
+            "cwd": "/tmp/project",
+            "env": { "QWEN_MODE": "code" },
+            "sessionId": "native-session"
+          }
+        }"#;
+
+        let spec: AgentSpec = serde_json::from_str(raw).unwrap();
+        assert_eq!(spec.runtime, AgentRuntime::Pty);
+        assert_eq!(spec.session_id.as_deref(), Some("native-session"));
+        let Some(ResolvedHarnessPlan::Pty(plan)) = spec.harness_plan else {
+            panic!("expected pty harness plan");
+        };
+        assert_eq!(plan.command, "qwen");
+        assert_eq!(
+            plan.args,
+            vec![
+                "run".to_string(),
+                "-m".to_string(),
+                "qwen3-coder".to_string()
+            ]
+        );
+        assert_eq!(plan.cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(
+            plan.env
+                .as_ref()
+                .and_then(|env| env.get("QWEN_MODE"))
+                .map(String::as_str),
+            Some("code")
+        );
+        assert_eq!(plan.session_id.as_deref(), Some("native-session"));
+    }
+
+    #[test]
+    fn app_server_harness_plan_round_trips() {
+        let raw = json!({
+            "runtime": "app_server",
+            "protocol": "opencode",
+            "endpoint": "http://127.0.0.1:4096",
+            "sessionId": "ses_123",
+            "auth": {
+                "type": "basic",
+                "username": "opencode",
+                "password": "secret"
+            },
+            "release": "abort"
+        });
+
+        let plan: ResolvedHarnessPlan = serde_json::from_value(raw).unwrap();
+        assert_eq!(plan.runtime(), AgentRuntime::AppServer);
+        assert_eq!(plan.session_id(), Some("ses_123"));
+
+        let encoded = serde_json::to_string(&plan).unwrap();
+        assert!(encoded.contains("\"runtime\":\"app_server\""));
+        assert!(encoded.contains("\"sessionId\":\"ses_123\""));
+        let decoded: ResolvedHarnessPlan = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.session_id(), Some("ses_123"));
     }
 
     #[test]

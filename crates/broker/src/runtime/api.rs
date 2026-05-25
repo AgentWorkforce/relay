@@ -45,6 +45,7 @@ impl BrokerRuntime {
                 idle_threshold_secs,
                 skip_relay_prompt,
                 restart_policy,
+                harness_plan,
                 agent_token,
                 agent_result_schema,
                 reply,
@@ -66,6 +67,7 @@ impl BrokerRuntime {
                     shadow_of,
                     shadow_mode,
                     *restart_policy,
+                    harness_plan,
                 ) {
                     Ok(spec) => spec,
                     Err(error) => {
@@ -268,6 +270,7 @@ impl BrokerRuntime {
                                 "cli": effective_spec.cli.clone(),
                                 "model": effective_spec.model.clone(),
                                 "pid":pid,
+                                "sessionId": effective_spec.session_id.clone(),
                                 "source":"http_api",
                                 "pre_registered": worker_relay_key.is_some(),
                                 "registration_warning": preregistration_warning.clone(),
@@ -287,6 +290,7 @@ impl BrokerRuntime {
                             "runtime": runtime_label(&effective_spec.runtime),
                             "model": effective_spec.model.clone(),
                             "pid": pid,
+                            "sessionId": effective_spec.session_id.clone(),
                             "pre_registered": worker_relay_key.is_some(),
                             "warning": preregistration_warning,
                         })));
@@ -940,21 +944,43 @@ impl BrokerRuntime {
                 let _ = reply.send(Ok(json!({ "threads": threads })));
             }
             ListenApiRequest::SendInput { name, data, reply } => {
-                if let Err(err) = workers
-                    .send_to_worker(
-                        &name,
-                        "write_pty",
-                        Some(format!("api_{}", Uuid::new_v4().simple())),
-                        json!({ "data": data }),
-                    )
-                    .await
+                match workers
+                    .workers
+                    .get(&name)
+                    .map(|handle| handle.spec.runtime.clone())
                 {
-                    let _ = reply.send(Err(format!("agent_not_found: {}", err)));
-                } else {
-                    let _ = reply.send(Ok(json!({
-                        "name": name,
-                        "bytes_written": data.len(),
-                    })));
+                    None => {
+                        let _ =
+                            reply.send(Err(format!("agent_not_found: no worker named '{name}'")));
+                    }
+                    Some(AgentRuntime::Headless) => {
+                        let _ = reply.send(Err(format!(
+                            "unsupported_runtime: worker '{name}' is headless; pty input is only supported on PTY workers"
+                        )));
+                    }
+                    Some(AgentRuntime::AppServer) => {
+                        let _ = reply.send(Err(format!(
+                            "unsupported_runtime: worker '{name}' is app_server; pty input is only supported on PTY workers"
+                        )));
+                    }
+                    Some(AgentRuntime::Pty) => {
+                        if let Err(err) = workers
+                            .send_to_worker(
+                                &name,
+                                "write_pty",
+                                Some(format!("api_{}", Uuid::new_v4().simple())),
+                                json!({ "data": data }),
+                            )
+                            .await
+                        {
+                            let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                        } else {
+                            let _ = reply.send(Ok(json!({
+                                "name": name,
+                                "bytes_written": data.len(),
+                            })));
+                        }
+                    }
                 }
             }
             ListenApiRequest::CheckPtyInputTarget { name, reply } => {
@@ -970,6 +996,11 @@ impl BrokerRuntime {
                     Some(AgentRuntime::Headless) => {
                         let _ = reply.send(Err(format!(
                             "unsupported_runtime: worker '{name}' is headless; pty input streams are only supported on PTY workers"
+                        )));
+                    }
+                    Some(AgentRuntime::AppServer) => {
+                        let _ = reply.send(Err(format!(
+                            "unsupported_runtime: worker '{name}' is app_server; pty input streams are only supported on PTY workers"
                         )));
                     }
                     Some(AgentRuntime::Pty) => {
@@ -989,22 +1020,46 @@ impl BrokerRuntime {
                 if rows == 0 || cols == 0 {
                     let _ =
                         reply.send(Err("invalid_dimensions: rows and cols must be >= 1".into()));
-                } else if let Err(err) = workers
-                    .send_to_worker(
-                        &name,
-                        "resize_pty",
-                        Some(format!("api_{}", Uuid::new_v4().simple())),
-                        json!({ "rows": rows, "cols": cols }),
-                    )
-                    .await
-                {
-                    let _ = reply.send(Err(format!("agent_not_found: {}", err)));
                 } else {
-                    let _ = reply.send(Ok(json!({
-                        "name": name,
-                        "rows": rows,
-                        "cols": cols,
-                    })));
+                    match workers
+                        .workers
+                        .get(&name)
+                        .map(|handle| handle.spec.runtime.clone())
+                    {
+                        None => {
+                            let _ = reply
+                                .send(Err(format!("agent_not_found: no worker named '{name}'")));
+                        }
+                        Some(AgentRuntime::Headless) => {
+                            let _ = reply.send(Err(format!(
+                                "unsupported_runtime: worker '{name}' is headless; resize_pty is only supported on PTY workers"
+                            )));
+                        }
+                        Some(AgentRuntime::AppServer) => {
+                            let _ = reply.send(Err(format!(
+                                "unsupported_runtime: worker '{name}' is app_server; resize_pty is only supported on PTY workers"
+                            )));
+                        }
+                        Some(AgentRuntime::Pty) => {
+                            if let Err(err) = workers
+                                .send_to_worker(
+                                    &name,
+                                    "resize_pty",
+                                    Some(format!("api_{}", Uuid::new_v4().simple())),
+                                    json!({ "rows": rows, "cols": cols }),
+                                )
+                                .await
+                            {
+                                let _ = reply.send(Err(format!("agent_not_found: {}", err)));
+                            } else {
+                                let _ = reply.send(Ok(json!({
+                                    "name": name,
+                                    "rows": rows,
+                                    "cols": cols,
+                                })));
+                            }
+                        }
+                    }
                 }
             }
             ListenApiRequest::WorkerRequest {
@@ -1044,6 +1099,13 @@ impl BrokerRuntime {
                                             format!("worker '{name}' is headless; {kind} is only supported on PTY workers"),
                                         ),
                                     ));
+                    }
+                    Some(AgentRuntime::AppServer) => {
+                        let _ = reply.send(Err(
+                            worker_request::RequestWorkerError::UnsupportedRuntime(format!(
+                                "worker '{name}' is app_server; {kind} is only supported on PTY workers"
+                            )),
+                        ));
                     }
                     Some(AgentRuntime::Pty) => {
                         let request_id = format!("req_{}", Uuid::new_v4().simple());

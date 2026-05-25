@@ -1,6 +1,6 @@
 export const PROTOCOL_VERSION = 2 as const;
 
-export type AgentRuntime = 'pty' | 'headless';
+export type AgentRuntime = 'pty' | 'headless' | 'app_server';
 export type HeadlessProvider = 'claude' | 'opencode';
 export type InboundDeliveryMode = 'auto_inject' | 'manual_flush';
 export type SnapshotFormat = 'plain' | 'ansi';
@@ -17,6 +17,8 @@ export interface AgentSpec {
   runtime: AgentRuntime;
   provider?: HeadlessProvider;
   cli?: string;
+  session_id?: string;
+  harness_plan?: import('./harness.js').ResolvedHarnessPlan;
   args?: string[];
   channels?: string[];
   model?: string;
@@ -259,6 +261,7 @@ export type BrokerEvent =
       model?: string;
       parent?: string;
       pid?: number;
+      sessionId?: string;
       source?: string;
     }
   | {
@@ -397,6 +400,8 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
+      pid?: number;
     }
   | {
       kind: 'worker_error';
@@ -504,7 +509,7 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider };
+      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string };
     }
   | {
       type: 'delivery_ack';

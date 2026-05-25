@@ -28,7 +28,8 @@ use crate::{
     dedup::DedupCache,
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, HeadlessProvider as ProtocolHeadlessProvider,
-        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan,
+        PROTOCOL_VERSION,
     },
     relaycast::{
         agent_name_eq, ensure_relaycast_mcp_config, format_worker_preregistration_error,
@@ -45,7 +46,7 @@ use crate::{
     },
 };
 
-use crate::cli::{DumpPtyCommand, DumpPtyFormat, HeadlessCommand, InitCommand};
+use crate::cli::{AppServerCommand, DumpPtyCommand, DumpPtyFormat, HeadlessCommand, InitCommand};
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{broker, listen_api, routing, worker_request};
 
@@ -59,6 +60,7 @@ const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
 static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 mod api;
+mod app_server;
 mod connection;
 mod delivery;
 mod event_loop;
@@ -77,6 +79,7 @@ mod tests;
 mod util;
 mod worker_events;
 
+pub(crate) use app_server::*;
 pub(crate) use connection::*;
 pub(crate) use delivery::*;
 pub(crate) use event_loop::*;

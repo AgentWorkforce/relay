@@ -230,6 +230,8 @@ mod tests {
             runtime: AgentRuntime::Pty,
             provider: None,
             cli: Some("claude".to_string()),
+            session_id: None,
+            harness_plan: None,
             model: None,
             cwd: None,
             team: None,

@@ -4,6 +4,7 @@ pub(crate) fn runtime_label(runtime: &AgentRuntime) -> &'static str {
     match runtime {
         AgentRuntime::Pty => "pty",
         AgentRuntime::Headless => "headless",
+        AgentRuntime::AppServer => "app_server",
     }
 }
 
@@ -20,8 +21,9 @@ pub(crate) fn build_http_api_spawn_spec(
     shadow_of: Option<String>,
     shadow_mode: Option<String>,
     restart_policy: Option<Value>,
+    harness_plan: Option<ResolvedHarnessPlan>,
 ) -> Result<AgentSpec> {
-    let runtime = match transport
+    let requested_runtime = match transport
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -30,10 +32,35 @@ pub(crate) fn build_http_api_spawn_spec(
         None => AgentRuntime::Pty,
         Some(value) if value == "pty" => AgentRuntime::Pty,
         Some(value) if value == "headless" => AgentRuntime::Headless,
+        Some(value) if value == "app_server" || value == "app-server" => AgentRuntime::AppServer,
         Some(other) => {
-            anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
+            anyhow::bail!(
+                "unsupported transport '{other}' (expected 'pty', 'headless', or 'app_server')"
+            )
         }
     };
+    let harness_runtime = harness_plan.as_ref().map(ResolvedHarnessPlan::runtime);
+    let runtime = match (
+        transport
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        harness_runtime,
+    ) {
+        (None, Some(harness_runtime)) => harness_runtime,
+        (_, Some(harness_runtime)) if harness_runtime == requested_runtime => requested_runtime,
+        (_, Some(harness_runtime)) => {
+            anyhow::bail!(
+                "harnessPlan runtime '{}' does not match requested transport '{}'",
+                runtime_label(&harness_runtime),
+                runtime_label(&requested_runtime)
+            )
+        }
+        (_, None) => requested_runtime,
+    };
+    if matches!(runtime, AgentRuntime::AppServer) && harness_plan.is_none() {
+        anyhow::bail!("app_server transport requires harnessPlan.runtime = 'app_server'");
+    }
     let parsed_restart_policy = match restart_policy {
         Some(v) => Some(serde_json::from_value(v).context("invalid restart_policy")?),
         None => None,
@@ -49,13 +76,20 @@ pub(crate) fn build_http_api_spawn_spec(
             })?;
             (Some(provider), None, model)
         }
+        AgentRuntime::AppServer => (None, Some(cli), model),
     };
+    let session_id = harness_plan
+        .as_ref()
+        .and_then(ResolvedHarnessPlan::session_id)
+        .map(ToOwned::to_owned);
 
     Ok(AgentSpec {
         name,
         runtime,
         provider,
         cli: cli_command,
+        session_id,
+        harness_plan,
         model,
         cwd,
         team,

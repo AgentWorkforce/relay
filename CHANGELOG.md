@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
+- `@agent-relay/sdk` harness definitions resolve named agent runtimes into broker-executable `pty` or `app_server` plans, so custom CLIs like Qwen can be configured without Rust changes.
+- `agent-relay-broker` accepts resolved harness plans on spawn and adds an `app_server` runtime path for delivering Relay messages to existing OpenCode server sessions.
 
 ### Changed
 

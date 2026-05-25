@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
+use crate::protocol::{
+    AgentSpec, AppServerHarnessPlan, HarnessReleasePolicy, MessageInjectionMode, RelayDelivery,
+    ResolvedHarnessPlan,
+};
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
     broker::injection_format::format_injection,
@@ -68,6 +71,8 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 runtime: AgentRuntime::Pty,
                 provider: None,
                 cli: Some("cat".to_string()),
+                session_id: None,
+                harness_plan: None,
                 model: None,
                 cwd: None,
                 team: None,
@@ -1933,6 +1938,7 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
         Some("Lead".to_string()),
         Some("subagent".to_string()),
         None,
+        None,
     )
     .expect("spec should build");
 
@@ -1956,6 +1962,7 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
         None,
         None,
         None,
+        None,
     )
     .expect("headless spec should build");
 
@@ -1966,6 +1973,67 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
     ));
     assert!(spec.cli.is_none());
     assert_eq!(spec.model.as_deref(), Some("ignored"));
+}
+
+#[test]
+fn http_api_spawn_spec_uses_app_server_runtime_from_harness_plan() {
+    let harness_plan = ResolvedHarnessPlan::AppServer(AppServerHarnessPlan {
+        protocol: "opencode".to_string(),
+        endpoint: "http://127.0.0.1:4096".to_string(),
+        session_id: "ses_123".to_string(),
+        auth: None,
+        host: None,
+        release: Some(HarnessReleasePolicy::Abort),
+        metadata: None,
+    });
+
+    let spec = build_http_api_spawn_spec(
+        "worker-a".to_string(),
+        "opencode-server".to_string(),
+        None,
+        None,
+        vec![],
+        vec!["general".to_string()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(harness_plan),
+    )
+    .expect("app-server harness spec should build");
+
+    assert!(matches!(spec.runtime, AgentRuntime::AppServer));
+    assert_eq!(spec.cli.as_deref(), Some("opencode-server"));
+    assert_eq!(spec.session_id.as_deref(), Some("ses_123"));
+    assert!(matches!(
+        spec.harness_plan,
+        Some(ResolvedHarnessPlan::AppServer(_))
+    ));
+}
+
+#[test]
+fn http_api_spawn_spec_rejects_app_server_without_harness_plan() {
+    let error = build_http_api_spawn_spec(
+        "worker-a".to_string(),
+        "opencode-server".to_string(),
+        Some("app_server".to_string()),
+        None,
+        vec![],
+        vec!["general".to_string()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect_err("app-server spec without harness plan should fail");
+
+    assert!(
+        error.to_string().contains("requires harnessPlan"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2011,6 +2079,7 @@ fn http_api_spawn_spec_rejects_unknown_headless_providers() {
         None,
         vec![],
         vec!["general".to_string()],
+        None,
         None,
         None,
         None,

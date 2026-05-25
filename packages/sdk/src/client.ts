@@ -35,6 +35,7 @@ import type {
 } from './protocol.js';
 import type {
   AgentTransport,
+  SpawnAgentResult,
   SpawnHeadlessInput,
   SpawnPtyInput,
   SpawnProviderInput,
@@ -152,7 +153,9 @@ function isHeadlessProvider(value: string): value is HeadlessProvider {
 }
 
 function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
-  return input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+  if (input.transport) return input.transport;
+  if (input.harnessPlan) return input.harnessPlan.runtime;
+  return input.provider === 'opencode' ? 'headless' : 'pty';
 }
 
 /**
@@ -174,6 +177,7 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.harnessPlan !== undefined ? { harnessPlan: input.harnessPlan } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -198,6 +202,7 @@ function buildSpawnProviderBody(
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.harnessPlan !== undefined ? { harnessPlan: input.harnessPlan } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -584,7 +589,7 @@ export class AgentRelayClient {
 
   // ── Agent lifecycle ────────────────────────────────────────────────
 
-  async spawnPty(input: SpawnPtyInput): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnPty(input: SpawnPtyInput): Promise<SpawnAgentResult> {
     const beforeCtx: BeforeAgentSpawnContext = {
       kind: 'pty',
       input,
@@ -595,7 +600,7 @@ export class AgentRelayClient {
     const t0 = Date.now();
     const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnPtyInput;
     try {
-      const result = await this.transport.request<{ name: string; runtime: AgentRuntime }>('/api/spawn', {
+      const result = await this.transport.request<SpawnAgentResult>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnPtyBody(resolvedInput)),
       });
@@ -607,7 +612,7 @@ export class AgentRelayClient {
     }
   }
 
-  async spawnProvider(input: SpawnProviderInput): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnProvider(input: SpawnProviderInput): Promise<SpawnAgentResult> {
     const transport = resolveSpawnTransport(input);
     if (transport === 'headless' && !isHeadlessProvider(input.provider)) {
       throw new Error(
@@ -625,7 +630,7 @@ export class AgentRelayClient {
     const t0 = Date.now();
     const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnProviderInput;
     try {
-      const result = await this.transport.request<{ name: string; runtime: AgentRuntime }>('/api/spawn', {
+      const result = await this.transport.request<SpawnAgentResult>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnProviderBody(resolvedInput, transport)),
       });
@@ -637,19 +642,15 @@ export class AgentRelayClient {
     }
   }
 
-  async spawnHeadless(input: SpawnHeadlessInput): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, transport: 'headless' });
   }
 
-  async spawnClaude(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnClaude(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'claude' });
   }
 
-  async spawnOpencode(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<{ name: string; runtime: AgentRuntime }> {
+  async spawnOpencode(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'opencode' });
   }
 
@@ -686,7 +687,7 @@ export class AgentRelayClient {
     beforeCtx: BeforeAgentSpawnContext,
     resolvedInput: SpawnPtyInput | SpawnProviderInput,
     startMs: number,
-    result: { name: string; runtime: AgentRuntime } | undefined,
+    result: SpawnAgentResult | undefined,
     error: unknown
   ): Promise<void> {
     const afterCtx: AfterAgentSpawnContext = {
