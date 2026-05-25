@@ -4,6 +4,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::events::EventEmitter;
+use crate::ids::{AgentId, WorkspaceAlias, WorkspaceId};
 
 use super::{
     auth::{AuthClient, AuthSessionSet},
@@ -12,26 +13,26 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceInboundMessage {
-    pub workspace_id: String,
-    pub workspace_alias: Option<String>,
+    pub workspace_id: WorkspaceId,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub value: Value,
 }
 
 #[derive(Clone)]
 pub struct WorkspaceSessionHandle {
-    pub workspace_id: String,
-    pub workspace_alias: Option<String>,
+    pub workspace_id: WorkspaceId,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub relay_workspace_key: String,
     pub self_name: String,
-    pub self_agent_id: String,
+    pub self_agent_id: AgentId,
     pub self_names: HashSet<String>,
-    pub self_agent_ids: HashSet<String>,
+    pub self_agent_ids: HashSet<AgentId>,
     pub http_client: RelaycastHttpClient,
     pub ws_control_tx: mpsc::Sender<WsControl>,
 }
 
 pub struct MultiWorkspaceSession {
-    pub default_workspace_id: Option<String>,
+    pub default_workspace_id: Option<WorkspaceId>,
     pub handles: Vec<WorkspaceSessionHandle>,
     pub inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
 }
@@ -54,10 +55,10 @@ impl MultiWorkspaceSession {
         let mut handles = Vec::with_capacity(sessions.memberships.len());
 
         for session in sessions.memberships {
-            let workspace_id = session.credentials.workspace_id.clone();
-            let workspace_alias = session.credentials.workspace_alias.clone();
+            let workspace_id = WorkspaceId::new(session.credentials.workspace_id.clone());
+            let workspace_alias = session.credentials.workspace_alias.clone().map(WorkspaceAlias::from);
             let relay_workspace_key = session.credentials.api_key.clone();
-            let self_agent_id = session.credentials.agent_id.clone();
+            let self_agent_id = AgentId::new(session.credentials.agent_id.clone());
             let self_token = session.token.clone();
             let self_name = session
                 .credentials
@@ -137,7 +138,7 @@ impl MultiWorkspaceSession {
         }
 
         Self {
-            default_workspace_id: sessions.default_workspace_id,
+            default_workspace_id: sessions.default_workspace_id.map(WorkspaceId::from),
             handles,
             inbound_rx,
         }
@@ -182,7 +183,7 @@ impl MultiWorkspaceSession {
         }
     }
 
-    pub fn http_clients_by_workspace_id(&self) -> HashMap<String, RelaycastHttpClient> {
+    pub fn http_clients_by_workspace_id(&self) -> HashMap<WorkspaceId, RelaycastHttpClient> {
         self.handles
             .iter()
             .map(|handle| (handle.workspace_id.clone(), handle.http_client.clone()))
@@ -192,8 +193,8 @@ impl MultiWorkspaceSession {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkspaceMembershipSummary {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub is_default: bool,
 }

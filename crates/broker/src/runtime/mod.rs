@@ -26,6 +26,10 @@ use uuid::Uuid;
 
 use crate::{
     dedup::DedupCache,
+    ids::{
+        AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
+        WorkspaceAlias, WorkspaceId,
+    },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, HeadlessProvider as ProtocolHeadlessProvider,
         MessageInjectionMode, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION,

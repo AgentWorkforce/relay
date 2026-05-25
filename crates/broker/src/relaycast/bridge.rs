@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::ids::{AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
 use crate::types::{
     BrokerCommandEvent, BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest,
     RelayPriority, ReleaseParams, SenderKind, SpawnParams,
@@ -23,16 +24,16 @@ pub fn map_ws_event(
     );
 
     Some(InboundRelayEvent {
-        event_id: event.event_id,
-        workspace_id: workspace_id.to_string(),
-        workspace_alias: workspace_alias.map(str::to_string),
+        event_id: EventId::new(event.event_id),
+        workspace_id: WorkspaceId::new(workspace_id),
+        workspace_alias: workspace_alias.map(WorkspaceAlias::from),
         kind,
         from: event.from,
-        sender_agent_id: event.sender_agent_id,
+        sender_agent_id: event.sender_agent_id.map(AgentId::from),
         sender_kind: map_sdk_sender_kind(event.sender_kind),
-        target: event.target,
+        target: MessageTarget::new(event.target),
         text: event.text,
-        thread_id: event.thread_id,
+        thread_id: event.thread_id.map(ThreadId::from),
         priority: map_sdk_priority(event.priority),
     })
 }
@@ -61,11 +62,11 @@ pub fn map_ws_broker_command(
 
     Some(BrokerCommandEvent {
         command: command.command,
-        workspace_id: workspace_id.to_string(),
-        workspace_alias: workspace_alias.map(str::to_string),
-        channel: command.channel,
+        workspace_id: WorkspaceId::new(workspace_id),
+        workspace_alias: workspace_alias.map(WorkspaceAlias::from),
+        channel: ChannelName::new(command.channel),
         invoked_by: command.invoked_by,
-        handler_agent_id: command.handler_agent_id,
+        handler_agent_id: command.handler_agent_id.map(AgentId::from),
         payload,
     })
 }
@@ -103,7 +104,7 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
     }
 
     Some(InjectRequest {
-        id: event.event_id,
+        id: event.event_id.into_string(),
         workspace_id: event.workspace_id,
         workspace_alias: event.workspace_alias,
         from: event.from,

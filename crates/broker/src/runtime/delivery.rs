@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingDelivery {
-    pub(super) worker_name: String,
+    pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
     pub(super) next_retry_at: Instant,
@@ -13,7 +13,7 @@ pub(crate) struct PendingDelivery {
 /// Serializable snapshot of pending deliveries for crash recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PersistedPendingDelivery {
-    pub(super) worker_name: String,
+    pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
     #[serde(default)]
@@ -25,16 +25,16 @@ pub(crate) struct PersistedPendingDelivery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeliveryAttemptOutcome {
     Attempted {
-        worker_name: String,
+        worker_name: WorkerName,
         attempts: u32,
-        event_id: String,
+        event_id: EventId,
     },
     Failed {
-        worker_name: String,
-        delivery_id: String,
-        event_id: String,
+        worker_name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
         from: String,
-        to: String,
+        to: MessageTarget,
         attempts: u32,
         last_error: String,
     },
@@ -47,7 +47,7 @@ pub(crate) fn unix_timestamp_millis() -> u64 {
 
 pub(crate) fn save_pending_deliveries(
     path: &Path,
-    deliveries: &HashMap<String, PendingDelivery>,
+    deliveries: &HashMap<DeliveryId, PendingDelivery>,
 ) -> Result<()> {
     let persisted: Vec<PersistedPendingDelivery> = deliveries
         .values()
@@ -69,7 +69,7 @@ pub(crate) fn save_pending_deliveries(
     Ok(())
 }
 
-pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<String, PendingDelivery> {
+pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, PendingDelivery> {
     let data = match std::fs::read_to_string(path) {
         Ok(d) => d,
         Err(_) => return HashMap::new(),
@@ -104,7 +104,7 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<String, PendingDel
 // These payload structs were used by the stdio protocol handler (handle_sdk_frame).
 #[derive(Debug, Serialize)]
 pub(crate) struct AgentMetrics {
-    pub(super) name: String,
+    pub(super) name: WorkerName,
     pub(super) pid: u32,
     pub(super) memory_bytes: u64,
     pub(super) uptime_secs: u64,
@@ -112,8 +112,8 @@ pub(crate) struct AgentMetrics {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DeliveryAckPayload {
-    pub(super) delivery_id: String,
-    pub(super) event_id: String,
+    pub(super) delivery_id: DeliveryId,
+    pub(super) event_id: EventId,
 }
 
 /// Outcome of [`queue_inbound_for_delivery_mode`]. Distinguishes the
@@ -157,7 +157,7 @@ pub(crate) struct InboundContext<'a> {
 /// (`worker_ready` initial task, continuity restore) bypass this queue by
 /// not calling this helper.
 pub(crate) fn queue_inbound_for_delivery_mode(
-    delivery_states: &mut HashMap<String, InboundDeliveryState>,
+    delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     workers: &WorkerRegistry,
     worker_name: &str,
     ctx: InboundContext<'_>,
@@ -165,20 +165,20 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     if !workers.has_worker(worker_name) {
         return InboundQueueOutcome::WorkerMissing;
     }
-    let state = delivery_states.entry(worker_name.to_string()).or_default();
+    let state = delivery_states.entry(WorkerName::from(worker_name)).or_default();
     let should_drain = state.should_drain_immediately();
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {
         from: ctx.from.to_string(),
         body: ctx.body.to_string(),
-        target: ctx.target.to_string(),
-        thread_id: ctx.thread_id.map(str::to_string),
-        workspace_id: ctx.workspace_id.map(str::to_string),
-        workspace_alias: ctx.workspace_alias.map(str::to_string),
+        target: MessageTarget::new(ctx.target),
+        thread_id: ctx.thread_id.map(ThreadId::from),
+        workspace_id: ctx.workspace_id.map(WorkspaceId::from),
+        workspace_alias: ctx.workspace_alias.map(WorkspaceAlias::from),
         priority: ctx.priority,
         mode: ctx.mode,
         queued_at_ms,
-        event_id: ctx.event_id.map(str::to_string),
+        event_id: ctx.event_id.map(EventId::from),
     };
     match state.accept_inbound(msg) {
         InboundDeliveryDispatch::Queued { queue_len } => {
@@ -223,7 +223,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
 
 pub(crate) async fn try_inject_pending_relay_message(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
@@ -231,7 +231,7 @@ pub(crate) async fn try_inject_pending_relay_message(
     let event_id = msg
         .event_id
         .clone()
-        .unwrap_or_else(|| format!("flush_{}", Uuid::new_v4().simple()));
+        .unwrap_or_else(|| EventId::new(format!("flush_{}", Uuid::new_v4().simple())));
     match timeout(
         retry_interval,
         queue_and_try_delivery_raw(
@@ -272,7 +272,7 @@ pub(crate) async fn try_inject_pending_relay_message(
 /// the same way `/api/send` does for individual targets.
 pub(crate) async fn inject_pending_relay_message(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
@@ -300,7 +300,7 @@ pub(crate) async fn inject_pending_relay_message(
 
 pub(crate) async fn queue_and_try_delivery(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     mapped: &crate::types::InboundRelayEvent,
     retry_interval: Duration,
@@ -326,26 +326,26 @@ pub(crate) async fn queue_and_try_delivery(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn queue_and_try_delivery_raw(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     event_id: &str,
     from: &str,
     target: &str,
     body: &str,
-    thread_id: Option<String>,
-    workspace_id: Option<String>,
-    workspace_alias: Option<String>,
+    thread_id: Option<ThreadId>,
+    workspace_id: Option<WorkspaceId>,
+    workspace_alias: Option<WorkspaceAlias>,
     priority: u8,
     injection_mode: MessageInjectionMode,
     retry_interval: Duration,
 ) -> Result<()> {
     let delivery = RelayDelivery {
-        delivery_id: format!("del_{}", Uuid::new_v4().simple()),
-        event_id: event_id.to_string(),
+        delivery_id: DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())),
+        event_id: EventId::new(event_id),
         workspace_id,
         workspace_alias,
         from: from.to_string(),
-        target: target.to_string(),
+        target: MessageTarget::new(target),
         body: body.to_string(),
         thread_id,
         priority: Some(priority),
@@ -355,7 +355,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
     pending_deliveries.insert(
         delivery_id.clone(),
         PendingDelivery {
-            worker_name: worker_name.to_string(),
+            worker_name: WorkerName::new(worker_name),
             delivery,
             attempts: 0,
             next_retry_at: Instant::now(),
@@ -373,9 +373,9 @@ pub(crate) async fn queue_and_try_delivery_raw(
 }
 
 pub(crate) async fn retry_pending_delivery(
-    delivery_id: &str,
+    delivery_id: &DeliveryId,
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     retry_interval: Duration,
 ) -> Result<DeliveryAttemptOutcome> {
     let pending = match pending_deliveries.get(delivery_id) {
@@ -461,7 +461,7 @@ pub(crate) async fn retry_pending_delivery(
 
 pub(crate) async fn emit_delivery_attempt_outcome(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
-    delivery_id: &str,
+    delivery_id: &DeliveryId,
     was_retry: bool,
     outcome: DeliveryAttemptOutcome,
 ) -> Result<()> {
@@ -476,7 +476,7 @@ pub(crate) async fn emit_delivery_attempt_outcome(
                     sdk_out_tx,
                     BrokerEvent::DeliveryRetry {
                         name: worker_name,
-                        delivery_id: delivery_id.to_string(),
+                        delivery_id: delivery_id.clone(),
                         event_id,
                         attempts,
                     },
@@ -514,19 +514,19 @@ pub(crate) async fn emit_delivery_attempt_outcome(
 
 #[cfg(test)]
 pub(crate) fn drop_pending_for_worker(
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
 ) -> usize {
     take_pending_for_worker(pending_deliveries, worker_name).len()
 }
 
 pub(crate) fn take_pending_for_worker(
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
 ) -> Vec<PendingDelivery> {
-    let delivery_ids: Vec<String> = pending_deliveries
+    let delivery_ids: Vec<DeliveryId> = pending_deliveries
         .iter()
-        .filter(|(_, pending)| pending.worker_name == worker_name)
+        .filter(|(_, pending)| pending.worker_name.as_str() == worker_name)
         .map(|(delivery_id, _)| delivery_id.clone())
         .collect();
 
@@ -603,7 +603,7 @@ pub(crate) fn should_clear_pending_delivery_for_event(
 }
 
 pub(crate) fn clear_pending_delivery_if_event_matches(
-    pending_deliveries: &mut HashMap<String, PendingDelivery>,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     delivery_id: &str,
     event_id: Option<&str>,
     worker_name: &str,

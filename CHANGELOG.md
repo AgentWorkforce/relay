@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
+- `agent-relay-broker` replaces stringly-typed protocol IDs (`name`, `delivery_id`, `event_id`, `workspace_id`, `workspace_alias`, `thread_id`, `agent_id`, `request_id`, `channels`, `target`) with `#[serde(transparent)]` newtypes in `protocol.rs` and `types.rs`. Wire format is unchanged; the type system now catches passing a `DeliveryId` where an `EventId` is expected, and `MessageTarget::kind()` discriminates `Channel` / `Thread` / `DirectMessage` / `Conversation` / `Worker` exhaustively instead of hand-rolled prefix checks.
 
 ### Fixed
 

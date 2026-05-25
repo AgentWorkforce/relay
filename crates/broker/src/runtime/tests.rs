@@ -6,6 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::ids::{
+    ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias, WorkspaceId,
+};
 use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -61,10 +64,10 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
         .expect("test worker process should spawn");
     let stdin = child.stdin.take().expect("test worker stdin should exist");
     registry.workers.insert(
-        name.to_string(),
+        WorkerName::from(name),
         WorkerHandle {
             spec: AgentSpec {
-                name: name.to_string(),
+                name: WorkerName::from(name),
                 runtime: AgentRuntime::Pty,
                 provider: None,
                 cli: Some("cat".to_string()),
@@ -78,7 +81,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 restart_policy: None,
             },
             parent: None,
-            workspace_id: Some("ws_demo".to_string()),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
             child,
             stdin,
             spawned_at: Instant::now(),
@@ -158,7 +161,7 @@ async fn inbound_queue_manual_flush_holds_until_explicit_drain() {
     let worker_name = "worker-a";
     let workers = make_worker_registry_with_worker(worker_name).await;
     let mut delivery_states = HashMap::from([(
-        worker_name.to_string(),
+        WorkerName::from(worker_name),
         InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
     )]);
 
@@ -213,16 +216,16 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
         Instant::now(),
     );
     let mut pending_deliveries = HashMap::from([(
-        "del_gone".to_string(),
+        DeliveryId::new("del_gone"),
         PendingDelivery {
-            worker_name: "ghost".to_string(),
+            worker_name: WorkerName::from("ghost"),
             delivery: RelayDelivery {
-                delivery_id: "del_gone".to_string(),
-                event_id: "evt_gone".to_string(),
-                workspace_id: Some("ws_demo".to_string()),
-                workspace_alias: Some("Demo".to_string()),
+                delivery_id: DeliveryId::new("del_gone"),
+                event_id: EventId::new("evt_gone"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
                 from: "Lead".to_string(),
-                target: "Worker".to_string(),
+                target: MessageTarget::new("Worker"),
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: Some(2),
@@ -236,7 +239,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     )]);
 
     let outcome = retry_pending_delivery(
-        "del_gone",
+        &DeliveryId::new("del_gone"),
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
@@ -247,11 +250,11 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     assert_eq!(
         outcome,
         DeliveryAttemptOutcome::Failed {
-            worker_name: "ghost".to_string(),
-            delivery_id: "del_gone".to_string(),
-            event_id: "evt_gone".to_string(),
+            worker_name: WorkerName::from("ghost"),
+            delivery_id: DeliveryId::new("del_gone"),
+            event_id: EventId::new("evt_gone"),
             from: "Lead".to_string(),
-            to: "Worker".to_string(),
+            to: MessageTarget::new("Worker"),
             attempts: 3,
             last_error: "recipient gone".to_string(),
         }
@@ -280,16 +283,16 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
 
     let mut pending_deliveries = HashMap::from([(
-        "del_blip".to_string(),
+        DeliveryId::new("del_blip"),
         PendingDelivery {
-            worker_name: worker_name.to_string(),
+            worker_name: WorkerName::from(worker_name),
             delivery: RelayDelivery {
-                delivery_id: "del_blip".to_string(),
-                event_id: "evt_blip".to_string(),
-                workspace_id: Some("ws_demo".to_string()),
-                workspace_alias: Some("Demo".to_string()),
+                delivery_id: DeliveryId::new("del_blip"),
+                event_id: EventId::new("evt_blip"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
                 from: "orchestrator".to_string(),
-                target: worker_name.to_string(),
+                target: MessageTarget::new(worker_name),
                 body: "transient auth blip".to_string(),
                 thread_id: None,
                 priority: Some(2),
@@ -305,7 +308,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     let mut final_outcome = None;
     for retry_index in 1..=MAX_DELIVERY_RETRIES + 1 {
         match retry_pending_delivery(
-            "del_blip",
+            &DeliveryId::new("del_blip"),
             &mut workers,
             &mut pending_deliveries,
             Duration::from_millis(1),
@@ -357,7 +360,9 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
-    emit_delivery_attempt_outcome(&sdk_out_tx, "del_blip", true, outcome)
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &DeliveryId::new("del_blip"), true, outcome)
         .await
         .expect("failed outcome should emit to sdk_out_tx");
 
@@ -392,16 +397,16 @@ async fn delivery_retry_success_clears_stale_last_error() {
     let worker_name = "worker-clear-error";
     let mut workers = make_worker_registry_with_worker(worker_name).await;
     let mut pending_deliveries = HashMap::from([(
-        "del_clear".to_string(),
+        DeliveryId::new("del_clear"),
         PendingDelivery {
-            worker_name: worker_name.to_string(),
+            worker_name: WorkerName::from(worker_name),
             delivery: RelayDelivery {
-                delivery_id: "del_clear".to_string(),
-                event_id: "evt_clear".to_string(),
-                workspace_id: Some("ws_demo".to_string()),
-                workspace_alias: Some("Demo".to_string()),
+                delivery_id: DeliveryId::new("del_clear"),
+                event_id: EventId::new("evt_clear"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
                 from: "orchestrator".to_string(),
-                target: worker_name.to_string(),
+                target: MessageTarget::new(worker_name),
                 body: "clear stale error".to_string(),
                 thread_id: None,
                 priority: Some(2),
@@ -415,7 +420,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
     )]);
 
     let outcome = retry_pending_delivery(
-        "del_clear",
+        &DeliveryId::new("del_clear"),
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
@@ -1174,18 +1179,18 @@ fn http_api_timeout_windows_use_default_and_env_override() {
 
 #[test]
 fn drop_pending_for_worker_removes_only_matching_entries() {
-    let mut pending = HashMap::new();
+    let mut pending: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
     pending.insert(
-        "del_1".to_string(),
+        DeliveryId::new("del_1"),
         PendingDelivery {
-            worker_name: "A".to_string(),
+            worker_name: WorkerName::from("A"),
             delivery: RelayDelivery {
-                delivery_id: "del_1".to_string(),
-                event_id: "evt_1".to_string(),
-                workspace_id: Some("ws_test".to_string()),
-                workspace_alias: Some("test".to_string()),
+                delivery_id: DeliveryId::new("del_1"),
+                event_id: EventId::new("evt_1"),
+                workspace_id: Some(WorkspaceId::new("ws_test")),
+                workspace_alias: Some(WorkspaceAlias::new("test")),
                 from: "x".to_string(),
-                target: "#general".to_string(),
+                target: MessageTarget::new("#general"),
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
@@ -1198,16 +1203,16 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
         },
     );
     pending.insert(
-        "del_2".to_string(),
+        DeliveryId::new("del_2"),
         PendingDelivery {
-            worker_name: "B".to_string(),
+            worker_name: WorkerName::from("B"),
             delivery: RelayDelivery {
-                delivery_id: "del_2".to_string(),
-                event_id: "evt_2".to_string(),
-                workspace_id: Some("ws_test".to_string()),
-                workspace_alias: Some("test".to_string()),
+                delivery_id: DeliveryId::new("del_2"),
+                event_id: EventId::new("evt_2"),
+                workspace_id: Some(WorkspaceId::new("ws_test")),
+                workspace_alias: Some(WorkspaceAlias::new("test")),
                 from: "y".to_string(),
-                target: "#general".to_string(),
+                target: MessageTarget::new("#general"),
                 body: "world".to_string(),
                 thread_id: None,
                 priority: None,
@@ -1229,14 +1234,14 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
 #[tokio::test]
 async fn dropped_pending_deliveries_emit_terminal_message_failures() {
     let pending = PendingDelivery {
-        worker_name: "A".to_string(),
+        worker_name: WorkerName::from("A"),
         delivery: RelayDelivery {
-            delivery_id: "del_1".to_string(),
-            event_id: "evt_1".to_string(),
-            workspace_id: Some("ws_test".to_string()),
-            workspace_alias: Some("test".to_string()),
+            delivery_id: DeliveryId::new("del_1"),
+            event_id: EventId::new("evt_1"),
+            workspace_id: Some(WorkspaceId::new("ws_test")),
+            workspace_alias: Some(WorkspaceAlias::new("test")),
             from: "Lead".to_string(),
-            target: "A".to_string(),
+            target: MessageTarget::new("A"),
             body: "hello".to_string(),
             thread_id: None,
             priority: None,
@@ -1271,14 +1276,14 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
 #[test]
 fn should_clear_pending_delivery_when_event_id_matches() {
     let pending = PendingDelivery {
-        worker_name: "A".to_string(),
+        worker_name: WorkerName::from("A"),
         delivery: RelayDelivery {
-            delivery_id: "del_1".to_string(),
-            event_id: "evt_1".to_string(),
-            workspace_id: Some("ws_test".to_string()),
-            workspace_alias: Some("test".to_string()),
+            delivery_id: DeliveryId::new("del_1"),
+            event_id: EventId::new("evt_1"),
+            workspace_id: Some(WorkspaceId::new("ws_test")),
+            workspace_alias: Some(WorkspaceAlias::new("test")),
             from: "x".to_string(),
-            target: "#general".to_string(),
+            target: MessageTarget::new("#general"),
             body: "hello".to_string(),
             thread_id: None,
             priority: None,
@@ -1303,16 +1308,16 @@ fn should_clear_pending_delivery_when_event_id_matches() {
 #[test]
 fn clear_pending_delivery_returns_none_for_stale_event_id() {
     let mut pending = HashMap::from([(
-        "del_1".to_string(),
+        DeliveryId::new("del_1"),
         PendingDelivery {
-            worker_name: "A".to_string(),
+            worker_name: WorkerName::from("A"),
             delivery: RelayDelivery {
-                delivery_id: "del_1".to_string(),
-                event_id: "evt_current".to_string(),
-                workspace_id: Some("ws_test".to_string()),
-                workspace_alias: Some("test".to_string()),
+                delivery_id: DeliveryId::new("del_1"),
+                event_id: EventId::new("evt_current"),
+                workspace_id: Some(WorkspaceId::new("ws_test")),
+                workspace_alias: Some(WorkspaceAlias::new("test")),
                 from: "x".to_string(),
-                target: "#general".to_string(),
+                target: MessageTarget::new("#general"),
                 body: "hello".to_string(),
                 thread_id: None,
                 priority: None,
@@ -1340,14 +1345,14 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
 #[test]
 fn should_clear_pending_delivery_without_event_id_for_compatibility() {
     let pending = PendingDelivery {
-        worker_name: "A".to_string(),
+        worker_name: WorkerName::from("A"),
         delivery: RelayDelivery {
-            delivery_id: "del_1".to_string(),
-            event_id: "evt_1".to_string(),
-            workspace_id: Some("ws_test".to_string()),
-            workspace_alias: Some("test".to_string()),
+            delivery_id: DeliveryId::new("del_1"),
+            event_id: EventId::new("evt_1"),
+            workspace_id: Some(WorkspaceId::new("ws_test")),
+            workspace_alias: Some(WorkspaceAlias::new("test")),
             from: "x".to_string(),
-            target: "#general".to_string(),
+            target: MessageTarget::new("#general"),
             body: "hello".to_string(),
             thread_id: None,
             priority: None,
@@ -1922,15 +1927,15 @@ fn ephemeral_paths_are_unique_per_broker_instance() {
 #[test]
 fn http_api_spawn_spec_defaults_to_pty_runtime() {
     let spec = build_http_api_spawn_spec(
-        "worker-a".to_string(),
+        WorkerName::from("worker-a"),
         "codex".to_string(),
         None,
         Some("o3".to_string()),
         vec!["--fast".to_string()],
-        vec!["general".to_string()],
+        vec![ChannelName::from("general")],
         Some("/tmp/project".to_string()),
         Some("core".to_string()),
-        Some("Lead".to_string()),
+        Some(WorkerName::from("Lead")),
         Some("subagent".to_string()),
         None,
     )
@@ -1945,12 +1950,12 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
 #[test]
 fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
     let spec = build_http_api_spawn_spec(
-        "worker-a".to_string(),
+        WorkerName::from("worker-a"),
         "opencode".to_string(),
         Some("headless".to_string()),
         Some("ignored".to_string()),
         vec![],
-        vec!["general".to_string()],
+        vec![ChannelName::from("general")],
         None,
         None,
         None,
@@ -2005,12 +2010,12 @@ fn headless_provider_command_opencode_places_flags_before_task() {
 #[test]
 fn http_api_spawn_spec_rejects_unknown_headless_providers() {
     let error = build_http_api_spawn_spec(
-        "worker-a".to_string(),
+        WorkerName::from("worker-a"),
         "codex".to_string(),
         Some("headless".to_string()),
         None,
         vec![],
-        vec!["general".to_string()],
+        vec![ChannelName::from("general")],
         None,
         None,
         None,

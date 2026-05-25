@@ -199,7 +199,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         workspaces,
         ws_inbound_rx,
     } = relay;
-    let workspace_lookup: HashMap<String, RelayWorkspace> = workspaces
+    let workspace_lookup: HashMap<WorkspaceId, RelayWorkspace> = workspaces
         .iter()
         .cloned()
         .map(|workspace| (workspace.workspace_id.clone(), workspace))
@@ -301,7 +301,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     }
     log_startup_phase(startup_debug, broker_start, "default channels ensured");
 
-    let extra_channels = channels_from_csv(&cmd.channels);
+    let extra_channels: Vec<ChannelName> = channels_from_csv(&cmd.channels)
+        .into_iter()
+        .map(ChannelName::from)
+        .collect();
     log_startup_phase(
         startup_debug,
         broker_start,
@@ -360,9 +363,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         // themselves through per-spawn env_vars.
         worker_env.push((
             "RELAY_DEFAULT_WORKSPACE".to_string(),
-            default_workspace_id.clone(),
+            default_workspace_id.as_str().to_string(),
         ));
-        worker_env.push(("RELAY_WORKSPACE_ID".to_string(), default_workspace_id));
+        worker_env.push((
+            "RELAY_WORKSPACE_ID".to_string(),
+            default_workspace_id.into_string(),
+        ));
     }
 
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
@@ -405,7 +411,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
     let pending_deliveries = load_pending_deliveries(&paths.pending);
-    let terminal_failed_deliveries: HashSet<String> = HashSet::new();
+    let terminal_failed_deliveries: HashSet<EventId> = HashSet::new();
     // Outstanding worker-bound RPC requests waiting on a `*_response`
     // frame from the wrapped worker. Keyed by the `request_id` we put on
     // the outbound request frame; the reply `oneshot` is consumed when
@@ -422,8 +428,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // process state). See `relay_broker::types::InboundDeliveryState`. Entries
     // are created lazily on first lookup and removed wherever workers
     // exit (`Release` arm or `reap_exited` sweep).
-    let delivery_states: HashMap<String, InboundDeliveryState> = HashMap::new();
-    let agent_result_tokens: HashMap<String, String> = HashMap::new();
+    let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+    let agent_result_tokens: HashMap<String, WorkerName> = HashMap::new();
     let dm_participants_cache = DmParticipantsCache::new();
     let recent_thread_messages: VecDeque<Value> = VecDeque::new();
     if !pending_deliveries.is_empty() {
