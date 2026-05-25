@@ -1,0 +1,144 @@
+---
+title: Harnesses
+description: Define custom PTY and app-server harnesses for Agent Relay.
+---
+
+A harness tells Relay how to control an agent runtime. The broker executes two
+runtime shapes: `pty` for terminal-backed agents and `app_server` for
+session-backed agent servers. Named harnesses such as `codex`, `qwen`, or
+`opencode-server` resolve to one of those shapes.
+
+The important boundary is that the Rust broker runs durable execution plans. SDKs
+can define names and resolve them into JSON, but the broker should not depend on
+an in-memory SDK callback unless the broker lifetime is explicitly attached to
+that SDK process.
+
+## Static PTY Harnesses
+
+Most CLI agents only need a PTY plan. Static harnesses are JSON-compatible and
+work with attached or detached brokers.
+
+```typescript file="qwen-harness.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  harnesses: {
+    qwen: {
+      runtime: 'pty',
+      command: 'qwen',
+      args: ['run', '{modelArgs}', '{args}'],
+      modelArgs: ['-m', '{model}'],
+      searchPaths: ['~/.local/bin'],
+    },
+  },
+});
+
+await relay.spawn('QwenReviewer', 'qwen', 'Review the current diff.', {
+  model: 'qwen3-coder',
+  args: ['--verbose'],
+  channels: ['dev'],
+});
+```
+
+The SDK resolves that definition to a broker-executable plan:
+
+```json
+{
+  "runtime": "pty",
+  "command": "qwen",
+  "args": ["run", "-m", "qwen3-coder", "--verbose"]
+}
+```
+
+The broker owns the PTY process, terminal stream, raw input, resize, snapshot,
+release, and Relay message injection.
+
+## App-Server Harnesses
+
+App-server harnesses control a session through HTTP instead of typing into a
+terminal. OpenCode's `opencode serve` mode is the first target shape.
+
+```typescript file="opencode-server-harness.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  harnesses: {
+    'opencode-server': {
+      runtime: 'app_server',
+      protocol: 'opencode',
+      endpoint: 'http://127.0.0.1:4096',
+      sessionId: 'ses_123',
+      release: 'abort',
+    },
+  },
+});
+
+await relay.spawn('OpenCodeServerWorker', 'opencode-server', 'Inspect the repo.');
+```
+
+For app-server plans, `sessionId` identifies the native runtime session. `pid`
+only exists when the broker owns a local server process; remote or already
+running servers may not have one.
+
+## Dynamic Resolvers
+
+Some harnesses need pre-spawn work. Codex PTY spawning is the motivating
+example: a resolver can call Codex app-server to create a resumable thread, then
+return a PTY plan that resumes that thread.
+
+```typescript file="codex-resolver.ts"
+const relay = new AgentRelay({
+  broker: { lifetime: 'attached' },
+  harnesses: {
+    codex: async (ctx) => {
+      const sessionId = await createCodexSession(ctx);
+
+      return {
+        runtime: 'pty',
+        command: 'codex',
+        args: ['resume', sessionId, ...ctx.args],
+        env: ctx.env,
+        sessionId,
+      };
+    },
+  },
+});
+```
+
+Dynamic resolvers require an attached broker because the SDK process is part of
+the control path. Detached brokers should use static plans, built-in Rust
+adapters, HTTP webhooks, or a durable extension host.
+
+## Runtime Capabilities
+
+Harness capabilities determine which broker routes are valid.
+
+| Capability | PTY | App server |
+| --- | --- | --- |
+| Relay message delivery | Yes | Yes |
+| Release | Yes | Yes |
+| Fork | No | Protocol-dependent |
+| Terminal stream | Yes | No |
+| Raw PTY input | Yes | No |
+| PTY resize | Yes | No |
+| PTY snapshot | Yes | No |
+| Session messages | No | Protocol-dependent |
+
+PTY-only routes such as `sendInput`, `resizePty`, and `snapshotPty` fail when
+the target harness does not expose PTY capabilities.
+
+## Broker Lifetime
+
+Attached brokers are owned by the SDK process. They can use in-process dynamic
+resolvers and decision hooks because the broker exits when the SDK control
+connection exits.
+
+Detached brokers survive SDK callers. They can be reached later by another SDK,
+the CLI, the dashboard, or agent-triggered spawn requests, so they require
+durable plans and durable hooks.
+
+## See Also
+
+- [Spawning an agent](/docs/spawning-an-agent) - High-level spawn APIs
+- [Event handlers](/docs/event-handlers) - SDK event subscriptions
+- [Broker HTTP / WS API](/docs/reference-broker-api) - Broker API routes

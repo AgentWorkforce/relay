@@ -20,6 +20,7 @@ export const docsNav: NavGroup[] = [
     title: 'Basics',
     items: [
       { title: 'Spawning an agent', slug: 'spawning-an-agent' },
+      { title: 'Harnesses', slug: 'harnesses' },
       { title: 'Sending messages', slug: 'sending-messages' },
       { title: 'Event handlers', slug: 'event-handlers' },
       { title: 'Channels', slug: 'channels' },
