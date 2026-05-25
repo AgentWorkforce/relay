@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-25T21:42:57.470Z",
+  "lastUpdated": "2026-05-25T22:14:26.055Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1121,6 +1121,13 @@
       "startedAt": "2026-05-25T21:42:41.236Z",
       "completedAt": "2026-05-25T21:42:57.292Z",
       "path": "/private/tmp/relay-owned-mcp/.trajectories/completed/2026-05/traj_l1349adi1g0o.json"
+    },
+    "traj_8nhd9lljhbsw": {
+      "title": "Switch owned MCP tool names to underscores",
+      "status": "completed",
+      "startedAt": "2026-05-25T22:05:23.828Z",
+      "completedAt": "2026-05-25T22:14:25.886Z",
+      "path": "/private/tmp/relay-owned-mcp/.trajectories/completed/2026-05/traj_8nhd9lljhbsw.json"
     }
   }
 }

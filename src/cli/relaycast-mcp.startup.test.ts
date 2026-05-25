@@ -111,7 +111,7 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
             vi.fn(async () => ({
               tools: [
                 {
-                  name: 'message.post',
+                  name: 'post_message',
                   title: 'Post Message',
                   execution: { hidden: true },
                   outputSchema: { type: 'object' },
@@ -289,26 +289,28 @@ describe('createPatchedRelayMcpServer', () => {
     mod.createPatchedRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
     const server = mocks.serverInstances[0];
 
-    expect(server.tools.get('workspace.create')).toBeDefined();
     expect(server.tools.get('create_workspace')).toBeDefined();
-    expect(server.tools.get('agent.register')).toBeDefined();
-    expect(server.tools.get('register')).toBeDefined();
-    expect(server.tools.get('agent.list')).toBeDefined();
-    expect(server.tools.get('message.post')).toBeDefined();
-    expect(server.tools.get('agent.add')).toBeDefined();
+    expect(server.tools.get('register_agent')).toBeDefined();
+    expect(server.tools.get('list_agents')).toBeDefined();
+    expect(server.tools.get('post_message')).toBeDefined();
+    expect(server.tools.get('add_agent')).toBeDefined();
+    expect(server.tools.get('workspace.create')).toBeUndefined();
+    expect(server.tools.get('agent.register')).toBeUndefined();
+    expect(server.tools.get('message.post')).toBeUndefined();
+    expect([...server.tools.keys()].filter((name) => name.includes('.'))).toEqual([]);
     expect(server.resources.get('inbox')).toBeDefined();
     expect(server.resources.get('channel-messages')).toBeDefined();
     expect(server.prompts.get('system')).toBeDefined();
 
     await expect(server.resources.get('agents')?.handler(new URL('relay://agents'))).rejects.toThrow(
-      'Workspace key not configured. Set RELAY_API_KEY at startup, or call "workspace.create" or "workspace.set_key" first.'
+      'Workspace key not configured. Set RELAY_API_KEY at startup, or call "create_workspace" or "set_workspace_key" first.'
     );
-    await expect(server.tools.get('agent.register')?.handler({ name: 'WorkerA' })).rejects.toThrow(
-      'Workspace key not configured. Call "workspace.create" or "workspace.set_key" first.'
+    await expect(server.tools.get('register_agent')?.handler({ name: 'WorkerA' })).rejects.toThrow(
+      'Workspace key not configured. Call "create_workspace" or "set_workspace_key" first.'
     );
 
     const workspaceResult = await server.tools
-      .get('workspace.create')
+      .get('create_workspace')
       ?.handler({ name: 'Coverage Workspace' });
     expect(mocks.RelayCast.createWorkspace).toHaveBeenCalledWith('Coverage Workspace', {
       baseUrl: 'https://api.relaycast.dev/',
@@ -318,7 +320,7 @@ describe('createPatchedRelayMcpServer', () => {
       workspaceName: 'Test Workspace',
     });
 
-    const registerResult = await server.tools.get('agent.register')?.handler({
+    const registerResult = await server.tools.get('register_agent')?.handler({
       name: 'WorkerA',
       type: 'human',
       persona: 'Coverage tester',
@@ -341,14 +343,15 @@ describe('createPatchedRelayMcpServer', () => {
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
-        name: 'message.post',
+        name: 'post_message',
         title: 'Post Message',
         description: 'Send a channel message',
       },
     ]);
 
     const promptResult = await server.prompts.get('system')?.handler();
-    expect(promptResult.messages[0].content.text).toContain('workspace.create');
+    expect(promptResult.messages[0].content.text).toContain('create_workspace');
+    expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
   });
 
   it('registers submit_result when a spawned-agent result callback is configured', async () => {
@@ -417,7 +420,7 @@ describe('createPatchedRelayMcpServer', () => {
 
     const server = mocks.serverInstances[0];
     const ws = mocks.wsClientInstances[0];
-    const setWorkspaceKeyTool = server.tools.get('workspace.set_key');
+    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
 
     expect(ws.connect).toHaveBeenCalledTimes(1);
     await expect(setWorkspaceKeyTool?.handler({ api_key: 'bad_key' })).rejects.toThrow(
@@ -427,7 +430,7 @@ describe('createPatchedRelayMcpServer', () => {
     const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_other' });
     expect(ws.disconnect).toHaveBeenCalledTimes(1);
     expect(result.structuredContent).toEqual({
-      message: 'Workspace key set. Call "agent.register" to join this workspace.',
+      message: 'Workspace key set. Call "register_agent" to join this workspace.',
     });
   });
 
@@ -442,7 +445,7 @@ describe('createPatchedRelayMcpServer', () => {
 
     const server = mocks.serverInstances[0];
     const ws = mocks.wsClientInstances[0];
-    const setWorkspaceKeyTool = server.tools.get('workspace.set_key');
+    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
 
     const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_existing' });
 
@@ -451,7 +454,7 @@ describe('createPatchedRelayMcpServer', () => {
       message: 'Workspace key set.',
     });
 
-    await server.tools.get('message.inbox.check')?.handler({});
+    await server.tools.get('check_inbox')?.handler({});
     const agentRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
     expect(agentRelay?.as).toHaveBeenCalledWith('at_live_existing', { autoHeartbeatMs: false });
   });

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
+- `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
 - `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
 - `@agent-relay/sdk` `spawnPersona` now runs the full `@agentworkforce/persona-kit` lifecycle (skill installs, mount policy, `CLAUDE.md` / `AGENTS.md` sidecars, persona inputs) before launching the harness, and reverses every side effect when the agent exits. Previously it only translated the harness argv and silently dropped the rest of the schema.

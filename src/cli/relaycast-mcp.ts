@@ -20,17 +20,17 @@ export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SD
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
 ## Getting Started
-1. If no workspace key is configured, call "workspace.create" or "workspace.set_key"
-2. When RELAY_API_KEY is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "agent.register" with your agent name to join the workspace
-3. Use "channel.list" to see available channels
-4. Use "channel.join" to join channels of interest
-5. Use "message.inbox.check" to see unread messages and mentions
+1. If no workspace key is configured, call "create_workspace" or "set_workspace_key"
+2. When RELAY_API_KEY is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
+3. Use "list_channels" to see available channels
+4. Use "join_channel" to join channels of interest
+5. Use "check_inbox" to see unread messages and mentions
 
 ## Communication
-- Post messages to channels with "message.post"
-- Send direct messages with "message.dm.send"
-- Reply to threads with "message.reply"
-- React to messages with "message.reaction.add"
+- Post messages to channels with "post_message"
+- Send direct messages with "send_dm"
+- Reply to threads with "reply_to_thread"
+- React to messages with "add_reaction"
 
 ## Best Practices
 - Check your inbox regularly for new messages and mentions
@@ -276,7 +276,7 @@ function requireWorkspaceKey(session: RegistrationSession): void {
     return;
   }
 
-  throw new Error('Workspace key not configured. Call "workspace.create" or "workspace.set_key" first.');
+  throw new Error('Workspace key not configured. Call "create_workspace" or "set_workspace_key" first.');
 }
 
 type JsonToolResult = {
@@ -558,15 +558,7 @@ function hasContentArray(value: unknown): value is { content: Array<Record<strin
   );
 }
 
-const SKIP_PIGGYBACK = new Set([
-  'message.inbox.check',
-  'workspace.create',
-  'workspace.set_key',
-  'agent.register',
-  'create_workspace',
-  'set_workspace_key',
-  'register',
-]);
+const SKIP_PIGGYBACK = new Set(['check_inbox', 'create_workspace', 'set_workspace_key', 'register_agent']);
 
 function formatInbox(inbox: any, selfName?: string | null): string {
   const norm = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
@@ -671,12 +663,6 @@ function resolveEmoji(input: string): string {
   return aliases[normalized] ?? input;
 }
 
-function registerTool(server: McpServer, names: string[], config: any, handler: any): void {
-  for (const name of names) {
-    server.registerTool(name, config, handler);
-  }
-}
-
 function registerAgentRelayTools(
   server: McpServer,
   getRelay: () => RelayCast,
@@ -688,9 +674,8 @@ function registerAgentRelayTools(
   preferredAgentName: string | undefined,
   forcedAgentType: AgentType | undefined
 ): void {
-  registerTool(
-    server,
-    ['workspace.create', 'create_workspace'],
+  server.registerTool(
+    'create_workspace',
     {
       title: 'Create Workspace',
       description: 'Create a new Relaycast workspace and store its API key in this MCP session.',
@@ -722,9 +707,8 @@ function registerAgentRelayTools(
     }
   );
 
-  registerTool(
-    server,
-    ['workspace.set_key', 'set_workspace_key'],
+  server.registerTool(
+    'set_workspace_key',
     {
       title: 'Set Workspace Key',
       description: 'Authenticate this MCP session with an existing Relaycast workspace API key.',
@@ -758,15 +742,14 @@ function registerAgentRelayTools(
       }
 
       const message = switchingWorkspace
-        ? 'Workspace key set. Call "agent.register" to join this workspace.'
+        ? 'Workspace key set. Call "register_agent" to join this workspace.'
         : 'Workspace key set.';
       return textContent(message);
     }
   );
 
-  registerTool(
-    server,
-    ['agent.register', 'register'],
+  server.registerTool(
+    'register_agent',
     {
       title: 'Register Agent',
       description: 'Register an agent identity in the current workspace and obtain an agent token.',
@@ -814,7 +797,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'agent.list',
+    'list_agents',
     {
       title: 'List Agents',
       description: 'List agents registered in the current workspace.',
@@ -834,7 +817,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.create',
+    'create_channel',
     {
       title: 'Create Channel',
       description: 'Create a new workspace channel.',
@@ -855,7 +838,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.list',
+    'list_channels',
     {
       title: 'List Channels',
       description: 'List channels available in the workspace.',
@@ -877,7 +860,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.join',
+    'join_channel',
     {
       title: 'Join Channel',
       description: 'Join an existing channel.',
@@ -895,7 +878,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.leave',
+    'leave_channel',
     {
       title: 'Leave Channel',
       description: 'Leave a channel.',
@@ -913,7 +896,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.invite',
+    'invite_to_channel',
     {
       title: 'Invite to Channel',
       description: 'Invite another agent to a channel.',
@@ -932,7 +915,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.set_topic',
+    'set_channel_topic',
     {
       title: 'Set Channel Topic',
       description: 'Update a channel topic.',
@@ -948,7 +931,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'channel.archive',
+    'archive_channel',
     {
       title: 'Archive Channel',
       description: 'Archive a channel.',
@@ -966,7 +949,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.post',
+    'post_message',
     {
       title: 'Post Message',
       description: 'Post a new message to a channel as the current agent.',
@@ -990,7 +973,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.list',
+    'list_messages',
     {
       title: 'Get Messages',
       description: 'Retrieve message history from a channel.',
@@ -1013,7 +996,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.reply',
+    'reply_to_thread',
     {
       title: 'Reply to Thread',
       description: 'Reply to an existing message thread.',
@@ -1034,7 +1017,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.get_thread',
+    'get_message_thread',
     {
       title: 'Get Thread',
       description: 'Retrieve a message thread.',
@@ -1051,7 +1034,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.dm.send',
+    'send_dm',
     {
       title: 'Send Direct Message',
       description: 'Send a private direct message to another agent.',
@@ -1075,7 +1058,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.dm.list',
+    'list_dms',
     {
       title: 'List DM Conversations',
       description: 'List direct message conversations for the current agent.',
@@ -1091,7 +1074,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.dm.send_group',
+    'send_group_dm',
     {
       title: 'Send Group DM',
       description: 'Create a group DM and send the first message.',
@@ -1118,7 +1101,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.reaction.add',
+    'add_reaction',
     {
       title: 'Add Reaction',
       description: 'Add an emoji reaction to a message.',
@@ -1138,7 +1121,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.reaction.remove',
+    'remove_reaction',
     {
       title: 'Remove Reaction',
       description: 'Remove an emoji reaction from a message.',
@@ -1158,7 +1141,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.search',
+    'search_messages',
     {
       title: 'Search Messages',
       description: 'Search messages across the workspace.',
@@ -1179,7 +1162,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.inbox.check',
+    'check_inbox',
     {
       title: 'Check Inbox',
       description: 'Check unread messages, mentions, DMs, and reactions for the current agent.',
@@ -1195,7 +1178,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.inbox.mark_read',
+    'mark_message_read',
     {
       title: 'Mark as Read',
       description: 'Mark a message as read for the current agent.',
@@ -1213,7 +1196,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'message.inbox.get_readers',
+    'get_message_readers',
     {
       title: 'Get Readers',
       description: 'List agents who have read a message.',
@@ -1230,7 +1213,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'agent.add',
+    'add_agent',
     {
       title: 'Add Agent',
       description: 'Ask Relaycast to spawn a worker agent for a task.',
@@ -1259,7 +1242,7 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
-    'agent.remove',
+    'remove_agent',
     {
       title: 'Remove Agent',
       description: 'Release a worker agent from active duty.',
@@ -1311,7 +1294,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
     const workspaceKey = session.workspaceKey;
     if (!workspaceKey) {
       throw new Error(
-        'Workspace key not configured. Set RELAY_API_KEY at startup, or call "workspace.create" or "workspace.set_key" first.'
+        'Workspace key not configured. Set RELAY_API_KEY at startup, or call "create_workspace" or "set_workspace_key" first.'
       );
     }
 
@@ -1376,7 +1359,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
     }
 
     if (!session.agentToken) {
-      throw new Error('Not registered. Call the "agent.register" tool first.');
+      throw new Error('Not registered. Call the "register_agent" tool first.');
     }
 
     return session.agentToken;
