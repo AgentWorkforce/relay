@@ -211,7 +211,7 @@ impl BrokerRuntime {
                                 "delivery_failed",
                             );
                             if pending_for_failure.is_some() && !delivery_id.is_empty() {
-                                terminal_failed_deliveries.insert(delivery_id.to_string());
+                                terminal_failed_deliveries.insert(DeliveryId::from(delivery_id));
                             }
                             let _ = send_event(
                                 sdk_out_tx,

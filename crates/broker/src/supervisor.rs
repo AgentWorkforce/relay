@@ -226,7 +226,7 @@ mod tests {
 
     fn test_spec(name: &str) -> AgentSpec {
         AgentSpec {
-            name: name.to_string(),
+            name: crate::ids::WorkerName::from(name),
             runtime: AgentRuntime::Pty,
             provider: None,
             cli: Some("claude".to_string()),
@@ -236,7 +236,7 @@ mod tests {
             shadow_of: None,
             shadow_mode: None,
             args: vec![],
-            channels: vec!["general".to_string()],
+            channels: vec![crate::ids::ChannelName::from("general")],
             restart_policy: None,
         }
     }

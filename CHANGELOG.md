@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Personas relying on `tiers.*` need to be flattened to a single top-level `harness` / `model` / `systemPrompt`. The shape that persona-kit (and the `agentworkforce` CLI) consumes is now the only supported shape.
 - Callers that previously used `spawnPersona` to "just launch the harness" — without persona-kit's skill / mount / sidecar side effects — should use `AgentRelay.getPersonaSpawnPlan(id)` to inspect the plan and call `spawnPty` with the plan's `cli` + `args` themselves.
 
+### Breaking Changes
+
+- `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
+
+### Migration Guidance
+
+- Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, …}` instead of `String`. Each newtype impls `From<String>` / `From<&str>` and `Deref<Target = str>`, so most string-handling code keeps compiling; only construction sites (`HashMap` keys, struct literals, channel sends) need updates.
+- Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
+
 ### Fixed
 
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
@@ -34,6 +43,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@agent-relay/slack-primitive` bumps `@slack/web-api` to `^7.16.0`, which raises its transitive `axios` floor to `^1.16.0` and clears GHSA-q8qp-cvcw-x6jj (prototype pollution gadgets in HTTP adapter allowing credential injection) and GHSA-3w6x-2g7m-8v23 (invisible JSON response tampering via `parseReviver`).
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
+- `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
+- `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [7.1.1] - 2026-05-25
+
+### Changed
+
+- Cache nested workspace node_modules
+- Update README to reflect new features and remove old content
+- Prune unused root dependencies
+- Add three-way demo and update README
+
+### Fixed
+
+- Bump relayfile-mount binary v0.1.6 -> v0.7.39
+- Externalize @slack/web-api in build:cjs + declare as root dep
+- Bump quinn-proto to 0.11.14 to address Dependabot alert
+- Drop swarms extra to clear litellm Dependabot alerts
+- Run package validation smoke before tarball cleanup
+
+### Security
+
+- Bump protobufjs and fast-xml-builder to clear high-severity alerts
+- Bump fast-uri to 3.1.2 to clear path-traversal & host-confusion
+- Bump ws to 8.21.0 to clear uninitialized memory disclosure
+- Bump @slack/web-api to ^7.16.0 to clear axios prototype pollution
 
 ## [7.1.0] - 2026-05-22
 

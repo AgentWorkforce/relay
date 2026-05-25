@@ -9,15 +9,15 @@ pub(crate) fn runtime_label(runtime: &AgentRuntime) -> &'static str {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_http_api_spawn_spec(
-    name: String,
+    name: WorkerName,
     cli: String,
     transport: Option<String>,
     model: Option<String>,
     args: Vec<String>,
-    channels: Vec<String>,
+    channels: Vec<ChannelName>,
     cwd: Option<String>,
     team: Option<String>,
-    shadow_of: Option<String>,
+    shadow_of: Option<WorkerName>,
     shadow_mode: Option<String>,
     restart_policy: Option<Value>,
 ) -> Result<AgentSpec> {
