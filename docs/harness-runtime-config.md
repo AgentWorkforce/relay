@@ -21,7 +21,8 @@ The first headless drivers are:
 - `app_server`: a session-backed HTTP driver for attached agent servers.
 
 Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
-those executable configs.
+those executable configs. `driver` defaults to `app_server` when `runtime` is
+`headless`.
 
 ## Naming
 
@@ -59,7 +60,7 @@ Headless app-server configs are session backed. They are still `headless` worker
 ```ts
 type HeadlessAppServerHarnessConfig = {
   runtime: 'headless';
-  driver: 'app_server';
+  driver?: 'app_server';
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;

@@ -208,7 +208,6 @@ describe('AgentRelayClient lifecycle hooks', () => {
     client.addListener('beforeAgentSpawn', () => ({
       harnessConfig: {
         runtime: 'headless',
-        driver: 'app_server',
         protocol: 'opencode',
         endpoint: 'http://127.0.0.1:4096',
         sessionId: 'ses_hook',
@@ -227,7 +226,6 @@ describe('AgentRelayClient lifecycle hooks', () => {
       transport: 'headless',
       harnessConfig: {
         runtime: 'headless',
-        driver: 'app_server',
         sessionId: 'ses_hook',
       },
     });

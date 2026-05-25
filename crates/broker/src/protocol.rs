@@ -112,9 +112,14 @@ pub enum HeadlessHarnessDriver {
     AppServer,
 }
 
+fn default_headless_harness_driver() -> HeadlessHarnessDriver {
+    HeadlessHarnessDriver::AppServer
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadlessHarnessConfig {
+    #[serde(default = "default_headless_harness_driver")]
     pub driver: HeadlessHarnessDriver,
     pub protocol: String,
     pub endpoint: String,
@@ -825,7 +830,6 @@ mod tests {
     fn headless_app_server_harness_config_round_trips() {
         let raw = json!({
             "runtime": "headless",
-            "driver": "app_server",
             "protocol": "opencode",
             "endpoint": "http://127.0.0.1:4096",
             "sessionId": "ses_123",
@@ -840,6 +844,10 @@ mod tests {
         let config: ResolvedHarnessConfig = serde_json::from_value(raw).unwrap();
         assert_eq!(config.runtime(), AgentRuntime::Headless);
         assert_eq!(config.session_id(), Some("ses_123"));
+        let ResolvedHarnessConfig::Headless(headless) = &config else {
+            panic!("expected headless harness config");
+        };
+        assert_eq!(headless.driver, HeadlessHarnessDriver::AppServer);
 
         let encoded = serde_json::to_string(&config).unwrap();
         assert!(encoded.contains("\"runtime\":\"headless\""));

@@ -43,7 +43,7 @@ export interface AppServerHarnessHost {
 
 export interface HeadlessAppServerHarnessConfig {
   runtime: 'headless';
-  driver: HeadlessHarnessDriver;
+  driver?: HeadlessHarnessDriver;
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;
@@ -70,7 +70,7 @@ export interface StaticPtyHarnessDefinition {
 
 export interface StaticHeadlessAppServerHarnessDefinition {
   runtime: 'headless';
-  driver: HeadlessHarnessDriver;
+  driver?: HeadlessHarnessDriver;
   protocol: 'opencode' | string;
   endpoint: string;
   sessionId: string;
@@ -120,7 +120,7 @@ export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): Re
   if (definition.runtime === 'headless') {
     return {
       runtime: 'headless',
-      driver: definition.driver,
+      driver: definition.driver ?? 'app_server',
       protocol: definition.protocol,
       endpoint: definition.endpoint,
       sessionId: definition.sessionId,

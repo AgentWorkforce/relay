@@ -15,7 +15,8 @@ Relay supports two public runtime categories:
 | `headless` | Non-terminal agents such as app-server sessions | delivery and release |
 
 `app_server` is not a third runtime. It is a `headless` driver for sessions
-controlled over HTTP.
+controlled over HTTP. When `runtime` is `headless`, `driver` defaults to
+`app_server`.
 
 ## Naming
 
@@ -122,8 +123,8 @@ functions.
 
 ## Headless App-Server Adapter
 
-Use a headless app-server adapter when the agent already lives in a server
-session. OpenCode `serve` is the first supported protocol driver.
+Use a headless adapter when the agent already lives in a server session.
+OpenCode `serve` is the first supported protocol.
 
 ```typescript file="opencode-server-harness.ts"
 import { AgentRelay } from '@agent-relay/sdk';
@@ -132,7 +133,6 @@ const relay = new AgentRelay({
   harnesses: {
     'opencode-server': {
       runtime: 'headless',
-      driver: 'app_server',
       protocol: 'opencode',
       endpoint: 'http://127.0.0.1:4096',
       sessionId: 'ses_123',
@@ -161,7 +161,6 @@ const relay = new AgentRelay({
 
       return {
         runtime: 'headless',
-        driver: 'app_server',
         protocol: 'opencode',
         endpoint: session.endpoint,
         sessionId: session.id,

@@ -38,7 +38,6 @@ describe('harness configs', () => {
       cli: 'opencode-server',
       definition: {
         runtime: 'headless',
-        driver: 'app_server',
         protocol: 'opencode',
         endpoint: 'http://127.0.0.1:4096',
         sessionId: 'ses_123',
