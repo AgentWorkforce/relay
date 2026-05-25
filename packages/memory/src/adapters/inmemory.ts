@@ -80,7 +80,7 @@ export class InMemoryAdapter implements MemoryAdapter {
   async search(query: MemorySearchQuery): Promise<MemoryEntry[]> {
     const results: Array<MemoryEntry & { score: number }> = [];
     const queryLower = query.query.toLowerCase();
-    const queryTerms = queryLower.split(/\s+/).filter(t => t.length > 2);
+    const queryTerms = queryLower.split(/\s+/).filter((t) => t.length > 2);
 
     for (const entry of this.memories.values()) {
       // Apply filters
@@ -89,7 +89,7 @@ export class InMemoryAdapter implements MemoryAdapter {
       if (query.since && entry.createdAt < query.since) continue;
       if (query.before && entry.createdAt > query.before) continue;
       if (query.tags && query.tags.length > 0) {
-        if (!entry.tags || !query.tags.some(t => entry.tags!.includes(t))) {
+        if (!entry.tags || !query.tags.some((t) => entry.tags!.includes(t))) {
           continue;
         }
       }
@@ -145,11 +145,7 @@ export class InMemoryAdapter implements MemoryAdapter {
     };
   }
 
-  async update(
-    id: string,
-    content: string,
-    options?: Partial<AddMemoryOptions>
-  ): Promise<MemoryResult> {
+  async update(id: string, content: string, options?: Partial<AddMemoryOptions>): Promise<MemoryResult> {
     const existing = this.memories.get(id);
     if (!existing) {
       return { success: false, error: 'Memory not found' };
@@ -167,11 +163,7 @@ export class InMemoryAdapter implements MemoryAdapter {
     return { success: true, id };
   }
 
-  async list(options?: {
-    limit?: number;
-    agentId?: string;
-    projectId?: string;
-  }): Promise<MemoryEntry[]> {
+  async list(options?: { limit?: number; agentId?: string; projectId?: string }): Promise<MemoryEntry[]> {
     const results: MemoryEntry[] = [];
 
     for (const entry of this.memories.values()) {
@@ -187,11 +179,7 @@ export class InMemoryAdapter implements MemoryAdapter {
     return results.slice(0, limit);
   }
 
-  async clear(options?: {
-    agentId?: string;
-    projectId?: string;
-    before?: number;
-  }): Promise<MemoryResult> {
+  async clear(options?: { agentId?: string; projectId?: string; before?: number }): Promise<MemoryResult> {
     let _count = 0;
     const toDelete: string[] = [];
 
@@ -253,9 +241,7 @@ export class InMemoryAdapter implements MemoryAdapter {
    * Remove oldest memories when over limit
    */
   private pruneOldest(): void {
-    const sorted = Array.from(this.memories.entries()).sort(
-      ([, a], [, b]) => a.createdAt - b.createdAt
-    );
+    const sorted = Array.from(this.memories.entries()).sort(([, a], [, b]) => a.createdAt - b.createdAt);
 
     const toRemove = sorted.slice(0, this.memories.size - this.maxMemories);
     for (const [id] of toRemove) {

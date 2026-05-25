@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  classifyBrokerStartError,
-  classifyBrokerStartStage,
-  describeError,
-} from './broker-lifecycle.js';
+import { classifyBrokerStartError, classifyBrokerStartStage, describeError } from './broker-lifecycle.js';
 
 describe('describeError', () => {
   it('returns plain message for a bare Error', () => {

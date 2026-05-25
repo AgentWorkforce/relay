@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
-const withId = (schema: unknown, id: string) =>
-  Object.assign(schema as Record<string, unknown>, { $id: id });
+const withId = (schema: unknown, id: string) => Object.assign(schema as Record<string, unknown>, { $id: id });
 
 // Relay connection defaults (used by broker + wrapper)
 export const ConnectionConfigSchema = z.object({
@@ -189,13 +188,25 @@ export const CloudConfigSchema = z.object({
 });
 
 export const jsonSchemas = {
-  connection: withId(zodToJsonSchema(ConnectionConfigSchema, { target: 'jsonSchema7' }), 'RelayConnectionConfig'),
-  tmuxWrapper: withId(zodToJsonSchema(TmuxWrapperConfigSchema, { target: 'jsonSchema7' }), 'RelayTmuxWrapperConfig'),
-  relayRuntime: withId(zodToJsonSchema(RelayRuntimeConfigSchema, { target: 'jsonSchema7' }), 'RelayRuntimeConfig'),
+  connection: withId(
+    zodToJsonSchema(ConnectionConfigSchema, { target: 'jsonSchema7' }),
+    'RelayConnectionConfig'
+  ),
+  tmuxWrapper: withId(
+    zodToJsonSchema(TmuxWrapperConfigSchema, { target: 'jsonSchema7' }),
+    'RelayTmuxWrapperConfig'
+  ),
+  relayRuntime: withId(
+    zodToJsonSchema(RelayRuntimeConfigSchema, { target: 'jsonSchema7' }),
+    'RelayRuntimeConfig'
+  ),
   bridge: withId(zodToJsonSchema(BridgeConfigSchema, { target: 'jsonSchema7' }), 'BridgeConfig'),
   teams: withId(zodToJsonSchema(TeamsConfigSchema, { target: 'jsonSchema7' }), 'TeamsConfig'),
   shadow: withId(zodToJsonSchema(ShadowConfigSchema, { target: 'jsonSchema7' }), 'ShadowConfig'),
-  agentFrontmatter: withId(zodToJsonSchema(AgentFrontmatterSchema, { target: 'jsonSchema7' }), 'AgentFrontmatter'),
+  agentFrontmatter: withId(
+    zodToJsonSchema(AgentFrontmatterSchema, { target: 'jsonSchema7' }),
+    'AgentFrontmatter'
+  ),
   cliAuth: withId(zodToJsonSchema(CLIAuthConfigSchema, { target: 'jsonSchema7' }), 'CLIAuthConfig'),
   cloud: withId(zodToJsonSchema(CloudConfigSchema, { target: 'jsonSchema7' }), 'CloudConfig'),
 };

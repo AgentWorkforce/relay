@@ -11,7 +11,8 @@ type SdkTab = 'typescript' | 'python' | 'curl';
 const featureGroups = [
   {
     title: 'JWT Tokens',
-    description: 'Issue short-lived access tokens with sponsor chains, workspace context, and edge-verifiable claims.',
+    description:
+      'Issue short-lived access tokens with sponsor chains, workspace context, and edge-verifiable claims.',
   },
   {
     title: 'Scope-Based Access',
@@ -19,7 +20,8 @@ const featureGroups = [
   },
   {
     title: 'RBAC Policies',
-    description: 'Bundle scopes into named roles and layer deny-first policies from org to workspace to agent.',
+    description:
+      'Bundle scopes into named roles and layer deny-first policies from org to workspace to agent.',
   },
   {
     title: 'Audit Trails',
@@ -49,15 +51,18 @@ const toolBadges = [
 const whyCards = [
   {
     title: 'Zero infrastructure',
-    description: 'No auth service to stitch together, no token broker to run, no callback validator to babysit.',
+    description:
+      'No auth service to stitch together, no token broker to run, no callback validator to babysit.',
   },
   {
     title: 'Instant setup',
-    description: 'Create an identity, issue a token, and protect a route in minutes instead of designing an IAM stack.',
+    description:
+      'Create an identity, issue a token, and protect a route in minutes instead of designing an IAM stack.',
   },
   {
     title: 'Framework-agnostic',
-    description: 'Use the same token model across Workers, Node, Python services, edge middleware, and MCP tools.',
+    description:
+      'Use the same token model across Workers, Node, Python services, edge middleware, and MCP tools.',
   },
 ];
 
@@ -168,17 +173,11 @@ curl https://api.relayauth.dev/.well-known/jwks.json`,
 };
 
 function highlight(code: string, tab: SdkTab) {
-  const keywords =
-    tab === 'python'
-      ? /\b(from|import|await)\b/g
-      : /\b(import|from|const|await|new)\b/g;
+  const keywords = tab === 'python' ? /\b(from|import|await)\b/g : /\b(import|from|const|await|new)\b/g;
   const types = /\b(RelayAuthClient)\b/g;
   const methods = /\.(\w+)\(/g;
 
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   const parts: string[] = [];
   let lastIndex = 0;
@@ -377,9 +376,8 @@ export function RelayauthContent() {
             </h1>
 
             <p className={s.subtitle}>
-              Tokens, scopes, RBAC, policies, and audit trails for multi-agent systems.
-              Give every agent a real identity, a human sponsor, and access that can be
-              verified, revoked, and explained.
+              Tokens, scopes, RBAC, policies, and audit trails for multi-agent systems. Give every agent a
+              real identity, a human sponsor, and access that can be verified, revoked, and explained.
             </p>
 
             <div className={s.ctas}>
@@ -413,12 +411,7 @@ export function RelayauthContent() {
 
         <section className={s.featuresSection}>
           {featureGroups.map((feature, index) => (
-            <FadeIn
-              key={feature.title}
-              direction="up"
-              delay={index * 50}
-              className={s.featureCard}
-            >
+            <FadeIn key={feature.title} direction="up" delay={index * 50} className={s.featureCard}>
               <div className={s.featureCardAccent} />
               <h3 className={s.featureTitle}>{feature.title}</h3>
               <p className={s.featureDesc}>{feature.description}</p>
@@ -432,7 +425,8 @@ export function RelayauthContent() {
           <FadeIn direction="up" className={s.toolsText}>
             <h2 className={s.sectionTitle}>Works with every AI tool</h2>
             <p className={s.sectionSubtitle}>
-              Use the same identity plane across local coding agents, cloud workers, approval bots, and internal platforms.
+              Use the same identity plane across local coding agents, cloud workers, approval bots, and
+              internal platforms.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={100} className={s.toolBadgeGrid}>
@@ -450,7 +444,8 @@ export function RelayauthContent() {
           <FadeIn direction="right" className={s.sdkText}>
             <h2 className={s.sectionTitle}>Same auth flow, any SDK</h2>
             <p className={s.sectionSubtitle}>
-              Create identities, issue scoped tokens, verify claims, and enforce permissions from the same control plane.
+              Create identities, issue scoped tokens, verify claims, and enforce permissions from the same
+              control plane.
             </p>
           </FadeIn>
 
@@ -512,7 +507,8 @@ export function RelayauthContent() {
           <FadeIn direction="up">
             <h2 className={s.sectionTitle}>Get started in three requests</h2>
             <p className={s.sectionSubtitle}>
-              Create the agent, mint the token, and publish verification keys for every service that needs to trust it.
+              Create the agent, mint the token, and publish verification keys for every service that needs to
+              trust it.
             </p>
           </FadeIn>
 
@@ -534,7 +530,8 @@ export function RelayauthContent() {
         <section className={s.poweredSection}>
           <p className={s.poweredLabel}>Powered by Agent Relay</p>
           <p className={s.poweredCopy}>
-            One identity layer for Relaycast, files, cloud jobs, MCP servers, and the rest of your agent stack.
+            One identity layer for Relaycast, files, cloud jobs, MCP servers, and the rest of your agent
+            stack.
           </p>
         </section>
       </div>

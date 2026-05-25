@@ -10,15 +10,11 @@ function toErrorMessage(err: unknown): string {
 }
 
 function formatProjectContext(projects: BridgeProject[]): string {
-  return projects
-    .map((project) => `- ${project.id}: ${project.path} (Lead: ${project.leadName})`)
-    .join('\n');
+  return projects.map((project) => `- ${project.id}: ${project.path} (Lead: ${project.leadName})`).join('\n');
 }
 
 async function cleanupRelays(relays: Map<string, CoreRelay>): Promise<void> {
-  await Promise.all(
-    Array.from(relays.values()).map((relay) => relay.shutdown().catch(() => undefined))
-  );
+  await Promise.all(Array.from(relays.values()).map((relay) => relay.shutdown().catch(() => undefined)));
 }
 
 export async function runBridgeCommand(

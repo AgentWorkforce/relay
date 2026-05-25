@@ -892,19 +892,13 @@ describe('SwarmCoordinator', () => {
     it('should query by workspace with optional status filter', async () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
       await coordinator.getRunsByWorkspace('ws-1', 'running');
-      expect(db.query).toHaveBeenCalledWith(
-        expect.stringContaining('status = $2'),
-        ['ws-1', 'running'],
-      );
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('status = $2'), ['ws-1', 'running']);
     });
 
     it('should query without status filter', async () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
       await coordinator.getRunsByWorkspace('ws-1');
-      expect(db.query).toHaveBeenCalledWith(
-        expect.not.stringContaining('status ='),
-        ['ws-1'],
-      );
+      expect(db.query).toHaveBeenCalledWith(expect.not.stringContaining('status ='), ['ws-1']);
     });
   });
 });

@@ -25,8 +25,8 @@ class MockOpenClawServer {
   /** Control flags — tests toggle these to simulate server behavior. */
   rejectAuth = false;
   skipChallenge = false;
-  rpcDelay = 0;      // ms delay before responding to RPCs
-  rpcError = false;   // respond to chat.send with an error
+  rpcDelay = 0; // ms delay before responding to RPCs
+  rpcError = false; // respond to chat.send with an error
 
   constructor() {
     this.wss = new WebSocketServer({ port: 0 }); // random port
@@ -39,11 +39,13 @@ class MockOpenClawServer {
 
     // Step 1: Send connect.challenge
     if (!this.skipChallenge) {
-      ws.send(JSON.stringify({
-        type: 'event',
-        event: 'connect.challenge',
-        payload: { nonce: 'test-nonce-123', ts: Date.now() },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: 'test-nonce-123', ts: Date.now() },
+        })
+      );
     }
 
     ws.on('message', (data) => {
@@ -52,26 +54,30 @@ class MockOpenClawServer {
 
       // Step 2: Handle connect request
       if (msg.method === 'connect') {
-        ws.send(JSON.stringify({
-          type: 'res',
-          id: msg.id,
-          ok: !this.rejectAuth,
-          ...(this.rejectAuth ? { error: 'auth rejected' } : {}),
-        }));
+        ws.send(
+          JSON.stringify({
+            type: 'res',
+            id: msg.id,
+            ok: !this.rejectAuth,
+            ...(this.rejectAuth ? { error: 'auth rejected' } : {}),
+          })
+        );
         return;
       }
 
       // Step 3: Handle chat.send RPC
       if (msg.method === 'chat.send') {
         setTimeout(() => {
-          ws.send(JSON.stringify({
-            type: 'res',
-            id: msg.id,
-            ok: !this.rpcError,
-            ...(this.rpcError
-              ? { error: 'delivery failed' }
-              : { payload: { runId: 'run_1', status: 'ok' } }),
-          }));
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: msg.id,
+              ok: !this.rpcError,
+              ...(this.rpcError
+                ? { error: 'delivery failed' }
+                : { payload: { runId: 'run_1', status: 'ok' } }),
+            })
+          );
         }, this.rpcDelay);
         return;
       }
@@ -95,37 +101,37 @@ class MockOpenClawServer {
 
 ### 1. Connection & Authentication
 
-| Test | What it validates |
-|---|---|
-| `should connect and authenticate via challenge-response` | Full happy path: challenge → sign → connect response |
-| `should reject when server denies auth` | `connect()` rejects when server returns `ok: false` |
-| `should timeout if no challenge arrives` | `connect()` rejects after `CONNECT_TIMEOUT_MS` when `skipChallenge=true` |
-| `should resolve immediately if already connected` | Second `connect()` call is a no-op |
+| Test                                                     | What it validates                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `should connect and authenticate via challenge-response` | Full happy path: challenge → sign → connect response                     |
+| `should reject when server denies auth`                  | `connect()` rejects when server returns `ok: false`                      |
+| `should timeout if no challenge arrives`                 | `connect()` rejects after `CONNECT_TIMEOUT_MS` when `skipChallenge=true` |
+| `should resolve immediately if already connected`        | Second `connect()` call is a no-op                                       |
 
 ### 2. Message Delivery (chat.send RPC)
 
-| Test | What it validates |
-|---|---|
-| `should send chat.send and resolve true on success` | `sendChatMessage()` returns `true` |
-| `should send idempotencyKey when provided` | Verify `params.idempotencyKey` in received message |
-| `should resolve false when RPC returns error` | `rpcError=true` → returns `false` |
-| `should resolve false on RPC timeout` | `rpcDelay=20000` → hits 15s timeout, returns `false` |
-| `should reconnect and retry if not connected` | Disconnect, call `sendChatMessage`, verify reconnection |
+| Test                                                | What it validates                                       |
+| --------------------------------------------------- | ------------------------------------------------------- |
+| `should send chat.send and resolve true on success` | `sendChatMessage()` returns `true`                      |
+| `should send idempotencyKey when provided`          | Verify `params.idempotencyKey` in received message      |
+| `should resolve false when RPC returns error`       | `rpcError=true` → returns `false`                       |
+| `should resolve false on RPC timeout`               | `rpcDelay=20000` → hits 15s timeout, returns `false`    |
+| `should reconnect and retry if not connected`       | Disconnect, call `sendChatMessage`, verify reconnection |
 
 ### 3. Reconnection
 
-| Test | What it validates |
-|---|---|
-| `should reconnect after server disconnects` | `disconnectAll()` → client reconnects within ~3s |
-| `should not reconnect after stop()` | `disconnect()` then `disconnectAll()` → no reconnection |
-| `should reject pending RPCs on disconnect` | In-flight `sendChatMessage` resolves `false` on disconnect |
+| Test                                        | What it validates                                          |
+| ------------------------------------------- | ---------------------------------------------------------- |
+| `should reconnect after server disconnects` | `disconnectAll()` → client reconnects within ~3s           |
+| `should not reconnect after stop()`         | `disconnect()` then `disconnectAll()` → no reconnection    |
+| `should reject pending RPCs on disconnect`  | In-flight `sendChatMessage` resolves `false` on disconnect |
 
 ### 4. Ed25519 Signature Verification
 
-| Test | What it validates |
-|---|---|
-| `should produce valid Ed25519 signature` | Mock server verifies the signature using the client's public key from the connect payload |
-| `should include correct v3 payload fields` | Verify clientId, clientMode, platform, role, scopes, nonce |
+| Test                                       | What it validates                                                                         |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `should produce valid Ed25519 signature`   | Mock server verifies the signature using the client's public key from the connect payload |
+| `should include correct v3 payload fields` | Verify clientId, clientMode, platform, role, scopes, nonce                                |
 
 ## Implementation Notes
 
@@ -168,6 +174,7 @@ Separate from the WS unit tests, create integration tests following the broker h
 ### Prerequisites
 
 These tests require network access to `api.relaycast.dev` and should:
+
 - Use `checkPrerequisites()` pattern from broker harness
 - Be skippable via `skipIfMissing()`
 - Have generous timeouts (120s)

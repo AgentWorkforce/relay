@@ -102,14 +102,16 @@ describe('checkPrereqs', () => {
     const result = await checkPrereqs({}, { relayauthRoot: relayauth, relayfileRoot: relayfile });
 
     expect(result.ok).toBe(false);
-    expect(result.missing).toEqual(expect.arrayContaining([
-      'node',
-      'npx',
-      'go',
-      'wrangler',
-      'relayfile binary',
-      'D1 database',
-      'relayauth SDK build (run `npx turbo build` in relayauth root)',
-    ]));
+    expect(result.missing).toEqual(
+      expect.arrayContaining([
+        'node',
+        'npx',
+        'go',
+        'wrangler',
+        'relayfile binary',
+        'D1 database',
+        'relayauth SDK build (run `npx turbo build` in relayauth root)',
+      ])
+    );
   });
 });

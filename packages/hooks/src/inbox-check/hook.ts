@@ -33,7 +33,7 @@ import {
   getInboxPath,
   hasUnreadMessages,
   countMessages,
-  buildBlockReason
+  buildBlockReason,
 } from './utils.js';
 
 /**
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
       // Block stop and provide reason
       outputResult({
         decision: 'block',
-        reason
+        reason,
       });
     } else {
       // No messages, allow stop

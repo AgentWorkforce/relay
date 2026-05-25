@@ -331,17 +331,10 @@ test('workflow: parallel spawn — 4 agents simultaneously', { timeout: 180_000 
   const suffix = uniqueSuffix();
 
   try {
-    const agentNames = [
-      `agent1-${suffix}`,
-      `agent2-${suffix}`,
-      `agent3-${suffix}`,
-      `agent4-${suffix}`,
-    ];
+    const agentNames = [`agent1-${suffix}`, `agent2-${suffix}`, `agent3-${suffix}`, `agent4-${suffix}`];
 
     // Spawn all 4 agents in parallel
-    await Promise.all(
-      agentNames.map((name) => harness.spawnAgent(name, cli, ['parallel-test']))
-    );
+    await Promise.all(agentNames.map((name) => harness.spawnAgent(name, cli, ['parallel-test'])));
 
     // Wait for all to initialize
     await sleep(20_000);
@@ -557,10 +550,7 @@ test('workflow: agent lifecycle — release and re-spawn', { timeout: 120_000 },
 
     // Verify agent is gone
     const agentsAfterRelease = await harness.listAgents();
-    assert.ok(
-      !agentsAfterRelease.some((a) => a.name === agentName),
-      'agent should be gone after release'
-    );
+    assert.ok(!agentsAfterRelease.some((a) => a.name === agentName), 'agent should be gone after release');
 
     // Re-spawn with same name
     await harness.spawnAgent(agentName, cli, ['lifecycle']);
@@ -573,9 +563,7 @@ test('workflow: agent lifecycle — release and re-spawn', { timeout: 120_000 },
     const events = harness.getEvents();
     const spawnEvents = events.filter(
       (e) =>
-        e.kind === 'agent_spawned' &&
-        'name' in e &&
-        (e as BrokerEvent & { name: string }).name === agentName
+        e.kind === 'agent_spawned' && 'name' in e && (e as BrokerEvent & { name: string }).name === agentName
     );
     assert.equal(spawnEvents.length, 2, 'should have 2 spawn events');
 
@@ -718,15 +706,11 @@ test('workflow: cat — lightweight workflow simulation', { timeout: 60_000 }, a
     const events = harness.getEvents();
     const implAck = events.find(
       (e) =>
-        e.kind === 'delivery_ack' &&
-        'name' in e &&
-        (e as BrokerEvent & { name: string }).name === implName
+        e.kind === 'delivery_ack' && 'name' in e && (e as BrokerEvent & { name: string }).name === implName
     );
     const revAck = events.find(
       (e) =>
-        e.kind === 'delivery_ack' &&
-        'name' in e &&
-        (e as BrokerEvent & { name: string }).name === revName
+        e.kind === 'delivery_ack' && 'name' in e && (e as BrokerEvent & { name: string }).name === revName
     );
 
     assert.ok(implAck, 'cat-impl should acknowledge');

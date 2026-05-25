@@ -15,7 +15,7 @@ import { DEFAULT_OPENCLAW_GATEWAY_PORT, type InboundMessage, type DeliveryResult
 export async function deliverMessage(
   message: InboundMessage,
   clawName: string,
-  relayClient?: AgentRelayClient | null,
+  relayClient?: AgentRelayClient | null
 ): Promise<DeliveryResult> {
   const formattedText = `[relaycast:${message.channel}] @${message.from}: ${message.text}`;
 
@@ -44,7 +44,8 @@ export async function deliverMessage(
 
   // Fallback: OpenClaw OpenResponses API (POST /v1/responses on local gateway)
   try {
-    const gatewayPort = process.env.OPENCLAW_GATEWAY_PORT ?? process.env.GATEWAY_PORT ?? String(DEFAULT_OPENCLAW_GATEWAY_PORT);
+    const gatewayPort =
+      process.env.OPENCLAW_GATEWAY_PORT ?? process.env.GATEWAY_PORT ?? String(DEFAULT_OPENCLAW_GATEWAY_PORT);
     const token = process.env.OPENCLAW_GATEWAY_TOKEN;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {

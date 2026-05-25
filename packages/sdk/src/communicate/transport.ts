@@ -83,14 +83,10 @@ export class RelayTransport {
       return this.agentId;
     }
 
-    const payload = await this.sendHttp<{ agent_id: string; token: string }>(
-      'POST',
-      '/v1/agents/register',
-      {
-        name: this.agentName,
-        workspace: this.config.workspace,
-      }
-    );
+    const payload = await this.sendHttp<{ agent_id: string; token: string }>('POST', '/v1/agents/register', {
+      name: this.agentName,
+      workspace: this.config.workspace,
+    });
 
     this.agentId = payload.agent_id;
     this.token = payload.token;
@@ -170,11 +166,7 @@ export class RelayTransport {
     }
   }
 
-  private async sendHttp<T = unknown>(
-    method: string,
-    path: string,
-    payload?: JsonObject
-  ): Promise<T> {
+  private async sendHttp<T = unknown>(method: string, path: string, payload?: JsonObject): Promise<T> {
     this.requireConfig();
 
     const url = `${this.config.baseUrl}${path}`;

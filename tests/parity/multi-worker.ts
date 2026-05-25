@@ -6,20 +6,17 @@
  * Run: npx tsx tests/parity/multi-worker.ts
  */
 
-import {
-  AgentRelayClient,
-  type BrokerEvent,
-} from "@agent-relay/sdk";
-import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
+import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
+import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
 
 const WORKER_COUNT = 3;
 
 async function main(): Promise<void> {
-  console.log("=== Parity Test: Multiple Workers Communication ===\n");
+  console.log('=== Parity Test: Multiple Workers Communication ===\n');
 
   const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
-    channels: ["general"],
+    channels: ['general'],
     env: process.env,
   });
 
@@ -32,41 +29,41 @@ async function main(): Promise<void> {
       const name = randomName(`mw-${i}`);
       await client.spawnPty({
         name,
-        cli: "cat",
-        channels: ["general"],
+        cli: 'cat',
+        channels: ['general'],
       });
       workers.push(name);
       console.log(`   Spawned: ${name}`);
     }
-    console.log("");
+    console.log('');
 
     await new Promise((r) => setTimeout(r, 500));
 
     // Step 2: Send ping to each worker
-    console.log("2. Sending ping to each worker...");
+    console.log('2. Sending ping to each worker...');
     let sendOk = 0;
     for (const worker of workers) {
       const result = await client.sendMessage({
         to: worker,
-        from: "orchestrator",
-        text: JSON.stringify({ type: "ping", from: "orchestrator" }),
+        from: 'orchestrator',
+        text: JSON.stringify({ type: 'ping', from: 'orchestrator' }),
       });
-      if (result.event_id !== "unsupported_operation") {
+      if (result.event_id !== 'unsupported_operation') {
         sendOk++;
         console.log(`   Ping → ${worker}: OK`);
       } else {
         console.log(`   Ping → ${worker}: FAILED`);
       }
     }
-    console.log("");
+    console.log('');
 
     // Step 3: Wait for delivery verification
-    console.log("3. Waiting for delivery verifications...");
+    console.log('3. Waiting for delivery verifications...');
     let verified = 0;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 5000);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === "delivery_verified") {
+        if (event.kind === 'delivery_verified') {
           verified++;
           if (verified >= WORKER_COUNT) {
             clearTimeout(timer);
@@ -79,7 +76,7 @@ async function main(): Promise<void> {
     console.log(`   Deliveries verified: ${verified}/${WORKER_COUNT}\n`);
 
     // Step 4: Send messages between workers (worker 0 → worker 1, worker 1 → worker 2)
-    console.log("4. Testing inter-worker messages...");
+    console.log('4. Testing inter-worker messages...');
     let interOk = 0;
     for (let i = 0; i < WORKER_COUNT - 1; i++) {
       const result = await client.sendMessage({
@@ -87,7 +84,7 @@ async function main(): Promise<void> {
         from: workers[i]!,
         text: `Message from worker ${i} to worker ${i + 1}`,
       });
-      if (result.event_id !== "unsupported_operation") {
+      if (result.event_id !== 'unsupported_operation') {
         interOk++;
       }
     }
@@ -97,14 +94,21 @@ async function main(): Promise<void> {
 
     // Results
     const passed = sendOk === WORKER_COUNT && verified === WORKER_COUNT && interOk === WORKER_COUNT - 1;
-    console.log(passed ? "=== Multi-Worker Parity Test PASSED ===" : "=== Multi-Worker Parity Test FAILED ===");
+    console.log(
+      passed ? '=== Multi-Worker Parity Test PASSED ===' : '=== Multi-Worker Parity Test FAILED ==='
+    );
     process.exit(passed ? 0 : 1);
   } finally {
     for (const name of workers) {
-      try { await client.release(name); } catch {}
+      try {
+        await client.release(name);
+      } catch {}
     }
     await client.shutdown();
   }
 }
 
-main().catch((err) => { console.error("test failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('test failed:', err);
+  process.exit(1);
+});

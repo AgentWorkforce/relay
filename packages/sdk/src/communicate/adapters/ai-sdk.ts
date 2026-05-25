@@ -89,7 +89,8 @@ function createRelayTools(relay: RelayLike): AiSdkTools {
         return {
           ok: true,
           messages,
-          text: messages.length === 0 ? 'No new relay messages.' : messages.map(formatRelayMessage).join('\n'),
+          text:
+            messages.length === 0 ? 'No new relay messages.' : messages.map(formatRelayMessage).join('\n'),
         };
       },
     },
@@ -122,7 +123,11 @@ function composeRelayInstructions(pendingMessages: string[], options: AiSdkRelay
   return sections.join('\n\n');
 }
 
-function composeSystemPrompt(baseSystem: string | undefined, pendingMessages: string[], options: AiSdkRelayOptions): string {
+function composeSystemPrompt(
+  baseSystem: string | undefined,
+  pendingMessages: string[],
+  options: AiSdkRelayOptions
+): string {
   const sections: string[] = [];
 
   if (baseSystem && baseSystem.trim().length > 0) {
@@ -140,7 +145,7 @@ function composeSystemPrompt(baseSystem: string | undefined, pendingMessages: st
 function injectSyntheticSystemMessage(
   messages: AiSdkMessageLike[] | undefined,
   pendingMessages: string[],
-  options: AiSdkRelayOptions,
+  options: AiSdkRelayOptions
 ): AiSdkMessageLike[] | undefined {
   if (!Array.isArray(messages)) {
     return messages;
@@ -162,7 +167,7 @@ function injectSyntheticSystemMessage(
  */
 export function onRelay(
   options: AiSdkRelayOptions,
-  relay: RelayLike = new Relay(options.name),
+  relay: RelayLike = new Relay(options.name)
 ): AiSdkRelaySession {
   const tools = createRelayTools(relay);
   const pendingMessages: string[] = [];
@@ -182,7 +187,7 @@ export function onRelay(
         const nextMessages = injectSyntheticSystemMessage(
           hasMessages ? [...(params.messages ?? [])] : params.messages,
           liveMessages,
-          options,
+          options
         );
 
         return {

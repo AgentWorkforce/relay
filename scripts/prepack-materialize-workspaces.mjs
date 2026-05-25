@@ -32,9 +32,7 @@ const bundled = pkg.bundledDependencies || pkg.bundleDependencies || [];
 const targets = bundled.filter((name) => name.startsWith('@agent-relay/'));
 
 if (targets.length === 0) {
-  console.log(
-    '[prepack-materialize] no @agent-relay/* entries in bundledDependencies - nothing to do',
-  );
+  console.log('[prepack-materialize] no @agent-relay/* entries in bundledDependencies - nothing to do');
   process.exit(0);
 }
 

@@ -16,21 +16,24 @@ import path from 'path';
 const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
 const rootDeps = rootPkg.dependencies || {};
 const bundledPackages = new Set(
-  (rootPkg.bundledDependencies || rootPkg.bundleDependencies || [])
-    .map(name => name.replace('@agent-relay/', ''))
+  (rootPkg.bundledDependencies || rootPkg.bundleDependencies || []).map((name) =>
+    name.replace('@agent-relay/', '')
+  )
 );
 
 // Get all workspace packages
-const packages = fs.readdirSync('packages').filter(d => {
+const packages = fs.readdirSync('packages').filter((d) => {
   try {
     return fs.existsSync(path.join('packages', d, 'package.json'));
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 });
 
 // Collect external deps from bundled packages only
 const externalDeps = new Map();
 
-packages.forEach(pkg => {
+packages.forEach((pkg) => {
   // Skip if not bundled
   if (!bundledPackages.has(pkg)) return;
 
@@ -78,7 +81,7 @@ if (missing.length > 0) {
   console.log('The following dependencies are used by bundled packages but not');
   console.log('listed in the root package.json dependencies:\n');
 
-  missing.forEach(d => {
+  missing.forEach((d) => {
     console.log(`  "${d.name}": "${d.version}",`);
     console.log(`    // used by: ${d.from.join(', ')}\n`);
   });

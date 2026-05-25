@@ -106,12 +106,7 @@ describe('runVerification output_contains (token double-count fix)', () => {
 
   it('handles empty token gracefully', () => {
     const runner = createRunner();
-    const result = runVerification(
-      runner,
-      { type: 'output_contains', value: '' },
-      'some output',
-      'step1'
-    );
+    const result = runVerification(runner, { type: 'output_contains', value: '' }, 'some output', 'step1');
     expect(result.passed).toBe(false);
   });
 });

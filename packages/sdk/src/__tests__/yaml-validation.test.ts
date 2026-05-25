@@ -13,7 +13,12 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { TemplateRegistry, BUILT_IN_TEMPLATE_NAMES } from '../workflows/templates.js';
 import { SwarmCoordinator } from '../workflows/coordinator.js';
-import type { RelayYamlConfig, SwarmPattern, WorkflowStep, CustomStepDefinition } from '../workflows/types.js';
+import type {
+  RelayYamlConfig,
+  SwarmPattern,
+  WorkflowStep,
+  CustomStepDefinition,
+} from '../workflows/types.js';
 import { isDeterministicStep, isWorktreeStep, isAgentStep, isCustomStep } from '../workflows/types.js';
 import {
   resolveCustomStep,
@@ -84,11 +89,30 @@ describe('YAML Template Validation', () => {
         it('should have valid swarm pattern', async () => {
           const config = await registry.loadTemplate(templateName);
           const validPatterns: SwarmPattern[] = [
-            'fan-out', 'pipeline', 'hub-spoke', 'consensus', 'mesh',
-            'handoff', 'cascade', 'dag', 'debate', 'hierarchical',
-            'map-reduce', 'scatter-gather', 'supervisor', 'reflection',
-            'red-team', 'verifier', 'auction', 'escalation', 'saga',
-            'circuit-breaker', 'blackboard', 'swarm', 'competitive', 'review-loop',
+            'fan-out',
+            'pipeline',
+            'hub-spoke',
+            'consensus',
+            'mesh',
+            'handoff',
+            'cascade',
+            'dag',
+            'debate',
+            'hierarchical',
+            'map-reduce',
+            'scatter-gather',
+            'supervisor',
+            'reflection',
+            'red-team',
+            'verifier',
+            'auction',
+            'escalation',
+            'saga',
+            'circuit-breaker',
+            'blackboard',
+            'swarm',
+            'competitive',
+            'review-loop',
           ];
           expect(validPatterns).toContain(config.swarm.pattern);
         });
@@ -284,9 +308,7 @@ agents:
     cli: claude
 `;
       const parsed = parseYaml(invalidYaml);
-      expect(() =>
-        (registry as any).validateRelayConfig(parsed, 'test')
-      ).toThrow(/version/);
+      expect(() => (registry as any).validateRelayConfig(parsed, 'test')).toThrow(/version/);
     });
 
     it('should reject template with missing name', () => {
@@ -299,9 +321,7 @@ agents:
     cli: claude
 `;
       const parsed = parseYaml(invalidYaml);
-      expect(() =>
-        (registry as any).validateRelayConfig(parsed, 'test')
-      ).toThrow(/name/);
+      expect(() => (registry as any).validateRelayConfig(parsed, 'test')).toThrow(/name/);
     });
 
     it('should reject template with empty agents', () => {
@@ -313,9 +333,7 @@ swarm:
 agents: []
 `;
       const parsed = parseYaml(invalidYaml);
-      expect(() =>
-        (registry as any).validateRelayConfig(parsed, 'test')
-      ).toThrow(/agents/);
+      expect(() => (registry as any).validateRelayConfig(parsed, 'test')).toThrow(/agents/);
     });
 
     it('should reject template with invalid agent definition', () => {
@@ -328,15 +346,11 @@ agents:
   - name: test
 `;
       const parsed = parseYaml(invalidYaml);
-      expect(() =>
-        (registry as any).validateRelayConfig(parsed, 'test')
-      ).toThrow(/invalid agent/i);
+      expect(() => (registry as any).validateRelayConfig(parsed, 'test')).toThrow(/invalid agent/i);
     });
 
     it('should reject non-existent template', async () => {
-      await expect(registry.loadTemplate('non-existent-template')).rejects.toThrow(
-        /not found/i
-      );
+      await expect(registry.loadTemplate('non-existent-template')).rejects.toThrow(/not found/i);
     });
   });
 
@@ -532,23 +546,27 @@ describe('Step Type Guards', () => {
 
 describe('Custom Step Resolution', () => {
   const customSteps = new Map<string, CustomStepDefinition>([
-    ['docker-build', {
-      params: [
-        { name: 'image', required: true },
-        { name: 'dockerfile', default: 'Dockerfile' },
-      ],
-      command: 'docker build -t {{image}} -f {{dockerfile}} .',
-      captureOutput: true,
-    }],
-    ['setup-worktree', {
-      type: 'worktree',
-      params: [
-        { name: 'branch', required: true },
-      ],
-      branch: '{{branch}}',
-      baseBranch: 'main',
-      createBranch: true,
-    }],
+    [
+      'docker-build',
+      {
+        params: [
+          { name: 'image', required: true },
+          { name: 'dockerfile', default: 'Dockerfile' },
+        ],
+        command: 'docker build -t {{image}} -f {{dockerfile}} .',
+        captureOutput: true,
+      },
+    ],
+    [
+      'setup-worktree',
+      {
+        type: 'worktree',
+        params: [{ name: 'branch', required: true }],
+        branch: '{{branch}}',
+        baseBranch: 'main',
+        createBranch: true,
+      },
+    ],
   ]);
 
   it('should resolve custom step with required param', () => {
@@ -561,7 +579,12 @@ describe('Custom Step Resolution', () => {
   });
 
   it('should resolve custom step with all params', () => {
-    const step = { name: 'build', use: 'docker-build', image: 'myapp:v2', dockerfile: 'Dockerfile.prod' } as WorkflowStep;
+    const step = {
+      name: 'build',
+      use: 'docker-build',
+      image: 'myapp:v2',
+      dockerfile: 'Dockerfile.prod',
+    } as WorkflowStep;
     const resolved = resolveCustomStep(step, customSteps);
 
     expect(resolved.command).toBe('docker build -t myapp:v2 -f Dockerfile.prod .');
@@ -594,7 +617,7 @@ describe('Custom Step Resolution', () => {
       name: 'my-build',
       use: 'docker-build',
       image: 'app:latest',
-      dependsOn: ['setup']
+      dependsOn: ['setup'],
     } as WorkflowStep;
     const resolved = resolveCustomStep(step, customSteps);
 
@@ -629,19 +652,23 @@ describe('Custom Step Resolution', () => {
 
 describe('Custom Step Validation', () => {
   const customSteps = new Map<string, CustomStepDefinition>([
-    ['docker-build', {
-      params: [
-        { name: 'image', required: true },
-        { name: 'dockerfile', default: 'Dockerfile' },
-      ],
-      command: 'docker build -t {{image}} -f {{dockerfile}} .',
-    }],
-    ['deploy', {
-      params: [
-        { name: 'env', required: true },
-      ],
-      command: 'deploy --env={{env}}',
-    }],
+    [
+      'docker-build',
+      {
+        params: [
+          { name: 'image', required: true },
+          { name: 'dockerfile', default: 'Dockerfile' },
+        ],
+        command: 'docker build -t {{image}} -f {{dockerfile}} .',
+      },
+    ],
+    [
+      'deploy',
+      {
+        params: [{ name: 'env', required: true }],
+        command: 'deploy --env={{env}}',
+      },
+    ],
   ]);
 
   describe('validateCustomStepsUsage', () => {
@@ -657,9 +684,7 @@ describe('Custom Step Validation', () => {
     });
 
     it('should report missing custom step definition', () => {
-      const steps: WorkflowStep[] = [
-        { name: 'build', use: 'unknown-step' } as WorkflowStep,
-      ];
+      const steps: WorkflowStep[] = [{ name: 'build', use: 'unknown-step' } as WorkflowStep];
 
       const result = validateCustomStepsUsage(steps, customSteps);
 
@@ -689,15 +714,16 @@ describe('Custom Step Validation', () => {
 
     it('should warn about undefined variables in command', () => {
       const customStepsWithUndefinedVar = new Map<string, CustomStepDefinition>([
-        ['bad-step', {
-          params: [{ name: 'known' }],
-          command: 'run {{known}} {{unknown}}',
-        }],
+        [
+          'bad-step',
+          {
+            params: [{ name: 'known' }],
+            command: 'run {{known}} {{unknown}}',
+          },
+        ],
       ]);
 
-      const steps: WorkflowStep[] = [
-        { name: 'test', use: 'bad-step', known: 'value' } as WorkflowStep,
-      ];
+      const steps: WorkflowStep[] = [{ name: 'test', use: 'bad-step', known: 'value' } as WorkflowStep];
 
       const result = validateCustomStepsUsage(steps, customStepsWithUndefinedVar);
 

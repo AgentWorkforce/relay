@@ -7,30 +7,27 @@
  * Run: npx tsx tests/parity/continuity-handoff.ts
  */
 
-import {
-  AgentRelayClient,
-  type BrokerEvent,
-} from "@agent-relay/sdk";
-import { resolveBinaryPath, randomName } from "../benchmarks/harness.js";
+import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
+import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
 
 async function main(): Promise<void> {
-  console.log("=== Parity Test: Continuity Handoff (Spawn/Release Cycle) ===\n");
+  console.log('=== Parity Test: Continuity Handoff (Spawn/Release Cycle) ===\n');
 
   const client = await AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
-    channels: ["general"],
+    channels: ['general'],
     env: process.env,
   });
 
-  const agentName = randomName("handoff");
+  const agentName = randomName('handoff');
 
   try {
     // Step 1: First spawn
-    console.log("1. First spawn cycle...");
+    console.log('1. First spawn cycle...');
     await client.spawnPty({
       name: agentName,
-      cli: "cat",
-      channels: ["general"],
+      cli: 'cat',
+      channels: ['general'],
     });
     console.log(`   Spawned: ${agentName}`);
 
@@ -39,10 +36,10 @@ async function main(): Promise<void> {
     // Send message in first session
     const result1 = await client.sendMessage({
       to: agentName,
-      from: "orchestrator",
-      text: "Session 1 message",
+      from: 'orchestrator',
+      text: 'Session 1 message',
     });
-    const send1Ok = result1.event_id !== "unsupported_operation";
+    const send1Ok = result1.event_id !== 'unsupported_operation';
     console.log(`   Message sent: ${send1Ok}`);
 
     // Wait for delivery
@@ -50,7 +47,7 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 5000);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === "delivery_verified") {
+        if (event.kind === 'delivery_verified') {
           verified1 = true;
           clearTimeout(timer);
           unsub();
@@ -61,18 +58,18 @@ async function main(): Promise<void> {
     console.log(`   Delivery verified: ${verified1}\n`);
 
     // Step 2: Release
-    console.log("2. Releasing agent...");
+    console.log('2. Releasing agent...');
     await client.release(agentName);
-    console.log("   Released\n");
+    console.log('   Released\n');
 
     await new Promise((r) => setTimeout(r, 1000));
 
     // Step 3: Re-spawn with same name
-    console.log("3. Re-spawning with same name...");
+    console.log('3. Re-spawning with same name...');
     await client.spawnPty({
       name: agentName,
-      cli: "cat",
-      channels: ["general"],
+      cli: 'cat',
+      channels: ['general'],
     });
     console.log(`   Re-spawned: ${agentName}`);
 
@@ -81,10 +78,10 @@ async function main(): Promise<void> {
     // Send message in second session
     const result2 = await client.sendMessage({
       to: agentName,
-      from: "orchestrator",
-      text: "Session 2 message",
+      from: 'orchestrator',
+      text: 'Session 2 message',
     });
-    const send2Ok = result2.event_id !== "unsupported_operation";
+    const send2Ok = result2.event_id !== 'unsupported_operation';
     console.log(`   Message sent: ${send2Ok}`);
 
     // Wait for delivery
@@ -92,7 +89,7 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 5000);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === "delivery_verified") {
+        if (event.kind === 'delivery_verified') {
           verified2 = true;
           clearTimeout(timer);
           unsub();
@@ -103,20 +100,27 @@ async function main(): Promise<void> {
     console.log(`   Delivery verified: ${verified2}\n`);
 
     // Step 4: Final release
-    console.log("4. Final release...");
+    console.log('4. Final release...');
     await client.release(agentName);
-    console.log("   Released\n");
+    console.log('   Released\n');
 
     // Results
     const passed = send1Ok && verified1 && send2Ok && verified2;
-    console.log(passed
-      ? "=== Continuity Handoff Parity Test PASSED ==="
-      : "=== Continuity Handoff Parity Test FAILED ===");
+    console.log(
+      passed
+        ? '=== Continuity Handoff Parity Test PASSED ==='
+        : '=== Continuity Handoff Parity Test FAILED ==='
+    );
     process.exit(passed ? 0 : 1);
   } finally {
-    try { await client.release(agentName); } catch {}
+    try {
+      await client.release(agentName);
+    } catch {}
     await client.shutdown();
   }
 }
 
-main().catch((err) => { console.error("test failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('test failed:', err);
+  process.exit(1);
+});

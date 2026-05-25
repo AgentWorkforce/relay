@@ -26,7 +26,9 @@ const BATCH_SIZE = 50;
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 function normalizeBaseUrl(baseUrl: string): string {
-  return String(baseUrl ?? '').trim().replace(/\/+$/, '');
+  return String(baseUrl ?? '')
+    .trim()
+    .replace(/\/+$/, '');
 }
 
 function normalizeWorkspaceId(workspaceId: string): string {
@@ -309,8 +311,11 @@ export async function seedAclRules(
 ): Promise<void> {
   const workspace = normalizeWorkspaceId(workspaceId);
   const files = Object.entries(aclRules).map(([dirPath, rules]) => {
-    const normalizedDir = String(dirPath ?? '').trim().replace(/\/+$/, '');
-    const aclPath = normalizedDir === '' || normalizedDir === '/' ? '/.relayfile.acl' : `${normalizedDir}/.relayfile.acl`;
+    const normalizedDir = String(dirPath ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    const aclPath =
+      normalizedDir === '' || normalizedDir === '/' ? '/.relayfile.acl' : `${normalizedDir}/.relayfile.acl`;
     return {
       path: aclPath,
       content: JSON.stringify({ semantics: { permissions: rules } }),
@@ -322,11 +327,15 @@ export async function seedAclRules(
     return;
   }
 
-  const result = await writeBulkWrite(baseUrl, token, workspace, files, `seed-acl-${workspace}-${Date.now()}`);
+  const result = await writeBulkWrite(
+    baseUrl,
+    token,
+    workspace,
+    files,
+    `seed-acl-${workspace}-${Date.now()}`
+  );
   if (result.errorCount > 0) {
     const details = result.errors ? JSON.stringify(result.errors) : '[]';
-    throw new Error(
-      `ACL seeding had ${result.errorCount} error(s) for workspace ${workspace}: ${details}`
-    );
+    throw new Error(`ACL seeding had ${result.errorCount} error(s) for workspace ${workspace}: ${details}`);
   }
 }

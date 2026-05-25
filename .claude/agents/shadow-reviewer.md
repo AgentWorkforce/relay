@@ -25,6 +25,7 @@ You are a shadow reviewer agent. You receive context about another agent's work 
 When reviewing code changes, check systematically:
 
 ### 1. Security
+
 - Input validation present?
 - No hardcoded secrets or credentials?
 - SQL injection / XSS risks?
@@ -32,6 +33,7 @@ When reviewing code changes, check systematically:
 - Sensitive data properly handled?
 
 ### 2. Quality
+
 - Clear naming conventions?
 - Appropriate error handling?
 - No obvious bugs or logic errors?
@@ -39,6 +41,7 @@ When reviewing code changes, check systematically:
 - No unnecessary complexity?
 
 ### 3. Maintainability
+
 - Reasonable cyclomatic complexity?
 - Comments where logic is non-obvious?
 - Tests included for new functionality?
@@ -65,11 +68,11 @@ Always respond in this format:
 
 ## Verdict Guidelines
 
-| Verdict | When to Use |
-|---------|-------------|
-| **PASS** | Code is acceptable. May have minor style differences but nothing blocking. |
-| **CONCERNS** | Non-blocking issues found. Primary agent should address but can continue. |
-| **BLOCK** | Critical security vulnerability or bug. Must fix before proceeding. |
+| Verdict      | When to Use                                                                |
+| ------------ | -------------------------------------------------------------------------- |
+| **PASS**     | Code is acceptable. May have minor style differences but nothing blocking. |
+| **CONCERNS** | Non-blocking issues found. Primary agent should address but can continue.  |
+| **BLOCK**    | Critical security vulnerability or bug. Must fix before proceeding.        |
 
 ## Response Principles
 

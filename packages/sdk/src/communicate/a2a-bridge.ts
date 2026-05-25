@@ -10,10 +10,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { Relay } from './core.js';
-import {
-  type A2AAgentCard,
-  a2aAgentCardFromDict,
-} from './a2a-types.js';
+import { type A2AAgentCard, a2aAgentCardFromDict } from './a2a-types.js';
 import type { Message, RelayConfig } from './types.js';
 
 export class A2ABridge {
@@ -24,11 +21,7 @@ export class A2ABridge {
   private _agentCard?: A2AAgentCard;
   private _started = false;
 
-  constructor(
-    relayConfig: RelayConfig,
-    a2aAgentUrl: string,
-    proxyName: string,
-  ) {
+  constructor(relayConfig: RelayConfig, a2aAgentUrl: string, proxyName: string) {
     this.relay = new Relay(proxyName, relayConfig);
     this.a2aAgentUrl = a2aAgentUrl.replace(/\/+$/, '');
     this.proxyName = proxyName;

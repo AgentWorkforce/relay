@@ -72,11 +72,7 @@ function writeStorageStatus(lines) {
     fs.writeFileSync(statusPath, `${lines.join('\n')}\n`, 'utf-8');
     return statusPath;
   } catch (err) {
-    warn(
-      `Failed to write storage status file: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
+    warn(`Failed to write storage status file: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -161,9 +157,7 @@ function getPackageVersion(pkgRoot) {
     return pkgJson.version;
   } catch (err) {
     warn(
-      `Unable to read package version from package.json: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Unable to read package version from package.json: ${err instanceof Error ? err.message : String(err)}`
     );
     return null;
   }
@@ -183,9 +177,13 @@ async function verifyChecksum(filePath, downloadUrl) {
     const checksumContent = await new Promise((resolve, reject) => {
       const fetchWithRedirects = (url, remaining = 5) => {
         const chunks = [];
-        const request = https.get(url, res => {
+        const request = https.get(url, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            if (remaining <= 0) { res.resume(); reject(new Error('Too many redirects fetching checksums')); return; }
+            if (remaining <= 0) {
+              res.resume();
+              reject(new Error('Too many redirects fetching checksums'));
+              return;
+            }
             res.resume();
             fetchWithRedirects(new URL(res.headers.location, url).toString(), remaining - 1);
             return;
@@ -195,7 +193,7 @@ async function verifyChecksum(filePath, downloadUrl) {
             reject(new Error(`Checksums file not available (HTTP ${res.statusCode})`));
             return;
           }
-          res.on('data', chunk => chunks.push(chunk));
+          res.on('data', (chunk) => chunks.push(chunk));
           res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
           res.on('error', reject);
         });
@@ -207,9 +205,9 @@ async function verifyChecksum(filePath, downloadUrl) {
     // Parse checksums file (format: "<hash>  <filename>" per line)
     const expectedHash = checksumContent
       .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.endsWith(binaryName))
-      .map(line => line.split(/\s+/)[0])[0];
+      .map((line) => line.trim())
+      .filter((line) => line.endsWith(binaryName))
+      .map((line) => line.split(/\s+/)[0])[0];
 
     if (!expectedHash) {
       warn(`No checksum entry found for ${binaryName} in checksums file`);
@@ -220,9 +218,7 @@ async function verifyChecksum(filePath, downloadUrl) {
     const actualHash = createHash('sha256').update(fileBuffer).digest('hex');
 
     if (actualHash !== expectedHash) {
-      throw new Error(
-        `Checksum mismatch for ${binaryName}: expected ${expectedHash}, got ${actualHash}`
-      );
+      throw new Error(`Checksum mismatch for ${binaryName}: expected ${expectedHash}, got ${actualHash}`);
     }
 
     info(`Checksum verified for ${binaryName}`);
@@ -245,7 +241,7 @@ function downloadBinary(url, destPath, maxRedirects = 5) {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
   const attemptDownload = (currentUrl, redirectsRemaining, resolve, reject) => {
-    const request = https.get(currentUrl, res => {
+    const request = https.get(currentUrl, (res) => {
       const status = res.statusCode ?? 0;
       const location = res.headers.location;
       const isRedirect = status >= 300 && status < 400 && location;
@@ -274,16 +270,16 @@ function downloadBinary(url, destPath, maxRedirects = 5) {
       fileStream.on('finish', () => {
         fileStream.close(resolve);
       });
-      fileStream.on('error', err => reject(err));
-      res.on('error', err => reject(err));
+      fileStream.on('error', (err) => reject(err));
+      res.on('error', (err) => reject(err));
     });
 
-    request.on('error', err => reject(err));
+    request.on('error', (err) => reject(err));
   };
 
   return new Promise((resolve, reject) => {
     attemptDownload(url, maxRedirects, resolve, reject);
-  }).catch(err => {
+  }).catch((err) => {
     try {
       fs.unlinkSync(destPath);
     } catch {
@@ -324,7 +320,12 @@ function resignBinaryForMacOS(binaryPath) {
     // This shouldn't happen on a normal macOS system, but handle gracefully
     warn(`Failed to re-sign binary: ${err.message}`);
     warn('The binary may fail to execute due to code signature issues.');
-    warn('You can manually fix this by running: codesign --remove-signature ' + binaryPath + ' && codesign --force --sign - ' + binaryPath);
+    warn(
+      'You can manually fix this by running: codesign --remove-signature ' +
+        binaryPath +
+        ' && codesign --force --sign - ' +
+        binaryPath
+    );
     return false;
   }
 }
@@ -378,7 +379,11 @@ async function installDashboardBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`Dashboard binary not available (${message}) — will use npx fallback`);
-    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(targetPath);
+    } catch {
+      /* ignore */
+    }
     return false;
   }
 }
@@ -434,7 +439,11 @@ async function installRelayAcpBinary() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     info(`relay-acp binary not available (${message}) — Zed integration requires manual install`);
-    try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(targetPath);
+    } catch {
+      /* ignore */
+    }
     return false;
   }
 }
@@ -485,7 +494,8 @@ function patchAgentTrajectories() {
     return;
   }
 
-  const optionNeedle = '.option("-t, --task <id>", "External task ID").option("-s, --source <system>", "Task system (github, linear, jira, beads)").option("--url <url>", "URL to external task")';
+  const optionNeedle =
+    '.option("-t, --task <id>", "External task ID").option("-s, --source <system>", "Task system (github, linear, jira, beads)").option("--url <url>", "URL to external task")';
   const optionReplacement = `${optionNeedle}.option("-a, --agent <name>", "Agent name starting the trajectory").option("-r, --role <role>", "Agent role (lead, contributor, reviewer)")`;
 
   const createNeedle = `    const trajectory = createTrajectory({
@@ -514,9 +524,7 @@ function patchAgentTrajectories() {
     return;
   }
 
-  const updated = content
-    .replace(optionNeedle, optionReplacement)
-    .replace(createNeedle, createReplacement);
+  const updated = content.replace(optionNeedle, optionReplacement).replace(createNeedle, createReplacement);
 
   // Verify the patch produced exactly the expected changes (no double-application or corruption)
   if (updated === content) {

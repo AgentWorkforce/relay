@@ -55,7 +55,7 @@ describe('formatRunSummaryTable', () => {
             summary: 'implemented',
           },
         ],
-      ]),
+      ])
     );
 
     expect(output).toMatchInlineSnapshot(`
@@ -69,7 +69,16 @@ describe('formatRunSummaryTable', () => {
 
   it('renders a failed step with the first error line', () => {
     const output = formatRunSummaryTable(
-      [{ name: 'broken-step', agent: 'worker', status: 'failed', attempts: 1, durationMs: 1_500, error: 'boom' }],
+      [
+        {
+          name: 'broken-step',
+          agent: 'worker',
+          status: 'failed',
+          attempts: 1,
+          durationMs: 1_500,
+          error: 'boom',
+        },
+      ],
       new Map([
         [
           'broken-step',
@@ -88,7 +97,7 @@ describe('formatRunSummaryTable', () => {
             summary: null,
           },
         ],
-      ]),
+      ])
     );
 
     expect(output).toContain('broken-step           FAIL');
@@ -98,7 +107,7 @@ describe('formatRunSummaryTable', () => {
   it('renders deterministic steps without reports using placeholder columns', () => {
     const output = formatRunSummaryTable(
       [{ name: 'lint', agent: 'shell', status: 'completed', attempts: 1, durationMs: 900 }],
-      new Map(),
+      new Map()
     );
 
     expect(output).toContain('lint                  pass    --');
@@ -109,9 +118,7 @@ describe('formatRunSummaryTable', () => {
 
   it('hides Cost column when no report has reliable cost data', () => {
     const output = formatRunSummaryTable(
-      [
-        { name: 'gen-code', agent: 'worker', status: 'completed', attempts: 1, durationMs: 5_000 },
-      ],
+      [{ name: 'gen-code', agent: 'worker', status: 'completed', attempts: 1, durationMs: 5_000 }],
       new Map([
         [
           'gen-code',
@@ -130,7 +137,7 @@ describe('formatRunSummaryTable', () => {
             summary: 'done',
           },
         ],
-      ]),
+      ])
     );
 
     expect(output).not.toContain('Cost');
@@ -147,7 +154,7 @@ describe('WorkflowRunner logRunSummary', () => {
     (runner as any).logRunSummary(
       'sample-workflow',
       [{ name: 'lint', agent: 'shell', status: 'completed', attempts: 1, output: 'ok' }],
-      'run-1',
+      'run-1'
     );
 
     const combined = logSpy.mock.calls.flat().join('\n');

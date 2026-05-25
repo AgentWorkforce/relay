@@ -12,22 +12,13 @@
  *   RELAY_API_KEY — Relaycast workspace key
  *   RELAY_INTEGRATION_REAL_CLI=1 — opt-in for real CLI tests
  */
-import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 
-import type { BrokerEvent } from "@agent-relay/sdk";
-import {
-  BrokerHarness,
-  checkPrerequisites,
-  uniqueSuffix,
-} from "./utils/broker-harness.js";
-import {
-  eventsForAgent,
-} from "./utils/assert-helpers.js";
-import {
-  skipUnlessAnyCli,
-  sleep,
-} from "./utils/cli-helpers.js";
+import type { BrokerEvent } from '@agent-relay/sdk';
+import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
+import { eventsForAgent } from './utils/assert-helpers.js';
+import { skipUnlessAnyCli, sleep } from './utils/cli-helpers.js';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -42,15 +33,13 @@ function skipIfMissing(t: TestContext): boolean {
  * Collect all worker_stream chunks for an agent into a single string.
  */
 function collectStreamOutput(events: BrokerEvent[], agentName: string): string {
-  const streams = eventsForAgent(events, agentName, "worker_stream");
-  return streams
-    .map((ev) => (ev as BrokerEvent & { chunk: string }).chunk)
-    .join("");
+  const streams = eventsForAgent(events, agentName, 'worker_stream');
+  return streams.map((ev) => (ev as BrokerEvent & { chunk: string }).chunk).join('');
 }
 
 // ── MCP Hint Wrapper Tests ──────────────────────────────────────────────────
 
-test("mcp-hints: injected messages include system-reminder wrapper", { timeout: 90_000 }, async (t) => {
+test('mcp-hints: injected messages include system-reminder wrapper', { timeout: 90_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -60,7 +49,7 @@ test("mcp-hints: injected messages include system-reminder wrapper", { timeout: 
   const agentName = `mcp-hint-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"]);
+    await harness.spawnAgent(agentName, cli, ['general']);
     await sleep(12_000); // Wait for CLI startup
 
     harness.clearEvents();
@@ -68,8 +57,8 @@ test("mcp-hints: injected messages include system-reminder wrapper", { timeout: 
     // Send a direct message
     await harness.sendMessage({
       to: agentName,
-      from: "test-sender",
-      text: "Hello, please acknowledge this message",
+      from: 'test-sender',
+      text: 'Hello, please acknowledge this message',
     });
 
     await sleep(8_000); // Wait for injection
@@ -79,28 +68,22 @@ test("mcp-hints: injected messages include system-reminder wrapper", { timeout: 
 
     // Verify system-reminder wrapper is present
     assert.ok(
-      output.includes("<system-reminder>"),
-      "Injected message should include <system-reminder> opening tag"
+      output.includes('<system-reminder>'),
+      'Injected message should include <system-reminder> opening tag'
     );
     assert.ok(
-      output.includes("</system-reminder>"),
-      "Injected message should include </system-reminder> closing tag"
+      output.includes('</system-reminder>'),
+      'Injected message should include </system-reminder> closing tag'
     );
 
     // Verify MCP tool hints are present
-    assert.ok(
-      output.includes("mcp__relaycast__"),
-      "Injected message should mention Relaycast MCP tools"
-    );
-    assert.ok(
-      output.includes("Relaycast MCP"),
-      "Injected message should mention Relaycast MCP"
-    );
+    assert.ok(output.includes('mcp__relaycast__'), 'Injected message should mention Relaycast MCP tools');
+    assert.ok(output.includes('Relaycast MCP'), 'Injected message should mention Relaycast MCP');
 
     // Verify the actual relay message is present
     assert.ok(
-      output.includes("Relay message from test-sender"),
-      "Injected message should include the relay message content"
+      output.includes('Relay message from test-sender'),
+      'Injected message should include the relay message content'
     );
 
     await harness.releaseAgent(agentName);
@@ -110,7 +93,7 @@ test("mcp-hints: injected messages include system-reminder wrapper", { timeout: 
   }
 });
 
-test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t) => {
+test('mcp-hints: DM messages hint to use send_dm', { timeout: 90_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -120,7 +103,7 @@ test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t
   const agentName = `mcp-dm-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"]);
+    await harness.spawnAgent(agentName, cli, ['general']);
     await sleep(12_000);
 
     harness.clearEvents();
@@ -128,8 +111,8 @@ test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t
     // Send a direct message
     await harness.sendMessage({
       to: agentName,
-      from: "alice",
-      text: "Direct message test",
+      from: 'alice',
+      text: 'Direct message test',
     });
 
     await sleep(8_000);
@@ -139,13 +122,10 @@ test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t
 
     // DM should hint to use send_dm with sender name
     assert.ok(
-      output.includes("mcp__relaycast__message_dm_send"),
-      "DM should hint to use mcp__relaycast__message_dm_send"
+      output.includes('mcp__relaycast__message_dm_send'),
+      'DM should hint to use mcp__relaycast__message_dm_send'
     );
-    assert.ok(
-      output.includes("alice"),
-      "DM hint should mention the sender (alice) to reply to"
-    );
+    assert.ok(output.includes('alice'), 'DM hint should mention the sender (alice) to reply to');
 
     await harness.releaseAgent(agentName);
     await sleep(1_000);
@@ -154,7 +134,7 @@ test("mcp-hints: DM messages hint to use send_dm", { timeout: 90_000 }, async (t
   }
 });
 
-test("mcp-hints: channel messages hint to use post_message with channel", { timeout: 90_000 }, async (t) => {
+test('mcp-hints: channel messages hint to use post_message with channel', { timeout: 90_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -164,7 +144,7 @@ test("mcp-hints: channel messages hint to use post_message with channel", { time
   const agentName = `mcp-channel-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["dev-team"]);
+    await harness.spawnAgent(agentName, cli, ['dev-team']);
     await sleep(12_000);
 
     harness.clearEvents();
@@ -173,8 +153,8 @@ test("mcp-hints: channel messages hint to use post_message with channel", { time
     // This simulates what Relaycast sends when delivering channel messages
     await harness.sendMessage({
       to: agentName,
-      from: "system",
-      text: "Relay message from bob [abc12345] [#dev-team]: Channel message test",
+      from: 'system',
+      text: 'Relay message from bob [abc12345] [#dev-team]: Channel message test',
     });
 
     await sleep(8_000);
@@ -184,12 +164,12 @@ test("mcp-hints: channel messages hint to use post_message with channel", { time
 
     // Channel message should hint to use post_message with specific channel
     assert.ok(
-      output.includes("mcp__relaycast__message_post"),
-      "Channel message should hint to use mcp__relaycast__message_post"
+      output.includes('mcp__relaycast__message_post'),
+      'Channel message should hint to use mcp__relaycast__message_post'
     );
     assert.ok(
-      output.includes("#dev-team") || output.includes("dev-team"),
-      "Channel hint should mention the channel name"
+      output.includes('#dev-team') || output.includes('dev-team'),
+      'Channel hint should mention the channel name'
     );
 
     await harness.releaseAgent(agentName);
@@ -199,7 +179,7 @@ test("mcp-hints: channel messages hint to use post_message with channel", { time
   }
 });
 
-test("mcp-hints: no double-wrapping of system-reminder", { timeout: 90_000 }, async (t) => {
+test('mcp-hints: no double-wrapping of system-reminder', { timeout: 90_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -209,7 +189,7 @@ test("mcp-hints: no double-wrapping of system-reminder", { timeout: 90_000 }, as
   const agentName = `mcp-nowrap-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"]);
+    await harness.spawnAgent(agentName, cli, ['general']);
     await sleep(12_000);
 
     harness.clearEvents();
@@ -217,13 +197,13 @@ test("mcp-hints: no double-wrapping of system-reminder", { timeout: 90_000 }, as
     // Send multiple messages rapidly
     await harness.sendMessage({
       to: agentName,
-      from: "sender1",
-      text: "First message",
+      from: 'sender1',
+      text: 'First message',
     });
     await harness.sendMessage({
       to: agentName,
-      from: "sender2",
-      text: "Second message",
+      from: 'sender2',
+      text: 'Second message',
     });
 
     await sleep(10_000);
@@ -236,15 +216,8 @@ test("mcp-hints: no double-wrapping of system-reminder", { timeout: 90_000 }, as
     const closeTags = (output.match(/<\/system-reminder>/g) || []).length;
 
     // Should have exactly 2 of each (one per message)
-    assert.ok(
-      openTags >= 2,
-      `Should have at least 2 <system-reminder> tags for 2 messages, got ${openTags}`
-    );
-    assert.equal(
-      openTags,
-      closeTags,
-      `Open and close tags should match: ${openTags} vs ${closeTags}`
-    );
+    assert.ok(openTags >= 2, `Should have at least 2 <system-reminder> tags for 2 messages, got ${openTags}`);
+    assert.equal(openTags, closeTags, `Open and close tags should match: ${openTags} vs ${closeTags}`);
 
     await harness.releaseAgent(agentName);
     await sleep(1_000);
@@ -255,7 +228,7 @@ test("mcp-hints: no double-wrapping of system-reminder", { timeout: 90_000 }, as
 
 // ── Idle Detection Tests ────────────────────────────────────────────────────
 
-test("mcp-hints: idle detection handles system-reminder format", { timeout: 120_000 }, async (t) => {
+test('mcp-hints: idle detection handles system-reminder format', { timeout: 120_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -265,7 +238,7 @@ test("mcp-hints: idle detection handles system-reminder format", { timeout: 120_
   const agentName = `mcp-idle-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"]);
+    await harness.spawnAgent(agentName, cli, ['general']);
     await sleep(12_000);
 
     harness.clearEvents();
@@ -273,8 +246,8 @@ test("mcp-hints: idle detection handles system-reminder format", { timeout: 120_
     // Send first message
     await harness.sendMessage({
       to: agentName,
-      from: "test",
-      text: "First message - agent should process this",
+      from: 'test',
+      text: 'First message - agent should process this',
     });
 
     await sleep(15_000); // Give agent time to process
@@ -283,18 +256,18 @@ test("mcp-hints: idle detection handles system-reminder format", { timeout: 120_
     // and allows injection after the first message's echo
     const result = await harness.sendMessage({
       to: agentName,
-      from: "test",
-      text: "Second message - should also be delivered",
+      from: 'test',
+      text: 'Second message - should also be delivered',
     });
 
-    assert.ok(result.event_id, "Second message should be accepted");
+    assert.ok(result.event_id, 'Second message should be accepted');
 
     await sleep(10_000);
 
     const events = harness.getEvents();
 
     // Both messages should have been injected
-    const injected = eventsForAgent(events, agentName, "delivery_injected");
+    const injected = eventsForAgent(events, agentName, 'delivery_injected');
     assert.ok(
       injected.length >= 2,
       `Both messages should be injected, got ${injected.length} delivery_injected events`
@@ -317,13 +290,13 @@ test("mcp-hints: idle detection handles system-reminder format", { timeout: 120_
  */
 function getRelayInboundFromAgent(events: BrokerEvent[], agentName: string): BrokerEvent[] {
   return events.filter((e) => {
-    if (e.kind !== "relay_inbound") return false;
+    if (e.kind !== 'relay_inbound') return false;
     const inbound = e as BrokerEvent & { from: string };
     return inbound.from === agentName;
   });
 }
 
-test("e2e-mcp: agent responds to DM using MCP send_dm", { timeout: 180_000 }, async (t) => {
+test('e2e-mcp: agent responds to DM using MCP send_dm', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -334,8 +307,8 @@ test("e2e-mcp: agent responds to DM using MCP send_dm", { timeout: 180_000 }, as
 
   try {
     // Spawn agent with explicit task to respond via MCP
-    await harness.spawnAgent(agentName, cli, ["general"], {
-      task: "You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses brief.",
+    await harness.spawnAgent(agentName, cli, ['general'], {
+      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses brief.',
     });
     await sleep(15_000);
 
@@ -344,7 +317,7 @@ test("e2e-mcp: agent responds to DM using MCP send_dm", { timeout: 180_000 }, as
     // Send a DM that requires a response
     await harness.sendMessage({
       to: agentName,
-      from: "test-user",
+      from: 'test-user',
       text: "Please acknowledge this message by replying 'ACK' using the MCP tools mentioned in the system reminder.",
     });
 
@@ -375,7 +348,7 @@ test("e2e-mcp: agent responds to DM using MCP send_dm", { timeout: 180_000 }, as
   }
 });
 
-test("e2e-mcp: agent responds to channel message using MCP post_message", { timeout: 180_000 }, async (t) => {
+test('e2e-mcp: agent responds to channel message using MCP post_message', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -383,7 +356,7 @@ test("e2e-mcp: agent responds to channel message using MCP post_message", { time
   const harness = new BrokerHarness();
   await harness.start();
   const agentName = `e2e-channel-${uniqueSuffix()}`;
-  const channelName = "test-channel";
+  const channelName = 'test-channel';
 
   try {
     await harness.spawnAgent(agentName, cli, [channelName], {
@@ -396,7 +369,7 @@ test("e2e-mcp: agent responds to channel message using MCP post_message", { time
     // Send a channel message (pre-formatted with channel hint)
     await harness.sendMessage({
       to: agentName,
-      from: "system",
+      from: 'system',
       text: `Relay message from channel-user [abc123] [#${channelName}]: Please respond to this channel message using the MCP tools.`,
     });
 
@@ -419,7 +392,7 @@ test("e2e-mcp: agent responds to channel message using MCP post_message", { time
     if (channelResponse) {
       console.log(`  Agent correctly responded to channel #${channelName}`);
     } else {
-      console.log(`  Agent responses: ${agentResponses.map((r) => (r as any).target).join(", ")}`);
+      console.log(`  Agent responses: ${agentResponses.map((r) => (r as any).target).join(', ')}`);
     }
 
     await harness.releaseAgent(agentName);
@@ -429,7 +402,7 @@ test("e2e-mcp: agent responds to channel message using MCP post_message", { time
   }
 });
 
-test("e2e-mcp: agent responds to thread using MCP reply_to_thread", { timeout: 180_000 }, async (t) => {
+test('e2e-mcp: agent responds to thread using MCP reply_to_thread', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -439,8 +412,8 @@ test("e2e-mcp: agent responds to thread using MCP reply_to_thread", { timeout: 1
   const agentName = `e2e-thread-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"], {
-      task: "You are a test agent. When you receive a thread message, respond using the mcp__relaycast__message_reply tool. Keep responses brief.",
+    await harness.spawnAgent(agentName, cli, ['general'], {
+      task: 'You are a test agent. When you receive a thread message, respond using the mcp__relaycast__message_reply tool. Keep responses brief.',
     });
     await sleep(15_000);
 
@@ -450,8 +423,8 @@ test("e2e-mcp: agent responds to thread using MCP reply_to_thread", { timeout: 1
     const threadId = `thread-${uniqueSuffix()}`;
     await harness.sendMessage({
       to: agentName,
-      from: "test-user",
-      text: "Please reply to this thread using the MCP reply_to_thread tool.",
+      from: 'test-user',
+      text: 'Please reply to this thread using the MCP reply_to_thread tool.',
       threadId,
     });
 
@@ -487,7 +460,7 @@ test("e2e-mcp: agent responds to thread using MCP reply_to_thread", { timeout: 1
 
 // ── Reaction Delivery Tests ─────────────────────────────────────────────────
 
-test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async (t) => {
+test('e2e-mcp: agent can check inbox for reactions', { timeout: 180_000 }, async (t) => {
   if (skipIfMissing(t)) return;
   const cli = skipUnlessAnyCli(t);
   if (!cli) return;
@@ -497,8 +470,8 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
   const agentName = `e2e-reaction-${uniqueSuffix()}`;
 
   try {
-    await harness.spawnAgent(agentName, cli, ["general"], {
-      task: "You are a test agent. Use the mcp__relaycast__message_inbox_check tool to see if you have any new messages or reactions. Report what you find.",
+    await harness.spawnAgent(agentName, cli, ['general'], {
+      task: 'You are a test agent. Use the mcp__relaycast__message_inbox_check tool to see if you have any new messages or reactions. Report what you find.',
     });
     await sleep(15_000);
 
@@ -507,8 +480,8 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
     // Ask agent to check their inbox
     await harness.sendMessage({
       to: agentName,
-      from: "test-user",
-      text: "Please check your inbox using mcp__relaycast__message_inbox_check and tell me if you see any messages or reactions.",
+      from: 'test-user',
+      text: 'Please check your inbox using mcp__relaycast__message_inbox_check and tell me if you see any messages or reactions.',
     });
 
     await sleep(60_000);
@@ -518,14 +491,12 @@ test("e2e-mcp: agent can check inbox for reactions", { timeout: 180_000 }, async
 
     // Verify agent attempted to use check_inbox
     // This is indicated by MCP tool calls in the output
-    const usedCheckInbox = output.includes("check_inbox") ||
-                           output.includes("mcp__relaycast__message_inbox_check") ||
-                           output.includes("inbox");
+    const usedCheckInbox =
+      output.includes('check_inbox') ||
+      output.includes('mcp__relaycast__message_inbox_check') ||
+      output.includes('inbox');
 
-    assert.ok(
-      usedCheckInbox,
-      "Agent should attempt to check inbox when asked about reactions"
-    );
+    assert.ok(usedCheckInbox, 'Agent should attempt to check inbox when asked about reactions');
 
     console.log(`  Agent inbox check behavior verified`);
 

@@ -18,6 +18,7 @@ Merged origin/main into PR 831 and addressed scheduling review feedback around t
 ## Key Decisions
 
 ### Merged main instead of rebasing PR 831
+
 - **Chose:** Merged main instead of rebasing PR 831
 - **Reasoning:** The user asked to fix conflicts; a merge commit preserves the already-reviewed branch history while resolving the dirty PR state against origin/main.
 
@@ -26,6 +27,7 @@ Merged origin/main into PR 831 and addressed scheduling review feedback around t
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Merged main instead of rebasing PR 831: Merged main instead of rebasing PR 831

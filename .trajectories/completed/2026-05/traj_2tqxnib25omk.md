@@ -18,6 +18,7 @@ Added workflow-reliability-contract tests covering repair-agent retry, repair-ag
 ## Key Decisions
 
 ### Add a dedicated SDK workflow reliability contract suite
+
 - **Chose:** Add a dedicated SDK workflow reliability contract suite
 - **Reasoning:** Workflow repair semantics should be enforced as product behavior with fast fake executors, not only incidental coverage in the broad runner test file.
 
@@ -26,6 +27,7 @@ Added workflow-reliability-contract tests covering repair-agent retry, repair-ag
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Add a dedicated SDK workflow reliability contract suite: Add a dedicated SDK workflow reliability contract suite

@@ -34,7 +34,7 @@ workflows:
              /exit
         verification:
           type: output_contains
-          value: "OWNER_DECISION: INCOMPLETE_FAIL"
+          value: 'OWNER_DECISION: INCOMPLETE_FAIL'
       - name: worker-step
         type: agent
         agent: worker

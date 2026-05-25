@@ -76,7 +76,7 @@ export function getToolDefinitions(): McpToolDefinition[] {
 
 export async function handleToolCall(
   toolName: string,
-  args: Record<string, unknown>,
+  args: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   switch (toolName) {
     case 'spawn_openclaw': {
@@ -91,21 +91,21 @@ export async function handleToolCall(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(args),
         });
-        const body = await res.json() as Record<string, unknown>;
+        const body = (await res.json()) as Record<string, unknown>;
         if (!body.ok) {
           return text(`Failed to spawn "${name}": ${body.error ?? 'unknown error'}`);
         }
         return text(
           `Spawned OpenClaw "${name}"\n` +
-          `  Agent name: ${body.agentName}\n` +
-          `  ID: ${body.id}\n` +
-          `  Gateway port: ${body.gatewayPort}\n` +
-          `  Total active: ${body.active}`,
+            `  Agent name: ${body.agentName}\n` +
+            `  ID: ${body.id}\n` +
+            `  Gateway port: ${body.gatewayPort}\n` +
+            `  Total active: ${body.active}`
         );
       } catch (err) {
         return text(
           `Failed to spawn "${name}": ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: relay-openclaw gateway',
+            'Is the gateway running? Start it with: relay-openclaw gateway'
         );
       }
     }
@@ -113,19 +113,17 @@ export async function handleToolCall(
     case 'list_openclaws': {
       try {
         const res = await fetch(`${CONTROL_URL}/list`);
-        const body = await res.json() as Record<string, unknown>;
+        const body = (await res.json()) as Record<string, unknown>;
         const claws = body.claws as Array<Record<string, unknown>>;
         if (!claws || claws.length === 0) {
           return text('No spawned OpenClaws currently running.');
         }
-        const lines = claws.map(
-          (h) => `- ${h.name} → ${h.agentName} (id: ${h.id}, port: ${h.gatewayPort})`,
-        );
+        const lines = claws.map((h) => `- ${h.name} → ${h.agentName} (id: ${h.id}, port: ${h.gatewayPort})`);
         return text(`Active OpenClaws (${claws.length}):\n${lines.join('\n')}`);
       } catch (err) {
         return text(
           `Failed to list claws: ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: relay-openclaw gateway',
+            'Is the gateway running? Start it with: relay-openclaw gateway'
         );
       }
     }
@@ -144,7 +142,7 @@ export async function handleToolCall(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, id }),
         });
-        const body = await res.json() as Record<string, unknown>;
+        const body = (await res.json()) as Record<string, unknown>;
         if (body.ok) {
           return text(`Released OpenClaw "${name ?? id}". Active: ${body.active}`);
         }
@@ -152,7 +150,7 @@ export async function handleToolCall(
       } catch (err) {
         return text(
           `Failed to release: ${err instanceof Error ? err.message : String(err)}\n` +
-          'Is the gateway running? Start it with: relay-openclaw gateway',
+            'Is the gateway running? Start it with: relay-openclaw gateway'
         );
       }
     }

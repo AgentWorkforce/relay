@@ -51,12 +51,7 @@
           "type": "reflection",
           "content": "PR feedback fixes are scoped: deterministic repair now requires explicit repairRetries, repair agents inherit the failed gate cwd, docs and trajectory comments are cleaned up, and the PR body now has a checkbox test plan.",
           "raw": {
-            "focalPoints": [
-              "pr-feedback",
-              "opt-in-repair",
-              "cwd-parity",
-              "review-cleanup"
-            ],
+            "focalPoints": ["pr-feedback", "opt-in-repair", "cwd-parity", "review-cleanup"],
             "adjustments": "Validated targeted repair tests and SDK typecheck; noted the unrelated local trajectory harness failure in the PR body.",
             "confidence": 0.86
           },

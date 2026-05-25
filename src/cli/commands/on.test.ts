@@ -89,7 +89,7 @@ describe('registerOnCommands', () => {
       'claude',
       expect.objectContaining({ workspace: 'rw_a7f3x9k2' }),
       expect.arrayContaining(['--print']),
-      deps,
+      deps
     );
   });
 });

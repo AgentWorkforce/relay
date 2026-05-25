@@ -18,6 +18,7 @@ Addressed current PR #826 review comments: corrected origin.agentrelay.net spell
 ## Key Decisions
 
 ### Patch current PR 826 review comments in place
+
 - **Chose:** Patch current PR 826 review comments in place
 - **Reasoning:** The remaining review items were documentation/test-stub issues on the same branch, so the least disruptive response is a small follow-up commit on PR 826 rather than a stacked PR.
 
@@ -26,6 +27,7 @@ Addressed current PR #826 review comments: corrected origin.agentrelay.net spell
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Patch current PR 826 review comments in place: Patch current PR 826 review comments in place

@@ -49,7 +49,7 @@ describe('update-checker', () => {
       });
 
       expect(consoleErrorSpy).toHaveBeenCalled();
-      const output = consoleErrorSpy.mock.calls.map(c => c[0]).join('\n');
+      const output = consoleErrorSpy.mock.calls.map((c) => c[0]).join('\n');
       expect(output).toContain('Update available');
       expect(output).toContain('1.0.0');
       expect(output).toContain('2.0.0');
@@ -65,7 +65,7 @@ describe('update-checker', () => {
         latestVersion: '2.0.0',
       });
 
-      const substantiveCalls = consoleErrorSpy.mock.calls.filter(c => c[0] !== '');
+      const substantiveCalls = consoleErrorSpy.mock.calls.filter((c) => c[0] !== '');
       expect(substantiveCalls.length).toBe(0);
     });
 
@@ -78,7 +78,7 @@ describe('update-checker', () => {
         latestVersion: null,
       });
 
-      const substantiveCalls = consoleErrorSpy.mock.calls.filter(c => c[0] !== '');
+      const substantiveCalls = consoleErrorSpy.mock.calls.filter((c) => c[0] !== '');
       expect(substantiveCalls.length).toBe(0);
     });
 
@@ -91,7 +91,7 @@ describe('update-checker', () => {
         latestVersion: '2.0.0',
       });
 
-      const output = consoleErrorSpy.mock.calls.map(c => c[0]).join('\n');
+      const output = consoleErrorSpy.mock.calls.map((c) => c[0]).join('\n');
       expect(output).toContain('╭');
       expect(output).toContain('╰');
       expect(output).toContain('│');
@@ -108,11 +108,11 @@ describe('update-checker', () => {
       });
 
       const boxLines = consoleErrorSpy.mock.calls
-        .map(c => c[0] as string)
-        .filter(line => line.startsWith('│') || line.startsWith('╭') || line.startsWith('╰'));
+        .map((c) => c[0] as string)
+        .filter((line) => line.startsWith('│') || line.startsWith('╭') || line.startsWith('╰'));
 
       // All box lines should have the same length
-      const lengths = boxLines.map(l => l.length);
+      const lengths = boxLines.map((l) => l.length);
       expect(new Set(lengths).size).toBe(1);
     });
 
@@ -125,16 +125,16 @@ describe('update-checker', () => {
         latestVersion: '10.20.301',
       });
 
-      const output = consoleErrorSpy.mock.calls.map(c => c[0]).join('\n');
+      const output = consoleErrorSpy.mock.calls.map((c) => c[0]).join('\n');
       expect(output).toContain('10.20.300');
       expect(output).toContain('10.20.301');
 
       const boxLines = consoleErrorSpy.mock.calls
-        .map(c => c[0] as string)
-        .filter(line => line.startsWith('│') || line.startsWith('╭') || line.startsWith('╰'));
+        .map((c) => c[0] as string)
+        .filter((line) => line.startsWith('│') || line.startsWith('╭') || line.startsWith('╰'));
 
       // All box lines should have the same length
-      const lengths = boxLines.map(l => l.length);
+      const lengths = boxLines.map((l) => l.length);
       expect(new Set(lengths).size).toBe(1);
     });
 
@@ -149,8 +149,8 @@ describe('update-checker', () => {
       });
 
       const boxLines = consoleErrorSpy.mock.calls
-        .map(c => c[0] as string)
-        .filter(line => line.startsWith('╭'));
+        .map((c) => c[0] as string)
+        .filter((line) => line.startsWith('╭'));
 
       // Box should be wider than minimum (install line is 31 chars + padding)
       expect(boxLines[0].length).toBeGreaterThan(35);

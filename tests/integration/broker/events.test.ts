@@ -12,22 +12,18 @@
  *   RELAY_API_KEY — Relaycast workspace key
  *   AGENT_RELAY_BIN (optional) — path to agent-relay binary
  */
-import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 
-import {
-  BrokerHarness,
-  checkPrerequisites,
-  uniqueSuffix,
-} from "./utils/broker-harness.js";
+import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import {
   assertEventOrder,
   assertEventSequence,
   assertAgentSpawnedEvent,
   assertAgentReleasedEvent,
   assertNoAclDenied,
-} from "./utils/assert-helpers.js";
-import type { BrokerEvent } from "@agent-relay/sdk";
+} from './utils/assert-helpers.js';
+import type { BrokerEvent } from '@agent-relay/sdk';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -40,7 +36,7 @@ function skipIfMissing(t: TestContext): boolean {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test("broker: event subscription receives all event kinds", async (t) => {
+test('broker: event subscription receives all event kinds', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -53,26 +49,24 @@ test("broker: event subscription receives all event kinds", async (t) => {
 
   try {
     await harness.spawnAgent(name);
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === name)
+      .promise;
 
     await harness.releaseAgent(name);
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_released', 5_000, (e) => e.kind === 'agent_released' && e.name === name)
+      .promise;
 
     // The subscription should have received at least spawn + release
     const kinds = collected.map((e) => e.kind);
-    assert.ok(kinds.includes("agent_spawned"), "subscription should see agent_spawned");
-    assert.ok(kinds.includes("agent_released"), "subscription should see agent_released");
+    assert.ok(kinds.includes('agent_spawned'), 'subscription should see agent_spawned');
+    assert.ok(kinds.includes('agent_released'), 'subscription should see agent_released');
   } finally {
     unsub();
     await harness.stop();
   }
 });
 
-test("broker: collectEvents captures events over a duration", async (t) => {
+test('broker: collectEvents captures events over a duration', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -90,12 +84,12 @@ test("broker: collectEvents captures events over a duration", async (t) => {
     await harness.releaseAgent(name);
 
     const events = await collectPromise;
-    assert.ok(events.length > 0, "should have collected at least one event");
+    assert.ok(events.length > 0, 'should have collected at least one event');
 
     const kinds = events.map((e) => e.kind);
     assert.ok(
-      kinds.includes("agent_spawned") || kinds.includes("agent_released"),
-      `collected events should include lifecycle events, got: ${JSON.stringify(kinds)}`,
+      kinds.includes('agent_spawned') || kinds.includes('agent_released'),
+      `collected events should include lifecycle events, got: ${JSON.stringify(kinds)}`
     );
   } finally {
     await harness.stop();
@@ -112,18 +106,20 @@ test("broker: waitForEvent times out when event doesn't arrive", async (t) => {
   try {
     // Wait for an event that will never come, with short timeout
     await assert.rejects(
-      harness.waitForEvent("agent_spawned", 500, (e) =>
-        e.kind === "agent_spawned" && (e as any).name === "never-exists",
+      harness.waitForEvent(
+        'agent_spawned',
+        500,
+        (e) => e.kind === 'agent_spawned' && (e as any).name === 'never-exists'
       ).promise,
-      (err: Error) => err.message.includes("Timed out"),
-      "should reject with timeout error",
+      (err: Error) => err.message.includes('Timed out'),
+      'should reject with timeout error'
     );
   } finally {
     await harness.stop();
   }
 });
 
-test("broker: waitForEvent resolves from buffer if event already arrived", async (t) => {
+test('broker: waitForEvent resolves from buffer if event already arrived', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -138,19 +134,23 @@ test("broker: waitForEvent resolves from buffer if event already arrived", async
     await new Promise((r) => setTimeout(r, 500));
 
     // Now wait for it — should resolve immediately from buffer
-    const event = await harness.waitForEvent("agent_spawned", 1_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
+    const event = await harness.waitForEvent(
+      'agent_spawned',
+      1_000,
+      (e) => e.kind === 'agent_spawned' && e.name === name
     ).promise;
 
-    assert.ok(event, "should resolve from buffer");
-    assert.equal(event.kind, "agent_spawned");
+    assert.ok(event, 'should resolve from buffer');
+    assert.equal(event.kind, 'agent_spawned');
   } finally {
-    try { await harness.releaseAgent(name); } catch {}
+    try {
+      await harness.releaseAgent(name);
+    } catch {}
     await harness.stop();
   }
 });
 
-test("broker: clearEvents resets the event buffer", async (t) => {
+test('broker: clearEvents resets the event buffer', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -162,28 +162,32 @@ test("broker: clearEvents resets the event buffer", async (t) => {
     await harness.spawnAgent(`clear-a-${suffix}`);
     await new Promise((r) => setTimeout(r, 300));
 
-    assert.ok(harness.getEvents().length > 0, "should have events before clear");
+    assert.ok(harness.getEvents().length > 0, 'should have events before clear');
 
     harness.clearEvents();
-    assert.equal(harness.getEvents().length, 0, "should have no events after clear");
+    assert.equal(harness.getEvents().length, 0, 'should have no events after clear');
 
     // Generate more events
     await harness.spawnAgent(`clear-b-${suffix}`);
     await new Promise((r) => setTimeout(r, 300));
 
     const events = harness.getEvents();
-    assert.ok(events.length > 0, "should have new events after clear");
+    assert.ok(events.length > 0, 'should have new events after clear');
 
     // Only the second spawn should be present
     assertAgentSpawnedEvent(events, `clear-b-${suffix}`);
   } finally {
-    try { await harness.releaseAgent(`clear-a-${suffix}`); } catch {}
-    try { await harness.releaseAgent(`clear-b-${suffix}`); } catch {}
+    try {
+      await harness.releaseAgent(`clear-a-${suffix}`);
+    } catch {}
+    try {
+      await harness.releaseAgent(`clear-b-${suffix}`);
+    } catch {}
     await harness.stop();
   }
 });
 
-test("broker: getEventsByKind filters correctly", async (t) => {
+test('broker: getEventsByKind filters correctly', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -194,32 +198,30 @@ test("broker: getEventsByKind filters correctly", async (t) => {
   try {
     harness.clearEvents();
     await harness.spawnAgent(name);
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === name)
+      .promise;
 
     await harness.releaseAgent(name);
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === name,
-    ).promise;
+    await harness.waitForEvent('agent_released', 5_000, (e) => e.kind === 'agent_released' && e.name === name)
+      .promise;
 
-    const spawned = harness.getEventsByKind("agent_spawned");
-    const released = harness.getEventsByKind("agent_released");
-    const nonexistent = harness.getEventsByKind("nonexistent_kind");
+    const spawned = harness.getEventsByKind('agent_spawned');
+    const released = harness.getEventsByKind('agent_released');
+    const nonexistent = harness.getEventsByKind('nonexistent_kind');
 
-    assert.ok(spawned.length > 0, "should have spawned events");
-    assert.ok(released.length > 0, "should have released events");
-    assert.equal(nonexistent.length, 0, "should have no nonexistent events");
+    assert.ok(spawned.length > 0, 'should have spawned events');
+    assert.ok(released.length > 0, 'should have released events');
+    assert.equal(nonexistent.length, 0, 'should have no nonexistent events');
 
     // All filtered events should be the right kind
-    for (const e of spawned) assert.equal(e.kind, "agent_spawned");
-    for (const e of released) assert.equal(e.kind, "agent_released");
+    for (const e of spawned) assert.equal(e.kind, 'agent_spawned');
+    for (const e of released) assert.equal(e.kind, 'agent_released');
   } finally {
     await harness.stop();
   }
 });
 
-test("broker: full lifecycle event sequence", async (t) => {
+test('broker: full lifecycle event sequence', async (t) => {
   if (skipIfMissing(t)) return;
 
   const harness = new BrokerHarness();
@@ -233,33 +235,35 @@ test("broker: full lifecycle event sequence", async (t) => {
 
     // Spawn A, then B
     await harness.spawnAgent(nameA);
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === nameA,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === nameA)
+      .promise;
 
     await harness.spawnAgent(nameB);
-    await harness.waitForEvent("agent_spawned", 5_000, (e) =>
-      e.kind === "agent_spawned" && e.name === nameB,
-    ).promise;
+    await harness.waitForEvent('agent_spawned', 5_000, (e) => e.kind === 'agent_spawned' && e.name === nameB)
+      .promise;
 
     // Release A, then B
     await harness.releaseAgent(nameA);
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === nameA,
+    await harness.waitForEvent(
+      'agent_released',
+      5_000,
+      (e) => e.kind === 'agent_released' && e.name === nameA
     ).promise;
 
     await harness.releaseAgent(nameB);
-    await harness.waitForEvent("agent_released", 5_000, (e) =>
-      e.kind === "agent_released" && e.name === nameB,
+    await harness.waitForEvent(
+      'agent_released',
+      5_000,
+      (e) => e.kind === 'agent_released' && e.name === nameB
     ).promise;
 
     // The full event order should be: spawn_A, spawn_B, release_A, release_B
     const events = harness.getEvents();
     assertEventOrder(events, [
-      "agent_spawned",  // A
-      "agent_spawned",  // B
-      "agent_released", // A
-      "agent_released", // B
+      'agent_spawned', // A
+      'agent_spawned', // B
+      'agent_released', // A
+      'agent_released', // B
     ]);
 
     assertNoAclDenied(events);
