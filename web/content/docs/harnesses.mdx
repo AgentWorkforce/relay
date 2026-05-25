@@ -15,6 +15,7 @@ Harnesses are used by real `agent-relay` spawning. They are not limited to workf
 
 Use a built-in harness by naming it in a spawn call:
 
+<CodeGroup>
 ```typescript TypeScript file="spawn-codex.ts"
 import { AgentRelay } from '@agent-relay/sdk';
 
@@ -28,13 +29,49 @@ const worker = await relay.spawn('CodexWorker', 'codex', 'Fix the failing auth t
 await worker.waitForReady();
 ```
 
+```python Python file="spawn_codex.py"
+from agent_relay import AgentRelay, SpawnOptions
+
+relay = AgentRelay(channels=["dev"])
+
+worker = await relay.spawn(
+    "CodexWorker",
+    "codex",
+    "Fix the failing auth tests.",
+    SpawnOptions(
+        model="gpt-5-codex",
+        channels=["dev"],
+    ),
+)
+
+await worker.wait_for_ready()
+```
+</CodeGroup>
+
 The built-in `codex` harness is equivalent to this adapter config:
 
+<CodeGroup>
 ```typescript TypeScript
 import { BUILTIN_HARNESS_DEFINITIONS } from '@agent-relay/sdk';
 
 console.log(BUILTIN_HARNESS_DEFINITIONS.codex);
 ```
+
+```python Python
+from agent_relay import HarnessDefinition
+
+codex_harness = HarnessDefinition(
+    adapter="codex",
+    binary="codex",
+    non_interactive_args=["exec", "{bypass}", "{task}", "{args}"],
+    bypass_flag="--dangerously-bypass-approvals-and-sandbox",
+    bypass_aliases=["--full-auto"],
+    search_paths=["~/.local/bin"],
+)
+
+print(codex_harness.to_dict())
+```
+</CodeGroup>
 
 ```json
 {
@@ -51,8 +88,9 @@ console.log(BUILTIN_HARNESS_DEFINITIONS.codex);
 
 ## Define a custom harness
 
-Register harnesses on `AgentRelay` when several spawns should share the same adapter:
+Register harnesses on `AgentRelay` when several spawns should share the same adapter. Python accepts the same serializable harness definition; use snake_case fields on the dataclass and the SDK serializes them to the broker format.
 
+<CodeGroup>
 ```typescript TypeScript file="spawn-qwen.ts"
 import { AgentRelay, type HarnessDefinition } from '@agent-relay/sdk';
 
@@ -80,44 +118,6 @@ const reviewer = await relay.spawn('QwenReviewer', 'qwen', 'Review the latest di
 
 await reviewer.waitForReady();
 ```
-
-You can also attach a harness to one spawn:
-
-```typescript TypeScript file="spawn-local-agent.ts"
-const agent = await relay.spawn('LocalAgent', 'local-agent', 'Inspect the repo.', {
-  model: 'local-large',
-  harness: {
-    binary: 'local-agent',
-    interactiveArgs: ['serve', '{modelArgs}', '{mcpArgs}', '{args}'],
-    modelArgs: ['--model-id', '{model}'],
-    searchPaths: ['~/bin', '~/.local/bin'],
-  },
-});
-```
-
-## Extend a built-in lifecycle
-
-If your wrapper is compatible with a built-in harness, set `adapter` to keep that lifecycle behavior while changing the executable or flags:
-
-```typescript TypeScript file="spawn-company-codex.ts"
-const relay = new AgentRelay({
-  harnesses: {
-    'company-codex': {
-      adapter: 'codex',
-      binary: 'company-codex',
-      searchPaths: ['~/company/bin'],
-    },
-  },
-});
-
-await relay.spawn('CompanyCodex', 'company-codex', 'Update the billing tests.');
-```
-
-This pattern is useful for internal wrappers, renamed binaries, or local installs that need different search paths while still behaving like a known coding harness.
-
-## Python spawn
-
-Python accepts the same serializable harness definition. Use snake_case fields on the dataclass; the SDK serializes them to the broker format.
 
 ```python Python file="spawn_qwen.py"
 from agent_relay import AgentRelay, HarnessDefinition, SpawnOptions
@@ -149,10 +149,67 @@ reviewer = await relay.spawn(
 
 await reviewer.wait_for_ready()
 ```
+</CodeGroup>
 
-Use `adapter` when a Python-defined harness should use a built-in lifecycle:
+You can also attach a harness to one spawn:
 
-```python Python
+<CodeGroup>
+```typescript TypeScript file="spawn-local-agent.ts"
+const agent = await relay.spawn('LocalAgent', 'local-agent', 'Inspect the repo.', {
+  model: 'local-large',
+  harness: {
+    binary: 'local-agent',
+    interactiveArgs: ['serve', '{modelArgs}', '{mcpArgs}', '{args}'],
+    modelArgs: ['--model-id', '{model}'],
+    searchPaths: ['~/bin', '~/.local/bin'],
+  },
+});
+```
+
+```python Python file="spawn_local_agent.py"
+from agent_relay import HarnessDefinition, SpawnOptions
+
+agent = await relay.spawn(
+    "LocalAgent",
+    "local-agent",
+    "Inspect the repo.",
+    SpawnOptions(
+        model="local-large",
+        harness=HarnessDefinition(
+            binary="local-agent",
+            interactive_args=["serve", "{modelArgs}", "{mcpArgs}", "{args}"],
+            model_args=["--model-id", "{model}"],
+            search_paths=["~/bin", "~/.local/bin"],
+        ),
+    ),
+)
+```
+</CodeGroup>
+
+## Extend a built-in lifecycle
+
+If your wrapper is compatible with a built-in harness, set `adapter` to keep that lifecycle behavior while changing the executable or flags:
+
+<CodeGroup>
+```typescript TypeScript file="spawn-company-codex.ts"
+const relay = new AgentRelay({
+  harnesses: {
+    'company-codex': {
+      adapter: 'codex',
+      binary: 'company-codex',
+      searchPaths: ['~/company/bin'],
+    },
+  },
+});
+
+await relay.spawn('CompanyCodex', 'company-codex', 'Update the billing tests.');
+```
+
+```python Python file="spawn_company_codex.py"
+from agent_relay import AgentRelay, HarnessDefinition
+
+relay = AgentRelay()
+
 relay.register_harness(
     "company-codex",
     HarnessDefinition(
@@ -162,6 +219,9 @@ relay.register_harness(
     ),
 )
 ```
+</CodeGroup>
+
+This pattern is useful for internal wrappers, renamed binaries, or local installs that need different search paths while still behaving like a known coding harness.
 
 ## Workflow YAML
 

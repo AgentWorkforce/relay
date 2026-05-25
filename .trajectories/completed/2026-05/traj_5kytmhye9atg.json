@@ -1,0 +1,25 @@
+{
+  "id": "traj_5kytmhye9atg",
+  "version": 1,
+  "task": {
+    "title": "Fix harness docs language examples"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T13:19:34.556Z",
+  "completedAt": "2026-05-25T13:19:41.038Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Fixed the harness docs page so TypeScript/Python examples switch with the global docs language selector and added a Harnesses sidebar icon.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "<repo-root>",
+  "tags": [],
+  "_trace": {
+    "startRef": "bffae82614f439546dab4d4be4e195b59e2575c6",
+    "endRef": "bffae82614f439546dab4d4be4e195b59e2575c6"
+  }
+}
