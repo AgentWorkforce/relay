@@ -3165,9 +3165,10 @@ export class WorkflowRunner {
 
     // Initialize trajectory recording
     this.trajectory = new WorkflowTrajectory(config.trajectories, runId, this.cwd);
-    const harnessSnapshot = this.installConfigHarnesses(config);
+    let harnessSnapshot: HarnessRegistrySnapshot | undefined;
 
     try {
+      harnessSnapshot = this.installConfigHarnesses(config);
       await this.updateRunStatus(runId, 'running');
       if (!isResume) {
         this.emit({ type: 'run:started', runId });
@@ -3547,7 +3548,9 @@ export class WorkflowRunner {
         });
       }
     } finally {
-      this.restoreConfigHarnesses(harnessSnapshot);
+      if (harnessSnapshot) {
+        this.restoreConfigHarnesses(harnessSnapshot);
+      }
       this.lastFailedStepOutput.clear();
       this.lastCustomVerificationFailure.clear();
       for (const stream of this.ptyLogStreams.values()) stream.end();
