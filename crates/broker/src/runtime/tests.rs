@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::protocol::{
-    AgentSpec, HarnessReleasePolicy, HeadlessHarnessDriver, HeadlessHarnessPlan,
-    MessageInjectionMode, RelayDelivery, ResolvedHarnessPlan,
+    AgentSpec, HarnessReleasePolicy, HeadlessHarnessConfig, HeadlessHarnessDriver,
+    MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
 };
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -72,7 +72,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 provider: None,
                 cli: Some("cat".to_string()),
                 session_id: None,
-                harness_plan: None,
+                harness_config: None,
                 model: None,
                 cwd: None,
                 team: None,
@@ -1977,8 +1977,8 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
 }
 
 #[test]
-fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_plan() {
-    let harness_plan = ResolvedHarnessPlan::Headless(HeadlessHarnessPlan {
+fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_config() {
+    let harness_config = ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
         driver: HeadlessHarnessDriver::AppServer,
         protocol: "opencode".to_string(),
         endpoint: "http://127.0.0.1:4096".to_string(),
@@ -2001,7 +2001,7 @@ fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_plan() {
         None,
         None,
         None,
-        Some(harness_plan),
+        Some(harness_config),
     )
     .expect("headless app-server harness spec should build");
 
@@ -2010,13 +2010,13 @@ fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_plan() {
     assert_eq!(spec.cli.as_deref(), Some("opencode-server"));
     assert_eq!(spec.session_id.as_deref(), Some("ses_123"));
     assert!(matches!(
-        spec.harness_plan,
-        Some(ResolvedHarnessPlan::Headless(_))
+        spec.harness_config,
+        Some(ResolvedHarnessConfig::Headless(_))
     ));
 }
 
 #[test]
-fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_plan() {
+fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_config() {
     let error = build_http_api_spawn_spec(
         "worker-a".to_string(),
         "opencode-server".to_string(),
@@ -2031,7 +2031,7 @@ fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_plan() 
         None,
         None,
     )
-    .expect_err("custom headless provider without harness plan should fail");
+    .expect_err("custom headless provider without harness config should fail");
 
     assert!(
         error

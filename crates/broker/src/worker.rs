@@ -9,8 +9,8 @@ use crate::{
     metrics::MetricsCollector,
     protocol::{
         AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
-        HeadlessHarnessDriver, HeadlessHarnessPlan, ProtocolEnvelope, RelayDelivery,
-        ResolvedHarnessPlan, PROTOCOL_VERSION,
+        HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
+        ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
@@ -248,24 +248,24 @@ impl WorkerRegistry {
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
 
-        match spec.harness_plan.clone() {
-            Some(ResolvedHarnessPlan::Pty(plan)) => {
+        match spec.harness_config.clone() {
+            Some(ResolvedHarnessConfig::Pty(config)) => {
                 spec.runtime = AgentRuntime::Pty;
                 if spec.session_id.is_none() {
-                    spec.session_id = plan.session_id.clone();
+                    spec.session_id = config.session_id.clone();
                 }
                 if spec.cwd.is_none() {
-                    spec.cwd = plan.cwd.clone();
+                    spec.cwd = config.cwd.clone();
                 }
-                if let Some(env) = plan.env {
+                if let Some(env) = config.env {
                     harness_env.extend(env);
                 }
 
-                let (resolved_cli, inline_cli_args) = parse_cli_command(&plan.command)
-                    .with_context(|| format!("invalid harness command '{}'", plan.command))?;
+                let (resolved_cli, inline_cli_args) = parse_cli_command(&config.command)
+                    .with_context(|| format!("invalid harness command '{}'", config.command))?;
                 let normalized_cli = normalize_cli_name(&resolved_cli);
                 let mut effective_args = inline_cli_args;
-                effective_args.extend(plan.args.clone());
+                effective_args.extend(config.args.clone());
 
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
@@ -324,33 +324,33 @@ impl WorkerRegistry {
                     }
                 }
             }
-            Some(ResolvedHarnessPlan::Headless(plan)) => {
-                validate_app_server_plan(&plan)?;
+            Some(ResolvedHarnessConfig::Headless(config)) => {
+                validate_app_server_config(&config)?;
                 spec.runtime = AgentRuntime::Headless;
-                spec.session_id = Some(plan.session_id.clone());
-                initial_harness_pid = plan.host.as_ref().and_then(|host| host.pid);
-                match &plan.driver {
+                spec.session_id = Some(config.session_id.clone());
+                initial_harness_pid = config.host.as_ref().and_then(|host| host.pid);
+                match &config.driver {
                     HeadlessHarnessDriver::AppServer => {}
                 }
 
                 command.arg("app-server");
                 command.arg("--agent-name").arg(&spec.name);
-                command.arg("--protocol").arg(&plan.protocol);
-                command.arg("--endpoint").arg(&plan.endpoint);
-                command.arg("--session-id").arg(&plan.session_id);
+                command.arg("--protocol").arg(&config.protocol);
+                command.arg("--endpoint").arg(&config.endpoint);
+                command.arg("--session-id").arg(&config.session_id);
                 if let Some(pid) = initial_harness_pid {
                     command.arg("--host-pid").arg(pid.to_string());
                 }
                 command
                     .arg("--release")
-                    .arg(release_policy_arg(plan.release.as_ref()));
+                    .arg(release_policy_arg(config.release.as_ref()));
 
                 suppress_worker_env.extend(APP_SERVER_AUTH_ENV_KEYS);
                 for key in APP_SERVER_AUTH_ENV_KEYS {
                     command.env_remove(key);
                 }
 
-                if let Some(auth) = plan.auth {
+                if let Some(auth) = config.auth {
                     harness_env.push((
                         "AGENT_RELAY_APP_SERVER_AUTH_TYPE".to_string(),
                         app_server_auth_type_arg(&auth.auth_type).to_string(),
@@ -868,9 +868,9 @@ fn app_server_auth_type_arg(auth_type: &AppServerAuthType) -> &'static str {
 }
 
 fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
-    match spec.harness_plan.as_ref() {
-        Some(ResolvedHarnessPlan::Headless(plan))
-            if matches!(&plan.driver, HeadlessHarnessDriver::AppServer) =>
+    match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Headless(config))
+            if matches!(&config.driver, HeadlessHarnessDriver::AppServer) =>
         {
             APP_SERVER_RELEASE_GRACE
         }
@@ -878,25 +878,25 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
     }
 }
 
-fn validate_app_server_plan(plan: &HeadlessHarnessPlan) -> Result<()> {
-    if !matches!(&plan.driver, HeadlessHarnessDriver::AppServer) {
+fn validate_app_server_config(config: &HeadlessHarnessConfig) -> Result<()> {
+    if !matches!(&config.driver, HeadlessHarnessDriver::AppServer) {
         anyhow::bail!("unsupported headless harness driver");
     }
 
-    let protocol = plan.protocol.trim().to_ascii_lowercase();
+    let protocol = config.protocol.trim().to_ascii_lowercase();
     if protocol != "opencode" {
         anyhow::bail!(
             "unsupported app_server protocol '{}' (supported: opencode)",
-            plan.protocol
+            config.protocol
         );
     }
 
-    let endpoint = plan.endpoint.trim();
+    let endpoint = config.endpoint.trim();
     if endpoint.is_empty() {
         anyhow::bail!("app_server endpoint is required");
     }
     let parsed_endpoint = reqwest::Url::parse(endpoint)
-        .with_context(|| format!("invalid app_server endpoint '{}'", plan.endpoint))?;
+        .with_context(|| format!("invalid app_server endpoint '{}'", config.endpoint))?;
     match parsed_endpoint.scheme() {
         "http" | "https" => {}
         scheme => anyhow::bail!(
@@ -905,11 +905,11 @@ fn validate_app_server_plan(plan: &HeadlessHarnessPlan) -> Result<()> {
         ),
     }
 
-    if plan.session_id.trim().is_empty() {
+    if config.session_id.trim().is_empty() {
         anyhow::bail!("app_server sessionId is required");
     }
 
-    if plan
+    if config
         .host
         .as_ref()
         .and_then(|host| host.ownership.as_ref())
@@ -918,7 +918,7 @@ fn validate_app_server_plan(plan: &HeadlessHarnessPlan) -> Result<()> {
         anyhow::bail!("broker-owned app_server hosts are not supported yet");
     }
 
-    if let Some(auth) = plan.auth.as_ref() {
+    if let Some(auth) = config.auth.as_ref() {
         match auth.auth_type {
             AppServerAuthType::Bearer => {
                 if auth
@@ -1310,8 +1310,8 @@ mod tests {
         assert_eq!(reg.env_value("MISSING"), None);
     }
 
-    fn make_app_server_plan() -> HeadlessHarnessPlan {
-        HeadlessHarnessPlan {
+    fn make_app_server_config() -> HeadlessHarnessConfig {
+        HeadlessHarnessConfig {
             driver: HeadlessHarnessDriver::AppServer,
             protocol: "opencode".to_string(),
             endpoint: "http://127.0.0.1:4096".to_string(),
@@ -1327,45 +1327,45 @@ mod tests {
     }
 
     #[test]
-    fn app_server_plan_validation_accepts_attached_opencode_plan() {
-        let plan = make_app_server_plan();
-        validate_app_server_plan(&plan).expect("valid app-server plan");
+    fn app_server_config_validation_accepts_attached_opencode_config() {
+        let config = make_app_server_config();
+        validate_app_server_config(&config).expect("valid app-server config");
     }
 
     #[test]
-    fn app_server_plan_validation_rejects_missing_bearer_token() {
-        let mut plan = make_app_server_plan();
-        plan.auth = Some(AppServerHarnessAuth {
+    fn app_server_config_validation_rejects_missing_bearer_token() {
+        let mut config = make_app_server_config();
+        config.auth = Some(AppServerHarnessAuth {
             auth_type: AppServerAuthType::Bearer,
             token: None,
             username: None,
             password: None,
         });
 
-        let error = validate_app_server_plan(&plan).expect_err("missing token rejected");
+        let error = validate_app_server_config(&config).expect_err("missing token rejected");
         assert!(error.to_string().contains("bearer auth requires token"));
     }
 
     #[test]
-    fn app_server_plan_validation_rejects_broker_owned_host() {
-        let mut plan = make_app_server_plan();
-        plan.host = Some(AppServerHarnessHost {
+    fn app_server_config_validation_rejects_broker_owned_host() {
+        let mut config = make_app_server_config();
+        config.host = Some(AppServerHarnessHost {
             ownership: Some(AppServerHostOwnership::BrokerOwned),
             pid: None,
         });
 
-        let error = validate_app_server_plan(&plan).expect_err("broker-owned host rejected");
+        let error = validate_app_server_config(&config).expect_err("broker-owned host rejected");
         assert!(error
             .to_string()
             .contains("broker-owned app_server hosts are not supported yet"));
     }
 
     #[test]
-    fn app_server_plan_validation_rejects_unsupported_protocol() {
-        let mut plan = make_app_server_plan();
-        plan.protocol = "custom".to_string();
+    fn app_server_config_validation_rejects_unsupported_protocol() {
+        let mut config = make_app_server_config();
+        config.protocol = "custom".to_string();
 
-        let error = validate_app_server_plan(&plan).expect_err("unsupported protocol rejected");
+        let error = validate_app_server_config(&config).expect_err("unsupported protocol rejected");
         assert!(error
             .to_string()
             .contains("unsupported app_server protocol"));
@@ -1379,7 +1379,7 @@ mod tests {
             provider: None,
             cli: None,
             session_id: Some("ses_123".to_string()),
-            harness_plan: Some(ResolvedHarnessPlan::Headless(make_app_server_plan())),
+            harness_config: Some(ResolvedHarnessConfig::Headless(make_app_server_config())),
             model: None,
             cwd: None,
             team: None,

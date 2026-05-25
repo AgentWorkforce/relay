@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
-- `@agent-relay/sdk` harness definitions resolve named agent runtimes into broker-executable `pty` or `headless` plans, so custom CLIs can be configured without Rust changes.
-- `agent-relay-broker` accepts resolved harness plans on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
+- `@agent-relay/sdk` harness definitions resolve named agent runtimes into broker-executable `pty` or `headless` configs, so custom CLIs can be configured without Rust changes.
+- `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
 
 ### Changed
 
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-broker` harness plans now report harness PIDs instead of wrapper worker PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.
+- `agent-relay-broker` harness configs now report harness PIDs instead of wrapper worker PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
 
 ### Security

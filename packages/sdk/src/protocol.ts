@@ -18,7 +18,7 @@ export interface AgentSpec {
   provider?: HeadlessProvider;
   cli?: string;
   session_id?: string;
-  harness_plan?: import('./harness.js').ResolvedHarnessPlan;
+  harness_config?: import('./harness.js').ResolvedHarnessConfig;
   args?: string[];
   channels?: string[];
   model?: string;

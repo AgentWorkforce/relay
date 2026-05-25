@@ -28,7 +28,7 @@ use crate::{
     dedup::DedupCache,
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, HeadlessProvider as ProtocolHeadlessProvider,
-        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan,
+        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig,
         PROTOCOL_VERSION,
     },
     relaycast::{

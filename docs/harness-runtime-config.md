@@ -1,11 +1,11 @@
-# Harness Runtime Plan
+# Harness Runtime Config
 
 ## Goal
 
 Harnesses should be user-extensible without requiring Rust changes for normal
 agent CLIs. The Rust broker should own durable runtime execution, lifecycle
 tracking, routing, delivery queues, retries, and observability. SDKs should be
-able to define named harnesses that resolve to broker-executable JSON plans.
+able to define named harnesses that resolve to broker-executable JSON configs.
 
 ## Core Model
 
@@ -21,14 +21,14 @@ The first headless drivers are:
 - `app_server`: a session-backed HTTP driver for attached agent servers.
 
 Named harnesses such as `codex`, `claude`, or `opencode-server` resolve to one of
-those executable plans.
+those executable configs.
 
-## Plan Shapes
+## Config Shapes
 
-PTY plans are process and terminal backed:
+PTY configs are process and terminal backed:
 
 ```ts
-type PtyHarnessPlan = {
+type PtyHarnessConfig = {
   runtime: 'pty';
   command: string;
   args: string[];
@@ -43,11 +43,11 @@ type PtyHarnessPlan = {
 };
 ```
 
-Headless app-server plans are session backed. They are still `headless` workers;
+Headless app-server configs are session backed. They are still `headless` workers;
 `driver: 'app_server'` explains how the broker talks to the worker:
 
 ```ts
-type HeadlessAppServerHarnessPlan = {
+type HeadlessAppServerHarnessConfig = {
   runtime: 'headless';
   driver: 'app_server';
   protocol: 'opencode' | string;
@@ -68,14 +68,14 @@ type HeadlessAppServerHarnessPlan = {
 };
 ```
 
-The broker runs the returned plan. It does not need to understand arbitrary
+The broker runs the returned config. It does not need to understand arbitrary
 TypeScript or Python logic.
 
-For now, `app_server` plans are attach-only. `host.ownership: 'broker-owned'`
+For now, `app_server` configs are attach-only. `host.ownership: 'broker-owned'`
 is reserved and rejected until the broker owns app-server lifecycle supervision.
 When `host.pid` is provided, the broker reports that as the harness PID.
 
-Plan `env` and `auth` values are visible to the broker and may be included in
+Config `env` and `auth` values are visible to the broker and may be included in
 runtime state. SDK resolvers should return explicit allowlists and avoid copying
 the whole process environment.
 
@@ -102,11 +102,11 @@ const harnesses = {
 ```
 
 Custom PTY harnesses own their CLI flags. Broker built-in permission bypass
-defaults are not injected into caller-provided harness plans.
+defaults are not injected into caller-provided harness configs.
 
 Dynamic harness resolvers are SDK functions and are attached-only. They can run
 pre-spawn logic, such as creating a provider session, then return a concrete
-plan:
+config:
 
 ```ts
 const harnesses = {
@@ -143,7 +143,7 @@ Attached brokers are owned by the SDK process. Dynamic resolvers and in-process
 decision hooks are allowed because the broker exits if the SDK control
 connection exits.
 
-Detached brokers survive SDK callers. They only accept static harness plans,
+Detached brokers survive SDK callers. They only accept static harness configs,
 built-in Rust adapters, and durable extension hosts.
 
 ## Broker Responsibilities
@@ -162,7 +162,7 @@ The broker does not own custom user logic unless that logic is built into Rust.
 
 ## PTY Runtime
 
-The PTY executor consumes a concrete PTY plan. It handles process spawn,
+The PTY executor consumes a concrete PTY config. It handles process spawn,
 terminal streaming, raw input, resize, snapshot, release, and PTY message
 injection.
 
@@ -209,10 +209,10 @@ durable extension host for decision-making.
 
 ## Implementation Phases
 
-1. Add shared plan schema and SDK types.
-2. Add static SDK harness resolution to PTY plans.
-3. Teach the broker to accept and execute resolved PTY plans.
-4. Add a headless app-server plan path with an OpenCode protocol driver.
+1. Add shared config schema and SDK types.
+2. Add static SDK harness resolution to PTY configs.
+3. Teach the broker to accept and execute resolved PTY configs.
+4. Add a headless app-server config path with an OpenCode protocol driver.
 5. Add capability-aware runtime checks for PTY-only operations.
 6. Add attached broker control RPCs for dynamic resolvers.
 7. Add detached-mode validation for dynamic resolvers and in-process decision hooks.

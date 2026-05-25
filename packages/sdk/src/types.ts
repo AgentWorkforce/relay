@@ -9,7 +9,7 @@ import type {
   MessageInjectionMode,
   RestartPolicy,
 } from './protocol.js';
-import type { ResolvedHarnessPlan } from './harness.js';
+import type { ResolvedHarnessConfig } from './harness.js';
 
 export type JsonSchema = Record<string, unknown> | boolean;
 
@@ -27,7 +27,7 @@ export interface SpawnPtyInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
-  harnessPlan?: ResolvedHarnessPlan;
+  harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
@@ -82,7 +82,7 @@ export interface SpawnProviderInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
-  harnessPlan?: ResolvedHarnessPlan;
+  harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from

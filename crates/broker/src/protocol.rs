@@ -44,7 +44,7 @@ pub struct PtyHarnessDelivery {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PtyHarnessPlan {
+pub struct PtyHarnessConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -114,7 +114,7 @@ pub enum HeadlessHarnessDriver {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HeadlessHarnessPlan {
+pub struct HeadlessHarnessConfig {
     pub driver: HeadlessHarnessDriver,
     pub protocol: String,
     pub endpoint: String,
@@ -131,12 +131,12 @@ pub struct HeadlessHarnessPlan {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "runtime", rename_all = "snake_case")]
-pub enum ResolvedHarnessPlan {
-    Pty(PtyHarnessPlan),
-    Headless(HeadlessHarnessPlan),
+pub enum ResolvedHarnessConfig {
+    Pty(PtyHarnessConfig),
+    Headless(HeadlessHarnessConfig),
 }
 
-impl<'de> Deserialize<'de> for ResolvedHarnessPlan {
+impl<'de> Deserialize<'de> for ResolvedHarnessConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -174,7 +174,7 @@ impl<'de> Deserialize<'de> for ResolvedHarnessPlan {
     }
 }
 
-impl ResolvedHarnessPlan {
+impl ResolvedHarnessConfig {
     pub(crate) fn runtime(&self) -> AgentRuntime {
         match self {
             Self::Pty(_) => AgentRuntime::Pty,
@@ -184,8 +184,8 @@ impl ResolvedHarnessPlan {
 
     pub(crate) fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Pty(plan) => plan.session_id.as_deref(),
-            Self::Headless(plan) => Some(plan.session_id.as_str()),
+            Self::Pty(config) => config.session_id.as_deref(),
+            Self::Headless(config) => Some(config.session_id.as_str()),
         }
     }
 }
@@ -202,10 +202,13 @@ pub struct AgentSpec {
     pub session_id: Option<String>,
     #[serde(
         default,
+        rename = "harnessConfig",
+        alias = "harness_config",
         alias = "harnessPlan",
+        alias = "harness_plan",
         skip_serializing_if = "Option::is_none"
     )]
-    pub harness_plan: Option<ResolvedHarnessPlan>,
+    pub harness_config: Option<ResolvedHarnessConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -551,7 +554,7 @@ mod tests {
     use super::{
         AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessHarnessDriver,
         HeadlessProvider, MessageInjectionMode, ProtocolEnvelope, RelayDelivery,
-        ResolvedHarnessPlan, WorkerToBroker, PROTOCOL_VERSION,
+        ResolvedHarnessConfig, WorkerToBroker, PROTOCOL_VERSION,
     };
 
     #[test]
@@ -732,7 +735,7 @@ mod tests {
         assert_eq!(spec.provider, None);
         assert_eq!(spec.cli, None);
         assert_eq!(spec.session_id, None);
-        assert_eq!(spec.harness_plan, None);
+        assert_eq!(spec.harness_config, None);
         assert_eq!(spec.model, None);
         assert_eq!(spec.cwd, None);
         assert_eq!(spec.team, None);
@@ -755,13 +758,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_spec_accepts_camel_case_harness_plan() {
+    fn agent_spec_accepts_camel_case_harness_config() {
         let raw = r#"{
           "name": "QwenWorker",
           "runtime": "pty",
           "cli": "qwen",
           "sessionId": "native-session",
-          "harnessPlan": {
+          "harnessConfig": {
             "runtime": "pty",
             "command": "qwen",
             "args": ["run", "-m", "qwen3-coder"],
@@ -774,31 +777,52 @@ mod tests {
         let spec: AgentSpec = serde_json::from_str(raw).unwrap();
         assert_eq!(spec.runtime, AgentRuntime::Pty);
         assert_eq!(spec.session_id.as_deref(), Some("native-session"));
-        let Some(ResolvedHarnessPlan::Pty(plan)) = spec.harness_plan else {
-            panic!("expected pty harness plan");
+        let Some(ResolvedHarnessConfig::Pty(config)) = spec.harness_config else {
+            panic!("expected pty harness config");
         };
-        assert_eq!(plan.command, "qwen");
+        assert_eq!(config.command, "qwen");
         assert_eq!(
-            plan.args,
+            config.args,
             vec![
                 "run".to_string(),
                 "-m".to_string(),
                 "qwen3-coder".to_string()
             ]
         );
-        assert_eq!(plan.cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(config.cwd.as_deref(), Some("/tmp/project"));
         assert_eq!(
-            plan.env
+            config
+                .env
                 .as_ref()
                 .and_then(|env| env.get("QWEN_MODE"))
                 .map(String::as_str),
             Some("code")
         );
-        assert_eq!(plan.session_id.as_deref(), Some("native-session"));
+        assert_eq!(config.session_id.as_deref(), Some("native-session"));
     }
 
     #[test]
-    fn headless_app_server_harness_plan_round_trips() {
+    fn agent_spec_accepts_legacy_camel_case_harness_plan() {
+        let raw = r#"{
+          "name": "LegacyHarnessWorker",
+          "runtime": "pty",
+          "cli": "codex",
+          "harnessPlan": {
+            "runtime": "pty",
+            "command": "codex",
+            "args": ["--model", "gpt-5.4"]
+          }
+        }"#;
+
+        let spec: AgentSpec = serde_json::from_str(raw).unwrap();
+        assert!(matches!(
+            spec.harness_config,
+            Some(ResolvedHarnessConfig::Pty(_))
+        ));
+    }
+
+    #[test]
+    fn headless_app_server_harness_config_round_trips() {
         let raw = json!({
             "runtime": "headless",
             "driver": "app_server",
@@ -813,20 +837,20 @@ mod tests {
             "release": "abort"
         });
 
-        let plan: ResolvedHarnessPlan = serde_json::from_value(raw).unwrap();
-        assert_eq!(plan.runtime(), AgentRuntime::Headless);
-        assert_eq!(plan.session_id(), Some("ses_123"));
+        let config: ResolvedHarnessConfig = serde_json::from_value(raw).unwrap();
+        assert_eq!(config.runtime(), AgentRuntime::Headless);
+        assert_eq!(config.session_id(), Some("ses_123"));
 
-        let encoded = serde_json::to_string(&plan).unwrap();
+        let encoded = serde_json::to_string(&config).unwrap();
         assert!(encoded.contains("\"runtime\":\"headless\""));
         assert!(encoded.contains("\"driver\":\"app_server\""));
         assert!(encoded.contains("\"sessionId\":\"ses_123\""));
-        let decoded: ResolvedHarnessPlan = serde_json::from_str(&encoded).unwrap();
+        let decoded: ResolvedHarnessConfig = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.session_id(), Some("ses_123"));
     }
 
     #[test]
-    fn legacy_app_server_harness_plan_deserializes_as_headless() {
+    fn legacy_app_server_harness_config_deserializes_as_headless() {
         let raw = json!({
             "runtime": "app_server",
             "protocol": "opencode",
@@ -834,13 +858,13 @@ mod tests {
             "sessionId": "ses_legacy"
         });
 
-        let plan: ResolvedHarnessPlan = serde_json::from_value(raw).unwrap();
-        assert_eq!(plan.runtime(), AgentRuntime::Headless);
-        assert_eq!(plan.session_id(), Some("ses_legacy"));
-        let ResolvedHarnessPlan::Headless(plan) = plan else {
-            panic!("expected headless harness plan");
+        let config: ResolvedHarnessConfig = serde_json::from_value(raw).unwrap();
+        assert_eq!(config.runtime(), AgentRuntime::Headless);
+        assert_eq!(config.session_id(), Some("ses_legacy"));
+        let ResolvedHarnessConfig::Headless(config) = config else {
+            panic!("expected headless harness config");
         };
-        assert_eq!(plan.driver, HeadlessHarnessDriver::AppServer);
+        assert_eq!(config.driver, HeadlessHarnessDriver::AppServer);
     }
 
     #[test]

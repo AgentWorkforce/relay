@@ -20,7 +20,7 @@ pub(crate) fn build_http_api_spawn_spec(
     shadow_of: Option<String>,
     shadow_mode: Option<String>,
     restart_policy: Option<Value>,
-    harness_plan: Option<ResolvedHarnessPlan>,
+    harness_config: Option<ResolvedHarnessConfig>,
 ) -> Result<AgentSpec> {
     let requested_runtime = match transport
         .as_deref()
@@ -35,7 +35,7 @@ pub(crate) fn build_http_api_spawn_spec(
             anyhow::bail!("unsupported transport '{other}' (expected 'pty' or 'headless')")
         }
     };
-    let harness_runtime = harness_plan.as_ref().map(ResolvedHarnessPlan::runtime);
+    let harness_runtime = harness_config.as_ref().map(ResolvedHarnessConfig::runtime);
     let runtime = match (
         transport
             .as_deref()
@@ -47,7 +47,7 @@ pub(crate) fn build_http_api_spawn_spec(
         (_, Some(harness_runtime)) if harness_runtime == requested_runtime => requested_runtime,
         (_, Some(harness_runtime)) => {
             anyhow::bail!(
-                "harnessPlan runtime '{}' does not match requested transport '{}'",
+                "harnessConfig runtime '{}' does not match requested transport '{}'",
                 runtime_label(&harness_runtime),
                 runtime_label(&requested_runtime)
             )
@@ -61,8 +61,8 @@ pub(crate) fn build_http_api_spawn_spec(
 
     let (provider, cli_command, model) = match runtime {
         AgentRuntime::Pty => (None, Some(cli), model),
-        AgentRuntime::Headless => match harness_plan.as_ref() {
-            Some(ResolvedHarnessPlan::Headless(_)) => (None, Some(cli), model),
+        AgentRuntime::Headless => match harness_config.as_ref() {
+            Some(ResolvedHarnessConfig::Headless(_)) => (None, Some(cli), model),
             _ => {
                 let provider = headless_provider_from_cli(&cli).with_context(|| {
                     format!(
@@ -73,9 +73,9 @@ pub(crate) fn build_http_api_spawn_spec(
             }
         },
     };
-    let session_id = harness_plan
+    let session_id = harness_config
         .as_ref()
-        .and_then(ResolvedHarnessPlan::session_id)
+        .and_then(ResolvedHarnessConfig::session_id)
         .map(ToOwned::to_owned);
 
     Ok(AgentSpec {
@@ -84,7 +84,7 @@ pub(crate) fn build_http_api_spawn_spec(
         provider,
         cli: cli_command,
         session_id,
-        harness_plan,
+        harness_config,
         model,
         cwd,
         team,

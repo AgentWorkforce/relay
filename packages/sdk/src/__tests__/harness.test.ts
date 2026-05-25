@@ -4,11 +4,11 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgentRelayClient } from '../client.js';
-import { harnessLookupKeys, resolveStaticHarnessPlan } from '../harness.js';
+import { harnessLookupKeys, resolveStaticHarnessConfig } from '../harness.js';
 
-describe('harness plans', () => {
-  it('resolves static PTY harnesses to broker-executable plans', () => {
-    const plan = resolveStaticHarnessPlan({
+describe('harness configs', () => {
+  it('resolves static PTY harnesses to broker-executable configs', () => {
+    const config = resolveStaticHarnessConfig({
       name: 'QwenReviewer',
       cli: 'qwen',
       definition: {
@@ -23,7 +23,7 @@ describe('harness plans', () => {
       cwd: '/workspace',
     });
 
-    expect(plan).toEqual({
+    expect(config).toEqual({
       runtime: 'pty',
       command: 'qwen',
       args: ['run', '-m', 'qwen3-coder', '--verbose'],
@@ -33,7 +33,7 @@ describe('harness plans', () => {
   });
 
   it('resolves static headless app-server harnesses without process args', () => {
-    const plan = resolveStaticHarnessPlan({
+    const config = resolveStaticHarnessConfig({
       name: 'OpenCodeServerWorker',
       cli: 'opencode-server',
       definition: {
@@ -46,7 +46,7 @@ describe('harness plans', () => {
       },
     });
 
-    expect(plan).toEqual({
+    expect(config).toEqual({
       runtime: 'headless',
       driver: 'app_server',
       protocol: 'opencode',
@@ -61,7 +61,7 @@ describe('harness plans', () => {
   });
 
   it('expands home directories in direct command paths', () => {
-    const plan = resolveStaticHarnessPlan({
+    const config = resolveStaticHarnessConfig({
       name: 'ClaudeReviewer',
       cli: 'claude',
       definition: {
@@ -70,10 +70,10 @@ describe('harness plans', () => {
       },
     });
 
-    expect(plan.command).toBe(path.join(homedir(), 'bin/claude'));
+    expect(config.command).toBe(path.join(homedir(), 'bin/claude'));
   });
 
-  it('serializes resolved harness plans on spawn requests', async () => {
+  it('serializes resolved harness configs on spawn requests', async () => {
     const captures: unknown[] = [];
     const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       captures.push(JSON.parse(String(init?.body ?? '{}')));
@@ -90,7 +90,7 @@ describe('harness plans', () => {
     const result = await client.spawnPty({
       name: 'QwenReviewer',
       cli: 'qwen',
-      harnessPlan: {
+      harnessConfig: {
         runtime: 'pty',
         command: 'qwen',
         args: ['run'],
@@ -102,7 +102,7 @@ describe('harness plans', () => {
     expect(captures[0]).toMatchObject({
       name: 'QwenReviewer',
       cli: 'qwen',
-      harnessPlan: {
+      harnessConfig: {
         runtime: 'pty',
         command: 'qwen',
         args: ['run'],

@@ -154,7 +154,7 @@ function isHeadlessProvider(value: string): value is HeadlessProvider {
 
 function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
   if (input.transport) return input.transport;
-  if (input.harnessPlan) return input.harnessPlan.runtime;
+  if (input.harnessConfig) return input.harnessConfig.runtime;
   return input.provider === 'opencode' ? 'headless' : 'pty';
 }
 
@@ -177,7 +177,7 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessPlan !== undefined ? { harnessPlan: input.harnessPlan } : {}),
+    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -202,7 +202,7 @@ function buildSpawnProviderBody(
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
-    ...(input.harnessPlan !== undefined ? { harnessPlan: input.harnessPlan } : {}),
+    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -626,7 +626,7 @@ export class AgentRelayClient {
     if (
       transport === 'headless' &&
       !isHeadlessProvider(resolvedInput.provider) &&
-      !resolvedInput.harnessPlan
+      !resolvedInput.harnessConfig
     ) {
       throw new Error(
         `provider '${resolvedInput.provider}' does not support headless transport (supported: claude, opencode)`

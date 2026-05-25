@@ -4,8 +4,8 @@ description: Define custom PTY and headless harness adapters in the SDK.
 ---
 
 A harness adapter is a named SDK definition that turns `relay.spawn(...)` into a
-broker-executable plan. The broker only runs durable plans; SDK code can prepare
-those plans before spawn.
+broker-executable harness config. The broker only runs durable configs; SDK code
+can prepare those configs before spawn.
 
 Relay supports two public runtime categories:
 
@@ -52,7 +52,7 @@ await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.'
 });
 ```
 
-When you provide a PTY harness plan, Relay runs that plan as written. Built-in
+When you provide a PTY harness config, Relay runs that config as written. Built-in
 CLI defaults such as Claude permission bypass flags are not auto-injected.
 
 Supported placeholders:
@@ -136,7 +136,7 @@ Release behavior is controlled by `release`: `abort`, `detach`, or `delete`.
 `host.pid` is reported as the harness PID when the server is local and known.
 
 Static app-server adapters attach to a known session. For per-spawn sessions,
-create the session in a dynamic resolver and return the concrete plan:
+create the session in a dynamic resolver and return the concrete config:
 
 ```typescript file="opencode-dynamic-harness.ts"
 const relay = new AgentRelay({
@@ -159,19 +159,19 @@ const relay = new AgentRelay({
 });
 ```
 
-For now, app-server plans must use `protocol: 'opencode'`, an `http` or `https`
+For now, app-server configs must use `protocol: 'opencode'`, an `http` or `https`
 endpoint, a non-empty `sessionId`, and attached host ownership. `broker-owned`
 app-server hosts are reserved for a later broker-supervised mode.
 
-## One-Off Plans
+## One-Off Configs
 
-You can bypass named registration and pass a plan directly for a single spawn:
+You can bypass named registration and pass a config directly for a single spawn:
 
 ```typescript file="one-off-codex.ts"
 await relay.spawnPty({
   name: 'CodexOneOff',
   cli: 'codex',
-  harnessPlan: {
+  harnessConfig: {
     runtime: 'pty',
     command: 'codex',
     args: ['--model', 'gpt-5.4'],

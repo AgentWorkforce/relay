@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    protocol::{MessageInjectionMode, ResolvedHarnessPlan},
+    protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -50,7 +50,7 @@ pub enum ListenApiRequest {
         idle_threshold_secs: Option<u64>,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
-        harness_plan: Option<ResolvedHarnessPlan>,
+        harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
         agent_result_schema: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -649,19 +649,21 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
-    let harness_plan = match body
-        .get("harness_plan")
+    let harness_config = match body
+        .get("harness_config")
+        .or_else(|| body.get("harnessConfig"))
+        .or_else(|| body.get("harness_plan"))
         .or_else(|| body.get("harnessPlan"))
         .cloned()
     {
-        Some(value) => match serde_json::from_value::<ResolvedHarnessPlan>(value) {
-            Ok(plan) => Some(plan),
+        Some(value) => match serde_json::from_value::<ResolvedHarnessConfig>(value) {
+            Ok(config) => Some(config),
             Err(error) => {
                 return (
                     axum::http::StatusCode::BAD_REQUEST,
                     axum::Json(json!({
                         "success": false,
-                        "error": format!("Invalid harnessPlan: {error}")
+                        "error": format!("Invalid harnessConfig: {error}")
                     })),
                 );
             }
@@ -705,7 +707,7 @@ async fn listen_api_spawn(
             idle_threshold_secs,
             skip_relay_prompt,
             restart_policy,
-            harness_plan,
+            harness_config,
             agent_token,
             agent_result_schema,
             reply: reply_tx,
@@ -2442,7 +2444,7 @@ mod auth_tests {
                     idle_threshold_secs,
                     skip_relay_prompt: _,
                     restart_policy: _,
-                    harness_plan,
+                    harness_config,
                     agent_token: _,
                     agent_result_schema,
                     reply,
@@ -2463,7 +2465,7 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
-                    assert!(harness_plan.is_some());
+                    assert!(harness_config.is_some());
                     assert_eq!(
                         agent_result_schema,
                         Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
@@ -2498,7 +2500,7 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
-                            "harnessPlan": {
+                            "harnessConfig": {
                                 "runtime": "pty",
                                 "command": "codex",
                                 "args": ["--fast"]

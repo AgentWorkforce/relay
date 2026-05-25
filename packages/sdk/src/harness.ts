@@ -13,7 +13,7 @@ export interface PtyHarnessDelivery {
   format?: 'relay-block';
 }
 
-export interface PtyHarnessPlan {
+export interface PtyHarnessConfig {
   runtime: 'pty';
   command: string;
   args: string[];
@@ -41,7 +41,7 @@ export interface AppServerHarnessHost {
   pid?: number;
 }
 
-export interface HeadlessAppServerHarnessPlan {
+export interface HeadlessAppServerHarnessConfig {
   runtime: 'headless';
   driver: HeadlessHarnessDriver;
   protocol: 'opencode' | string;
@@ -53,7 +53,7 @@ export interface HeadlessAppServerHarnessPlan {
   metadata?: Record<string, unknown>;
 }
 
-export type ResolvedHarnessPlan = PtyHarnessPlan | HeadlessAppServerHarnessPlan;
+export type ResolvedHarnessConfig = PtyHarnessConfig | HeadlessAppServerHarnessConfig;
 
 export interface StaticPtyHarnessDefinition {
   runtime: 'pty';
@@ -94,7 +94,7 @@ export interface HarnessResolveContext {
 
 export type AttachedHarnessResolver = (
   context: HarnessResolveContext
-) => ResolvedHarnessPlan | Promise<ResolvedHarnessPlan>;
+) => ResolvedHarnessConfig | Promise<ResolvedHarnessConfig>;
 export type HarnessDefinition = StaticHarnessDefinition | AttachedHarnessResolver;
 
 export interface ResolveStaticHarnessInput {
@@ -115,7 +115,7 @@ export function isAttachedHarnessResolver(value: HarnessDefinition): value is At
   return typeof value === 'function';
 }
 
-export function resolveStaticHarnessPlan(input: ResolveStaticHarnessInput): ResolvedHarnessPlan {
+export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): ResolvedHarnessConfig {
   const { definition } = input;
   if (definition.runtime === 'headless') {
     return {
@@ -145,7 +145,7 @@ export function resolveStaticHarnessPlan(input: ResolveStaticHarnessInput): Reso
       : [],
   };
 
-  const planEnv = {
+  const configEnv = {
     ...(definition.env ?? {}),
     ...(input.env ?? {}),
   };
@@ -155,7 +155,7 @@ export function resolveStaticHarnessPlan(input: ResolveStaticHarnessInput): Reso
     command: resolveCommand(definition.command, definition.searchPaths),
     args: renderTemplate(definition.args ?? DEFAULT_PTY_ARGS, context),
     ...((input.cwd ?? definition.cwd) ? { cwd: input.cwd ?? definition.cwd } : {}),
-    ...(Object.keys(planEnv).length > 0 ? { env: planEnv } : {}),
+    ...(Object.keys(configEnv).length > 0 ? { env: configEnv } : {}),
     ...(definition.sessionId ? { sessionId: definition.sessionId } : {}),
     ...(definition.delivery ? { delivery: { ...definition.delivery } } : {}),
     ...(definition.metadata ? { metadata: { ...definition.metadata } } : {}),

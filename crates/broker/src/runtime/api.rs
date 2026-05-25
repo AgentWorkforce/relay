@@ -45,7 +45,7 @@ impl BrokerRuntime {
                 idle_threshold_secs,
                 skip_relay_prompt,
                 restart_policy,
-                harness_plan,
+                harness_config,
                 agent_token,
                 agent_result_schema,
                 reply,
@@ -67,7 +67,7 @@ impl BrokerRuntime {
                     shadow_of,
                     shadow_mode,
                     *restart_policy,
-                    harness_plan,
+                    harness_config,
                 ) {
                     Ok(spec) => spec,
                     Err(error) => {

@@ -201,12 +201,12 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect((after.mock.calls[0][0] as AfterAgentSpawnContext).kind).toBe('provider');
   });
 
-  it('recomputes provider transport after beforeAgentSpawn patches add a harness plan', async () => {
+  it('recomputes provider transport after beforeAgentSpawn patches add a harness config', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
 
     client.addListener('beforeAgentSpawn', () => ({
-      harnessPlan: {
+      harnessConfig: {
         runtime: 'headless',
         driver: 'app_server',
         protocol: 'opencode',
@@ -225,7 +225,7 @@ describe('AgentRelayClient lifecycle hooks', () => {
       name: 'patched-headless',
       cli: 'custom-provider',
       transport: 'headless',
-      harnessPlan: {
+      harnessConfig: {
         runtime: 'headless',
         driver: 'app_server',
         sessionId: 'ses_hook',

@@ -231,7 +231,7 @@ mod tests {
             provider: None,
             cli: Some("claude".to_string()),
             session_id: None,
-            harness_plan: None,
+            harness_config: None,
             model: None,
             cwd: None,
             team: None,
