@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    ids::{RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     relaycast::configure_relaycast_mcp_with_result,
@@ -35,7 +36,7 @@ pub(crate) mod detection;
 pub(crate) struct WorkerHandle {
     pub(crate) spec: AgentSpec,
     pub(crate) parent: Option<String>,
-    pub(crate) workspace_id: Option<String>,
+    pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
     pub(crate) spawned_at: Instant,
@@ -65,15 +66,15 @@ impl AgentWorkState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
-    Message { name: String, value: Value },
+    Message { name: WorkerName, value: Value },
 }
 
 pub(crate) struct WorkerRegistry {
-    pub(crate) workers: HashMap<String, WorkerHandle>,
+    pub(crate) workers: HashMap<WorkerName, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     worker_logs_dir: PathBuf,
-    pub(crate) initial_tasks: HashMap<String, String>,
+    pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
 }
@@ -205,7 +206,7 @@ impl WorkerRegistry {
         idle_threshold_secs: Option<u64>,
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
-        workspace_id: Option<String>,
+        workspace_id: Option<crate::ids::WorkspaceId>,
         agent_result: Option<AgentResultMcpConfig>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
@@ -528,7 +529,7 @@ impl WorkerRegistry {
         &mut self,
         name: &str,
         msg_type: &str,
-        request_id: Option<String>,
+        request_id: Option<RequestId>,
         payload: Value,
     ) -> Result<()> {
         let handle = self
@@ -606,7 +607,7 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
+        let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         for name in names {
             if let Err(error) = self.release(&name).await {
                 tracing::warn!(target = "agent_relay::broker", name = %name, error = %error, "worker shutdown failed");
@@ -617,8 +618,8 @@ impl WorkerRegistry {
 
     pub(crate) async fn reap_exited(
         &mut self,
-    ) -> Result<Vec<(String, Option<i32>, Option<String>, Option<String>)>> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
+    ) -> Result<Vec<(WorkerName, Option<i32>, Option<String>, Option<String>)>> {
+        let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
             let (status, gone_via_kill0) = if let Some(handle) = self.workers.get_mut(&name) {
@@ -1042,7 +1043,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
 
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
-    name: String,
+    name: WorkerName,
     stream_name: &'static str,
     reader: R,
     parse_json: bool,

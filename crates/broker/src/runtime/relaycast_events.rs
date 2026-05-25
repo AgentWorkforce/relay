@@ -71,7 +71,7 @@ impl BrokerRuntime {
         if let Ok(ws_event) = serde_json::from_value::<WsEvent>(ws_value.clone()) {
             match ws_event {
                 WsEvent::AgentReleaseRequested(event) => {
-                    let name = event.agent.name;
+                    let name = WorkerName::from(event.agent.name);
                     if is_relaycast_self_control_target(
                         &name,
                         &workspace_self_name,
@@ -163,7 +163,7 @@ impl BrokerRuntime {
                     return;
                 }
                 WsEvent::AgentSpawnRequested(event) => {
-                    let name = event.agent.name;
+                    let name = WorkerName::from(event.agent.name);
                     eprintln!(
                         "[agent-relay] received spawn request for '{}' (cli: {})",
                         name, event.agent.cli
@@ -210,8 +210,9 @@ impl BrokerRuntime {
                         .as_deref()
                         .map(|ch| {
                             let mut chs = default_spawn_channels();
-                            if !chs.contains(&ch.to_string()) {
-                                chs.push(ch.to_string());
+                            let candidate = ChannelName::from(ch);
+                            if !chs.contains(&candidate) {
+                                chs.push(candidate);
                             }
                             chs
                         })
@@ -422,14 +423,15 @@ impl BrokerRuntime {
                             .as_deref()
                             .map(|ch| {
                                 let mut chs = default_spawn_channels();
-                                if !chs.contains(&ch.to_string()) {
-                                    chs.push(ch.to_string());
+                                let candidate = ChannelName::from(ch);
+                                if !chs.contains(&candidate) {
+                                    chs.push(candidate);
                                 }
                                 chs
                             })
                             .unwrap_or_else(default_spawn_channels);
                         let spec = AgentSpec {
-                            name: name.clone(),
+                            name: WorkerName::from(name.clone()),
                             runtime: AgentRuntime::Pty,
                             provider: None,
                             cli: Some(cli.clone()),
@@ -492,7 +494,7 @@ impl BrokerRuntime {
                                 if let Some(ref task_text) = effective_task {
                                     workers
                                         .initial_tasks
-                                        .insert(name.clone(), task_text.clone());
+                                        .insert(WorkerName::from(name.clone()), task_text.clone());
                                 }
                                 *agent_spawn_count += 1;
                                 telemetry.track(TelemetryEvent::AgentSpawn {
@@ -504,7 +506,7 @@ impl BrokerRuntime {
                                 });
                                 let pid = workers.worker_pid(&name).unwrap_or(0);
                                 state.agents.insert(
-                                    name.clone(),
+                                    WorkerName::from(name.clone()),
                                     broker::PersistedAgent {
                                         runtime: AgentRuntime::Pty,
                                         parent: Some("Relaycast".to_string()),
@@ -644,7 +646,7 @@ impl BrokerRuntime {
                         resolved_target = %chan_target,
                         "overriding thread reply display_target with raw WS channel"
                     );
-                    delivery_plan.display_target = chan_target;
+                    delivery_plan.display_target = MessageTarget::new(chan_target);
                 }
             }
 
@@ -682,7 +684,7 @@ impl BrokerRuntime {
                     .iter()
                     .find(|participant| !agent_name_eq(participant, &mapped.from))
                 {
-                    delivery_plan.display_target = participant.clone();
+                    delivery_plan.display_target = MessageTarget::new(participant.clone());
                 }
 
                 let worker_view = workers.routing_workers();
