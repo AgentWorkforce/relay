@@ -173,7 +173,11 @@ string_id!(
     RequestId
 );
 string_id!(
-    /// Channel name including the leading `#` (e.g. `"#general"`).
+    /// Channel name as it appears in subscribe / unsubscribe payloads
+    /// and `AgentSpec::channels` — the raw identifier without the
+    /// leading `#` (e.g. `"general"`, `"ops"`). The `#`-prefixed form
+    /// is the [`MessageTarget`] convention for routing a message *to*
+    /// a channel, not the channel's own name.
     ChannelName
 );
 

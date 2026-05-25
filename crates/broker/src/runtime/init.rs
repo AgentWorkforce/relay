@@ -411,7 +411,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
     let pending_deliveries = load_pending_deliveries(&paths.pending);
-    let terminal_failed_deliveries: HashSet<EventId> = HashSet::new();
+    let terminal_failed_deliveries: HashSet<DeliveryId> = HashSet::new();
     // Outstanding worker-bound RPC requests waiting on a `*_response`
     // frame from the wrapped worker. Keyed by the `request_id` we put on
     // the outbound request frame; the reply `oneshot` is consumed when

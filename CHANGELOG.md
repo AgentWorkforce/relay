@@ -14,7 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
-- `agent-relay-broker` replaces stringly-typed protocol IDs (`name`, `delivery_id`, `event_id`, `workspace_id`, `workspace_alias`, `thread_id`, `agent_id`, `request_id`, `channels`, `target`) with `#[serde(transparent)]` newtypes in `protocol.rs` and `types.rs`. Wire format is unchanged; the type system now catches passing a `DeliveryId` where an `EventId` is expected, and `MessageTarget::kind()` discriminates `Channel` / `Thread` / `DirectMessage` / `Conversation` / `Worker` exhaustively instead of hand-rolled prefix checks.
+
+### Breaking Changes
+
+- `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
+
+### Migration Guidance
+
+- Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, …}` instead of `String`. Each newtype impls `From<String>` / `From<&str>` and `Deref<Target = str>`, so most string-handling code keeps compiling; only construction sites (`HashMap` keys, struct literals, channel sends) need updates.
+- Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
 
 ### Fixed
 

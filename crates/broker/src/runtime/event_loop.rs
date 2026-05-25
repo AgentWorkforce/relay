@@ -29,7 +29,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
-    pub(super) terminal_failed_deliveries: HashSet<EventId>,
+    pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,

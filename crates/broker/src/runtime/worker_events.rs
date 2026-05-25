@@ -47,7 +47,7 @@ impl BrokerRuntime {
                                     "delivery_ack",
                                 );
                                 if pending.is_some() {
-                                    terminal_failed_deliveries.remove(ack.event_id.as_str());
+                                    terminal_failed_deliveries.remove(&ack.delivery_id);
                                 }
                                 pending
                             } else {
@@ -211,7 +211,7 @@ impl BrokerRuntime {
                                 "delivery_failed",
                             );
                             if pending_for_failure.is_some() && !delivery_id.is_empty() {
-                                terminal_failed_deliveries.insert(EventId::from(&event_id[..]));
+                                terminal_failed_deliveries.insert(DeliveryId::from(delivery_id));
                             }
                             let _ = send_event(
                                 sdk_out_tx,
