@@ -220,8 +220,8 @@ function listActiveTrajectoryFiles(trajectoriesDir: string): string[] {
   }
 
   return readdirSync(activeDir, { withFileTypes: true })
-    .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
-    .map(entry => join(activeDir, entry.name));
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => join(activeDir, entry.name));
 }
 
 function findActiveTrajectoryPathById(trajectoryDirs: string[], trajectoryId: string): string | null {
@@ -323,7 +323,9 @@ export async function isTrailAvailable(): Promise<boolean> {
 /**
  * Start a new trajectory
  */
-export async function startTrajectory(options: StartTrajectoryOptions): Promise<{ success: boolean; trajectoryId?: string; error?: string }> {
+export async function startTrajectory(
+  options: StartTrajectoryOptions
+): Promise<{ success: boolean; trajectoryId?: string; error?: string }> {
   const args = ['start', options.task];
 
   if (options.taskId) {
@@ -352,7 +354,12 @@ export async function startTrajectory(options: StartTrajectoryOptions): Promise<
  * Get current trajectory status
  * Reads directly from .trajectories/index.json instead of using CLI
  */
-export async function getTrajectoryStatus(): Promise<{ active: boolean; trajectoryId?: string; phase?: PDEROPhase; task?: string }> {
+export async function getTrajectoryStatus(): Promise<{
+  active: boolean;
+  trajectoryId?: string;
+  phase?: PDEROPhase;
+  task?: string;
+}> {
   const index = readTrajectoryIndex();
   const trajectoryDirs = getAllTrajectoriesDirs();
   if (!index && trajectoryDirs.length === 0) {
@@ -399,7 +406,11 @@ export async function getTrajectoryStatus(): Promise<{ active: boolean; trajecto
 /**
  * Transition to a new PDERO phase
  */
-export async function transitionPhase(phase: PDEROPhase, reason?: string, agentName?: string): Promise<{ success: boolean; error?: string }> {
+export async function transitionPhase(
+  phase: PDEROPhase,
+  reason?: string,
+  agentName?: string
+): Promise<{ success: boolean; error?: string }> {
   const args = ['phase', phase];
 
   if (reason) {
@@ -416,7 +427,9 @@ export async function transitionPhase(phase: PDEROPhase, reason?: string, agentN
 /**
  * Record a decision
  */
-export async function recordDecision(options: DecisionOptions): Promise<{ success: boolean; error?: string }> {
+export async function recordDecision(
+  options: DecisionOptions
+): Promise<{ success: boolean; error?: string }> {
   const args = ['decision', options.choice];
 
   if (options.question) {
@@ -470,7 +483,9 @@ export async function recordMessage(
 /**
  * Complete the current trajectory
  */
-export async function completeTrajectory(options: CompleteTrajectoryOptions = {}): Promise<{ success: boolean; error?: string }> {
+export async function completeTrajectory(
+  options: CompleteTrajectoryOptions = {}
+): Promise<{ success: boolean; error?: string }> {
   const args = ['complete'];
 
   if (options.summary) {
@@ -693,7 +708,7 @@ export async function getTrajectoryHistory(): Promise<{
 
       // Add additional details from trajectory file
       if (trajectory) {
-        historyEntry.agents = trajectory.agents?.map(a => a.name);
+        historyEntry.agents = trajectory.agents?.map((a) => a.name);
         if (trajectory.retrospective) {
           historyEntry.summary = trajectory.retrospective.summary;
           historyEntry.confidence = trajectory.retrospective.confidence;
@@ -718,7 +733,7 @@ export async function getTrajectoryHistory(): Promise<{
         status: trajectory.status ?? 'active',
         startedAt: trajectory.startedAt,
         completedAt: trajectory.completedAt,
-        agents: trajectory.agents?.map(a => a.name),
+        agents: trajectory.agents?.map((a) => a.name),
       };
 
       if (trajectory.retrospective) {
@@ -732,9 +747,7 @@ export async function getTrajectoryHistory(): Promise<{
   }
 
   // Sort by startedAt descending (most recent first)
-  trajectories.sort((a, b) =>
-    new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
-  );
+  trajectories.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 
   return { success: true, trajectories };
 }
@@ -798,11 +811,58 @@ export function detectPhaseFromContent(content: string): PDEROPhase | undefined 
   const lowerContent = content.toLowerCase();
 
   const phasePatterns: Array<{ phase: PDEROPhase; patterns: string[] }> = [
-    { phase: 'plan', patterns: ['planning', 'analyzing requirements', 'breaking down', 'creating plan', 'task list', 'todo', 'outline'] },
-    { phase: 'design', patterns: ['designing', 'architecting', 'choosing pattern', 'interface design', 'schema design', 'architecture'] },
-    { phase: 'execute', patterns: ['implementing', 'writing', 'coding', 'building', 'creating file', 'modifying', 'editing'] },
-    { phase: 'review', patterns: ['testing', 'reviewing', 'validating', 'checking', 'verifying', 'running tests', 'test passed', 'test failed'] },
-    { phase: 'observe', patterns: ['observing', 'monitoring', 'reflecting', 'documenting', 'retrospective', 'learnings', 'summary'] },
+    {
+      phase: 'plan',
+      patterns: [
+        'planning',
+        'analyzing requirements',
+        'breaking down',
+        'creating plan',
+        'task list',
+        'todo',
+        'outline',
+      ],
+    },
+    {
+      phase: 'design',
+      patterns: [
+        'designing',
+        'architecting',
+        'choosing pattern',
+        'interface design',
+        'schema design',
+        'architecture',
+      ],
+    },
+    {
+      phase: 'execute',
+      patterns: ['implementing', 'writing', 'coding', 'building', 'creating file', 'modifying', 'editing'],
+    },
+    {
+      phase: 'review',
+      patterns: [
+        'testing',
+        'reviewing',
+        'validating',
+        'checking',
+        'verifying',
+        'running tests',
+        'test passed',
+        'test failed',
+      ],
+    },
+    {
+      phase: 'observe',
+      patterns: [
+        'observing',
+        'monitoring',
+        'reflecting',
+        'documenting',
+        'retrospective',
+        'learnings',
+        'summary',
+      ],
+    },
   ];
 
   for (const { phase, patterns } of phasePatterns) {
@@ -838,9 +898,24 @@ export interface DetectedError {
  * All known Claude Code tool names
  */
 const TOOL_NAMES = [
-  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Task', 'TaskOutput',
-  'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite', 'AskUserQuestion',
-  'KillShell', 'EnterPlanMode', 'ExitPlanMode', 'Skill', 'SlashCommand',
+  'Read',
+  'Write',
+  'Edit',
+  'Bash',
+  'Glob',
+  'Grep',
+  'Task',
+  'TaskOutput',
+  'WebFetch',
+  'WebSearch',
+  'NotebookEdit',
+  'TodoWrite',
+  'AskUserQuestion',
+  'KillShell',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'Skill',
+  'SlashCommand',
 ];
 
 const TOOL_NAME_PATTERN = TOOL_NAMES.join('|');
@@ -1137,7 +1212,10 @@ export class TrajectoryIntegration {
   /**
    * Record an event
    */
-  async event(content: string, type: 'tool_call' | 'observation' | 'checkpoint' | 'error' = 'observation'): Promise<boolean> {
+  async event(
+    content: string,
+    type: 'tool_call' | 'observation' | 'checkpoint' | 'error' = 'observation'
+  ): Promise<boolean> {
     if (!(await this.isAvailable())) return false;
 
     const result = await recordEvent(content, type, this.agentName);
@@ -1255,7 +1333,11 @@ export function getCompactTrailInstructions(): string {
  * Get environment variables for trail CLI
  * If dataDir is not provided, uses config-based storage location
  */
-export function getTrailEnvVars(projectId: string, agentName: string, dataDir?: string): Record<string, string> {
+export function getTrailEnvVars(
+  projectId: string,
+  agentName: string,
+  dataDir?: string
+): Record<string, string> {
   // Use config-based path if dataDir not explicitly provided
   const effectiveDataDir = dataDir ?? getPrimaryTrajectoriesDir();
 

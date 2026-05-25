@@ -40,10 +40,7 @@ const CLI_MODEL_COMMANDS: Record<string, ModelCommandConfig> = {
   claude: {
     supported: true,
     buildCommand: (model: string) => `/model ${model}\n`,
-    validModels: [
-      ...CLAUDE_VALID_MODELS,
-      ...Object.keys(CLAUDE_MODEL_ALIASES),
-    ],
+    validModels: [...CLAUDE_VALID_MODELS, ...Object.keys(CLAUDE_MODEL_ALIASES)],
     normalizeModel: (model: string) => {
       const normalized = model.trim().toLowerCase();
       return CLAUDE_MODEL_ALIASES[normalized] ?? normalized;
@@ -93,7 +90,7 @@ export function buildModelSwitchCommand(cli: string, model: string): string | nu
  */
 export function validateModelForCli(
   cli: string,
-  model: string,
+  model: string
 ): { valid: boolean; error?: string; normalizedModel?: string } {
   const config = getModelCommandConfig(cli);
 
@@ -107,7 +104,7 @@ export function validateModelForCli(
   const normalizedModel = config.normalizeModel ? config.normalizeModel(model) : model;
 
   if (config.validModels && !config.validModels.includes(normalizedModel)) {
-    const displayModels = config.validModels.filter(m => !m.includes('-')); // Show short names only
+    const displayModels = config.validModels.filter((m) => !m.includes('-')); // Show short names only
     return {
       valid: false,
       error: `Invalid model "${model}" for CLI "${cli}". Valid models: ${displayModels.join(', ')}`,

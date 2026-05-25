@@ -1,4 +1,4 @@
-version: "1.0"
+version: '1.0'
 name: cross-repo-path-test
 description: E2E test for paths and workdir features (PR #488)
 paths:

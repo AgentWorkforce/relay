@@ -18,6 +18,7 @@ Added GitHub workflow-step integration, package exports, and workflow example
 ## Key Decisions
 
 ### Mirrored browser primitive workflow-step pattern for GitHub
+
 - **Chose:** Mirrored browser primitive workflow-step pattern for GitHub
 - **Reasoning:** The SDK already routes integration steps through RunnerStepExecutor; serializing params/config/output preserves workflow template interpolation and keeps GitHub primitive behavior local to the primitive package.
 
@@ -26,6 +27,7 @@ Added GitHub workflow-step integration, package exports, and workflow example
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Mirrored browser primitive workflow-step pattern for GitHub: Mirrored browser primitive workflow-step pattern for GitHub

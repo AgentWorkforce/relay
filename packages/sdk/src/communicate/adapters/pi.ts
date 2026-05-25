@@ -13,12 +13,7 @@ type RelayTool = {
   label: string;
   description: string;
   parameters: unknown;
-  execute: (
-    toolCallId: string,
-    params: any,
-    signal?: AbortSignal,
-    onUpdate?: unknown
-  ) => Promise<ToolResult>;
+  execute: (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: unknown) => Promise<ToolResult>;
 };
 
 type PiSessionLike = {
@@ -44,22 +39,45 @@ const txt = (text: string): ToolResult => ({ content: [{ type: 'text', text }], 
 
 function createRelayTools(relay: RelayLike): RelayTool[] {
   const toolDefs: Array<[string, string, unknown, (p: Record<string, string>) => Promise<string>]> = [
-    ['relay_send', 'Send a direct message to another relay agent.',
+    [
+      'relay_send',
+      'Send a direct message to another relay agent.',
       Type.Object({ to: Type.String(), text: Type.String() }),
-      async (p) => { await relay.send(p.to, p.text); return `Sent relay message to ${p.to}.`; }],
-    ['relay_inbox', 'Drain and inspect newly received relay messages.',
+      async (p) => {
+        await relay.send(p.to, p.text);
+        return `Sent relay message to ${p.to}.`;
+      },
+    ],
+    [
+      'relay_inbox',
+      'Drain and inspect newly received relay messages.',
       Type.Object({}),
-      async () => formatRelayInbox(await relay.inbox())],
-    ['relay_post', 'Post a message to a relay channel.',
+      async () => formatRelayInbox(await relay.inbox()),
+    ],
+    [
+      'relay_post',
+      'Post a message to a relay channel.',
       Type.Object({ channel: Type.String(), text: Type.String() }),
-      async (p) => { await relay.post(p.channel, p.text); return `Posted relay message to #${p.channel}.`; }],
-    ['relay_agents', 'List currently online relay agents.',
+      async (p) => {
+        await relay.post(p.channel, p.text);
+        return `Posted relay message to #${p.channel}.`;
+      },
+    ],
+    [
+      'relay_agents',
+      'List currently online relay agents.',
       Type.Object({}),
-      async () => (await relay.agents()).join('\n')],
+      async () => (await relay.agents()).join('\n'),
+    ],
   ];
   return toolDefs.map(([name, description, parameters, run]) => ({
-    name, label: name.replace('_', ' '), description, parameters,
-    async execute(_id: string, params: Record<string, string>) { return txt(await run(params)); },
+    name,
+    label: name.replace('_', ' '),
+    description,
+    parameters,
+    async execute(_id: string, params: Record<string, string>) {
+      return txt(await run(params));
+    },
   }));
 }
 

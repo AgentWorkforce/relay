@@ -58,9 +58,11 @@ function fetchLatestVersion(): Promise<string> {
         // Follow redirect
         const location = res.headers.location;
         if (location) {
-          https.get(location, { timeout: 5000 }, (redirectRes) => {
-            handleResponse(redirectRes, resolve, reject);
-          }).on('error', reject);
+          https
+            .get(location, { timeout: 5000 }, (redirectRes) => {
+              handleResponse(redirectRes, resolve, reject);
+            })
+            .on('error', reject);
           return;
         }
       }
@@ -86,7 +88,9 @@ function handleResponse(
   }
 
   let data = '';
-  res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+  res.on('data', (chunk: Buffer) => {
+    data += chunk.toString();
+  });
   res.on('end', () => {
     try {
       const json = JSON.parse(data);
@@ -101,7 +105,6 @@ function handleResponse(
   });
   res.on('error', reject);
 }
-
 
 export interface UpdateInfo {
   updateAvailable: boolean;
@@ -118,10 +121,8 @@ export async function checkForUpdates(currentVersion: string): Promise<UpdateInf
   const now = Date.now();
 
   // Return cached result if still valid
-  if (cache && (now - cache.lastCheck) < CHECK_INTERVAL_MS) {
-    const updateAvailable = cache.latestVersion
-      ? compare(cache.latestVersion, currentVersion, '>')
-      : false;
+  if (cache && now - cache.lastCheck < CHECK_INTERVAL_MS) {
+    const updateAvailable = cache.latestVersion ? compare(cache.latestVersion, currentVersion, '>') : false;
     return {
       updateAvailable,
       currentVersion,
@@ -200,7 +201,7 @@ export function checkForUpdatesInBackground(currentVersion: string): void {
 
   // Run async check without awaiting
   checkForUpdates(currentVersion)
-    .then(info => {
+    .then((info) => {
       if (info.updateAvailable) {
         printUpdateNotification(info);
       }

@@ -7,16 +7,19 @@ import { startMcpServer } from './mcp/server.js';
 import { runtimeSetup } from './runtime/setup.js';
 
 const require = createRequire(import.meta.url);
-const version = process.env.RELAY_OPENCLAW_VERSION ?? (() => {
-  try {
-    return (require('../package.json') as { version: string }).version;
-  } catch {
-    return 'unknown';
-  }
-})();
+const version =
+  process.env.RELAY_OPENCLAW_VERSION ??
+  (() => {
+    try {
+      return (require('../package.json') as { version: string }).version;
+    } catch {
+      return 'unknown';
+    }
+  })();
 
 function printUsage(): void {
-  console.log(`
+  console.log(
+    `
 relay-openclaw — Relaycast bridge for OpenClaw
 
 Usage:
@@ -65,7 +68,8 @@ Examples:
   relay-openclaw add-workspace rk_live_def456 --alias team-b --default
   relay-openclaw list-workspaces
   relay-openclaw switch-workspace team-a
-`.trim());
+`.trim()
+  );
 }
 
 function parseArgs(argv: string[]): {
@@ -97,10 +101,7 @@ function parseArgs(argv: string[]): {
   return { command, positional, flags };
 }
 
-async function runSetup(
-  positional: string[],
-  flags: Record<string, string>,
-): Promise<void> {
+async function runSetup(positional: string[], flags: Record<string, string>): Promise<void> {
   const apiKey = positional[0] ?? undefined;
   const clawName = flags['name'] ?? undefined;
   const channels = flags['channels']?.split(',').map((c) => c.trim());
@@ -125,9 +126,7 @@ async function runGateway(): Promise<void> {
   const config = await loadGatewayConfig();
 
   if (!config) {
-    console.error(
-      'No gateway config found. Run "relay-openclaw setup" first.',
-    );
+    console.error('No gateway config found. Run "relay-openclaw setup" first.');
     process.exit(1);
   }
 
@@ -169,13 +168,9 @@ async function runStatus(): Promise<void> {
   // Try to check connectivity
   try {
     const res = await fetch(`${config.baseUrl}/health`);
-    console.log(
-      `API connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`,
-    );
+    console.log(`API connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`);
   } catch (err) {
-    console.log(
-      `API connectivity: UNREACHABLE (${err instanceof Error ? err.message : String(err)})`,
-    );
+    console.log(`API connectivity: UNREACHABLE (${err instanceof Error ? err.message : String(err)})`);
   }
 }
 
@@ -247,14 +242,13 @@ async function runRuntimeSetup(flags: Record<string, string>): Promise<void> {
   console.log(`  Workspace: ${result.workspaceId}`);
 }
 
-async function runAddWorkspace(
-  positional: string[],
-  flags: Record<string, string>,
-): Promise<void> {
+async function runAddWorkspace(positional: string[], flags: Record<string, string>): Promise<void> {
   const apiKey = positional[0];
   if (!apiKey) {
     console.error('add-workspace requires a workspace API key as the first argument.');
-    console.error('Usage: relay-openclaw add-workspace <rk_live_...> [--alias <name>] [--workspace-id <id>] [--default]');
+    console.error(
+      'Usage: relay-openclaw add-workspace <rk_live_...> [--alias <name>] [--workspace-id <id>] [--default]'
+    );
     process.exit(1);
   }
 
@@ -266,9 +260,7 @@ async function runAddWorkspace(
   });
 
   const entry = config.workspaces.find((w) => w.api_key === apiKey);
-  const label = entry?.workspace_alias
-    ?? entry?.workspace_id
-    ?? apiKey.slice(0, 12) + '...';
+  const label = entry?.workspace_alias ?? entry?.workspace_id ?? apiKey.slice(0, 12) + '...';
   console.log(`Workspace "${label}" added.`);
   console.log(`Total workspaces: ${config.workspaces.length}`);
   if (config.default_workspace) {

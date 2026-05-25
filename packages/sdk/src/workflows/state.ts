@@ -40,12 +40,7 @@ export interface ReadOptions {
 }
 
 /** Callback invoked to gate a write. Return true to allow, false to reject. */
-export type ConsensusGate = (
-  runId: string,
-  key: string,
-  value: unknown,
-  agent: string,
-) => Promise<boolean>;
+export type ConsensusGate = (runId: string, key: string, value: unknown, agent: string) => Promise<boolean>;
 
 export interface StateStoreEvents {
   'state:set': (entry: StateEntry) => void;
@@ -96,16 +91,14 @@ export class StateStore extends EventEmitter {
     key: string,
     value: unknown,
     agent: string,
-    options: WriteOptions = {},
+    options: WriteOptions = {}
   ): Promise<StateEntry> {
     // Consensus gate check.
     if (this.consensusGate) {
       const allowed = await this.consensusGate(runId, key, value, agent);
       if (!allowed) {
         this.emit('state:gated', runId, key, agent);
-        throw new Error(
-          `Write to "${key}" rejected by consensus gate for agent "${agent}"`,
-        );
+        throw new Error(`Write to "${key}" rejected by consensus gate for agent "${agent}"`);
       }
     }
 
@@ -122,7 +115,7 @@ export class StateStore extends EventEmitter {
        ON CONFLICT (run_id, namespace, key)
        DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [id, runId, namespace, key, JSON.stringify(value), expiresAt, now],
+      [id, runId, namespace, key, JSON.stringify(value), expiresAt, now]
     );
 
     const entry = rows[0];
@@ -132,45 +125,34 @@ export class StateStore extends EventEmitter {
 
   // ── Read ──────────────────────────────────────────────────────────────
 
-  async get(
-    runId: string,
-    key: string,
-    options: ReadOptions = {},
-  ): Promise<unknown | null> {
+  async get(runId: string, key: string, options: ReadOptions = {}): Promise<unknown | null> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query<StateEntry>(
       `SELECT * FROM swarm_state
        WHERE run_id = $1 AND namespace = $2 AND key = $3
          AND (expires_at IS NULL OR expires_at > now())`,
-      [runId, namespace, key],
+      [runId, namespace, key]
     );
 
     if (rows.length === 0) return null;
     return rows[0].value;
   }
 
-  async getEntry(
-    runId: string,
-    key: string,
-    options: ReadOptions = {},
-  ): Promise<StateEntry | null> {
+  async getEntry(runId: string, key: string, options: ReadOptions = {}): Promise<StateEntry | null> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query<StateEntry>(
       `SELECT * FROM swarm_state
        WHERE run_id = $1 AND namespace = $2 AND key = $3
          AND (expires_at IS NULL OR expires_at > now())`,
-      [runId, namespace, key],
+      [runId, namespace, key]
     );
 
     return rows[0] ?? null;
   }
 
-  async getAll(
-    runId: string,
-    options: ReadOptions = {},
-  ): Promise<StateEntry[]> {
+  async getAll(runId: string, options: ReadOptions = {}): Promise<StateEntry[]> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query<StateEntry>(
@@ -178,16 +160,13 @@ export class StateStore extends EventEmitter {
        WHERE run_id = $1 AND namespace = $2
          AND (expires_at IS NULL OR expires_at > now())
        ORDER BY key ASC`,
-      [runId, namespace],
+      [runId, namespace]
     );
 
     return rows;
   }
 
-  async keys(
-    runId: string,
-    options: ReadOptions = {},
-  ): Promise<string[]> {
+  async keys(runId: string, options: ReadOptions = {}): Promise<string[]> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query<{ key: string }>(
@@ -195,7 +174,7 @@ export class StateStore extends EventEmitter {
        WHERE run_id = $1 AND namespace = $2
          AND (expires_at IS NULL OR expires_at > now())
        ORDER BY key ASC`,
-      [runId, namespace],
+      [runId, namespace]
     );
 
     return rows.map((r) => r.key);
@@ -203,16 +182,12 @@ export class StateStore extends EventEmitter {
 
   // ── Delete ────────────────────────────────────────────────────────────
 
-  async delete(
-    runId: string,
-    key: string,
-    options: ReadOptions = {},
-  ): Promise<boolean> {
+  async delete(runId: string, key: string, options: ReadOptions = {}): Promise<boolean> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query(
       `DELETE FROM swarm_state WHERE run_id = $1 AND namespace = $2 AND key = $3 RETURNING id`,
-      [runId, namespace, key],
+      [runId, namespace, key]
     );
 
     if (rows.length > 0) {
@@ -223,15 +198,12 @@ export class StateStore extends EventEmitter {
     return false;
   }
 
-  async deleteAll(
-    runId: string,
-    options: ReadOptions = {},
-  ): Promise<number> {
+  async deleteAll(runId: string, options: ReadOptions = {}): Promise<number> {
     const namespace = options.namespace ?? this.defaultNamespace;
 
     const { rows } = await this.db.query(
       `DELETE FROM swarm_state WHERE run_id = $1 AND namespace = $2 RETURNING id`,
-      [runId, namespace],
+      [runId, namespace]
     );
 
     return rows.length;
@@ -247,14 +219,14 @@ export class StateStore extends EventEmitter {
     if (runId) {
       const { rows } = await this.db.query(
         `DELETE FROM swarm_state WHERE run_id = $1 AND expires_at IS NOT NULL AND expires_at <= now() RETURNING id`,
-        [runId],
+        [runId]
       );
       return rows.length;
     }
 
     const { rows } = await this.db.query(
       `DELETE FROM swarm_state WHERE expires_at IS NOT NULL AND expires_at <= now() RETURNING id`,
-      [],
+      []
     );
     return rows.length;
   }
@@ -265,10 +237,7 @@ export class StateStore extends EventEmitter {
    * Take a snapshot of all state for a run as a plain object.
    * Useful for persisting into workflow_runs.state_snapshot.
    */
-  async snapshot(
-    runId: string,
-    options: ReadOptions = {},
-  ): Promise<Record<string, unknown>> {
+  async snapshot(runId: string, options: ReadOptions = {}): Promise<Record<string, unknown>> {
     const entries = await this.getAll(runId, options);
     const result: Record<string, unknown> = {};
     for (const entry of entries) {

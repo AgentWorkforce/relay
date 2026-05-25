@@ -1,7 +1,12 @@
 import { WebClient } from '@slack/web-api';
 
 import { BaseSlackAdapter, normalizeSlackRuntimeConfig } from './adapter.js';
-import { SlackPostBackError, type SlackRuntime, type SlackRuntimeConfig, type SlackWebApiLike } from './types.js';
+import {
+  SlackPostBackError,
+  type SlackRuntime,
+  type SlackRuntimeConfig,
+  type SlackWebApiLike,
+} from './types.js';
 
 /**
  * Local Slack Web API adapter backed by SLACK_BOT_TOKEN.

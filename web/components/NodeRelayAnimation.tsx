@@ -63,14 +63,14 @@ const RELAYING_TEXTS: Record<ModelProvider, string[]> = {
 };
 
 const NODE_POOL: { name: string; provider: ModelProvider; model: string }[] = [
-  { name: 'Lead', provider: 'claude', model: 'Opus' },         // 0
-  { name: 'Planner', provider: 'gemini', model: '2.5 Pro' },   // 1
-  { name: 'Coder', provider: 'codex', model: 'Codex-1' },      // 2
-  { name: 'Reviewer', provider: 'claude', model: 'Sonnet' },    // 3
+  { name: 'Lead', provider: 'claude', model: 'Opus' }, // 0
+  { name: 'Planner', provider: 'gemini', model: '2.5 Pro' }, // 1
+  { name: 'Coder', provider: 'codex', model: 'Codex-1' }, // 2
+  { name: 'Reviewer', provider: 'claude', model: 'Sonnet' }, // 3
   { name: 'Frontend', provider: 'copilot', model: 'GPT-4.1' }, // 4
-  { name: 'Backend', provider: 'opencode', model: 'Gemini' },   // 5
+  { name: 'Backend', provider: 'opencode', model: 'Gemini' }, // 5
   { name: 'Marketer', provider: 'gemini', model: '2.5 Flash' }, // 6
-  { name: 'Tester', provider: 'claude', model: 'Haiku' },       // 7
+  { name: 'Tester', provider: 'claude', model: 'Haiku' }, // 7
 ];
 
 // Scripted spawn/message sequence: { tick, type, from, to }
@@ -114,9 +114,7 @@ const NODE_POSITIONS = (() => {
 
   const positions: { x: number; y: number }[] = [{ x: cx, y: cy }]; // index 0 = center
 
-  const rings = [
-    { count: 7, radius: 0.32 },
-  ];
+  const rings = [{ count: 7, radius: 0.32 }];
 
   for (const ring of rings) {
     for (let i = 0; i < ring.count; i++) {
@@ -211,9 +209,7 @@ function handleScriptEvents(tick: number, nodes: AgentNode[], messages: Message[
 }
 
 function findReadyIndices(nodes: AgentNode[]) {
-  return nodes
-    .map((node, index) => (isReadyNode(node) ? index : -1))
-    .filter((index) => index >= 0);
+  return nodes.map((node, index) => (isReadyNode(node) ? index : -1)).filter((index) => index >= 0);
 }
 
 function getActiveNeighbors(senderIdx: number, connections: [number, number][], nodes: AgentNode[]) {
@@ -284,11 +280,10 @@ function updateNodePositions(nodes: AgentNode[], now: number) {
   for (const node of nodes) {
     const t = now * node.driftSpeed + node.driftPhase;
     node.x = node.baseX + Math.sin(t) * node.driftAmplitudeX + Math.cos(t * 0.7) * node.driftAmplitudeX * 0.5;
-    node.y = node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
+    node.y =
+      node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
 
-    node.opacity = node.active
-      ? Math.min(node.opacity + 0.08, 1)
-      : Math.max(node.opacity - 0.03, 0);
+    node.opacity = node.active ? Math.min(node.opacity + 0.08, 1) : Math.max(node.opacity - 0.03, 0);
 
     node.glowOpacity = node.glowing
       ? Math.min(node.glowOpacity + 0.06, 1)
@@ -398,7 +393,8 @@ function handleMessageArrival(message: Message, nodes: AgentNode[], messages: Me
   }
 
   const branchTargets = message.branches.filter(
-    (branchTarget) => branchTarget !== message.to && branchTarget !== message.from && nodes[branchTarget]?.active
+    (branchTarget) =>
+      branchTarget !== message.to && branchTarget !== message.from && nodes[branchTarget]?.active
   );
 
   if (branchTargets.length === 0) {
@@ -521,14 +517,35 @@ function OpenCodeLogo() {
 function GeminiLogo() {
   return (
     <svg className={s.providerLogo} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="#3186FF" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf0)" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf1)" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#ngf2)" />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="#3186FF"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#ngf0)"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#ngf1)"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#ngf2)"
+      />
       <defs>
-        <linearGradient gradientUnits="userSpaceOnUse" id="ngf0" x1="7" x2="11" y1="15.5" y2="12"><stop stopColor="#08B962" /><stop offset="1" stopColor="#08B962" stopOpacity="0" /></linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id="ngf1" x1="8" x2="11.5" y1="5.5" y2="11"><stop stopColor="#F94543" /><stop offset="1" stopColor="#F94543" stopOpacity="0" /></linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id="ngf2" x1="3.5" x2="17.5" y1="13.5" y2="12"><stop stopColor="#FABC12" /><stop offset=".46" stopColor="#FABC12" stopOpacity="0" /></linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf0" x1="7" x2="11" y1="15.5" y2="12">
+          <stop stopColor="#08B962" />
+          <stop offset="1" stopColor="#08B962" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf1" x1="8" x2="11.5" y1="5.5" y2="11">
+          <stop stopColor="#F94543" />
+          <stop offset="1" stopColor="#F94543" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="ngf2" x1="3.5" x2="17.5" y1="13.5" y2="12">
+          <stop stopColor="#FABC12" />
+          <stop offset=".46" stopColor="#FABC12" stopOpacity="0" />
+        </linearGradient>
       </defs>
     </svg>
   );
@@ -663,9 +680,10 @@ export function NodeRelayAnimation() {
               top: `${node.y * 100}%`,
               opacity: node.opacity,
               transform: `scale(${0.92 + node.opacity * 0.08})`,
-              boxShadow: node.glowOpacity > 0
-                ? `0 0 ${18 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 10px rgba(0,0,0,0.08)`
-                : '0 2px 8px rgba(0,0,0,0.06)',
+              boxShadow:
+                node.glowOpacity > 0
+                  ? `0 0 ${18 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 10px rgba(0,0,0,0.08)`
+                  : '0 2px 8px rgba(0,0,0,0.06)',
               pointerEvents: node.opacity < 0.1 ? 'none' : undefined,
             }}
           >
@@ -678,9 +696,7 @@ export function NodeRelayAnimation() {
             </div>
             <div className={s.cardStatus}>
               {isBusy && <span className={s.statusDot} />}
-              <span className={`${s.statusText} ${isBusy ? s.statusActive : ''}`}>
-                {node.statusText}
-              </span>
+              <span className={`${s.statusText} ${isBusy ? s.statusActive : ''}`}>{node.statusText}</span>
             </div>
           </div>
         );

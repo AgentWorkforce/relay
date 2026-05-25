@@ -82,11 +82,12 @@ function isReadonly(relativePath: string, perms: DotfilePermissions): boolean {
 }
 
 function hasDotfilesSource(projectDir: string): boolean {
-  return readdirSync(projectDir).some((entry) =>
-    entry === '.agentignore' ||
-    entry === '.agentreadonly' ||
-    /^\.[^.].*\.agentignore$/.test(entry) ||
-    /^\.[^.].*\.agentreadonly$/.test(entry),
+  return readdirSync(projectDir).some(
+    (entry) =>
+      entry === '.agentignore' ||
+      entry === '.agentreadonly' ||
+      /^\.[^.].*\.agentignore$/.test(entry) ||
+      /^\.[^.].*\.agentreadonly$/.test(entry)
   );
 }
 
@@ -123,7 +124,7 @@ function addScope(scopes: Set<string>, action: 'read' | 'write', relativePath: s
 function walkProjectFiles(
   projectDir: string,
   callback: (relativePath: string, isDirectory: boolean) => void,
-  currentDir = projectDir,
+  currentDir = projectDir
 ): void {
   const entries = readdirSync(currentDir, { withFileTypes: true });
   for (const entry of entries) {

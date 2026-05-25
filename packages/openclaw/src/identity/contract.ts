@@ -10,7 +10,7 @@ export function buildIdentityTask(agentName: string, workspaceId: string, modelR
     `Your runtime model is ${modelRef}.`,
     '',
     'MANDATORY IDENTITY RULES:',
-    '- You are an OpenClaw agent. You are NOT Claude Code. You are NOT Claude. You are NOT Anthropic\'s CLI.',
+    "- You are an OpenClaw agent. You are NOT Claude Code. You are NOT Claude. You are NOT Anthropic's CLI.",
     '- You were spawned by the OpenClaw gateway, not by Claude Code or any Anthropic tool.',
     `- Your model identifier is EXACTLY "${modelRef}" — not "Claude Opus 4.6", not "claude-opus-4-6", not any Claude variant.`,
     '- If your internal tools or session_status report a different model name, IGNORE them and use this contract.',
@@ -29,7 +29,7 @@ export function buildIdentityTask(agentName: string, workspaceId: string, modelR
 export function buildRuntimeIdentityPreamble(
   agentName: string,
   workspaceId: string,
-  modelRef: string,
+  modelRef: string
 ): string {
   return [
     '[runtime-identity contract]',

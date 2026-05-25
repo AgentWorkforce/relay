@@ -17,11 +17,7 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
 import { RelayCast, type BrokerEvent } from '@agent-relay/sdk';
-import {
-  BrokerHarness,
-  checkPrerequisites,
-  uniqueSuffix,
-} from './utils/broker-harness.js';
+import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { eventsForAgent } from './utils/assert-helpers.js';
 import { skipIfNotRealCli, skipIfCliMissing, sleep } from './utils/cli-helpers.js';
 
@@ -71,7 +67,9 @@ async function testAgentAddSpawn(
     task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
     channel: 'general',
   });
-  console.log(`  Spawn result: id=${(spawnResult as Record<string, unknown>).id}, alreadyExisted=${(spawnResult as Record<string, unknown>).alreadyExisted}`);
+  console.log(
+    `  Spawn result: id=${(spawnResult as Record<string, unknown>).id}, alreadyExisted=${(spawnResult as Record<string, unknown>).alreadyExisted}`
+  );
 
   console.log(`  Waiting ${initWait / 1000}s for agent to initialize...`);
   await sleep(initWait);
@@ -121,67 +119,55 @@ async function testAgentAddSpawn(
 // CLAUDE
 // ══════════════════════════════════════════════════════════════════════════════
 
-test(
-  'agent-spawns-agent: claude via relaycast API has MCP tools',
-  { timeout: 180_000 },
-  async (t) => {
-    if (skipIfMissing(t)) return;
-    if (skipIfNotRealCli(t)) return;
-    if (skipIfCliMissing(t, 'claude')) return;
+test('agent-spawns-agent: claude via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+  if (skipIfNotRealCli(t)) return;
+  if (skipIfCliMissing(t, 'claude')) return;
 
-    const harness = new BrokerHarness();
-    await harness.start();
-    try {
-      await testAgentAddSpawn('claude', harness);
-    } finally {
-      await harness.stop();
-    }
+  const harness = new BrokerHarness();
+  await harness.start();
+  try {
+    await testAgentAddSpawn('claude', harness);
+  } finally {
+    await harness.stop();
   }
-);
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CODEX
 // ══════════════════════════════════════════════════════════════════════════════
 
-test(
-  'agent-spawns-agent: codex via relaycast API has MCP tools',
-  { timeout: 180_000 },
-  async (t) => {
-    if (skipIfMissing(t)) return;
-    if (skipIfNotRealCli(t)) return;
-    if (skipIfCliMissing(t, 'codex')) return;
+test('agent-spawns-agent: codex via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+  if (skipIfNotRealCli(t)) return;
+  if (skipIfCliMissing(t, 'codex')) return;
 
-    const harness = new BrokerHarness();
-    await harness.start();
-    try {
-      await testAgentAddSpawn('codex', harness);
-    } finally {
-      await harness.stop();
-    }
+  const harness = new BrokerHarness();
+  await harness.start();
+  try {
+    await testAgentAddSpawn('codex', harness);
+  } finally {
+    await harness.stop();
   }
-);
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GEMINI
 // ══════════════════════════════════════════════════════════════════════════════
 
-test(
-  'agent-spawns-agent: gemini via relaycast API has MCP tools',
-  { timeout: 180_000 },
-  async (t) => {
-    if (skipIfMissing(t)) return;
-    if (skipIfNotRealCli(t)) return;
-    if (skipIfCliMissing(t, 'gemini')) return;
+test('agent-spawns-agent: gemini via relaycast API has MCP tools', { timeout: 180_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
+  if (skipIfNotRealCli(t)) return;
+  if (skipIfCliMissing(t, 'gemini')) return;
 
-    const harness = new BrokerHarness();
-    await harness.start();
-    try {
-      await testAgentAddSpawn('gemini', harness);
-    } finally {
-      await harness.stop();
-    }
+  const harness = new BrokerHarness();
+  await harness.start();
+  try {
+    await testAgentAddSpawn('gemini', harness);
+  } finally {
+    await harness.stop();
   }
-);
+});
 
 // Note: opencode and droid are not in the Relaycast API's cli enum,
 // so they can't be spawned via agent_add. They are only spawnable via

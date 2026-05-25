@@ -94,7 +94,9 @@ export function createDefaultEventLogger(level: LogLevel = 'normal'): WorkflowEv
       // ── Other events (verbose only) ──
       case 'step:owner-assigned':
         if (level === 'verbose') {
-          console.log(chalk.dim(`  ${event.stepName} — owner: ${event.ownerName}, specialist: ${event.specialistName}`));
+          console.log(
+            chalk.dim(`  ${event.stepName} — owner: ${event.ownerName}, specialist: ${event.specialistName}`)
+          );
         }
         break;
 

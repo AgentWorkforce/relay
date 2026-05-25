@@ -32,11 +32,7 @@ describe('HighlightedPre', () => {
     });
 
     const element = await HighlightedPre({
-      children: (
-        <code className={`language-${token} custom-code-class`}>
-          {'npm install agent-relay'}
-        </code>
-      ),
+      children: <code className={`language-${token} custom-code-class`}>{'npm install agent-relay'}</code>,
     });
     const codeElement = findElementByType(element, 'code');
 

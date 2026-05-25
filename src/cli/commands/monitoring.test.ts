@@ -14,9 +14,7 @@ class ExitSignal extends Error {
   }
 }
 
-function createMetricsClientMock(
-  overrides: Partial<MonitoringMetricsClient> = {}
-): MonitoringMetricsClient {
+function createMetricsClientMock(overrides: Partial<MonitoringMetricsClient> = {}): MonitoringMetricsClient {
   return {
     getMetrics: vi.fn(async () => ({ agents: [] })),
     shutdown: vi.fn(async () => undefined),
@@ -24,9 +22,7 @@ function createMetricsClientMock(
   };
 }
 
-function createProfilerRelayMock(
-  overrides: Partial<MonitoringProfilerRelay> = {}
-): MonitoringProfilerRelay {
+function createProfilerRelayMock(overrides: Partial<MonitoringProfilerRelay> = {}): MonitoringProfilerRelay {
   return {
     spawn: vi.fn(async () => undefined),
     listAgents: vi.fn(async () => []),
@@ -55,19 +51,21 @@ function createHarness(options?: {
     generateAgentName: vi.fn(() => 'GeneratedAgent'),
     fetch:
       options?.fetchImpl ??
-      (vi.fn(async () =>
-        ({
-          ok: true,
-          json: async () => ({
-            healthScore: 90,
-            summary: 'ok',
-            issues: [],
-            recommendations: [],
-            crashes: [],
-            alerts: [],
-            stats: { totalCrashes24h: 0, totalAlerts24h: 0, agentCount: 1 },
-          }),
-        }) as unknown as Response) as MonitoringDependencies['fetch']),
+      (vi.fn(
+        async () =>
+          ({
+            ok: true,
+            json: async () => ({
+              healthScore: 90,
+              summary: 'ok',
+              issues: [],
+              recommendations: [],
+              crashes: [],
+              alerts: [],
+              stats: { totalCrashes24h: 0, totalAlerts24h: 0, agentCount: 1 },
+            }),
+          }) as unknown as Response
+      ) as MonitoringDependencies['fetch']),
     pathExists: vi.fn(() => true),
     mkdir: vi.fn(() => undefined),
     appendFile: vi.fn(() => undefined),
@@ -116,7 +114,9 @@ describe('registerMonitoringCommands', () => {
 
   it('runs metrics command and prints JSON output', async () => {
     const metricsClient = createMetricsClientMock({
-      getMetrics: vi.fn(async () => ({ agents: [{ name: 'A1', pid: 101, memory_bytes: 2048, uptime_secs: 60 }] })),
+      getMetrics: vi.fn(async () => ({
+        agents: [{ name: 'A1', pid: 101, memory_bytes: 2048, uptime_secs: 60 }],
+      })),
     });
     const { program, deps } = createHarness({ metricsClient });
 
@@ -132,19 +132,20 @@ describe('registerMonitoringCommands', () => {
   });
 
   it('fetches and prints health JSON payload', async () => {
-    const fetchImpl = vi.fn(async () =>
-      ({
-        ok: true,
-        json: async () => ({
-          healthScore: 80,
-          summary: 'stable',
-          issues: [],
-          recommendations: [],
-          crashes: [],
-          alerts: [],
-          stats: { totalCrashes24h: 1, totalAlerts24h: 0, agentCount: 3 },
-        }),
-      }) as unknown as Response
+    const fetchImpl = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            healthScore: 80,
+            summary: 'stable',
+            issues: [],
+            recommendations: [],
+            crashes: [],
+            alerts: [],
+            stats: { totalCrashes24h: 1, totalAlerts24h: 0, agentCount: 3 },
+          }),
+        }) as unknown as Response
     ) as MonitoringDependencies['fetch'];
 
     const { program, deps } = createHarness({ fetchImpl });
@@ -174,7 +175,14 @@ describe('registerMonitoringCommands', () => {
     const profilerRelay = createProfilerRelayMock();
     const { program, deps } = createHarness({ profilerRelay });
 
-    const exitCode = await runCommand(program, ['profile', 'codex', 'Ship', 'tests', '--output-dir', './tmp-profiles']);
+    const exitCode = await runCommand(program, [
+      'profile',
+      'codex',
+      'Ship',
+      'tests',
+      '--output-dir',
+      './tmp-profiles',
+    ]);
 
     expect(exitCode).toBeUndefined();
     expect(deps.pathExists).toHaveBeenCalledWith('./tmp-profiles');

@@ -21,7 +21,9 @@ describe('docs markdown export for spawn options', () => {
     expect(doc?.markdown).toContain(
       '| `requestTimeoutMs` | Timeout in ms for HTTP requests to the broker. Defaults to `30000`. |'
     );
-    expect(doc?.markdown).toContain('| `skipRelayPrompt` | Skip MCP/protocol prompt injection when relay messaging is not needed |');
+    expect(doc?.markdown).toContain(
+      '| `skipRelayPrompt` | Skip MCP/protocol prompt injection when relay messaging is not needed |'
+    );
     expect(doc?.markdown).toContain('| `onStart` | Run code before spawn |');
     expect(doc?.markdown).toContain('| `onSuccess` | Run code after a successful spawn |');
     expect(doc?.markdown).toContain('| `onError` | Run code if spawn fails |');

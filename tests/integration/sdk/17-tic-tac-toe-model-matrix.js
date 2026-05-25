@@ -102,9 +102,7 @@ async function runGame({ apiKey, binaryPath, xProvider, xModel, oProvider, oMode
 
     await Promise.all([relay.waitForAgentReady(xName), relay.waitForAgentReady(oName)]);
 
-    await relay
-      .system()
-      .sendMessage({ to: xName, text: `Start the game now in #${channel}.` });
+    await relay.system().sendMessage({ to: xName, text: `Start the game now in #${channel}.` });
 
     const [xResult, oResult] = await Promise.all([x.waitForExit(), o.waitForExit()]);
 
@@ -189,6 +187,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exit(1);
 });

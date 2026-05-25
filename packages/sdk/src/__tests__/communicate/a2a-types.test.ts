@@ -219,12 +219,9 @@ describe('A2AAgentCard', () => {
   });
 
   it('serializes and deserializes roundtrip', () => {
-    const card = createA2AAgentCard(
-      'my-agent',
-      'My agent',
-      'http://example.com',
-      [{ id: 'sk1', name: 'Skill1', description: 'Does skill1' }],
-    );
+    const card = createA2AAgentCard('my-agent', 'My agent', 'http://example.com', [
+      { id: 'sk1', name: 'Skill1', description: 'Does skill1' },
+    ]);
     const dict = a2aAgentCardToDict(card);
     const restored = a2aAgentCardFromDict(dict);
     expect(restored.name).toBe('my-agent');

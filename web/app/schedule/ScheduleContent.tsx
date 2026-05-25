@@ -19,15 +19,15 @@ export function ScheduleContent() {
     },
     {
       q: 'Do I need a Cloudflare account?',
-      a: 'Yes — RelayCron runs on Cloudflare Workers and Durable Objects. You bring your own Cloudflare account and Workers usage is covered under RelayCron\'s pricing tiers, separate from Cloudflare\'s included quotas.',
+      a: "Yes — RelayCron runs on Cloudflare Workers and Durable Objects. You bring your own Cloudflare account and Workers usage is covered under RelayCron's pricing tiers, separate from Cloudflare's included quotas.",
     },
     {
       q: 'How accurate are cron schedules?',
-      a: 'Durable Object alarms fire within ~seconds of the configured schedule. The accuracy depends on Cloudflare\'s alarm coalescing — for sub-second precision requirements, consider combining cron schedules with WebSocket-triggered real-time endpoints.',
+      a: "Durable Object alarms fire within ~seconds of the configured schedule. The accuracy depends on Cloudflare's alarm coalescing — for sub-second precision requirements, consider combining cron schedules with WebSocket-triggered real-time endpoints.",
     },
     {
       q: "What's the maximum webhook payload size?",
-      a: '256KB per webhook delivery. For larger payloads, use the SDK to fetch data from RelayCron\'s execution context directly, or use file-based outputs stored via the Relay File API.',
+      a: "256KB per webhook delivery. For larger payloads, use the SDK to fetch data from RelayCron's execution context directly, or use file-based outputs stored via the Relay File API.",
     },
   ];
 
@@ -82,7 +82,12 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
     <main className={s.page}>
       {/* Hero */}
       <section className={s.heroSection}>
-        <svg className={s.heroBgSvg} viewBox="0 0 1440 400" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+        <svg
+          className={s.heroBgSvg}
+          viewBox="0 0 1440 400"
+          preserveAspectRatio="xMidYMid slice"
+          xmlns="http://www.w3.org/2000/svg"
+        >
           <defs>
             <radialGradient id="g1" cx="50%" cy="50%" r="60%">
               <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.22" />
@@ -99,13 +104,25 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
             </div>
             <h1 className={s.headline}>Reliable cron scheduling for AI agents</h1>
             <p className={s.subtitle}>
-              Cron expressions, webhook delivery, WebSocket real-time events, and execution logs — all built on Cloudflare Durable Objects.
+              Cron expressions, webhook delivery, WebSocket real-time events, and execution logs — all built
+              on Cloudflare Durable Objects.
             </p>
             <div className={s.ctas}>
-              <a href="https://app.agentcron.dev" className={s.ctaPrimary}>Start building free</a>
+              <a href="https://app.agentcron.dev" className={s.ctaPrimary}>
+                Start building free
+              </a>
               <Link href="/docs" className={s.ctaSecondary}>
                 Read the docs
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <path d="M5 12h14M12 5l7 7-7 7" />
                 </svg>
               </Link>
@@ -113,18 +130,38 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
           </div>
           <div className={s.heroRight}>
             <div className={s.clockDemo}>
-              <svg className={s.clockSvg} viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg
+                className={s.clockSvg}
+                viewBox="0 0 200 200"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
                 {/* Clock face */}
-                <circle cx="100" cy="100" r="88" fill="var(--card-bg)" stroke="var(--line)" strokeWidth="1.5" />
-                <circle cx="100" cy="100" r="80" fill="none" stroke="var(--primary)" strokeOpacity="0.15" strokeWidth="1" />
+                <circle
+                  cx="100"
+                  cy="100"
+                  r="88"
+                  fill="var(--card-bg)"
+                  stroke="var(--line)"
+                  strokeWidth="1.5"
+                />
+                <circle
+                  cx="100"
+                  cy="100"
+                  r="80"
+                  fill="none"
+                  stroke="var(--primary)"
+                  strokeOpacity="0.15"
+                  strokeWidth="1"
+                />
                 {/* Hour markers */}
-                {[0,30,60,90,120,150,180,210,240,270,300,330].map((deg, i) => (
+                {[0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map((deg, i) => (
                   <line
                     key={i}
-                    x1={100 + 72 * Math.cos((deg - 90) * Math.PI / 180)}
-                    y1={100 + 72 * Math.sin((deg - 90) * Math.PI / 180)}
-                    x2={100 + 80 * Math.cos((deg - 90) * Math.PI / 180)}
-                    y2={100 + 80 * Math.sin((deg - 90) * Math.PI / 180)}
+                    x1={100 + 72 * Math.cos(((deg - 90) * Math.PI) / 180)}
+                    y1={100 + 72 * Math.sin(((deg - 90) * Math.PI) / 180)}
+                    x2={100 + 80 * Math.cos(((deg - 90) * Math.PI) / 180)}
+                    y2={100 + 80 * Math.sin(((deg - 90) * Math.PI) / 180)}
                     stroke="var(--primary)"
                     strokeOpacity={i % 3 === 0 ? 0.6 : 0.2}
                     strokeWidth={i % 3 === 0 ? 2 : 1}
@@ -132,11 +169,37 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                   />
                 ))}
                 {/* Hour hand */}
-                <line x1="100" y1="100" x2="100" y2="52" stroke="var(--fg)" strokeWidth="3" strokeLinecap="round" />
+                <line
+                  x1="100"
+                  y1="100"
+                  x2="100"
+                  y2="52"
+                  stroke="var(--fg)"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                />
                 {/* Minute hand */}
-                <line x1="100" y1="100" x2="130" y2="100" stroke="var(--fg)" strokeWidth="2" strokeOpacity="0.5" strokeLinecap="round" />
+                <line
+                  x1="100"
+                  y1="100"
+                  x2="130"
+                  y2="100"
+                  stroke="var(--fg)"
+                  strokeWidth="2"
+                  strokeOpacity="0.5"
+                  strokeLinecap="round"
+                />
                 {/* Second hand */}
-                <line className={s.secondHand} x1="100" y1="108" x2="100" y2="28" stroke="var(--primary)" strokeWidth="1.5" strokeLinecap="round" />
+                <line
+                  className={s.secondHand}
+                  x1="100"
+                  y1="108"
+                  x2="100"
+                  y2="28"
+                  stroke="var(--primary)"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
                 {/* Center dot */}
                 <circle cx="100" cy="100" r="5" fill="var(--primary)" />
                 {/* Tick particles */}
@@ -144,12 +207,54 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                 <circle className={s.tick2} cx="180" cy="100" r="3" fill="var(--primary)" />
                 <circle className={s.tick3} cx="100" cy="180" r="3" fill="var(--primary)" />
                 {/* Agent nodes */}
-                <circle cx="20" cy="80" r="10" fill="var(--primary)" fillOpacity="0.18" stroke="var(--primary)" strokeWidth="1.5" />
-                <circle cx="180" cy="160" r="8" fill="var(--primary)" fillOpacity="0.18" stroke="var(--primary)" strokeWidth="1.5" />
-                <circle cx="40" cy="160" r="7" fill="var(--primary)" fillOpacity="0.12" stroke="var(--primary)" strokeWidth="1" />
+                <circle
+                  cx="20"
+                  cy="80"
+                  r="10"
+                  fill="var(--primary)"
+                  fillOpacity="0.18"
+                  stroke="var(--primary)"
+                  strokeWidth="1.5"
+                />
+                <circle
+                  cx="180"
+                  cy="160"
+                  r="8"
+                  fill="var(--primary)"
+                  fillOpacity="0.18"
+                  stroke="var(--primary)"
+                  strokeWidth="1.5"
+                />
+                <circle
+                  cx="40"
+                  cy="160"
+                  r="7"
+                  fill="var(--primary)"
+                  fillOpacity="0.12"
+                  stroke="var(--primary)"
+                  strokeWidth="1"
+                />
                 {/* Connection lines */}
-                <line x1="28" y1="84" x2="60" y2="92" stroke="var(--primary)" strokeWidth="1" strokeOpacity="0.25" strokeDasharray="3 3" />
-                <line x1="172" y1="158" x2="140" y2="108" stroke="var(--primary)" strokeWidth="1" strokeOpacity="0.2" strokeDasharray="3 3" />
+                <line
+                  x1="28"
+                  y1="84"
+                  x2="60"
+                  y2="92"
+                  stroke="var(--primary)"
+                  strokeWidth="1"
+                  strokeOpacity="0.25"
+                  strokeDasharray="3 3"
+                />
+                <line
+                  x1="172"
+                  y1="158"
+                  x2="140"
+                  y2="108"
+                  stroke="var(--primary)"
+                  strokeWidth="1"
+                  strokeOpacity="0.2"
+                  strokeDasharray="3 3"
+                />
               </svg>
               <p className={s.clockLabel}>CRON: 0 9 * * * America/New_York</p>
             </div>
@@ -161,7 +266,9 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
       <div className={s.featuresWrapper}>
         <div className={s.featuresHeader}>
           <h2 className={s.featuresTitle}>Everything you need to schedule at scale</h2>
-          <p className={s.featuresSubtitle}>Built on Cloudflare Durable Objects so your schedules survive data center outages.</p>
+          <p className={s.featuresSubtitle}>
+            Built on Cloudflare Durable Objects so your schedules survive data center outages.
+          </p>
         </div>
         <div className={s.featuresSection}>
           {[
@@ -212,12 +319,18 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
         <div className={s.byohSection}>
           <div className={s.byohText}>
             <h2 className={s.byohTitle}>Works with every AI tool</h2>
-            <p className={s.byohSubtitle}>Trigger any workflow, agent, or pipeline on a schedule — from any AI framework.</p>
+            <p className={s.byohSubtitle}>
+              Trigger any workflow, agent, or pipeline on a schedule — from any AI framework.
+            </p>
           </div>
           <div className={s.byohLogos}>
-            {['Claude Code', 'Codex', 'Gemini CLI', 'OpenCode', 'Pi', 'Devin', 'Mage', 'Aider'].map((tool) => (
-              <span key={tool} className={s.toolBadge}>{tool}</span>
-            ))}
+            {['Claude Code', 'Codex', 'Gemini CLI', 'OpenCode', 'Pi', 'Devin', 'Mage', 'Aider'].map(
+              (tool) => (
+                <span key={tool} className={s.toolBadge}>
+                  {tool}
+                </span>
+              )
+            )}
           </div>
         </div>
       </div>
@@ -228,7 +341,9 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
           <div className={s.sdkText}>
             <span className={s.openclawBadge}>SDK</span>
             <h2 className={s.sdkTitle}>Simple, expressive API</h2>
-            <p className={s.sdkSubtitle}>Create schedules, subscribe to events, and fetch execution history — all from one coherent SDK.</p>
+            <p className={s.sdkSubtitle}>
+              Create schedules, subscribe to events, and fetch execution history — all from one coherent SDK.
+            </p>
             <div className={s.sdkBullets}>
               {[
                 'TypeScript &amp; Python SDKs with full type safety',
@@ -265,12 +380,18 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                 ))}
               </div>
               <pre className={s.sdkCodeBlock}>
-                <code dangerouslySetInnerHTML={{ __html: codeSnippets[activeTab]
-                  .replace(/\b(const|await|import|from|for|async|new|class|type|interface|export|return)\b/g, '<span class="' + s.codeKeyword + '">$1</span>')
-                  .replace(/(['"`])(.*?)\1/g, '<span class="' + s.codeString + '">$1$2$1</span>')
-                  .replace(/(\/\/.*)/g, '<span class="' + s.codeType + '">$1</span>')
-                  .replace(/\b(\d+)\b/g, '<span class="' + s.codeType + '">$1</span>')
-                }} />
+                <code
+                  dangerouslySetInnerHTML={{
+                    __html: codeSnippets[activeTab]
+                      .replace(
+                        /\b(const|await|import|from|for|async|new|class|type|interface|export|return)\b/g,
+                        '<span class="' + s.codeKeyword + '">$1</span>'
+                      )
+                      .replace(/(['"`])(.*?)\1/g, '<span class="' + s.codeString + '">$1$2$1</span>')
+                      .replace(/(\/\/.*)/g, '<span class="' + s.codeType + '">$1</span>')
+                      .replace(/\b(\d+)\b/g, '<span class="' + s.codeType + '">$1</span>'),
+                  }}
+                />
               </pre>
             </div>
           </div>
@@ -281,13 +402,15 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
       <div className={s.deployWrapper}>
         <div className={s.deploySection}>
           <h2 className={s.deployTitle}>Why RelayCron?</h2>
-          <p className={s.deploySubtitle}>Built on Cloudflare Durable Objects — the scheduling infrastructure your agents can rely on.</p>
+          <p className={s.deploySubtitle}>
+            Built on Cloudflare Durable Objects — the scheduling infrastructure your agents can rely on.
+          </p>
           <div className={s.deployCards}>
             {[
               {
                 icon: '⚡',
                 title: 'Global reliability',
-                text: 'Durable Objects replicate automatically across Cloudflare\'s 300+ PoPs. A data center outage won\'t stop your jobs from firing — failover is built in, not bolted on.',
+                text: "Durable Objects replicate automatically across Cloudflare's 300+ PoPs. A data center outage won't stop your jobs from firing — failover is built in, not bolted on.",
               },
               {
                 icon: '📊',
@@ -314,14 +437,22 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
       <div className={s.pricingWrapper}>
         <div className={s.pricingSection}>
           <h2 className={s.pricingTitle}>Simple, predictable pricing</h2>
-          <p className={s.pricingSubtitle}>No per-seat fees. No surprise overages. Scale your agents without scaling your billing headaches.</p>
+          <p className={s.pricingSubtitle}>
+            No per-seat fees. No surprise overages. Scale your agents without scaling your billing headaches.
+          </p>
           <div className={s.pricingCards}>
             {[
               {
                 name: 'Hobby',
                 price: 'Free',
                 period: '',
-                features: ['5 active schedules', '10,000 executions/mo', 'Webhook delivery', '7-day log retention', 'Community support'],
+                features: [
+                  '5 active schedules',
+                  '10,000 executions/mo',
+                  'Webhook delivery',
+                  '7-day log retention',
+                  'Community support',
+                ],
                 cta: 'Start for free',
                 featured: false,
               },
@@ -329,7 +460,14 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                 name: 'Pro',
                 price: '$29',
                 period: '/month',
-                features: ['50 active schedules', '500,000 executions/mo', 'Webhook + WebSocket', '30-day log retention', 'Idempotency keys', 'Priority support'],
+                features: [
+                  '50 active schedules',
+                  '500,000 executions/mo',
+                  'Webhook + WebSocket',
+                  '30-day log retention',
+                  'Idempotency keys',
+                  'Priority support',
+                ],
                 cta: 'Get Pro',
                 featured: true,
               },
@@ -337,7 +475,14 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                 name: 'Enterprise',
                 price: 'Custom',
                 period: '',
-                features: ['Unlimited schedules', 'Custom execution limits', 'SLA guarantee', '90+ day log retention', 'Dedicated support', 'On-premise option'],
+                features: [
+                  'Unlimited schedules',
+                  'Custom execution limits',
+                  'SLA guarantee',
+                  '90+ day log retention',
+                  'Dedicated support',
+                  'On-premise option',
+                ],
                 cta: 'Talk to us',
                 featured: false,
               },
@@ -348,13 +493,25 @@ curl -X POST https://api.agentcron.dev/v1/schedules \\
                 <p className={s.pricingPeriod}>{p.period}</p>
                 {p.features.map((f) => (
                   <p key={f} className={s.pricingFeature}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }}>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--primary)"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }}
+                    >
                       <polyline points="20 6 9 17 4 12" />
                     </svg>
                     {f}
                   </p>
                 ))}
-                <button className={`${s.pricingCta} ${p.featured ? s.pricingCtaPrimary : ''}`}>{p.cta}</button>
+                <button className={`${s.pricingCta} ${p.featured ? s.pricingCtaPrimary : ''}`}>
+                  {p.cta}
+                </button>
               </div>
             ))}
           </div>

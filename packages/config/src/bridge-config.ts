@@ -27,10 +27,13 @@ const CONFIG_PATHS = [
 ];
 
 interface BridgeConfigFile {
-  projects?: Record<string, {
-    lead?: string;
-    cli?: string;
-  }>;
+  projects?: Record<
+    string,
+    {
+      lead?: string;
+      cli?: string;
+    }
+  >;
   defaultCli?: string;
 }
 
@@ -82,10 +85,7 @@ export function getDefaultLeadName(projectPath: string): string {
 /**
  * Resolve projects from CLI args and/or config file
  */
-export function resolveProjects(
-  cliPaths: string[],
-  cliOverride?: string
-): ProjectConfig[] {
+export function resolveProjects(cliPaths: string[], cliOverride?: string): ProjectConfig[] {
   const config = loadBridgeConfig();
   const projects: ProjectConfig[] = [];
 
@@ -162,9 +162,7 @@ export function validateBrokers(projects: ProjectConfig[]): {
 /**
  * Start brokers for missing projects
  */
-export async function startMissingBrokers(
-  projects: ProjectConfig[]
-): Promise<void> {
+export async function startMissingBrokers(projects: ProjectConfig[]): Promise<void> {
   const { execAsync } = await import('./bridge-utils.js');
 
   for (const project of projects) {
@@ -183,7 +181,6 @@ export async function startMissingBrokers(
   }
 }
 
-
 /**
  * Wait for socket file to exist
  */
@@ -193,7 +190,7 @@ async function waitForSocket(socketPath: string, timeoutMs: number): Promise<voi
     if (fs.existsSync(socketPath)) {
       return;
     }
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`Timeout waiting for socket: ${socketPath}`);
 }

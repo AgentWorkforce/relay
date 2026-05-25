@@ -14,7 +14,10 @@ const LANG_ALIASES: Record<string, string> = {
  * Server-side syntax highlighting with Shiki.
  * Returns the extracted <code> contents plus <pre> metadata for dual light/dark themes.
  */
-export async function highlightCode(code: string, lang = 'text'): Promise<{
+export async function highlightCode(
+  code: string,
+  lang = 'text'
+): Promise<{
   codeHtml: string;
   preClassName?: string;
   preStyle?: string;
@@ -33,7 +36,9 @@ export async function highlightCode(code: string, lang = 'text'): Promise<{
     },
   });
 
-  const match = html.match(/<pre(?: class="([^"]*)")?(?: style="([^"]*)")?[^>]*><code>([\s\S]*)<\/code><\/pre>/);
+  const match = html.match(
+    /<pre(?: class="([^"]*)")?(?: style="([^"]*)")?[^>]*><code>([\s\S]*)<\/code><\/pre>/
+  );
 
   if (!match) {
     return { codeHtml: html };

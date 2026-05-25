@@ -138,7 +138,9 @@ export function validateWorkflow(config: RelayYamlConfig): ValidationIssue[] {
       // Check 5: non-interactive agent that references relay messaging tools in task
       if (
         def.interactive === false &&
-        (task.includes('mcp__relaycast__message_dm_send') || task.includes('mcp__relaycast__message_post') || task.includes('mcp__relaycast__message_inbox_check'))
+        (task.includes('mcp__relaycast__message_dm_send') ||
+          task.includes('mcp__relaycast__message_post') ||
+          task.includes('mcp__relaycast__message_inbox_check'))
       ) {
         issues.push({
           severity: 'warning',

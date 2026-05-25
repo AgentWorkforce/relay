@@ -23,7 +23,9 @@ export function createCloudPolicyFetcher(): CloudPolicyFetcher | null {
     async getWorkspacePolicy(requestedWorkspaceId: string): Promise<WorkspacePolicy | null> {
       // Only allow fetching policy for this workspace
       if (requestedWorkspaceId !== workspaceId) {
-        console.warn(`[policy-fetcher] Attempted to fetch policy for different workspace: ${requestedWorkspaceId}`);
+        console.warn(
+          `[policy-fetcher] Attempted to fetch policy for different workspace: ${requestedWorkspaceId}`
+        );
         return null;
       }
 
@@ -45,7 +47,7 @@ export function createCloudPolicyFetcher(): CloudPolicyFetcher | null {
           return null;
         }
 
-        const data = await response.json() as {
+        const data = (await response.json()) as {
           defaultPolicy?: AgentPolicy;
           agents?: AgentPolicy[];
           settings?: WorkspacePolicy['settings'];
@@ -67,7 +69,9 @@ export function createCloudPolicyFetcher(): CloudPolicyFetcher | null {
           },
         };
 
-        console.log(`[policy-fetcher] Fetched policy for workspace ${workspaceId}: ${policy.agents.length} agent rules`);
+        console.log(
+          `[policy-fetcher] Fetched policy for workspace ${workspaceId}: ${policy.agents.length} agent rules`
+        );
         return policy;
       } catch (error) {
         console.error('[policy-fetcher] Error fetching policy:', error);

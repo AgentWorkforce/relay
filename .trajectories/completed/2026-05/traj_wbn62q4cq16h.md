@@ -18,6 +18,7 @@ Updated the Ricky generated master workflow and materialized child workflows so 
 ## Key Decisions
 
 ### Converted Ricky generated workflow agents to Codex-only
+
 - **Chose:** Converted Ricky generated workflow agents to Codex-only
 - **Reasoning:** The failed run spawned lead-claude/validator-claude at child lead-plan and those Claude CLI steps exited 1; replacing top-level and embedded child workflow agent declarations with Codex lets resumed and fresh runs use Codex agents only.
 
@@ -26,6 +27,7 @@ Updated the Ricky generated master workflow and materialized child workflows so 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Converted Ricky generated workflow agents to Codex-only: Converted Ricky generated workflow agents to Codex-only

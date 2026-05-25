@@ -69,18 +69,14 @@ describe('OpenCode relay hooks', () => {
     expect(secondResult).toBeUndefined();
     expect(thirdResult).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      'https://www.relaycast.dev/api/v1/inbox/check',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer tok_test',
-        },
-        body: '{}',
-      }
-    );
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://www.relaycast.dev/api/v1/inbox/check', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer tok_test',
+      },
+      body: '{}',
+    });
   });
 
   it('idle-surfaces-messages', async () => {

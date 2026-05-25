@@ -19,7 +19,7 @@ describe('WorkflowRunner step cwd resolution', () => {
 
     const resolved = (runner as any).resolveEffectiveCwd(
       { name: 'generate', agent: 'worker', task: 'Generate', cwd: 'steps/generate' },
-      { name: 'worker', cli: 'claude', cwd: 'agents/worker' },
+      { name: 'worker', cli: 'claude', cwd: 'agents/worker' }
     );
 
     expect(resolved).toBe(path.resolve(runnerRoot, 'steps/generate'));
@@ -50,23 +50,23 @@ describe('WorkflowRunner step cwd resolution', () => {
     expect(
       (runner as any).resolveEffectiveCwd(
         { name: 's1', agent: 'worker', task: 'Do work', cwd: 'steps/explicit', workdir: 'generated' },
-        agentDef,
-      ),
+        agentDef
+      )
     ).toBe(path.resolve(runnerRoot, 'steps/explicit'));
 
     expect(
       (runner as any).resolveEffectiveCwd(
         { name: 's2', agent: 'worker', task: 'Do work', workdir: 'generated' },
-        agentDef,
-      ),
+        agentDef
+      )
     ).toBe(namedPath);
 
     expect(
-      (runner as any).resolveEffectiveCwd({ name: 's3', agent: 'worker', task: 'Do work' }, agentDef),
+      (runner as any).resolveEffectiveCwd({ name: 's3', agent: 'worker', task: 'Do work' }, agentDef)
     ).toBe(path.resolve(runnerRoot, 'agents/worker'));
 
-    expect(
-      (runner as any).resolveEffectiveCwd({ name: 's4', type: 'deterministic', command: 'pwd' }),
-    ).toBe(runnerRoot);
+    expect((runner as any).resolveEffectiveCwd({ name: 's4', type: 'deterministic', command: 'pwd' })).toBe(
+      runnerRoot
+    );
   });
 });

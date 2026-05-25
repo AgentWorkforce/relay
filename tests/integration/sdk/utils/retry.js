@@ -11,7 +11,7 @@ export const DEFAULT_RETRY_OPTIONS = {
   initialDelay: 100,
   maxDelay: 5000,
   backoffMultiplier: 2,
-  retryOn: () => true
+  retryOn: () => true,
 };
 
 /**
@@ -93,5 +93,5 @@ export async function retryImmediate(fn, maxAttempts = 3) {
  * @returns {Promise<void>}
  */
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

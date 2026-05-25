@@ -18,6 +18,7 @@ The staging environment deployment is a coordinated multi-repo process that sync
 - **Cross-team coordination** - Share feature branches for integration testing
 
 **When NOT to use:**
+
 - Emergency hotfixes (use production deployment instead)
 - Single-repo changes only (push directly if not blocking other repos)
 - Testing without intent to deploy (use local environment instead)
@@ -41,6 +42,7 @@ Automatic health check verification
 ```
 
 **Key details:**
+
 - Each repo has independent staging branch
 - relay-cloud staging branch push triggers automatic deployment
 - Workflow accepts optional relay/dashboard branch overrides
@@ -109,6 +111,7 @@ Git worktrees provide several benefits for staging workflows:
 ### Step-by-Step Deployment Process
 
 #### Prerequisites
+
 - Access to all three repos with push permission
 - Current working directory: one of the repos
 - No uncommitted changes blocking worktree creation
@@ -116,6 +119,7 @@ Git worktrees provide several benefits for staging workflows:
 #### Execute Staging Push Across All Repos
 
 **Step 1: Relay**
+
 ```bash
 cd /data/repos/relay
 git worktree add .worktrees/staging-push main
@@ -127,6 +131,7 @@ git worktree remove .worktrees/staging-push
 ```
 
 Expected output:
+
 ```
 Updated 'main' to 'origin/main'
 remote: Create pull request for staging...
@@ -137,6 +142,7 @@ or
 ```
 
 **Step 2: Relay-Dashboard**
+
 ```bash
 cd /data/repos/relay-dashboard
 git worktree add .worktrees/staging-push main
@@ -148,6 +154,7 @@ git worktree remove .worktrees/staging-push
 ```
 
 **Step 3: Relay-Cloud (Triggers Deployment)**
+
 ```bash
 cd /data/repos/relay-cloud
 git worktree add .worktrees/staging-push main
@@ -210,6 +217,7 @@ git worktree remove .worktrees/staging-push
 ```
 
 Then manually trigger with specific branches:
+
 - Go to: https://github.com/AgentWorkforce/relay-cloud/actions/workflows/deploy-staging.yml
 - Click "Run workflow"
 - Enter: `relay_branch` and `dashboard_branch` (optional)
@@ -217,31 +225,34 @@ Then manually trigger with specific branches:
 
 ## Common Mistakes
 
-| Mistake | Problem | Fix |
-|---------|---------|-----|
-| Pushing from dirty working tree | Worktree creation fails with error | Commit or stash changes before creating worktree |
-| Forgetting to remove worktree | Accumulates worktree directories | Always run `git worktree remove .worktrees/staging-push` after pushing |
-| Pushing staging without relay/dashboard | Deployment uses outdated relay/dashboard | Coordinate all three repos or use GitHub Actions inputs to override |
-| Not fetching fresh ref | Pushes stale local branch state | Always `git fetch origin branch:branch` before pushing |
-| Confusing staging branch direction | Push main→staging, not staging→main | Remember: feature work → staging branch, for promotion/testing |
-| Assuming all repos auto-sync | relay/dashboard changes don't auto-trigger | Only relay-cloud staging push triggers deployment |
-| Not checking health status | Deployment may fail silently | Always verify workflow completes and health check passes |
-| Creating worktrees in wrong directory | Path confusion for multiple repos | Each repo is separate; create worktrees within that repo's .worktrees/ |
+| Mistake                                 | Problem                                    | Fix                                                                    |
+| --------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------- |
+| Pushing from dirty working tree         | Worktree creation fails with error         | Commit or stash changes before creating worktree                       |
+| Forgetting to remove worktree           | Accumulates worktree directories           | Always run `git worktree remove .worktrees/staging-push` after pushing |
+| Pushing staging without relay/dashboard | Deployment uses outdated relay/dashboard   | Coordinate all three repos or use GitHub Actions inputs to override    |
+| Not fetching fresh ref                  | Pushes stale local branch state            | Always `git fetch origin branch:branch` before pushing                 |
+| Confusing staging branch direction      | Push main→staging, not staging→main        | Remember: feature work → staging branch, for promotion/testing         |
+| Assuming all repos auto-sync            | relay/dashboard changes don't auto-trigger | Only relay-cloud staging push triggers deployment                      |
+| Not checking health status              | Deployment may fail silently               | Always verify workflow completes and health check passes               |
+| Creating worktrees in wrong directory   | Path confusion for multiple repos          | Each repo is separate; create worktrees within that repo's .worktrees/ |
 
 ## Workflow Details
 
 ### deploy-staging.yml Behavior
 
 **Triggers:**
+
 - Manual push to staging branch (automatic)
 - GitHub Actions workflow_dispatch (manual with optional inputs)
 
 **Optional Workflow Inputs:**
+
 - `relay_branch` - Override which relay branch to deploy (defaults to current staging branch)
 - `dashboard_branch` - Override which relay-dashboard branch to deploy (defaults to current staging branch)
 - Falls back to main if specified branch doesn't exist in remote
 
 **Deployment Steps:**
+
 1. Checkout relay-cloud repository
 2. Determine relay branch (input or current, fallback to main)
 3. Determine dashboard branch (input or current, fallback to main)
@@ -255,12 +266,14 @@ Then manually trigger with specific branches:
 ### Deployment Success Criteria
 
 ✅ All checks passed:
+
 - [ ] "Deploy to Staging" job completes
 - [ ] "Build Staging Workspace" job completes
 - [ ] Health check succeeds (HTTP 200 from /health endpoint)
 - [ ] Deployment summary shows all expected values
 
 ❌ Deployment failed:
+
 - Workflow run shows red X
 - Check step that failed in workflow logs
 - Common failures: auth (secrets), health check timeout, Docker build error
@@ -316,12 +329,14 @@ echo "Check: https://github.com/AgentWorkforce/relay-cloud/actions"
 ### Worktree Errors
 
 **Error: "fatal: 'main' already exists"**
+
 ```
 Solution: git worktree remove .worktrees/staging-push
          (if worktree from previous run still exists)
 ```
 
 **Error: "fatal: cannot checkout branch into locked working tree"**
+
 ```
 Solution: Ensure main branch isn't checked out in primary working tree
          git status (confirm different branch is checked out)
@@ -330,6 +345,7 @@ Solution: Ensure main branch isn't checked out in primary working tree
 ### Deployment Failures
 
 **Health check timeout after 150s**
+
 ```
 Problem: Staging environment took too long to become healthy
 Solution: - Check Fly.io logs: flyctl logs --app agent-relay-staging
@@ -339,6 +355,7 @@ Solution: - Check Fly.io logs: flyctl logs --app agent-relay-staging
 ```
 
 **Docker build fails**
+
 ```
 Problem: "Build Staging Workspace" job failed
 Solution: - Check docker-staging.yml workflow logs
@@ -348,6 +365,7 @@ Solution: - Check docker-staging.yml workflow logs
 ```
 
 **Branch not found fallback to main**
+
 ```
 Problem: Workflow says "using main" for your custom branch
 Reason: Specified branch doesn't exist in relay/relay-dashboard
@@ -361,11 +379,13 @@ Solution: - Verify branch name is exact (case-sensitive)
 **Git:** Worktree feature (Git 2.5+, standard on all modern systems)
 
 **Permissions:** Push access to all three repos:
+
 - github.com:AgentWorkforce/relay
 - github.com:AgentWorkforce/relay-dashboard
 - github.com:AgentWorkforce/relay-cloud
 
 **GitHub Secrets (relay-cloud):**
+
 - `CROSS_REPO_TOKEN` - PAT with repo access across all three repos
 - `FLY_API_TOKEN` or `FLY_API_TOKEN_STAGING` - Fly.io deployment token
 

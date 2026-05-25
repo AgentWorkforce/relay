@@ -22,11 +22,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NODE_VERSION: "18"
-        PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+        NODE_VERSION: '18'
+        PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
     environment:
-      NODE_VERSION: "18"
-      PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+      NODE_VERSION: '18'
+      PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
 
   # Node.js 20 (LTS)
   node20:
@@ -34,11 +34,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NODE_VERSION: "20"
-        PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+        NODE_VERSION: '20'
+        PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
     environment:
-      NODE_VERSION: "20"
-      PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+      NODE_VERSION: '20'
+      PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
 
   # Node.js 22 (Current)
   node22:
@@ -46,11 +46,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NODE_VERSION: "22"
-        PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+        NODE_VERSION: '22'
+        PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
     environment:
-      NODE_VERSION: "22"
-      PACKAGE_VERSION: "${PACKAGE_VERSION:-latest}"
+      NODE_VERSION: '22'
+      PACKAGE_VERSION: '${PACKAGE_VERSION:-latest}'
 
 networks:
   default:

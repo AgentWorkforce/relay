@@ -416,10 +416,7 @@ class IntegrationStressTest {
       }
 
       passed =
-        operations.add >= 4 &&
-        operations.list >= 8 &&
-        operations.remove >= 4 &&
-        operations.errors <= 3;
+        operations.add >= 4 && operations.list >= 8 && operations.remove >= 4 && operations.errors <= 3;
     } catch (err: any) {
       this.results.httpApiWorkspaces = {
         passed: false,
@@ -439,7 +436,9 @@ class IntegrationStressTest {
     };
 
     if (!passed) this.failures++;
-    log(`  Add: ${operations.add}, List: ${operations.list}, Remove: ${operations.remove}, Errors: ${operations.errors}`);
+    log(
+      `  Add: ${operations.add}, List: ${operations.list}, Remove: ${operations.remove}, Errors: ${operations.errors}`
+    );
     log(`  PASSED: ${passed}\n`);
   }
 
@@ -507,7 +506,9 @@ class IntegrationStressTest {
     };
 
     if (!passed) this.failures++;
-    log(`  Success: ${successCount}/${CONFIG.httpRequestCount} (${Math.round((successCount / CONFIG.httpRequestCount) * 100)}%)`);
+    log(
+      `  Success: ${successCount}/${CONFIG.httpRequestCount} (${Math.round((successCount / CONFIG.httpRequestCount) * 100)}%)`
+    );
     log(`  Rate: ${Math.round(CONFIG.httpRequestCount / (elapsed / 1000))} req/sec`);
     log(`  PASSED: ${passed}\n`);
   }
@@ -939,9 +940,7 @@ class IntegrationStressTest {
       // Allow async handlers to run
       await sleep(300);
 
-      passed = broadcasted.some(
-        (evt) => evt?.type === 'agent:crashed' && evt?.data?.name === agentName
-      );
+      passed = broadcasted.some((evt) => evt?.type === 'agent:crashed' && evt?.data?.name === agentName);
       details.broadcastCount = broadcasted.length;
       details.crashEventDetected = passed;
     } catch (err: any) {

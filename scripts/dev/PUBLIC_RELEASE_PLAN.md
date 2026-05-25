@@ -1,15 +1,18 @@
 # Agent-Relay Public Release Plan
 
 ## Goal
+
 Prepare agent-relay for public release on npm and GitHub with comprehensive documentation, examples, and polish.
 
 ## Team Structure
 
 ### Agent 1: DocWriter (Claude) - Documentation & Examples
+
 **Focus:** User-facing content, tutorials, examples
 **Workdir:** `/Users/khaliqgant/Projects/prpm/agent-relay`
 
 Tasks:
+
 - [ ] Review and improve README.md
   - Add GIF/video demo of quick start usage
   - Improve quick start section
@@ -20,14 +23,16 @@ Tasks:
   - [ ] examples/tic-tac-toe/ - Simple game
   - [ ] examples/collaborative-coding/ - Agents working together
 - [ ] Update CLI --help text for all commands
-- [ ] Document the new inbox-* commands
+- [ ] Document the new inbox-\* commands
 - [ ] Create API.md documenting the protocol
 
 ### Agent 2: CodePolish (Claude) - Code Quality & Tests
+
 **Focus:** Test coverage, error handling, code cleanup
 **Workdir:** `/Users/khaliqgant/Projects/prpm/agent-relay`
 
 Tasks:
+
 - [ ] Audit test coverage - identify gaps
 - [ ] Add tests for new inbox-poll/write/agents commands
 - [ ] Improve error messages (user-friendly)
@@ -38,10 +43,12 @@ Tasks:
 - [ ] Add JSDoc comments to public APIs
 
 ### Agent 3: DevOps (Codex) - CI/CD & Publishing
+
 **Focus:** Build, publish, installation
 **Workdir:** `/Users/khaliqgant/Projects/prpm/agent-relay`
 
 Tasks:
+
 - [ ] Review and improve package.json
   - Verify all fields for npm publish
   - Add repository, bugs, homepage URLs
@@ -61,10 +68,12 @@ Tasks:
 ## Coordination Protocol
 
 Agents communicate via `/tmp/agent-relay-dev/`:
+
 - DocWriter, CodePolish, DevOps each have inbox directories
 - Use `agent-relay inbox-*` commands
 
 ### Message Types
+
 - `STATUS: <doing what>` - Progress update
 - `QUESTION: <question>` - Need input from another agent
 - `DONE: <task>` - Task completed
@@ -72,12 +81,14 @@ Agents communicate via `/tmp/agent-relay-dev/`:
 - `HANDOFF: <what>` - Passing work to another agent
 
 ### Coordination Rules
+
 1. Before editing a file, announce: `STATUS: Editing <filename>`
 2. After completing a task, broadcast: `DONE: <task description>`
 3. If blocked, ask: `QUESTION: @AgentName <question>`
 4. Check inbox after each major task
 
 ## Success Criteria
+
 - [ ] npm install agent-relay works
 - [ ] All CLI commands have --help
 - [ ] README has working quick start

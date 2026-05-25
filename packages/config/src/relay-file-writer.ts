@@ -181,9 +181,7 @@ export class RelayFileWriter {
     this.workspaceId = workspaceId ?? process.env.WORKSPACE_ID;
 
     // Resolve paths based on environment
-    const basePaths = this.workspaceId
-      ? getWorkspacePaths(this.workspaceId)
-      : getLocalPaths();
+    const basePaths = this.workspaceId ? getWorkspacePaths(this.workspaceId) : getLocalPaths();
 
     this.paths = {
       ...basePaths,
@@ -291,11 +289,7 @@ export class RelayFileWriter {
    * await writer.writeMessage('ack', `TO: Lead\n\nACK: Task received`);
    * ```
    */
-  async writeMessage(
-    messageType: string,
-    content: string,
-    options: WriteOptions = {}
-  ): Promise<string> {
+  async writeMessage(messageType: string, content: string, options: WriteOptions = {}): Promise<string> {
     const { mkdir = true, mode = 0o644 } = options;
 
     if (mkdir) {
@@ -392,7 +386,7 @@ export class RelayFileWriter {
   async listMessages(): Promise<string[]> {
     try {
       const entries = await fs.promises.readdir(this.paths.agentOutbox);
-      return entries.filter(e => !e.startsWith('.'));
+      return entries.filter((e) => !e.startsWith('.'));
     } catch (err: any) {
       if (err.code === 'ENOENT') {
         return [];
@@ -428,7 +422,7 @@ export class RelayFileWriter {
     const filePath = path.join(this.paths.metaDir, key);
     try {
       const content = await fs.promises.readFile(filePath, 'utf-8');
-      return parse ? JSON.parse(content) as T : content as T;
+      return parse ? (JSON.parse(content) as T) : (content as T);
     } catch (err: any) {
       if (err.code === 'ENOENT') {
         return null;
@@ -471,9 +465,7 @@ export function getRelayPaths(agentName: string, workspaceId?: string): AgentPat
  */
 export function getBaseRelayPaths(workspaceId?: string): RelayPaths {
   const effectiveWorkspaceId = workspaceId ?? process.env.WORKSPACE_ID;
-  return effectiveWorkspaceId
-    ? getWorkspacePaths(effectiveWorkspaceId)
-    : getLocalPaths();
+  return effectiveWorkspaceId ? getWorkspacePaths(effectiveWorkspaceId) : getLocalPaths();
 }
 
 /**
