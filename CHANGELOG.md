@@ -24,6 +24,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/slack-primitive` bumps `@slack/web-api` to `^7.16.0`, which raises its transitive `axios` floor to `^1.16.0` and clears GHSA-q8qp-cvcw-x6jj (prototype pollution gadgets in HTTP adapter allowing credential injection) and GHSA-3w6x-2g7m-8v23 (invisible JSON response tampering via `parseReviver`).
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 
+## [7.1.1] - 2026-05-25
+
+### Changed
+
+- Cache nested workspace node_modules
+- Update README to reflect new features and remove old content
+- Prune unused root dependencies
+- Add three-way demo and update README
+
+### Fixed
+
+- Bump relayfile-mount binary v0.1.6 -> v0.7.39
+- Externalize @slack/web-api in build:cjs + declare as root dep
+- Bump quinn-proto to 0.11.14 to address Dependabot alert
+- Drop swarms extra to clear litellm Dependabot alerts
+- Run package validation smoke before tarball cleanup
+
+### Security
+
+- Bump protobufjs and fast-xml-builder to clear high-severity alerts
+- Bump fast-uri to 3.1.2 to clear path-traversal & host-confusion
+- Bump ws to 8.21.0 to clear uninitialized memory disclosure
+- Bump @slack/web-api to ^7.16.0 to clear axios prototype pollution
+
 ## [7.1.0] - 2026-05-22
 
 ### Changed
