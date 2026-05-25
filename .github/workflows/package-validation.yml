@@ -65,24 +65,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      # Cache node_modules - skip npm ci entirely if unchanged
-      - name: Cache node_modules
-        id: cache-modules
-        uses: actions/cache@v4
-        with:
-          # Include nested workspace node_modules so unhoisted deps
-          # (e.g. @slack/web-api under packages/slack-primitive) survive
-          # a cache hit — otherwise the cache restores only the root tree
-          # and skipping `npm ci` leaves the bundler unable to resolve
-          # them.
-          path: |
-            node_modules
-            packages/*/node_modules
-          key: modules-v3-${{ hashFiles('package-lock.json') }}
+          cache: 'npm'
 
       - name: Install dependencies
-        if: steps.cache-modules.outputs.cache-hit != 'true'
         run: npm ci
 
       # Cache turbo build outputs for incremental builds
