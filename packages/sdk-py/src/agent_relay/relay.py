@@ -70,11 +70,13 @@ class Agent:
         runtime: AgentRuntime,
         channels: list[str],
         relay: AgentRelay,
+        session_id: Optional[str] = None,
     ):
         self._name = name
         self._runtime = runtime
         self._channels = channels
         self._relay = relay
+        self._session_id = session_id
         self.exit_code: Optional[int] = None
         self.exit_signal: Optional[str] = None
         self.exit_reason: Optional[str] = None
@@ -86,6 +88,10 @@ class Agent:
     @property
     def runtime(self) -> AgentRuntime:
         return self._runtime
+
+    @property
+    def session_id(self) -> Optional[str]:
+        return self._session_id
 
     @property
     def channels(self) -> list[str]:
@@ -361,6 +367,7 @@ class AgentSpawner:
             runtime=result.get("runtime", "pty"),
             channels=agent_channels,
             relay=self._relay,
+            session_id=result.get("sessionId"),
         )
         self._relay._known_agents[agent.name] = agent
         self._relay._reset_agent_lifecycle_state(agent.name)
@@ -370,6 +377,7 @@ class AgentSpawner:
                 **context,
                 "name": agent.name,
                 "runtime": agent.runtime,
+                "sessionId": agent.session_id,
             },
             f'spawn("{agent_name}") on_success',
         )
@@ -540,6 +548,7 @@ class AgentRelay:
             runtime=result.get("runtime", "pty"),
             channels=channels,
             relay=self,
+            session_id=result.get("sessionId"),
         )
         self._known_agents[agent.name] = agent
         self._reset_agent_lifecycle_state(agent.name)
@@ -549,6 +558,7 @@ class AgentRelay:
                 **context,
                 "name": agent.name,
                 "runtime": agent.runtime,
+                "sessionId": agent.session_id,
             },
             f'spawn("{name}") on_success',
         )
@@ -596,6 +606,7 @@ class AgentRelay:
                     runtime=entry.get("runtime", "pty"),
                     channels=entry.get("channels", []),
                     relay=self,
+                    session_id=entry.get("sessionId"),
                 )
                 self._known_agents[name] = agent
                 agents.append(agent)
@@ -622,7 +633,11 @@ class AgentRelay:
         def on_event(event: BrokerEvent) -> None:
             if event.get("kind") != "worker_ready" or event.get("name") != name:
                 return
-            agent = self._ensure_agent_handle(name, event.get("runtime", "pty"))
+            agent = self._ensure_agent_handle(
+                name,
+                event.get("runtime", "pty"),
+                session_id=event.get("sessionId"),
+            )
             self._ready_agents.add(name)
             self._exited_agents.discard(name)
             if not future.done():
@@ -751,12 +766,18 @@ class AgentRelay:
         self._idle_agents.discard(name)
 
     def _ensure_agent_handle(
-        self, name: str, runtime: AgentRuntime = "pty", channels: Optional[list[str]] = None,
+        self,
+        name: str,
+        runtime: AgentRuntime = "pty",
+        channels: Optional[list[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Agent:
         existing = self._known_agents.get(name)
         if existing:
+            if session_id:
+                existing._session_id = session_id
             return existing
-        agent = Agent(name, runtime, channels or [], self)
+        agent = Agent(name, runtime, channels or [], self, session_id=session_id)
         self._known_agents[name] = agent
         return agent
 
@@ -782,7 +803,11 @@ class AgentRelay:
                     self.on_message_received(msg)
 
             elif kind == "agent_spawned":
-                agent = self._ensure_agent_handle(name, event.get("runtime", "pty"))
+                agent = self._ensure_agent_handle(
+                    name,
+                    event.get("runtime", "pty"),
+                    session_id=event.get("sessionId"),
+                )
                 self._ready_agents.discard(name)
                 self._message_ready_agents.discard(name)
                 self._exited_agents.discard(name)
@@ -833,7 +858,11 @@ class AgentRelay:
                     self.on_agent_exit_requested({"name": name, "reason": event.get("reason", "")})
 
             elif kind == "worker_ready":
-                agent = self._ensure_agent_handle(name, event.get("runtime", "pty"))
+                agent = self._ensure_agent_handle(
+                    name,
+                    event.get("runtime", "pty"),
+                    session_id=event.get("sessionId"),
+                )
                 self._ready_agents.add(name)
                 self._exited_agents.discard(name)
                 self._idle_agents.discard(name)

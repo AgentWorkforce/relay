@@ -35,6 +35,8 @@ pub struct AgentSpec {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,6 +163,8 @@ pub enum BrokerEvent {
         parent: Option<WorkerName>,
         cli: Option<String>,
         model: Option<String>,
+        #[serde(default, rename = "sessionId")]
+        session_id: Option<String>,
         pid: Option<u32>,
         source: Option<String>,
     },
@@ -459,6 +463,7 @@ mod tests {
             parent: Some("Lead".into()),
             cli: None,
             model: None,
+            session_id: None,
             pid: None,
             source: None,
         });

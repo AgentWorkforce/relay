@@ -17,8 +17,12 @@ class ExitSignal extends Error {
 }
 
 function createClientMock(overrides: Partial<AgentManagementClient> = {}): AgentManagementClient {
+  const spawnPty: AgentManagementClient['spawnPty'] = async (options) => ({
+    name: options.name,
+    runtime: 'pty',
+  });
   const client: AgentManagementClient = {
-    spawnPty: vi.fn(async () => undefined),
+    spawnPty: vi.fn(spawnPty),
     listAgents: vi.fn(async () => []),
     release: vi.fn(async () => undefined),
     setModel: vi.fn(async () => ({ success: true })),
