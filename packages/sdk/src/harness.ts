@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -63,7 +62,6 @@ export interface StaticPtyHarnessDefinition {
   env?: Record<string, string>;
   cwd?: string;
   sessionId?: string;
-  searchPaths?: string[];
   delivery?: PtyHarnessDelivery;
   metadata?: Record<string, unknown>;
 }
@@ -134,7 +132,7 @@ export function resolveStaticHarnessConfig(input: ResolveStaticHarnessInput): Re
 
   return {
     runtime: 'pty',
-    command: resolveCommand(definition.command, definition.searchPaths),
+    command: expandHome(definition.command),
     args: renderTemplate(definition.args ?? DEFAULT_PTY_ARGS, context),
     ...((input.cwd ?? definition.cwd) ? { cwd: input.cwd ?? definition.cwd } : {}),
     ...(Object.keys(configEnv).length > 0 ? { env: configEnv } : {}),
@@ -194,23 +192,8 @@ function isExactPlaceholder(value: string, name: string): boolean {
   return value === `{${name}}` || value === `{{${name}}}`;
 }
 
-function resolveCommand(command: string, searchPaths?: string[]): string {
-  const expandedCommand = expandHome(command);
-  if (!searchPaths?.length || expandedCommand.includes('/') || expandedCommand.includes('\\')) {
-    return expandedCommand;
-  }
-
-  for (const searchPath of searchPaths) {
-    const candidate = path.join(expandHome(searchPath), expandedCommand);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return expandedCommand;
-}
-
 function expandHome(value: string): string {
   if (value === '~') return homedir();
-  if (value.startsWith('~/')) return path.join(homedir(), value.slice(2));
+  if (value.startsWith('~/') || value.startsWith('~\\')) return path.join(homedir(), value.slice(2));
   return value;
 }

@@ -19,9 +19,9 @@ pub enum WsControl {
     Publish(Value),
     /// Re-subscribe to a list of channels (e.g. after creating/joining a new
     /// channel that didn't exist when the WS connection was first established).
-    Subscribe(Vec<String>),
+    Subscribe(Vec<crate::ids::ChannelName>),
     /// Unsubscribe from channels that an agent has left.
-    Unsubscribe(Vec<String>),
+    Unsubscribe(Vec<crate::ids::ChannelName>),
 }
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub struct RelaycastWsClient {
     workspace_http: RelaycastHttpClient,
     /// Reference-counted channel subscriptions: channel_name -> number of agents subscribed.
     /// The WS only unsubscribes when the count drops to zero.
-    subscriptions: Arc<Mutex<HashMap<String, usize>>>,
+    subscriptions: Arc<Mutex<HashMap<crate::ids::ChannelName, usize>>>,
 }
 
 impl RelaycastWsClient {
@@ -41,7 +41,7 @@ impl RelaycastWsClient {
     ) -> Self {
         let mut subs = HashMap::new();
         for ch in channels {
-            *subs.entry(ch).or_insert(0) += 1;
+            *subs.entry(crate::ids::ChannelName::from(ch)).or_insert(0) += 1;
         }
         Self {
             ws_base_url: ws_base_url.into(),
@@ -50,7 +50,7 @@ impl RelaycastWsClient {
         }
     }
 
-    pub fn active_subscriptions(&self) -> Vec<String> {
+    pub fn active_subscriptions(&self) -> Vec<crate::ids::ChannelName> {
         self.subscriptions.lock().keys().cloned().collect()
     }
 
@@ -104,7 +104,11 @@ impl RelaycastWsClient {
                     // the same join notifications.
                     let active_subscriptions = self.active_subscriptions();
                     if !active_subscriptions.is_empty() {
-                        if let Err(error) = ws.subscribe(active_subscriptions.clone()).await {
+                        let active_strs: Vec<String> = active_subscriptions
+                            .iter()
+                            .map(|c| c.as_str().to_string())
+                            .collect();
+                        if let Err(error) = ws.subscribe(active_strs.clone()).await {
                             tracing::warn!(
                                 target = "relay_broker::ws",
                                 channels = ?active_subscriptions,
@@ -160,7 +164,11 @@ impl RelaycastWsClient {
                                             }
                                         }
                                         if !joined_now.is_empty() {
-                                            if let Err(error) = ws.subscribe(joined_now.clone()).await {
+                                            let joined_strs: Vec<String> = joined_now
+                                                .iter()
+                                                .map(|c| c.as_str().to_string())
+                                                .collect();
+                                            if let Err(error) = ws.subscribe(joined_strs).await {
                                                 tracing::warn!(
                                                     target = "relay_broker::ws",
                                                     channels = ?joined_now,
@@ -200,7 +208,11 @@ impl RelaycastWsClient {
                                             }
                                         }
                                         if !left_now.is_empty() {
-                                            if let Err(error) = ws.unsubscribe(left_now.clone()).await {
+                                            let left_strs: Vec<String> = left_now
+                                                .iter()
+                                                .map(|c| c.as_str().to_string())
+                                                .collect();
+                                            if let Err(error) = ws.unsubscribe(left_strs).await {
                                                 tracing::warn!(
                                                     target = "relay_broker::ws",
                                                     channels = ?left_now,
@@ -538,9 +550,9 @@ impl RelaycastHttpClient {
     /// hardcoded defaults).  Channels that already exist are silently skipped
     /// (409 → no-op).  The broker must be a channel member to receive
     /// `message.created` WebSocket events for that channel.
-    pub async fn ensure_extra_channels(&self, channels: &[String]) -> Result<()> {
+    pub async fn ensure_extra_channels(&self, channels: &[crate::ids::ChannelName]) -> Result<()> {
         let defaults = ["general", "engineering"];
-        let extras: Vec<&String> = channels
+        let extras: Vec<&crate::ids::ChannelName> = channels
             .iter()
             .filter(|c| !defaults.contains(&c.as_str()))
             .collect();
@@ -556,7 +568,7 @@ impl RelaycastHttpClient {
         };
         for name in extras {
             let request = relaycast::CreateChannelRequest {
-                name: name.clone(),
+                name: name.as_str().to_string(),
                 topic: None,
                 metadata: None,
             };

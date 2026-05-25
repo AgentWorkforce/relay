@@ -72,6 +72,19 @@ describe('harness configs', () => {
     expect(config.command).toBe(path.join(homedir(), 'bin/claude'));
   });
 
+  it('expands Windows-style home-relative command paths', () => {
+    const config = resolveStaticHarnessConfig({
+      name: 'ClaudeReviewer',
+      cli: 'claude',
+      definition: {
+        runtime: 'pty',
+        command: '~\\bin\\claude',
+      },
+    });
+
+    expect(config.command).toBe(path.join(homedir(), 'bin\\claude'));
+  });
+
   it('serializes resolved harness configs on spawn requests', async () => {
     const captures: unknown[] = [];
     const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

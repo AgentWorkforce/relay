@@ -7,9 +7,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) paths: RuntimePaths,
     pub(super) state: broker::BrokerState,
     pub(super) workspaces: Vec<RelayWorkspace>,
-    pub(super) workspace_lookup: HashMap<String, RelayWorkspace>,
+    pub(super) workspace_lookup: HashMap<WorkspaceId, RelayWorkspace>,
     pub(super) default_workspace: RelayWorkspace,
-    pub(super) default_workspace_id: Option<String>,
+    pub(super) default_workspace_id: Option<WorkspaceId>,
     pub(super) self_names: HashSet<String>,
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
@@ -28,11 +28,11 @@ pub(crate) struct BrokerRuntime {
     pub(super) reap_tick: tokio::time::Interval,
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
-    pub(super) pending_deliveries: HashMap<String, PendingDelivery>,
-    pub(super) terminal_failed_deliveries: HashSet<String>,
+    pub(super) pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
+    pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
-    pub(super) delivery_states: HashMap<String, InboundDeliveryState>,
-    pub(super) agent_result_tokens: HashMap<String, String>,
+    pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
+    pub(super) agent_result_tokens: HashMap<String, WorkerName>,
     pub(super) dm_participants_cache: DmParticipantsCache,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
@@ -145,7 +145,7 @@ impl BrokerRuntime {
         });
         self.telemetry.shutdown();
 
-        let active_workers: Vec<String> = self.workers.workers.keys().cloned().collect();
+        let active_workers: Vec<WorkerName> = self.workers.workers.keys().cloned().collect();
         for worker_name in active_workers {
             if let Err(error) = self.relaycast_http.mark_agent_offline(&worker_name).await {
                 tracing::warn!(

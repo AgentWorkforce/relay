@@ -259,9 +259,9 @@ export type BrokerEvent =
       provider?: HeadlessProvider;
       cli?: string;
       model?: string;
+      sessionId?: string;
       parent?: string;
       pid?: number;
-      sessionId?: string;
       source?: string;
     }
   | {

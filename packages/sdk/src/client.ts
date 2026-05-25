@@ -14,6 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 import {
   BrokerTransport,
   AgentRelayProtocolError,
@@ -22,7 +23,6 @@ import {
 } from './transport.js';
 import { getBrokerBinaryPath, formatBrokerNotFoundError } from './broker-path.js';
 import type {
-  AgentRuntime,
   BrokerEvent,
   BrokerStats,
   BrokerStatus,
@@ -116,6 +116,21 @@ export interface AgentRelaySpawnOptions {
   /** Optional shared event bus — see {@link AgentRelayClientOptions.eventBus}. */
   eventBus?: EventBus<AgentRelayEvents>;
 }
+
+const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
+
+export const SpawnAgentResultSchema = z
+  .object({
+    success: z.boolean().optional(),
+    name: z.string(),
+    runtime: z.enum(['pty', 'headless']),
+    model: z.string().nullable().optional(),
+    pid: z.number().optional(),
+    pre_registered: z.boolean().optional(),
+    warning: z.string().nullable().optional(),
+    sessionId: optionalString,
+  })
+  .passthrough();
 
 export interface SessionInfo {
   broker_version: string;
@@ -600,10 +615,11 @@ export class AgentRelayClient {
     const t0 = Date.now();
     const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnPtyInput;
     try {
-      const result = await this.transport.request<SpawnAgentResult>('/api/spawn', {
+      const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnPtyBody(resolvedInput)),
       });
+      const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
       return result;
     } catch (err) {
@@ -634,10 +650,11 @@ export class AgentRelayClient {
     }
 
     try {
-      const result = await this.transport.request<SpawnAgentResult>('/api/spawn', {
+      const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
         body: JSON.stringify(buildSpawnProviderBody(resolvedInput, transport)),
       });
+      const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
       return result;
     } catch (err) {

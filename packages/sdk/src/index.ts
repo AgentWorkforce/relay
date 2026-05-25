@@ -10,6 +10,7 @@ export {
 } from './transport.js';
 export {
   AgentRelayClient,
+  SpawnAgentResultSchema,
   type AgentRelayBrokerInitArgs,
   type BrokerExitInfo,
   type AgentRelayClientOptions,

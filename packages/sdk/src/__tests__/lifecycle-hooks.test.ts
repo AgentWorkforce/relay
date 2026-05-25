@@ -71,6 +71,22 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(captures[0].path).toBe('/api/spawn');
   });
 
+  it('validates spawn responses before returning them', async () => {
+    const { fetchFn } = makeMockFetch([() => ({ name: 'agent-bad', runtime: 'invalid' })]);
+    const client = makeClient(fetchFn);
+
+    await expect(client.spawnPty({ name: 'agent-bad', cli: 'claude' })).rejects.toThrow();
+  });
+
+  it('normalizes null spawn sessionId to undefined', async () => {
+    const { fetchFn } = makeMockFetch([() => ({ name: 'agent-null', runtime: 'pty', sessionId: null })]);
+    const client = makeClient(fetchFn);
+
+    const result = await client.spawnPty({ name: 'agent-null', cli: 'claude' });
+
+    expect(result.sessionId).toBeUndefined();
+  });
+
   it('folds beforeAgentSpawn patches into resolvedInput before POST', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
@@ -208,6 +224,7 @@ describe('AgentRelayClient lifecycle hooks', () => {
     client.addListener('beforeAgentSpawn', () => ({
       harnessConfig: {
         runtime: 'headless',
+        driver: 'app_server',
         protocol: 'opencode',
         endpoint: 'http://127.0.0.1:4096',
         sessionId: 'ses_hook',
@@ -217,7 +234,6 @@ describe('AgentRelayClient lifecycle hooks', () => {
     await client.spawnProvider({
       name: 'patched-headless',
       provider: 'custom-provider',
-      transport: 'headless',
     });
 
     expect(captures[0].body).toMatchObject({
@@ -226,6 +242,7 @@ describe('AgentRelayClient lifecycle hooks', () => {
       transport: 'headless',
       harnessConfig: {
         runtime: 'headless',
+        driver: 'app_server',
         sessionId: 'ses_hook',
       },
     });

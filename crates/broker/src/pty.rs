@@ -462,7 +462,8 @@ impl PtySession {
     }
 
     pub fn child_pid(&self) -> Option<u32> {
-        self.child_pid
+        let child = self.child.lock();
+        child.process_id().or(self.child_pid)
     }
 
     /// Run a closure against the live `Term`, holding the term lock for the

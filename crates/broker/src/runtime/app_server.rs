@@ -150,7 +150,7 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                                 "delivery_id": &delivery_id,
                                 "event_id": &event_id,
                                 "agent": &worker_name,
-                                "timestamp": timestamp,
+                                "timestamp": chrono::Utc::now().timestamp_millis(),
                             }),
                         )
                         .await;
@@ -185,7 +185,7 @@ pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
                             json!({
                                 "code":"app_server_delivery_failed",
                                 "message": error.to_string(),
-                                "retryable": true,
+                                "retryable": false,
                             }),
                         )
                         .await;

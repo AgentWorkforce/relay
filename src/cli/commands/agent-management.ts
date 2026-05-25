@@ -14,11 +14,16 @@ type ShadowMode = 'subagent' | 'process';
 type ShadowTrigger = 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST' | 'EXPLICIT_ASK' | 'ALL_MESSAGES';
 
 type ExitFn = (code: number) => never;
+type AgentManagementSpawnResult = Awaited<ReturnType<AgentRelayClient['spawnPty']>> & {
+  sessionId?: string;
+  pid?: number;
+};
 
 interface WorkerInfo {
   name: string;
   runtime?: string;
   pid?: number;
+  sessionId?: string;
 }
 
 interface SetModelResult {
@@ -39,7 +44,7 @@ export interface AgentManagementClient {
     shadowMode?: ShadowMode;
     continueFrom?: string;
     skipRelayPrompt?: boolean;
-  }): Promise<unknown>;
+  }): Promise<AgentManagementSpawnResult>;
   listAgents(): Promise<WorkerInfo[]>;
   release(name: string, reason: string): Promise<unknown>;
   setModel(name: string, model: string, options: { timeoutMs: number }): Promise<SetModelResult>;
@@ -125,7 +130,14 @@ async function createSdkClient(cwd: string, autoStart: boolean): Promise<AgentMa
   }
 
   await waitForReadyBrokerClient(client);
-  return client as unknown as AgentManagementClient;
+  return {
+    spawnPty: (options) => client.spawnPty(options),
+    listAgents: () => client.listAgents(),
+    release: (name, reason) => client.release(name, reason),
+    setModel: (name, model, options) => client.setModel(name, model, options),
+    getMetrics: (agentName) => client.getMetrics(agentName),
+    shutdown: () => client.shutdown(),
+  };
 }
 
 function isBrokerWarmupError(err: unknown): boolean {
@@ -321,6 +333,10 @@ function parseShadowTriggers(
   return triggers;
 }
 
+function isShadowMode(value: string): value is ShadowMode {
+  return value === 'subagent' || value === 'process';
+}
+
 export function registerAgentManagementCommands(
   program: Command,
   overrides: Partial<AgentManagementDependencies> = {}
@@ -386,9 +402,15 @@ export function registerAgentManagementCommands(
           return;
         }
 
-        if (options.shadowMode && !['subagent', 'process'].includes(options.shadowMode)) {
-          deps.error('Error: --shadow-mode must be "subagent" or "process"');
-          deps.exit(1);
+        let shadowMode: ShadowMode | undefined;
+        if (options.shadowMode) {
+          if (isShadowMode(options.shadowMode)) {
+            shadowMode = options.shadowMode;
+          } else {
+            deps.error('Error: --shadow-mode must be "subagent" or "process"');
+            deps.exit(1);
+            return;
+          }
         }
 
         parseShadowTriggers(options.shadowTriggers, deps);
@@ -410,7 +432,7 @@ export function registerAgentManagementCommands(
         const continueFrom = options.continueFrom ?? (options.continue ? name : undefined);
 
         try {
-          await client.spawnPty({
+          const spawnResult = await client.spawnPty({
             name,
             cli,
             channels: ['general'],
@@ -419,7 +441,7 @@ export function registerAgentManagementCommands(
             model: options.model,
             cwd: options.cwd,
             shadowOf: options.shadowOf,
-            shadowMode: options.shadowMode as ShadowMode | undefined,
+            shadowMode,
             continueFrom,
             skipRelayPrompt: options.skipRelayPrompt,
           });
@@ -431,8 +453,14 @@ export function registerAgentManagementCommands(
             deps.error(`Warning: spawned ${name}, but failed to refresh agent list: ${detail}`);
           }
           const spawned = agents.find((agent) => agent.name === name);
-          if (spawned?.pid) {
-            deps.log(`Spawned agent: ${name} (pid: ${spawned.pid})`);
+          const sessionId = spawnResult?.sessionId ?? spawned?.sessionId;
+          const pid = spawned?.pid ?? spawnResult?.pid;
+          if (pid && sessionId) {
+            deps.log(`Spawned agent: ${name} (pid: ${pid}, session: ${sessionId})`);
+          } else if (pid) {
+            deps.log(`Spawned agent: ${name} (pid: ${pid})`);
+          } else if (sessionId) {
+            deps.log(`Spawned agent: ${name} (session: ${sessionId})`);
           } else {
             deps.log(`Spawned agent: ${name}`);
           }

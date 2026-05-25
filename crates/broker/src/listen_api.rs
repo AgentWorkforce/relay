@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    ids::{ChannelName, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId},
     protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
@@ -35,16 +36,16 @@ type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::syn
 #[allow(clippy::large_enum_variant)]
 pub enum ListenApiRequest {
     Spawn {
-        name: String,
+        name: WorkerName,
         cli: String,
         transport: Option<String>,
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
-        channels: Vec<String>,
+        channels: Vec<ChannelName>,
         cwd: Option<String>,
         team: Option<String>,
-        shadow_of: Option<String>,
+        shadow_of: Option<WorkerName>,
         shadow_mode: Option<String>,
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
@@ -56,13 +57,13 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
-        name: String,
+        name: WorkerName,
         model: String,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Release {
-        name: String,
+        name: WorkerName,
         reason: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
@@ -73,26 +74,26 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Send {
-        to: String,
+        to: MessageTarget,
         text: String,
         from: Option<String>,
-        thread_id: Option<String>,
-        workspace_id: Option<String>,
-        workspace_alias: Option<String>,
+        thread_id: Option<ThreadId>,
+        workspace_id: Option<WorkspaceId>,
+        workspace_alias: Option<WorkspaceAlias>,
         mode: MessageInjectionMode,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SendInput {
-        name: String,
+        name: WorkerName,
         data: String,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     CheckPtyInputTarget {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     ResizePty {
-        name: String,
+        name: WorkerName,
         rows: u16,
         cols: u16,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -107,7 +108,7 @@ pub enum ListenApiRequest {
     /// Fire-and-forget routes (`send_input`, `resize_pty`) keep their
     /// existing single-arm channel pattern.
     WorkerRequest {
-        name: String,
+        name: WorkerName,
         /// Outbound frame `type`, e.g. `"snapshot_pty"`. The worker is
         /// expected to reply with `"{kind}_response"`.
         kind: String,
@@ -120,7 +121,7 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, RequestWorkerError>>,
     },
     GetMetrics {
-        agent: Option<String>,
+        agent: Option<WorkerName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     GetStatus {
@@ -134,13 +135,13 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     UnsubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Shutdown {
@@ -152,7 +153,7 @@ pub enum ListenApiRequest {
     /// `GET /api/spawned/{name}/delivery-mode` — read the current inbound
     /// delivery mode.
     GetInboundDeliveryMode {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<InboundDeliveryMode, DeliveryRouteError>>,
     },
     /// `PUT /api/spawned/{name}/delivery-mode` — set the inbound delivery mode.
@@ -160,7 +161,7 @@ pub enum ListenApiRequest {
     /// queue into the worker (via the existing inject path) before
     /// replying; `flushed` reports how many messages were injected.
     SetInboundDeliveryMode {
-        name: String,
+        name: WorkerName,
         mode: InboundDeliveryMode,
         reply: tokio::sync::oneshot::Sender<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>,
     },
@@ -168,21 +169,21 @@ pub enum ListenApiRequest {
     /// pending-message queue (FIFO, head first). Auto-inject workers usually
     /// report an empty queue because they drain in the same broker turn.
     GetPending {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, DeliveryRouteError>>,
     },
     /// `POST /api/spawned/{name}/flush` — drain the pending queue and
     /// inject every message into the worker via the existing
     /// fire-and-forget inject path. Does *not* change the mode.
     FlushPending {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
     },
     /// `POST /api/agent-result` — accepts structured result payloads from the
     /// per-agent MCP tool using a callback token minted at spawn time.
     SubmitAgentResult {
         token: String,
-        name: Option<String>,
+        name: Option<WorkerName>,
         data: Value,
         final_result: bool,
         metadata: Option<Value>,
@@ -198,7 +199,7 @@ pub enum ListenApiRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryRouteError {
     /// No worker with that name is currently registered with the broker.
-    WorkerNotFound(String),
+    WorkerNotFound(WorkerName),
 }
 
 impl std::fmt::Display for DeliveryRouteError {
@@ -280,7 +281,7 @@ struct ListenApiState {
     /// relaycast.json or env var.
     workspace_key: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
-    default_workspace_id: Option<String>,
+    default_workspace_id: Option<WorkspaceId>,
     /// Broker version string (from Cargo.toml)
     broker_version: String,
     /// Whether the broker is in persist mode
@@ -314,7 +315,7 @@ pub struct ListenApiConfig {
     pub replay_buffer: ReplayBuffer,
     pub workspace_key: Option<String>,
     pub memberships: Vec<WorkspaceMembershipSummary>,
-    pub default_workspace_id: Option<String>,
+    pub default_workspace_id: Option<WorkspaceId>,
     pub persist: bool,
 }
 
@@ -431,7 +432,7 @@ fn listen_api_router_with_auth(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn listen_api_health_payload(
-    default_workspace_id: Option<String>,
+    default_workspace_id: Option<WorkspaceId>,
     memberships: Vec<WorkspaceMembershipSummary>,
 ) -> Value {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
@@ -443,7 +444,7 @@ pub(crate) fn listen_api_health_payload(
                 .first()
                 .map(|membership| membership.workspace_id.clone())
         })
-        .unwrap_or_else(|| "ws_unknown".to_string());
+        .unwrap_or_else(|| WorkspaceId::new("ws_unknown"));
 
     json!({
         "status": status,
@@ -714,16 +715,16 @@ async fn listen_api_spawn(
     if state
         .tx
         .send(ListenApiRequest::Spawn {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             cli,
             transport,
             model,
             args,
             task,
-            channels,
+            channels: channels.into_iter().map(ChannelName::from).collect(),
             cwd,
             team,
-            shadow_of,
+            shadow_of: shadow_of.map(WorkerName::from),
             shadow_mode,
             continue_from,
             idle_threshold_secs,
@@ -798,7 +799,7 @@ async fn listen_api_set_model(
     if state
         .tx
         .send(ListenApiRequest::SetModel {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             model: model.clone(),
             timeout_ms: body.timeout_ms,
             reply: reply_tx,
@@ -891,7 +892,7 @@ async fn listen_api_agent_result(
         .tx
         .send(ListenApiRequest::SubmitAgentResult {
             token,
-            name,
+            name: name.map(WorkerName::from),
             data,
             final_result,
             metadata,
@@ -929,7 +930,7 @@ async fn listen_api_release(
     if state
         .tx
         .send(ListenApiRequest::Release {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reason,
             reply: reply_tx,
         })
@@ -1061,12 +1062,12 @@ async fn listen_api_send(
     if state
         .tx
         .send(ListenApiRequest::Send {
-            to: to.clone(),
+            to: MessageTarget::new(to.clone()),
             text,
             from,
-            thread_id,
-            workspace_id,
-            workspace_alias,
+            thread_id: thread_id.map(ThreadId::from),
+            workspace_id: workspace_id.map(WorkspaceId::from),
+            workspace_alias: workspace_alias.map(WorkspaceAlias::from),
             mode,
             reply: reply_tx,
         })
@@ -1376,7 +1377,7 @@ async fn check_pty_input_target(
 ) -> Result<Value, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(ListenApiRequest::CheckPtyInputTarget {
-        name: name.to_string(),
+        name: WorkerName::from(name),
         reply: reply_tx,
     })
     .await
@@ -1393,7 +1394,7 @@ async fn send_pty_input_frame(
 ) -> Result<Value, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(ListenApiRequest::SendInput {
-        name: name.to_string(),
+        name: WorkerName::from(name),
         data,
         reply: reply_tx,
     })
@@ -1494,7 +1495,7 @@ async fn listen_api_resize_pty(
     if state
         .tx
         .send(ListenApiRequest::ResizePty {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             rows: body.rows,
             cols: body.cols,
             reply: reply_tx,
@@ -1547,7 +1548,7 @@ async fn listen_api_snapshot(
     if state
         .tx
         .send(ListenApiRequest::WorkerRequest {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             kind: "snapshot_pty".to_string(),
             payload: json!({ "format": format.as_wire_str() }),
             timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -1584,7 +1585,7 @@ async fn listen_api_get_inbound_delivery_mode(
     if state
         .tx
         .send(ListenApiRequest::GetInboundDeliveryMode {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1634,7 +1635,7 @@ async fn listen_api_set_inbound_delivery_mode(
     if state
         .tx
         .send(ListenApiRequest::SetInboundDeliveryMode {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             mode,
             reply: reply_tx,
         })
@@ -1667,7 +1668,7 @@ async fn listen_api_get_pending(
     if state
         .tx
         .send(ListenApiRequest::GetPending {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1690,19 +1691,28 @@ async fn listen_api_get_pending(
                     });
                     let obj = payload.as_object_mut().expect("payload object built above");
                     if let Some(thread_id) = m.thread_id {
-                        obj.insert("thread_id".to_string(), Value::String(thread_id));
+                        obj.insert(
+                            "thread_id".to_string(),
+                            Value::String(thread_id.into_string()),
+                        );
                     }
                     if let Some(workspace_id) = m.workspace_id {
-                        obj.insert("workspace_id".to_string(), Value::String(workspace_id));
+                        obj.insert(
+                            "workspace_id".to_string(),
+                            Value::String(workspace_id.into_string()),
+                        );
                     }
                     if let Some(workspace_alias) = m.workspace_alias {
                         obj.insert(
                             "workspace_alias".to_string(),
-                            Value::String(workspace_alias),
+                            Value::String(workspace_alias.into_string()),
                         );
                     }
                     if let Some(event_id) = m.event_id {
-                        obj.insert("event_id".to_string(), Value::String(event_id));
+                        obj.insert(
+                            "event_id".to_string(),
+                            Value::String(event_id.into_string()),
+                        );
                     }
                     payload
                 })
@@ -1731,7 +1741,7 @@ async fn listen_api_flush_pending(
     if state
         .tx
         .send(ListenApiRequest::FlushPending {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1820,7 +1830,7 @@ async fn listen_api_metrics(
     if state
         .tx
         .send(ListenApiRequest::GetMetrics {
-            agent: query.agent,
+            agent: query.agent.map(WorkerName::from),
             reply: reply_tx,
         })
         .await
@@ -1977,8 +1987,8 @@ async fn listen_api_subscribe_channels(
     if state
         .tx
         .send(ListenApiRequest::SubscribeChannels {
-            name: name.clone(),
-            channels: body.channels,
+            name: WorkerName::new(name.clone()),
+            channels: body.channels.into_iter().map(ChannelName::from).collect(),
             reply: reply_tx,
         })
         .await
@@ -2002,8 +2012,8 @@ async fn listen_api_unsubscribe_channels(
     if state
         .tx
         .send(ListenApiRequest::UnsubscribeChannels {
-            name: name.clone(),
-            channels: body.channels,
+            name: WorkerName::new(name.clone()),
+            channels: body.channels.into_iter().map(ChannelName::from).collect(),
             reply: reply_tx,
         })
         .await
@@ -2311,6 +2321,7 @@ mod auth_tests {
         listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
         PtyInputFrame, SetInboundDeliveryModeOk,
     };
+    use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
     use crate::protocol::MessageInjectionMode;
     use crate::types::{InboundDeliveryMode, PendingRelayMessage};
     use crate::worker_request::RequestWorkerError;
@@ -3701,19 +3712,19 @@ mod auth_tests {
                         PendingRelayMessage {
                             from: "Alice".to_string(),
                             body: "one".to_string(),
-                            target: "#general".to_string(),
-                            thread_id: Some("thr_42".to_string()),
-                            workspace_id: Some("ws_demo".to_string()),
-                            workspace_alias: Some("Demo".to_string()),
+                            target: MessageTarget::new("#general"),
+                            thread_id: Some(ThreadId::new("thr_42")),
+                            workspace_id: Some(WorkspaceId::new("ws_demo")),
+                            workspace_alias: Some(WorkspaceAlias::new("Demo")),
                             priority: 1,
                             mode: MessageInjectionMode::Steer,
                             queued_at_ms: 100,
-                            event_id: Some("evt_1".to_string()),
+                            event_id: Some(EventId::new("evt_1")),
                         },
                         PendingRelayMessage {
                             from: "Bob".to_string(),
                             body: "two".to_string(),
-                            target: "worker-a".to_string(),
+                            target: MessageTarget::new("worker-a"),
                             thread_id: None,
                             workspace_id: None,
                             workspace_alias: None,

@@ -51,7 +51,7 @@ function createHarness(opts: HarnessOptions = {}): {
     fetchLog.push({ url, method, body: bodyJson, headers });
     if (opts.spawnThrows) throw opts.spawnThrows;
     const status = opts.spawnStatus ?? 200;
-    const body = opts.spawnBody ?? { success: true, name: 'Alice' };
+    const body = opts.spawnBody ?? { success: true, name: 'Alice', runtime: 'pty' };
     return new Response(JSON.stringify(body), {
       status,
       headers: { 'Content-Type': 'application/json' },
@@ -330,7 +330,7 @@ function createAttachHarness(opts: AttachHarnessOptions = {}): {
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ name: 'Alice' }), {
+      return new Response(JSON.stringify({ name: 'Alice', runtime: 'pty' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -573,7 +573,7 @@ describe('registerNewCommands — --attach action integration', () => {
       if (url.endsWith('/api/spawn')) {
         const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : null;
         attachCaptures.spawnCalls.push({ url, body });
-        return new Response(JSON.stringify({ name: 'Alice' }), {
+        return new Response(JSON.stringify({ name: 'Alice', runtime: 'pty' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });

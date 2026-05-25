@@ -113,10 +113,10 @@ export interface ListAgent {
   provider?: HeadlessProvider;
   cli?: string;
   model?: string;
+  sessionId?: string;
   team?: string;
   channels: string[];
   parent?: string;
-  sessionId?: string;
   pid?: number;
   last_activity_at?: string;
   last_activity_ms?: number;

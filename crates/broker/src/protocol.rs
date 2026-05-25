@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::ids::{
+    ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
+    WorkspaceAlias, WorkspaceId,
+};
 use crate::supervisor::RestartPolicy;
 
 pub const PROTOCOL_VERSION: u32 = 2;
@@ -197,7 +201,7 @@ impl ResolvedHarnessConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentSpec {
-    pub name: String,
+    pub name: WorkerName,
     pub runtime: AgentRuntime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<HeadlessProvider>,
@@ -221,13 +225,13 @@ pub struct AgentSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadow_of: Option<String>,
+    pub shadow_of: Option<WorkerName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow_mode: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
-    pub channels: Vec<String>,
+    pub channels: Vec<ChannelName>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_policy: Option<RestartPolicy>,
 }
@@ -242,17 +246,17 @@ pub enum MessageInjectionMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDelivery {
-    pub delivery_id: String,
-    pub event_id: String,
+    pub delivery_id: DeliveryId,
+    pub event_id: EventId,
     #[serde(default)]
-    pub workspace_id: Option<String>,
+    pub workspace_id: Option<WorkspaceId>,
     #[serde(default)]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub from: String,
-    pub target: String,
+    pub target: MessageTarget,
     pub body: String,
     #[serde(default)]
-    pub thread_id: Option<String>,
+    pub thread_id: Option<ThreadId>,
     #[serde(default)]
     pub priority: Option<u8>,
     #[serde(default)]
@@ -265,7 +269,7 @@ pub struct ProtocolEnvelope<T> {
     #[serde(rename = "type")]
     pub msg_type: String,
     #[serde(default)]
-    pub request_id: Option<String>,
+    pub request_id: Option<RequestId>,
     pub payload: T,
 }
 
@@ -280,31 +284,31 @@ pub enum SdkToBroker {
         agent: Box<AgentSpec>,
     },
     SendMessage {
-        to: String,
+        to: MessageTarget,
         text: String,
         #[serde(default)]
         from: Option<String>,
         #[serde(default)]
-        thread_id: Option<String>,
+        thread_id: Option<ThreadId>,
         #[serde(default)]
-        workspace_id: Option<String>,
+        workspace_id: Option<WorkspaceId>,
         #[serde(default)]
-        workspace_alias: Option<String>,
+        workspace_alias: Option<WorkspaceAlias>,
         #[serde(default)]
         priority: Option<u8>,
         #[serde(default)]
         mode: MessageInjectionMode,
     },
     ReleaseAgent {
-        name: String,
+        name: WorkerName,
     },
     SubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
     },
     UnsubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
     },
     ListAgents {},
     Shutdown {},
@@ -337,128 +341,128 @@ pub struct ProtocolError {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerEvent {
     AgentSpawned {
-        name: String,
+        name: WorkerName,
         runtime: AgentRuntime,
         #[serde(default)]
         provider: Option<HeadlessProvider>,
-        parent: Option<String>,
+        parent: Option<WorkerName>,
         cli: Option<String>,
         model: Option<String>,
-        pid: Option<u32>,
-        #[serde(default)]
+        #[serde(default, rename = "sessionId")]
         session_id: Option<String>,
+        pid: Option<u32>,
         source: Option<String>,
     },
     AgentReleased {
-        name: String,
+        name: WorkerName,
     },
     AgentExit {
-        name: String,
+        name: WorkerName,
         reason: String,
     },
     AgentExited {
-        name: String,
+        name: WorkerName,
         code: Option<i32>,
         signal: Option<String>,
         #[serde(default)]
         reason: Option<String>,
     },
     AgentContextLow {
-        name: String,
+        name: WorkerName,
         pct: u8,
     },
     RelayInbound {
-        event_id: String,
+        event_id: EventId,
         from: String,
-        target: String,
+        target: MessageTarget,
         body: String,
-        thread_id: Option<String>,
+        thread_id: Option<ThreadId>,
     },
     WorkerStream {
-        name: String,
+        name: WorkerName,
         stream: String,
         chunk: String,
     },
     DeliveryRetry {
-        name: String,
-        delivery_id: String,
-        event_id: String,
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
         attempts: u32,
     },
     DeliveryDropped {
-        name: String,
+        name: WorkerName,
         count: usize,
         reason: String,
     },
     DeliveryVerified {
-        name: String,
-        delivery_id: String,
-        event_id: String,
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
     },
     DeliveryFailed {
-        name: String,
-        delivery_id: String,
-        event_id: String,
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
         reason: String,
     },
     MessageDeliveryConfirmed {
-        name: String,
-        delivery_id: String,
-        event_id: String,
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
         from: String,
-        to: String,
+        to: MessageTarget,
     },
     MessageDeliveryFailed {
-        name: String,
+        name: WorkerName,
         #[serde(default)]
-        delivery_id: Option<String>,
+        delivery_id: Option<DeliveryId>,
         #[serde(default)]
-        event_id: Option<String>,
+        event_id: Option<EventId>,
         from: String,
-        to: String,
+        to: MessageTarget,
         attempts: u32,
         #[serde(rename = "lastError")]
         last_error: String,
     },
     DeliveryQueued {
-        delivery_id: String,
-        agent: String,
+        delivery_id: DeliveryId,
+        agent: WorkerName,
     },
     DeliveryInjected {
-        delivery_id: String,
-        agent: String,
+        delivery_id: DeliveryId,
+        agent: WorkerName,
     },
     DeliveryActive {
-        delivery_id: String,
-        agent: String,
+        delivery_id: DeliveryId,
+        agent: WorkerName,
     },
     DeliveryAck {
-        delivery_id: String,
-        agent: String,
+        delivery_id: DeliveryId,
+        agent: WorkerName,
     },
     AclDenied {
-        name: String,
+        name: WorkerName,
         sender: String,
-        owner_chain: Vec<String>,
+        owner_chain: Vec<WorkerName>,
     },
     RelaycastPublished {
-        event_id: String,
-        to: String,
+        event_id: EventId,
+        to: MessageTarget,
         target_type: String,
     },
     RelaycastPublishFailed {
-        event_id: String,
-        to: String,
+        event_id: EventId,
+        to: MessageTarget,
         reason: String,
     },
     AgentIdle {
-        name: String,
+        name: WorkerName,
         idle_secs: u64,
         #[serde(default)]
         since: Option<String>,
     },
     AgentResult {
-        name: String,
+        name: WorkerName,
         result_id: String,
         data: Value,
         #[serde(rename = "final")]
@@ -467,12 +471,12 @@ pub enum BrokerEvent {
         metadata: Option<Value>,
     },
     AgentBlockedOnSend {
-        name: String,
+        name: WorkerName,
         blocked_secs: u64,
         pending_delivery_count: usize,
     },
     AgentRestarting {
-        name: String,
+        name: WorkerName,
         #[serde(rename = "code")]
         exit_code: Option<i32>,
         signal: Option<String>,
@@ -480,20 +484,20 @@ pub enum BrokerEvent {
         delay_ms: u64,
     },
     AgentRestarted {
-        name: String,
+        name: WorkerName,
         restart_count: u32,
     },
     AgentPermanentlyDead {
-        name: String,
+        name: WorkerName,
         reason: String,
     },
     ChannelSubscribed {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
     },
     ChannelUnsubscribed {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
     },
 }
 
@@ -522,20 +526,20 @@ pub enum BrokerToWorker {
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum WorkerToBroker {
     WorkerReady {
-        name: String,
+        name: WorkerName,
         runtime: AgentRuntime,
     },
     DeliveryAck {
-        delivery_id: String,
-        event_id: String,
+        delivery_id: DeliveryId,
+        event_id: EventId,
     },
     DeliveryVerified {
-        delivery_id: String,
-        event_id: String,
+        delivery_id: DeliveryId,
+        event_id: EventId,
     },
     DeliveryFailed {
-        delivery_id: String,
-        event_id: String,
+        delivery_id: DeliveryId,
+        event_id: EventId,
         reason: String,
     },
     WorkerStream {
@@ -561,13 +565,14 @@ mod tests {
         HeadlessProvider, MessageInjectionMode, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, WorkerToBroker, PROTOCOL_VERSION,
     };
+    use crate::ids::RequestId;
 
     #[test]
     fn sdk_envelope_round_trip() {
         let frame = ProtocolEnvelope {
             v: PROTOCOL_VERSION,
             msg_type: "spawn_agent".to_string(),
-            request_id: Some("req_1".to_string()),
+            request_id: Some(RequestId::new("req_1")),
             payload: json!({
                 "agent": {
                     "name": "Worker1",
@@ -644,8 +649,8 @@ mod tests {
             parent: Some("Lead".into()),
             cli: None,
             model: None,
-            pid: None,
             session_id: None,
+            pid: None,
             source: None,
         });
         let encoded = serde_json::to_string(&event).unwrap();
