@@ -223,6 +223,44 @@ relay.register_harness(
 
 This pattern is useful for internal wrappers, renamed binaries, or local installs that need different search paths while still behaving like a known coding harness.
 
+## Harness lifecycle
+
+Harness lifecycle is the broker-owned spawn preparation for a CLI. It is not a callback function inside `HarnessDefinition`; the definition is serializable config that tells the broker which lifecycle adapter to use and how to render the command.
+
+For PTY-backed spawning, Relay applies a harness in this order:
+
+1. **Select the harness.** The SDK sends the per-spawn `harness` when present. Otherwise it uses the harness registered on the `AgentRelay` instance, then the built-in registry for the requested `cli`.
+2. **Resolve the adapter.** The broker normalizes the `cli` name and reads `adapter`. If `adapter` names a built-in lifecycle such as `codex`, `claude`, `opencode`, or `cursor`, the broker starts from that built-in definition and applies your overrides.
+3. **Resolve the executable.** The broker tries `binaries` in order, or `binary`, then the requested `cli`. `searchPaths` are checked before `PATH`, and `~` expands to the user home directory.
+4. **Prepare adapter behavior.** Built-in adapters add CLI-specific setup such as Relay MCP wiring, session handling, model fallbacks, config-file writes, or bypass flag handling. Generic custom adapters skip built-in setup and rely on the fields in the harness definition.
+5. **Render argv.** The broker computes `{bypass}`, `{modelArgs}`, `{mcpArgs}`, `{args}`, and `{sessionArgs}`, then renders `interactiveArgs`. Placeholders that represent vectors should be their own argv item.
+6. **Start and report lifecycle.** The broker starts the PTY process, registers the worker, and emits normal agent lifecycle events such as `agentSpawned`, `agentReady`, `agentIdle`, `agentExited`, and `agentReleased`.
+
+The `adapter` field is what selects broker-owned lifecycle behavior. The executable name is independent:
+
+| Harness | `adapter` | Lifecycle behavior |
+| --- | --- | --- |
+| `codex` | `codex` | Adds Relay MCP `--config` values, disables the Codex update prompt, applies Codex model fallback behavior, and creates resumable sessions when the spawn does not already provide a prompt, subcommand, or session reference. |
+| `company-codex` | `codex` | Runs your wrapper binary while keeping the Codex lifecycle above. |
+| `claude` | `claude` | Adds Relay MCP config with `--mcp-config` and manages Claude session flags unless the caller already supplied resume or session options. |
+| `opencode` | `opencode` | Writes or updates `opencode.json` for Relay MCP and selects the `relaycast` OpenCode agent when the caller did not provide `--agent`. |
+| `cursor` | `cursor` | Resolves Cursor Agent binary aliases and writes `.cursor/mcp.json` for Relay MCP. |
+| `qwen` | `qwen` | Uses generic template rendering. `{mcpArgs}` is empty until Relay has a lifecycle adapter that knows how to configure Qwen's MCP surface. |
+
+<Note>
+Custom harnesses do not need Rust when they only need different binaries, args, model flags, bypass flags, search paths, or non-interactive workflow behavior. A new broker lifecycle adapter is only needed when the CLI requires custom broker-side work, such as writing a config file, minting a session before spawn, or translating Relay MCP config into a CLI-specific format. Built-in lifecycle adapters live in the broker so all SDKs and agent-initiated spawns get the same behavior.
+</Note>
+
+### Lifecycle hooks and events
+
+Harness lifecycle runs inside the broker after the spawn request is accepted. SDK event handlers are separate:
+
+- `beforeAgentSpawn` and `afterAgentSpawn` in the TypeScript SDK run at the SDK call site before and after the HTTP spawn request. `beforeAgentSpawn` can patch fields such as `args`, `channels`, `task`, `model`, `harness`, `team`, or `agentToken` before the broker sees them.
+- Per-spawn `onStart`, `onSuccess`, and `onError` callbacks run only for the spawn call that provided them.
+- Broker events such as `agentSpawned`, `agentReady`, `agentIdle`, and `agentExited` fire after the broker observes those process lifecycle changes.
+
+Use the [event handlers](/docs/event-handlers) page for telemetry, audit logging, UI updates, and spawn input patching. Use harness definitions for durable command construction and adapter selection.
+
 ## Workflow YAML
 
 Workflow YAML uses the same `harnesses` map. Interactive workflow agents use the harness for broker spawning. Non-interactive agents use `nonInteractiveArgs` to run a one-shot command.
@@ -289,7 +327,7 @@ Use placeholders as whole argv items when they expand to multiple arguments:
 The `{{placeholder}}` form is also accepted. For vector placeholders such as `{mcpArgs}` and `{args}`, keep the placeholder as its own array item so it can expand to zero or more argv items.
 
 <Note>
-If you override `interactiveArgs`, include `{mcpArgs}` unless the CLI does not need Relay messaging. Omitting it prevents Relay from passing the MCP configuration and protocol prompt into the spawned process.
+If you override `interactiveArgs`, include `{mcpArgs}` when using a built-in or compatible adapter that produces Relay MCP arguments. For a brand-new CLI, `{mcpArgs}` stays empty until Relay has a lifecycle adapter that can translate Relay MCP config into that CLI's format.
 </Note>
 
 ## See Also

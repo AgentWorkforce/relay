@@ -1,0 +1,53 @@
+{
+  "id": "traj_qpefcnn38jnx",
+  "version": 1,
+  "task": {
+    "title": "Document harness lifecycle"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T13:32:44.211Z",
+  "completedAt": "2026-05-25T13:36:05.155Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T13:36:00.434Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_f6hx4z58mixx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T13:36:00.434Z",
+      "endedAt": "2026-05-25T13:36:05.155Z",
+      "events": [
+        {
+          "ts": 1779716160435,
+          "type": "decision",
+          "content": "Documented harness lifecycle as broker-owned adapter preparation: Documented harness lifecycle as broker-owned adapter preparation",
+          "raw": {
+            "question": "Documented harness lifecycle as broker-owned adapter preparation",
+            "chosen": "Documented harness lifecycle as broker-owned adapter preparation",
+            "alternatives": [],
+            "reasoning": "The shipped behavior keeps executable config serializable in SDKs while CLI-specific MCP/session setup runs in Rust broker adapters; docs need to clarify where hooks and custom harness definitions fit."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added harness lifecycle documentation to the Harnesses docs page, covering SDK selection, broker adapter resolution, executable lookup, built-in adapter preparation, argv rendering, runtime events, and how SDK hooks differ from broker lifecycle adapters.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "<repo-root>",
+  "tags": [],
+  "_trace": {
+    "startRef": "2b405d09bd018f5d395a5c07acfc71c1bd3b1488",
+    "endRef": "2b405d09bd018f5d395a5c07acfc71c1bd3b1488"
+  }
+}
