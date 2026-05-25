@@ -16,7 +16,7 @@ import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 
-const RELAYFILE_VERSION = '0.1.6';
+const RELAYFILE_VERSION = '0.7.39';
 const RELEASE_BASE_URL = 'https://github.com/AgentWorkforce/relayfile/releases/download';
 const CHECKSUMS_FILE = 'checksums.txt';
 const CACHE_DIR = path.join(os.homedir(), '.agent-relay', 'bin');
