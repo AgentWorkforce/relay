@@ -1,3 +1,6 @@
+import { homedir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgentRelayClient } from '../client.js';
@@ -55,6 +58,19 @@ describe('harness plans', () => {
 
   it('looks up harnesses by full cli, executable token, and model suffix base', () => {
     expect(harnessLookupKeys('qwen:coder --fast')).toEqual(['qwen:coder --fast', 'qwen:coder', 'qwen']);
+  });
+
+  it('expands home directories in direct command paths', () => {
+    const plan = resolveStaticHarnessPlan({
+      name: 'ClaudeReviewer',
+      cli: 'claude',
+      definition: {
+        runtime: 'pty',
+        command: '~/bin/claude',
+      },
+    });
+
+    expect(plan.command).toBe(path.join(homedir(), 'bin/claude'));
   });
 
   it('serializes resolved harness plans on spawn requests', async () => {

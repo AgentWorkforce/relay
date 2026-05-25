@@ -489,6 +489,8 @@ type OutputListener = {
 
 type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
+  _setMetadata: (metadata?: { sessionId?: string; pid?: number }) => void;
+  _setRuntime: (runtime: AgentRuntime) => void;
 };
 
 type InternalAgentResultContract<T = unknown> = {
@@ -917,8 +919,12 @@ export class AgentRelay {
       this.resultContracts.delete(input.name);
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
-    const agent = this.makeAgent(result.name, result.runtime, channels, result) as Agent<TAgentResult>;
-    this.knownAgents.set(agent.name, agent);
+    const agent = this.ensureAgentHandle(
+      result.name,
+      result.runtime,
+      channels,
+      result
+    ) as Agent<TAgentResult>;
     await this.invokeLifecycleHook(
       input.onSuccess,
       {
@@ -1186,7 +1192,10 @@ export class AgentRelay {
     const list = await client.listAgents();
     return list.map((entry) => {
       const existing = this.knownAgents.get(entry.name);
-      if (existing) return existing;
+      if (existing) {
+        this.updateAgentHandle(existing, entry.runtime, entry.channels, entry);
+        return existing;
+      }
       const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry);
       this.knownAgents.set(agent.name, agent);
       return agent;
@@ -1484,11 +1493,26 @@ export class AgentRelay {
   ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
+      this.updateAgentHandle(existing, runtime, channels, metadata);
       return existing;
     }
     const agent = this.makeAgent(name, runtime, channels, metadata);
     this.knownAgents.set(name, agent);
     return agent;
+  }
+
+  private updateAgentHandle(
+    agent: Agent,
+    runtime: AgentRuntime,
+    channels: string[],
+    metadata?: { sessionId?: string; pid?: number }
+  ): void {
+    const internal = agent as InternalAgent;
+    internal._setRuntime(runtime);
+    if (channels.length > 0) {
+      internal._setChannels([...new Set([...agent.channels, ...channels])]);
+    }
+    internal._setMetadata(metadata);
   }
 
   private updateDeliveryState(
@@ -2086,11 +2110,20 @@ export class AgentRelay {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
+    let agentRuntime = runtime;
+    let sessionId = metadata?.sessionId;
+    let pid = metadata?.pid;
     const agent: InternalAgent = {
       name,
-      runtime,
-      sessionId: metadata?.sessionId,
-      pid: metadata?.pid,
+      get runtime() {
+        return agentRuntime;
+      },
+      get sessionId() {
+        return sessionId;
+      },
+      get pid() {
+        return pid;
+      },
       get channels() {
         return [...agentChannels];
       },
@@ -2300,6 +2333,17 @@ export class AgentRelay {
       _setChannels(nextChannels: string[]) {
         agentChannels = [...nextChannels];
       },
+      _setMetadata(nextMetadata) {
+        if (nextMetadata?.sessionId !== undefined) {
+          sessionId = nextMetadata.sessionId;
+        }
+        if (nextMetadata?.pid !== undefined) {
+          pid = nextMetadata.pid;
+        }
+      },
+      _setRuntime(nextRuntime: AgentRuntime) {
+        agentRuntime = nextRuntime;
+      },
     };
     return agent;
   }
@@ -2392,8 +2436,12 @@ export class AgentRelay {
           this.resultContracts.delete(name);
           this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
         }
-        const agent = this.makeAgent(result.name, result.runtime, channels, result) as Agent<TAgentResult>;
-        this.knownAgents.set(agent.name, agent);
+        const agent = this.ensureAgentHandle(
+          result.name,
+          result.runtime,
+          channels,
+          result
+        ) as Agent<TAgentResult>;
         await this.invokeLifecycleHook(
           options?.onSuccess,
           {

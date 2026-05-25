@@ -613,13 +613,6 @@ export class AgentRelayClient {
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<SpawnAgentResult> {
-    const transport = resolveSpawnTransport(input);
-    if (transport === 'headless' && !isHeadlessProvider(input.provider) && !input.harnessPlan) {
-      throw new Error(
-        `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
-      );
-    }
-
     const beforeCtx: BeforeAgentSpawnContext = {
       kind: 'provider',
       input,
@@ -629,6 +622,17 @@ export class AgentRelayClient {
     };
     const t0 = Date.now();
     const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnProviderInput;
+    const transport = resolveSpawnTransport(resolvedInput);
+    if (
+      transport === 'headless' &&
+      !isHeadlessProvider(resolvedInput.provider) &&
+      !resolvedInput.harnessPlan
+    ) {
+      throw new Error(
+        `provider '${resolvedInput.provider}' does not support headless transport (supported: claude, opencode)`
+      );
+    }
+
     try {
       const result = await this.transport.request<SpawnAgentResult>('/api/spawn', {
         method: 'POST',

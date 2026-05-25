@@ -208,17 +208,18 @@ function isExactPlaceholder(value: string, name: string): boolean {
 }
 
 function resolveCommand(command: string, searchPaths?: string[]): string {
-  if (!searchPaths?.length || command.includes('/') || command.includes('\\')) {
-    return command;
+  const expandedCommand = expandHome(command);
+  if (!searchPaths?.length || expandedCommand.includes('/') || expandedCommand.includes('\\')) {
+    return expandedCommand;
   }
 
   for (const searchPath of searchPaths) {
-    const candidate = path.join(expandHome(searchPath), command);
+    const candidate = path.join(expandHome(searchPath), expandedCommand);
     if (existsSync(candidate)) {
       return candidate;
     }
   }
-  return command;
+  return expandedCommand;
 }
 
 function expandHome(value: string): string {

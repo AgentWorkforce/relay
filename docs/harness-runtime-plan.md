@@ -37,7 +37,7 @@ type PtyHarnessPlan = {
   env?: Record<string, string>;
   sessionId?: string;
   delivery?: {
-    mode: 'pty-injection';
+    mode?: 'pty-injection';
     format?: 'relay-block';
   };
   metadata?: Record<string, unknown>;
@@ -61,7 +61,7 @@ type HeadlessAppServerHarnessPlan = {
     password?: string;
   };
   host?: {
-    ownership: 'broker-owned' | 'attached';
+    ownership?: 'broker-owned' | 'attached';
     pid?: number;
   };
   release?: 'abort' | 'detach' | 'delete';
@@ -169,8 +169,12 @@ Headless runtimes do not expose PTY input, resize, or snapshot capabilities.
 Event hooks are non-blocking subscriptions:
 
 ```ts
-relay.on('agent.spawned', async (event) => {
-  await posthog.capture(...);
+relay.addListener('agentSpawned', async (agent) => {
+  await posthog.capture({
+    distinctId: agent.name,
+    event: 'agent_spawned',
+    properties: { runtime: agent.runtime },
+  });
 });
 ```
 

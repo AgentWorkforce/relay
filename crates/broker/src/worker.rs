@@ -32,6 +32,13 @@ use crate::{
     spawner::terminate_child,
 };
 
+const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
+    "AGENT_RELAY_APP_SERVER_AUTH_TYPE",
+    "AGENT_RELAY_APP_SERVER_AUTH_TOKEN",
+    "AGENT_RELAY_APP_SERVER_AUTH_USERNAME",
+    "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
+];
+
 pub(crate) mod detection;
 
 #[derive(Debug)]
@@ -229,6 +236,7 @@ impl WorkerRegistry {
         let mut command =
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
         let mut harness_env: Vec<(String, String)> = Vec::new();
+        let mut suppress_worker_env: Vec<&'static str> = Vec::new();
 
         match spec.harness_plan.clone() {
             Some(ResolvedHarnessPlan::Pty(plan)) => {
@@ -321,6 +329,11 @@ impl WorkerRegistry {
                 command
                     .arg("--release")
                     .arg(release_policy_arg(plan.release.as_ref()));
+
+                suppress_worker_env.extend(APP_SERVER_AUTH_ENV_KEYS);
+                for key in APP_SERVER_AUTH_ENV_KEYS {
+                    command.env_remove(key);
+                }
 
                 if let Some(auth) = plan.auth {
                     harness_env.push((
@@ -512,6 +525,12 @@ impl WorkerRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in &self.worker_env {
+            if suppress_worker_env
+                .iter()
+                .any(|blocked| key.as_str() == *blocked)
+            {
+                continue;
+            }
             command.env(key, value);
         }
         for (key, value) in &harness_env {

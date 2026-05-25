@@ -8,13 +8,18 @@ struct AppServerAuthConfig {
     password: Option<String>,
 }
 
+const APP_SERVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
     let protocol = cmd.protocol.trim().to_ascii_lowercase();
     let endpoint = cmd.endpoint.trim().trim_end_matches('/').to_string();
     let session_id = cmd.session_id.clone();
     let release = cmd.release.trim().to_ascii_lowercase();
     let auth = app_server_auth_from_env();
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .timeout(APP_SERVER_HTTP_TIMEOUT)
+        .build()
+        .context("failed to build app-server HTTP client")?;
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
     let writer_task = tokio::spawn(async move {

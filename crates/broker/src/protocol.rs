@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::supervisor::RestartPolicy;
@@ -129,11 +129,49 @@ pub struct HeadlessHarnessPlan {
     pub metadata: Option<HashMap<String, Value>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "runtime", rename_all = "snake_case")]
 pub enum ResolvedHarnessPlan {
     Pty(PtyHarnessPlan),
     Headless(HeadlessHarnessPlan),
+}
+
+impl<'de> Deserialize<'de> for ResolvedHarnessPlan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        let runtime = value
+            .get("runtime")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| serde::de::Error::missing_field("runtime"))?;
+
+        match runtime.as_str() {
+            "pty" => serde_json::from_value(value)
+                .map(Self::Pty)
+                .map_err(serde::de::Error::custom),
+            "headless" => serde_json::from_value(value)
+                .map(Self::Headless)
+                .map_err(serde::de::Error::custom),
+            "app_server" => {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "driver".to_string(),
+                        Value::String("app_server".to_string()),
+                    );
+                }
+                serde_json::from_value(value)
+                    .map(Self::Headless)
+                    .map_err(serde::de::Error::custom)
+            }
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["pty", "headless", "app_server"],
+            )),
+        }
+    }
 }
 
 impl ResolvedHarnessPlan {
@@ -511,9 +549,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessProvider,
-        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessPlan, WorkerToBroker,
-        PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, BrokerEvent, BrokerToSdk, BrokerToWorker, HeadlessHarnessDriver,
+        HeadlessProvider, MessageInjectionMode, ProtocolEnvelope, RelayDelivery,
+        ResolvedHarnessPlan, WorkerToBroker, PROTOCOL_VERSION,
     };
 
     #[test]
@@ -785,6 +823,24 @@ mod tests {
         assert!(encoded.contains("\"sessionId\":\"ses_123\""));
         let decoded: ResolvedHarnessPlan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.session_id(), Some("ses_123"));
+    }
+
+    #[test]
+    fn legacy_app_server_harness_plan_deserializes_as_headless() {
+        let raw = json!({
+            "runtime": "app_server",
+            "protocol": "opencode",
+            "endpoint": "http://127.0.0.1:4096",
+            "sessionId": "ses_legacy"
+        });
+
+        let plan: ResolvedHarnessPlan = serde_json::from_value(raw).unwrap();
+        assert_eq!(plan.runtime(), AgentRuntime::Headless);
+        assert_eq!(plan.session_id(), Some("ses_legacy"));
+        let ResolvedHarnessPlan::Headless(plan) = plan else {
+            panic!("expected headless harness plan");
+        };
+        assert_eq!(plan.driver, HeadlessHarnessDriver::AppServer);
     }
 
     #[test]
