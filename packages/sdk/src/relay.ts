@@ -976,7 +976,7 @@ export class AgentRelay {
         args: mergedArgs,
         ...(task !== undefined ? { task } : {}),
         channels: options.channels,
-        model: plan.persona.model,
+        model: options.model ?? plan.persona.model,
         cwd: handle.cwd,
         team: options.team,
         agentToken: options.agentToken,

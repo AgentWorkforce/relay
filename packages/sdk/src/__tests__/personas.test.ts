@@ -347,7 +347,7 @@ test('findPersona skips a malformed shadow file at the conventional path', () =>
     });
     assert.ok(found, 'should fall through to the valid persona in the lower-priority dir');
     assert.match(found?.path ?? '', /frontend\.json$/);
-    assert.notMatch(found?.path ?? '', new RegExp(shadowDir));
+    assert.notEqual(found?.path, join(shadowDir, 'frontend.json'));
   } finally {
     otherFix.cleanup();
     fix.cleanup();
