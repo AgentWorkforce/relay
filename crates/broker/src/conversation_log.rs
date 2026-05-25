@@ -87,7 +87,7 @@ impl ConversationLog {
         let msg_type = match event.kind {
             crate::types::InboundKind::DmReceived => "DM".to_string(),
             crate::types::InboundKind::GroupDmReceived => "Group DM".to_string(),
-            crate::types::InboundKind::MessageCreated => event.target.clone(),
+            crate::types::InboundKind::MessageCreated => event.target.as_str().to_string(),
             crate::types::InboundKind::ThreadReply => format!(
                 "Thread {}",
                 short_id(event.thread_id.as_deref().unwrap_or("?"))

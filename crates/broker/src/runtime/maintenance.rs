@@ -33,7 +33,7 @@ impl BrokerRuntime {
             );
         }
 
-        let due_ids: Vec<String> = pending_deliveries
+        let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
             .filter_map(|(delivery_id, pending)| {
                 if pending.next_retry_at <= now {
@@ -90,7 +90,7 @@ impl BrokerRuntime {
             let (category, description) =
                 crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
             crash_insights.record(crate::crash_insights::CrashRecord {
-                agent_name: name.clone(),
+                agent_name: name.as_str().to_string(),
                 exit_code: *code,
                 signal: signal.clone(),
                 timestamp: std::time::SystemTime::now()
@@ -257,6 +257,7 @@ impl BrokerRuntime {
         if !*shutdown {
             let pending_restarts = workers.supervisor.pending_restarts();
             for (name, rst) in pending_restarts {
+                let name = WorkerName::from(name);
                 if let Some(remaining) = relaycast_http.registration_block_remaining(&name) {
                     tracing::debug!(
                         worker = %name,
