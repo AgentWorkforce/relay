@@ -84,9 +84,7 @@ export interface AgentDefinition {
   skills?: string;
 }
 
-export type AgentCli =
-  | KnownAgentCli
-  | (string & {});
+export type AgentCli = KnownAgentCli | (string & {});
 
 export type KnownAgentCli =
   | 'claude'
@@ -112,6 +110,12 @@ export type KnownAgentCli =
  * placeholders expand to argument arrays instead of a single string.
  */
 export interface HarnessDefinition {
+  /**
+   * Lifecycle adapter id for broker-owned behavior. Defaults to the harness
+   * name. Use a built-in id such as `codex`, `claude`, or `opencode` when a
+   * custom binary should keep that harness's session/MCP behavior.
+   */
+  adapter?: string;
   /** Primary binary to execute. Shorthand for `binaries: [binary]`. */
   binary?: string;
   /** Binary names to try, in preference order. Defaults to the harness name. */

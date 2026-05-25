@@ -234,11 +234,12 @@ impl WorkerRegistry {
         match spec.runtime {
             AgentRuntime::Pty => {
                 let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
-                let harness = spec.harness.clone();
                 let (parsed_cli, inline_cli_args) = parse_cli_command(cli)
                     .with_context(|| format!("invalid CLI command '{cli}'"))?;
+                let harness = resolve_harness_definition(&parsed_cli, spec.harness.clone());
+                spec.harness = harness.clone();
                 let resolved_cli = resolve_harness_command(&parsed_cli, harness.as_ref());
-                let normalized_cli = normalize_cli_name(&resolved_cli);
+                let adapter_cli = harness_adapter_key(&resolved_cli, harness.as_ref());
                 let mut effective_args = inline_cli_args;
                 effective_args.extend(spec.args.clone());
 
@@ -249,7 +250,7 @@ impl WorkerRegistry {
                 }
                 command.arg(&resolved_cli);
 
-                let cli_lower = normalized_cli.to_lowercase();
+                let cli_lower = adapter_cli.to_lowercase();
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
@@ -343,7 +344,7 @@ impl WorkerRegistry {
 
                 let mcp_args = self
                     .build_mcp_args(
-                        cli,
+                        &adapter_cli,
                         &spec.name,
                         &effective_args,
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
@@ -954,6 +955,213 @@ fn fallback_path_env() -> OsString {
     }
 }
 
+fn harness_name_key(cli: &str) -> String {
+    normalize_cli_name(cli)
+        .split(':')
+        .next()
+        .unwrap_or(cli)
+        .to_lowercase()
+}
+
+fn builtin_harness_definition(adapter: &str) -> Option<HarnessDefinition> {
+    let key = harness_name_key(adapter);
+    let mut definition = HarnessDefinition {
+        adapter: Some(key.clone()),
+        ..Default::default()
+    };
+
+    match key.as_str() {
+        "claude" => {
+            definition.binary = Some("claude".to_string());
+            definition.non_interactive_args = vec![
+                "-p".to_string(),
+                "{bypass}".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            definition.bypass_flag = Some("--dangerously-skip-permissions".to_string());
+            definition.search_paths = vec!["~/.claude/local".to_string()];
+            Some(definition)
+        }
+        "codex" => {
+            definition.binary = Some("codex".to_string());
+            definition.non_interactive_args = vec![
+                "exec".to_string(),
+                "{bypass}".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            definition.bypass_flag = Some("--dangerously-bypass-approvals-and-sandbox".to_string());
+            definition.bypass_aliases = vec!["--full-auto".to_string()];
+            definition.search_paths = vec!["~/.local/bin".to_string()];
+            Some(definition)
+        }
+        "gemini" => {
+            definition.binary = Some("gemini".to_string());
+            definition.non_interactive_args =
+                vec!["-p".to_string(), "{task}".to_string(), "{args}".to_string()];
+            definition.bypass_flag = Some("--yolo".to_string());
+            definition.bypass_aliases = vec!["-y".to_string()];
+            Some(definition)
+        }
+        "opencode" => {
+            definition.binary = Some("opencode".to_string());
+            definition.non_interactive_args = vec![
+                "run".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            definition.search_paths = vec!["~/.opencode/bin".to_string()];
+            definition.ignore_exit_code = true;
+            Some(definition)
+        }
+        "droid" => {
+            definition.binary = Some("droid".to_string());
+            definition.non_interactive_args = vec![
+                "exec".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            Some(definition)
+        }
+        "aider" => {
+            definition.binary = Some("aider".to_string());
+            definition.non_interactive_args = vec![
+                "--message".to_string(),
+                "{task}".to_string(),
+                "--yes-always".to_string(),
+                "--no-git".to_string(),
+                "{args}".to_string(),
+            ];
+            Some(definition)
+        }
+        "goose" => {
+            definition.binary = Some("goose".to_string());
+            definition.non_interactive_args = vec![
+                "run".to_string(),
+                "--text".to_string(),
+                "{task}".to_string(),
+                "--no-session".to_string(),
+                "{args}".to_string(),
+            ];
+            Some(definition)
+        }
+        "cursor" => {
+            definition.adapter = Some("cursor".to_string());
+            definition.binaries = vec!["cursor-agent".to_string(), "agent".to_string()];
+            definition.non_interactive_args = vec![
+                "--force".to_string(),
+                "-p".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            Some(definition)
+        }
+        "cursor-agent" | "agent" => {
+            definition.adapter = Some("cursor".to_string());
+            definition.binary = Some(key.clone());
+            definition.non_interactive_args = vec![
+                "--force".to_string(),
+                "-p".to_string(),
+                "{task}".to_string(),
+                "{args}".to_string(),
+            ];
+            Some(definition)
+        }
+        _ => None,
+    }
+}
+
+fn merge_harness_definitions(
+    base: HarnessDefinition,
+    override_definition: HarnessDefinition,
+) -> HarnessDefinition {
+    HarnessDefinition {
+        adapter: override_definition.adapter.or(base.adapter),
+        binary: override_definition.binary.or(base.binary),
+        binaries: if override_definition.binaries.is_empty() {
+            base.binaries
+        } else {
+            override_definition.binaries
+        },
+        interactive_args: if override_definition.interactive_args.is_empty() {
+            base.interactive_args
+        } else {
+            override_definition.interactive_args
+        },
+        non_interactive_args: if override_definition.non_interactive_args.is_empty() {
+            base.non_interactive_args
+        } else {
+            override_definition.non_interactive_args
+        },
+        model_args: if override_definition.model_args.is_empty() {
+            base.model_args
+        } else {
+            override_definition.model_args
+        },
+        bypass_flag: override_definition.bypass_flag.or(base.bypass_flag),
+        bypass_aliases: if override_definition.bypass_aliases.is_empty() {
+            base.bypass_aliases
+        } else {
+            override_definition.bypass_aliases
+        },
+        search_paths: if override_definition.search_paths.is_empty() {
+            base.search_paths
+        } else {
+            override_definition.search_paths
+        },
+        ignore_exit_code: override_definition.ignore_exit_code || base.ignore_exit_code,
+        proxy_provider: override_definition.proxy_provider.or(base.proxy_provider),
+        aliases: if override_definition.aliases.is_empty() {
+            base.aliases
+        } else {
+            override_definition.aliases
+        },
+    }
+}
+
+fn resolve_harness_definition(
+    cli_name: &str,
+    provided: Option<HarnessDefinition>,
+) -> Option<HarnessDefinition> {
+    let default_adapter = harness_name_key(cli_name);
+    let mut definition = if let Some(provided) = provided {
+        let adapter_key = provided
+            .adapter
+            .as_deref()
+            .map(str::trim)
+            .filter(|adapter| !adapter.is_empty())
+            .map(harness_name_key)
+            .unwrap_or_else(|| default_adapter.clone());
+        if let Some(base) = builtin_harness_definition(&adapter_key) {
+            merge_harness_definitions(base, provided)
+        } else {
+            provided
+        }
+    } else {
+        builtin_harness_definition(&default_adapter)?
+    };
+    if definition
+        .adapter
+        .as_deref()
+        .map(str::trim)
+        .filter(|adapter| !adapter.is_empty())
+        .is_none()
+    {
+        definition.adapter = Some(default_adapter);
+    }
+    Some(definition)
+}
+
+fn harness_adapter_key(resolved_cli: &str, harness: Option<&HarnessDefinition>) -> String {
+    harness
+        .and_then(|definition| definition.adapter.as_deref())
+        .map(str::trim)
+        .filter(|adapter| !adapter.is_empty())
+        .map(harness_name_key)
+        .unwrap_or_else(|| harness_name_key(resolved_cli))
+}
+
 fn resolve_command_with_paths(command: &str, search_paths: &[String]) -> String {
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
         return canonicalize_display(Path::new(command));
@@ -1538,6 +1746,41 @@ fn spawn_worker_reader<R>(
 #[cfg(test)]
 mod harness_adapter_tests {
     use super::*;
+
+    #[test]
+    fn built_in_harnesses_resolve_as_adapter_config() {
+        let harness = resolve_harness_definition("codex", None).expect("codex harness");
+
+        assert_eq!(harness.adapter.as_deref(), Some("codex"));
+        assert_eq!(harness.binary.as_deref(), Some("codex"));
+        assert_eq!(
+            harness.bypass_flag.as_deref(),
+            Some("--dangerously-bypass-approvals-and-sandbox")
+        );
+        assert_eq!(harness.bypass_aliases, vec!["--full-auto".to_string()]);
+    }
+
+    #[test]
+    fn custom_harness_can_select_builtin_lifecycle_adapter() {
+        let harness = resolve_harness_definition(
+            "company-codex",
+            Some(HarnessDefinition {
+                adapter: Some("codex".to_string()),
+                binary: Some("company-codex".to_string()),
+                ..Default::default()
+            }),
+        )
+        .expect("custom harness");
+
+        assert_eq!(
+            harness_adapter_key("company-codex", Some(&harness)),
+            "codex"
+        );
+        assert_eq!(
+            harness.bypass_flag.as_deref(),
+            Some("--dangerously-bypass-approvals-and-sandbox")
+        );
+    }
 
     #[test]
     fn harness_interactive_args_expand_vector_placeholders() {

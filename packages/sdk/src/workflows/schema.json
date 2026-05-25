@@ -258,6 +258,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "adapter": { "type": "string" },
         "binary": { "type": "string" },
         "binaries": { "type": "array", "items": { "type": "string" } },
         "interactiveArgs": { "type": "array", "items": { "type": "string" } },

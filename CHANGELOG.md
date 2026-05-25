@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
-- `@agent-relay/sdk`: spawn calls and workflow configs can declare harness adapters so custom agent CLIs define their own binaries, interactive/non-interactive argument templates, model flags, and process behavior without Relay changes.
+- `@agent-relay/sdk`: spawn calls and workflow configs can declare harness adapters so custom agent CLIs define their own binaries, interactive/non-interactive argument templates, model flags, and process behavior without Relay changes; built-in coding harnesses now use the same serializable config shape by default.
 
 ### Changed
 

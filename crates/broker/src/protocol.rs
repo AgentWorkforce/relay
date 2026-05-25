@@ -23,6 +23,8 @@ pub enum HeadlessProvider {
 #[serde(rename_all = "camelCase")]
 pub struct HarnessDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub binaries: Vec<String>,

@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgentRelayClient } from '../client.js';
-import { registerHarnessAdapter } from '../cli-registry.js';
+import { getHarnessDefinition, registerHarnessAdapter } from '../cli-registry.js';
 import { AgentRelay } from '../relay.js';
 
 describe('spawn harness adapters', () => {
+  it('exposes built-in harnesses as serializable adapter config', () => {
+    expect(getHarnessDefinition('codex')).toMatchObject({
+      adapter: 'codex',
+      binary: 'codex',
+      nonInteractiveArgs: ['exec', '{bypass}', '{task}', '{args}'],
+      bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
+      bypassAliases: ['--full-auto'],
+    });
+  });
+
   it('serializes per-spawn harness config to the broker', async () => {
     const client = new AgentRelayClient({ baseUrl: 'http://127.0.0.1:3888' });
     const request = vi
@@ -71,6 +81,66 @@ describe('spawn harness adapters', () => {
           interactiveArgs: ['run', '{modelArgs}', '{args}'],
           modelArgs: ['-m', '{model}'],
           bypassFlag: '--yes',
+        },
+      })
+    );
+  });
+
+  it('attaches built-in harness definitions from the facade spawn API', async () => {
+    const spawnPty = vi.fn(async (input: { name: string }) => ({
+      name: input.name,
+      runtime: 'pty' as const,
+    }));
+    const relay = new AgentRelay();
+    (relay as any).client = { spawnPty };
+
+    await relay.spawn('worker', 'codex', 'ship it', {
+      channels: ['general'],
+      model: 'gpt-5-codex',
+    });
+
+    expect(spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'worker',
+        cli: 'codex',
+        model: 'gpt-5-codex',
+        harness: expect.objectContaining({
+          adapter: 'codex',
+          binary: 'codex',
+          bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
+        }),
+      })
+    );
+  });
+
+  it('merges custom wrappers with built-in adapter defaults', async () => {
+    const spawnPty = vi.fn(async (input: { name: string }) => ({
+      name: input.name,
+      runtime: 'pty' as const,
+    }));
+    const relay = new AgentRelay({
+      harnesses: {
+        'company-codex': {
+          adapter: 'codex',
+          binary: 'company-codex',
+          searchPaths: ['~/company/bin'],
+        },
+      },
+    });
+    (relay as any).client = { spawnPty };
+
+    await relay.spawn('worker', 'company-codex', 'ship it', { channels: ['general'] });
+
+    expect(spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cli: 'company-codex',
+        harness: {
+          adapter: 'codex',
+          binary: 'company-codex',
+          nonInteractiveArgs: ['exec', '{bypass}', '{task}', '{args}'],
+          bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
+          bypassAliases: ['--full-auto'],
+          searchPaths: ['~/company/bin'],
         },
       })
     );

@@ -51,7 +51,12 @@ import {
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { HarnessDefinition, JsonSchema, SendMessageInput, SpawnPtyInput } from './types.js';
-import { getHarnessDefinition, registerHarnessAdapter, registerHarnessAdapters } from './cli-registry.js';
+import {
+  defineHarnessDefinition,
+  getHarnessDefinition,
+  registerHarnessAdapter,
+  registerHarnessAdapters,
+} from './cli-registry.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -146,7 +151,7 @@ function cloneHarnessMap(
 ): Record<string, HarnessDefinition> {
   if (!harnesses) return {};
   return Object.fromEntries(
-    Object.entries(harnesses).map(([name, definition]) => [name, cloneHarnessDefinition(definition)])
+    Object.entries(harnesses).map(([name, definition]) => [name, defineHarnessDefinition(name, definition)])
   );
 }
 
@@ -674,8 +679,9 @@ export class AgentRelay {
     if (!key) {
       throw new Error('registerHarness() expects a non-empty harness name');
     }
-    this.harnesses[key] = cloneHarnessDefinition(definition);
-    registerHarnessAdapter(key, definition);
+    const resolved = defineHarnessDefinition(key, definition);
+    this.harnesses[key] = cloneHarnessDefinition(resolved);
+    registerHarnessAdapter(key, resolved);
     return this;
   }
 

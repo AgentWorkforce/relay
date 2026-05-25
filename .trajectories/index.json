@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-24T17:02:55.026Z",
+  "lastUpdated": "2026-05-25T01:45:42.089Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1229,9 +1229,10 @@
     },
     "traj_4b2d63f6ljvh": {
       "title": "Fix CI run 26263517444",
-      "status": "active",
+      "status": "completed",
       "startedAt": "2026-05-22T01:47:08.312Z",
-      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/active/traj_4b2d63f6ljvh.json"
+      "completedAt": "2026-05-25T01:45:41.710Z",
+      "path": "/Users/will/Projects/AgentWorkforce/relay/.trajectories/completed/2026-05/traj_4b2d63f6ljvh.json"
     }
   }
 }

@@ -6,6 +6,15 @@ import { buildCommand } from '../process-spawner.js';
 import { WorkflowRunner } from '../runner.js';
 
 describe('workflow harness adapters', () => {
+  it('builds built-in commands from declarative harness config', () => {
+    expect(buildCommand('codex', [], 'do the work')).toEqual([
+      'codex',
+      'exec',
+      '--dangerously-bypass-approvals-and-sandbox',
+      'do the work',
+    ]);
+  });
+
   it('lets SDK callers register a harness command adapter', () => {
     registerHarnessAdapter('unit-harness-a', {
       binaries: ['unit-agent'],

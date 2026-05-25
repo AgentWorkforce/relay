@@ -198,6 +198,7 @@ class AgentDefinition:
 class HarnessDefinition:
     """Serializable harness adapter config for spawning and workflows."""
 
+    adapter: str | None = None
     binary: str | None = None
     binaries: list[str] | None = None
     interactive_args: list[str] | None = None
@@ -212,6 +213,8 @@ class HarnessDefinition:
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
+        if self.adapter is not None:
+            result["adapter"] = self.adapter
         if self.binary is not None:
             result["binary"] = self.binary
         if self.binaries is not None:

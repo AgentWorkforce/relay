@@ -1,17 +1,55 @@
 ---
 title: Harnesses
-description: Define custom agent CLI adapters for Agent Relay spawning and workflows.
+description: Define agent CLI adapters for Agent Relay spawning and workflows.
 ---
 
-A harness tells Relay how to start an agent CLI: which binary to execute, how to render model flags, which Relay MCP arguments to inject, and which extra paths to search when the command is not on `PATH`.
+A harness is Relay's adapter for an agent CLI. It tells the broker which binary to run, how to render arguments, how to inject Relay MCP arguments, which bypass/model flags the CLI understands, and which lifecycle adapter should handle built-in behavior such as sessions.
 
-Relay includes built-in harnesses for the common CLIs. Define a custom harness when you want to spawn a CLI that Relay does not ship yet, or when your local install needs different binary names, flags, or search paths.
+Relay ships built-in harnesses for common coding agents, including `codex`, `claude`, `opencode`, `gemini`, `goose`, `aider`, `droid`, and Cursor Agent. Those built-ins are defined with the same `HarnessDefinition` shape that you use for custom harnesses.
 
 <Note>
-Harnesses are used by real `agent-relay` spawning. They are not limited to workflow execution. SDK spawn calls send the resolved harness to the broker with the spawn request.
+Harnesses are used by real `agent-relay` spawning. They are not limited to workflow execution. SDK spawn calls send the resolved harness definition to the broker with the spawn request.
 </Note>
 
-## TypeScript spawn
+## Built-in harnesses
+
+Use a built-in harness by naming it in a spawn call:
+
+```typescript TypeScript file="spawn-codex.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({ channels: ['dev'] });
+
+const worker = await relay.spawn('CodexWorker', 'codex', 'Fix the failing auth tests.', {
+  model: 'gpt-5-codex',
+  channels: ['dev'],
+});
+
+await worker.waitForReady();
+```
+
+The built-in `codex` harness is equivalent to this adapter config:
+
+```typescript TypeScript
+import { BUILTIN_HARNESS_DEFINITIONS } from '@agent-relay/sdk';
+
+console.log(BUILTIN_HARNESS_DEFINITIONS.codex);
+```
+
+```json
+{
+  "adapter": "codex",
+  "binary": "codex",
+  "nonInteractiveArgs": ["exec", "{bypass}", "{task}", "{args}"],
+  "bypassFlag": "--dangerously-bypass-approvals-and-sandbox",
+  "bypassAliases": ["--full-auto"],
+  "searchPaths": ["~/.local/bin"]
+}
+```
+
+`adapter` identifies the broker-owned lifecycle adapter. For `codex`, that includes Codex-specific MCP args, model fallback behavior, and resumable session setup. Most custom harnesses can omit `adapter`; Relay defaults it to the harness name. When `adapter` points at a built-in harness, Relay starts from the built-in config and applies your overrides.
+
+## Define a custom harness
 
 Register harnesses on `AgentRelay` when several spawns should share the same adapter:
 
@@ -57,25 +95,25 @@ const agent = await relay.spawn('LocalAgent', 'local-agent', 'Inspect the repo.'
 });
 ```
 
-For direct broker control, pass the same shape to the low-level client:
+## Extend a built-in lifecycle
 
-```typescript TypeScript file="client-spawn.ts"
-import { AgentRelayClient } from '@agent-relay/sdk';
+If your wrapper is compatible with a built-in harness, set `adapter` to keep that lifecycle behavior while changing the executable or flags:
 
-const client = AgentRelayClient.connect({ cwd: '/repo' });
-
-await client.spawnPty({
-  name: 'CustomWorker',
-  cli: 'custom-agent',
-  model: 'fast',
-  task: 'Summarize the worktree state.',
-  harness: {
-    binaries: ['custom-agent', 'custom'],
-    modelArgs: ['--model', '{model}'],
-    searchPaths: ['~/.custom/bin'],
+```typescript TypeScript file="spawn-company-codex.ts"
+const relay = new AgentRelay({
+  harnesses: {
+    'company-codex': {
+      adapter: 'codex',
+      binary: 'company-codex',
+      searchPaths: ['~/company/bin'],
+    },
   },
 });
+
+await relay.spawn('CompanyCodex', 'company-codex', 'Update the billing tests.');
 ```
+
+This pattern is useful for internal wrappers, renamed binaries, or local installs that need different search paths while still behaving like a known coding harness.
 
 ## Python spawn
 
@@ -112,16 +150,16 @@ reviewer = await relay.spawn(
 await reviewer.wait_for_ready()
 ```
 
-Use `register_harness()` when you want to add an adapter after constructing the relay:
+Use `adapter` when a Python-defined harness should use a built-in lifecycle:
 
-```python Python file="register_harness.py"
+```python Python
 relay.register_harness(
-    "local-agent",
-    {
-        "binary": "local-agent",
-        "interactiveArgs": ["serve", "{modelArgs}", "{mcpArgs}", "{args}"],
-        "modelArgs": ["--model-id", "{model}"],
-    },
+    "company-codex",
+    HarnessDefinition(
+        adapter="codex",
+        binary="company-codex",
+        search_paths=["~/company/bin"],
+    ),
 )
 ```
 
@@ -161,6 +199,7 @@ workflows:
 
 | Field | Description |
 | --- | --- |
+| `adapter` | Broker lifecycle adapter id. Defaults to the harness name. Use a built-in id such as `codex`, `claude`, or `opencode` to inherit its defaults and lifecycle behavior with a custom binary. |
 | `binary` | Primary executable. Shorthand for `binaries: [binary]`. |
 | `binaries` | Executables to try in order. Defaults to the harness name. |
 | `interactiveArgs` | Argv template for PTY-backed broker spawning. Defaults to `['{bypass}', '{modelArgs}', '{mcpArgs}', '{args}', '{sessionArgs}']`. |
@@ -183,7 +222,7 @@ Use placeholders as whole argv items when they expand to multiple arguments:
 | `{mcpArgs}` | `interactiveArgs` | Relay's MCP and protocol arguments for the spawned agent. |
 | `{args}` | `interactiveArgs`, `nonInteractiveArgs` | Extra args from the spawn call or workflow agent. |
 | `{sessionArgs}` | `interactiveArgs` | Session resume arguments when Relay has them. |
-| `{bypass}` | `interactiveArgs` | The configured `bypassFlag`, omitted when not applicable. |
+| `{bypass}` | `interactiveArgs`, `nonInteractiveArgs` | The configured `bypassFlag`, omitted when not applicable. |
 | `{task}` | `nonInteractiveArgs` | The workflow step task for one-shot process execution. |
 | `{model}` | `modelArgs` | The requested model id. |
 

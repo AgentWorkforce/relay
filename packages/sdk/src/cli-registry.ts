@@ -57,61 +57,79 @@ export const COMMON_SEARCH_PATHS = [
 const DEFAULT_NON_INTERACTIVE_TEMPLATE = ['{task}', '{args}'] as const;
 const DEFAULT_MODEL_ARGS_TEMPLATE = ['--model', '{model}'] as const;
 
-const CLI_REGISTRY: Record<KnownAgentCli, CliDefinition> = {
+export const BUILTIN_HARNESS_DEFINITIONS: Readonly<Partial<Record<KnownAgentCli, HarnessDefinition>>> = {
   claude: {
-    binaries: ['claude'],
-    nonInteractiveArgs: (task, extra = []) => ['-p', '--dangerously-skip-permissions', task, ...extra],
+    adapter: 'claude',
+    binary: 'claude',
+    nonInteractiveArgs: ['-p', '{bypass}', '{task}', '{args}'],
     bypassFlag: '--dangerously-skip-permissions',
     searchPaths: ['~/.claude/local'],
   },
   codex: {
-    binaries: ['codex'],
-    nonInteractiveArgs: (task, extra = []) => [
-      'exec',
-      '--dangerously-bypass-approvals-and-sandbox',
-      task,
-      ...extra,
-    ],
+    adapter: 'codex',
+    binary: 'codex',
+    nonInteractiveArgs: ['exec', '{bypass}', '{task}', '{args}'],
     bypassFlag: '--dangerously-bypass-approvals-and-sandbox',
     bypassAliases: ['--full-auto'],
     searchPaths: ['~/.local/bin'],
   },
   gemini: {
-    binaries: ['gemini'],
-    nonInteractiveArgs: (task, extra = []) => ['-p', task, ...extra],
+    adapter: 'gemini',
+    binary: 'gemini',
+    nonInteractiveArgs: ['-p', '{task}', '{args}'],
     bypassFlag: '--yolo',
     bypassAliases: ['-y'],
   },
   opencode: {
-    binaries: ['opencode'],
-    nonInteractiveArgs: (task, extra = []) => ['run', task, ...extra],
+    adapter: 'opencode',
+    binary: 'opencode',
+    nonInteractiveArgs: ['run', '{task}', '{args}'],
     searchPaths: ['~/.opencode/bin'],
     ignoreExitCode: true,
   },
   droid: {
-    binaries: ['droid'],
-    nonInteractiveArgs: (task, extra = []) => ['exec', task, ...extra],
+    adapter: 'droid',
+    binary: 'droid',
+    nonInteractiveArgs: ['exec', '{task}', '{args}'],
   },
   aider: {
-    binaries: ['aider'],
-    nonInteractiveArgs: (task, extra = []) => ['--message', task, '--yes-always', '--no-git', ...extra],
+    adapter: 'aider',
+    binary: 'aider',
+    nonInteractiveArgs: ['--message', '{task}', '--yes-always', '--no-git', '{args}'],
   },
   goose: {
-    binaries: ['goose'],
-    nonInteractiveArgs: (task, extra = []) => ['run', '--text', task, '--no-session', ...extra],
+    adapter: 'goose',
+    binary: 'goose',
+    nonInteractiveArgs: ['run', '--text', '{task}', '--no-session', '{args}'],
   },
   'cursor-agent': {
-    binaries: ['cursor-agent'],
-    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
+    adapter: 'cursor',
+    binary: 'cursor-agent',
+    nonInteractiveArgs: ['--force', '-p', '{task}', '{args}'],
   },
   agent: {
-    binaries: ['agent'],
-    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
+    adapter: 'cursor',
+    binary: 'agent',
+    nonInteractiveArgs: ['--force', '-p', '{task}', '{args}'],
   },
   cursor: {
+    adapter: 'cursor',
     binaries: ['cursor-agent', 'agent'],
-    nonInteractiveArgs: (task, extra = []) => ['--force', '-p', task, ...extra],
+    nonInteractiveArgs: ['--force', '-p', '{task}', '{args}'],
   },
+};
+
+const CLI_REGISTRY: Record<KnownAgentCli, CliDefinition> = {
+  claude: adapterFromConfig('claude', BUILTIN_HARNESS_DEFINITIONS.claude!),
+  codex: adapterFromConfig('codex', BUILTIN_HARNESS_DEFINITIONS.codex!),
+  gemini: adapterFromConfig('gemini', BUILTIN_HARNESS_DEFINITIONS.gemini!),
+  opencode: adapterFromConfig('opencode', BUILTIN_HARNESS_DEFINITIONS.opencode!),
+  droid: adapterFromConfig('droid', BUILTIN_HARNESS_DEFINITIONS.droid!),
+  aider: adapterFromConfig('aider', BUILTIN_HARNESS_DEFINITIONS.aider!),
+  goose: adapterFromConfig('goose', BUILTIN_HARNESS_DEFINITIONS.goose!),
+  'cursor-agent': adapterFromConfig('cursor-agent', BUILTIN_HARNESS_DEFINITIONS['cursor-agent']!),
+  agent: adapterFromConfig('agent', BUILTIN_HARNESS_DEFINITIONS.agent!),
+  cursor: adapterFromConfig('cursor', BUILTIN_HARNESS_DEFINITIONS.cursor!),
   api: {
     binaries: [],
     nonInteractiveArgs: (task) => [task],
@@ -146,6 +164,7 @@ function validateStringArray(value: readonly string[] | undefined, label: string
 function cloneHarnessDefinition(config: HarnessDefinition): HarnessDefinition {
   return {
     ...config,
+    ...(config.adapter ? { adapter: config.adapter } : {}),
     ...(config.binaries ? { binaries: [...config.binaries] } : {}),
     ...(config.interactiveArgs ? { interactiveArgs: [...config.interactiveArgs] } : {}),
     ...(config.nonInteractiveArgs ? { nonInteractiveArgs: [...config.nonInteractiveArgs] } : {}),
@@ -154,6 +173,63 @@ function cloneHarnessDefinition(config: HarnessDefinition): HarnessDefinition {
     ...(config.searchPaths ? { searchPaths: [...config.searchPaths] } : {}),
     ...(config.aliases ? { aliases: [...config.aliases] } : {}),
   };
+}
+
+function mergeHarnessDefinitions(base: HarnessDefinition, override: HarnessDefinition): HarnessDefinition {
+  return {
+    ...cloneHarnessDefinition(base),
+    ...cloneHarnessDefinition(override),
+    adapter: override.adapter ?? base.adapter,
+    binary: override.binary ?? base.binary,
+    ...(override.binaries
+      ? { binaries: [...override.binaries] }
+      : base.binaries
+        ? { binaries: [...base.binaries] }
+        : {}),
+    ...(override.interactiveArgs
+      ? { interactiveArgs: [...override.interactiveArgs] }
+      : base.interactiveArgs
+        ? { interactiveArgs: [...base.interactiveArgs] }
+        : {}),
+    ...(override.nonInteractiveArgs
+      ? { nonInteractiveArgs: [...override.nonInteractiveArgs] }
+      : base.nonInteractiveArgs
+        ? { nonInteractiveArgs: [...base.nonInteractiveArgs] }
+        : {}),
+    ...(override.modelArgs
+      ? { modelArgs: [...override.modelArgs] }
+      : base.modelArgs
+        ? { modelArgs: [...base.modelArgs] }
+        : {}),
+    bypassFlag: override.bypassFlag ?? base.bypassFlag,
+    ...(override.bypassAliases
+      ? { bypassAliases: [...override.bypassAliases] }
+      : base.bypassAliases
+        ? { bypassAliases: [...base.bypassAliases] }
+        : {}),
+    ...(override.searchPaths
+      ? { searchPaths: [...override.searchPaths] }
+      : base.searchPaths
+        ? { searchPaths: [...base.searchPaths] }
+        : {}),
+    ignoreExitCode: override.ignoreExitCode ?? base.ignoreExitCode,
+    proxyProvider: override.proxyProvider ?? base.proxyProvider,
+    ...(override.aliases
+      ? { aliases: [...override.aliases] }
+      : base.aliases
+        ? { aliases: [...base.aliases] }
+        : {}),
+  };
+}
+
+function resolveHarnessConfig(name: string, config: HarnessDefinition): HarnessDefinition {
+  const adapterKey = lookupCliKey(config.adapter ?? name);
+  const base = adapterKey ? BUILTIN_HARNESS_DEFINITIONS[adapterKey as KnownAgentCli] : undefined;
+  return base ? mergeHarnessDefinitions(base, config) : cloneHarnessDefinition(config);
+}
+
+export function defineHarnessDefinition(name: string, definition: HarnessDefinition): HarnessDefinition {
+  return resolveHarnessConfig(normalizeCliKey(name), definition);
 }
 
 function harnessConfigFromCliDefinition(definition: CliDefinition): HarnessDefinition {
@@ -167,12 +243,29 @@ function harnessConfigFromCliDefinition(definition: CliDefinition): HarnessDefin
   };
 }
 
+function argMatchesFlag(arg: string, flag: string): boolean {
+  return arg === flag || arg.startsWith(`${flag}=`);
+}
+
+function resolveTemplateBypass(config: HarnessDefinition, extraArgs: string[]): string | undefined {
+  const flag = config.bypassFlag?.trim();
+  if (!flag) return undefined;
+
+  const candidates = [flag, ...(config.bypassAliases ?? []).map((alias) => alias.trim()).filter(Boolean)];
+  return extraArgs.some((arg) => candidates.some((candidate) => argMatchesFlag(arg, candidate)))
+    ? undefined
+    : flag;
+}
+
 function expandTemplateArg(
   template: string,
-  context: { task: string; extraArgs: string[]; model?: string }
+  context: { task: string; extraArgs: string[]; bypass?: string; model?: string }
 ): string[] {
   if (template === '{args}' || template === '{{args}}') {
     return [...context.extraArgs];
+  }
+  if (template === '{bypass}' || template === '{{bypass}}') {
+    return context.bypass ? [context.bypass] : [];
   }
   if ((template === '{model}' || template === '{{model}}') && context.model === undefined) {
     return [];
@@ -180,13 +273,14 @@ function expandTemplateArg(
   return [
     template
       .replace(/\{\{\s*task\s*\}\}|\{task\}/g, context.task)
+      .replace(/\{\{\s*bypass\s*\}\}|\{bypass\}/g, context.bypass ?? '')
       .replace(/\{\{\s*model\s*\}\}|\{model\}/g, context.model ?? ''),
   ];
 }
 
 function renderArgTemplate(
   template: readonly string[],
-  context: { task: string; extraArgs?: string[]; model?: string }
+  context: { task: string; extraArgs?: string[]; bypass?: string; model?: string }
 ): string[] {
   const args: string[] = [];
   for (const entry of template) {
@@ -194,6 +288,7 @@ function renderArgTemplate(
       ...expandTemplateArg(entry, {
         task: context.task,
         extraArgs: context.extraArgs ?? [],
+        bypass: context.bypass,
         model: context.model,
       })
     );
@@ -209,17 +304,22 @@ function adapterFromConfig(name: string, config: HarnessDefinition): CliDefiniti
     throw new Error(`harness "${name}".binaries must contain at least one non-empty binary`);
   }
 
-  const nonInteractiveTemplate =
-    validateStringArray(config.nonInteractiveArgs, `harness "${name}".nonInteractiveArgs`) ??
-    [...DEFAULT_NON_INTERACTIVE_TEMPLATE];
-  const modelTemplate =
-    validateStringArray(config.modelArgs, `harness "${name}".modelArgs`) ??
-    [...DEFAULT_MODEL_ARGS_TEMPLATE];
+  const nonInteractiveTemplate = validateStringArray(
+    config.nonInteractiveArgs,
+    `harness "${name}".nonInteractiveArgs`
+  ) ?? [...DEFAULT_NON_INTERACTIVE_TEMPLATE];
+  const modelTemplate = validateStringArray(config.modelArgs, `harness "${name}".modelArgs`) ?? [
+    ...DEFAULT_MODEL_ARGS_TEMPLATE,
+  ];
 
   return {
     binaries,
     nonInteractiveArgs: (task, extraArgs = []) =>
-      renderArgTemplate(nonInteractiveTemplate, { task, extraArgs }),
+      renderArgTemplate(nonInteractiveTemplate, {
+        task,
+        extraArgs,
+        bypass: resolveTemplateBypass(config, extraArgs),
+      }),
     modelArgs: (model) => renderArgTemplate(modelTemplate, { task: '', model }),
     bypassFlag: config.bypassFlag,
     bypassAliases: validateStringArray(config.bypassAliases, `harness "${name}".bypassAliases`),
@@ -244,7 +344,7 @@ export function defineHarnessAdapter(name: string, adapter: HarnessAdapter): Cli
       searchPaths: adapter.searchPaths ? [...adapter.searchPaths] : undefined,
     };
   }
-  return adapterFromConfig(name, adapter as HarnessDefinition);
+  return adapterFromConfig(name, resolveHarnessConfig(name, adapter as HarnessDefinition));
 }
 
 /**
@@ -260,7 +360,7 @@ export function registerHarnessAdapter(name: string, adapter: HarnessAdapter): v
   USER_CLI_REGISTRY.set(key, definition);
   const serializableConfig = isCliDefinition(adapter)
     ? harnessConfigFromCliDefinition(definition)
-    : cloneHarnessDefinition(adapter);
+    : resolveHarnessConfig(key, adapter);
   USER_HARNESS_CONFIGS.set(key, serializableConfig);
 
   const aliases = 'aliases' in adapter ? adapter.aliases : undefined;
@@ -295,11 +395,17 @@ export function getCliDefinition(cli: string): CliDefinition | undefined {
 
 export const getHarnessAdapter = getCliDefinition;
 
+export function getBuiltInHarnessDefinitions(): Readonly<Partial<Record<KnownAgentCli, HarnessDefinition>>> {
+  return BUILTIN_HARNESS_DEFINITIONS;
+}
+
 export function getHarnessDefinition(cli: string): HarnessDefinition | undefined {
   const baseCli = lookupCliKey(cli);
   if (!baseCli) return undefined;
   const config = USER_HARNESS_CONFIGS.get(baseCli);
-  return config ? cloneHarnessDefinition(config) : undefined;
+  if (config) return cloneHarnessDefinition(config);
+  const builtIn = BUILTIN_HARNESS_DEFINITIONS[baseCli as KnownAgentCli];
+  return builtIn ? cloneHarnessDefinition(builtIn) : undefined;
 }
 
 export function buildModelArgs(cli: string, model: string | undefined): string[] {
