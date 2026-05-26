@@ -15,24 +15,28 @@ The adapters are well-structured and follow a consistent pattern overall. All 6 
 ## Issues Found & Fixed
 
 ### 1. Pi adapter: No cleanup exposed (FIXED)
+
 **File**: `src/communicate/adapters/pi.ts`
 **Severity**: Medium
 
 The `unsubscribe` handle from `relay.onMessage()` was captured in a closure variable but never exposed to the caller. Every other adapter that subscribes to messages provides a cleanup/unsubscribe mechanism. Added a `cleanup()` method to the returned config object.
 
 ### 2. CrewAI: Dead `messageBuffer` code (FIXED)
+
 **File**: `src/communicate/adapters/crewai.ts`
 **Severity**: Low
 
 `messageBuffer` was populated in the `onMessage` callback but never read anywhere. Removed the dead accumulator — `step_callback` is the only routing mechanism needed.
 
 ### 3. Missing `onCrewRelay` export (FIXED)
+
 **File**: `src/communicate/adapters/index.ts`
 **Severity**: Medium
 
 `crewai.ts` exports both `onRelay` (single agent) and `onCrewRelay` (all agents in a crew), but `index.ts` only re-exported `onRelay`. Added `onCrewRelay` to the barrel export.
 
 ### 4. LangGraph: Hardcoded agent name (FIXED)
+
 **File**: `src/communicate/adapters/langgraph.ts`
 **Severity**: Low
 
@@ -42,14 +46,14 @@ The default Relay name was hardcoded to `'langgraph'`, unlike all other adapters
 
 ## Consistency Audit
 
-| Aspect | Pi | Claude SDK | OpenAI Agents | LangGraph | Google ADK | CrewAI |
-|--------|----|-----------:|---------------|-----------|------------|--------|
-| Tool names | relay_send/inbox/post/agents | N/A (MCP) | relay_send/inbox/post/agents | relay_send/inbox/post/agents | relay_send/inbox/post/agents | relay_send/inbox/post/agents |
-| Tool descriptions | Consistent | N/A | Consistent | Consistent | Consistent | Consistent |
-| Message formatting | formatRelayMessage | formatRelayMessage | formatRelayMessage | formatRelayMessage | formatRelayMessage | formatRelayMessage |
-| Inbox formatting | formatRelayInbox | drainInbox (wraps formatRelayMessage) | formatRelayInbox | formatRelayInbox | formatRelayInbox | formatRelayInbox |
-| Cleanup mechanism | cleanup() (fixed) | N/A (stateless hooks) | cleanup() | unsubscribe() | unsubscribe() | unsubscribe() |
-| Name source | param | param | agent.name | param or default | param | agent.role |
+| Aspect             | Pi                           |                            Claude SDK | OpenAI Agents                | LangGraph                    | Google ADK                   | CrewAI                       |
+| ------------------ | ---------------------------- | ------------------------------------: | ---------------------------- | ---------------------------- | ---------------------------- | ---------------------------- |
+| Tool names         | relay_send/inbox/post/agents |                             N/A (MCP) | relay_send/inbox/post/agents | relay_send/inbox/post/agents | relay_send/inbox/post/agents | relay_send/inbox/post/agents |
+| Tool descriptions  | Consistent                   |                                   N/A | Consistent                   | Consistent                   | Consistent                   | Consistent                   |
+| Message formatting | formatRelayMessage           |                    formatRelayMessage | formatRelayMessage           | formatRelayMessage           | formatRelayMessage           | formatRelayMessage           |
+| Inbox formatting   | formatRelayInbox             | drainInbox (wraps formatRelayMessage) | formatRelayInbox             | formatRelayInbox             | formatRelayInbox             | formatRelayInbox             |
+| Cleanup mechanism  | cleanup() (fixed)            |                 N/A (stateless hooks) | cleanup()                    | unsubscribe()                | unsubscribe()                | unsubscribe()                |
+| Name source        | param                        |                                 param | agent.name                   | param or default             | param                        | agent.role                   |
 
 ### Notes on intentional differences
 
@@ -78,16 +82,17 @@ All adapters delegate errors to the Relay instance (which handles connection err
 
 ## Test Coverage
 
-| Adapter | Tests | Tools | Message routing | Cleanup | Preserves existing |
-|---------|------:|------:|----------------:|--------:|-------------------:|
-| Pi | 3 | Yes | steer + followUp | No test | Yes (onSessionCreated) |
-| Claude SDK | 4 | N/A | PostToolUse + Stop hooks | N/A | Yes (existing hooks) |
-| OpenAI Agents | 7 | Yes + invoke | instructions injection | Yes | Yes (fn instructions) |
-| LangGraph | 7 | Yes + invoke | graph.invoke() | Yes | N/A |
-| Google ADK | 9 | Yes + execute | runner.runAsync() | Yes | N/A |
-| CrewAI | 10 | Yes + execute | step_callback | Yes | Yes (onCrewRelay) |
+| Adapter       | Tests |         Tools |          Message routing | Cleanup |     Preserves existing |
+| ------------- | ----: | ------------: | -----------------------: | ------: | ---------------------: |
+| Pi            |     3 |           Yes |         steer + followUp | No test | Yes (onSessionCreated) |
+| Claude SDK    |     4 |           N/A | PostToolUse + Stop hooks |     N/A |   Yes (existing hooks) |
+| OpenAI Agents |     7 |  Yes + invoke |   instructions injection |     Yes |  Yes (fn instructions) |
+| LangGraph     |     7 |  Yes + invoke |           graph.invoke() |     Yes |                    N/A |
+| Google ADK    |     9 | Yes + execute |        runner.runAsync() |     Yes |                    N/A |
+| CrewAI        |    10 | Yes + execute |            step_callback |     Yes |      Yes (onCrewRelay) |
 
 **Gaps**:
+
 - Pi: No test for the new `cleanup()` method (added by this review).
 - Pi: No test for `relay_send` / `relay_post` tool execution (only tests tool presence).
 - Claude SDK: No test for empty inbox returning `{}` (no systemMessage).
@@ -97,13 +102,13 @@ All adapters delegate errors to the Relay instance (which handles connection err
 ## Export Naming (index.ts)
 
 ```typescript
-onPiRelay        // ✓ clear
-onClaudeRelay    // ✓ clear
-onCrewAIRelay    // ✓ clear
-onCrewRelay      // ✓ added (crew-level helper)
-onOpenAIAgentsRelay  // ✓ clear
-onLangGraphRelay     // ✓ clear
-onGoogleAdkRelay     // ✓ clear
+onPiRelay; // ✓ clear
+onClaudeRelay; // ✓ clear
+onCrewAIRelay; // ✓ clear
+onCrewRelay; // ✓ added (crew-level helper)
+onOpenAIAgentsRelay; // ✓ clear
+onLangGraphRelay; // ✓ clear
+onGoogleAdkRelay; // ✓ clear
 ```
 
 All exports follow `on<Framework>Relay` naming convention. Consistent and discoverable.

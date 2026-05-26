@@ -71,10 +71,7 @@ export function getGitRemoteUrl(workingDirectory: string, remoteName = 'origin')
       const config = fs.readFileSync(configPath, 'utf-8');
 
       // Parse git config to find remote URL
-      const remoteSection = new RegExp(
-        `\\[remote\\s+"${remoteName}"\\][^\\[]*url\\s*=\\s*([^\\n]+)`,
-        'i'
-      );
+      const remoteSection = new RegExp(`\\[remote\\s+"${remoteName}"\\][^\\[]*url\\s*=\\s*([^\\n]+)`, 'i');
       const match = config.match(remoteSection);
 
       return match?.[1]?.trim() || null;

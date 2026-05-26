@@ -2,7 +2,11 @@
 
 import { useEffect, useState, type ReactNode, type ReactElement, Children, isValidElement } from 'react';
 
-import { extractCodeFenceToken, humanizeCodeFenceLanguage, parseCodeFenceMetaToken } from '../../lib/code-fence-meta';
+import {
+  extractCodeFenceToken,
+  humanizeCodeFenceLanguage,
+  parseCodeFenceMetaToken,
+} from '../../lib/code-fence-meta';
 import { normalizeDocsLanguageLabel, useDocsLanguage } from './DocsLanguageContext';
 import styles from './docs.module.css';
 
@@ -46,8 +50,8 @@ function getLabel(block: ReactElement, index: number): string {
 
 export function CodeGroup({ children }: CodeGroupProps) {
   const { language, setLanguage } = useDocsLanguage();
-  const rawBlocks = Children.toArray(children).filter(
-    (child): child is ReactElement => isValidElement(child)
+  const rawBlocks = Children.toArray(children).filter((child): child is ReactElement =>
+    isValidElement(child)
   );
 
   if (rawBlocks.length <= 1) {
@@ -92,9 +96,7 @@ export function CodeGroup({ children }: CodeGroupProps) {
           </button>
         ))}
       </div>
-      <div className={styles.codeGroupPanel}>
-        {blocks[active]}
-      </div>
+      <div className={styles.codeGroupPanel}>{blocks[active]}</div>
     </div>
   );
 }

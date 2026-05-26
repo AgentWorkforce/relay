@@ -18,6 +18,7 @@ Added Relay workflow reliability defaults, repairable builder presets, agent-ste
 ## Key Decisions
 
 ### Made retry-mode workflows repair-aware by default
+
 - **Chose:** Made retry-mode workflows repair-aware by default
 - **Reasoning:** Workflow reliability is now a product contract: SDK builder workflows and raw runner configs with agents get bounded repair retries unless callers explicitly choose fail-fast, continue, or repairRetries: 0. Agent/artifact failures now invoke repair before retrying, not only deterministic gates.
 
@@ -26,6 +27,7 @@ Added Relay workflow reliability defaults, repairable builder presets, agent-ste
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Made retry-mode workflows repair-aware by default

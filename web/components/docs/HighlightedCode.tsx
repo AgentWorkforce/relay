@@ -42,9 +42,7 @@ function parseInlineStyle(styleText?: string): React.CSSProperties | undefined {
       continue;
     }
 
-    const camelCased = property.replace(/-([a-z])/g, (_, character: string) =>
-      character.toUpperCase()
-    );
+    const camelCased = property.replace(/-([a-z])/g, (_, character: string) => character.toUpperCase());
     style[camelCased] = value;
   }
 
@@ -54,7 +52,10 @@ function parseInlineStyle(styleText?: string): React.CSSProperties | undefined {
 /**
  * Server component that wraps <pre><code>...</code></pre> with Shiki highlighting and a copy button.
  */
-export async function HighlightedPre({ children, ...props }: React.DetailedHTMLProps<React.HTMLAttributes<HTMLPreElement>, HTMLPreElement>) {
+export async function HighlightedPre({
+  children,
+  ...props
+}: React.DetailedHTMLProps<React.HTMLAttributes<HTMLPreElement>, HTMLPreElement>) {
   const codeChild = Children.toArray(children).find(
     (c): c is ReactElement => isValidElement(c) && c.type === 'code'
   );
@@ -90,12 +91,7 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
     : styles.codeWrapper;
   const normalizedLanguageClass = `language-${normalizedLanguage}`;
   const codeClassName = Array.from(
-    new Set(
-      className
-        .split(/\s+/)
-        .filter(Boolean)
-        .concat(normalizedLanguageClass)
-    )
+    new Set(className.split(/\s+/).filter(Boolean).concat(normalizedLanguageClass))
   ).join(' ');
   const badgeKey = meta.filename?.split('/').pop()?.split('.').pop()?.toLowerCase() || normalizedLanguage;
   const BadgeIcon = codeBadgeIcons[badgeKey];
@@ -119,11 +115,7 @@ export async function HighlightedPre({ children, ...props }: React.DetailedHTMLP
       ) : (
         <CopyCodeButton code={raw} />
       )}
-      <pre
-        {...props}
-        className={preClassName || undefined}
-        style={{ ...shikiStyle, ...props.style }}
-      >
+      <pre {...props} className={preClassName || undefined} style={{ ...shikiStyle, ...props.style }}>
         <code
           className={codeClassName}
           data-language={normalizedLanguage}

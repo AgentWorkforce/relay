@@ -1,8 +1,7 @@
 import { registerHooks } from './hooks.js';
 import { registerTools, type ToolContext } from './tools.js';
 
-export const DEFAULT_RELAYCAST_API_BASE_URL =
-  'https://www.relaycast.dev/api/v1';
+export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://www.relaycast.dev/api/v1';
 export const DEFAULT_IDLE_POLL_INTERVAL_MS = 3_000;
 
 export interface SessionIdleResult {
@@ -56,9 +55,7 @@ export class RelayState {
   spawned = new Map<string, SpawnedAgent>();
   connected = false;
 }
-export default async function relayPlugin(
-  ctx: PluginContext
-): Promise<RelayState> {
+export default async function relayPlugin(ctx: PluginContext): Promise<RelayState> {
   const state = new RelayState();
 
   if (ctx.tool) {

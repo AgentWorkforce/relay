@@ -69,7 +69,7 @@ export async function patchOpenClawDist(distDir: string, modelRef: string): Prom
           } catch (err) {
             // Individual file patch failure is non-fatal
             process.stderr.write(
-              `[patch] Warning: could not patch ${fullPath}: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[patch] Warning: could not patch ${fullPath}: ${err instanceof Error ? err.message : String(err)}\n`
             );
           }
         }
@@ -80,7 +80,7 @@ export async function patchOpenClawDist(distDir: string, modelRef: string): Prom
   } catch (err) {
     // Entire patching failure is non-fatal — runtime identity enforcement is the primary defense
     process.stderr.write(
-      `[patch] Warning: dist patching failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`,
+      `[patch] Warning: dist patching failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
     );
   }
 

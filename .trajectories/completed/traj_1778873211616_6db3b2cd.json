@@ -143,13 +143,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "5 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                ">7u",
-                "0",
-                "COMPLETE"
-              ],
+              "signals": ["implement-slice", "COMPLETE", ">7u", "0", "COMPLETE"],
               "channelPosts": [
                 "**[implement-slice] Output:**\n```\n └  .claude/rules/docs-sync.md | 39 ++++++++++++++++++------------\n     .trajectories/index.json   | 59 ++++++++++++++++++++++"
               ],
@@ -655,8 +649,6 @@
     "approach": "dag workflow (6 agents)",
     "confidence": 0.7647058823529412,
     "learnings": [],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

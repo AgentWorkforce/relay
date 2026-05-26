@@ -35,8 +35,7 @@ import { getProjectPaths } from './project-namespace.js';
  * otherwise defaults to ~/.config/agent-relay
  */
 function getAgentRelayConfigDir(): string {
-  return process.env.AGENT_RELAY_CONFIG_DIR ??
-    join(homedir(), '.config', 'agent-relay');
+  return process.env.AGENT_RELAY_CONFIG_DIR ?? join(homedir(), '.config', 'agent-relay');
 }
 
 /**

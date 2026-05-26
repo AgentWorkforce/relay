@@ -490,8 +490,6 @@
     "approach": "dag workflow (4 agents)",
     "confidence": 0.2647058823529412,
     "learnings": [],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

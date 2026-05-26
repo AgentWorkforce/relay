@@ -38,14 +38,21 @@ function createCodexFixture(tempDir: string, cwd: string, createdAtSeconds: numb
   `);
 
   db.prepare(
-    'INSERT INTO threads (id, cwd, model_provider, tokens_used, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO threads (id, cwd, model_provider, tokens_used, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
   ).run('thread-1', cwd, 'openai/gpt-5', 321, createdAtSeconds, createdAtSeconds + 3);
-  db.prepare(
-    'INSERT INTO logs (thread_id, ts, level, message, line) VALUES (?, ?, ?, ?, ?)',
-  ).run('thread-1', createdAtSeconds + 1, 'error', 'Command failed: bad exit code', 12);
+  db.prepare('INSERT INTO logs (thread_id, ts, level, message, line) VALUES (?, ?, ?, ?, ?)').run(
+    'thread-1',
+    createdAtSeconds + 1,
+    'error',
+    'Command failed: bad exit code',
+    12
+  );
   db.close();
 
-  writeFileSync(historyPath, `${JSON.stringify({ session_id: 'thread-1', ts: createdAtSeconds, text: 'history' })}\n`);
+  writeFileSync(
+    historyPath,
+    `${JSON.stringify({ session_id: 'thread-1', ts: createdAtSeconds, text: 'history' })}\n`
+  );
 
   return { statePath, historyPath };
 }

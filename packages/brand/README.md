@@ -15,7 +15,7 @@ This is a pure CSS package — no build step required.
 ### Link directly (HTML)
 
 ```html
-<link rel="stylesheet" href="node_modules/@agent-relay/brand/brand.css">
+<link rel="stylesheet" href="node_modules/@agent-relay/brand/brand.css" />
 ```
 
 ### Static sites without a bundler

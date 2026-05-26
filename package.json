@@ -1,77 +1,38 @@
 {
-  "name": "agent-relay",
+  "name": "@agent-relay/monorepo",
   "version": "7.1.1",
-  "description": "Real-time agent-to-agent communication system",
+  "private": true,
+  "description": "Agent Relay monorepo",
   "type": "module",
-  "main": "dist/index.cjs",
-  "types": "dist/src/index.d.ts",
-  "files": [
-    "dist",
-    "install.sh",
-    "scripts/postinstall.js",
-    "scripts/build-cjs.mjs",
-    "LICENSE",
-    "README.md"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/src/index.d.ts",
-      "require": "./dist/index.cjs",
-      "import": "./dist/src/index.js",
-      "default": "./dist/index.cjs"
-    },
-    "./mcp": {
-      "types": "./dist/src/cli/relaycast-mcp.d.ts",
-      "import": "./dist/src/cli/relaycast-mcp.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "bin": {
-    "agent-relay": "dist/src/cli/index.js",
-    "relay": "dist/src/cli/index.js"
-  },
   "workspaces": [
     "packages/*",
     "web"
   ],
-  "bundledDependencies": [
-    "@relaycast/sdk",
-    "@relayfile/local-mount"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
-    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && tsc --noEmit",
-    "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
-    "build:sequential": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
-    "build:workspace": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*' && tsc",
+    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
+    "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*'",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
-    "build:policy": "cd packages/policy && npm run build",
-    "build:memory": "cd packages/memory && npm run build",
-    "build:utils": "cd packages/utils && npm run build",
-    "build:config": "cd packages/config && npm run build",
-    "build:trajectory": "cd packages/trajectory && npm run build",
-    "build:hooks": "cd packages/hooks && npm run build",
-    "build:sdk": "cd packages/sdk && npm run build",
-    "build:telemetry": "cd packages/telemetry && npm run build",
-    "build:cjs": "node ./scripts/build-cjs.mjs",
-    "postbuild": "chmod +x dist/src/cli/bootstrap.js dist/src/cli/index.js && npm run build:cjs",
-    "prepack": "if [ -d node_modules ]; then npm run build; else echo '⚠ node_modules not found, skipping prepack build'; fi && node scripts/prepack-materialize-workspaces.mjs && node scripts/verify-bundled-deps.mjs",
-    "prepublishOnly": "node scripts/verify-bundled-deps.mjs",
-    "dev:watch": "tsc -w",
-    "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch dist/src/cli/index.js start dashboard.js claude\"",
+    "build:cli": "npm --prefix packages/cli run build",
+    "build:policy": "npm --prefix packages/policy run build",
+    "build:memory": "npm --prefix packages/memory run build",
+    "build:utils": "npm --prefix packages/utils run build",
+    "build:config": "npm --prefix packages/config run build",
+    "build:trajectory": "npm --prefix packages/trajectory run build",
+    "build:hooks": "npm --prefix packages/hooks run build",
+    "build:sdk": "npm --prefix packages/sdk run build",
+    "build:telemetry": "npm --prefix packages/telemetry run build",
+    "dev:watch": "cd packages/cli && npx tsc -w",
+    "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch packages/cli/dist/cli/index.js start dashboard.js claude\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
-    "predev": "npm run clean && npm run build:packages && tsc && chmod +x dist/src/cli/index.js",
-    "dev": "node dist/src/cli/index.js up --port 3888",
-    "dev:local": "npm run build && npm link && echo '✓ agent-relay linked globally'",
-    "dev:unlink": "npm unlink -g agent-relay && echo '✓ agent-relay unlinked'",
+    "predev": "npm run clean && npm run build:packages && cd packages/cli && npx tsc && cd ../.. && chmod +x packages/cli/dist/cli/index.js",
+    "dev": "node packages/cli/dist/cli/index.js up --port 3888",
+    "dev:local": "npm run build && (cd packages/cli && npm link) && echo '✓ agent-relay linked globally'",
+    "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
     "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk/bin && cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker.new && mv -f packages/sdk/bin/agent-relay-broker.new packages/sdk/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk/bin/'; else echo '⚠ Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
-    "start": "node dist/src/cli/index.js",
+    "start": "node packages/cli/dist/cli/index.js",
     "pretest": "npm run build",
     "test": "vitest run && npm run test:sdk:vitest",
     "test:sdk:vitest": "cd packages/sdk && vitest run --config vitest.config.ts src/workflows/__tests__/run-script.test.ts",
@@ -83,12 +44,12 @@
     "test:integration:broker": "npx tsc -p tests/integration/broker/tsconfig.json && cd tests/integration/broker && node --test dist/*.test.js",
     "test:integration:broker:build": "npx tsc -p tests/integration/broker/tsconfig.json",
     "test:integration:broker:run": "cd tests/integration/broker && node --test dist/*.test.js",
-    "lint": "eslint src --ext .ts",
+    "lint": "npm --prefix packages/cli run lint",
     "knip": "knip",
     "syncpack": "syncpack lint",
-    "audit:deps": "node scripts/audit-bundled-deps.mjs",
-    "pack:validate": "node scripts/validate-npm-tarball.mjs",
-    "clean": "rm -rf dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
+    "audit:deps": "npm --prefix packages/cli run audit:deps",
+    "pack:validate": "npm --prefix packages/cli run pack:validate",
+    "clean": "rm -rf packages/cli/dist && find packages -maxdepth 2 -name dist -type d -exec rm -rf {} + 2>/dev/null || true",
     "hooks:install": "./scripts/hooks/install.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -98,32 +59,9 @@
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
     "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
     "codegen:models:py": "node packages/shared/codegen-py.mjs",
-    "prepare": "node scripts/prepare-husky.cjs",
     "dev:web": "cd web && ../node_modules/.bin/sst dev",
     "web": "cd web && npm run dev"
   },
-  "lint-staged": {
-    "*.{ts,tsx}": [
-      "eslint --fix"
-    ],
-    "*.{ts,tsx,json,md,mdx,yml,yaml}": [
-      "prettier --write"
-    ],
-    "packages/shared/cli-registry.yaml": [
-      "npm run codegen:models",
-      "git add packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py"
-    ]
-  },
-  "keywords": [
-    "agent",
-    "ai",
-    "communication",
-    "relay",
-    "real-time",
-    "claude",
-    "codex",
-    "gemini"
-  ],
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
   "repository": {
@@ -134,32 +72,6 @@
     "url": "https://github.com/AgentWorkforce/relay/issues"
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
-  "dependencies": {
-    "@agent-relay/cloud": "7.1.1",
-    "@agent-relay/config": "7.1.1",
-    "@agent-relay/hooks": "7.1.1",
-    "@agent-relay/memory": "7.1.1",
-    "@agent-relay/sdk": "7.1.1",
-    "@agent-relay/telemetry": "7.1.1",
-    "@agent-relay/trajectory": "7.1.1",
-    "@agent-relay/utils": "7.1.1",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relayauth/core": "^0.1.2",
-    "@relaycast/sdk": "^1.1.0",
-    "@relayfile/local-mount": "^0.2.2",
-    "@relayfile/sdk": "^0.6.0",
-    "@slack/web-api": "^7.16.0",
-    "agent-trajectories": "^0.5.8",
-    "commander": "^12.1.0",
-    "dotenv": "^17.2.3",
-    "esbuild": "^0.27.2",
-    "ignore": "^7.0.5",
-    "ssh2": "^1.17.0",
-    "tar": "^7.5.10",
-    "ws": "^8.18.3",
-    "yaml": "^2.7.0",
-    "zod": "^3.23.8"
-  },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^14.3.1",
@@ -172,7 +84,6 @@
     "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^9.2.1",
     "eslint": "^8.57.1",
-    "husky": "^9.1.7",
     "jsdom": "^25.0.1",
     "knip": "^5.84.1",
     "prettier": "^3.6.2",

@@ -52,7 +52,8 @@ describe('Token Estimation', () => {
     });
 
     it('estimates longer text', () => {
-      const text = 'This is a longer piece of text that contains multiple sentences. It should have more tokens than a short phrase.';
+      const text =
+        'This is a longer piece of text that contains multiple sentences. It should have more tokens than a short phrase.';
       const tokens = estimateTokens(text);
       expect(tokens).toBeGreaterThan(20);
       expect(tokens).toBeLessThan(50);
@@ -143,10 +144,7 @@ describe('Token Estimation', () => {
 describe('Importance Scoring', () => {
   describe('calculateImportance', () => {
     it('gives higher score to recent messages', () => {
-      const messages = [
-        makeMessage({ id: 'old' }),
-        makeMessage({ id: 'new' }),
-      ];
+      const messages = [makeMessage({ id: 'old' }), makeMessage({ id: 'new' })];
 
       const oldScore = calculateImportance(messages[0], 0, 2);
       const newScore = calculateImportance(messages[1], 1, 2);
@@ -344,9 +342,7 @@ describe('Summarization', () => {
     });
 
     it('includes thread information if present', () => {
-      const messages = [
-        makeMessage({ thread: 'auth-thread', content: 'Message in thread' }),
-      ];
+      const messages = [makeMessage({ thread: 'auth-thread', content: 'Message in thread' })];
 
       const summary = createSummary(messages);
       expect(summary.content).toContain('auth-thread');
@@ -414,7 +410,10 @@ describe('ContextCompactor', () => {
     it('returns true above threshold', () => {
       // Create many messages to exceed threshold
       const messages = Array.from({ length: 100 }, (_, i) =>
-        makeMessage({ content: 'This is a reasonably long message number ' + i + ' with enough content to consume tokens.' })
+        makeMessage({
+          content:
+            'This is a reasonably long message number ' + i + ' with enough content to consume tokens.',
+        })
       );
       expect(compactor.needsCompaction(messages)).toBe(true);
     });
@@ -464,14 +463,17 @@ describe('ContextCompactor', () => {
       // Use distinct content to avoid deduplication
       const topics = ['auth', 'db', 'api', 'ui', 'tests', 'deploy', 'config', 'docs', 'perf', 'security'];
       const messages = topics.map((topic, i) =>
-        makeMessage({ id: `msg-${i}`, content: `Working on ${topic} implementation with ${topic}-specific details` })
+        makeMessage({
+          id: `msg-${i}`,
+          content: `Working on ${topic} implementation with ${topic}-specific details`,
+        })
       );
 
       const result = compactorSmall.compact(messages);
 
       // Recent messages should be kept (at least the last keepRecentCount)
-      const lastThree = messages.slice(-3).map(m => m.id);
-      const resultIds = result.messages.map(m => m.id);
+      const lastThree = messages.slice(-3).map((m) => m.id);
+      const resultIds = result.messages.map((m) => m.id);
 
       // Result should include the most recent messages
       expect(result.messages.length).toBeGreaterThanOrEqual(3);

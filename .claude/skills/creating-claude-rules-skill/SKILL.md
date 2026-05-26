@@ -18,11 +18,11 @@ Rules in `.claude/rules/` are modular instructions scoped to specific files via 
 
 ## Quick Reference
 
-| Field | Claude | Cursor |
-|-------|--------|--------|
-| Path patterns | `paths` | `globs` |
-| Always apply | Omit `paths` | `alwaysApply: true` |
-| Description | Not documented | `description` |
+| Field         | Claude         | Cursor              |
+| ------------- | -------------- | ------------------- |
+| Path patterns | `paths`        | `globs`             |
+| Always apply  | Omit `paths`   | `alwaysApply: true` |
+| Description   | Not documented | `description`       |
 
 ## Frontmatter
 
@@ -31,8 +31,8 @@ Rules in `.claude/rules/` are modular instructions scoped to specific files via 
 ```yaml
 ---
 paths:
-  - "src/api/**/*.ts"
-  - "tests/**/*.test.ts"
+  - 'src/api/**/*.ts'
+  - 'tests/**/*.test.ts'
 ---
 ```
 
@@ -60,13 +60,12 @@ Use .js extensions in imports.
 # ❌ WRONG - globs is Cursor format
 ---
 globs:
-  - "**/*.ts"
+  - '**/*.ts'
 ---
-
 # ✅ CORRECT - Claude uses paths
 ---
 paths:
-  - "**/*.ts"
+  - '**/*.ts'
 ---
 ```
 
@@ -75,7 +74,6 @@ paths:
 ---
 alwaysApply: true
 ---
-
 # ✅ CORRECT - just omit paths for global rules
 # (no frontmatter needed)
 ```
@@ -108,13 +106,13 @@ Files discovered recursively. Use subdirectories to organize.
 
 ## Glob Patterns
 
-| Pattern | Matches |
-|---------|---------|
-| `**/*.ts` | All .ts files anywhere |
-| `src/**/*` | Everything under src/ |
-| `*.md` | Markdown in root only |
-| `**/*.{ts,tsx}` | .ts and .tsx files |
-| `{src,lib}/**/*.ts` | .ts in src/ or lib/ |
+| Pattern             | Matches                |
+| ------------------- | ---------------------- |
+| `**/*.ts`           | All .ts files anywhere |
+| `src/**/*`          | Everything under src/  |
+| `*.md`              | Markdown in root only  |
+| `**/*.{ts,tsx}`     | .ts and .tsx files     |
+| `{src,lib}/**/*.ts` | .ts in src/ or lib/    |
 
 ## Reference
 

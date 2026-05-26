@@ -1,9 +1,9 @@
 ---
 paths:
-  - "src/spawner.rs"
-  - "src/snippets.rs"
-  - "relay-pty/src/inject.rs"
-  - "relay-pty/src/protocol.rs"
+  - 'src/spawner.rs'
+  - 'src/snippets.rs'
+  - 'relay-pty/src/inject.rs'
+  - 'relay-pty/src/protocol.rs'
 ---
 
 # MCP Configuration Injection
@@ -38,15 +38,15 @@ In `spawner.rs`, always pass the **original CLI name** (e.g. `"claude"`, `"curso
 
 ## CLI Provider Support Matrix
 
-| CLI | MCP Support | Mechanism | Key Function |
-|-----|-------------|-----------|--------------|
-| **Claude** | Full | `--mcp-config '{json}'` flag | `configure_relaycast_mcp()` |
-| **Codex** | Full | Multiple `--config key=value` flags | `configure_relaycast_mcp()` |
-| **Cursor** | Full | Writes `.cursor/mcp.json` | `ensure_cursor_mcp_config()` |
-| **Opencode** | Full | Writes `opencode.json` + `--agent relaycast` | `ensure_opencode_config()` |
-| **Gemini** | Conditional | Pre-spawn `gemini mcp add` command | `configure_gemini_droid_mcp()` |
-| **Droid** | Conditional | Pre-spawn `droid mcp add` command | `configure_gemini_droid_mcp()` |
-| **Goose/Aider/Other** | None | No injection — agent has no MCP tools | — |
+| CLI                   | MCP Support | Mechanism                                    | Key Function                   |
+| --------------------- | ----------- | -------------------------------------------- | ------------------------------ |
+| **Claude**            | Full        | `--mcp-config '{json}'` flag                 | `configure_relaycast_mcp()`    |
+| **Codex**             | Full        | Multiple `--config key=value` flags          | `configure_relaycast_mcp()`    |
+| **Cursor**            | Full        | Writes `.cursor/mcp.json`                    | `ensure_cursor_mcp_config()`   |
+| **Opencode**          | Full        | Writes `opencode.json` + `--agent relaycast` | `ensure_opencode_config()`     |
+| **Gemini**            | Conditional | Pre-spawn `gemini mcp add` command           | `configure_gemini_droid_mcp()` |
+| **Droid**             | Conditional | Pre-spawn `droid mcp add` command            | `configure_gemini_droid_mcp()` |
+| **Goose/Aider/Other** | None        | No injection — agent has no MCP tools        | —                              |
 
 ## Adding a New CLI Provider
 
@@ -71,14 +71,14 @@ Multi-workspace vars (`RELAY_WORKSPACES_JSON`, `RELAY_DEFAULT_WORKSPACE`) must b
 
 All CLI paths accept `workspaces_json: Option<&str>` and `default_workspace: Option<&str>`:
 
-| Function | Role |
-|----------|------|
-| `configure_relaycast_mcp_with_token()` | Top-level entry; receives params, passes to each CLI path |
-| `merge_relaycast_with_project_mcp()` | Claude path; threads to `relaycast_server_config()` |
-| `ensure_opencode_config()` | OpenCode; inserts into `environment` block |
-| `ensure_cursor_mcp_config()` | Cursor; chains through `relaycast_mcp_config_json_with_token()` |
-| `gemini_droid_mcp_add_args()` | Gemini/Droid; appends as `--env`/`-e` flags |
-| `relaycast_mcp_config_json_with_token()` | Shared JSON builder; forwards to `relaycast_server_config()` |
+| Function                                 | Role                                                            |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| `configure_relaycast_mcp_with_token()`   | Top-level entry; receives params, passes to each CLI path       |
+| `merge_relaycast_with_project_mcp()`     | Claude path; threads to `relaycast_server_config()`             |
+| `ensure_opencode_config()`               | OpenCode; inserts into `environment` block                      |
+| `ensure_cursor_mcp_config()`             | Cursor; chains through `relaycast_mcp_config_json_with_token()` |
+| `gemini_droid_mcp_add_args()`            | Gemini/Droid; appends as `--env`/`-e` flags                     |
+| `relaycast_mcp_config_json_with_token()` | Shared JSON builder; forwards to `relaycast_server_config()`    |
 
 **Rule:** When adding a new CLI path, always accept and forward these two params. Never fall back to `std::env::var()`.
 
@@ -109,6 +109,7 @@ After an agent is running, incoming relay messages are injected into the PTY wit
 ## CLIs Without MCP Support
 
 For CLIs that don't support MCP (goose, aider, etc.):
+
 - The agent spawns without MCP tools
 - Message injection still happens via PTY
 - The agent can only respond through its PTY output, not via MCP tool calls

@@ -966,14 +966,12 @@ export class AgentRelay {
     // that lands, surface any env beyond the broker's effective ambient
     // env so callers know they're being dropped.
     const brokerEnv = this.clientOptions.env ?? process.env;
-    const droppedEnv = Object.keys(plan.env ?? {}).filter(
-      (key) => brokerEnv[key] !== plan.env[key],
-    );
+    const droppedEnv = Object.keys(plan.env ?? {}).filter((key) => brokerEnv[key] !== plan.env[key]);
     if (droppedEnv.length > 0) {
       console.warn(
         `[AgentRelay] persona "${spec.id}" declares env vars not forwardable through ` +
           `the broker today: ${droppedEnv.join(', ')}. Set them in the spawning ` +
-          'process env or pass them via options.envOverrides + set them yourself.',
+          'process env or pass them via options.envOverrides + set them yourself.'
       );
     }
 
@@ -1011,9 +1009,7 @@ export class AgentRelay {
         await handle.dispose();
       } catch (disposeErr) {
         const msg = (disposeErr as Error)?.message ?? String(disposeErr);
-        console.warn(
-          `[AgentRelay] persona "${spec.id}" dispose after spawn failure failed: ${msg}`,
-        );
+        console.warn(`[AgentRelay] persona "${spec.id}" dispose after spawn failure failed: ${msg}`);
       }
       throw err;
     }
@@ -1040,10 +1036,7 @@ export class AgentRelay {
    *
    * Performs no filesystem writes and spawns no subprocesses.
    */
-  getPersonaSpawnPlan(
-    personaId: string,
-    options: SpawnPersonaOptions<unknown> = {},
-  ): PersonaSpawnPlan {
+  getPersonaSpawnPlan(personaId: string, options: SpawnPersonaOptions<unknown> = {}): PersonaSpawnPlan {
     const planOptions = {
       ...(options.skillsInstallRoot !== undefined ? { installRoot: options.skillsInstallRoot } : {}),
       ...(options.envOverrides !== undefined ? { envOverrides: options.envOverrides } : {}),

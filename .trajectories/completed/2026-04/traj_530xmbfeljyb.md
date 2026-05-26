@@ -18,6 +18,7 @@ Created GitHub primitive adapter base layer with shared types, runtime detection
 ## Key Decisions
 
 ### Implemented GitHub primitive as base adapter layer with action stubs
+
 - **Chose:** Implemented GitHub primitive as base adapter layer with action stubs
 - **Reasoning:** The requested step creates client/runtime infrastructure only; action-specific methods should exist on the contract but throw until the next implementation phase.
 
@@ -26,6 +27,7 @@ Created GitHub primitive adapter base layer with shared types, runtime detection
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Implemented GitHub primitive as base adapter layer with action stubs: Implemented GitHub primitive as base adapter layer with action stubs

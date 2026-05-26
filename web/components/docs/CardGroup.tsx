@@ -9,10 +9,7 @@ interface CardGroupProps {
 
 export function CardGroup({ cols = 2, children }: CardGroupProps) {
   return (
-    <div
-      className={styles.cardGroup}
-      style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
-    >
+    <div className={styles.cardGroup} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
       {children}
     </div>
   );

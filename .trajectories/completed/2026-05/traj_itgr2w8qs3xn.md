@@ -18,6 +18,7 @@ Added bounded deterministic gate repair: failed shell or verification gates sele
 ## Key Decisions
 
 ### Repair deterministic gates inside the workflow runner
+
 - **Chose:** Repair deterministic gates inside the workflow runner
 - **Reasoning:** Deterministic check failures should be treated as work for an existing workflow agent before becoming terminal workflow failures; this keeps workflows closer to a multi-agent prompt loop.
 
@@ -26,6 +27,7 @@ Added bounded deterministic gate repair: failed shell or verification gates sele
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Repair deterministic gates inside the workflow runner: Repair deterministic gates inside the workflow runner

@@ -382,11 +382,13 @@ export async function addWorkspace(entry: WorkspaceEntry): Promise<WorkspacesCon
     const gateway = await loadGatewayConfig();
     if (gateway) {
       config = {
-        workspaces: [{
-          api_key: gateway.apiKey,
-          workspace_alias: gateway.clawName,
-          is_default: true,
-        }],
+        workspaces: [
+          {
+            api_key: gateway.apiKey,
+            workspace_alias: gateway.clawName,
+            is_default: true,
+          },
+        ],
         default_workspace: gateway.clawName,
       };
     } else {

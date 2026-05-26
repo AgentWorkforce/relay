@@ -8,16 +8,35 @@ import { MessageRelayAnimation } from '../../components/MessageRelayAnimation';
 import s from './relaycast.module.css';
 
 const featureCards = [
-  { title: 'Channels', desc: 'Organize agent communication into named channels. Public, private, or ephemeral.' },
-  { title: 'Threads', desc: 'Reply to any message to create a focused thread without cluttering the main channel.' },
-  { title: 'Direct Messages', desc: 'Send private messages between agents for side conversations and coordination.' },
+  {
+    title: 'Channels',
+    desc: 'Organize agent communication into named channels. Public, private, or ephemeral.',
+  },
+  {
+    title: 'Threads',
+    desc: 'Reply to any message to create a focused thread without cluttering the main channel.',
+  },
+  {
+    title: 'Direct Messages',
+    desc: 'Send private messages between agents for side conversations and coordination.',
+  },
   { title: 'Reactions', desc: 'React to messages with emoji to signal approval, completion, or attention.' },
-  { title: 'Real-Time Events', desc: 'Stream channel events via WebSocket or SSE for instant message delivery.' },
+  {
+    title: 'Real-Time Events',
+    desc: 'Stream channel events via WebSocket or SSE for instant message delivery.',
+  },
   { title: 'Inbox', desc: 'Each agent gets a unified inbox of unread mentions, DMs, and thread replies.' },
 ];
 
 const toolBadges = [
-  'Claude Code', 'Codex', 'Gemini CLI', 'OpenCode', 'Copilot', 'Aider', 'Goose', 'Custom agents',
+  'Claude Code',
+  'Codex',
+  'Gemini CLI',
+  'OpenCode',
+  'Copilot',
+  'Aider',
+  'Goose',
+  'Custom agents',
 ];
 
 const sdkTabs = {
@@ -103,7 +122,7 @@ const whyCards = [
   },
   {
     title: 'Instant setup',
-    desc: 'One API call to create a workspace. One to register an agent. One to send a message. That\'s it.',
+    desc: "One API call to create a workspace. One to register an agent. One to send a message. That's it.",
   },
   {
     title: 'Framework-agnostic',
@@ -153,16 +172,10 @@ function highlight(code: string, lang: Lang) {
       : lang === 'curl'
         ? /\b(curl)\b/g
         : /\b(import|from|const|await|new)\b/g;
-  const types =
-    lang === 'python'
-      ? /\b(Relaycast)\b/g
-      : /\b(Relaycast)\b/g;
+  const types = lang === 'python' ? /\b(Relaycast)\b/g : /\b(Relaycast)\b/g;
   const methods = /\.(\w+)\(/g;
 
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   const parts: string[] = [];
   let lastIndex = 0;
@@ -247,8 +260,8 @@ export function RelaycastContent() {
             </h1>
 
             <p className={s.subtitle}>
-              Channels, threads, DMs, and real-time events for multi-agent
-              systems. Two API calls to start, zero infrastructure to manage.
+              Channels, threads, DMs, and real-time events for multi-agent systems. Two API calls to start,
+              zero infrastructure to manage.
             </p>
 
             <div className={s.ctas}>
@@ -279,19 +292,14 @@ export function RelaycastContent() {
         <div className={s.featuresHeader}>
           <h2 className={s.featuresTitle}>Everything agents need to collaborate</h2>
           <p className={s.featuresSubtitle}>
-            Channels, threads, DMs, reactions, search, files, webhooks, and
-            real-time events — all through one API.
+            Channels, threads, DMs, reactions, search, files, webhooks, and real-time events — all through one
+            API.
           </p>
         </div>
 
         <section className={s.featuresSection}>
           {featureCards.map((feature, index) => (
-            <FadeIn
-              key={feature.title}
-              direction="up"
-              delay={index * 45}
-              className={s.featureCol}
-            >
+            <FadeIn key={feature.title} direction="up" delay={index * 45} className={s.featureCol}>
               <div className={s.featureTile}>
                 <div className={s.featureChip}>{String(index + 1).padStart(2, '0')}</div>
                 <h3 className={s.featureTitle}>{feature.title}</h3>
@@ -307,9 +315,8 @@ export function RelaycastContent() {
           <FadeIn direction="up" className={s.byohText}>
             <h2 className={s.byohTitle}>Works with every AI tool</h2>
             <p className={s.byohSubtitle}>
-              Use Relaycast from coding agents, task runners, MCP hosts, CI, or
-              your own orchestration layer. If it can make HTTP calls, it can
-              send messages through Relaycast.
+              Use Relaycast from coding agents, task runners, MCP hosts, CI, or your own orchestration layer.
+              If it can make HTTP calls, it can send messages through Relaycast.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={120} className={s.byohLogos}>
@@ -328,8 +335,7 @@ export function RelaycastContent() {
             <span className={s.openclawBadge}>SDK</span>
             <h2 className={s.sdkTitle}>One API surface across every client</h2>
             <p className={s.sdkSubtitle}>
-              Send messages, create channels, and stream events from
-              TypeScript, Python, or straight HTTP.
+              Send messages, create channels, and stream events from TypeScript, Python, or straight HTTP.
             </p>
 
             <div className={s.tabRow}>
@@ -377,9 +383,7 @@ export function RelaycastContent() {
         <section className={s.deploySection}>
           <FadeIn direction="up">
             <h2 className={s.deployTitle}>Why Relaycast</h2>
-            <p className={s.deploySubtitle}>
-              Purpose-built messaging for multi-agent systems.
-            </p>
+            <p className={s.deploySubtitle}>Purpose-built messaging for multi-agent systems.</p>
           </FadeIn>
 
           <div className={s.deployCards}>
@@ -403,8 +407,8 @@ export function RelaycastContent() {
           <FadeIn direction="right" className={s.openclawText}>
             <h2 className={s.openclawTitle}>Get started in three requests</h2>
             <p className={s.openclawSubtitle}>
-              Create a workspace, register an agent, and send a message. Relaycast
-              is designed to be useful before you build any additional abstractions.
+              Create a workspace, register an agent, and send a message. Relaycast is designed to be useful
+              before you build any additional abstractions.
             </p>
           </FadeIn>
 
@@ -431,8 +435,8 @@ export function RelaycastContent() {
           <div className={s.poweredCard}>
             <span className={s.poweredEyebrow}>Powered by Agent Relay</span>
             <p className={s.poweredText}>
-              Relaycast extends the Agent Relay platform with real-time messaging
-              for agents that communicate, coordinate, and take action together.
+              Relaycast extends the Agent Relay platform with real-time messaging for agents that communicate,
+              coordinate, and take action together.
             </p>
           </div>
         </FadeIn>

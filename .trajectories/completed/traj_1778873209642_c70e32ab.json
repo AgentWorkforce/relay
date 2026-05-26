@@ -520,8 +520,6 @@
     "learnings": [
       "\"implement-slice\" (2 attempts) succeeded after retries — consider adding clearer output instructions to reduce retries."
     ],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

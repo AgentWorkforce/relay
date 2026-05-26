@@ -69,23 +69,27 @@ describe('SpawnManager', () => {
     expect(manager.size).toBe(1);
 
     // Second spawn should fail due to limit
-    await expect(manager.spawn({
-      name: 'claw-2',
-      relayApiKey: 'rk_live_test',
-    })).rejects.toThrow(/Maximum concurrent spawns reached/);
+    await expect(
+      manager.spawn({
+        name: 'claw-2',
+        relayApiKey: 'rk_live_test',
+      })
+    ).rejects.toThrow(/Maximum concurrent spawns reached/);
   });
 
   it('should enforce maxDepth limit', async () => {
     const manager = new SpawnManager({
       mode: 'process',
       maxDepth: 2,
-      spawnDepth: 2,  // Already at max depth
+      spawnDepth: 2, // Already at max depth
     });
 
-    await expect(manager.spawn({
-      name: 'claw-1',
-      relayApiKey: 'rk_live_test',
-    })).rejects.toThrow(/Spawn depth limit reached/);
+    await expect(
+      manager.spawn({
+        name: 'claw-1',
+        relayApiKey: 'rk_live_test',
+      })
+    ).rejects.toThrow(/Spawn depth limit reached/);
   });
 
   it('should prevent duplicate spawns by name', async () => {
@@ -96,10 +100,12 @@ describe('SpawnManager', () => {
       relayApiKey: 'rk_live_test',
     });
 
-    await expect(manager.spawn({
-      name: 'researcher',
-      relayApiKey: 'rk_live_test',
-    })).rejects.toThrow(/already running/);
+    await expect(
+      manager.spawn({
+        name: 'researcher',
+        relayApiKey: 'rk_live_test',
+      })
+    ).rejects.toThrow(/already running/);
   });
 
   it('should list spawned handles', async () => {

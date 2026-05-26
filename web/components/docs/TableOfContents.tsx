@@ -11,9 +11,7 @@ export function TableOfContents({ items }: { items: TocItem[] }) {
   const { language, setLanguage } = useDocsLanguage();
 
   useEffect(() => {
-    const headings = items
-      .map((item) => document.getElementById(item.id))
-      .filter(Boolean) as HTMLElement[];
+    const headings = items.map((item) => document.getElementById(item.id)).filter(Boolean) as HTMLElement[];
 
     if (headings.length === 0) return;
 

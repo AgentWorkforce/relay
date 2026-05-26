@@ -15,10 +15,11 @@ env:
 
 jobs:
   changes:
-    name: Detect web-only change set
+    name: Detect change scope
     runs-on: ubuntu-latest
     outputs:
       web_only: ${{ steps.scope.outputs.web_only }}
+      sdk_swift_only: ${{ steps.scope.outputs.sdk_swift_only }}
     steps:
       - id: scope
         uses: actions/github-script@v7
@@ -45,13 +46,15 @@ jobs:
             }
 
             const webOnly = files.length > 0 && files.every((file) => file.startsWith('web/'));
+            const sdkSwiftOnly = files.length > 0 && files.every((file) => file.startsWith('packages/sdk-swift/'));
             core.info(`Changed files (${files.length}): ${files.join(', ')}`);
             core.setOutput('web_only', webOnly ? 'true' : 'false');
+            core.setOutput('sdk_swift_only', sdkSwiftOnly ? 'true' : 'false');
 
   validate:
     name: Build & Validate
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -116,7 +119,7 @@ jobs:
       - name: Audit bundled dependencies
         run: |
           echo "=== Auditing bundled package dependencies ==="
-          node scripts/audit-bundled-deps.mjs
+          node packages/cli/scripts/audit-bundled-deps.mjs
 
       - name: Validate all
         run: |
@@ -175,7 +178,7 @@ jobs:
           echo ""
           echo "=== Testing main package ==="
           node --eval "
-            import('./dist/src/index.js').then(m => {
+            import('./packages/cli/dist/index.js').then(m => {
               const required = ['AgentRelay', 'AgentRelayClient', 'createLogger'];
               const missing = required.filter(r => !(r in m));
               if (missing.length) {
@@ -195,7 +198,7 @@ jobs:
           TEST_PORT=3899
           API_PORT=$((TEST_PORT + 1))
           # Start broker+dashboard in background
-          node dist/src/cli/index.js up --port "$TEST_PORT" &
+          node packages/cli/dist/cli/index.js up --port "$TEST_PORT" &
           DAEMON_PID=$!
 
           # Wait for health endpoint (broker API is dashboard port + 1)
@@ -209,14 +212,14 @@ jobs:
           # Verify broker is reachable
           if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
             echo "✓ Broker health endpoint responding"
-            AGENT_RELAY_SKIP_TMUX=1 node dist/src/cli/index.js status || true
+            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js status || true
           else
             echo "✗ Broker health endpoint did not become ready"
             exit 1
           fi
 
           # Cleanup through CLI down first, then hard-kill fallback
-          node dist/src/cli/index.js down --force --timeout 5000 || true
+          node packages/cli/dist/cli/index.js down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
 
       # Keep tarball validation after runtime smoke tests. The tarball
@@ -228,7 +231,7 @@ jobs:
   publish-fresh-install-build:
     name: Publish Fresh Install Build
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -262,7 +265,7 @@ jobs:
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
@@ -357,7 +360,7 @@ jobs:
             --target="$TARGET" \
             --external=better-sqlite3 \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
-            ./dist/src/cli/index.js \
+            ./packages/cli/dist/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
           if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
             echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"

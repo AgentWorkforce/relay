@@ -100,7 +100,7 @@ describe('ChannelMessenger', () => {
     it('returns registration instructions for non-claude CLIs', () => {
       const messenger = new ChannelMessenger();
       const result = messenger.buildRelayRegistrationNote('codex', 'helper-1');
-      expect(result).toContain('register(name="helper-1")');
+      expect(result).toContain('register_agent(name="helper-1")');
       expect(result).toContain('RELAY SETUP');
     });
   });

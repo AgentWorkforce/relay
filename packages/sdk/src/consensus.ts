@@ -12,8 +12,8 @@
  * - quorum     — minimum participation + majority
  */
 
-import { randomBytes } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 // Re-export all types and pure helpers so consumers can import everything
 // from "consensus.js" without needing to know about the split.
@@ -28,7 +28,7 @@ export type {
   ConsensusConfig,
   ConsensusEvents,
   ParsedProposalCommand,
-} from "./consensus-helpers.js";
+} from './consensus-helpers.js';
 
 export {
   formatProposalMessage,
@@ -36,7 +36,7 @@ export {
   parseVoteCommand,
   isConsensusCommand,
   parseProposalCommand,
-} from "./consensus-helpers.js";
+} from './consensus-helpers.js';
 
 import type {
   ConsensusType,
@@ -46,13 +46,13 @@ import type {
   Proposal,
   ConsensusResult,
   ConsensusConfig,
-} from "./consensus-helpers.js";
+} from './consensus-helpers.js';
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: ConsensusConfig = {
   defaultTimeoutMs: 5 * 60 * 1000,
-  defaultConsensusType: "majority",
+  defaultConsensusType: 'majority',
   defaultThreshold: 0.67,
   allowVoteChange: true,
   autoResolve: true,
@@ -86,7 +86,7 @@ export class ConsensusEngine extends EventEmitter {
     metadata?: Record<string, unknown>;
     thread?: string;
   }): Proposal {
-    const id = `prop_${Date.now()}_${randomBytes(4).toString("hex")}`;
+    const id = `prop_${Date.now()}_${randomBytes(4).toString('hex')}`;
     const now = Date.now();
     const timeoutMs = options.timeoutMs ?? this.config.defaultTimeoutMs;
 
@@ -95,15 +95,14 @@ export class ConsensusEngine extends EventEmitter {
       title: options.title,
       description: options.description,
       proposer: options.proposer,
-      consensusType:
-        options.consensusType ?? this.config.defaultConsensusType,
+      consensusType: options.consensusType ?? this.config.defaultConsensusType,
       participants: options.participants,
       quorum: options.quorum,
       threshold: options.threshold ?? this.config.defaultThreshold,
       weights: options.weights,
       createdAt: now,
       expiresAt: now + timeoutMs,
-      status: "pending",
+      status: 'pending',
       votes: [],
       metadata: options.metadata,
       thread: options.thread ?? `consensus-${id}`,
@@ -111,7 +110,7 @@ export class ConsensusEngine extends EventEmitter {
 
     this.proposals.set(id, proposal);
     this.scheduleExpiry(proposal);
-    this.emit("proposal:created", proposal);
+    this.emit('proposal:created', proposal);
     return proposal;
   }
 
@@ -119,18 +118,16 @@ export class ConsensusEngine extends EventEmitter {
     proposalId: string,
     agent: string,
     value: VoteValue,
-    reason?: string,
+    reason?: string
   ): { success: boolean; error?: string; proposal?: Proposal } {
     const proposal = this.proposals.get(proposalId);
 
-    if (!proposal) return { success: false, error: "Proposal not found" };
-    if (proposal.status !== "pending")
-      return { success: false, error: `Proposal is ${proposal.status}` };
-    if (!proposal.participants.includes(agent))
-      return { success: false, error: "Agent not a participant" };
+    if (!proposal) return { success: false, error: 'Proposal not found' };
+    if (proposal.status !== 'pending') return { success: false, error: `Proposal is ${proposal.status}` };
+    if (!proposal.participants.includes(agent)) return { success: false, error: 'Agent not a participant' };
     if (Date.now() > proposal.expiresAt) {
       this.expireProposal(proposal);
-      return { success: false, error: "Proposal has expired" };
+      return { success: false, error: 'Proposal has expired' };
     }
 
     const existingIdx = proposal.votes.findIndex((v) => v.agent === agent);
@@ -138,7 +135,7 @@ export class ConsensusEngine extends EventEmitter {
       if (!this.config.allowVoteChange)
         return {
           success: false,
-          error: "Vote already cast and changes not allowed",
+          error: 'Vote already cast and changes not allowed',
         };
       proposal.votes.splice(existingIdx, 1);
     }
@@ -147,7 +144,7 @@ export class ConsensusEngine extends EventEmitter {
     const vote: Vote = { agent, value, weight, reason, timestamp: Date.now() };
 
     proposal.votes.push(vote);
-    this.emit("proposal:voted", proposal, vote);
+    this.emit('proposal:voted', proposal, vote);
 
     if (this.config.autoResolve) {
       const result = this.calculateResult(proposal);
@@ -174,7 +171,7 @@ export class ConsensusEngine extends EventEmitter {
   getPendingVotesForAgent(agent: string): Proposal[] {
     const out: Proposal[] = [];
     for (const p of this.proposals.values()) {
-      if (p.status !== "pending") continue;
+      if (p.status !== 'pending') continue;
       if (!p.participants.includes(agent)) continue;
       if (p.votes.some((v) => v.agent === agent)) continue;
       out.push(p);
@@ -182,27 +179,22 @@ export class ConsensusEngine extends EventEmitter {
     return out;
   }
 
-  cancelProposal(
-    proposalId: string,
-    agent: string,
-  ): { success: boolean; error?: string } {
+  cancelProposal(proposalId: string, agent: string): { success: boolean; error?: string } {
     const proposal = this.proposals.get(proposalId);
-    if (!proposal) return { success: false, error: "Proposal not found" };
-    if (proposal.proposer !== agent)
-      return { success: false, error: "Only proposer can cancel" };
-    if (proposal.status !== "pending")
-      return { success: false, error: `Proposal is ${proposal.status}` };
+    if (!proposal) return { success: false, error: 'Proposal not found' };
+    if (proposal.proposer !== agent) return { success: false, error: 'Only proposer can cancel' };
+    if (proposal.status !== 'pending') return { success: false, error: `Proposal is ${proposal.status}` };
 
-    proposal.status = "cancelled";
+    proposal.status = 'cancelled';
     this.clearExpiryTimer(proposalId);
-    this.emit("proposal:cancelled", proposal);
+    this.emit('proposal:cancelled', proposal);
     this.evictOldProposals();
     return { success: true };
   }
 
   forceResolve(proposalId: string): ConsensusResult | null {
     const proposal = this.proposals.get(proposalId);
-    if (!proposal || proposal.status !== "pending") return null;
+    if (!proposal || proposal.status !== 'pending') return null;
     const result = this.calculateResult(proposal);
     this.resolveProposal(proposal, result);
     return result;
@@ -216,8 +208,8 @@ export class ConsensusEngine extends EventEmitter {
     let abstainWeight = 0;
 
     for (const v of proposal.votes) {
-      if (v.value === "approve") approveWeight += v.weight;
-      else if (v.value === "reject") rejectWeight += v.weight;
+      if (v.value === 'approve') approveWeight += v.weight;
+      else if (v.value === 'reject') rejectWeight += v.weight;
       else abstainWeight += v.weight;
     }
 
@@ -228,8 +220,7 @@ export class ConsensusEngine extends EventEmitter {
     const voters = new Set(proposal.votes.map((v) => v.agent));
     const nonVoters = proposal.participants.filter((p) => !voters.has(p));
 
-    const quorumRequired =
-      proposal.quorum ?? Math.ceil(proposal.participants.length / 2);
+    const quorumRequired = proposal.quorum ?? Math.ceil(proposal.participants.length / 2);
     const quorumMet = proposal.votes.length >= quorumRequired;
 
     const decision = this.determineDecision(proposal, {
@@ -258,104 +249,79 @@ export class ConsensusEngine extends EventEmitter {
       rejectWeight: number;
       votedWeight: number;
       quorumMet: boolean;
-    },
-  ): "approved" | "rejected" | "no_consensus" {
+    }
+  ): 'approved' | 'rejected' | 'no_consensus' {
     const { approveWeight, rejectWeight, votedWeight, quorumMet } = counts;
 
     switch (proposal.consensusType) {
-      case "unanimous": {
-        if (proposal.votes.some((v) => v.value === "reject")) return "rejected";
-        if (proposal.votes.length < proposal.participants.length)
-          return "no_consensus";
-        return proposal.votes.every((v) => v.value === "approve")
-          ? "approved"
-          : "rejected";
+      case 'unanimous': {
+        if (proposal.votes.some((v) => v.value === 'reject')) return 'rejected';
+        if (proposal.votes.length < proposal.participants.length) return 'no_consensus';
+        return proposal.votes.every((v) => v.value === 'approve') ? 'approved' : 'rejected';
       }
 
-      case "supermajority": {
+      case 'supermajority': {
         const threshold = proposal.threshold ?? this.config.defaultThreshold;
-        if (votedWeight === 0) return "no_consensus";
-        if (approveWeight / votedWeight >= threshold) return "approved";
-        if (rejectWeight / votedWeight > 1 - threshold) return "rejected";
-        return "no_consensus";
+        if (votedWeight === 0) return 'no_consensus';
+        if (approveWeight / votedWeight >= threshold) return 'approved';
+        if (rejectWeight / votedWeight > 1 - threshold) return 'rejected';
+        return 'no_consensus';
       }
 
-      case "quorum": {
-        if (!quorumMet) return "no_consensus";
+      case 'quorum': {
+        if (!quorumMet) return 'no_consensus';
         // fall through to majority
       }
       // eslint-disable-next-line no-fallthrough
-      case "majority": {
-        if (votedWeight === 0) return "no_consensus";
-        if (approveWeight > rejectWeight) return "approved";
-        if (rejectWeight > approveWeight) return "rejected";
-        return "no_consensus";
+      case 'majority': {
+        if (votedWeight === 0) return 'no_consensus';
+        if (approveWeight > rejectWeight) return 'approved';
+        if (rejectWeight > approveWeight) return 'rejected';
+        return 'no_consensus';
       }
 
-      case "weighted": {
-        if (votedWeight === 0) return "no_consensus";
-        if (approveWeight > rejectWeight) return "approved";
-        if (rejectWeight > approveWeight) return "rejected";
-        return "no_consensus";
+      case 'weighted': {
+        if (votedWeight === 0) return 'no_consensus';
+        if (approveWeight > rejectWeight) return 'approved';
+        if (rejectWeight > approveWeight) return 'rejected';
+        return 'no_consensus';
       }
 
       default:
-        return "no_consensus";
+        return 'no_consensus';
     }
   }
 
-  private canResolveEarly(
-    proposal: Proposal,
-    result: ConsensusResult,
-  ): boolean {
+  private canResolveEarly(proposal: Proposal, result: ConsensusResult): boolean {
     const totalWeight = this.getTotalWeight(proposal);
-    const remainingWeight =
-      totalWeight -
-      (result.approveWeight + result.rejectWeight + result.abstainWeight);
+    const remainingWeight = totalWeight - (result.approveWeight + result.rejectWeight + result.abstainWeight);
 
     switch (proposal.consensusType) {
-      case "unanimous":
+      case 'unanimous':
         return (
-          proposal.votes.some((v) => v.value === "reject") ||
+          proposal.votes.some((v) => v.value === 'reject') ||
           proposal.votes.length === proposal.participants.length
         );
 
-      case "supermajority": {
+      case 'supermajority': {
         const threshold = proposal.threshold ?? this.config.defaultThreshold;
-        const votedWeight =
-          result.approveWeight + result.rejectWeight + result.abstainWeight;
-        if (
-          votedWeight > 0 &&
-          result.approveWeight / votedWeight >= threshold
-        ) {
-          return (
-            result.approveWeight / (votedWeight + remainingWeight) >= threshold
-          );
+        const votedWeight = result.approveWeight + result.rejectWeight + result.abstainWeight;
+        if (votedWeight > 0 && result.approveWeight / votedWeight >= threshold) {
+          return result.approveWeight / (votedWeight + remainingWeight) >= threshold;
         }
-        if (
-          votedWeight > 0 &&
-          result.rejectWeight / votedWeight > 1 - threshold
-        ) {
-          return (
-            result.rejectWeight / (votedWeight + remainingWeight) > 1 - threshold
-          );
+        if (votedWeight > 0 && result.rejectWeight / votedWeight > 1 - threshold) {
+          return result.rejectWeight / (votedWeight + remainingWeight) > 1 - threshold;
         }
         return false;
       }
 
-      case "majority":
-      case "weighted":
-        return (
-          result.approveWeight > totalWeight / 2 ||
-          result.rejectWeight > totalWeight / 2
-        );
+      case 'majority':
+      case 'weighted':
+        return result.approveWeight > totalWeight / 2 || result.rejectWeight > totalWeight / 2;
 
-      case "quorum":
+      case 'quorum':
         if (!result.quorumMet) return false;
-        return (
-          result.approveWeight > totalWeight / 2 ||
-          result.rejectWeight > totalWeight / 2
-        );
+        return result.approveWeight > totalWeight / 2 || result.rejectWeight > totalWeight / 2;
 
       default:
         return false;
@@ -382,29 +348,22 @@ export class ConsensusEngine extends EventEmitter {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
-  private resolveProposal(
-    proposal: Proposal,
-    result: ConsensusResult,
-  ): void {
+  private resolveProposal(proposal: Proposal, result: ConsensusResult): void {
     proposal.status =
-      result.decision === "approved"
-        ? "approved"
-        : result.decision === "rejected"
-          ? "rejected"
-          : "rejected"; // no_consensus maps to rejected (not expired — that's for timeouts)
+      result.decision === 'approved' ? 'approved' : result.decision === 'rejected' ? 'rejected' : 'rejected'; // no_consensus maps to rejected (not expired — that's for timeouts)
     proposal.result = result;
     this.clearExpiryTimer(proposal.id);
-    this.emit("proposal:resolved", proposal, result);
+    this.emit('proposal:resolved', proposal, result);
     this.evictOldProposals();
   }
 
   private expireProposal(proposal: Proposal): void {
-    if (proposal.status !== "pending") return;
+    if (proposal.status !== 'pending') return;
     const result = this.calculateResult(proposal);
-    proposal.status = "expired";
+    proposal.status = 'expired';
     proposal.result = result;
     this.clearExpiryTimer(proposal.id);
-    this.emit("proposal:expired", proposal);
+    this.emit('proposal:expired', proposal);
     this.evictOldProposals();
   }
 
@@ -434,7 +393,7 @@ export class ConsensusEngine extends EventEmitter {
 
     const terminal: Proposal[] = [];
     for (const p of this.proposals.values()) {
-      if (p.status !== "pending") terminal.push(p);
+      if (p.status !== 'pending') terminal.push(p);
     }
 
     if (terminal.length <= max) return;
@@ -472,11 +431,11 @@ export class ConsensusEngine extends EventEmitter {
     let resolvedCount = 0;
 
     for (const p of this.proposals.values()) {
-      if (p.status === "pending") pending++;
-      else if (p.status === "approved") approved++;
-      else if (p.status === "rejected") rejected++;
-      else if (p.status === "expired") expired++;
-      else if (p.status === "cancelled") cancelled++;
+      if (p.status === 'pending') pending++;
+      else if (p.status === 'approved') approved++;
+      else if (p.status === 'rejected') rejected++;
+      else if (p.status === 'expired') expired++;
+      else if (p.status === 'cancelled') cancelled++;
 
       if (p.result) {
         totalParticipation += p.result.participation;
@@ -491,16 +450,13 @@ export class ConsensusEngine extends EventEmitter {
       rejected,
       expired,
       cancelled,
-      avgParticipation:
-        resolvedCount > 0 ? totalParticipation / resolvedCount : 0,
+      avgParticipation: resolvedCount > 0 ? totalParticipation / resolvedCount : 0,
     };
   }
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
-export function createConsensusEngine(
-  config?: Partial<ConsensusConfig>,
-): ConsensusEngine {
+export function createConsensusEngine(config?: Partial<ConsensusConfig>): ConsensusEngine {
   return new ConsensusEngine(config);
 }

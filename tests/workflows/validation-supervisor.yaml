@@ -51,4 +51,4 @@ workflows:
           REASON: both worker outputs present
         verification:
           type: output_contains
-          value: "OWNER_DECISION: COMPLETE"
+          value: 'OWNER_DECISION: COMPLETE'

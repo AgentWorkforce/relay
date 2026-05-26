@@ -5,12 +5,7 @@
  * Run: npx tsx tests/benchmarks/overhead.ts [--quick]
  */
 
-import {
-  QUICK,
-  startBroker,
-  randomName,
-  performance,
-} from "./harness.js";
+import { QUICK, startBroker, randomName, performance } from './harness.js';
 
 const AGENT_COUNT = QUICK ? 3 : 5;
 
@@ -36,8 +31,8 @@ async function main(): Promise<void> {
       const name = randomName(`overhead-${i}`);
       await client.spawnPty({
         name,
-        cli: "cat",
-        channels: ["general"],
+        cli: 'cat',
+        channels: ['general'],
       });
       agents.push(name);
       // Let process settle
@@ -51,7 +46,7 @@ async function main(): Promise<void> {
     for (let i = 0; i < 10; i++) {
       await client.sendMessage({
         to: agents[0]!,
-        from: "bench",
+        from: 'bench',
         text: `overhead-test-${i}`,
       });
     }
@@ -61,16 +56,23 @@ async function main(): Promise<void> {
     console.log(`\n  Baseline RSS:         ${baselineRss} KB`);
     console.log(`  After broker start:   ${brokerRss} KB (+${brokerRss - baselineRss} KB)`);
     console.log(`  Broker start time:    ${brokerStartMs.toFixed(0)} ms`);
-    console.log(`  After ${AGENT_COUNT} agents:      ${afterAgentsRss} KB (+${afterAgentsRss - brokerRss} KB)`);
+    console.log(
+      `  After ${AGENT_COUNT} agents:      ${afterAgentsRss} KB (+${afterAgentsRss - brokerRss} KB)`
+    );
     console.log(`  Per-agent overhead:   ~${perAgentOverhead.toFixed(0)} KB`);
     console.log(`  After 10 messages:    ${afterMessagesRss} KB (+${afterMessagesRss - afterAgentsRss} KB)`);
-    console.log("\nDONE");
+    console.log('\nDONE');
   } finally {
     for (const name of agents) {
-      try { await client.release(name); } catch {}
+      try {
+        await client.release(name);
+      } catch {}
     }
     await client.shutdown();
   }
 }
 
-main().catch((err) => { console.error("benchmark failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('benchmark failed:', err);
+  process.exit(1);
+});
