@@ -137,14 +137,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "6 signal(s), 2 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "COMPLETE",
-                "COMPLETE",
-                ">7u",
-                "0",
-                "COMPLETE",
-                "**[implement-slice] Output:**"
-              ],
+              "signals": ["COMPLETE", "COMPLETE", ">7u", "0", "COMPLETE", "**[implement-slice] Output:**"],
               "channelPosts": [
                 "OWNER_DECISION: COMPLETE\nREASON: Updated the bounded messaging test slice in src/cli/commands/messaging.test.ts and wrote the required signoff artifact; focused",
                 "**[implement-slice] Output:**\n```\n/cli/commands/setup.ts(22,8): error TS2305: Module '\"@agent-relay/sdk\n        /workflows\"' has no exported member 'ParsedWorkf"
@@ -502,8 +495,6 @@
     "approach": "dag workflow (4 agents)",
     "confidence": 0.36764705882352944,
     "learnings": [],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

@@ -1,9 +1,19 @@
+// `agent-relay-broker` is a binary-with-thin-lib crate: `main.rs` only calls
+// `run_cli`, so every code path the binary exercises is reachable through this
+// library. The `#[allow(dead_code)]` annotations below mark modules that
+// currently carry unused items (constants, helpers, even whole types) — a
+// follow-up cleanup will trim them. They are not a side effect of the
+// binary/library split; each annotated module has at least one genuinely
+// unused public-facing item that the compiler would otherwise warn about.
+
+pub mod ids;
 pub mod protocol;
 pub mod snippets;
 
 pub(crate) mod broker;
 pub(crate) mod cli;
 pub(crate) mod cli_mcp_args;
+pub(crate) mod codex_session;
 #[allow(dead_code)]
 pub(crate) mod config;
 pub(crate) mod control;

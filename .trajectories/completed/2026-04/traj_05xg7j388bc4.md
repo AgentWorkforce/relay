@@ -18,6 +18,7 @@ Added Browser primitive workflow-step integration, MCP JSON-RPC server, package 
 ## Key Decisions
 
 ### Implemented Browser primitive as SDK integration step
+
 - **Chose:** Implemented Browser primitive as SDK integration step
 - **Reasoning:** The SDK runner already delegates type: integration steps through executeIntegrationStep, so the Browser primitive can plug in without changing DAG scheduling or runner internals.
 
@@ -26,6 +27,7 @@ Added Browser primitive workflow-step integration, MCP JSON-RPC server, package 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Implemented Browser primitive as SDK integration step: Implemented Browser primitive as SDK integration step

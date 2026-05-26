@@ -270,11 +270,10 @@ export async function captureInitialSnapshot(
   deps: CaptureInitialSnapshotDeps
 ): Promise<{ snapshotRows?: number } | null> {
   const render = deps.captureAndRenderSnapshot ?? captureAndRenderSnapshot;
-  const snapshot = await render(
-    { url: connection.url, apiKey: connection.apiKey },
-    name,
-    { fetch: deps.fetch, writeChunk: deps.writeChunk }
-  );
+  const snapshot = await render({ url: connection.url, apiKey: connection.apiKey }, name, {
+    fetch: deps.fetch,
+    writeChunk: deps.writeChunk,
+  });
   switch (snapshot.status) {
     case 'ok':
       return { snapshotRows: snapshot.rows };

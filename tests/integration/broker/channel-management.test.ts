@@ -101,7 +101,8 @@ test('broker: channel management subscribe, mute, unmute, and unsubscribe flow',
     await harness.waitForEvent(
       'channel_muted',
       10_000,
-      (event) => isNamedChannelEvent(event, 'channel_muted') && event.name === agentName && event.channel === 'ch-a'
+      (event) =>
+        isNamedChannelEvent(event, 'channel_muted') && event.name === agentName && event.channel === 'ch-a'
     ).promise;
 
     harness.clearEvents();
@@ -147,7 +148,11 @@ test('broker: channel management subscribe, mute, unmute, and unsubscribe flow',
     ).promise;
 
     agent = await assertAgentExists(harness, agentName);
-    assert.deepEqual(agent.channels, ['ch-a'], 'agent should only remain subscribed to ch-a after unsubscribe');
+    assert.deepEqual(
+      agent.channels,
+      ['ch-a'],
+      'agent should only remain subscribed to ch-a after unsubscribe'
+    );
   } finally {
     try {
       await harness.releaseAgent(agentName);

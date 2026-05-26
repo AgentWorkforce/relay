@@ -4,7 +4,9 @@
   color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 .main {
@@ -118,7 +120,9 @@
   border: 1px solid var(--line);
   border-radius: 0.95rem;
   background: var(--card-bg);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 
 .featureCard:hover {

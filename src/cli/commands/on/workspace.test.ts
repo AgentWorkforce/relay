@@ -80,7 +80,9 @@ describe('seedWorkspace', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const written = await seedWorkspace('https://relayfile.example/', 'token', 'rw_demo', root, ['custom-ignore']);
+    const written = await seedWorkspace('https://relayfile.example/', 'token', 'rw_demo', root, [
+      'custom-ignore',
+    ]);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -105,8 +107,15 @@ describe('seedAclRules', () => {
   it('writes acl files and throws on partial failure', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ written: 2, errorCount: 0, errors: [] }) })
-      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ written: 1, errorCount: 1, errors: [{ path: '/src/.relayfile.acl' }] }) });
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ written: 2, errorCount: 0, errors: [] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () =>
+          JSON.stringify({ written: 1, errorCount: 1, errors: [{ path: '/src/.relayfile.acl' }] }),
+      });
     vi.stubGlobal('fetch', fetchMock);
     bulkWriteMock.mockRejectedValue({ status: undefined });
 
@@ -119,12 +128,20 @@ describe('seedAclRules', () => {
 
     const firstPayload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(firstPayload.files).toEqual([
-      { path: '/.relayfile.acl', content: JSON.stringify({ semantics: { permissions: ['read'] } }), encoding: 'utf-8' },
-      { path: '/src/.relayfile.acl', content: JSON.stringify({ semantics: { permissions: ['read', 'write'] } }), encoding: 'utf-8' },
+      {
+        path: '/.relayfile.acl',
+        content: JSON.stringify({ semantics: { permissions: ['read'] } }),
+        encoding: 'utf-8',
+      },
+      {
+        path: '/src/.relayfile.acl',
+        content: JSON.stringify({ semantics: { permissions: ['read', 'write'] } }),
+        encoding: 'utf-8',
+      },
     ]);
 
-    await expect(seedAclRules('https://relayfile.example/', 'token', 'rw_demo', { '/src': ['read'] })).rejects.toThrow(
-      'ACL seeding had 1 error(s)'
-    );
+    await expect(
+      seedAclRules('https://relayfile.example/', 'token', 'rw_demo', { '/src': ['read'] })
+    ).rejects.toThrow('ACL seeding had 1 error(s)');
   });
 });

@@ -31,18 +31,26 @@ import { RelayCast } from '@relaycast/sdk';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
+import {
+  AgentRelayClient,
+  type AgentRelayBrokerInitArgs,
+  type AgentRelaySpawnOptions,
+  type SpawnAgentResult,
+} from './client.js';
 import { EventBus } from './event-bus.js';
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import {
-  buildPersonaSpawnSpec,
+  buildPersonaSpawnPlan,
   composePersonaTask,
+  executePersonaSpawnPlan,
+  getPersonaSpawnPlan as getPersonaSpawnPlanImpl,
   loadPersona,
-  materializePersonaConfigFiles,
-  restorePersonaConfigFiles,
+  resolvePersona,
+  type ExecuteOptions,
   type PersonaLoadOptions,
-  type PersonaTier,
-  type ResolvedPersona,
+  type PersonaSpawnPlan,
+  type PersonaSpawnPlanOptions,
+  type PersonaSpec,
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type { JsonSchema, SendMessageInput, SpawnPtyInput } from './types.js';
@@ -241,6 +249,7 @@ export interface SpawnLifecycleContext {
 
 export interface SpawnLifecycleSuccessContext extends SpawnLifecycleContext {
   runtime: AgentRuntime;
+  sessionId?: string;
 }
 
 export interface SpawnLifecycleErrorContext extends SpawnLifecycleContext {
@@ -310,8 +319,6 @@ export interface SpawnPersonaOptions<TAgentResult = unknown> extends SpawnOption
   name?: string;
   /** Initial task / user prompt for the agent. */
   task?: string;
-  /** Persona tier to resolve. Defaults to 'best'. */
-  tier?: PersonaTier;
   /**
    * Override the persona search-dir cascade. When set, the default
    * directories (cwd/agentworkforce/personas, ~/.agentworkforce/...) are
@@ -327,10 +334,27 @@ export interface SpawnPersonaOptions<TAgentResult = unknown> extends SpawnOption
    */
   personaCwd?: string;
   /**
-   * Override the resolved persona before translation. Useful for callers
-   * that want to load+adjust+spawn in one step (e.g. tweak permissions).
+   * Override the parsed persona before spawn-plan construction. Useful for
+   * callers that want to load+adjust+spawn in one step (e.g. tweak
+   * permissions or skills).
    */
-  persona?: ResolvedPersona;
+  persona?: PersonaSpec;
+  /**
+   * Stage skills under this absolute directory instead of the repo's
+   * `.claude/skills/`. Claude harness only — persona-kit throws otherwise.
+   */
+  skillsInstallRoot?: string;
+  /** Caller-supplied values for persona inputs (highest precedence). */
+  inputValues?: Record<string, string | number | boolean | null | undefined>;
+  /** Extra env bindings to merge into `plan.env` (persona env wins on conflict). */
+  envOverrides?: Record<string, string>;
+  /**
+   * Whether the executor should remove `.claude/skills/` etc. on dispose.
+   * Defaults to persona-kit's default (true).
+   */
+  cleanupSkillsOnDispose?: boolean;
+  /** Mount-specific options forwarded to persona-kit's executor. */
+  mount?: ExecuteOptions['mount'];
 }
 
 type AgentOutputPayload = { stream: string; chunk: string };
@@ -339,6 +363,7 @@ type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayloa
 export interface Agent<TAgentResult = unknown> {
   readonly name: string;
   readonly runtime: AgentRuntime;
+  readonly sessionId?: string;
   readonly channels: string[];
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
@@ -467,6 +492,7 @@ type OutputListener = {
 
 type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
+  _setSessionId: (sessionId: string) => void;
 };
 
 type InternalAgentResultContract<T = unknown> = {
@@ -780,7 +806,7 @@ export class AgentRelay {
       task: input.task,
     };
     await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
-    let result: { name: string; runtime: AgentRuntime };
+    let result: SpawnAgentResult;
     const resultContract = this.prepareAgentResultContract(input.result);
     if (resultContract) {
       this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
@@ -822,7 +848,12 @@ export class AgentRelay {
       this.resultContracts.delete(input.name);
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
-    const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
+    const agent = this.makeAgent(
+      result.name,
+      result.runtime,
+      channels,
+      result.sessionId
+    ) as Agent<TAgentResult>;
     this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
       input.onSuccess,
@@ -830,6 +861,7 @@ export class AgentRelay {
         ...lifecycleContext,
         name: result.name,
         runtime: result.runtime,
+        sessionId: result.sessionId,
       },
       `spawnPty("${input.name}") onSuccess`
     );
@@ -884,17 +916,20 @@ export class AgentRelay {
    * Looks up the persona JSON in the search-dir cascade
    * (`<cwd>/agentworkforce/personas`, `<cwd>/.agentworkforce/workforce/personas`,
    * `~/.agentworkforce/workforce/personas`, plus `AGENT_WORKFORCE_HOME`),
-   * resolves the requested tier, and translates it to spawnPty args via
-   * `@agentworkforce/harness-kit#buildInteractiveSpec`.
+   * then runs the full `@agentworkforce/persona-kit` spawn lifecycle:
+   * installs the persona's skills, applies its mount policy, writes its
+   * `CLAUDE.md` / `AGENTS.md` sidecars and any harness config files, and
+   * resolves its declared inputs. The agent is then launched with the
+   * harness argv and prompt the persona-kit plan produced.
    *
-   * For opencode, an `opencode.json` is materialized in the spawn cwd and
-   * automatically restored when the agent exits. For codex, the persona's
-   * systemPrompt is folded into the initial task (codex has no
-   * system-prompt flag). Translation warnings are surfaced via console.warn.
+   * When the spawned agent exits, every side effect is reversed in LIFO
+   * order (skills uninstalled, sidecars restored, mount unmounted, etc.).
+   * A failure during the plan execution aborts before `spawnPty` runs and
+   * leaves no partial state.
    *
    * @param personaId — id of the persona to load
-   * @param options — overrides for tier, search dirs, name, task, and the
-   *   underlying spawn options
+   * @param options — overrides for search dirs, name, task, inputs, and
+   *   the underlying spawn options
    */
   async spawnPersona<TAgentResult = unknown>(
     personaId: string,
@@ -906,34 +941,55 @@ export class AgentRelay {
       cwd: personaCwd,
       ...(searchDirs ? { searchDirs } : {}),
       ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
-      ...(options.tier ? { tier: options.tier } : {}),
     };
-    const persona = options.persona ?? loadPersona(personaId, loadOpts);
-    const spec = buildPersonaSpawnSpec(persona);
-
-    for (const warning of spec.warnings) {
-      console.warn(`[AgentRelay] ${warning}`);
-    }
+    const spec = options.persona ?? loadPersona(personaId, loadOpts);
+    const resolved = resolvePersona(spec);
+    const planOptions = {
+      ...(options.skillsInstallRoot !== undefined ? { installRoot: options.skillsInstallRoot } : {}),
+      ...(options.envOverrides !== undefined ? { envOverrides: options.envOverrides } : {}),
+      ...(options.inputValues !== undefined ? { inputValues: options.inputValues } : {}),
+    };
+    const plan = buildPersonaSpawnPlan(resolved, planOptions);
 
     const spawnCwd = options.cwd ?? process.cwd();
-    const writes =
-      spec.configFiles.length > 0 ? materializePersonaConfigFiles(spawnCwd, spec.configFiles) : [];
+    const executeOptions: ExecuteOptions = {
+      cwd: spawnCwd,
+      ...(options.cleanupSkillsOnDispose !== undefined
+        ? { cleanupSkillsOnDispose: options.cleanupSkillsOnDispose }
+        : {}),
+      ...(options.mount ? { mount: options.mount } : {}),
+    };
+    const handle = await executePersonaSpawnPlan(plan, executeOptions);
+
+    // Persona-kit's plan.env carries persona-author env + resolved inputs.
+    // The broker spawnPty API does not yet accept a per-spawn env; until
+    // that lands, surface any env beyond the broker's effective ambient
+    // env so callers know they're being dropped.
+    const brokerEnv = this.clientOptions.env ?? process.env;
+    const droppedEnv = Object.keys(plan.env ?? {}).filter((key) => brokerEnv[key] !== plan.env[key]);
+    if (droppedEnv.length > 0) {
+      console.warn(
+        `[AgentRelay] persona "${spec.id}" declares env vars not forwardable through ` +
+          `the broker today: ${droppedEnv.join(', ')}. Set them in the spawning ` +
+          'process env or pass them via options.envOverrides + set them yourself.'
+      );
+    }
 
     const baseArgs = options.args ?? [];
-    const mergedArgs = [...spec.args, ...baseArgs];
-    const task = composePersonaTask(spec, options.task);
-    const spawnName = options.name ?? persona.id;
+    const mergedArgs = [...plan.args, ...baseArgs];
+    const task = composePersonaTask(plan, options.task);
+    const spawnName = options.name ?? spec.id;
 
     let agent: Agent<TAgentResult>;
     try {
       agent = await this.spawnPty({
         name: spawnName,
-        cli: spec.cli,
+        cli: plan.cli,
         args: mergedArgs,
         ...(task !== undefined ? { task } : {}),
         channels: options.channels,
-        model: spec.model,
-        cwd: spawnCwd,
+        model: options.model ?? plan.persona.model,
+        cwd: handle.cwd,
         team: options.team,
         agentToken: options.agentToken,
         shadowOf: options.shadowOf,
@@ -947,17 +1003,57 @@ export class AgentRelay {
         onError: options.onError,
       });
     } catch (err) {
-      restorePersonaConfigFiles(writes);
+      // Reverse persona side effects, but never let a dispose failure mask
+      // the original spawn error — that's the actionable one for callers.
+      try {
+        await handle.dispose();
+      } catch (disposeErr) {
+        const msg = (disposeErr as Error)?.message ?? String(disposeErr);
+        console.warn(`[AgentRelay] persona "${spec.id}" dispose after spawn failure failed: ${msg}`);
+      }
       throw err;
     }
 
-    if (writes.length > 0) {
-      void agent.waitForExit().finally(() => {
-        restorePersonaConfigFiles(writes);
+    void agent.waitForExit().finally(() => {
+      handle.dispose().catch((e: unknown) => {
+        const msg = (e as Error)?.message ?? String(e);
+        console.warn(`[AgentRelay] persona "${spec.id}" dispose failed: ${msg}`);
       });
-    }
+    });
 
     return agent;
+  }
+
+  /**
+   * Build a {@link PersonaSpawnPlan} for the persona without executing it.
+   * Useful for authoring tools, validators, and dry-runs that want to
+   * inspect the persona's skill installs, mount policy, sidecars, and
+   * harness argv before committing to a spawn.
+   *
+   * Honors `options.persona` the same way {@link spawnPersona} does — a
+   * caller-supplied {@link PersonaSpec} short-circuits the search-dir
+   * cascade so dry-runs match what `spawnPersona` would actually execute.
+   *
+   * Performs no filesystem writes and spawns no subprocesses.
+   */
+  getPersonaSpawnPlan(personaId: string, options: SpawnPersonaOptions<unknown> = {}): PersonaSpawnPlan {
+    const planOptions = {
+      ...(options.skillsInstallRoot !== undefined ? { installRoot: options.skillsInstallRoot } : {}),
+      ...(options.envOverrides !== undefined ? { envOverrides: options.envOverrides } : {}),
+      ...(options.inputValues !== undefined ? { inputValues: options.inputValues } : {}),
+    };
+    if (options.persona) {
+      return buildPersonaSpawnPlan(resolvePersona(options.persona), planOptions);
+    }
+    const personaCwd = options.personaCwd ?? options.cwd ?? process.cwd();
+    const searchDirs = options.searchDirs ?? this.defaultPersonaDirs;
+    const callOptions: PersonaSpawnPlanOptions = {
+      cwd: personaCwd,
+      ...(searchDirs ? { searchDirs } : {}),
+      ...(options.extraDirs ? { extraDirs: options.extraDirs } : {}),
+      ...planOptions,
+    };
+    return getPersonaSpawnPlanImpl(personaId, callOptions);
   }
 
   // ── Human source ────────────────────────────────────────────────────────
@@ -1087,13 +1183,9 @@ export class AgentRelay {
   async listAgents(): Promise<Agent[]> {
     const client = await this.ensureStarted();
     const list = await client.listAgents();
-    return list.map((entry) => {
-      const existing = this.knownAgents.get(entry.name);
-      if (existing) return existing;
-      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels);
-      this.knownAgents.set(agent.name, agent);
-      return agent;
-    });
+    return list.map((entry) =>
+      this.ensureAgentHandle(entry.name, entry.runtime, entry.channels, entry.sessionId)
+    );
   }
 
   /** Pre-register a batch of agents with Relaycast before steps execute. */
@@ -1376,12 +1468,20 @@ export class AgentRelay {
 
   // ── Private helpers ─────────────────────────────────────────────────────
 
-  private ensureAgentHandle(name: string, runtime: AgentRuntime = 'pty', channels: string[] = []): Agent {
+  private ensureAgentHandle(
+    name: string,
+    runtime: AgentRuntime = 'pty',
+    channels: string[] = [],
+    sessionId?: string
+  ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
+      if (sessionId) {
+        (existing as InternalAgent)._setSessionId(sessionId);
+      }
       return existing;
     }
-    const agent = this.makeAgent(name, runtime, channels);
+    const agent = this.makeAgent(name, runtime, channels, sessionId);
     this.knownAgents.set(name, agent);
     return agent;
   }
@@ -1664,7 +1764,7 @@ export class AgentRelay {
           break;
         }
         case 'agent_spawned': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
@@ -1725,7 +1825,7 @@ export class AgentRelay {
           break;
         }
         case 'worker_ready': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
@@ -1966,13 +2066,22 @@ export class AgentRelay {
     });
   }
 
-  private makeAgent(name: string, runtime: AgentRuntime, channels: string[]): Agent<unknown> {
+  private makeAgent(
+    name: string,
+    runtime: AgentRuntime,
+    channels: string[],
+    sessionId?: string
+  ): Agent<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
+    let agentSessionId = sessionId;
     const agent: InternalAgent = {
       name,
       runtime,
+      get sessionId() {
+        return agentSessionId;
+      },
       get channels() {
         return [...agentChannels];
       },
@@ -2182,6 +2291,9 @@ export class AgentRelay {
       _setChannels(nextChannels: string[]) {
         agentChannels = [...nextChannels];
       },
+      _setSessionId(nextSessionId: string) {
+        agentSessionId = nextSessionId;
+      },
     };
     return agent;
   }
@@ -2221,7 +2333,7 @@ export class AgentRelay {
           task,
         };
         await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
-        let result: { name: string; runtime: AgentRuntime };
+        let result: SpawnAgentResult;
         const resultContract = this.prepareAgentResultContract(options?.result);
         if (resultContract) {
           this.resultContracts.set(name, resultContract as InternalAgentResultContract);
@@ -2261,7 +2373,12 @@ export class AgentRelay {
           this.resultContracts.delete(name);
           this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
         }
-        const agent = this.makeAgent(result.name, result.runtime, channels) as Agent<TAgentResult>;
+        const agent = this.makeAgent(
+          result.name,
+          result.runtime,
+          channels,
+          result.sessionId
+        ) as Agent<TAgentResult>;
         this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
           options?.onSuccess,
@@ -2269,6 +2386,7 @@ export class AgentRelay {
             ...lifecycleContext,
             name: result.name,
             runtime: result.runtime,
+            sessionId: result.sessionId,
           },
           `spawn("${name}") onSuccess`
         );

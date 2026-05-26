@@ -46,10 +46,7 @@ export interface TeamsConfig {
  * Possible locations for teams.json (in order of precedence)
  */
 function getTeamsConfigPaths(projectRoot: string): string[] {
-  return [
-    path.join(projectRoot, '.agent-relay', 'teams.json'),
-    path.join(projectRoot, 'teams.json'),
-  ];
+  return [path.join(projectRoot, '.agent-relay', 'teams.json'), path.join(projectRoot, 'teams.json')];
 }
 
 /**
@@ -106,7 +103,9 @@ export function loadTeamsConfig(projectRoot: string): TeamsConfig | null {
 
     // Validate required fields
     if (!config.team || typeof config.team !== 'string') {
-      console.error(`[teams-config] Invalid teams.json at ${foundConfigPath}: missing or invalid 'team' field`);
+      console.error(
+        `[teams-config] Invalid teams.json at ${foundConfigPath}: missing or invalid 'team' field`
+      );
       configCache = { config: null, projectRoot, configPath: foundConfigPath, mtime: foundMtime };
       return null;
     }
@@ -131,7 +130,9 @@ export function loadTeamsConfig(projectRoot: string): TeamsConfig | null {
       validAgents.push(agent);
     }
 
-    console.log(`[teams-config] Loaded team '${config.team}' from ${foundConfigPath} (${validAgents.length} agents)`);
+    console.log(
+      `[teams-config] Loaded team '${config.team}' from ${foundConfigPath} (${validAgents.length} agents)`
+    );
 
     const result: TeamsConfig = {
       team: config.team,
@@ -175,7 +176,7 @@ export function isValidAgentName(projectRoot: string, agentName: string): boolea
     return true;
   }
 
-  return config.agents.some(a => a.name === agentName);
+  return config.agents.some((a) => a.name === agentName);
 }
 
 /**
@@ -185,7 +186,7 @@ export function getAgentConfig(projectRoot: string, agentName: string): TeamAgen
   const config = loadTeamsConfig(projectRoot);
   if (!config) return null;
 
-  return config.agents.find(a => a.name === agentName) ?? null;
+  return config.agents.find((a) => a.name === agentName) ?? null;
 }
 
 /**

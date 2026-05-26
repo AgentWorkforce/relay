@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    ids::{DeliveryId, RequestId},
     protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
     pty::PtySession,
 };
@@ -40,7 +41,7 @@ use base64::Engine;
 #[derive(Debug, Clone)]
 struct PendingWorkerInjection {
     delivery: RelayDelivery,
-    request_id: Option<String>,
+    request_id: Option<RequestId>,
     queued_at: Instant,
 }
 
@@ -193,7 +194,7 @@ fn should_block_pending_injection(
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     worker_name: &str,
-    init_request_id: &mut Option<String>,
+    init_request_id: &mut Option<RequestId>,
     init_received_at: Option<Instant>,
     worker_ready_sent: &mut bool,
     startup_ready: bool,
@@ -305,13 +306,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     const MCP_REMINDER_COOLDOWN: Duration = Duration::from_secs(300);
     let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
-    let mut pending_worker_delivery_ids: HashSet<String> = HashSet::new();
+    let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
     let wait_for_relaycast_boot = codex_relaycast_boot_expected(&resolved_cli, &effective_args);
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
     let mut saw_relaycast_boot = false;
     let mut post_boot_output = String::new();
-    let mut init_request_id: Option<String> = None;
+    let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
     let mut worker_ready_sent = false;
     let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")

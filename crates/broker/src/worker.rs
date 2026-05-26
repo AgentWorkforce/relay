@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    ids::{RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
     relaycast::configure_relaycast_mcp_with_result,
@@ -35,7 +36,7 @@ pub(crate) mod detection;
 pub(crate) struct WorkerHandle {
     pub(crate) spec: AgentSpec,
     pub(crate) parent: Option<String>,
-    pub(crate) workspace_id: Option<String>,
+    pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
     pub(crate) spawned_at: Instant,
@@ -65,15 +66,15 @@ impl AgentWorkState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
-    Message { name: String, value: Value },
+    Message { name: WorkerName, value: Value },
 }
 
 pub(crate) struct WorkerRegistry {
-    pub(crate) workers: HashMap<String, WorkerHandle>,
+    pub(crate) workers: HashMap<WorkerName, WorkerHandle>,
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     worker_logs_dir: PathBuf,
-    pub(crate) initial_tasks: HashMap<String, String>,
+    pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
 }
@@ -133,6 +134,7 @@ impl WorkerRegistry {
                     "provider": handle.spec.provider.clone(),
                     "cli": handle.spec.cli,
                     "model": handle.spec.model,
+                    "sessionId": handle.spec.session_id,
                     "team": handle.spec.team,
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
@@ -204,7 +206,7 @@ impl WorkerRegistry {
         idle_threshold_secs: Option<u64>,
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
-        workspace_id: Option<String>,
+        workspace_id: Option<crate::ids::WorkspaceId>,
         agent_result: Option<AgentResultMcpConfig>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
@@ -254,6 +256,53 @@ impl WorkerRegistry {
                 .await
                 {
                     spec.model = Some(model);
+                }
+                let mut harness_session_args = Vec::new();
+                if is_claude {
+                    spec.session_id = prepare_claude_session_args(&mut effective_args);
+                } else if is_codex {
+                    match codex_session_reference(&effective_args) {
+                        CodexSessionReference::Known(thread_id) => {
+                            spec.session_id = Some(thread_id);
+                        }
+                        CodexSessionReference::Unknown => {}
+                        CodexSessionReference::None => {
+                            if codex_has_positional_arg(&effective_args) {
+                                tracing::debug!(
+                                    worker = %spec.name,
+                                    "not pre-creating Codex session because args contain a positional prompt or subcommand"
+                                );
+                            } else {
+                                let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
+                                match crate::codex_session::create_resumable_codex_thread(
+                                    &resolved_cli,
+                                    cwd,
+                                    &self.worker_env,
+                                    &effective_args,
+                                )
+                                .await
+                                {
+                                    Ok(thread_id) => {
+                                        tracing::info!(
+                                            worker = %spec.name,
+                                            session_id = %thread_id,
+                                            "created resumable Codex session for spawned PTY"
+                                        );
+                                        spec.session_id = Some(thread_id.clone());
+                                        harness_session_args.push("resume".to_string());
+                                        harness_session_args.push(thread_id);
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            worker = %spec.name,
+                                            error = %err,
+                                            "failed to pre-create resumable Codex session; spawning without sessionId"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
                 // This means any actor who can trigger agent.add gets agents with no permission
@@ -311,7 +360,8 @@ impl WorkerRegistry {
                 let has_extra = bypass_flag.is_some()
                     || model_flag.is_some()
                     || !effective_args.is_empty()
-                    || !mcp_args.is_empty();
+                    || !mcp_args.is_empty()
+                    || !harness_session_args.is_empty();
                 if has_extra {
                     command.arg("--");
                     if let Some(flag) = bypass_flag {
@@ -325,6 +375,9 @@ impl WorkerRegistry {
                         command.arg(arg);
                     }
                     for arg in &effective_args {
+                        command.arg(arg);
+                    }
+                    for arg in &harness_session_args {
                         command.arg(arg);
                     }
                 }
@@ -476,7 +529,7 @@ impl WorkerRegistry {
         &mut self,
         name: &str,
         msg_type: &str,
-        request_id: Option<String>,
+        request_id: Option<RequestId>,
         payload: Value,
     ) -> Result<()> {
         let handle = self
@@ -554,7 +607,7 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
+        let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         for name in names {
             if let Err(error) = self.release(&name).await {
                 tracing::warn!(target = "agent_relay::broker", name = %name, error = %error, "worker shutdown failed");
@@ -565,8 +618,8 @@ impl WorkerRegistry {
 
     pub(crate) async fn reap_exited(
         &mut self,
-    ) -> Result<Vec<(String, Option<i32>, Option<String>, Option<String>)>> {
-        let names: Vec<String> = self.workers.keys().cloned().collect();
+    ) -> Result<Vec<(WorkerName, Option<i32>, Option<String>, Option<String>)>> {
+        let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
             let (status, gone_via_kill0) = if let Some(handle) = self.workers.get_mut(&name) {
@@ -692,6 +745,145 @@ impl WorkerRegistry {
                 || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexSessionReference {
+    Known(String),
+    Unknown,
+    None,
+}
+
+fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
+    if let Some(session_id) = cli_flag_value(args, "--session-id") {
+        return Some(session_id);
+    }
+    if cli_flag_present(args, &["--session-id"]) {
+        return None;
+    }
+    if let Some(session_id) =
+        cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
+    {
+        return Some(session_id);
+    }
+    if cli_flag_present(args, &["--resume", "-r", "--continue", "-c"]) {
+        return None;
+    }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    args.push("--session-id".to_string());
+    args.push(session_id.clone());
+    Some(session_id)
+}
+
+fn codex_session_reference(args: &[String]) -> CodexSessionReference {
+    let mut index = 0;
+    let mut skip_next = false;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if skip_next {
+            skip_next = false;
+            index += 1;
+            continue;
+        }
+        if arg == "--" {
+            return CodexSessionReference::None;
+        }
+        if codex_flag_consumes_next_arg(arg) {
+            if args.get(index + 1).is_none() {
+                return CodexSessionReference::Unknown;
+            }
+            skip_next = true;
+            index += 1;
+            continue;
+        }
+        if arg == "resume" || arg == "fork" {
+            let Some(next) = args.get(index + 1).map(String::as_str) else {
+                return CodexSessionReference::Unknown;
+            };
+            if next == "--last" || next.starts_with('-') {
+                return CodexSessionReference::Unknown;
+            }
+            return CodexSessionReference::Known(next.to_string());
+        }
+        index += 1;
+    }
+    CodexSessionReference::None
+}
+
+fn codex_has_positional_arg(args: &[String]) -> bool {
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--" {
+            return true;
+        }
+        if codex_flag_consumes_next_arg(arg) {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn codex_flag_consumes_next_arg(arg: &str) -> bool {
+    if arg.contains('=') {
+        return false;
+    }
+    matches!(
+        arg,
+        "--model"
+            | "-m"
+            | "--profile"
+            | "--config"
+            | "-c"
+            | "--sandbox"
+            | "-s"
+            | "--ask-for-approval"
+            | "--approval-policy"
+            | "--cd"
+            | "--cwd"
+    )
+}
+
+fn cli_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let equals_prefix = format!("{flag}=");
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == flag {
+            return args
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .cloned();
+        }
+        if let Some(value) = arg.strip_prefix(&equals_prefix) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn cli_flag_present(args: &[String], flags: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        let arg = arg.as_str();
+        flags.iter().any(|flag| {
+            arg == *flag
+                || arg
+                    .strip_prefix(*flag)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+    })
 }
 
 fn args_include_model_override(args: &[String]) -> bool {
@@ -851,7 +1043,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
 
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
-    name: String,
+    name: WorkerName,
     stream_name: &'static str,
     reader: R,
     parse_json: bool,
@@ -1055,6 +1247,87 @@ mod tests {
     fn routing_workers_empty_when_no_workers() {
         let reg = make_registry(vec![]);
         assert!(reg.routing_workers().is_empty());
+    }
+
+    #[test]
+    fn prepare_claude_session_args_generates_uuid_session_id() {
+        let mut args = Vec::new();
+        let session_id = prepare_claude_session_args(&mut args).expect("session id");
+
+        assert!(uuid::Uuid::parse_str(&session_id).is_ok());
+        assert_eq!(args, vec!["--session-id".to_string(), session_id]);
+    }
+
+    #[test]
+    fn prepare_claude_session_args_preserves_explicit_session_id() {
+        let mut args = vec![
+            "--session-id".to_string(),
+            "session-1".to_string(),
+            "--print".to_string(),
+        ];
+        let session_id = prepare_claude_session_args(&mut args);
+
+        assert_eq!(session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            args,
+            vec![
+                "--session-id".to_string(),
+                "session-1".to_string(),
+                "--print".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_claude_session_args_uses_resume_id_without_injecting() {
+        let mut args = vec!["--resume=session-2".to_string()];
+        let session_id = prepare_claude_session_args(&mut args);
+
+        assert_eq!(session_id.as_deref(), Some("session-2"));
+        assert_eq!(args, vec!["--resume=session-2".to_string()]);
+    }
+
+    #[test]
+    fn codex_session_reference_detects_resume_and_fork_ids() {
+        assert_eq!(
+            codex_session_reference(&[
+                "--model".into(),
+                "gpt-5.4".into(),
+                "resume".into(),
+                "thread-1".into()
+            ]),
+            CodexSessionReference::Known("thread-1".to_string())
+        );
+        assert_eq!(
+            codex_session_reference(&["fork".into(), "thread-2".into()]),
+            CodexSessionReference::Known("thread-2".to_string())
+        );
+        assert_eq!(
+            codex_session_reference(&["resume".into(), "--last".into()]),
+            CodexSessionReference::Unknown
+        );
+        // Trailing value-taking flag without a value -> Unknown (don't blindly
+        // pre-create a Codex session for malformed CLI input).
+        assert_eq!(
+            codex_session_reference(&["--profile".into()]),
+            CodexSessionReference::Unknown
+        );
+    }
+
+    #[test]
+    fn codex_has_positional_arg_ignores_known_global_flag_values() {
+        assert!(!codex_has_positional_arg(&[
+            "--model".into(),
+            "gpt-5.4".into(),
+            "--config".into(),
+            "model_provider=default".into(),
+        ]));
+        assert!(codex_has_positional_arg(&[
+            "--model".into(),
+            "gpt-5.4".into(),
+            "Fix the bug".into(),
+        ]));
+        assert!(codex_has_positional_arg(&["exec".into()]));
     }
 
     #[test]

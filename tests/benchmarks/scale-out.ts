@@ -5,20 +5,13 @@
  * Run: npx tsx tests/benchmarks/scale-out.ts [--quick]
  */
 
-import {
-  QUICK,
-  startBroker,
-  randomName,
-  computeStats,
-  printStats,
-  performance,
-} from "./harness.js";
+import { QUICK, startBroker, randomName, computeStats, printStats, performance } from './harness.js';
 
 const AGENT_COUNTS = QUICK ? [1, 3] : [1, 3, 5, 10];
 const MSGS_PER_LEVEL = QUICK ? 5 : 20;
 
 async function main(): Promise<void> {
-  console.log(`Scale-Out Benchmark (levels: ${AGENT_COUNTS.join(", ")} agents)`);
+  console.log(`Scale-Out Benchmark (levels: ${AGENT_COUNTS.join(', ')} agents)`);
   const client = await startBroker();
 
   try {
@@ -30,8 +23,8 @@ async function main(): Promise<void> {
         const name = randomName(`scale-${count}-${i}`);
         await client.spawnPty({
           name,
-          cli: "cat",
-          channels: ["general"],
+          cli: 'cat',
+          channels: ['general'],
         });
         agents.push(name);
       }
@@ -43,7 +36,7 @@ async function main(): Promise<void> {
         const start = performance.now();
         await client.sendMessage({
           to: agents[0]!,
-          from: "bench",
+          from: 'bench',
           text: `scale-${count}-msg-${i}`,
         });
         samples.push(performance.now() - start);
@@ -54,15 +47,20 @@ async function main(): Promise<void> {
 
       // Cleanup this level's agents
       for (const name of agents) {
-        try { await client.release(name); } catch {}
+        try {
+          await client.release(name);
+        } catch {}
       }
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    console.log("\nDONE");
+    console.log('\nDONE');
   } finally {
     await client.shutdown();
   }
 }
 
-main().catch((err) => { console.error("benchmark failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('benchmark failed:', err);
+  process.exit(1);
+});

@@ -2,14 +2,7 @@
 
 import type React from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
-import {
-  Check,
-  ChevronDown,
-  ChevronUp,
-  Copy,
-  ExternalLink,
-  Link2,
-} from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Copy, ExternalLink, Link2 } from 'lucide-react';
 import { SiClaude, SiOpenai } from 'react-icons/si';
 
 import styles from './docs.module.css';
@@ -170,7 +163,11 @@ export function DocsPageActions({ title, pageUrl, markdownPath, markdownUrl }: D
           aria-haspopup="menu"
           aria-label={open ? 'Close page actions' : 'Open page actions'}
         >
-          {open ? <ChevronUp className={styles.pageActionChevron} /> : <ChevronDown className={styles.pageActionChevron} />}
+          {open ? (
+            <ChevronUp className={styles.pageActionChevron} />
+          ) : (
+            <ChevronDown className={styles.pageActionChevron} />
+          )}
         </button>
       </div>
 

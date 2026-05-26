@@ -172,9 +172,7 @@ export class WorkflowRunnerHarness {
         binaryPath: this.binaryPath,
         env: {
           ...this.runnerEnv,
-          ...(process.env.FAKE_OUTPUT === undefined
-            ? {}
-            : { FAKE_OUTPUT: process.env.FAKE_OUTPUT }),
+          ...(process.env.FAKE_OUTPUT === undefined ? {} : { FAKE_OUTPUT: process.env.FAKE_OUTPUT }),
           ...(useRelaycast ? {} : { AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1' }),
         },
       },
@@ -233,7 +231,7 @@ function ensureFakeCliDir(cliName = 'claude'): string {
     'MARKER=""\n' +
     'REVIEW_OUTPUT=""\n' +
     'if [[ "${RELAY_AGENT_NAME:-}" =~ ^(.+)-review-[A-Za-z0-9]+$ ]]; then\n' +
-    '  REVIEW_OUTPUT=$\'REVIEW_DECISION: APPROVE\\nREVIEW_REASON: Fake reviewer approved\'\n' +
+    "  REVIEW_OUTPUT=$'REVIEW_DECISION: APPROVE\\nREVIEW_REASON: Fake reviewer approved'\n" +
     'elif [[ "${RELAY_AGENT_NAME:-}" =~ ^(.+)-(worker|owner)-[A-Za-z0-9]+$ ]]; then\n' +
     '  MARKER="STEP_COMPLETE:${BASH_REMATCH[1]}"\n' +
     'elif [[ "${RELAY_AGENT_NAME:-}" =~ ^(.+)-[A-Za-z0-9]+$ ]]; then\n' +

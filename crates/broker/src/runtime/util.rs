@@ -188,15 +188,15 @@ pub(crate) fn channels_from_csv(raw: &str) -> Vec<String> {
 /// Reads RELAY_DEFAULT_CHANNELS (comma-separated) or falls back to the
 /// broker's default channels: vec!["general", "engineering"] — both created
 /// at startup by ensure_default_channels().
-pub(crate) fn default_spawn_channels() -> Vec<String> {
+pub(crate) fn default_spawn_channels() -> Vec<ChannelName> {
     if let Ok(raw) = std::env::var("RELAY_DEFAULT_CHANNELS") {
         let parsed = channels_from_csv(&raw);
         if !parsed.is_empty() {
-            return parsed;
+            return parsed.into_iter().map(ChannelName::from).collect();
         }
     }
     // channels: ["general", "engineering"] (must match ensure_default_channels)
-    vec!["general".to_string(), "engineering".to_string()]
+    vec![ChannelName::new("general"), ChannelName::new("engineering")]
 }
 
 pub(crate) fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {

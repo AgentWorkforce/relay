@@ -1,13 +1,23 @@
 .page {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 36% 28% at 10% 8%, color-mix(in srgb, var(--primary) 16%, white 22%), transparent 72%),
-    radial-gradient(ellipse 34% 26% at 90% 10%, color-mix(in srgb, var(--secondary-400) 12%, white 28%), transparent 72%),
+    radial-gradient(
+      ellipse 36% 28% at 10% 8%,
+      color-mix(in srgb, var(--primary) 16%, white 22%),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 34% 26% at 90% 10%,
+      color-mix(in srgb, var(--secondary-400) 12%, white 28%),
+      transparent 72%
+    ),
     var(--landing-hero-bg);
   color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 .heroSection {
@@ -21,7 +31,11 @@
 :global(html[data-theme='dark']) .page {
   background:
     radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--primary) 18%, transparent), transparent 36%),
-    radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--secondary-400) 16%, transparent), transparent 32%),
+    radial-gradient(
+      circle at 82% 12%,
+      color-mix(in srgb, var(--secondary-400) 16%, transparent),
+      transparent 32%
+    ),
     radial-gradient(circle at 50% 22%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 44%),
     var(--landing-hero-bg);
 }
@@ -95,8 +109,13 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .headline {
@@ -143,7 +162,10 @@
   border: none;
   border-radius: 100px;
   text-decoration: none;
-  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
   cursor: pointer;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
 }
@@ -168,7 +190,10 @@
   border: 1.5px solid var(--line);
   border-radius: 100px;
   text-decoration: none;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s;
   cursor: pointer;
 }
 
@@ -307,9 +332,18 @@
 }
 
 @keyframes flow {
-  0% { left: 0; opacity: 0.6; }
-  50% { left: calc(100% - 10px); opacity: 1; }
-  100% { left: 0; opacity: 0.6; }
+  0% {
+    left: 0;
+    opacity: 0.6;
+  }
+  50% {
+    left: calc(100% - 10px);
+    opacity: 1;
+  }
+  100% {
+    left: 0;
+    opacity: 0.6;
+  }
 }
 
 .policyPanel {
@@ -367,8 +401,12 @@
   box-shadow: 0 0 10px color-mix(in srgb, var(--primary) 35%, transparent);
 }
 
-.authAllowed { color: var(--status-green); }
-.authDenied { color: var(--status-red); }
+.authAllowed {
+  color: var(--status-green);
+}
+.authDenied {
+  color: var(--status-red);
+}
 
 .featuresWrapper,
 .whyWrapper {
@@ -551,7 +589,10 @@
   padding: 10px 12px;
   border-radius: 10px 10px 0 0;
   cursor: pointer;
-  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .tab:hover {
@@ -576,10 +617,18 @@
   color: var(--terminal-fg);
 }
 
-.codeKeyword { color: var(--terminal-keyword); }
-.codeString { color: var(--terminal-string); }
-.codeType { color: var(--terminal-type); }
-.codeMethod { color: var(--terminal-method); }
+.codeKeyword {
+  color: var(--terminal-keyword);
+}
+.codeString {
+  color: var(--terminal-string);
+}
+.codeType {
+  color: var(--terminal-type);
+}
+.codeMethod {
+  color: var(--terminal-method);
+}
 
 .whySection {
   padding: 84px 40px;
@@ -769,9 +818,18 @@
 }
 
 @keyframes flowVertical {
-  0% { top: 0; opacity: 0.6; }
-  50% { top: calc(100% - 10px); opacity: 1; }
-  100% { top: 0; opacity: 0.6; }
+  0% {
+    top: 0;
+    opacity: 0.6;
+  }
+  50% {
+    top: calc(100% - 10px);
+    opacity: 1;
+  }
+  100% {
+    top: 0;
+    opacity: 0.6;
+  }
 }
 
 @media (max-width: 720px) {

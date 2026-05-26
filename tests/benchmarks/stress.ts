@@ -6,14 +6,11 @@
  * Run: npx tsx tests/benchmarks/stress.ts [--quick]
  */
 
-import {
-  AgentRelayClient,
-  type BrokerEvent,
-} from "@agent-relay/sdk";
-import { performance } from "node:perf_hooks";
-import { resolveBinaryPath, randomName } from "./harness.js";
+import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
+import { performance } from 'node:perf_hooks';
+import { resolveBinaryPath, randomName } from './harness.js';
 
-const QUICK = process.argv.includes("--quick");
+const QUICK = process.argv.includes('--quick');
 
 interface StressResult {
   name: string;
@@ -30,12 +27,14 @@ function printResult(r: StressResult): void {
   const throughput = ((r.sent / r.elapsedMs) * 1000).toFixed(1);
   console.log(`\n  ${r.name}`);
   console.log(`    Sent: ${r.sent}  Verified: ${r.verified}  Failed: ${r.failed}  Errors: ${r.sendErrors}`);
-  console.log(`    Success rate: ${rate}%  Throughput: ${throughput} msgs/sec  Time: ${r.elapsedMs.toFixed(0)}ms`);
+  console.log(
+    `    Success rate: ${rate}%  Throughput: ${throughput} msgs/sec  Time: ${r.elapsedMs.toFixed(0)}ms`
+  );
 }
 
 async function collectDeliveryEvents(
   client: AgentRelayClient,
-  durationMs: number,
+  durationMs: number
 ): Promise<{ verified: number; failed: number }> {
   let verified = 0;
   let failed = 0;
@@ -45,8 +44,8 @@ async function collectDeliveryEvents(
       resolve({ verified, failed });
     }, durationMs);
     const unsub = client.onEvent((event: BrokerEvent) => {
-      if (event.kind === "delivery_verified") verified++;
-      if (event.kind === "delivery_failed") failed++;
+      if (event.kind === 'delivery_verified') verified++;
+      if (event.kind === 'delivery_failed') failed++;
     });
   });
 }
@@ -57,8 +56,8 @@ async function collectDeliveryEvents(
  */
 async function testBurstOverload(client: AgentRelayClient): Promise<StressResult> {
   const count = QUICK ? 50 : 100;
-  const worker = randomName("burst");
-  await client.spawnPty({ name: worker, cli: "cat", channels: ["general"] });
+  const worker = randomName('burst');
+  await client.spawnPty({ name: worker, cli: 'cat', channels: ['general'] });
   await new Promise((r) => setTimeout(r, 500));
 
   let sent = 0;
@@ -69,9 +68,14 @@ async function testBurstOverload(client: AgentRelayClient): Promise<StressResult
 
   for (let i = 0; i < count; i++) {
     promises.push(
-      client.sendMessage({ to: worker, from: "stress", text: `burst-${i}` })
-        .then(() => { sent++; })
-        .catch(() => { sendErrors++; }),
+      client
+        .sendMessage({ to: worker, from: 'stress', text: `burst-${i}` })
+        .then(() => {
+          sent++;
+        })
+        .catch(() => {
+          sendErrors++;
+        })
     );
   }
   await Promise.all(promises);
@@ -83,11 +87,13 @@ async function testBurstOverload(client: AgentRelayClient): Promise<StressResult
   let verified = 0;
   let failed = 0;
   // Count via a quick send to trigger final tally
-  const tallySend = await client.sendMessage({ to: worker, from: "stress", text: "tally" }).catch(() => null);
+  const tallySend = await client.sendMessage({ to: worker, from: 'stress', text: 'tally' }).catch(() => null);
   if (tallySend) sent++;
   await new Promise((r) => setTimeout(r, 1000));
 
-  try { await client.release(worker); } catch {}
+  try {
+    await client.release(worker);
+  } catch {}
 
   const total = verified + failed;
   return {
@@ -112,7 +118,7 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
 
   for (let i = 0; i < agentCount; i++) {
     const name = randomName(`contend-${i}`);
-    await client.spawnPty({ name, cli: "cat", channels: ["general"] });
+    await client.spawnPty({ name, cli: 'cat', channels: ['general'] });
     workers.push(name);
   }
   await new Promise((r) => setTimeout(r, 500));
@@ -123,8 +129,8 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === "delivery_verified") verified++;
-    if (event.kind === "delivery_failed") failed++;
+    if (event.kind === 'delivery_verified') verified++;
+    if (event.kind === 'delivery_failed') failed++;
   });
 
   const start = performance.now();
@@ -133,9 +139,14 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
   for (const worker of workers) {
     for (let i = 0; i < msgsPerAgent; i++) {
       promises.push(
-        client.sendMessage({ to: worker, from: "stress", text: `contend-${i}` })
-          .then(() => { sent++; })
-          .catch(() => { sendErrors++; }),
+        client
+          .sendMessage({ to: worker, from: 'stress', text: `contend-${i}` })
+          .then(() => {
+            sent++;
+          })
+          .catch(() => {
+            sendErrors++;
+          })
       );
     }
   }
@@ -147,7 +158,9 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
   unsub();
 
   for (const w of workers) {
-    try { await client.release(w); } catch {}
+    try {
+      await client.release(w);
+    } catch {}
   }
 
   const total = verified + failed;
@@ -158,7 +171,7 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
     failed,
     sendErrors,
     elapsedMs: sendElapsed,
-    successRate: total > 0 ? (verified / total) * 100 : (sent > 0 && sendErrors === 0 ? 100 : 0),
+    successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
   };
 }
 
@@ -169,9 +182,9 @@ async function testMultiAgentContention(client: AgentRelayClient): Promise<Stres
 async function testSteadyState(client: AgentRelayClient): Promise<StressResult> {
   const durationMs = QUICK ? 10_000 : 30_000;
   const intervalMs = 200; // 5 msgs/sec
-  const worker = randomName("steady");
+  const worker = randomName('steady');
 
-  await client.spawnPty({ name: worker, cli: "cat", channels: ["general"] });
+  await client.spawnPty({ name: worker, cli: 'cat', channels: ['general'] });
   await new Promise((r) => setTimeout(r, 500));
 
   let sent = 0;
@@ -180,14 +193,14 @@ async function testSteadyState(client: AgentRelayClient): Promise<StressResult> 
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === "delivery_verified") verified++;
-    if (event.kind === "delivery_failed") failed++;
+    if (event.kind === 'delivery_verified') verified++;
+    if (event.kind === 'delivery_failed') failed++;
   });
 
   const start = performance.now();
   while (performance.now() - start < durationMs) {
     try {
-      await client.sendMessage({ to: worker, from: "stress", text: `steady-${sent}` });
+      await client.sendMessage({ to: worker, from: 'stress', text: `steady-${sent}` });
       sent++;
     } catch {
       sendErrors++;
@@ -200,17 +213,19 @@ async function testSteadyState(client: AgentRelayClient): Promise<StressResult> 
   await new Promise((r) => setTimeout(r, 3000));
   unsub();
 
-  try { await client.release(worker); } catch {}
+  try {
+    await client.release(worker);
+  } catch {}
 
   const total = verified + failed;
   return {
-    name: `Steady State (${(durationMs / 1000)}s @ 5 msgs/sec)`,
+    name: `Steady State (${durationMs / 1000}s @ 5 msgs/sec)`,
     sent,
     verified,
     failed,
     sendErrors,
     elapsedMs: elapsed,
-    successRate: total > 0 ? (verified / total) * 100 : (sent > 0 && sendErrors === 0 ? 100 : 0),
+    successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
   };
 }
 
@@ -226,21 +241,21 @@ async function testSpawnReleaseCycles(client: AgentRelayClient): Promise<StressR
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === "delivery_verified") verified++;
-    if (event.kind === "delivery_failed") failed++;
+    if (event.kind === 'delivery_verified') verified++;
+    if (event.kind === 'delivery_failed') failed++;
   });
 
   const start = performance.now();
 
   for (let c = 0; c < cycles; c++) {
     const worker = randomName(`cycle-${c}`);
-    await client.spawnPty({ name: worker, cli: "cat", channels: ["general"] });
+    await client.spawnPty({ name: worker, cli: 'cat', channels: ['general'] });
     await new Promise((r) => setTimeout(r, 300));
 
     // Send a few messages
     for (let i = 0; i < 5; i++) {
       try {
-        await client.sendMessage({ to: worker, from: "stress", text: `cycle-${c}-msg-${i}` });
+        await client.sendMessage({ to: worker, from: 'stress', text: `cycle-${c}-msg-${i}` });
         sent++;
       } catch {
         sendErrors++;
@@ -248,7 +263,9 @@ async function testSpawnReleaseCycles(client: AgentRelayClient): Promise<StressR
     }
 
     await new Promise((r) => setTimeout(r, 500));
-    try { await client.release(worker); } catch {}
+    try {
+      await client.release(worker);
+    } catch {}
     await new Promise((r) => setTimeout(r, 300));
   }
 
@@ -264,23 +281,23 @@ async function testSpawnReleaseCycles(client: AgentRelayClient): Promise<StressR
     failed,
     sendErrors,
     elapsedMs: elapsed,
-    successRate: total > 0 ? (verified / total) * 100 : (sent > 0 && sendErrors === 0 ? 100 : 0),
+    successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
   };
 }
 
 async function main(): Promise<void> {
-  console.log(`Stress Tests (${QUICK ? "quick" : "full"} mode)\n`);
-  console.log("These tests push the broker to determine if more sophisticated");
-  console.log("throttling/activity detection is needed.\n");
+  console.log(`Stress Tests (${QUICK ? 'quick' : 'full'} mode)\n`);
+  console.log('These tests push the broker to determine if more sophisticated');
+  console.log('throttling/activity detection is needed.\n');
 
   const results: StressResult[] = [];
 
   // Each test gets its own broker instance to avoid interference
-  console.log("--- Test A: Burst Overload ---");
+  console.log('--- Test A: Burst Overload ---');
   {
     const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
-      channels: ["general"],
+      channels: ['general'],
       env: process.env,
     });
     try {
@@ -290,11 +307,11 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("--- Test B: Multi-Agent Contention ---");
+  console.log('--- Test B: Multi-Agent Contention ---');
   {
     const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
-      channels: ["general"],
+      channels: ['general'],
       env: process.env,
     });
     try {
@@ -304,11 +321,11 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("--- Test C: Steady State ---");
+  console.log('--- Test C: Steady State ---');
   {
     const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
-      channels: ["general"],
+      channels: ['general'],
       env: process.env,
     });
     try {
@@ -318,11 +335,11 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("--- Test D: Spawn/Release Cycles ---");
+  console.log('--- Test D: Spawn/Release Cycles ---');
   {
     const client = await AgentRelayClient.spawn({
       binaryPath: resolveBinaryPath(),
-      channels: ["general"],
+      channels: ['general'],
       env: process.env,
     });
     try {
@@ -333,7 +350,7 @@ async function main(): Promise<void> {
   }
 
   // Summary
-  console.log("\n\n========== STRESS TEST SUMMARY ==========");
+  console.log('\n\n========== STRESS TEST SUMMARY ==========');
   let allPassed = true;
   for (const r of results) {
     printResult(r);
@@ -342,17 +359,20 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("\n------------------------------------------");
+  console.log('\n------------------------------------------');
   if (allPassed) {
-    console.log("  VERDICT: Current simple ThrottleState is SUFFICIENT");
-    console.log("  Recommendation: DELETE orphaned activity.rs + throttle.rs");
+    console.log('  VERDICT: Current simple ThrottleState is SUFFICIENT');
+    console.log('  Recommendation: DELETE orphaned activity.rs + throttle.rs');
   } else {
-    console.log("  VERDICT: Degradation detected under stress");
-    console.log("  Recommendation: WIRE IN sophisticated AdaptiveThrottle + ActivityMonitor");
+    console.log('  VERDICT: Degradation detected under stress');
+    console.log('  Recommendation: WIRE IN sophisticated AdaptiveThrottle + ActivityMonitor');
   }
-  console.log("==========================================\n");
+  console.log('==========================================\n');
 
   process.exit(allPassed ? 0 : 1);
 }
 
-main().catch((err) => { console.error("stress test failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('stress test failed:', err);
+  process.exit(1);
+});

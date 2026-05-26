@@ -20,9 +20,7 @@ import { SupermemoryAdapter } from './adapters/supermemory.js';
  */
 export function getMemoryConfigFromEnv(): MemoryConfig {
   const type = process.env.AGENT_RELAY_MEMORY_TYPE ?? 'inmemory';
-  const apiKey =
-    process.env.AGENT_RELAY_MEMORY_API_KEY ??
-    process.env.SUPERMEMORY_API_KEY;
+  const apiKey = process.env.AGENT_RELAY_MEMORY_API_KEY ?? process.env.SUPERMEMORY_API_KEY;
 
   return {
     type,
@@ -51,9 +49,7 @@ export function getMemoryConfigFromEnv(): MemoryConfig {
  * });
  * ```
  */
-export async function createMemoryAdapter(
-  config?: Partial<MemoryConfig>
-): Promise<MemoryAdapter> {
+export async function createMemoryAdapter(config?: Partial<MemoryConfig>): Promise<MemoryAdapter> {
   // Merge with environment config
   const envConfig = getMemoryConfigFromEnv();
   const finalConfig: MemoryConfig = {
@@ -74,8 +70,8 @@ export async function createMemoryAdapter(
       if (!finalConfig.apiKey) {
         throw new Error(
           'Supermemory adapter requires an API key. ' +
-          'Set AGENT_RELAY_MEMORY_API_KEY or SUPERMEMORY_API_KEY environment variable, ' +
-          'or provide apiKey in config.'
+            'Set AGENT_RELAY_MEMORY_API_KEY or SUPERMEMORY_API_KEY environment variable, ' +
+            'or provide apiKey in config.'
         );
       }
 
@@ -95,8 +91,7 @@ export async function createMemoryAdapter(
       // Claude memory is not yet available as a public API
       // Fall back to in-memory with a warning
       console.warn(
-        '[memory] Claude memory adapter not yet available. ' +
-        'Using in-memory adapter as fallback.'
+        '[memory] Claude memory adapter not yet available. ' + 'Using in-memory adapter as fallback.'
       );
       adapter = new InMemoryAdapter({
         defaultAgentId: finalConfig.defaultAgentId,
@@ -141,10 +136,7 @@ export function isMemoryAdapterAvailable(type: string): boolean {
     case 'supermemory':
     case 'supermemory.ai':
       // Available if API key is configured
-      return !!(
-        process.env.AGENT_RELAY_MEMORY_API_KEY ||
-        process.env.SUPERMEMORY_API_KEY
-      );
+      return !!(process.env.AGENT_RELAY_MEMORY_API_KEY || process.env.SUPERMEMORY_API_KEY);
 
     case 'claude':
     case 'claude-memory':

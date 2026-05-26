@@ -6,9 +6,7 @@
   "mcpServers": {
     "relaycast": {
       "command": "node",
-      "args": [
-        "${extensionPath}${/}relay-server.js"
-      ],
+      "args": ["${extensionPath}${/}relay-server.js"],
       "cwd": "${extensionPath}"
     }
   },

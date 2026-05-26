@@ -36,9 +36,9 @@ describe('StateStore error scenarios', () => {
     it('should reject writes when consensus gate returns false', async () => {
       store.setConsensusGate(async () => false);
 
-      await expect(
-        store.set('run_1', 'key', 'value', 'agent-1'),
-      ).rejects.toThrow('rejected by consensus gate');
+      await expect(store.set('run_1', 'key', 'value', 'agent-1')).rejects.toThrow(
+        'rejected by consensus gate'
+      );
     });
 
     it('should emit state:gated event on rejection', async () => {
@@ -110,19 +110,13 @@ describe('StateStore error scenarios', () => {
     it('should use custom namespace when provided', async () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
       await store.get('run_1', 'key', { namespace: 'custom' });
-      expect(db.query).toHaveBeenCalledWith(
-        expect.any(String),
-        ['run_1', 'custom', 'key'],
-      );
+      expect(db.query).toHaveBeenCalledWith(expect.any(String), ['run_1', 'custom', 'key']);
     });
 
     it('should use default namespace when not provided', async () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
       await store.get('run_1', 'key');
-      expect(db.query).toHaveBeenCalledWith(
-        expect.any(String),
-        ['run_1', 'default', 'key'],
-      );
+      expect(db.query).toHaveBeenCalledWith(expect.any(String), ['run_1', 'default', 'key']);
     });
   });
 
@@ -196,8 +190,26 @@ describe('StateStore error scenarios', () => {
 
     it('should build key-value map from entries', async () => {
       const entries: StateEntry[] = [
-        { id: '1', runId: 'run_1', namespace: 'default', key: 'a', value: 1, expiresAt: null, createdAt: '', updatedAt: '' },
-        { id: '2', runId: 'run_1', namespace: 'default', key: 'b', value: 'hello', expiresAt: null, createdAt: '', updatedAt: '' },
+        {
+          id: '1',
+          runId: 'run_1',
+          namespace: 'default',
+          key: 'a',
+          value: 1,
+          expiresAt: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+        {
+          id: '2',
+          runId: 'run_1',
+          namespace: 'default',
+          key: 'b',
+          value: 'hello',
+          expiresAt: null,
+          createdAt: '',
+          updatedAt: '',
+        },
       ];
       vi.mocked(db.query).mockResolvedValueOnce({ rows: entries });
 
@@ -340,9 +352,7 @@ describe('BarrierManager error scenarios', () => {
       // getBarrier also returns empty
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
 
-      await expect(
-        manager.resolve('run_1', 'nonexistent', 'agent-a'),
-      ).rejects.toThrow('not found');
+      await expect(manager.resolve('run_1', 'nonexistent', 'agent-a')).rejects.toThrow('not found');
     });
 
     it('should return existing state when barrier already satisfied', async () => {
@@ -444,10 +454,7 @@ describe('BarrierManager error scenarios', () => {
     it('getUnsatisfiedBarriers should query with is_satisfied = FALSE', async () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [] });
       await manager.getUnsatisfiedBarriers('run_1');
-      expect(db.query).toHaveBeenCalledWith(
-        expect.stringContaining('is_satisfied = FALSE'),
-        ['run_1'],
-      );
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('is_satisfied = FALSE'), ['run_1']);
     });
   });
 });
@@ -510,12 +517,14 @@ describe('SwarmCoordinator error scenarios', () => {
   describe('DB propagation', () => {
     it('should propagate DB errors from createRun', async () => {
       vi.mocked(db.query).mockRejectedValueOnce(new Error('connection refused'));
-      await expect(coordinator.createRun('ws-1', {
-        version: '1',
-        name: 'test',
-        swarm: { pattern: 'fan-out' },
-        agents: [{ name: 'a', cli: 'claude' }],
-      })).rejects.toThrow('connection refused');
+      await expect(
+        coordinator.createRun('ws-1', {
+          version: '1',
+          name: 'test',
+          swarm: { pattern: 'fan-out' },
+          agents: [{ name: 'a', cli: 'claude' }],
+        })
+      ).rejects.toThrow('connection refused');
     });
 
     it('should propagate DB errors from getSteps', async () => {
@@ -583,7 +592,7 @@ describe('WorkflowRunner error scenarios', () => {
 
     it('should reject config without swarm', () => {
       expect(() =>
-        runner.validateConfig({ version: '1', name: 'x', agents: [{ name: 'a', cli: 'claude' }] }),
+        runner.validateConfig({ version: '1', name: 'x', agents: [{ name: 'a', cli: 'claude' }] })
       ).toThrow('missing required field "swarm"');
     });
 
@@ -594,7 +603,7 @@ describe('WorkflowRunner error scenarios', () => {
           name: 'x',
           swarm: null,
           agents: [{ name: 'a', cli: 'claude' }],
-        }),
+        })
       ).toThrow('missing required field "swarm"');
     });
 
@@ -606,7 +615,7 @@ describe('WorkflowRunner error scenarios', () => {
           swarm: { pattern: 'dag' },
           agents: [{ name: 'a', cli: 'claude' }],
           workflows: [{ name: 'wf', steps: ['not-an-object'] }],
-        }),
+        })
       ).toThrow('each step must be an object');
     });
 
@@ -618,7 +627,7 @@ describe('WorkflowRunner error scenarios', () => {
           swarm: { pattern: 'dag' },
           agents: [{ name: 'a', cli: 'claude' }],
           workflows: [{ name: 'wf', steps: [{ name: 's1', agent: 'a' }] }],
-        }),
+        })
       ).toThrow('must have "agent" and "task" string fields');
     });
   });
@@ -640,10 +649,12 @@ describe('WorkflowRunner error scenarios', () => {
         name: 'test',
         swarm: { pattern: 'dag' as const },
         agents: [{ name: 'a', cli: 'claude' as const }],
-        workflows: [{
-          name: 'wf',
-          steps: [{ name: 's1', agent: 'a', task: 'Deploy to {{env}}' }],
-        }],
+        workflows: [
+          {
+            name: 'wf',
+            steps: [{ name: 's1', agent: 'a', task: 'Deploy to {{env}}' }],
+          },
+        ],
       };
       expect(() => runner.resolveVariables(config, {})).toThrow('Unresolved variable: {{env}}');
     });

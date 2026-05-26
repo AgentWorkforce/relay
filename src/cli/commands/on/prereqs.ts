@@ -29,10 +29,7 @@ function isPathConfig(value: unknown): value is CheckPrereqConfig {
   }
 
   const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.relayauthRoot === 'string' ||
-    typeof candidate.relayfileRoot === 'string'
-  );
+  return typeof candidate.relayauthRoot === 'string' || typeof candidate.relayfileRoot === 'string';
 }
 
 function readCachedConfig(): CachedConfig {
@@ -85,7 +82,9 @@ export function resolvePrereqPaths(config: CheckPrereqConfig = {}): {
   ].filter((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0);
 
   const relayauthRoot = path.resolve(
-    relayauthCandidates.find((candidate) => existsSync(candidate)) ?? relayauthCandidates[0] ?? path.join(cwd, 'relayauth')
+    relayauthCandidates.find((candidate) => existsSync(candidate)) ??
+      relayauthCandidates[0] ??
+      path.join(cwd, 'relayauth')
   );
 
   return {

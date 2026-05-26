@@ -61,7 +61,8 @@ describe('RelayFileWriter', () => {
 
     it('should hash long workspace IDs', () => {
       // Create a workspace ID that would result in path > 107 chars
-      const longWorkspaceId = 'very-long-workspace-id-that-would-exceed-the-unix-socket-path-limit-of-107-characters-'.repeat(2);
+      const longWorkspaceId =
+        'very-long-workspace-id-that-would-exceed-the-unix-socket-path-limit-of-107-characters-'.repeat(2);
       process.env.WORKSPACE_ID = longWorkspaceId;
 
       const writer = new RelayFileWriter('TestAgent');

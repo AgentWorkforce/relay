@@ -98,9 +98,7 @@ export function parseMessages(inboxPath: string): ParsedInboxMessage[] {
  * Format a message for display
  */
 export function formatMessagePreview(msg: ParsedInboxMessage, maxLength: number = 50): string {
-  const preview = msg.body.length > maxLength
-    ? msg.body.substring(0, maxLength) + '...'
-    : msg.body;
+  const preview = msg.body.length > maxLength ? msg.body.substring(0, maxLength) + '...' : msg.body;
   return `[${msg.from}]: ${preview}`;
 }
 
@@ -109,11 +107,11 @@ export function formatMessagePreview(msg: ParsedInboxMessage, maxLength: number 
  */
 export function buildBlockReason(inboxPath: string, messageCount: number): string {
   const messages = parseMessages(inboxPath);
-  const previews = messages.slice(0, 3).map(m => formatMessagePreview(m));
+  const previews = messages.slice(0, 3).map((m) => formatMessagePreview(m));
 
   let reason = `You have ${messageCount} unread relay message(s) in ${inboxPath}.\n\n`;
   reason += 'Messages:\n';
-  reason += previews.map(p => `  - ${p}`).join('\n');
+  reason += previews.map((p) => `  - ${p}`).join('\n');
 
   if (messages.length > 3) {
     reason += `\n  ... and ${messages.length - 3} more`;

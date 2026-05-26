@@ -61,10 +61,7 @@ export class BarrierManager extends EventEmitter {
   /**
    * Create a barrier for a workflow run.
    */
-  async createBarrier(
-    runId: string,
-    definition: BarrierDefinition,
-  ): Promise<BarrierRow> {
+  async createBarrier(runId: string, definition: BarrierDefinition): Promise<BarrierRow> {
     const id = `bar_${Date.now()}_${randomBytes(4).toString('hex')}`;
     const now = new Date().toISOString();
     const mode = definition.mode ?? 'all';
@@ -73,14 +70,7 @@ export class BarrierManager extends EventEmitter {
       `INSERT INTO workflow_barriers (id, run_id, barrier_name, wait_for, resolved, is_satisfied, timeout_ms, created_at, updated_at)
        VALUES ($1, $2, $3, $4, '[]'::jsonb, FALSE, $5, $6, $6)
        RETURNING *`,
-      [
-        id,
-        runId,
-        definition.name,
-        JSON.stringify(definition.waitFor),
-        definition.timeoutMs ?? null,
-        now,
-      ],
+      [id, runId, definition.name, JSON.stringify(definition.waitFor), definition.timeoutMs ?? null, now]
     );
 
     const barrier = rows[0];
@@ -98,10 +88,7 @@ export class BarrierManager extends EventEmitter {
   /**
    * Bulk-create barriers from a list of definitions (e.g. from coordination config).
    */
-  async createBarriers(
-    runId: string,
-    definitions: BarrierDefinition[],
-  ): Promise<BarrierRow[]> {
+  async createBarriers(runId: string, definitions: BarrierDefinition[]): Promise<BarrierRow[]> {
     const results: BarrierRow[] = [];
     for (const def of definitions) {
       results.push(await this.createBarrier(runId, def));
@@ -118,7 +105,7 @@ export class BarrierManager extends EventEmitter {
   async resolve(
     runId: string,
     barrierName: string,
-    agent: string,
+    agent: string
   ): Promise<{ satisfied: boolean; barrier: BarrierRow }> {
     const now = new Date().toISOString();
 
@@ -132,7 +119,7 @@ export class BarrierManager extends EventEmitter {
            updated_at = $4
        WHERE run_id = $1 AND barrier_name = $2 AND is_satisfied = FALSE
        RETURNING *`,
-      [runId, barrierName, JSON.stringify(agent), now],
+      [runId, barrierName, JSON.stringify(agent), now]
     );
 
     if (rows.length === 0) {
@@ -160,7 +147,7 @@ export class BarrierManager extends EventEmitter {
   async getBarrier(runId: string, barrierName: string): Promise<BarrierRow | null> {
     const { rows } = await this.db.query<BarrierRow>(
       `SELECT * FROM workflow_barriers WHERE run_id = $1 AND barrier_name = $2`,
-      [runId, barrierName],
+      [runId, barrierName]
     );
     return rows[0] ?? null;
   }
@@ -168,7 +155,7 @@ export class BarrierManager extends EventEmitter {
   async getBarriers(runId: string): Promise<BarrierRow[]> {
     const { rows } = await this.db.query<BarrierRow>(
       `SELECT * FROM workflow_barriers WHERE run_id = $1 ORDER BY created_at ASC`,
-      [runId],
+      [runId]
     );
     return rows;
   }
@@ -176,7 +163,7 @@ export class BarrierManager extends EventEmitter {
   async getUnsatisfiedBarriers(runId: string): Promise<BarrierRow[]> {
     const { rows } = await this.db.query<BarrierRow>(
       `SELECT * FROM workflow_barriers WHERE run_id = $1 AND is_satisfied = FALSE ORDER BY created_at ASC`,
-      [runId],
+      [runId]
     );
     return rows;
   }
@@ -213,15 +200,13 @@ export class BarrierManager extends EventEmitter {
     }
   }
 
-  private async markSatisfied(
-    barrier: BarrierRow,
-  ): Promise<{ satisfied: boolean; barrier: BarrierRow }> {
+  private async markSatisfied(barrier: BarrierRow): Promise<{ satisfied: boolean; barrier: BarrierRow }> {
     const now = new Date().toISOString();
     const { rows } = await this.db.query<BarrierRow>(
       `UPDATE workflow_barriers SET is_satisfied = TRUE, updated_at = $2
        WHERE id = $1
        RETURNING *`,
-      [barrier.id, now],
+      [barrier.id, now]
     );
 
     const updated = rows[0];

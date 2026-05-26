@@ -35,4 +35,4 @@ workflows:
           REASON: explicit retry requested
         verification:
           type: output_contains
-          value: "OWNER_DECISION: INCOMPLETE_RETRY"
+          value: 'OWNER_DECISION: INCOMPLETE_RETRY'

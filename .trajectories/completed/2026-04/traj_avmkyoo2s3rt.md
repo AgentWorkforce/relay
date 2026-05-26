@@ -18,6 +18,7 @@ Implemented Browser primitive client with typed actions, Playwright-backed Brows
 ## Key Decisions
 
 ### Implemented browser primitive as a nested workspace package
+
 - **Chose:** Implemented browser primitive as a nested workspace package
 - **Reasoning:** The design document defines packages/primitives/browser as an independent primitive, so the implementation needs package metadata, a workspace entry, and package build coverage in addition to source files.
 
@@ -26,6 +27,7 @@ Implemented Browser primitive client with typed actions, Playwright-backed Brows
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Implemented browser primitive as a nested workspace package: Implemented browser primitive as a nested workspace package

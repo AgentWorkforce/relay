@@ -26,7 +26,10 @@ function expandHomeDir(input: string): string {
 }
 
 function sanitizeContainerSegment(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, '-');
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-');
   return normalized.replace(/^-+|-+$/g, '') || 'claw';
 }
 
@@ -79,15 +82,20 @@ export class DockerSpawnProvider implements SpawnProvider {
 
   constructor(options: DockerSpawnProviderOptions = {}) {
     this.image = options.image ?? process.env.CLAW_IMAGE ?? 'openclaw:local';
-    this.imageFallback = options.imageFallback ?? process.env.CLAW_IMAGE_FALLBACK ?? 'clawrunner-sandbox:latest';
+    this.imageFallback =
+      options.imageFallback ?? process.env.CLAW_IMAGE_FALLBACK ?? 'clawrunner-sandbox:latest';
     this.networkMode = options.networkMode ?? process.env.CLAW_NETWORK ?? 'bridge';
     this.socketPath = options.socketPath ?? process.env.DOCKER_SOCKET ?? '/var/run/docker.sock';
-    this.codexAuthFile = expandHomeDir(options.codexAuthFile ?? process.env.CLAW_CODEX_AUTH_FILE ?? '~/.codex/auth.json');
-    this.codexConfigFile = expandHomeDir(options.codexConfigFile ?? process.env.CLAW_CODEX_CONFIG_FILE ?? '~/.codex/config.toml');
+    this.codexAuthFile = expandHomeDir(
+      options.codexAuthFile ?? process.env.CLAW_CODEX_AUTH_FILE ?? '~/.codex/auth.json'
+    );
+    this.codexConfigFile = expandHomeDir(
+      options.codexConfigFile ?? process.env.CLAW_CODEX_CONFIG_FILE ?? '~/.codex/config.toml'
+    );
     this.containerHome = options.containerHome ?? process.env.CLAW_CONTAINER_HOME ?? '/home/node';
-    this.containerCmd = options.containerCmd ?? (process.env.CLAW_CONTAINER_CMD
-      ? process.env.CLAW_CONTAINER_CMD.split(' ')
-      : null);
+    this.containerCmd =
+      options.containerCmd ??
+      (process.env.CLAW_CONTAINER_CMD ? process.env.CLAW_CONTAINER_CMD.split(' ') : null);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,9 +108,7 @@ export class DockerSpawnProvider implements SpawnProvider {
       this.docker = new Docker({ socketPath: this.socketPath });
       return this.docker;
     } catch {
-      throw new Error(
-        'dockerode is required for Docker spawning. Install it with: npm install dockerode',
-      );
+      throw new Error('dockerode is required for Docker spawning. Install it with: npm install dockerode');
     }
   }
 
@@ -129,7 +135,7 @@ export class DockerSpawnProvider implements SpawnProvider {
         "const bp = p.join(p.dirname(require.resolve('@agent-relay/openclaw/package.json')), 'bridge', 'bridge.mjs');" +
         "require('fs').symlinkSync(bp, '/tmp/openclaw-bridge.mjs');" +
         "console.log('[entrypoint] Bridge resolved: ' + bp);" +
-      '"',
+        '"',
       // Start gateway in background
       `openclaw gateway --port ${gatewayPort} --bind loopback --allow-unconfigured --auth token &`,
       // Wait for gateway health
@@ -180,9 +186,7 @@ export class DockerSpawnProvider implements SpawnProvider {
       AGENT_ARGS: '/tmp/openclaw-bridge.mjs',
       RELAY_API_KEY: options.relayApiKey,
       RELAY_BASE_URL: options.relayBaseUrl ?? '',
-      AGENT_TASK: options.systemPrompt
-        ? `${options.systemPrompt}\n\n${identityTask}`
-        : identityTask,
+      AGENT_TASK: options.systemPrompt ? `${options.systemPrompt}\n\n${identityTask}` : identityTask,
       AGENT_CWD: '/workspace',
       AGENT_CHANNELS: channels.join(','),
       GATEWAY_PORT: String(gatewayPort),

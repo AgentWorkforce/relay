@@ -134,13 +134,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "5 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "implement-slice",
-                "COMPLETE",
-                ">7u",
-                "0",
-                "COMPLETE"
-              ],
+              "signals": ["implement-slice", "COMPLETE", ">7u", "0", "COMPLETE"],
               "channelPosts": [
                 "**[implement-slice] Output:**\n```\n └  .claude/rules/docs-sync.md | 39 ++++++++++++++++++------------\n     .trajectories/index.json   | 59 ++++++++++++++++++++++"
               ],

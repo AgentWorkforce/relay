@@ -58,7 +58,7 @@ describe('cli-session-collector', () => {
       new CodexCollector({
         historyPath: path.join(homeDir, 'missing-history.jsonl'),
         statePath: path.join(homeDir, 'missing-state.sqlite'),
-      }).canCollect(),
+      }).canCollect()
     ).toBe(false);
   });
 });

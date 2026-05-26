@@ -173,8 +173,7 @@ export class AgentPolicyService {
    * Uses ~/.config/agent-relay/policies/ (not in source control)
    */
   private getUserPoliciesDir(): string {
-    const configDir = process.env.AGENT_RELAY_CONFIG_DIR ??
-      path.join(os.homedir(), '.config', 'agent-relay');
+    const configDir = process.env.AGENT_RELAY_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'agent-relay');
     return path.join(configDir, 'policies');
   }
 
@@ -195,9 +194,9 @@ export class AgentPolicyService {
     }
 
     try {
-      const files = fs.readdirSync(policiesDir).filter(f =>
-        f.endsWith('.yaml') || f.endsWith('.yml') || f.endsWith('.json')
-      );
+      const files = fs
+        .readdirSync(policiesDir)
+        .filter((f) => f.endsWith('.yaml') || f.endsWith('.yml') || f.endsWith('.json'));
 
       if (files.length === 0) {
         return null;
@@ -235,12 +234,12 @@ export class AgentPolicyService {
 
         // Merge settings (later files override)
         if (parsed.settings && typeof parsed.settings === 'object') {
-          mergedSettings = { ...mergedSettings, ...parsed.settings as Record<string, unknown> };
+          mergedSettings = { ...mergedSettings, ...(parsed.settings as Record<string, unknown>) };
         }
 
         // Merge default policy
         if (parsed.defaultPolicy && typeof parsed.defaultPolicy === 'object') {
-          mergedDefault = { ...mergedDefault, ...parsed.defaultPolicy as AgentPolicy };
+          mergedDefault = { ...mergedDefault, ...(parsed.defaultPolicy as AgentPolicy) };
         }
       }
 
@@ -287,7 +286,7 @@ export class AgentPolicyService {
 
         // Object in array (e.g., "- name: Worker")
         if (value.includes(':')) {
-          const [key, val] = value.split(':').map(s => s.trim());
+          const [key, val] = value.split(':').map((s) => s.trim());
           currentObject = { [key]: this.parseValue(val) };
           if (currentArray) {
             currentArray.push(currentObject);
@@ -350,7 +349,7 @@ export class AgentPolicyService {
     if (value.startsWith('[') && value.endsWith(']')) {
       const inner = value.slice(1, -1);
       if (!inner.trim()) return [];
-      return inner.split(',').map(s => {
+      return inner.split(',').map((s) => {
         const trimmed = s.trim().replace(/^["']|["']$/g, '');
         return trimmed;
       });
@@ -368,11 +367,7 @@ export class AgentPolicyService {
   /**
    * Check if an agent can spawn another agent
    */
-  async canSpawn(
-    spawnerName: string,
-    targetName: string,
-    targetCli: string
-  ): Promise<PolicyDecision> {
+  async canSpawn(spawnerName: string, targetName: string, targetCli: string): Promise<PolicyDecision> {
     const spawnerPolicy = await this.getAgentPolicy(spawnerName);
     const targetPolicy = await this.getAgentPolicy(targetName);
 
@@ -418,10 +413,7 @@ export class AgentPolicyService {
   /**
    * Check if an agent can send a message to another agent
    */
-  async canMessage(
-    senderName: string,
-    recipientName: string
-  ): Promise<PolicyDecision> {
+  async canMessage(senderName: string, recipientName: string): Promise<PolicyDecision> {
     const senderPolicy = await this.getAgentPolicy(senderName);
 
     const canMessageList = senderPolicy.matchedPolicy?.canMessage;
@@ -613,7 +605,7 @@ export class AgentPolicyService {
    */
   private findMatchingPolicy(agentName: string, policies: AgentPolicy[]): AgentPolicy | null {
     // First try exact match
-    const exactMatch = policies.find(p => p.name.toLowerCase() === agentName.toLowerCase());
+    const exactMatch = policies.find((p) => p.name.toLowerCase() === agentName.toLowerCase());
     if (exactMatch) return exactMatch;
 
     // Then try pattern match
@@ -700,7 +692,9 @@ export class AgentPolicyService {
 
     // Log denied actions
     if (!decision.allowed) {
-      console.warn(`[policy] DENIED: ${action} by ${actor}${target ? ` -> ${target}` : ''}: ${decision.reason}`);
+      console.warn(
+        `[policy] DENIED: ${action} by ${actor}${target ? ` -> ${target}` : ''}: ${decision.reason}`
+      );
     }
   }
 
@@ -716,13 +710,13 @@ export class AgentPolicyService {
     let entries = [...this.auditLog];
 
     if (options?.action) {
-      entries = entries.filter(e => e.action === options.action);
+      entries = entries.filter((e) => e.action === options.action);
     }
     if (options?.actor) {
-      entries = entries.filter(e => e.actor === options.actor);
+      entries = entries.filter((e) => e.actor === options.actor);
     }
     if (options?.deniedOnly) {
-      entries = entries.filter(e => !e.decision.allowed);
+      entries = entries.filter((e) => !e.decision.allowed);
     }
     if (options?.limit) {
       entries = entries.slice(-options.limit);
@@ -753,11 +747,7 @@ export class AgentPolicyService {
   async getPolicySummary(agentName: string): Promise<string> {
     const { matchedPolicy, policySource } = await this.getAgentPolicy(agentName);
 
-    const lines: string[] = [
-      `# Agent Policy for ${agentName}`,
-      `Source: ${policySource}`,
-      '',
-    ];
+    const lines: string[] = [`# Agent Policy for ${agentName}`, `Source: ${policySource}`, ''];
 
     // Tools
     if (matchedPolicy.allowedTools) {

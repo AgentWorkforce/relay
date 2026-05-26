@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const bundled = (pkg.bundledDependencies || pkg.bundleDependencies || []).filter((name) =>
-  name.startsWith('@agent-relay/'),
+  name.startsWith('@agent-relay/')
 );
 
 let failed = 0;
@@ -28,9 +28,7 @@ for (const name of bundled) {
   }
 
   if (lstatSync(dir).isSymbolicLink()) {
-    console.error(
-      '[verify-bundled] STILL A SYMLINK: ' + dir + ' - prepack materializer did not run',
-    );
+    console.error('[verify-bundled] STILL A SYMLINK: ' + dir + ' - prepack materializer did not run');
     failed += 1;
     continue;
   }

@@ -3,17 +3,8 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  RelayState,
-  type SpawnLike,
-  createRelayDismissTool,
-  createRelaySpawnTool,
-} from '../src/index.js';
-import {
-  MockRelayServer,
-  connectRelayState,
-  createMockFetch,
-} from './mock-relay-server.js';
+import { RelayState, type SpawnLike, createRelayDismissTool, createRelaySpawnTool } from '../src/index.js';
+import { MockRelayServer, connectRelayState, createMockFetch } from './mock-relay-server.js';
 
 class FakeChildProcess extends EventEmitter implements Pick<ChildProcess, 'kill' | 'pid'> {
   pid: number;

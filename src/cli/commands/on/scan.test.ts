@@ -32,7 +32,9 @@ describe('scanPermissions', () => {
     await scanPermissions({ projectDir: '/tmp/demo-project', log });
 
     expect(log).toHaveBeenNthCalledWith(1, 'Discovered agents: default-agent');
-    expect(log).toHaveBeenCalledWith('No dotfile patterns found; defaulting to full readwrite workspace visibility.');
+    expect(log).toHaveBeenCalledWith(
+      'No dotfile patterns found; defaulting to full readwrite workspace visibility.'
+    );
     expect(parseDotfilesMock).toHaveBeenCalledWith('/tmp/demo-project', 'default-agent');
     expect(compileDotfilesMock).toHaveBeenCalledWith('/tmp/demo-project', 'default-agent', 'demo-project');
     expect(log).toHaveBeenCalledWith('Ignored patterns (0):');

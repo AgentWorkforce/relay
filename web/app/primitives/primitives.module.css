@@ -1,13 +1,23 @@
 .page {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 36% 28% at 10% 8%, color-mix(in srgb, var(--primary) 16%, white 22%), transparent 72%),
-    radial-gradient(ellipse 34% 26% at 90% 10%, color-mix(in srgb, var(--primary) 14%, white 20%), transparent 70%),
+    radial-gradient(
+      ellipse 36% 28% at 10% 8%,
+      color-mix(in srgb, var(--primary) 16%, white 22%),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 34% 26% at 90% 10%,
+      color-mix(in srgb, var(--primary) 14%, white 20%),
+      transparent 70%
+    ),
     var(--landing-hero-bg);
   color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 :global(html[data-theme='dark']) .page {
@@ -61,8 +71,13 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .headline {
@@ -108,7 +123,11 @@
   font-size: 0.92rem;
   font-weight: 600;
   text-decoration: none;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
 }
 
 .pill:hover {
@@ -201,10 +220,16 @@
   padding: 22px;
   border-radius: 18px;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%, color-mix(in srgb, var(--surface) 98%, transparent) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 98%, transparent) 100%
+  );
   box-shadow: 0 8px 24px color-mix(in srgb, var(--primary) 4%, transparent);
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    transform 0.2s;
 }
 
 .featureCard:hover {
@@ -249,7 +274,10 @@
   border-radius: 100px;
   text-decoration: none;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
-  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
 }
 
 .ctaPrimary:hover {
@@ -271,7 +299,10 @@
   border: 1.5px solid var(--line);
   border-radius: 100px;
   text-decoration: none;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s;
 }
 
 .ctaSecondary:hover {

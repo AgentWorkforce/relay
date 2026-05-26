@@ -19,13 +19,13 @@ Command palettes (Cmd+K / Ctrl+K) need precise keyboard navigation, scroll behav
 
 ## Quick Reference
 
-| Feature | Implementation |
-|---------|----------------|
-| Arrow navigation | Track `selectedIndex`, clamp with `Math.min/max` |
-| Keep in view | `scrollIntoView({ block: 'nearest', behavior: 'smooth' })` |
-| Shortcut matching | Strip spaces from shortcuts, match against query |
-| Stable icons | Define icon elements outside component |
-| Stable handlers | `useCallback` + `noop` constant for disabled states |
+| Feature           | Implementation                                             |
+| ----------------- | ---------------------------------------------------------- |
+| Arrow navigation  | Track `selectedIndex`, clamp with `Math.min/max`           |
+| Keep in view      | `scrollIntoView({ block: 'nearest', behavior: 'smooth' })` |
+| Shortcut matching | Strip spaces from shortcuts, match against query           |
+| Stable icons      | Define icon elements outside component                     |
+| Stable handlers   | `useCallback` + `noop` constant for disabled states        |
 
 ## Keyboard Navigation
 
@@ -54,6 +54,7 @@ function CommandPaletteContent({ onClose, ... }: CommandPaletteProps) {
 ```
 
 **Why this matters:**
+
 - If you put `if (!isOpen) return null` AFTER useEffect hooks, the effects still run when closed
 - This causes keyboard listeners to be registered even when palette is invisible
 - The wrapper pattern ensures effects only run when the component actually renders
@@ -61,6 +62,7 @@ function CommandPaletteContent({ onClose, ... }: CommandPaletteProps) {
 ### Input Focus + Window Listener Pattern
 
 The input MUST be focused (for typing to work), and keyboard navigation MUST use `window.addEventListener`. This works because:
+
 - The window listener receives keydown events for ALL keys
 - Arrow keys don't insert text into inputs, so `e.preventDefault()` just stops page scrolling
 - Regular character keys still reach the input for typing
@@ -71,9 +73,9 @@ The input MUST be focused (for typing to work), and keyboard navigation MUST use
   autoFocus
   type="text"
   value={query}
-  onChange={e => {
+  onChange={(e) => {
     setQuery(e.target.value);
-    setSelectedIndex(0);  // Reset to first item when query changes
+    setSelectedIndex(0); // Reset to first item when query changes
   }}
 />
 ```
@@ -91,12 +93,12 @@ useEffect(() => {
       case 'ArrowDown':
         e.preventDefault();
         // Clamp to last item
-        setSelectedIndex(prev => Math.min(prev + 1, filteredItems.length - 1));
+        setSelectedIndex((prev) => Math.min(prev + 1, filteredItems.length - 1));
         break;
       case 'ArrowUp':
         e.preventDefault();
         // Clamp to first item
-        setSelectedIndex(prev => Math.max(prev - 1, 0));
+        setSelectedIndex((prev) => Math.max(prev - 1, 0));
         break;
       case 'Enter':
         e.preventDefault();
@@ -119,6 +121,7 @@ useEffect(() => {
 ```
 
 **Key patterns:**
+
 - `e.preventDefault()` stops arrow keys from scrolling the page
 - `Math.min/max` prevents index going out of bounds
 - Effect depends on `filteredItems` so navigation updates when filter changes
@@ -136,22 +139,26 @@ useEffect(() => {
   const selectedItem = itemRefs.current[selectedIndex];
   if (selectedItem) {
     selectedItem.scrollIntoView({
-      block: 'nearest',    // Minimal scroll - only scroll if needed
-      behavior: 'smooth'   // Smooth animation
+      block: 'nearest', // Minimal scroll - only scroll if needed
+      behavior: 'smooth', // Smooth animation
     });
   }
 }, [selectedIndex]);
 
 // Assign refs in render
-{filteredItems.map((item, index) => (
-  <button
-    key={index}
-    ref={el => { itemRefs.current[index] = el; }}
-    className={index === selectedIndex ? 'bg-blue-100' : ''}
-  >
-    {item.label}
-  </button>
-))}
+{
+  filteredItems.map((item, index) => (
+    <button
+      key={index}
+      ref={(el) => {
+        itemRefs.current[index] = el;
+      }}
+      className={index === selectedIndex ? 'bg-blue-100' : ''}
+    >
+      {item.label}
+    </button>
+  ));
+}
 ```
 
 ### Alternative: Single Ref for Selected Item
@@ -175,6 +182,7 @@ useEffect(() => {
 ```
 
 **Why `block: 'nearest'`?**
+
 - `'nearest'` only scrolls if the element is outside the visible area
 - `'center'` would scroll even when item is already visible, causing jarring movement
 - `'start'` or `'end'` would always align to top/bottom
@@ -182,7 +190,7 @@ useEffect(() => {
 ## Filtering with Shortcut Matching
 
 ```tsx
-const filteredCommands = commands.filter(command => {
+const filteredCommands = commands.filter((command) => {
   const q = query.toLowerCase().trim();
   if (!q) return true;
 
@@ -221,13 +229,18 @@ Command palettes often suffer from infinite re-renders when command objects are 
 ```tsx
 // BAD: Icons recreated every render
 function usePageCommands() {
-  const commands = useMemo(() => [{
-    label: 'Sync',
-    icon: <RefreshCw size={16} />,  // New element every render!
-    action: () => onSync(),          // New function every render!
-  }], [onSync]);  // Even with deps, icon is new
+  const commands = useMemo(
+    () => [
+      {
+        label: 'Sync',
+        icon: <RefreshCw size={16} />, // New element every render!
+        action: () => onSync(), // New function every render!
+      },
+    ],
+    [onSync]
+  ); // Even with deps, icon is new
 
-  useRegisterCommands(commands);  // Triggers re-registration → re-render loop
+  useRegisterCommands(commands); // Triggers re-registration → re-render loop
 }
 ```
 
@@ -243,11 +256,16 @@ function usePageCommands({ onSync, isSyncing }: Props) {
   // Memoize handlers
   const handleSync = useCallback(() => onSync?.(), [onSync]);
 
-  const commands = useMemo(() => [{
-    label: isSyncing ? 'Syncing...' : 'Sync',
-    icon: isSyncing ? refreshSpinIcon : refreshIcon,  // Stable references
-    action: isSyncing ? noop : handleSync,             // noop, not undefined
-  }], [isSyncing, handleSync]);
+  const commands = useMemo(
+    () => [
+      {
+        label: isSyncing ? 'Syncing...' : 'Sync',
+        icon: isSyncing ? refreshSpinIcon : refreshIcon, // Stable references
+        action: isSyncing ? noop : handleSync, // noop, not undefined
+      },
+    ],
+    [isSyncing, handleSync]
+  );
 
   useRegisterCommands(commands);
 }
@@ -263,15 +281,21 @@ export function useRegisterCommands(commands: CommandItem[]) {
 
   // Create stable ID based on LABELS, not object references
   const commandIds = useMemo(
-    () => commands.map(c => {
-      if (c.type === 'nav') return `nav:${c.path}`;
-      return `action:${c.label}`;
-    }).sort().join('|'),
+    () =>
+      commands
+        .map((c) => {
+          if (c.type === 'nav') return `nav:${c.path}`;
+          return `action:${c.label}`;
+        })
+        .sort()
+        .join('|'),
     [commands]
   );
 
   const commandsRef = useRef<CommandItem[]>(commands);
-  useEffect(() => { commandsRef.current = commands; });
+  useEffect(() => {
+    commandsRef.current = commands;
+  });
 
   const prevIdsRef = useRef<string>('');
 
@@ -316,20 +340,20 @@ function executeCommand(command: CommandItem) {
 
 ## Common Mistakes
 
-| Mistake | Why It Fails | Fix |
-|---------|--------------|-----|
-| Icons inside useMemo | New icon element every render | Define icons as constants outside component |
-| Not resetting index on filter | Arrow keys start from wrong position | `setSelectedIndex(0)` in onChange |
-| `block: 'center'` in scrollIntoView | Jarring scroll when item already visible | Use `block: 'nearest'` |
-| Missing `e.preventDefault()` | Arrow keys scroll page AND move selection | Add preventDefault for ArrowUp/Down |
-| Forgetting cleanup in useEffect | Event listeners accumulate | Return cleanup function |
-| `undefined` for disabled action | Type error or click does nothing | Use `noop` constant |
-| Using `{ capture: true }` on window listener | Not needed and can cause issues | Use simple `addEventListener` without options |
-| Focusing a container instead of input | Typing won't work, UX feels broken | Use `autoFocus` on input, window listener handles arrows |
-| `setTimeout` for focus | Race conditions, focus may fail | Use `autoFocus` attribute on input |
-| `onKeyDown` on input element | Works but less reliable than window | Use `window.addEventListener` in useEffect |
-| Using refs to avoid re-registering listener | Stale closures, missed updates | Include deps in array, let listener re-register |
-| `if (!isOpen) return null` after useEffect | Effects run even when closed, listener always active | Use wrapper component pattern (see above) |
+| Mistake                                             | Why It Fails                                                           | Fix                                                                                                           |
+| --------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Icons inside useMemo                                | New icon element every render                                          | Define icons as constants outside component                                                                   |
+| Not resetting index on filter                       | Arrow keys start from wrong position                                   | `setSelectedIndex(0)` in onChange                                                                             |
+| `block: 'center'` in scrollIntoView                 | Jarring scroll when item already visible                               | Use `block: 'nearest'`                                                                                        |
+| Missing `e.preventDefault()`                        | Arrow keys scroll page AND move selection                              | Add preventDefault for ArrowUp/Down                                                                           |
+| Forgetting cleanup in useEffect                     | Event listeners accumulate                                             | Return cleanup function                                                                                       |
+| `undefined` for disabled action                     | Type error or click does nothing                                       | Use `noop` constant                                                                                           |
+| Using `{ capture: true }` on window listener        | Not needed and can cause issues                                        | Use simple `addEventListener` without options                                                                 |
+| Focusing a container instead of input               | Typing won't work, UX feels broken                                     | Use `autoFocus` on input, window listener handles arrows                                                      |
+| `setTimeout` for focus                              | Race conditions, focus may fail                                        | Use `autoFocus` attribute on input                                                                            |
+| `onKeyDown` on input element                        | Works but less reliable than window                                    | Use `window.addEventListener` in useEffect                                                                    |
+| Using refs to avoid re-registering listener         | Stale closures, missed updates                                         | Include deps in array, let listener re-register                                                               |
+| `if (!isOpen) return null` after useEffect          | Effects run even when closed, listener always active                   | Use wrapper component pattern (see above)                                                                     |
 | `bg-transparent` with conditional `bg-accent-light` | Tailwind CSS conflict - both set background-color, compiled order wins | Put background classes in conditional: `${selected ? 'bg-accent-light' : 'bg-transparent hover:bg-gray-100'}` |
 
 ## Testing Checklist

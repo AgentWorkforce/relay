@@ -118,7 +118,13 @@ describe('Bridge Config', () => {
 
       const projects = [
         { path: '/auth', id: 'auth', socketPath: '/tmp/auth/relay.sock', leadName: 'Auth', cli: 'claude' },
-        { path: '/frontend', id: 'frontend', socketPath: '/tmp/frontend/relay.sock', leadName: 'Frontend', cli: 'claude' },
+        {
+          path: '/frontend',
+          id: 'frontend',
+          socketPath: '/tmp/frontend/relay.sock',
+          leadName: 'Frontend',
+          cli: 'claude',
+        },
       ];
 
       const { valid, missing } = validateBrokers(projects);
@@ -141,6 +147,5 @@ describe('Bridge Config', () => {
       expect(valid).toHaveLength(1);
       expect(missing).toHaveLength(0);
     });
-
   });
 });

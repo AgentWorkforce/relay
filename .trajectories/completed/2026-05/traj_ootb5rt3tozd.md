@@ -19,43 +19,56 @@ All 17 steps completed in 38min. 1 step(s) needed retries: implement-slice.
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: lead-plan
-*Agent: lead-codex*
+
+_Agent: lead-codex_
 
 ### 3. Execution: implement-slice
-*Agent: impl-codex*
+
+_Agent: impl-codex_
 
 ### 4. Execution: implement-slice
-*Agent: impl-codex*
+
+_Agent: impl-codex_
 
 ### 5. Execution: review-codex-primary
-*Agent: reviewer-codex-primary*
+
+_Agent: reviewer-codex-primary_
 
 ### 6. Execution: fix-loop
-*Agent: validator-codex-primary*
+
+_Agent: validator-codex-primary_
 
 ### 7. Execution: final-review-codex-primary
-*Agent: reviewer-codex-primary*
+
+_Agent: reviewer-codex-primary_
 
 ### 8. Execution: final-fix-codex-primary
-*Agent: validator-codex-primary*
+
+_Agent: validator-codex-primary_
 
 ### 9. Execution: review-codex
-*Agent: reviewer-codex*
+
+_Agent: reviewer-codex_
 
 ### 10. Execution: fix-loop-codex
-*Agent: validator-codex*
+
+_Agent: validator-codex_
 
 ### 11. Execution: final-review-codex
-*Agent: reviewer-codex*
+
+_Agent: reviewer-codex_
 
 ### 12. Execution: final-fix-codex
-*Agent: validator-codex*
+
+_Agent: validator-codex_
 
 ### 13. Retrospective
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 - All 17 steps completed in 38min. 1 step(s) needed retries: implement-slice. (completed in 38 minutes)
 

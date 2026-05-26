@@ -11,7 +11,9 @@
   background: var(--nav-solid-bg);
   border: 1px solid var(--nav-border);
   border-radius: 14px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
   color: var(--nav-fg);
   box-shadow:
     0 8px 24px var(--nav-shadow),
@@ -19,12 +21,11 @@
 }
 
 .navBarScrolled {
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--nav-bg) 78%, transparent) 0%,
-      color-mix(in srgb, var(--nav-bg) 88%, transparent) 100%
-    );
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--nav-bg) 78%, transparent) 0%,
+    color-mix(in srgb, var(--nav-bg) 88%, transparent) 100%
+  );
   backdrop-filter: blur(24px) saturate(2) brightness(1.05);
   -webkit-backdrop-filter: blur(24px) saturate(2) brightness(1.05);
   border-color: var(--nav-border);
@@ -98,7 +99,9 @@
   padding: 5px 12px;
   border: 1px solid var(--nav-border);
   border-radius: 6px;
-  transition: opacity 0.2s, border-color 0.2s;
+  transition:
+    opacity 0.2s,
+    border-color 0.2s;
 }
 
 .agentLink:hover {
@@ -116,7 +119,10 @@
   text-decoration: none;
   padding-bottom: 4px;
   border-bottom: 2.5px solid transparent;
-  transition: color 0.2s, opacity 0.2s, border-color 0.2s;
+  transition:
+    color 0.2s,
+    opacity 0.2s,
+    border-color 0.2s;
   opacity: 1;
 }
 
@@ -208,7 +214,9 @@
   color: inherit;
   text-decoration: none;
   opacity: 0.85;
-  transition: background 0.15s, opacity 0.15s;
+  transition:
+    background 0.15s,
+    opacity 0.15s;
 }
 
 .mobileLink:hover {
@@ -251,7 +259,9 @@
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    visibility 0.15s ease;
 }
 
 .productDropdown:hover .dropdownMenu {
@@ -310,7 +320,9 @@
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition:
+    background 0.15s,
+    opacity 0.15s;
   font-family: inherit;
 }
 

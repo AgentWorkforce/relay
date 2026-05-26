@@ -56,6 +56,7 @@ If unset, a new workspace is auto-created on the first session.
 If you prefer to configure everything manually instead of using the auto-installer:
 
 1. Add to `.codex/config.toml`:
+
 ```toml
 features.codex_hooks = true
 
@@ -66,11 +67,13 @@ env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://api.relaycast.dev", RELAY_
 ```
 
 2. Copy hooks config:
+
 ```bash
 cp .agents/skills/agent-relay/hooks/hooks.json .codex/hooks.json
 ```
 
 3. Install the worker agent:
+
 ```bash
 mkdir -p .codex/agents
 cp .agents/skills/agent-relay/codex-config/relay-worker.toml .codex/agents/relay-worker.toml
@@ -118,12 +121,12 @@ Use Relaycast when workers need to message each other directly, not only the lea
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `RELAY_API_KEY` | No | `""` in the template config | Relaycast workspace key |
-| `RELAY_BASE_URL` | No | `https://api.relaycast.dev` | Relaycast API base URL |
-| `RELAY_AGENT_TYPE` | No | `agent` | Default Relaycast agent type |
-| `RELAY_AGENT_NAME` | No | unset | Optional stable relay identity when your workflow wants a fixed name |
+| Variable           | Required | Default                     | Description                                                          |
+| ------------------ | -------- | --------------------------- | -------------------------------------------------------------------- |
+| `RELAY_API_KEY`    | No       | `""` in the template config | Relaycast workspace key                                              |
+| `RELAY_BASE_URL`   | No       | `https://api.relaycast.dev` | Relaycast API base URL                                               |
+| `RELAY_AGENT_TYPE` | No       | `agent`                     | Default Relaycast agent type                                         |
+| `RELAY_AGENT_NAME` | No       | unset                       | Optional stable relay identity when your workflow wants a fixed name |
 
 ## Plugin structure
 

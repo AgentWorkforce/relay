@@ -64,7 +64,11 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
     {
       name: 'relay_send',
       description: 'Send a direct message to another relay agent.',
-      parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'] },
+      parameters: {
+        type: 'object',
+        properties: { to: { type: 'string' }, text: { type: 'string' } },
+        required: ['to', 'text'],
+      },
       async execute(input) {
         await relay.send(input.to, input.text);
         return { result: `Sent relay message to ${input.to}.` };
@@ -81,7 +85,11 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
     {
       name: 'relay_post',
       description: 'Post a message to a relay channel.',
-      parameters: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } }, required: ['channel', 'text'] },
+      parameters: {
+        type: 'object',
+        properties: { channel: { type: 'string' }, text: { type: 'string' } },
+        required: ['channel', 'text'],
+      },
       async execute(input) {
         await relay.post(input.channel, input.text);
         return { result: `Posted relay message to #${input.channel}.` };
@@ -110,7 +118,7 @@ function createRelayFunctionTools(relay: RelayLike): FunctionToolLike[] {
 export function onRelay(
   name: string,
   options: GoogleAdkRelayOptions,
-  relay: RelayLike = new Relay(name),
+  relay: RelayLike = new Relay(name)
 ): { agent: LlmAgentLike; tools: FunctionToolLike[]; unsubscribe: () => void } {
   const { agent, runner, userId = 'relay', sessionId = 'relay-session' } = options;
 

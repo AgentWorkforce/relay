@@ -447,7 +447,9 @@ describe('workflow reliability contract', () => {
   it('repairs malformed agent artifacts before retrying the agent step', async () => {
     const executeAgentStep = vi.fn(async (step) => {
       if (step.name.includes('-repair-')) return 'patched artifact instructions';
-      if ((executeAgentStep as any).mock.calls.filter(([s]: any[]) => s.name === 'write-artifact').length === 1) {
+      if (
+        (executeAgentStep as any).mock.calls.filter(([s]: any[]) => s.name === 'write-artifact').length === 1
+      ) {
         return 'plain prose without required metadata';
       }
       return 'artifact complete\nRICKY_MASTER_CHILD_RUN_VERIFIED';

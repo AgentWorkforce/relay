@@ -11,7 +11,10 @@
   font-size: 0.82rem;
   font-weight: 500;
   animation: throb 3s ease-in-out infinite;
-  transition: background 0.25s, border-color 0.25s, color 0.25s;
+  transition:
+    background 0.25s,
+    border-color 0.25s,
+    color 0.25s;
 }
 
 .meta {
@@ -29,7 +32,8 @@
 }
 
 @keyframes throb {
-  0%, 100% {
+  0%,
+  100% {
     border-color: var(--nav-border);
     transform: scale(1);
     box-shadow: 0 0 0 0 transparent;

@@ -73,9 +73,7 @@ describe('Inbox Check Utils', () => {
 
     it('throws when no agent name available', () => {
       delete process.env.AGENT_RELAY_NAME;
-      expect(() => getInboxPath({ inboxDir: tempDir })).toThrow(
-        'Agent name not configured'
-      );
+      expect(() => getInboxPath({ inboxDir: tempDir })).toThrow('Agent name not configured');
     });
   });
 
