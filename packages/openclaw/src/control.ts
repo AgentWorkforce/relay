@@ -44,7 +44,7 @@ async function callApi<T>(
   path: string,
   method: 'GET' | 'POST',
   config?: Partial<ClawRunnerControlConfig>,
-  body?: unknown,
+  body?: unknown
 ): Promise<T> {
   const resolved = resolveConfig(config);
   const response = await fetch(`${resolved.baseUrl}${path}`, {
@@ -59,7 +59,7 @@ async function callApi<T>(
   const text = await response.text();
   const json = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const msg = (json && typeof json.error === 'string') ? json.error : `HTTP ${response.status}`;
+    const msg = json && typeof json.error === 'string' ? json.error : `HTTP ${response.status}`;
     throw new Error(`ClawRunner control API error: ${msg}`);
   }
   return json as T;
@@ -67,7 +67,7 @@ async function callApi<T>(
 
 export async function spawnOpenClaw(
   input: SpawnOpenClawInput,
-  config?: Partial<ClawRunnerControlConfig>,
+  config?: Partial<ClawRunnerControlConfig>
 ): Promise<unknown> {
   return callApi('/api/agents/spawn', 'POST', config, {
     workspaceId: input.workspaceId,
@@ -82,7 +82,7 @@ export async function spawnOpenClaw(
 
 export async function listOpenClaws(
   workspaceId: string,
-  config?: Partial<ClawRunnerControlConfig>,
+  config?: Partial<ClawRunnerControlConfig>
 ): Promise<unknown> {
   const query = new URLSearchParams({ workspaceId }).toString();
   return callApi(`/api/agents?${query}`, 'GET', config);
@@ -90,7 +90,7 @@ export async function listOpenClaws(
 
 export async function releaseOpenClaw(
   input: ReleaseOpenClawInput,
-  config?: Partial<ClawRunnerControlConfig>,
+  config?: Partial<ClawRunnerControlConfig>
 ): Promise<unknown> {
   const path = `/api/agents/${encodeURIComponent(input.agentName)}/release`;
   return callApi(path, 'POST', config, {

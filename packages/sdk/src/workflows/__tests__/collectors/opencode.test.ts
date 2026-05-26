@@ -26,8 +26,12 @@ function createOpenCodeFixture(homeDir: string, cwd: string, sessionCreatedAt: n
   `);
 
   const insertSession = db.prepare('INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)');
-  const insertMessage = db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)');
-  const insertPart = db.prepare('INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)');
+  const insertMessage = db.prepare(
+    'INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)'
+  );
+  const insertPart = db.prepare(
+    'INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)'
+  );
 
   insertSession.run('session-1', cwd, sessionCreatedAt);
   insertSession.run('session-2', '/other/project', sessionCreatedAt + 1000);
@@ -36,7 +40,7 @@ function createOpenCodeFixture(homeDir: string, cwd: string, sessionCreatedAt: n
     'msg-1',
     'session-1',
     sessionCreatedAt + 10,
-    JSON.stringify({ role: 'user', tokens: { input: 10, output: 0, cache: { read: 1 } } }),
+    JSON.stringify({ role: 'user', tokens: { input: 10, output: 0, cache: { read: 1 } } })
   );
   insertMessage.run(
     'msg-2',
@@ -49,13 +53,13 @@ function createOpenCodeFixture(homeDir: string, cwd: string, sessionCreatedAt: n
       finish: 'error',
       cost: 1.25,
       tokens: { input: 15, output: 20, cache: { read: 4 } },
-    }),
+    })
   );
   insertMessage.run(
     'msg-other',
     'session-2',
     sessionCreatedAt + 30,
-    JSON.stringify({ role: 'assistant', modelID: 'ignore-me', providerID: 'other', finish: 'completed' }),
+    JSON.stringify({ role: 'assistant', modelID: 'ignore-me', providerID: 'other', finish: 'completed' })
   );
 
   insertPart.run(
@@ -63,28 +67,28 @@ function createOpenCodeFixture(homeDir: string, cwd: string, sessionCreatedAt: n
     'msg-1',
     'session-1',
     sessionCreatedAt + 11,
-    JSON.stringify({ type: 'text', text: 'Planning work' }),
+    JSON.stringify({ type: 'text', text: 'Planning work' })
   );
   insertPart.run(
     'part-2',
     'msg-2',
     'session-1',
     sessionCreatedAt + 21,
-    JSON.stringify({ type: 'tool_call', name: 'write_file' }),
+    JSON.stringify({ type: 'tool_call', name: 'write_file' })
   );
   insertPart.run(
     'part-3',
     'msg-2',
     'session-1',
     sessionCreatedAt + 22,
-    JSON.stringify({ type: 'text', text: 'Error: database locked\nCleanup afterwards' }),
+    JSON.stringify({ type: 'text', text: 'Error: database locked\nCleanup afterwards' })
   );
   insertPart.run(
     'part-4',
     'msg-2',
     'session-1',
     sessionCreatedAt + 23,
-    JSON.stringify({ type: 'text', text: 'Completed summary output' }),
+    JSON.stringify({ type: 'text', text: 'Completed summary output' })
   );
 
   db.close();

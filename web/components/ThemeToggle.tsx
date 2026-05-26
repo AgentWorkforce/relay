@@ -53,9 +53,7 @@ export function ThemeToggle({ mobile = false }: { mobile?: boolean } = {}) {
   }, []);
 
   const nextTheme: Theme = theme === 'dark' ? 'light' : 'dark';
-  const actionLabel = mounted
-    ? `Switch to ${nextTheme} mode`
-    : 'Toggle color theme';
+  const actionLabel = mounted ? `Switch to ${nextTheme} mode` : 'Toggle color theme';
 
   return (
     <button
@@ -68,9 +66,7 @@ export function ThemeToggle({ mobile = false }: { mobile?: boolean } = {}) {
       aria-label={actionLabel}
       title={actionLabel}
     >
-      <span className={s.icon}>
-        {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-      </span>
+      <span className={s.icon}>{theme === 'dark' ? <SunIcon /> : <MoonIcon />}</span>
       {mobile && <span className={s.label}>{nextTheme === 'dark' ? 'Dark mode' : 'Light mode'}</span>}
     </button>
   );

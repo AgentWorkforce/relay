@@ -4,11 +4,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
-import type {
-  CliSessionCollector,
-  CliSessionQuery,
-  CliSessionReport,
-} from '../cli-session-collector.js';
+import type { CliSessionCollector, CliSessionQuery, CliSessionReport } from '../cli-session-collector.js';
 
 const CLAUDE_HOME = path.join(homedir(), '.claude');
 const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
@@ -38,7 +34,7 @@ export class ClaudeCodeCollector implements CliSessionCollector {
     const sessionPath = path.join(
       PROJECTS_PATH,
       encodeProjectPath(historyEntry.project),
-      `${historyEntry.sessionId}.jsonl`,
+      `${historyEntry.sessionId}.jsonl`
     );
     if (!(await isReadableFileAsync(sessionPath))) {
       return null;
@@ -87,7 +83,7 @@ async function findMatchingHistoryEntry(query: CliSessionQuery): Promise<ClaudeH
 async function parseSessionLog(
   sessionPath: string,
   query: CliSessionQuery,
-  sessionId: string,
+  sessionId: string
 ): Promise<CliSessionReport | null> {
   const session = createInterface({
     input: createReadStream(sessionPath, { encoding: 'utf8' }),
@@ -219,32 +215,33 @@ function extractUsage(record: JsonRecord): { input: number; output: number; cach
   return {
     input: firstNumber(usage, ['input_tokens', 'inputTokens']) ?? 0,
     output: firstNumber(usage, ['output_tokens', 'outputTokens']) ?? 0,
-    cacheRead: firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cache_read_tokens']) ?? 0,
+    cacheRead:
+      firstNumber(usage, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cache_read_tokens']) ?? 0,
   };
 }
 
 function extractModel(record: JsonRecord): string | null {
   return (
-    getString(record.model)
-    ?? getString(record.modelId)
-    ?? getString(findNestedValue(record, ['message.model', 'message.modelId', 'metadata.model']))
+    getString(record.model) ??
+    getString(record.modelId) ??
+    getString(findNestedValue(record, ['message.model', 'message.modelId', 'metadata.model']))
   );
 }
 
 function extractProvider(record: JsonRecord): string | null {
   return (
-    getString(record.provider)
-    ?? getString(record.providerId)
-    ?? getString(findNestedValue(record, ['message.provider', 'message.providerId', 'metadata.provider']))
-    ?? 'anthropic'
+    getString(record.provider) ??
+    getString(record.providerId) ??
+    getString(findNestedValue(record, ['message.provider', 'message.providerId', 'metadata.provider'])) ??
+    'anthropic'
   );
 }
 
 function extractToolName(record: JsonRecord): string | null {
   return (
-    getString(record.name)
-    ?? getString(record.tool_name)
-    ?? getString(findNestedValue(record, ['tool.name', 'content.name']))
+    getString(record.name) ??
+    getString(record.tool_name) ??
+    getString(findNestedValue(record, ['tool.name', 'content.name']))
   );
 }
 
@@ -275,9 +272,7 @@ function extractText(value: unknown): string | null {
   }
 
   if (Array.isArray(value)) {
-    const texts = value
-      .map((entry) => extractText(entry))
-      .filter((entry): entry is string => Boolean(entry));
+    const texts = value.map((entry) => extractText(entry)).filter((entry): entry is string => Boolean(entry));
     return texts.length > 0 ? texts.join('\n').trim() : null;
   }
 

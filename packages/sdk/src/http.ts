@@ -35,7 +35,7 @@ interface RegisterAgentResult {
  */
 export async function createWorkspace(
   name: string,
-  baseUrl: string = DEFAULT_BASE_URL,
+  baseUrl: string = DEFAULT_BASE_URL
 ): Promise<CreateWorkspaceResult> {
   const url = `${baseUrl}/v1/workspaces`;
   const response = await fetch(url, {
@@ -46,16 +46,14 @@ export async function createWorkspace(
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(
-      `Failed to create workspace (HTTP ${response.status}): ${body}`,
-    );
+    throw new Error(`Failed to create workspace (HTTP ${response.status}): ${body}`);
   }
 
   const body = (await response.json()) as
     | CreateWorkspaceResult
     | { ok: boolean; data: CreateWorkspaceResult };
   // The API wraps responses in { ok, data } — unwrap transparently
-  return 'data' in body && body.data ? body.data : body as CreateWorkspaceResult;
+  return 'data' in body && body.data ? body.data : (body as CreateWorkspaceResult);
 }
 
 /**
@@ -70,7 +68,7 @@ export async function createWorkspace(
 export async function registerAgent(
   apiKey: string,
   name: string,
-  baseUrl: string = DEFAULT_BASE_URL,
+  baseUrl: string = DEFAULT_BASE_URL
 ): Promise<RegisterAgentResult> {
   const url = `${baseUrl}/v1/agents`;
   const response = await fetch(url, {
@@ -84,13 +82,9 @@ export async function registerAgent(
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => '');
-    throw new Error(
-      `Failed to register agent (HTTP ${response.status}): ${errBody}`,
-    );
+    throw new Error(`Failed to register agent (HTTP ${response.status}): ${errBody}`);
   }
 
-  const body = (await response.json()) as
-    | RegisterAgentResult
-    | { ok: boolean; data: RegisterAgentResult };
-  return 'data' in body && body.data ? body.data : body as RegisterAgentResult;
+  const body = (await response.json()) as RegisterAgentResult | { ok: boolean; data: RegisterAgentResult };
+  return 'data' in body && body.data ? body.data : (body as RegisterAgentResult);
 }

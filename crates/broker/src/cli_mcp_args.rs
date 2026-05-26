@@ -369,9 +369,9 @@ mod tests {
         assert!(output
             .args
             .contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
-        assert!(output
-            .args
-            .contains(&"mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]".to_string()));
+        assert!(output.args.contains(
+            &"mcp_servers.relaycast.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
+        ));
         assert!(output.side_effect_files.is_empty());
     }
 

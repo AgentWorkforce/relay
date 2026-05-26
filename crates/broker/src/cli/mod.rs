@@ -229,11 +229,13 @@ pub(crate) struct InitCommand {
     #[arg(long, default_value = "127.0.0.1")]
     pub(crate) api_bind: String,
 
-    /// Enable persistence: write state, pending-deliveries, lock, PID, and MCP
-    /// config to `.agent-relay/` in the working directory. When omitted (the
-    /// default), runtime files are written to a deterministic temp directory and
-    /// cleaned up opportunistically; identity registration is non-strict to avoid
-    /// stale-name collisions across short-lived sessions.
+    /// Enable persistence: write state, pending-deliveries, lock, and PID files
+    /// to `.agent-relay/` in the working directory. MCP configuration is injected
+    /// into spawned agents at launch time instead of being written to project
+    /// config files. When omitted (the default), runtime files are written to a
+    /// deterministic temp directory and cleaned up opportunistically; identity
+    /// registration is non-strict to avoid stale-name collisions across
+    /// short-lived sessions.
     #[arg(long, default_value_t = false)]
     pub(crate) persist: bool,
 

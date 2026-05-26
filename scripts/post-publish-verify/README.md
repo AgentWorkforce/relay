@@ -21,6 +21,7 @@ Automated tests to verify the `agent-relay` npm package works correctly after pu
 ## Node.js Versions
 
 Tests run across all supported Node.js versions:
+
 - Node.js 18 (minimum supported)
 - Node.js 20 (LTS)
 - Node.js 22 (Current)
@@ -66,6 +67,7 @@ docker compose down --rmi local
 The verification runs automatically after publishing via the `verify-publish.yml` workflow.
 
 You can also trigger it manually:
+
 1. Go to Actions tab
 2. Select "Verify Published Package"
 3. Click "Run workflow"

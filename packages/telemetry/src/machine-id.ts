@@ -9,8 +9,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 export function getMachineIdPath(): string {
-  const dataDir = process.env.AGENT_RELAY_DATA_DIR ||
-    path.join(os.homedir(), '.local', 'share', 'agent-relay');
+  const dataDir =
+    process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agent-relay');
   return path.join(dataDir, 'machine-id');
 }
 
@@ -34,7 +34,11 @@ export function loadMachineId(): string {
       const machineId = `${os.hostname()}-${randomBytes(8).toString('hex')}`;
 
       // O_CREAT | O_EXCL fails if file exists - prevents race condition
-      const fd = fs.openSync(machineIdPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+      const fd = fs.openSync(
+        machineIdPath,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+        0o600
+      );
       fs.writeSync(fd, machineId);
       fs.closeSync(fd);
 
@@ -56,8 +60,5 @@ export function loadMachineId(): string {
 /** SHA256 hash of machine ID, truncated to 16 chars */
 export function createAnonymousId(): string {
   const machineId = loadMachineId();
-  return createHash('sha256')
-    .update(machineId)
-    .digest('hex')
-    .substring(0, 16);
+  return createHash('sha256').update(machineId).digest('hex').substring(0, 16);
 }

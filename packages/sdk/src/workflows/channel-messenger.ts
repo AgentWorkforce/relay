@@ -235,9 +235,9 @@ export class ChannelMessenger {
     return (
       '---\n' +
       'RELAY SETUP — do this FIRST before any other relay tool:\n' +
-      `1. Call: register(name="${agentName}")\n` +
+      `1. Call: register_agent(name="${agentName}")\n` +
       '   This authenticates you in the Relaycast workspace.\n' +
-      '   ALL relay tools (mcp__relaycast__message_dm_send, mcp__relaycast__message_inbox_check, mcp__relaycast__message_post, etc.) require\n' +
+      '   ALL relay tools (mcp__relaycast__send_dm, mcp__relaycast__check_inbox, mcp__relaycast__post_message, etc.) require\n' +
       '   registration first — they will fail with "Not registered" otherwise.\n' +
       `2. Your agent name is "${agentName}" — use this exact name when registering.`
     );
@@ -263,10 +263,10 @@ export class ChannelMessenger {
       'If it involves multiple independent subtasks, touches many files, or could take a long time, ' +
       'you should break it down and delegate to helper agents to avoid timeouts.\n\n' +
       'Option 1 — Spawn relay agents (for real parallel coding work):\n' +
-      '  - mcp__relaycast__agent_add(name="helper-1", cli="claude", task="Specific subtask description")\n' +
-      '  - Coordinate via mcp__relaycast__message_dm_send(to="helper-1", text="...")\n' +
-      '  - Check on them with mcp__relaycast__message_inbox_check()\n' +
-      '  - Clean up when done: mcp__relaycast__agent_remove(name="helper-1")\n\n' +
+      '  - mcp__relaycast__add_agent(name="helper-1", cli="claude", task="Specific subtask description")\n' +
+      '  - Coordinate via mcp__relaycast__send_dm(to="helper-1", text="...")\n' +
+      '  - Check on them with mcp__relaycast__check_inbox()\n' +
+      '  - Clean up when done: mcp__relaycast__remove_agent(name="helper-1")\n\n' +
       subAgentOption +
       'Guidelines:\n' +
       '- You are the lead — delegate but stay in control, track progress, integrate results\n' +
@@ -274,7 +274,7 @@ export class ChannelMessenger {
       "- For simple or quick work, just do it yourself — don't over-delegate\n" +
       '- Always release spawned relay agents when their work is complete\n' +
       '- When spawning non-claude agents (codex, gemini, etc.), prepend to their task:\n' +
-      '  "RELAY SETUP: First call register(name=\'<exact-agent-name>\') before any other relay tool."'
+      '  "RELAY SETUP: First call register_agent(name=\'<exact-agent-name>\') before any other relay tool."'
     );
   }
 

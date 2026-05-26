@@ -20,12 +20,12 @@ WebSocket "invalid frame header" errors often stem from raw HTTP being written t
 
 ## Quick Reference
 
-| Symptom | Likely Cause | Fix |
-|---------|--------------|-----|
-| RSV1 must be clear | Multiple WSS on same server OR compression mismatch | Use `noServer: true` mode |
-| Hex starts with `48545450` | Raw HTTP on WebSocket (0x48='H') | Check for conflicting upgrade handlers |
-| Code 1006, no reason | Abnormal closure, often server-side abort | Check `abortHandshake` calls |
-| Works isolated, fails in app | Something else writing to socket | Audit all upgrade listeners |
+| Symptom                      | Likely Cause                                        | Fix                                    |
+| ---------------------------- | --------------------------------------------------- | -------------------------------------- |
+| RSV1 must be clear           | Multiple WSS on same server OR compression mismatch | Use `noServer: true` mode              |
+| Hex starts with `48545450`   | Raw HTTP on WebSocket (0x48='H')                    | Check for conflicting upgrade handlers |
+| Code 1006, no reason         | Abnormal closure, often server-side abort           | Check `abortHandshake` calls           |
+| Works isolated, fails in app | Something else writing to socket                    | Audit all upgrade listeners            |
 
 ## The Multiple WebSocketServer Bug
 
@@ -40,6 +40,7 @@ const wss2 = new WebSocketServer({ server, path: '/ws/other' });
 ```
 
 **What happens:**
+
 1. Client connects to `/ws`
 2. BOTH upgrade handlers fire (Node.js EventEmitter calls all listeners)
 3. `wss1` matches path, handles upgrade successfully
@@ -85,7 +86,7 @@ ws.on('open', () => {
   const socket = ws._socket;
   const originalPush = socket.push.bind(socket);
 
-  socket.push = function(chunk, encoding) {
+  socket.push = function (chunk, encoding) {
     if (chunk) {
       console.log('First 20 bytes (hex):', chunk.slice(0, 20).toString('hex'));
       const byte0 = chunk[0];
@@ -111,16 +112,17 @@ ws.on('open', () => {
 
 ## Common Mistakes
 
-| Mistake | Result | Fix |
-|---------|--------|-----|
-| Multiple WSS with `server` option | HTTP 400 written to socket | Use `noServer: true` |
-| `perMessageDeflate: true` (default in older ws) | RSV1 set on frames | Explicitly set `perMessageDeflate: false` |
-| Not checking upgrade headers | Miss compression negotiation | Log `sec-websocket-extensions` header |
-| Assuming RSV1 error = compression | Could be raw HTTP | Check if bytes decode as ASCII "HTTP" |
+| Mistake                                         | Result                       | Fix                                       |
+| ----------------------------------------------- | ---------------------------- | ----------------------------------------- |
+| Multiple WSS with `server` option               | HTTP 400 written to socket   | Use `noServer: true`                      |
+| `perMessageDeflate: true` (default in older ws) | RSV1 set on frames           | Explicitly set `perMessageDeflate: false` |
+| Not checking upgrade headers                    | Miss compression negotiation | Log `sec-websocket-extensions` header     |
+| Assuming RSV1 error = compression               | Could be raw HTTP            | Check if bytes decode as ASCII "HTTP"     |
 
 ## Verification Checklist
 
 After fixing, verify:
+
 - [ ] `RSV1: false` in frame inspection
 - [ ] `Extensions header: NONE` in upgrade response
 - [ ] No `HTTP/1.1` in raw frame data

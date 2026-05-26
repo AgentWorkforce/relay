@@ -1,10 +1,5 @@
 import { RelayTransport } from './transport.js';
-import {
-  type Message,
-  type MessageCallback,
-  type RelayConfig,
-  resolveRelayConfig,
-} from './types.js';
+import { type Message, type MessageCallback, type RelayConfig, resolveRelayConfig } from './types.js';
 
 const MAX_PENDING_MESSAGES = 10_000;
 
@@ -124,12 +119,15 @@ export class Relay {
     }
 
     if (!this.connectPromise) {
-      this.connectPromise = this.transport.connect().then(() => {
-        this.connected = true;
-      }).catch((error) => {
-        this.connectPromise = undefined;
-        throw error;
-      });
+      this.connectPromise = this.transport
+        .connect()
+        .then(() => {
+          this.connected = true;
+        })
+        .catch((error) => {
+          this.connectPromise = undefined;
+          throw error;
+        });
     }
 
     await this.connectPromise;

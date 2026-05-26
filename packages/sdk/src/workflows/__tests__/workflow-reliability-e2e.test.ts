@@ -8,7 +8,7 @@ import { WorkflowRunner } from '../runner.js';
 import type { AgentDefinition, RelayYamlConfig, WorkflowStep } from '../types.js';
 
 const CHECK_MARKER =
-  'node -e "const fs=require(\'fs\');const v=fs.readFileSync(\'marker.txt\',\'utf8\').trim();if(v!==\'fixed\'){console.log(\'marker=\'+v);process.exit(1)}console.log(\'ok\')"';
+  "node -e \"const fs=require('fs');const v=fs.readFileSync('marker.txt','utf8').trim();if(v!=='fixed'){console.log('marker='+v);process.exit(1)}console.log('ok')\"";
 
 function baseConfig(
   name: string,

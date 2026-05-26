@@ -6,7 +6,6 @@ pub(crate) mod ws;
 
 pub(crate) use crate::snippets::{
     configure_relaycast_mcp_with_result, configure_relaycast_mcp_with_token,
-    ensure_relaycast_mcp_config,
 };
 pub(crate) use auth::AuthClient;
 pub(crate) use bridge::{map_ws_broker_command, map_ws_event};

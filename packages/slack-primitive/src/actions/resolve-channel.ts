@@ -8,10 +8,7 @@ const CHANNEL_ID_PATTERN = /^[CGD][A-Z0-9]{2,}$/;
  * @param channel - Raw channel id or #channel-name reference.
  * @returns Resolved Slack channel summary.
  */
-export async function resolveChannel(
-  slack: SlackWebApiLike,
-  channel: string
-): Promise<SlackChannelSummary> {
+export async function resolveChannel(slack: SlackWebApiLike, channel: string): Promise<SlackChannelSummary> {
   if (CHANNEL_ID_PATTERN.test(channel)) {
     return { id: channel };
   }

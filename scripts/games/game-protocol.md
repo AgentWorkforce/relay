@@ -7,21 +7,25 @@ This document defines the standard protocol for multi-agent games using agent-re
 All agents use these `agent-relay` commands:
 
 ### Wait for messages (blocking)
+
 ```bash
 agent-relay inbox-poll -n YOUR_NAME -d GAME_DIR --clear
 ```
 
 ### Send to one player
+
 ```bash
 agent-relay inbox-write -t RECIPIENT -f YOUR_NAME -m "MESSAGE" -d GAME_DIR
 ```
 
 ### Broadcast to all players
+
 ```bash
 agent-relay inbox-write -t "*" -f YOUR_NAME -m "MESSAGE" -d GAME_DIR
 ```
 
 ### List all players
+
 ```bash
 agent-relay inbox-agents -d GAME_DIR
 ```
@@ -54,6 +58,7 @@ DATA: <json_or_text>
 ## Game Coordinator
 
 For complex games, one player can act as coordinator:
+
 - Deals cards/sets up game
 - Validates moves
 - Tracks state

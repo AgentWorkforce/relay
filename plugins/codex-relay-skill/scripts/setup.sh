@@ -154,7 +154,7 @@ ensure_relaycast_mcp_block() {
       args_seen = 0
       env_seen = 0
       command_line = "command = \"npx\""
-      args_line = "args = [\"-y\", \"@relaycast/mcp\"]"
+      args_line = "args = [\"-y\", \"agent-relay\", \"mcp\"]"
       env_line = "env = { RELAY_API_KEY = \"\", RELAY_BASE_URL = \"https://api.relaycast.dev\", RELAY_AGENT_TYPE = \"agent\" }"
     }
     function write_missing_keys() {

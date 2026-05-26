@@ -5,24 +5,21 @@
  * Run any benchmark with: npx tsx tests/benchmarks/<name>.ts [--quick]
  */
 
-import { performance } from "node:perf_hooks";
-import fs from "node:fs";
-import path from "node:path";
-import {
-  AgentRelayClient,
-  type BrokerEvent,
-} from "@agent-relay/sdk";
+import { performance } from 'node:perf_hooks';
+import fs from 'node:fs';
+import path from 'node:path';
+import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
 
-export const QUICK = process.argv.includes("--quick");
+export const QUICK = process.argv.includes('--quick');
 
 export function resolveBinaryPath(): string {
   if (process.env.AGENT_RELAY_BIN) {
     return process.env.AGENT_RELAY_BIN;
   }
-  const exe = process.platform === "win32" ? "agent-relay.exe" : "agent-relay";
+  const exe = process.platform === 'win32' ? 'agent-relay.exe' : 'agent-relay';
   const candidates = [
-    path.resolve(process.cwd(), "target", "debug", exe),
-    path.resolve(process.cwd(), "target", "release", exe),
+    path.resolve(process.cwd(), 'target', 'debug', exe),
+    path.resolve(process.cwd(), 'target', 'release', exe),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -37,7 +34,7 @@ export function randomName(prefix: string): string {
 export async function startBroker(): Promise<AgentRelayClient> {
   return AgentRelayClient.spawn({
     binaryPath: resolveBinaryPath(),
-    channels: ["general"],
+    channels: ['general'],
     env: process.env,
   });
 }
@@ -45,7 +42,7 @@ export async function startBroker(): Promise<AgentRelayClient> {
 export function waitForEvent(
   client: AgentRelayClient,
   kind: string,
-  timeoutMs = 15_000,
+  timeoutMs = 15_000
 ): Promise<BrokerEvent> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {

@@ -73,10 +73,10 @@ fi
 
 export RUST_LOG=debug
 export RELAY_DASHBOARD_STATIC_DIR=/Users/khaliqgant/Projects/agent-workforce/relay-dashboard/packages/dashboard/out
-export RELAYCAST_MCP_COMMAND="node /Users/khaliqgant/Projects/agent-workforce/relaycast/packages/mcp/dist/stdio.js"
+export RELAYCAST_MCP_COMMAND="node dist/src/cli/relaycast-mcp.js"
 export AGENT_RELAY_BIN=/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/target/debug/agent-relay-broker
 export RELAY_DASHBOARD_BINARY=/Users/khaliqgant/Projects/agent-workforce/relay-dashboard/packages/dashboard-server/dist/start.js
 
 concurrently -k \
   "(cd \"$CLI_REPO_DIR\" && npm run dev:watch)" \
-  "cd \"$PROJECT_DIR\" && node --watch /Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/dist/src/cli/index.js start dashboard.js ${CLI_TOOL} --port ${DASHBOARD_PORT}"
+  "cd \"$PROJECT_DIR\" && node --watch /Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/packages/cli/dist/cli/index.js start dashboard.js ${CLI_TOOL} --port ${DASHBOARD_PORT}"

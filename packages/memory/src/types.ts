@@ -143,21 +143,13 @@ export interface MemoryAdapter {
    * @param options - Filter options
    * @returns Array of recent memories
    */
-  list?(options?: {
-    limit?: number;
-    agentId?: string;
-    projectId?: string;
-  }): Promise<MemoryEntry[]>;
+  list?(options?: { limit?: number; agentId?: string; projectId?: string }): Promise<MemoryEntry[]>;
 
   /**
    * Clear all memories matching criteria
    * @param options - Filter for what to clear
    */
-  clear?(options?: {
-    agentId?: string;
-    projectId?: string;
-    before?: number;
-  }): Promise<MemoryResult>;
+  clear?(options?: { agentId?: string; projectId?: string; before?: number }): Promise<MemoryResult>;
 
   /**
    * Get statistics about stored memories

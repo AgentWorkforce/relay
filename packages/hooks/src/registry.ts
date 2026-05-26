@@ -188,9 +188,7 @@ export class HookRegistry {
   /**
    * Register memory hooks from configuration
    */
-  private async registerMemoryHooksFromConfig(
-    config: HooksMemoryConfig | boolean
-  ): Promise<void> {
+  private async registerMemoryHooksFromConfig(config: HooksMemoryConfig | boolean): Promise<void> {
     const loadMemory = async () => import('@agent-relay/memory');
 
     try {

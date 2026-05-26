@@ -1,5 +1,11 @@
 // ── Types ──────────────────────────────────────────────────────────────
-export type { GatewayConfig, InboundMessage, DeliveryResult, WorkspaceEntry, WorkspacesConfig } from './types.js';
+export type {
+  GatewayConfig,
+  InboundMessage,
+  DeliveryResult,
+  WorkspaceEntry,
+  WorkspacesConfig,
+} from './types.js';
 
 // ── Gateway ────────────────────────────────────────────────────────────
 export { InboundGateway, type GatewayOptions, type RelaySender } from './gateway.js';

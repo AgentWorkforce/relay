@@ -20,12 +20,7 @@ export interface A2AMessage {
   taskId?: string;
 }
 
-export type A2ATaskState =
-  | 'submitted'
-  | 'working'
-  | 'completed'
-  | 'failed'
-  | 'canceled';
+export type A2ATaskState = 'submitted' | 'working' | 'completed' | 'failed' | 'canceled';
 
 export const VALID_TASK_STATES: ReadonlySet<string> = new Set([
   'submitted',
@@ -93,7 +88,7 @@ export function createA2APart(text?: string): A2APart {
 export function createA2AMessage(
   role: 'user' | 'agent',
   parts: A2APart[],
-  opts?: { messageId?: string; contextId?: string; taskId?: string },
+  opts?: { messageId?: string; contextId?: string; taskId?: string }
 ): A2AMessage {
   return {
     role,
@@ -104,10 +99,7 @@ export function createA2AMessage(
   };
 }
 
-export function createA2ATaskStatus(
-  state: A2ATaskState,
-  message?: A2AMessage,
-): A2ATaskStatus {
+export function createA2ATaskStatus(state: A2ATaskState, message?: A2AMessage): A2ATaskStatus {
   return {
     state,
     message,
@@ -115,10 +107,7 @@ export function createA2ATaskStatus(
   };
 }
 
-export function createA2ATask(
-  id: string,
-  contextId?: string,
-): A2ATask {
+export function createA2ATask(id: string, contextId?: string): A2ATask {
   return {
     id,
     contextId,
@@ -132,7 +121,7 @@ export function createA2AAgentCard(
   name: string,
   description: string,
   url: string,
-  skills: A2ASkill[] = [],
+  skills: A2ASkill[] = []
 ): A2AAgentCard {
   return {
     name,
@@ -297,7 +286,7 @@ export interface JsonRpcResponse {
 export function makeJsonRpcRequest(
   method: string,
   params: Record<string, unknown>,
-  id?: string | number,
+  id?: string | number
 ): JsonRpcRequest {
   return {
     jsonrpc: '2.0',
@@ -307,18 +296,11 @@ export function makeJsonRpcRequest(
   };
 }
 
-export function makeJsonRpcResponse(
-  result: unknown,
-  id: string | number,
-): JsonRpcResponse {
+export function makeJsonRpcResponse(result: unknown, id: string | number): JsonRpcResponse {
   return { jsonrpc: '2.0', result, id };
 }
 
-export function makeJsonRpcError(
-  code: number,
-  message: string,
-  id: string | number | null,
-): JsonRpcResponse {
+export function makeJsonRpcError(code: number, message: string, id: string | number | null): JsonRpcResponse {
   return {
     jsonrpc: '2.0',
     error: { code, message },

@@ -18,6 +18,7 @@ Fixed Relay SDK broker stdout drain at the source. TypeScript AgentRelayClient.s
 ## Key Decisions
 
 ### Drain spawned broker stdout in SDK clients
+
 - **Chose:** Drain spawned broker stdout in SDK clients
 - **Reasoning:** agent-relay run and direct SDK users both reach AgentRelayClient.spawn; after startup URL parsing stdout was left paused/undrained, so the root fix belongs in the TypeScript and Python SDK clients rather than only in Ricky's loader workaround.
 
@@ -26,6 +27,7 @@ Fixed Relay SDK broker stdout drain at the source. TypeScript AgentRelayClient.s
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Drain spawned broker stdout in SDK clients: Drain spawned broker stdout in SDK clients

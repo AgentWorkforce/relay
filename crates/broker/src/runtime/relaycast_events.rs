@@ -259,7 +259,7 @@ impl BrokerRuntime {
                     let effective_task = normalize_initial_task(task.clone());
 
                     // Pre-register an agent token for every spawned worker.
-                    // `@relaycast/mcp` needs RELAY_AGENT_TOKEN +
+                    // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
                     // RELAY_SKIP_BOOTSTRAP=1 in its environment to expose
                     // tools immediately; otherwise it runs network
                     // registration before responding to the MCP initialize

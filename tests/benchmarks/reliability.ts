@@ -6,38 +6,33 @@
  * Run: npx tsx tests/benchmarks/reliability.ts [--quick]
  */
 
-import {
-  QUICK,
-  startBroker,
-  randomName,
-  performance,
-} from "./harness.js";
-import type { BrokerEvent } from "@agent-relay/sdk";
+import { QUICK, startBroker, randomName, performance } from './harness.js';
+import type { BrokerEvent } from '@agent-relay/sdk';
 
 const MESSAGE_COUNT = QUICK ? 50 : 500;
 
 async function main(): Promise<void> {
   console.log(`Reliability Benchmark (${MESSAGE_COUNT} messages)`);
   const client = await startBroker();
-  const receiver = randomName("reliability-recv");
+  const receiver = randomName('reliability-recv');
 
   let verified = 0;
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === "delivery_verified") verified++;
-    if (event.kind === "delivery_failed") failed++;
+    if (event.kind === 'delivery_verified') verified++;
+    if (event.kind === 'delivery_failed') failed++;
   });
 
   try {
     await client.spawnPty({
       name: receiver,
-      cli: "cat",
-      channels: ["general"],
+      cli: 'cat',
+      channels: ['general'],
     });
 
     // Warmup
-    await client.sendMessage({ to: receiver, from: "bench", text: "warmup" });
+    await client.sendMessage({ to: receiver, from: 'bench', text: 'warmup' });
     await new Promise((r) => setTimeout(r, 500));
 
     const start = performance.now();
@@ -45,7 +40,7 @@ async function main(): Promise<void> {
     for (let i = 0; i < MESSAGE_COUNT; i++) {
       await client.sendMessage({
         to: receiver,
-        from: "bench",
+        from: 'bench',
         text: `reliability-${i}`,
       });
       // Small spacing to let broker process
@@ -66,12 +61,17 @@ async function main(): Promise<void> {
     console.log(`  Delivery failed:    ${failed}`);
     console.log(`  Success rate:       ${successRate.toFixed(1)}%`);
     console.log(`  Total time:         ${elapsed.toFixed(0)} ms`);
-    console.log("\nDONE");
+    console.log('\nDONE');
   } finally {
     unsub();
-    try { await client.release(receiver); } catch {}
+    try {
+      await client.release(receiver);
+    } catch {}
     await client.shutdown();
   }
 }
 
-main().catch((err) => { console.error("benchmark failed:", err); process.exit(1); });
+main().catch((err) => {
+  console.error('benchmark failed:', err);
+  process.exit(1);
+});

@@ -14,11 +14,7 @@ import type {
   OutputContext,
   HookResult,
 } from '@agent-relay/hooks';
-import type {
-  MemoryAdapter,
-  MemoryConfig,
-  MemoryEntry,
-} from './types.js';
+import type { MemoryAdapter, MemoryConfig, MemoryEntry } from './types.js';
 import { createMemoryAdapter } from './factory.js';
 
 /**
@@ -155,7 +151,7 @@ async function getAdapter(state: MemoryHooksState): Promise<MemoryAdapter | null
       ...state.options.config,
       defaultAgentId: state.options.agentId,
       defaultProjectId: state.options.projectId,
-    }).catch(error => {
+    }).catch((error) => {
       console.error('[memory-hooks] Failed to create adapter:', error);
       return null as unknown as MemoryAdapter;
     });
@@ -184,8 +180,7 @@ function createSessionStartHook(state: MemoryHooksState) {
     try {
       // Build search query based on context
       const searchQuery =
-        state.options.startSearchQuery ||
-        `project: ${ctx.workingDir} OR agent: ${state.options.agentId}`;
+        state.options.startSearchQuery || `project: ${ctx.workingDir} OR agent: ${state.options.agentId}`;
 
       const memories = await adapter.search({
         query: searchQuery,

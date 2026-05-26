@@ -3,13 +3,23 @@
 .page {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 36% 28% at 10% 8%, color-mix(in srgb, var(--primary) 16%, white 22%), transparent 72%),
-    radial-gradient(ellipse 34% 26% at 90% 10%, color-mix(in srgb, var(--primary) 14%, white 20%), transparent 70%),
+    radial-gradient(
+      ellipse 36% 28% at 10% 8%,
+      color-mix(in srgb, var(--primary) 16%, white 22%),
+      transparent 72%
+    ),
+    radial-gradient(
+      ellipse 34% 26% at 90% 10%,
+      color-mix(in srgb, var(--primary) 14%, white 20%),
+      transparent 70%
+    ),
     var(--landing-hero-bg);
   color: var(--fg);
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 .heroSection {
@@ -95,8 +105,13 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .headline {
@@ -142,7 +157,10 @@
   border-radius: 100px;
   text-decoration: none;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
-  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  transition:
+    background 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
 }
 
 .ctaPrimary:hover {
@@ -164,7 +182,10 @@
   border: 1.5px solid var(--line);
   border-radius: 100px;
   text-decoration: none;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s;
 }
 
 .ctaSecondary:hover {
@@ -195,8 +216,12 @@
 }
 
 @keyframes tick {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tick1 {
@@ -212,9 +237,18 @@
 }
 
 @keyframes tickFly {
-  0% { opacity: 0.7; transform: scale(1); }
-  80% { opacity: 0.3; transform: scale(0.7); }
-  100% { opacity: 0; transform: scale(0.3); }
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  80% {
+    opacity: 0.3;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
 }
 
 .clockLabel {
@@ -298,8 +332,11 @@
   padding: 22px;
   border-radius: 18px;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%, color-mix(in srgb, var(--surface) 98%, transparent) 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-strong) 96%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 98%, transparent) 100%
+  );
   box-shadow: 0 8px 24px color-mix(in srgb, var(--primary) 4%, transparent);
 }
 
@@ -461,7 +498,11 @@
   font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.15s, border-color 0.2s, color 0.2s, background 0.2s;
+  transition:
+    transform 0.15s,
+    border-color 0.2s,
+    color 0.2s,
+    background 0.2s;
 }
 
 .tabButton:hover {
@@ -547,10 +588,18 @@
   color: var(--terminal-fg);
 }
 
-.codeKeyword { color: var(--terminal-keyword); }
-.codeString { color: var(--terminal-string); }
-.codeType { color: var(--terminal-type); }
-.codeMethod { color: var(--terminal-method); }
+.codeKeyword {
+  color: var(--terminal-keyword);
+}
+.codeString {
+  color: var(--terminal-string);
+}
+.codeType {
+  color: var(--terminal-type);
+}
+.codeMethod {
+  color: var(--terminal-method);
+}
 
 /* Why RelayCron */
 .deploySection {
@@ -576,7 +625,10 @@
   border: 1px solid var(--line);
   background: var(--card-bg);
   text-align: left;
-  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    transform 0.2s;
 }
 
 .deployCard:hover {

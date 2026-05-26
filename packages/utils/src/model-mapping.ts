@@ -14,14 +14,14 @@ const MODEL_TO_CLI: Record<string, string> = {
   'claude-sonnet-4': 'claude:sonnet',
   'claude-opus-4': 'claude:opus',
   'claude-opus-4.5': 'claude:opus',
-  'sonnet': 'claude:sonnet',
-  'opus': 'claude:opus',
-  'haiku': 'claude:haiku',
+  sonnet: 'claude:sonnet',
+  opus: 'claude:opus',
+  haiku: 'claude:haiku',
   // Codex (OpenAI)
-  'codex': 'codex',
+  codex: 'codex',
   'gpt-4o': 'codex',
   // Gemini (Google)
-  'gemini': 'gemini',
+  gemini: 'gemini',
   'gemini-2.0-flash': 'gemini',
 };
 

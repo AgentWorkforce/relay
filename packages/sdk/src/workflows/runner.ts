@@ -6362,8 +6362,8 @@ export class WorkflowRunner {
       case 'worker':
         return (
           'You are a non-interactive worker agent. Produce clean, structured output to stdout.\n' +
-          'Do NOT use mcp__relaycast__agent_add, add_agent, or any MCP tool to spawn sub-agents.\n' +
-          'Do NOT use mcp__relaycast__message_dm_send or any Relaycast messaging tools — you have no relay connection.\n\n'
+          'Do NOT use mcp__relaycast__add_agent, add_agent, or any MCP tool to spawn sub-agents.\n' +
+          'Do NOT use mcp__relaycast__send_dm or any Relaycast messaging tools — you have no relay connection.\n\n'
         );
       case 'reviewer':
         return (
@@ -6401,7 +6401,7 @@ export class WorkflowRunner {
       step.task +
       '\n\n---\n' +
       'IMPORTANT: You are running as a non-interactive subprocess. ' +
-      'Do NOT call mcp__relaycast__agent_add, add_agent, or any MCP tool to spawn or manage other agents.\n\n' +
+      'Do NOT call mcp__relaycast__add_agent, add_agent, or any MCP tool to spawn or manage other agents.\n\n' +
       'CRITICAL REQUIREMENT — YOU MUST FOLLOW THIS EXACTLY:\n' +
       'You are running in non-interactive mode. There is NO opportunity for follow-up, ' +
       'clarification, or additional input. Your stdout output is your ONLY deliverable.\n\n' +
@@ -6662,7 +6662,7 @@ export class WorkflowRunner {
 
     // Non-claude CLIs (codex, gemini, etc.) don't auto-register with Relaycast
     // via the MCP system prompt the way claude does. Inject an explicit preamble
-    // so they call register() before any other relay tool.
+    // so they call register_agent() before any other relay tool.
     const relayRegistrationNote = usesHeadlessWorkflowSpawner
       ? ''
       : this.buildRelayRegistrationNote(agentDef.cli, agentName);

@@ -45,7 +45,7 @@ Located in `packages/sdk/src/workflows/`:
 
 ## Communication Protocol
 
-- **Primary**: MCP tools (mcp__relaycast__message_dm_send, mcp__relaycast__message_inbox_check, mcp__relaycast__agent_list, mcp__relaycast__agent_add, mcp__relaycast__agent_remove)
+- **Primary**: MCP tools (mcp**relaycast**message_dm_send, mcp**relaycast**message_inbox_check, mcp**relaycast**agent_list, mcp**relaycast**agent_add, mcp**relaycast**agent_remove)
 
 ## Exports
 

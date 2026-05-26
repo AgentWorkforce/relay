@@ -7,17 +7,17 @@ paths:
 
 ## Purpose
 
-Hooks integrate with Claude Code's hook system to enable real-time agent communication (inbox checking, trajectory tracking).
+Hooks integrate with Claude Code's hook system for trajectory tracking and other lifecycle events.
 
 ## Directory Structure
 
 ```
 packages/hooks/src/
-├── inbox-check/     # Inbox polling hook
 ├── trajectory-hooks.ts  # Trajectory event hooks
-├── registry.ts      # Hook registration
-├── types.ts         # Shared hook types
-└── index.ts         # Module exports
+├── registry.ts          # Hook registration
+├── emitter.ts           # Hook emitter
+├── types.ts             # Shared hook types
+└── index.ts             # Module exports
 ```
 
 ## Hook Implementation
@@ -26,12 +26,6 @@ packages/hooks/src/
 - Read hook input from stdin as JSON
 - Write hook output to stdout as JSON
 - Exit with appropriate code (0 = success, non-zero = error)
-
-## Shell Wrapper
-
-- `check-inbox.sh` wraps the TypeScript hook for Claude Code
-- Must be executable: `chmod +x`
-- Handles Node.js execution and error output
 
 ## Testing
 

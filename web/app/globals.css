@@ -1,5 +1,5 @@
-@import "tailwindcss";
-@import "../public/brand.css";
+@import 'tailwindcss';
+@import '../public/brand.css';
 
 html {
   background: var(--bg);
@@ -22,7 +22,9 @@ body {
   font-family: var(--font-geist-sans), sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 a {
@@ -35,12 +37,25 @@ pre {
 }
 
 /* ── Syntax highlighting ── */
-.syn-keyword { color: var(--primary); }
-.syn-string { color: var(--syntax-string); }
-.syn-type { color: var(--primary-500); }
-.syn-method { color: var(--syntax-method); }
-.syn-comment { color: var(--syntax-comment); font-style: italic; }
-.syn-number { color: var(--primary-hover); }
+.syn-keyword {
+  color: var(--primary);
+}
+.syn-string {
+  color: var(--syntax-string);
+}
+.syn-type {
+  color: var(--primary-500);
+}
+.syn-method {
+  color: var(--syntax-method);
+}
+.syn-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+.syn-number {
+  color: var(--primary-hover);
+}
 
 html[data-theme='dark'] .shiki,
 html[data-theme='dark'] .shiki span {

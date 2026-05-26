@@ -35,4 +35,3 @@ jobs:
             }
 
             console.log(`Cancelled ${runs.data.workflow_runs.length} workflow runs`);
-

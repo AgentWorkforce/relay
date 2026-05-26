@@ -53,35 +53,22 @@ export interface RelayDismissInput {
 export type EmptyInput = Record<string, never>;
 export type Message = RelayMessage;
 export type RelayAPIResponse = Record<string, unknown>;
-export type SpawnLike = (
-  command: string,
-  args?: readonly string[],
-  options?: SpawnOptions
-) => ChildProcess;
+export type SpawnLike = (command: string, args?: readonly string[], options?: SpawnOptions) => ChildProcess;
 
 export interface ToolDependencies {
   spawn?: SpawnLike;
 }
 
-function isConnected(
-  state: RelayState
-): state is RelayState & {
+function isConnected(state: RelayState): state is RelayState & {
   agentName: string;
   workspace: string;
   token: string;
   connected: true;
 } {
-  return (
-    state.connected &&
-    state.agentName !== null &&
-    state.workspace !== null &&
-    state.token !== null
-  );
+  return state.connected && state.agentName !== null && state.workspace !== null && state.token !== null;
 }
 
-export function assertConnected(
-  state: RelayState
-): asserts state is RelayState & {
+export function assertConnected(state: RelayState): asserts state is RelayState & {
   agentName: string;
   workspace: string;
   token: string;
@@ -209,9 +196,7 @@ export function createRelayInboxTool(
   };
 }
 
-export function createRelayAgentsTool(
-  state: RelayState
-): ToolDefinition<EmptyInput, { agents: unknown[] }> {
+export function createRelayAgentsTool(state: RelayState): ToolDefinition<EmptyInput, { agents: unknown[] }> {
   return {
     name: 'relay_agents',
     description: 'List all agents currently on the relay.',
@@ -249,10 +234,7 @@ export function createRelayPostTool(
 export function createRelaySpawnTool(
   state: RelayState,
   dependencies: ToolDependencies = {}
-): ToolDefinition<
-  RelaySpawnInput,
-  { spawned: true; name: string; pid: number | null; hint: string }
-> {
+): ToolDefinition<RelaySpawnInput, { spawned: true; name: string; pid: number | null; hint: string }> {
   const spawnProcess = dependencies.spawn ?? spawn;
 
   return {
@@ -377,11 +359,8 @@ export function createRelayTools(
   ToolDefinition<EmptyInput, { count: number; messages: Message[] }>,
   ToolDefinition<EmptyInput, { agents: unknown[] }>,
   ToolDefinition<RelayPostInput, { posted: true; channel: string }>,
-  ToolDefinition<
-    RelaySpawnInput,
-    { spawned: true; name: string; pid: number | null; hint: string }
-  >,
-  ToolDefinition<RelayDismissInput, { dismissed: true; name: string }>
+  ToolDefinition<RelaySpawnInput, { spawned: true; name: string; pid: number | null; hint: string }>,
+  ToolDefinition<RelayDismissInput, { dismissed: true; name: string }>,
 ] {
   return [
     createRelayConnectTool(state),

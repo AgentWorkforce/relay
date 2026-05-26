@@ -88,10 +88,7 @@ export class TemplateRegistry {
     }
   }
 
-  async loadTemplate(
-    name: string,
-    options: LoadTemplateOptions = {}
-  ): Promise<RelayYamlConfig> {
+  async loadTemplate(name: string, options: LoadTemplateOptions = {}): Promise<RelayYamlConfig> {
     const templatePath = await this.resolveTemplatePath(name);
     const template = await this.readTemplateFile(templatePath);
 
@@ -131,10 +128,7 @@ export class TemplateRegistry {
     return config;
   }
 
-  applyOverrides(
-    config: RelayYamlConfig,
-    overrides: Record<string, unknown>
-  ): RelayYamlConfig {
+  applyOverrides(config: RelayYamlConfig, overrides: Record<string, unknown>): RelayYamlConfig {
     const nextConfig = this.cloneValue(config);
 
     for (const [overridePath, value] of Object.entries(overrides)) {
@@ -161,13 +155,18 @@ export class TemplateRegistry {
     const templateName = this.normalizeTemplateName(name ?? inferredName);
 
     if (!templateName) {
-      throw new Error(
-        'Template name is required. Provide name explicitly or include a string "name" field.'
-      );
+      throw new Error('Template name is required. Provide name explicitly or include a string "name" field.');
     }
 
-    if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..') || path.isAbsolute(templateName)) {
-      throw new Error(`Invalid template name: "${templateName}" contains path separators or traversal sequences`);
+    if (
+      templateName.includes('/') ||
+      templateName.includes('\\') ||
+      templateName.includes('..') ||
+      path.isAbsolute(templateName)
+    ) {
+      throw new Error(
+        `Invalid template name: "${templateName}" contains path separators or traversal sequences`
+      );
     }
 
     this.validateRelayConfig(parsed, url);
@@ -240,10 +239,7 @@ export class TemplateRegistry {
     throw new Error(`Template not found: ${name}`);
   }
 
-  private async findTemplatePath(
-    directory: string,
-    templateName: string
-  ): Promise<string | undefined> {
+  private async findTemplatePath(directory: string, templateName: string): Promise<string | undefined> {
     for (const ext of YAML_EXTENSIONS) {
       const candidate = path.join(directory, `${templateName}${ext}`);
       try {
@@ -295,9 +291,8 @@ export class TemplateRegistry {
     }
 
     if (!Array.isArray(normalized.workflows) && isRecord(normalized.workflow)) {
-      const workflowName = typeof normalized.name === 'string'
-        ? `${normalized.name}-workflow`
-        : 'default-workflow';
+      const workflowName =
+        typeof normalized.name === 'string' ? `${normalized.name}-workflow` : 'default-workflow';
 
       const workflow = normalized.workflow;
       const steps = Array.isArray(workflow.steps)
@@ -324,17 +319,11 @@ export class TemplateRegistry {
       return null;
     }
 
-    const name = typeof step.name === 'string'
-      ? step.name
-      : typeof step.id === 'string'
-        ? step.id
-        : undefined;
+    const name =
+      typeof step.name === 'string' ? step.name : typeof step.id === 'string' ? step.id : undefined;
 
-    const task = typeof step.task === 'string'
-      ? step.task
-      : typeof step.prompt === 'string'
-        ? step.prompt
-        : undefined;
+    const task =
+      typeof step.task === 'string' ? step.task : typeof step.prompt === 'string' ? step.prompt : undefined;
 
     if (!name || typeof step.agent !== 'string' || !task) {
       return null;
@@ -417,7 +406,9 @@ export class TemplateRegistry {
           // Deterministic steps require type and command
           if (step.type === 'deterministic') {
             if (typeof step.command !== 'string') {
-              throw new Error(`Template at ${source} has deterministic step "${step.name}" without a command`);
+              throw new Error(
+                `Template at ${source} has deterministic step "${step.name}" without a command`
+              );
             }
           } else {
             // Agent steps (type is undefined or 'agent') require agent and task
@@ -430,11 +421,7 @@ export class TemplateRegistry {
     }
   }
 
-  private setOverride(
-    config: RelayYamlConfig,
-    overridePath: string,
-    value: unknown
-  ): void {
+  private setOverride(config: RelayYamlConfig, overridePath: string, value: unknown): void {
     const pathParts = overridePath
       .replace(/\[(\d+)\]/g, '.$1')
       .split('.')
@@ -466,12 +453,7 @@ export class TemplateRegistry {
     this.setOnValue(config as unknown, pathParts, value, overridePath);
   }
 
-  private setOnValue(
-    target: unknown,
-    pathParts: string[],
-    value: unknown,
-    fullPath: string
-  ): void {
+  private setOnValue(target: unknown, pathParts: string[], value: unknown, fullPath: string): void {
     if (pathParts.length === 0) {
       throw new Error(`Invalid override path: ${fullPath}`);
     }
