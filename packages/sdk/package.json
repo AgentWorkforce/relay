@@ -122,15 +122,10 @@
       "import": "./dist/slack.js",
       "default": "./dist/slack.js"
     },
-    "./provisioner": {
-      "types": "./dist/provisioner/index.d.ts",
-      "import": "./dist/provisioner/index.js",
-      "default": "./dist/provisioner/index.js"
-    },
-    "./provisioner/mount": {
-      "types": "./dist/provisioner/mount.d.ts",
-      "import": "./dist/provisioner/mount.js",
-      "default": "./dist/provisioner/mount.js"
+    "./permissions": {
+      "types": "./dist/permissions.d.ts",
+      "import": "./dist/permissions.js",
+      "default": "./dist/permissions.js"
     },
     "./provisioner/seeder": {
       "types": "./dist/provisioner/seeder.d.ts",

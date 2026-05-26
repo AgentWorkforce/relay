@@ -11,7 +11,7 @@
  * in `resolve_command_path()` at crates/broker/src/pty.rs.
  */
 
-import type { AgentCli } from './workflows/types.js';
+import type { AgentCli } from './permissions.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
