@@ -59,10 +59,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     threads: true,
-    setupFiles: [path.resolve(__dirname, './test/vitest.setup.ts')],
+    setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
-      'test/**/*.test.ts',
-      'test/**/*.test.tsx',
       'tests/fixtures/**/*.test.ts',
       'tests/integration/ssh-interactive-live.test.ts',
       'packages/**/src/**/*.test.ts',
