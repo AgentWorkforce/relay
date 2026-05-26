@@ -87,6 +87,15 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(result.sessionId).toBeUndefined();
   });
 
+  it('normalizes null spawn pid to undefined', async () => {
+    const { fetchFn } = makeMockFetch([() => ({ name: 'agent-null-pid', runtime: 'pty', pid: null })]);
+    const client = makeClient(fetchFn);
+
+    const result = await client.spawnPty({ name: 'agent-null-pid', cli: 'claude' });
+
+    expect(result.pid).toBeUndefined();
+  });
+
   it('folds beforeAgentSpawn patches into resolvedInput before POST', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
@@ -215,6 +224,37 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect((before.mock.calls[0][0] as BeforeAgentSpawnContext).kind).toBe('provider');
     expect(after).toHaveBeenCalledTimes(1);
     expect((after.mock.calls[0][0] as AfterAgentSpawnContext).kind).toBe('provider');
+  });
+
+  it('recomputes provider transport after beforeAgentSpawn patches add a harness config', async () => {
+    const { fetchFn, captures } = makeMockFetch();
+    const client = makeClient(fetchFn);
+
+    client.addListener('beforeAgentSpawn', () => ({
+      harnessConfig: {
+        runtime: 'headless',
+        driver: 'app_server',
+        protocol: 'opencode',
+        endpoint: 'http://127.0.0.1:4096',
+        sessionId: 'ses_hook',
+      },
+    }));
+
+    await client.spawnProvider({
+      name: 'patched-headless',
+      provider: 'custom-provider',
+    });
+
+    expect(captures[0].body).toMatchObject({
+      name: 'patched-headless',
+      cli: 'custom-provider',
+      transport: 'headless',
+      harnessConfig: {
+        runtime: 'headless',
+        driver: 'app_server',
+        sessionId: 'ses_hook',
+      },
+    });
   });
 
   it('release fires beforeAgentRelease then afterAgentRelease', async () => {

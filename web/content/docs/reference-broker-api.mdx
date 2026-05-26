@@ -91,13 +91,15 @@ Body (fields accept both camelCase and snake_case):
   "idleThresholdSecs": 0,
   "skipRelayPrompt": false,
   "restartPolicy": null,
+  "harnessConfig": null,
   "agentToken": null
 }
 ```
 
-`name` and `cli` are required. Returns `{ "success": true, ... }` on
-success or `{ "success": false, "error": "..." }` with a non-2xx
-status on failure.
+`name` and `cli` are required. `harnessConfig` sends a concrete broker-executable
+config for a custom PTY or headless harness. Returns `{ "success": true, ... }`
+on success or `{ "success": false, "error": "..." }` with a non-2xx status on
+failure.
 
 ### PTY interaction
 

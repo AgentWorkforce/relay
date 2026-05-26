@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     ids::{ChannelName, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId},
-    protocol::MessageInjectionMode,
+    protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -51,6 +51,7 @@ pub enum ListenApiRequest {
         idle_threshold_secs: Option<u64>,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
+        harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
         agent_result_schema: Option<Value>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
@@ -577,6 +578,24 @@ async fn listen_api_auth_middleware(
     Ok(next.run(request).await)
 }
 
+fn parse_harness_config_value(value: Value) -> Result<ResolvedHarnessConfig, String> {
+    serde_json::from_value::<ResolvedHarnessConfig>(value)
+        .map_err(|error| format!("Invalid harnessConfig: {error}"))
+}
+
+fn extract_harness_config(body: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+    match body
+        .get("harness_config")
+        .or_else(|| body.get("harnessConfig"))
+        .or_else(|| body.get("harness_plan"))
+        .or_else(|| body.get("harnessPlan"))
+        .cloned()
+    {
+        Some(value) => parse_harness_config_value(value).map(Some),
+        None => Ok(None),
+    }
+}
+
 async fn listen_api_spawn(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::Json(body): axum::Json<Value>,
@@ -649,6 +668,31 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
+    if body
+        .get("harness_id")
+        .or_else(|| body.get("harnessId"))
+        .is_some()
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "success": false,
+                "error": "harnessId is not supported by the broker API; send harnessConfig"
+            })),
+        );
+    }
+    let harness_config = match extract_harness_config(&body) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": error
+                })),
+            );
+        }
+    };
     let agent_token = body
         .get("agent_token")
         .or_else(|| body.get("agentToken"))
@@ -686,6 +730,7 @@ async fn listen_api_spawn(
             idle_threshold_secs,
             skip_relay_prompt,
             restart_policy,
+            harness_config,
             agent_token,
             agent_result_schema,
             reply: reply_tx,
@@ -2432,13 +2477,14 @@ mod auth_tests {
                     idle_threshold_secs,
                     skip_relay_prompt: _,
                     restart_policy: _,
+                    harness_config,
                     agent_token: _,
                     agent_result_schema,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(cli, "codex");
-                    assert_eq!(transport.as_deref(), Some("headless"));
+                    assert_eq!(transport.as_deref(), Some("pty"));
                     assert_eq!(model.as_deref(), Some("o3"));
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
@@ -2452,6 +2498,7 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
+                    assert!(harness_config.is_some());
                     assert_eq!(
                         agent_result_schema,
                         Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
@@ -2475,7 +2522,7 @@ mod auth_tests {
                         json!({
                             "name": "worker-a",
                             "cli": "codex",
-                            "transport": "headless",
+                            "transport": "pty",
                             "model": "o3",
                             "args": ["--fast"],
                             "task": "Ship it",
@@ -2486,6 +2533,11 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
+                            "harnessConfig": {
+                                "runtime": "pty",
+                                "command": "codex",
+                                "args": ["--fast"]
+                            },
                             "resultSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
                         })
                         .to_string(),
@@ -2500,6 +2552,37 @@ mod auth_tests {
         assert_eq!(body["success"], json!(true));
 
         spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn spawn_route_rejects_harness_id() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "company-claude",
+                            "harnessId": "company-claude"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("harnessId is not supported"));
     }
 
     #[tokio::test]

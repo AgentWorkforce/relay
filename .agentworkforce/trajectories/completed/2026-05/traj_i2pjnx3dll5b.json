@@ -1,0 +1,26 @@
+{
+  "id": "traj_i2pjnx3dll5b",
+  "version": 1,
+  "task": {
+    "title": "Fresh harness runtime plan and implementation"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T15:49:27.102Z",
+  "completedAt": "2026-05-25T16:22:35.339Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Documented and implemented harness runtime plans with SDK static/dynamic resolution, broker PTY plan execution, and OpenCode app-server delivery.",
+    "approach": "Standard approach",
+    "confidence": 0.84
+  },
+  "commits": ["8ddc2f9d"],
+  "filesChanged": ["docs/harness-runtime-plan.md", "web/content/docs/harnesses.mdx", "web/lib/docs-nav.ts"],
+  "projectId": "/private/tmp/relay-harness-runtime-plans",
+  "tags": [],
+  "_trace": {
+    "startRef": "ff1d4da534c314ece4f3a0f66d29de59c3363232",
+    "endRef": "8ddc2f9d9e9fcf0504ad4bd76e8d7e0b1da8d299",
+    "traceId": "bb0dfc23-cfa6-4d25-9d72-4d0448733f1f"
+  }
+}

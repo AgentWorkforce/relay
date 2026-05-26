@@ -1,0 +1,188 @@
+---
+title: Harness runtime config
+description: Reference for the concrete HarnessConfig objects that SDK adapters send to the broker.
+---
+
+Use this page when you need the exact `HarnessConfig` shape. For a shorter
+guide with Codex, Claude, and OpenCode examples, start with
+[Harnesses](/docs/harnesses).
+
+The broker only executes serializable config data. SDK adapters can help you
+build that data, but the broker does not call SDK functions after spawn and does
+not keep a named harness registry.
+
+## Runtime Categories
+
+| Runtime | Use for | Broker capabilities |
+| --- | --- | --- |
+| `pty` | Terminal-backed CLIs such as Codex or Claude Code | process spawn, PTY stream, input, resize, snapshot, delivery, release |
+| `headless` | Non-terminal sessions such as OpenCode app-server | session delivery, release |
+
+When `runtime` is `headless`, `driver` defaults to `app_server`.
+
+## Terms
+
+| Term | Meaning |
+| --- | --- |
+| Harness config | Concrete `pty` or `headless` JSON the broker can validate and run |
+| Harness adapter | SDK or userland helper that returns a harness config |
+| Named harness | SDK-side shortcut in `new AgentRelay({ harnesses })` |
+| `harnessConfig` | Spawn field carrying the concrete config to the broker |
+
+Named harnesses are local SDK ergonomics. The SDK resolves them to an inline
+`harnessConfig` before the spawn request reaches the broker.
+
+## PTY Config
+
+Use `pty` for terminal-backed coding harnesses:
+
+```typescript
+type PtyHarnessConfig = {
+  runtime: 'pty';
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  sessionId?: string;
+  delivery?: {
+    mode?: 'pty-injection';
+    format?: 'relay-block';
+  };
+  metadata?: Record<string, unknown>;
+};
+```
+
+Example:
+
+```typescript
+const harnessConfig = {
+  runtime: 'pty',
+  command: 'codex',
+  args: ['resume', sessionId],
+  cwd,
+  env: {
+    PATH: process.env.PATH ?? '',
+    CODEX_HOME: process.env.CODEX_HOME ?? '',
+  },
+  sessionId,
+} satisfies ResolvedHarnessConfig;
+```
+
+The broker owns the spawned process, PTY stream, raw input, resize, snapshots,
+message injection, and release behavior for this runtime.
+
+## Headless App-Server Config
+
+Use `headless` for a non-terminal agent session controlled through an app
+server. OpenCode is the first supported protocol:
+
+```typescript
+type HeadlessAppServerHarnessConfig = {
+  runtime: 'headless';
+  driver?: 'app_server';
+  protocol: 'opencode' | string;
+  endpoint: string;
+  sessionId: string;
+  auth?: {
+    type: 'bearer' | 'basic' | 'none';
+    token?: string;
+    username?: string;
+    password?: string;
+  };
+  host?: {
+    ownership?: 'broker-owned' | 'attached';
+    pid?: number;
+  };
+  release?: 'abort' | 'detach' | 'delete';
+  metadata?: Record<string, unknown>;
+};
+```
+
+Example:
+
+```typescript
+const harnessConfig = {
+  runtime: 'headless',
+  protocol: 'opencode',
+  endpoint: 'http://127.0.0.1:4096',
+  sessionId: 'ses_123',
+  host: { ownership: 'attached', pid: 34567 },
+  release: 'abort',
+} satisfies ResolvedHarnessConfig;
+```
+
+For now, app-server configs are attach-only. `host.ownership: 'broker-owned'`
+is reserved until the broker owns app-server lifecycle supervision. If
+`host.pid` is provided, the broker reports that PID as the harness process ID.
+
+## Adapter Pattern
+
+An adapter should return config data:
+
+```typescript
+function companyClaude(): ResolvedHarnessConfig {
+  return {
+    runtime: 'pty',
+    command: 'claude',
+    args: [
+      '--dangerously-skip-permissions',
+      '--append-system-prompt',
+      'Follow the company review rubric.',
+    ],
+  };
+}
+```
+
+Register stable configs by name:
+
+```typescript
+const relay = new AgentRelay({
+  harnesses: {
+    'company-claude': companyClaude(),
+  },
+});
+```
+
+Use an inline `harnessConfig` when setup changes per spawn, such as creating a
+Codex session:
+
+```typescript
+const sessionId = await createCodexSession({ cwd, task });
+
+await relay.spawn('CodexReviewer', 'codex', task, {
+  harnessConfig: {
+    runtime: 'pty',
+    command: 'codex',
+    args: ['resume', sessionId],
+    cwd,
+    sessionId,
+  },
+});
+```
+
+Do not copy the whole process environment into `env`, and do not put secrets in
+`metadata`. `env` and `auth` are visible to the broker, so pass explicit
+allowlists.
+
+## Spawn Payloads
+
+`POST /api/spawn` accepts `harnessConfig`:
+
+```json
+{
+  "name": "CodexReviewer",
+  "cli": "codex",
+  "task": "Review the current diff.",
+  "harnessConfig": {
+    "runtime": "pty",
+    "command": "codex",
+    "args": ["resume", "session_123"],
+    "sessionId": "session_123"
+  }
+}
+```
+
+The broker rejects `harnessId`. Relaycast spawns that need custom behavior
+should also send a full inline `harnessConfig`, which keeps each spawn
+self-contained across local, remote, and multi-broker deployments.
+

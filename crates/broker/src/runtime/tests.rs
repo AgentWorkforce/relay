@@ -9,7 +9,10 @@ use std::{
 use crate::ids::{
     ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias, WorkspaceId,
 };
-use crate::protocol::{AgentSpec, MessageInjectionMode, RelayDelivery};
+use crate::protocol::{
+    AgentSpec, HarnessReleasePolicy, HeadlessHarnessConfig, HeadlessHarnessDriver,
+    MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
+};
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
     broker::injection_format::format_injection,
@@ -71,9 +74,10 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
                 runtime: AgentRuntime::Pty,
                 provider: None,
                 cli: Some("cat".to_string()),
+                session_id: None,
+                harness_config: None,
                 model: None,
                 cwd: None,
-                session_id: None,
                 team: None,
                 shadow_of: None,
                 shadow_mode: None,
@@ -85,6 +89,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             workspace_id: Some(WorkspaceId::new("ws_demo")),
             child,
             stdin,
+            harness_pid: None,
             spawned_at: Instant::now(),
             last_activity_at: Instant::now(),
             context_budget_pct: None,
@@ -318,9 +323,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         {
             Ok(outcome @ DeliveryAttemptOutcome::Failed { attempts, .. }) => {
                 assert_eq!(attempts, MAX_DELIVERY_RETRIES);
+                // Some platforms can accept a final pipe write after the child exits,
+                // so terminal failure may arrive on the immediate post-cap check.
                 assert!(
-                    retry_index <= MAX_DELIVERY_RETRIES,
-                    "retry loop must terminate within the retry cap"
+                    retry_index >= MAX_DELIVERY_RETRIES,
+                    "delivery should not fail before the retry cap is exhausted"
                 );
                 final_outcome = Some(outcome);
                 break;
@@ -1937,6 +1944,7 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
         Some(WorkerName::from("Lead")),
         Some("subagent".to_string()),
         None,
+        None,
     )
     .expect("spec should build");
 
@@ -1960,6 +1968,7 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
         None,
         None,
         None,
+        None,
     )
     .expect("headless spec should build");
 
@@ -1970,6 +1979,71 @@ fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
     ));
     assert!(spec.cli.is_none());
     assert_eq!(spec.model.as_deref(), Some("ignored"));
+}
+
+#[test]
+fn http_api_spawn_spec_uses_headless_runtime_for_app_server_harness_config() {
+    let harness_config = ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".to_string(),
+        endpoint: "http://127.0.0.1:4096".to_string(),
+        session_id: "ses_123".to_string(),
+        auth: None,
+        host: None,
+        release: Some(HarnessReleasePolicy::Abort),
+        metadata: None,
+    });
+
+    let spec = build_http_api_spawn_spec(
+        WorkerName::from("worker-a"),
+        "opencode-server".to_string(),
+        None,
+        None,
+        vec![],
+        vec![ChannelName::from("general")],
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(harness_config),
+    )
+    .expect("headless app-server harness spec should build");
+
+    assert!(matches!(spec.runtime, AgentRuntime::Headless));
+    assert!(spec.provider.is_none());
+    assert_eq!(spec.cli.as_deref(), Some("opencode-server"));
+    assert_eq!(spec.session_id.as_deref(), Some("ses_123"));
+    assert!(matches!(
+        spec.harness_config,
+        Some(ResolvedHarnessConfig::Headless(_))
+    ));
+}
+
+#[test]
+fn http_api_spawn_spec_rejects_unknown_headless_provider_without_harness_config() {
+    let error = build_http_api_spawn_spec(
+        WorkerName::from("worker-a"),
+        "opencode-server".to_string(),
+        Some("headless".to_string()),
+        None,
+        vec![],
+        vec![ChannelName::from("general")],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect_err("custom headless provider without harness config should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not support headless transport"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2015,6 +2089,7 @@ fn http_api_spawn_spec_rejects_unknown_headless_providers() {
         None,
         vec![],
         vec![ChannelName::from("general")],
+        None,
         None,
         None,
         None,

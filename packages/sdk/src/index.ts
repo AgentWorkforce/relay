@@ -17,7 +17,6 @@ export {
   type AgentRelaySpawnOptions,
   type SetInboundDeliveryModeResult,
   type SessionInfo,
-  type SpawnAgentResult,
   type WorkerStreamSubscriptionOptions,
 } from './client.js';
 export { EventBus, type EventHandler, type EventMap } from './event-bus.js';
@@ -44,6 +43,7 @@ export * from './broker-logs.js';
 export * from './consensus.js';
 export * from './shadow.js';
 export * from './relay-adapter.js';
+export * from './harness.js';
 export * from './workflows/index.js';
 export * from './spawn-from-env.js';
 export * from './cli-registry.js';

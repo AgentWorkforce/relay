@@ -194,6 +194,7 @@ fn should_block_pending_injection(
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     worker_name: &str,
+    child_pid: Option<u32>,
     init_request_id: &mut Option<RequestId>,
     init_received_at: Option<Instant>,
     worker_ready_sent: &mut bool,
@@ -227,7 +228,7 @@ async fn try_emit_worker_ready(
         out_tx,
         "worker_ready",
         request_id,
-        json!({"name": worker_name, "runtime": "pty"}),
+        json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
     )
     .await;
     *worker_ready_sent = true;
@@ -423,6 +424,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 try_emit_worker_ready(
                                     &out_tx,
                                     &worker_name,
+                                    pty.child_pid(),
                                     &mut init_request_id,
                                     init_received_at,
                                     &mut worker_ready_sent,
@@ -667,6 +669,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
+                            pty.child_pid(),
                             &mut init_request_id,
                             init_received_at,
                             &mut worker_ready_sent,
@@ -1027,6 +1030,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
+                    pty.child_pid(),
                     &mut init_request_id,
                     init_received_at,
                     &mut worker_ready_sent,

@@ -31,13 +31,14 @@ import { RelayCast } from '@relaycast/sdk';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-import {
-  AgentRelayClient,
-  type AgentRelayBrokerInitArgs,
-  type AgentRelaySpawnOptions,
-  type SpawnAgentResult,
-} from './client.js';
+import { AgentRelayClient, type AgentRelayBrokerInitArgs, type AgentRelaySpawnOptions } from './client.js';
 import { EventBus } from './event-bus.js';
+import {
+  harnessLookupKeys,
+  resolveStaticHarnessConfig,
+  type HarnessDefinition,
+  type ResolvedHarnessConfig,
+} from './harness.js';
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import {
   buildPersonaSpawnPlan,
@@ -53,7 +54,7 @@ import {
   type PersonaSpec,
 } from './personas.js';
 import { AgentRelayProtocolError } from './transport.js';
-import type { JsonSchema, SendMessageInput, SpawnPtyInput } from './types.js';
+import type { JsonSchema, SendMessageInput, SpawnAgentResult, SpawnPtyInput } from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
@@ -291,6 +292,7 @@ export interface SpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHook
   shadowMode?: string;
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
+  harnessConfig?: ResolvedHarnessConfig;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
@@ -363,8 +365,11 @@ type AgentOutputCallback = ((chunk: string) => void) | ((data: AgentOutputPayloa
 export interface Agent<TAgentResult = unknown> {
   readonly name: string;
   readonly runtime: AgentRuntime;
-  readonly sessionId?: string;
   readonly channels: string[];
+  /** Native harness session id, when the runtime exposes one. */
+  readonly sessionId?: string;
+  /** Broker worker process id, when known. */
+  readonly pid?: number;
   /** Current lifecycle status of the agent. */
   readonly status: AgentStatus;
   /** Set when the agent exits. Available once the `agentExited` event fires. */
@@ -429,6 +434,7 @@ export interface SpawnerSpawnOptions<TAgentResult = unknown> extends SpawnLifecy
   model?: string;
   cwd?: string;
   idleThresholdSecs?: number;
+  harnessConfig?: ResolvedHarnessConfig;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
@@ -482,6 +488,15 @@ export interface AgentRelayOptions {
    * `searchDirs` on `spawnPersona` still overrides this.
    */
   personaDirs?: string[];
+  /**
+   * Named harness definitions. Definitions are SDK-side shortcuts that render
+   * to broker-executable JSON configs before each spawn.
+   */
+  harnesses?: Record<string, HarnessDefinition>;
+  /** Broker lifetime. Ephemeral attached brokers shut down when the SDK lease expires. */
+  broker?: {
+    lifetime?: 'attached' | 'detached';
+  };
 }
 
 type OutputListener = {
@@ -492,7 +507,8 @@ type OutputListener = {
 
 type InternalAgent = Agent<unknown> & {
   _setChannels: (channels: string[]) => void;
-  _setSessionId: (sessionId: string) => void;
+  _setMetadata: (metadata?: { sessionId?: string; pid?: number }) => void;
+  _setRuntime: (runtime: AgentRuntime) => void;
 };
 
 type InternalAgentResultContract<T = unknown> = {
@@ -599,6 +615,7 @@ export class AgentRelay {
   private readonly workspaceName?: string;
   private readonly relaycastBaseUrl?: string;
   private readonly defaultPersonaDirs?: string[];
+  private readonly harnesses: Record<string, HarnessDefinition>;
   private relayApiKey?: string;
   private resolvedWorkspaceId?: string;
   private client?: AgentRelayClient;
@@ -641,6 +658,7 @@ export class AgentRelay {
     }
     this.relaycastBaseUrl = options.relaycastBaseUrl;
     if (options.personaDirs) this.defaultPersonaDirs = [...options.personaDirs];
+    this.harnesses = { ...(options.harnesses ?? {}) };
     this.clientOptions = {
       binaryPath: options.binaryPath,
       binaryArgs: options.binaryArgs,
@@ -740,6 +758,46 @@ export class AgentRelay {
     );
   }
 
+  registerHarness(name: string, definition: HarnessDefinition): void {
+    const key = name.trim();
+    if (!key) {
+      throw new Error('registerHarness() expects a non-empty harness name');
+    }
+    this.harnesses[key] = definition;
+  }
+
+  private findHarnessDefinition(cli: string): HarnessDefinition | undefined {
+    for (const key of harnessLookupKeys(cli)) {
+      const definition = this.harnesses[key];
+      if (definition) return definition;
+    }
+    return undefined;
+  }
+
+  private resolveHarnessConfig(input: {
+    name: string;
+    cli: string;
+    args?: string[];
+    task?: string;
+    model?: string;
+    cwd?: string;
+    harnessConfig?: ResolvedHarnessConfig;
+  }): ResolvedHarnessConfig | undefined {
+    if (input.harnessConfig) return input.harnessConfig;
+    const definition = this.findHarnessDefinition(input.cli);
+    if (!definition) return undefined;
+
+    return resolveStaticHarnessConfig({
+      name: input.name,
+      cli: input.cli,
+      definition,
+      args: input.args ?? [],
+      task: input.task,
+      model: input.model,
+      cwd: input.cwd ?? this.clientOptions.cwd ?? process.cwd(),
+    });
+  }
+
   private applyWorkspaceEnv(workspaceId: string, apiKey: string): void {
     // `workspaceId` here is the **relaycast** workspace id resolved by this
     // SDK (auto-created or caller-supplied via `new AgentRelay({ workspaceId })`).
@@ -812,6 +870,7 @@ export class AgentRelay {
       this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
     }
     try {
+      const harnessConfig = this.resolveHarnessConfig(input);
       result = await client.spawnPty({
         name: input.name,
         cli: input.cli,
@@ -826,6 +885,7 @@ export class AgentRelay {
         shadowMode: input.shadowMode,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
+        harnessConfig,
         skipRelayPrompt: input.skipRelayPrompt,
         agentResultSchema: resultContract?.jsonSchema,
       });
@@ -848,13 +908,12 @@ export class AgentRelay {
       this.resultContracts.delete(input.name);
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
-    const agent = this.makeAgent(
+    const agent = this.ensureAgentHandle(
       result.name,
       result.runtime,
       channels,
-      result.sessionId
+      result
     ) as Agent<TAgentResult>;
-    this.knownAgents.set(agent.name, agent);
     await this.invokeLifecycleHook(
       input.onSuccess,
       {
@@ -888,6 +947,7 @@ export class AgentRelay {
       shadowMode: options?.shadowMode,
       idleThresholdSecs: options?.idleThresholdSecs,
       restartPolicy: options?.restartPolicy,
+      harnessConfig: options?.harnessConfig,
       skipRelayPrompt: options?.skipRelayPrompt,
       result: options?.result,
       onStart: options?.onStart,
@@ -996,6 +1056,7 @@ export class AgentRelay {
         shadowMode: options.shadowMode,
         idleThresholdSecs: options.idleThresholdSecs,
         restartPolicy: options.restartPolicy,
+        harnessConfig: options.harnessConfig,
         skipRelayPrompt: options.skipRelayPrompt,
         result: options.result,
         onStart: options.onStart,
@@ -1183,9 +1244,18 @@ export class AgentRelay {
   async listAgents(): Promise<Agent[]> {
     const client = await this.ensureStarted();
     const list = await client.listAgents();
-    return list.map((entry) =>
-      this.ensureAgentHandle(entry.name, entry.runtime, entry.channels, entry.sessionId)
-    );
+    return list.map((entry) => {
+      const existing = this.knownAgents.get(entry.name);
+      if (existing) {
+        this.updateAgentHandle(existing, entry.runtime, entry.channels, entry, {
+          replaceChannels: true,
+        });
+        return existing;
+      }
+      const agent = this.makeAgent(entry.name, entry.runtime, entry.channels, entry);
+      this.knownAgents.set(agent.name, agent);
+      return agent;
+    });
   }
 
   /** Pre-register a batch of agents with Relaycast before steps execute. */
@@ -1338,7 +1408,10 @@ export class AgentRelay {
         if (event.kind !== 'worker_ready' || event.name !== name) {
           return;
         }
-        const agent = this.ensureAgentHandle(event.name, event.runtime);
+        const agent = this.ensureAgentHandle(event.name, event.runtime, [], {
+          sessionId: event.sessionId,
+          pid: event.pid,
+        });
         this.readyAgents.add(event.name);
         this.exitedAgents.delete(event.name);
         resolveWith(agent);
@@ -1472,18 +1545,33 @@ export class AgentRelay {
     name: string,
     runtime: AgentRuntime = 'pty',
     channels: string[] = [],
-    sessionId?: string
+    metadata?: { sessionId?: string; pid?: number }
   ): Agent {
     const existing = this.knownAgents.get(name);
     if (existing) {
-      if (sessionId) {
-        (existing as InternalAgent)._setSessionId(sessionId);
-      }
+      this.updateAgentHandle(existing, runtime, channels, metadata);
       return existing;
     }
-    const agent = this.makeAgent(name, runtime, channels, sessionId);
+    const agent = this.makeAgent(name, runtime, channels, metadata);
     this.knownAgents.set(name, agent);
     return agent;
+  }
+
+  private updateAgentHandle(
+    agent: Agent,
+    runtime: AgentRuntime,
+    channels: string[],
+    metadata?: { sessionId?: string; pid?: number },
+    options?: { replaceChannels?: boolean }
+  ): void {
+    const internal = agent as InternalAgent;
+    internal._setRuntime(runtime);
+    if (options?.replaceChannels) {
+      internal._setChannels([...new Set(channels)]);
+    } else if (channels.length > 0) {
+      internal._setChannels([...new Set([...agent.channels, ...channels])]);
+    }
+    internal._setMetadata(metadata);
   }
 
   private updateDeliveryState(
@@ -1712,7 +1800,7 @@ export class AgentRelay {
           },
         })
       )
-      .then((c) => {
+      .then(async (c) => {
         // Use the workspace key the broker actually connected with.
         // This ensures SDK and workers are always on the same workspace.
         if (c.workspaceKey) {
@@ -1764,7 +1852,10 @@ export class AgentRelay {
           break;
         }
         case 'agent_spawned': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], {
+            sessionId: event.sessionId,
+            pid: event.pid,
+          });
           this.readyAgents.delete(event.name);
           this.messageReadyAgents.delete(event.name);
           this.exitedAgents.delete(event.name);
@@ -1825,7 +1916,10 @@ export class AgentRelay {
           break;
         }
         case 'worker_ready': {
-          const agent = this.ensureAgentHandle(event.name, event.runtime, [], event.sessionId);
+          const agent = this.ensureAgentHandle(event.name, event.runtime, [], {
+            sessionId: event.sessionId,
+            pid: event.pid,
+          });
           this.readyAgents.add(event.name);
           this.exitedAgents.delete(event.name);
           this.idleAgents.delete(event.name);
@@ -2070,17 +2164,24 @@ export class AgentRelay {
     name: string,
     runtime: AgentRuntime,
     channels: string[],
-    sessionId?: string
+    metadata?: { sessionId?: string; pid?: number }
   ): Agent<unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const relay = this;
     let agentChannels = [...channels];
-    let agentSessionId = sessionId;
+    let agentRuntime = runtime;
+    let agentSessionId = metadata?.sessionId;
+    let agentPid = metadata?.pid;
     const agent: InternalAgent = {
       name,
-      runtime,
+      get runtime() {
+        return agentRuntime;
+      },
       get sessionId() {
         return agentSessionId;
+      },
+      get pid() {
+        return agentPid;
       },
       get channels() {
         return [...agentChannels];
@@ -2291,8 +2392,16 @@ export class AgentRelay {
       _setChannels(nextChannels: string[]) {
         agentChannels = [...nextChannels];
       },
-      _setSessionId(nextSessionId: string) {
-        agentSessionId = nextSessionId;
+      _setMetadata(nextMetadata) {
+        if (nextMetadata?.sessionId !== undefined) {
+          agentSessionId = nextMetadata.sessionId;
+        }
+        if (nextMetadata?.pid !== undefined) {
+          agentPid = nextMetadata.pid;
+        }
+      },
+      _setRuntime(nextRuntime: AgentRuntime) {
+        agentRuntime = nextRuntime;
       },
     };
     return agent;
@@ -2316,6 +2425,7 @@ export class AgentRelay {
             model: options?.model,
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
+            harnessConfig: options?.harnessConfig,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             result: options?.result,
@@ -2339,16 +2449,26 @@ export class AgentRelay {
           this.resultContracts.set(name, resultContract as InternalAgentResultContract);
         }
         try {
+          const harnessConfig = this.resolveHarnessConfig({
+            name,
+            cli,
+            args,
+            task,
+            model: options?.model,
+            cwd: options?.cwd,
+            harnessConfig: options?.harnessConfig,
+          });
           result = await client.spawnProvider({
             name,
             provider: cli as HeadlessProvider,
-            transport: 'headless',
+            transport: harnessConfig?.runtime ?? 'headless',
             args,
             channels,
             task,
             model: options?.model,
             cwd: options?.cwd,
             idleThresholdSecs: options?.idleThresholdSecs,
+            harnessConfig,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
             agentResultSchema: resultContract?.jsonSchema,
@@ -2373,13 +2493,12 @@ export class AgentRelay {
           this.resultContracts.delete(name);
           this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
         }
-        const agent = this.makeAgent(
+        const agent = this.ensureAgentHandle(
           result.name,
           result.runtime,
           channels,
-          result.sessionId
+          result
         ) as Agent<TAgentResult>;
-        this.knownAgents.set(agent.name, agent);
         await this.invokeLifecycleHook(
           options?.onSuccess,
           {

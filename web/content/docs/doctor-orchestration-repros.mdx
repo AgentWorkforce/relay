@@ -1,0 +1,184 @@
+---
+title: Doctor orchestration repros
+description: Local repro steps for broker connection and orchestration diagnostics.
+---
+
+Use these local repros when `agent-relay status`, `agent-relay who`, or
+messaging commands disagree about broker state. They intentionally create broken
+broker metadata so you can verify diagnostics without comparing command output
+by hand.
+
+Credential values shown by your local commands should be treated as secrets.
+Do not paste unredacted workspace keys, broker API keys, or agent tokens into
+issues or shared logs.
+
+## Stale Broker Connection
+
+This repro simulates a connection file that points at an old broker URL while
+recording the PID of a newer broker process.
+
+```bash
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/relay-repro-stale-XXXXXX")
+cd "$TMP"
+
+agent-relay up --no-dashboard --port 49200
+CONN1=$(cat .agent-relay/connection.json)
+PID1=$(node -e 'console.log(JSON.parse(process.argv[1]).pid)' "$CONN1")
+
+kill -9 "$PID1"
+
+agent-relay up --no-dashboard --port 49300
+CONN2=$(cat .agent-relay/connection.json)
+
+node -e '
+const fs = require("node:fs");
+const oldConn = JSON.parse(process.argv[1]);
+const nextConn = JSON.parse(process.argv[2]);
+oldConn.pid = nextConn.pid;
+fs.writeFileSync(".agent-relay/connection.json", JSON.stringify(oldConn, null, 2));
+' "$CONN1" "$CONN2"
+
+agent-relay status
+agent-relay status --wait-for=1
+agent-relay who --json
+```
+
+Expected result:
+
+```text
+Status: STARTING
+Broker process is running, but the API did not become ready before timeout.
+
+[]
+```
+
+The broker process exists, but the recorded API URL is stale. Diagnostic
+commands should report the mismatch instead of treating the workspace as a
+healthy broker session.
+
+## Unresolved API Key Template
+
+This repro checks that a literal unresolved environment template fails before a
+messaging command attempts a Relaycast read.
+
+First confirm that the correctly resolved local broker context reaches
+Relaycast:
+
+```bash
+agent-relay replies WorkerA --json
+```
+
+Expected result when there is no conversation:
+
+```text
+No DM conversation with WorkerA.
+```
+
+Then run the same command with a literal unresolved template:
+
+```bash
+RELAY_API_KEY='${RELAY_API_KEY}' agent-relay replies WorkerA --json
+```
+
+Expected result:
+
+```text
+Failed to initialize relaycast client: Workspace key required (rk_live_...)
+```
+
+The command should reject the unresolved template as invalid credential input
+instead of treating it as a real workspace key.
+
+## Half-Started Broker Metadata
+
+This repro simulates a broker process that is still running after its local
+connection metadata has disappeared.
+
+```bash
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/relay-repro-half-started-XXXXXX")
+cd "$TMP"
+
+env \
+  -u RELAY_API_KEY \
+  -u RELAY_AGENT_TOKEN \
+  -u RELAY_WORKSPACES_JSON \
+  -u RELAY_DEFAULT_WORKSPACE \
+  -u RELAY_WORKSPACE_ID \
+  -u RELAY_BASE_URL \
+  -u RELAY_BROKER_URL \
+  -u RELAY_BROKER_API_KEY \
+  -u RELAY_AGENT_NAME \
+  -u RELAY_AGENT_TYPE \
+  -u RELAY_STRICT_AGENT_NAME \
+  agent-relay up --no-dashboard --port 49600
+
+CONN=$(cat .agent-relay/connection.json)
+PID=$(node -e 'console.log(JSON.parse(process.argv[1]).pid)' "$CONN")
+rm .agent-relay/connection.json
+
+ps -p "$PID" -o pid=,comm=
+
+env \
+  -u RELAY_API_KEY \
+  -u RELAY_AGENT_TOKEN \
+  -u RELAY_WORKSPACES_JSON \
+  -u RELAY_DEFAULT_WORKSPACE \
+  -u RELAY_WORKSPACE_ID \
+  -u RELAY_BASE_URL \
+  -u RELAY_BROKER_URL \
+  -u RELAY_BROKER_API_KEY \
+  -u RELAY_AGENT_NAME \
+  -u RELAY_AGENT_TYPE \
+  -u RELAY_STRICT_AGENT_NAME \
+  agent-relay status
+
+env \
+  -u RELAY_API_KEY \
+  -u RELAY_AGENT_TOKEN \
+  -u RELAY_WORKSPACES_JSON \
+  -u RELAY_DEFAULT_WORKSPACE \
+  -u RELAY_WORKSPACE_ID \
+  -u RELAY_BASE_URL \
+  -u RELAY_BROKER_URL \
+  -u RELAY_BROKER_API_KEY \
+  -u RELAY_AGENT_NAME \
+  -u RELAY_AGENT_TYPE \
+  -u RELAY_STRICT_AGENT_NAME \
+  agent-relay history
+
+env \
+  -u RELAY_API_KEY \
+  -u RELAY_AGENT_TOKEN \
+  -u RELAY_WORKSPACES_JSON \
+  -u RELAY_DEFAULT_WORKSPACE \
+  -u RELAY_WORKSPACE_ID \
+  -u RELAY_BASE_URL \
+  -u RELAY_BROKER_URL \
+  -u RELAY_BROKER_API_KEY \
+  -u RELAY_AGENT_NAME \
+  -u RELAY_AGENT_TYPE \
+  -u RELAY_STRICT_AGENT_NAME \
+  agent-relay replies WorkerA --json
+```
+
+Expected result:
+
+```text
+Status: STOPPED
+
+Failed to initialize relaycast client: Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.
+```
+
+The process table can still contain the broker PID, but the workspace is missing
+the metadata needed for broker-backed messaging. Diagnostic commands should
+surface that missing metadata directly.
+
+## Cleanup
+
+Each repro creates a temporary project directory and may leave a broker process
+behind. Clean up with:
+
+```bash
+agent-relay down --force --all
+```
+

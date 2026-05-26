@@ -461,6 +461,11 @@ impl PtySession {
         (grid.screen_lines() as u16, grid.columns() as u16)
     }
 
+    pub fn child_pid(&self) -> Option<u32> {
+        let child = self.child.lock();
+        child.process_id().or(self.child_pid)
+    }
+
     /// Run a closure against the live `Term`, holding the term lock for the
     /// duration. Used by `snapshot::Snapshot::capture` to walk the grid
     /// (cells + colours + flags) without exposing the underlying `Term` type

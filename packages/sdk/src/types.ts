@@ -9,6 +9,7 @@ import type {
   MessageInjectionMode,
   RestartPolicy,
 } from './protocol.js';
+import type { ResolvedHarnessConfig } from './harness.js';
 
 export type JsonSchema = Record<string, unknown> | boolean;
 
@@ -26,6 +27,7 @@ export interface SpawnPtyInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
+  harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
@@ -58,6 +60,13 @@ export interface SpawnHeadlessInput {
 
 export type AgentTransport = 'pty' | 'headless';
 
+export interface SpawnAgentResult {
+  name: string;
+  runtime: AgentRuntime;
+  sessionId?: string;
+  pid?: number;
+}
+
 export interface SpawnProviderInput {
   name: string;
   provider: string;
@@ -73,6 +82,7 @@ export interface SpawnProviderInput {
   idleThresholdSecs?: number;
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
+  harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from

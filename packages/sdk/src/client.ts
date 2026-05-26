@@ -35,6 +35,7 @@ import type {
 } from './protocol.js';
 import type {
   AgentTransport,
+  SpawnAgentResult,
   SpawnHeadlessInput,
   SpawnPtyInput,
   SpawnProviderInput,
@@ -117,6 +118,7 @@ export interface AgentRelaySpawnOptions {
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
+const optionalNumber = z.preprocess((value) => (value === null ? undefined : value), z.number().optional());
 
 export const SpawnAgentResultSchema = z
   .object({
@@ -124,14 +126,12 @@ export const SpawnAgentResultSchema = z
     name: z.string(),
     runtime: z.enum(['pty', 'headless']),
     model: z.string().nullable().optional(),
-    pid: z.number().optional(),
+    pid: optionalNumber,
     pre_registered: z.boolean().optional(),
     warning: z.string().nullable().optional(),
     sessionId: optionalString,
   })
   .passthrough();
-
-export type SpawnAgentResult = z.infer<typeof SpawnAgentResultSchema>;
 
 export interface SessionInfo {
   broker_version: string;
@@ -169,7 +169,9 @@ function isHeadlessProvider(value: string): value is HeadlessProvider {
 }
 
 function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
-  return input.transport ?? (input.provider === 'opencode' ? 'headless' : 'pty');
+  if (input.transport) return input.transport;
+  if (input.harnessConfig) return input.harnessConfig.runtime;
+  return input.provider === 'opencode' ? 'headless' : 'pty';
 }
 
 /**
@@ -191,6 +193,7 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -215,6 +218,7 @@ function buildSpawnProviderBody(
     ...(input.shadowOf !== undefined ? { shadowOf: input.shadowOf } : {}),
     ...(input.shadowMode !== undefined ? { shadowMode: input.shadowMode } : {}),
     ...(input.continueFrom !== undefined ? { continueFrom: input.continueFrom } : {}),
+    ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
@@ -626,13 +630,6 @@ export class AgentRelayClient {
   }
 
   async spawnProvider(input: SpawnProviderInput): Promise<SpawnAgentResult> {
-    const transport = resolveSpawnTransport(input);
-    if (transport === 'headless' && !isHeadlessProvider(input.provider)) {
-      throw new Error(
-        `provider '${input.provider}' does not support headless transport (supported: claude, opencode)`
-      );
-    }
-
     const beforeCtx: BeforeAgentSpawnContext = {
       kind: 'provider',
       input,
@@ -642,6 +639,17 @@ export class AgentRelayClient {
     };
     const t0 = Date.now();
     const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnProviderInput;
+    const transport = resolveSpawnTransport(resolvedInput);
+    if (
+      transport === 'headless' &&
+      !isHeadlessProvider(resolvedInput.provider) &&
+      !resolvedInput.harnessConfig
+    ) {
+      throw new Error(
+        `provider '${resolvedInput.provider}' does not support headless transport (supported: claude, opencode)`
+      );
+    }
+
     try {
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',

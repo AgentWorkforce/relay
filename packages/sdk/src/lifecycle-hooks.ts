@@ -26,9 +26,9 @@
  * (`relay.ts` → `event-bus.ts` → no further).
  */
 
-import type { AgentRuntime, BrokerEvent } from './protocol.js';
+import type { BrokerEvent } from './protocol.js';
 import type { Agent, AgentActivityChange, AgentResult, Message } from './relay.js';
-import type { SpawnPtyInput, SpawnProviderInput } from './types.js';
+import type { SpawnAgentResult, SpawnPtyInput, SpawnProviderInput } from './types.js';
 
 // ── SpawnPatch ─────────────────────────────────────────────────────────────
 
@@ -52,7 +52,10 @@ import type { SpawnPtyInput, SpawnProviderInput } from './types.js';
  * the same key.
  */
 export type SpawnPatch = Partial<
-  Pick<SpawnPtyInput & SpawnProviderInput, 'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken'>
+  Pick<
+    SpawnPtyInput & SpawnProviderInput,
+    'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken' | 'harnessConfig'
+  >
 >;
 
 // ── Call-site contexts ─────────────────────────────────────────────────────
@@ -78,7 +81,7 @@ export interface AfterAgentSpawnContext extends BeforeAgentSpawnContext {
   /** Final input that was sent to the broker — original input merged with every handler's patch. */
   resolvedInput: SpawnPtyInput | SpawnProviderInput;
   /** Broker reply on success. */
-  result?: { name: string; runtime: AgentRuntime; sessionId?: string };
+  result?: SpawnAgentResult;
   /** Set when the broker call rejected. Mutually exclusive with `result`. */
   error?: Error;
   /** Wall-clock duration from `beforeAgentSpawn` start to here. */

@@ -1,0 +1,25 @@
+{
+  "id": "traj_1fjub7c9rlap",
+  "version": 1,
+  "task": {
+    "title": "Rewrite harness docs around SDK adapters"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T16:53:04.706Z",
+  "completedAt": "2026-05-25T16:53:16.077Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Reworked harness docs to be concise and example-led around SDK adapter definitions for Claude, Codex, and OpenCode.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-harness-runtime-plans",
+  "tags": [],
+  "_trace": {
+    "startRef": "298ec2169dcc7827c076a37099824c62ad78d136",
+    "endRef": "298ec2169dcc7827c076a37099824c62ad78d136"
+  }
+}

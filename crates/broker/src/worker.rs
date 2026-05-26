@@ -8,7 +8,11 @@ use std::{
 use crate::{
     ids::{RequestId, WorkerName},
     metrics::MetricsCollector,
-    protocol::{AgentRuntime, AgentSpec, ProtocolEnvelope, RelayDelivery, PROTOCOL_VERSION},
+    protocol::{
+        AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
+        HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
+        ResolvedHarnessConfig, PROTOCOL_VERSION,
+    },
     relaycast::configure_relaycast_mcp_with_result,
     supervisor::Supervisor,
     types::AgentResultMcpConfig,
@@ -30,6 +34,15 @@ use crate::{
     spawner::terminate_child,
 };
 
+const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
+    "AGENT_RELAY_APP_SERVER_AUTH_TYPE",
+    "AGENT_RELAY_APP_SERVER_AUTH_TOKEN",
+    "AGENT_RELAY_APP_SERVER_AUTH_USERNAME",
+    "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
+];
+const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
+const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
+
 pub(crate) mod detection;
 
 #[derive(Debug)]
@@ -39,6 +52,7 @@ pub(crate) struct WorkerHandle {
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
+    pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
     pub(crate) last_activity_at: Instant,
     pub(crate) context_budget_pct: Option<u8>,
@@ -138,7 +152,9 @@ impl WorkerRegistry {
                     "team": handle.spec.team,
                     "channels": handle.spec.channels,
                     "parent": handle.parent,
-                    "pid": handle.child.id(),
+                    "sessionId": handle.spec.session_id,
+                    "pid": handle.harness_pid,
+                    "workerPid": handle.child.id(),
                     "last_activity_ms": handle.last_activity_at.elapsed().as_millis() as u64,
                     "last_activity_at": chrono::Utc::now()
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
@@ -198,6 +214,10 @@ impl WorkerRegistry {
         self.workers.get(name).and_then(|h| h.child.id())
     }
 
+    pub(crate) fn harness_pid(&self, name: &str) -> Option<u32> {
+        self.workers.get(name).and_then(|h| h.harness_pid)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
@@ -226,15 +246,28 @@ impl WorkerRegistry {
 
         let mut command =
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
+        let mut harness_env: Vec<(String, String)> = Vec::new();
+        let mut suppress_worker_env: Vec<&'static str> = Vec::new();
+        let mut initial_harness_pid: Option<u32> = None;
 
-        match spec.runtime {
-            AgentRuntime::Pty => {
-                let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
-                let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
-                    .with_context(|| format!("invalid CLI command '{cli}'"))?;
+        match spec.harness_config.clone() {
+            Some(ResolvedHarnessConfig::Pty(config)) => {
+                spec.runtime = AgentRuntime::Pty;
+                if spec.session_id.is_none() {
+                    spec.session_id = config.session_id.clone();
+                }
+                if spec.cwd.is_none() {
+                    spec.cwd = config.cwd.clone();
+                }
+                if let Some(env) = config.env {
+                    harness_env.extend(env);
+                }
+
+                let (resolved_cli, inline_cli_args) = parse_cli_command(&config.command)
+                    .with_context(|| format!("invalid harness command '{}'", config.command))?;
                 let normalized_cli = normalize_cli_name(&resolved_cli);
                 let mut effective_args = inline_cli_args;
-                effective_args.extend(spec.args.clone());
+                effective_args.extend(config.args.clone());
 
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
@@ -258,46 +291,48 @@ impl WorkerRegistry {
                     spec.model = Some(model);
                 }
                 let mut harness_session_args = Vec::new();
-                if is_claude {
-                    spec.session_id = prepare_claude_session_args(&mut effective_args);
-                } else if is_codex {
-                    match codex_session_reference(&effective_args) {
-                        CodexSessionReference::Known(thread_id) => {
-                            spec.session_id = Some(thread_id);
-                        }
-                        CodexSessionReference::Unknown => {}
-                        CodexSessionReference::None => {
-                            if codex_has_positional_arg(&effective_args) {
-                                tracing::debug!(
-                                    worker = %spec.name,
-                                    "not pre-creating Codex session because args contain a positional prompt or subcommand"
-                                );
-                            } else {
-                                let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
-                                match crate::codex_session::create_resumable_codex_thread(
-                                    &resolved_cli,
-                                    cwd,
-                                    &self.worker_env,
-                                    &effective_args,
-                                )
-                                .await
-                                {
-                                    Ok(thread_id) => {
-                                        tracing::info!(
-                                            worker = %spec.name,
-                                            session_id = %thread_id,
-                                            "created resumable Codex session for spawned PTY"
-                                        );
-                                        spec.session_id = Some(thread_id.clone());
-                                        harness_session_args.push("resume".to_string());
-                                        harness_session_args.push(thread_id);
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            worker = %spec.name,
-                                            error = %err,
-                                            "failed to pre-create resumable Codex session; spawning without sessionId"
-                                        );
+                if spec.session_id.is_none() {
+                    if is_claude {
+                        spec.session_id = prepare_claude_session_args(&mut effective_args);
+                    } else if is_codex {
+                        match codex_session_reference(&effective_args) {
+                            CodexSessionReference::Known(thread_id) => {
+                                spec.session_id = Some(thread_id);
+                            }
+                            CodexSessionReference::Unknown => {}
+                            CodexSessionReference::None => {
+                                if codex_has_positional_arg(&effective_args) {
+                                    tracing::debug!(
+                                        worker = %spec.name,
+                                        "not pre-creating Codex session because args contain a positional prompt or subcommand"
+                                    );
+                                } else {
+                                    let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
+                                    match crate::codex_session::create_resumable_codex_thread(
+                                        &resolved_cli,
+                                        cwd,
+                                        &self.worker_env,
+                                        &effective_args,
+                                    )
+                                    .await
+                                    {
+                                        Ok(thread_id) => {
+                                            tracing::info!(
+                                                worker = %spec.name,
+                                                session_id = %thread_id,
+                                                "created resumable Codex session for spawned PTY"
+                                            );
+                                            spec.session_id = Some(thread_id.clone());
+                                            harness_session_args.push("resume".to_string());
+                                            harness_session_args.push(thread_id);
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                worker = %spec.name,
+                                                error = %err,
+                                                "failed to pre-create resumable Codex session; spawning without sessionId"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -335,7 +370,7 @@ impl WorkerRegistry {
 
                 let mcp_args = self
                     .build_mcp_args(
-                        cli,
+                        &resolved_cli,
                         &spec.name,
                         &effective_args,
                         Path::new(spec.cwd.as_deref().unwrap_or(".")),
@@ -382,64 +417,268 @@ impl WorkerRegistry {
                     }
                 }
             }
-            AgentRuntime::Headless => {
-                let provider = spec
-                    .provider
-                    .as_ref()
-                    .context("headless runtime requires `provider`")?;
-                command.arg("headless");
+            Some(ResolvedHarnessConfig::Headless(config)) => {
+                validate_app_server_config(&config)?;
+                spec.runtime = AgentRuntime::Headless;
+                spec.session_id = Some(config.session_id.clone());
+                initial_harness_pid = config.host.as_ref().and_then(|host| host.pid);
+                match &config.driver {
+                    HeadlessHarnessDriver::AppServer => {}
+                }
+
+                command.arg("app-server");
                 command.arg("--agent-name").arg(&spec.name);
-                let provider_cli = headless_provider_cli_name(provider);
-                command.arg(provider_cli);
-                if let Some(model) = apply_codex_model_arg_fallback(
-                    provider_cli,
-                    provider_cli,
-                    &spec.name,
-                    &mut spec.args,
-                )
-                .await
-                {
-                    spec.model = Some(model);
+                command.arg("--protocol").arg(&config.protocol);
+                command.arg("--endpoint").arg(&config.endpoint);
+                command.arg("--session-id").arg(&config.session_id);
+                if let Some(pid) = initial_harness_pid {
+                    command.arg("--host-pid").arg(pid.to_string());
+                }
+                command
+                    .arg("--release")
+                    .arg(release_policy_arg(config.release.as_ref()));
+
+                suppress_worker_env.extend(APP_SERVER_AUTH_ENV_KEYS);
+                for key in APP_SERVER_AUTH_ENV_KEYS {
+                    command.env_remove(key);
                 }
 
-                let mcp_args = self
-                    .build_mcp_args(
-                        provider_cli,
-                        &spec.name,
-                        &spec.args,
-                        Path::new(spec.cwd.as_deref().unwrap_or(".")),
-                        worker_relay_api_key.as_deref(),
-                        skip_relay_prompt,
-                        agent_result.as_ref(),
-                    )
-                    .await?;
-
-                let model_arg = resolve_model_flag_for_cli(
-                    provider_cli,
-                    provider_cli,
-                    &spec.name,
-                    spec.model.as_deref(),
-                    &spec.args,
-                )
-                .await;
-                if let Some(ref model) = model_arg {
-                    spec.model = Some(model.clone());
-                }
-
-                if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
-                    command.arg("--");
-                    if let Some(model) = model_arg {
-                        command.arg("--model");
-                        command.arg(model);
+                if let Some(auth) = config.auth {
+                    harness_env.push((
+                        "AGENT_RELAY_APP_SERVER_AUTH_TYPE".to_string(),
+                        app_server_auth_type_arg(&auth.auth_type).to_string(),
+                    ));
+                    if let Some(token) = auth.token {
+                        harness_env.push(("AGENT_RELAY_APP_SERVER_AUTH_TOKEN".to_string(), token));
                     }
-                    for arg in &mcp_args {
-                        command.arg(arg);
+                    if let Some(username) = auth.username {
+                        harness_env
+                            .push(("AGENT_RELAY_APP_SERVER_AUTH_USERNAME".to_string(), username));
                     }
-                    for arg in &spec.args {
-                        command.arg(arg);
+                    if let Some(password) = auth.password {
+                        harness_env
+                            .push(("AGENT_RELAY_APP_SERVER_AUTH_PASSWORD".to_string(), password));
                     }
                 }
             }
+            None => match spec.runtime {
+                AgentRuntime::Pty => {
+                    let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
+                    let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
+                        .with_context(|| format!("invalid CLI command '{cli}'"))?;
+                    let normalized_cli = normalize_cli_name(&resolved_cli);
+                    let mut effective_args = inline_cli_args;
+                    effective_args.extend(spec.args.clone());
+
+                    command.arg("pty");
+                    command.arg("--agent-name").arg(&spec.name);
+                    if let Some(secs) = idle_threshold_secs {
+                        command.arg("--idle-threshold-secs").arg(secs.to_string());
+                    }
+                    command.arg(&resolved_cli);
+
+                    let cli_lower = normalized_cli.to_lowercase();
+                    let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
+                    let is_codex = cli_lower == "codex";
+                    let is_gemini = cli_lower == "gemini";
+                    if let Some(model) = apply_codex_model_arg_fallback(
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        &mut effective_args,
+                    )
+                    .await
+                    {
+                        spec.model = Some(model);
+                    }
+                    let mut harness_session_args = Vec::new();
+                    if spec.session_id.is_none() {
+                        if is_claude {
+                            spec.session_id = prepare_claude_session_args(&mut effective_args);
+                        } else if is_codex {
+                            match codex_session_reference(&effective_args) {
+                                CodexSessionReference::Known(thread_id) => {
+                                    spec.session_id = Some(thread_id);
+                                }
+                                CodexSessionReference::Unknown => {}
+                                CodexSessionReference::None => {
+                                    if codex_has_positional_arg(&effective_args) {
+                                        tracing::debug!(
+                                            worker = %spec.name,
+                                            "not pre-creating Codex session because args contain a positional prompt or subcommand"
+                                        );
+                                    } else {
+                                        let cwd = Path::new(spec.cwd.as_deref().unwrap_or("."));
+                                        match crate::codex_session::create_resumable_codex_thread(
+                                            &resolved_cli,
+                                            cwd,
+                                            &self.worker_env,
+                                            &effective_args,
+                                        )
+                                        .await
+                                        {
+                                            Ok(thread_id) => {
+                                                tracing::info!(
+                                                    worker = %spec.name,
+                                                    session_id = %thread_id,
+                                                    "created resumable Codex session for spawned PTY"
+                                                );
+                                                spec.session_id = Some(thread_id.clone());
+                                                harness_session_args.push("resume".to_string());
+                                                harness_session_args.push(thread_id);
+                                            }
+                                            Err(err) => {
+                                                tracing::warn!(
+                                                    worker = %spec.name,
+                                                    error = %err,
+                                                    "failed to pre-create resumable Codex session; spawning without sessionId"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // NOTE: Permission-bypass flags are auto-injected for all spawned agents.
+                    // This means any actor who can trigger agent.add gets agents with no permission
+                    // guardrails. Future work should make this an explicit opt-in per step/agent.
+                    let bypass_flag: Option<&str> = if is_claude
+                        && !effective_args
+                            .iter()
+                            .any(|a| a.contains("dangerously-skip-permissions"))
+                    {
+                        Some("--dangerously-skip-permissions")
+                    } else if is_codex
+                        && !effective_args
+                            .iter()
+                            .any(|a| a.contains("dangerously-bypass") || a.contains("full-auto"))
+                    {
+                        Some("--dangerously-bypass-approvals-and-sandbox")
+                    } else if is_gemini
+                        && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
+                    {
+                        Some("--yolo")
+                    } else {
+                        None
+                    };
+
+                    if let Some(flag) = bypass_flag {
+                        tracing::warn!(
+                            worker = %spec.name,
+                            flag = %flag,
+                            "auto-injecting permission-bypass flag for spawned agent"
+                        );
+                    }
+
+                    let mcp_args = self
+                        .build_mcp_args(
+                            cli,
+                            &spec.name,
+                            &effective_args,
+                            Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                            worker_relay_api_key.as_deref(),
+                            skip_relay_prompt,
+                            agent_result.as_ref(),
+                        )
+                        .await?;
+
+                    let model_flag = resolve_model_flag_for_cli(
+                        &resolved_cli,
+                        &cli_lower,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &effective_args,
+                    )
+                    .await;
+                    if let Some(ref model) = model_flag {
+                        spec.model = Some(model.clone());
+                    }
+
+                    let has_extra = bypass_flag.is_some()
+                        || model_flag.is_some()
+                        || !effective_args.is_empty()
+                        || !mcp_args.is_empty()
+                        || !harness_session_args.is_empty();
+                    if has_extra {
+                        command.arg("--");
+                        if let Some(flag) = bypass_flag {
+                            command.arg(flag);
+                        }
+                        if let Some(ref model) = model_flag {
+                            command.arg("--model");
+                            command.arg(model);
+                        }
+                        for arg in &mcp_args {
+                            command.arg(arg);
+                        }
+                        for arg in &effective_args {
+                            command.arg(arg);
+                        }
+                        for arg in &harness_session_args {
+                            command.arg(arg);
+                        }
+                    }
+                }
+                AgentRuntime::Headless => {
+                    let provider = spec
+                        .provider
+                        .as_ref()
+                        .context("headless runtime requires `provider`")?;
+                    command.arg("headless");
+                    command.arg("--agent-name").arg(&spec.name);
+                    let provider_cli = headless_provider_cli_name(provider);
+                    command.arg(provider_cli);
+                    if let Some(model) = apply_codex_model_arg_fallback(
+                        provider_cli,
+                        provider_cli,
+                        &spec.name,
+                        &mut spec.args,
+                    )
+                    .await
+                    {
+                        spec.model = Some(model);
+                    }
+
+                    let mcp_args = self
+                        .build_mcp_args(
+                            provider_cli,
+                            &spec.name,
+                            &spec.args,
+                            Path::new(spec.cwd.as_deref().unwrap_or(".")),
+                            worker_relay_api_key.as_deref(),
+                            skip_relay_prompt,
+                            agent_result.as_ref(),
+                        )
+                        .await?;
+
+                    let model_arg = resolve_model_flag_for_cli(
+                        provider_cli,
+                        provider_cli,
+                        &spec.name,
+                        spec.model.as_deref(),
+                        &spec.args,
+                    )
+                    .await;
+                    if let Some(ref model) = model_arg {
+                        spec.model = Some(model.clone());
+                    }
+
+                    if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
+                        command.arg("--");
+                        if let Some(model) = model_arg {
+                            command.arg("--model");
+                            command.arg(model);
+                        }
+                        for arg in &mcp_args {
+                            command.arg(arg);
+                        }
+                        for arg in &spec.args {
+                            command.arg(arg);
+                        }
+                    }
+                }
+            },
         }
 
         command
@@ -447,6 +686,12 @@ impl WorkerRegistry {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in &self.worker_env {
+            if suppress_worker_env.contains(&key.as_str()) {
+                continue;
+            }
+            command.env(key, value);
+        }
+        for (key, value) in &harness_env {
             command.env(key, value);
         }
         if let Some(config) = &agent_result {
@@ -454,7 +699,7 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && !matches!(spec.runtime, AgentRuntime::Headless) {
+        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
@@ -498,6 +743,7 @@ impl WorkerRegistry {
             workspace_id,
             child,
             stdin,
+            harness_pid: initial_harness_pid,
             spawned_at: Instant::now(),
             last_activity_at: Instant::now(),
             context_budget_pct: None,
@@ -584,19 +830,20 @@ impl WorkerRegistry {
             .workers
             .remove(name)
             .with_context(|| format!("unknown worker '{name}'"))?;
+        let release_grace = release_grace_for_spec(&handle.spec);
 
         let shutdown_frame = ProtocolEnvelope {
             v: PROTOCOL_VERSION,
             msg_type: "shutdown_worker".to_string(),
             request_id: None,
-            payload: json!({"reason":"release","grace_ms":2000}),
+            payload: json!({"reason":"release","grace_ms": release_grace.as_millis() as u64}),
         };
         let encoded = serde_json::to_string(&shutdown_frame)?;
         let _ = handle.stdin.write_all(encoded.as_bytes()).await;
         let _ = handle.stdin.write_all(b"\n").await;
         let _ = handle.stdin.flush().await;
 
-        let result = terminate_child(&mut handle.child, Duration::from_secs(2)).await;
+        let result = terminate_child(&mut handle.child, release_grace).await;
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -745,6 +992,122 @@ impl WorkerRegistry {
                 || trimmed.eq_ignore_ascii_case(&format!("@{}", worker_name))
         })
     }
+}
+
+fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
+    match policy {
+        Some(HarnessReleasePolicy::Abort) => "abort",
+        Some(HarnessReleasePolicy::Delete) => "delete",
+        Some(HarnessReleasePolicy::Detach) | None => "detach",
+    }
+}
+
+fn app_server_auth_type_arg(auth_type: &AppServerAuthType) -> &'static str {
+    match auth_type {
+        AppServerAuthType::Bearer => "bearer",
+        AppServerAuthType::Basic => "basic",
+        AppServerAuthType::None => "none",
+    }
+}
+
+fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
+    match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Headless(config))
+            if matches!(&config.driver, HeadlessHarnessDriver::AppServer) =>
+        {
+            APP_SERVER_RELEASE_GRACE
+        }
+        _ => DEFAULT_RELEASE_GRACE,
+    }
+}
+
+fn validate_app_server_config(config: &HeadlessHarnessConfig) -> Result<()> {
+    if !matches!(&config.driver, HeadlessHarnessDriver::AppServer) {
+        anyhow::bail!("unsupported headless harness driver");
+    }
+
+    let protocol = config.protocol.trim().to_ascii_lowercase();
+    if protocol != "opencode" {
+        anyhow::bail!(
+            "unsupported app_server protocol '{}' (supported: opencode)",
+            config.protocol
+        );
+    }
+
+    let endpoint = config.endpoint.trim();
+    if endpoint.is_empty() {
+        anyhow::bail!("app_server endpoint is required");
+    }
+    let parsed_endpoint = reqwest::Url::parse(endpoint)
+        .with_context(|| format!("invalid app_server endpoint '{}'", config.endpoint))?;
+    match parsed_endpoint.scheme() {
+        "http" | "https" => {}
+        scheme => anyhow::bail!(
+            "invalid app_server endpoint scheme '{}' (expected http or https)",
+            scheme
+        ),
+    }
+    if config.auth.is_some()
+        && parsed_endpoint.scheme() == "http"
+        && !is_loopback_endpoint_host(&parsed_endpoint)
+    {
+        anyhow::bail!(
+            "app_server auth requires https unless the endpoint is loopback: {}",
+            config.endpoint
+        );
+    }
+
+    if config.session_id.trim().is_empty() {
+        anyhow::bail!("app_server sessionId is required");
+    }
+
+    if config
+        .host
+        .as_ref()
+        .and_then(|host| host.ownership.as_ref())
+        .is_some_and(|ownership| matches!(ownership, AppServerHostOwnership::BrokerOwned))
+    {
+        anyhow::bail!("broker-owned app_server hosts are not supported yet");
+    }
+
+    if let Some(auth) = config.auth.as_ref() {
+        match auth.auth_type {
+            AppServerAuthType::Bearer => {
+                if auth
+                    .token
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server bearer auth requires token");
+                }
+            }
+            AppServerAuthType::Basic => {
+                if auth
+                    .username
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server basic auth requires username");
+                }
+                if auth
+                    .password
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    anyhow::bail!("app_server basic auth requires password");
+                }
+            }
+            AppServerAuthType::None => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn is_loopback_endpoint_host(endpoint: &reqwest::Url) -> bool {
+    endpoint.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1204,6 +1567,7 @@ fn spawn_worker_reader<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{AppServerHarnessAuth, AppServerHarnessHost};
 
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -1241,6 +1605,106 @@ mod tests {
         let reg = make_registry(env);
         assert_eq!(reg.env_value("KEY"), Some("val"));
         assert_eq!(reg.env_value("MISSING"), None);
+    }
+
+    fn make_app_server_config() -> HeadlessHarnessConfig {
+        HeadlessHarnessConfig {
+            driver: HeadlessHarnessDriver::AppServer,
+            protocol: "opencode".to_string(),
+            endpoint: "http://127.0.0.1:4096".to_string(),
+            session_id: "ses_123".to_string(),
+            auth: None,
+            host: Some(AppServerHarnessHost {
+                ownership: Some(AppServerHostOwnership::Attached),
+                pid: Some(12345),
+            }),
+            release: Some(HarnessReleasePolicy::Detach),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn app_server_config_validation_accepts_attached_opencode_config() {
+        let config = make_app_server_config();
+        validate_app_server_config(&config).expect("valid app-server config");
+    }
+
+    #[test]
+    fn app_server_config_validation_rejects_missing_bearer_token() {
+        let mut config = make_app_server_config();
+        config.auth = Some(AppServerHarnessAuth {
+            auth_type: AppServerAuthType::Bearer,
+            token: None,
+            username: None,
+            password: None,
+        });
+
+        let error = validate_app_server_config(&config).expect_err("missing token rejected");
+        assert!(error.to_string().contains("bearer auth requires token"));
+    }
+
+    #[test]
+    fn app_server_config_validation_rejects_authenticated_non_loopback_http() {
+        let mut config = make_app_server_config();
+        config.endpoint = "http://example.com:4096".to_string();
+        config.auth = Some(AppServerHarnessAuth {
+            auth_type: AppServerAuthType::Bearer,
+            token: Some("token".to_string()),
+            username: None,
+            password: None,
+        });
+
+        let error = validate_app_server_config(&config).expect_err("non-loopback http rejected");
+        assert!(error
+            .to_string()
+            .contains("auth requires https unless the endpoint is loopback"));
+    }
+
+    #[test]
+    fn app_server_config_validation_rejects_broker_owned_host() {
+        let mut config = make_app_server_config();
+        config.host = Some(AppServerHarnessHost {
+            ownership: Some(AppServerHostOwnership::BrokerOwned),
+            pid: None,
+        });
+
+        let error = validate_app_server_config(&config).expect_err("broker-owned host rejected");
+        assert!(error
+            .to_string()
+            .contains("broker-owned app_server hosts are not supported yet"));
+    }
+
+    #[test]
+    fn app_server_config_validation_rejects_unsupported_protocol() {
+        let mut config = make_app_server_config();
+        config.protocol = "custom".to_string();
+
+        let error = validate_app_server_config(&config).expect_err("unsupported protocol rejected");
+        assert!(error
+            .to_string()
+            .contains("unsupported app_server protocol"));
+    }
+
+    #[test]
+    fn app_server_release_uses_extended_grace() {
+        let spec = AgentSpec {
+            name: WorkerName::from("opencode-app"),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: Some("ses_123".to_string()),
+            harness_config: Some(ResolvedHarnessConfig::Headless(make_app_server_config())),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+
+        assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
     }
 
     #[test]

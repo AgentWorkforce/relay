@@ -25,6 +25,9 @@ enum Commands {
     Init(InitCommand),
     Pty(PtyCommand),
     Headless(HeadlessCommand),
+    /// Internal: headless worker shim for app-server-backed harnesses.
+    #[command(name = "app-server", hide = true)]
+    HeadlessAppServer(HeadlessAppServerCommand),
     /// Compute MCP injection args and side-effect config file paths for a CLI
     /// without spawning it. Outputs JSON to stdout.
     McpArgs(McpArgsCommand),
@@ -52,6 +55,7 @@ impl Commands {
             Commands::Init(_) => "init",
             Commands::Pty(_) => "pty",
             Commands::Headless(_) => "headless",
+            Commands::HeadlessAppServer(_) => "app_server",
             Commands::McpArgs(_) => "mcp_args",
             Commands::Swarm(_) => "swarm",
             Commands::DumpPty(_) => "dump_pty",
@@ -86,6 +90,8 @@ impl Commands {
             }
             Commands::Headless(cmd) => non_empty_name(cmd.agent_name.as_deref())
                 .unwrap_or_else(|| format!("headless-{pid}")),
+            Commands::HeadlessAppServer(cmd) => non_empty_name(cmd.agent_name.as_deref())
+                .unwrap_or_else(|| format!("headless-app-server-{pid}")),
             Commands::Wrap { cli, .. } => format!("wrap-{cli}-{pid}"),
             Commands::McpArgs(_) => format!("mcp_args-{pid}"),
             Commands::DumpPty(cmd) => format!("dump_pty-{}-{}", cmd.name, pid),
@@ -114,6 +120,7 @@ pub(crate) async fn run() -> Result<()> {
         Commands::Init(cmd) => runtime::run_init(cmd, telemetry).await,
         Commands::Pty(cmd) => pty_worker::run_pty_worker(cmd).await,
         Commands::Headless(cmd) => runtime::run_headless_worker(cmd).await,
+        Commands::HeadlessAppServer(cmd) => runtime::run_headless_app_server_worker(cmd).await,
         Commands::McpArgs(cmd) => cli_mcp_args::run_mcp_args(cmd).await,
         Commands::Swarm(args) => swarm::run_swarm(args).await,
         Commands::DumpPty(cmd) => runtime::run_dump_pty(cmd).await,
@@ -266,6 +273,27 @@ pub(crate) struct HeadlessCommand {
 
     #[arg(last = true)]
     pub(crate) args: Vec<String>,
+
+    #[arg(long)]
+    pub(crate) agent_name: Option<String>,
+}
+
+#[derive(Debug, clap::Args, Clone)]
+pub(crate) struct HeadlessAppServerCommand {
+    #[arg(long)]
+    pub(crate) protocol: String,
+
+    #[arg(long)]
+    pub(crate) endpoint: String,
+
+    #[arg(long = "session-id")]
+    pub(crate) session_id: String,
+
+    #[arg(long = "host-pid")]
+    pub(crate) host_pid: Option<u32>,
+
+    #[arg(long, default_value = "detach")]
+    pub(crate) release: String,
 
     #[arg(long)]
     pub(crate) agent_name: Option<String>,
