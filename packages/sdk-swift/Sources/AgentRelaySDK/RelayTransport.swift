@@ -119,10 +119,8 @@ public actor RelayTransport {
         }
         components?.path = path + "/ws"
 
-        components?.queryItems = components?.queryItems?.filter { $0.name != "token" }
-        if components?.queryItems?.isEmpty == true {
-            components?.queryItems = nil
-        }
+        let filteredQuery = components?.queryItems?.filter { $0.name != "token" }
+        components?.queryItems = (filteredQuery?.isEmpty == false) ? filteredQuery : nil
 
         return components?.url
     }
