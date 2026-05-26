@@ -4,11 +4,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Minimal HTTP client for the v7 broker REST API.
-///
-/// In v7, agent lifecycle and messaging moved off the WebSocket onto plain
-/// HTTP endpoints (`POST /api/spawn`, `DELETE /api/spawned/{name}`,
-/// `POST /api/send`). The WebSocket at `/ws` is a read-only event broadcast.
+/// Minimal HTTP client for the broker REST API.
 actor RelayHTTP {
     private let baseURL: URL
     private let apiKey: String

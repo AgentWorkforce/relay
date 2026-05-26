@@ -99,8 +99,6 @@ public actor RelayTransport {
     }
 
     private func websocketRequest() -> URLRequest {
-        // v7 broker exposes the read-only event stream at `/ws` with `X-API-Key`
-        // auth — the legacy `/v1/ws` path and `token` query parameter are gone.
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         if components?.scheme == "http" { components?.scheme = "ws" }
         if components?.scheme == "https" { components?.scheme = "wss" }

@@ -75,10 +75,6 @@ actor RelayCore {
     }
 
     /// Open the read-only event WebSocket if it's not already connected.
-    ///
-    /// v7 brokers expose `/ws` as a one-way broadcast — there is no
-    /// `hello`/`hello_ack` handshake, so a successful WebSocket upgrade is
-    /// the "connected" signal.
     func ensureConnected() async throws {
         if routerTask == nil || routerTask?.isCancelled == true {
             routerTask = Task { [weak self] in await self?.routeFrames() }
@@ -132,8 +128,6 @@ actor RelayCore {
     }
 
     func registerOrRotate(name: String) async throws -> AgentRegistration {
-        // v7 brokers do not have a register/rotate endpoint — agents are
-        // identified by name and authenticated via the broker API key.
         AgentRegistration(agentName: name, token: name) { agentName, token in
             AgentClient(core: self, agentName: agentName, token: token)
         }
@@ -178,14 +172,10 @@ actor RelayCore {
 
     private func routeFrames() async {
         for await data in transport.inbound {
-            // v7 brokers send each event as a bare JSON object on the WS
-            // (`{kind: "...", ...}`) — there is no `{type, payload}` envelope.
-            // Decode as BrokerEvent directly and surface it on every stream.
             guard let event = try? decoder.decode(BrokerEvent.self, from: data) else {
                 continue
             }
 
-            // Wrap in InboundMessage.event for the legacy raw-message stream.
             for continuation in inboundMessageContinuations {
                 continuation.yield(.event(event))
             }
@@ -319,10 +309,6 @@ public final class AgentRelayClient: @unchecked Sendable {
     }
 
     /// Stream of all raw inbound protocol messages.
-    ///
-    /// This is the lowest-level event stream, including hello_ack, ok, error,
-    /// event, deliver_relay, worker_stream, worker_exited, and pong frames.
-    /// Use this when you need full protocol visibility.
     public var inboundMessages: AsyncStream<InboundMessage> {
         AsyncStream<InboundMessage> { continuation in
             Task { await core.registerInboundMessageContinuation(continuation) }

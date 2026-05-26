@@ -19,8 +19,7 @@ final class AgentRelaySDKTests: XCTestCase {
         XCTAssertEqual(client.baseURL.port, 3889)
     }
 
-    /// v7 broker emits each event as a bare `{kind: ...}` JSON object on `/ws`.
-    /// Make sure the SDK can still decode the broker's wire format.
+    /// The broker emits each event as a bare `{kind: ...}` JSON object on `/ws`.
     func testBrokerEventDecodesBarePayload() throws {
         let json = """
         {
