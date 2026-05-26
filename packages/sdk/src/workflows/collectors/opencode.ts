@@ -66,11 +66,26 @@ interface OpenCodePartData {
   name?: string;
 }
 
+function isBunRuntime(): boolean {
+  // Bun does not implement the Node 22+ `node:sqlite` builtin; requiring it
+  // under Bun both throws AND emits cosmetic stderr noise
+  // ("error: Registry URL must be http:// or https://") that leaks through
+  // the try/catch into runner.log.
+  return (
+    typeof process !== 'undefined' &&
+    typeof (process.versions as { bun?: string } | undefined)?.bun === 'string'
+  );
+}
+
 function loadDatabaseConstructor(): DatabaseConstructor | null {
   try {
     return require('better-sqlite3') as DatabaseConstructor;
   } catch {
     // fall through
+  }
+
+  if (isBunRuntime()) {
+    return null;
   }
 
   // Fall back to Node 22+ native node:sqlite (experimental)

@@ -62,14 +62,30 @@ function loadBetterSqlite3(): DatabaseConstructor | null {
   }
 }
 
+function isBunRuntime(): boolean {
+  // Bun exposes its version on process.versions.bun. The `node:sqlite` module
+  // is a Node.js 22+ builtin that Bun does not implement; attempting
+  // `await import('node:sqlite')` under Bun rejects AND emits cosmetic stderr
+  // noise ("error: Registry URL must be http:// or https://") that leaks
+  // through the try/catch into runner.log. Skip the fallback under Bun.
+  return (
+    typeof process !== 'undefined' &&
+    typeof (process.versions as { bun?: string } | undefined)?.bun === 'string'
+  );
+}
+
 async function openDatabase(dbPath: string): Promise<DatabaseInstance | null> {
   const BetterSqlite = loadBetterSqlite3();
   if (BetterSqlite) {
     try {
       return new BetterSqlite(dbPath, { readonly: true, fileMustExist: true });
     } catch {
-      // Fall through to node:sqlite.
+      // Fall through to node:sqlite (on Node) or give up (on Bun).
     }
+  }
+
+  if (isBunRuntime()) {
+    return null;
   }
 
   try {
