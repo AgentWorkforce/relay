@@ -57,7 +57,7 @@
     "@relayauth/core": "^0.1.2",
     "@relaycast/mcp": "1.0.0",
     "@relaycast/sdk": "^1.1.0",
-    "@relayfile/local-mount": "^0.7.24",
+    "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.6.0",
     "@slack/web-api": "^7.16.0",
     "agent-trajectories": "^0.5.8",
