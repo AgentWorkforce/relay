@@ -49,7 +49,7 @@ jobs:
         run: npm run build
 
       - name: Link local CLI
-        run: npm --prefix packages/cli link
+        run: cd packages/cli && npm link
 
       - name: Verify CLI
         run: agent-relay --version

@@ -60,7 +60,7 @@ jobs:
         run: npm run build
 
       - name: Link CLI for local testing
-        run: npm --prefix packages/cli link
+        run: cd packages/cli && npm link
 
       - name: Verify CLI is available
         run: agent-relay --version
