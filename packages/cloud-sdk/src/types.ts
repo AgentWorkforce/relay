@@ -4,7 +4,7 @@ import type {
   CompiledAgentPermissions,
   FilePermissions,
   PermissionSource,
-} from '../permissions.js';
+} from './permissions.js';
 
 // ── Shared helper types ─────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 import ignore, { type Ignore } from 'ignore';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AgentPreset } from '../permissions.js';
+import type { AgentPreset } from './permissions.js';
 
 import type { AgentPermissions, CompiledAgentPermissions, CompileInput, PermissionSource } from './types.js';
 

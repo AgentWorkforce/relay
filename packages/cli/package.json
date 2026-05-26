@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@agent-relay/cloud": "7.1.1",
+    "@agent-relay/cloud-sdk": "7.1.1",
     "@agent-relay/config": "7.1.1",
     "@agent-relay/hooks": "7.1.1",
     "@agent-relay/memory": "7.1.1",

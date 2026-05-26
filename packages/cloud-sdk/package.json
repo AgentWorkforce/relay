@@ -1,0 +1,66 @@
+{
+  "name": "@agent-relay/cloud-sdk",
+  "version": "7.1.1",
+  "description": "Shared Agent Relay cloud SDK: identity, permissions, tokens, audit, and per-product provisioning primitives (relayfile, relayauth) used by relay tooling and downstream consumers.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./permissions": {
+      "types": "./dist/permissions.d.ts",
+      "import": "./dist/permissions.js",
+      "default": "./dist/permissions.js"
+    },
+    "./token": {
+      "types": "./dist/token.d.ts",
+      "import": "./dist/token.js",
+      "default": "./dist/token.js"
+    },
+    "./local-jwks": {
+      "types": "./dist/local-jwks.d.ts",
+      "import": "./dist/local-jwks.js",
+      "default": "./dist/local-jwks.js"
+    },
+    "./seeder": {
+      "types": "./dist/seeder.d.ts",
+      "import": "./dist/seeder.js",
+      "default": "./dist/seeder.js"
+    },
+    "./mount": {
+      "types": "./dist/mount.d.ts",
+      "import": "./dist/mount.js",
+      "default": "./dist/mount.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "node --test --import tsx src/__tests__/*.test.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/cloud-sdk"
+  },
+  "dependencies": {
+    "@relayfile/sdk": ">=0.1.2 <1",
+    "ignore": "^7.0.5",
+    "tar": "^7.5.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
