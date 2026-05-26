@@ -55,9 +55,7 @@ function findInstalledPackageDir(name) {
 const bundled = pkg.bundledDependencies || pkg.bundleDependencies || [];
 
 if (bundled.length === 0) {
-  console.log(
-    '[prepack-materialize] no bundledDependencies declared - nothing to do',
-  );
+  console.log('[prepack-materialize] no bundledDependencies declared - nothing to do');
   process.exit(0);
 }
 
@@ -73,7 +71,7 @@ for (const name of bundled) {
   const installedDir = findInstalledPackageDir(name);
   if (!installedDir) {
     console.error(
-      `[prepack-materialize] cannot find ${name} in any node_modules ancestor of ${PKG_ROOT} - run npm install first`,
+      `[prepack-materialize] cannot find ${name} in any node_modules ancestor of ${PKG_ROOT} - run npm install first`
     );
     process.exit(1);
   }
@@ -108,20 +106,14 @@ for (const name of bundled) {
       cpSync(readmeSrc, join(dst, 'README.md'));
     }
 
-    console.log(
-      `[prepack-materialize] ${name} <- workspace ${relative(REPO_ROOT, realPath)}`,
-    );
+    console.log(`[prepack-materialize] ${name} <- workspace ${relative(REPO_ROOT, realPath)}`);
   } else {
     cpSync(realPath, dst, { recursive: true });
-    console.log(
-      `[prepack-materialize] ${name} <- ${relative(REPO_ROOT, realPath)} (wholesale)`,
-    );
+    console.log(`[prepack-materialize] ${name} <- ${relative(REPO_ROOT, realPath)} (wholesale)`);
   }
 
   writeFileSync(join(dst, '.materialized'), 'materialized-by-prepack\n');
   materialized += 1;
 }
 
-console.log(
-  `[prepack-materialize] done - materialized ${materialized} package(s)`,
-);
+console.log(`[prepack-materialize] done - materialized ${materialized} package(s)`);

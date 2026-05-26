@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'packages/cli/install.sh'
+      - 'install.sh'
       - 'packages/**'
       - 'workflows/relay-e2e-meta-workflow.ts'
       - 'workflows/relay-clean-room-e2e-validation.ts'

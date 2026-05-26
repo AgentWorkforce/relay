@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-const installScriptPath = fileURLToPath(new URL('../install.sh', import.meta.url));
+const installScriptPath = fileURLToPath(
+  new URL('../../../install.sh', import.meta.url),
+);
 const installScript = fs.readFileSync(installScriptPath, 'utf-8');
 
 describe('install.sh', () => {
