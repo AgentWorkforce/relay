@@ -94,7 +94,7 @@ jobs:
         run: |
           # Test that the built package can be imported locally
           node --eval "
-            import('./dist/src/index.js').then(m => {
+            import('./packages/cli/dist/index.js').then(m => {
               console.log('Local ESM import successful');
               console.log('Exports:', Object.keys(m));
             }).catch(err => {

@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@agent-relay/config": ["../config/dist/index.d.ts"],
+      "@agent-relay/config/*": ["../config/dist/*"],
+      "@agent-relay/trajectory": ["../trajectory/dist/index.d.ts"],
+      "@agent-relay/trajectory/*": ["../trajectory/dist/*"],
+      "@agent-relay/hooks": ["../hooks/dist/index.d.ts"],
+      "@agent-relay/hooks/*": ["../hooks/dist/*"],
+      "@agent-relay/policy": ["../policy/dist/index.d.ts"],
+      "@agent-relay/policy/*": ["../policy/dist/*"],
+      "@agent-relay/memory": ["../memory/dist/index.d.ts"],
+      "@agent-relay/memory/*": ["../memory/dist/*"],
+      "@agent-relay/sdk": ["../sdk/dist/index.d.ts"],
+      "@agent-relay/sdk/*": ["../sdk/dist/*"],
+      "@agent-relay/utils": ["../utils/dist/index.d.ts"],
+      "@agent-relay/utils/*": ["../utils/dist/*"],
+      "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
+      "@agent-relay/cloud/*": ["../cloud/dist/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+}

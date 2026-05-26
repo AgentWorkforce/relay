@@ -94,8 +94,8 @@ cd "$PROJECT_DIR"
 
 # Determine which CLI command to use
 # ALWAYS prefer local dist to test the actual build, fall back to global only if local doesn't exist
-if [ -f "$PROJECT_DIR/dist/src/cli/index.js" ]; then
-  CLI_CMD="$PROJECT_DIR/dist/src/cli/index.js"
+if [ -f "$PROJECT_DIR/packages/cli/dist/cli/index.js" ]; then
+  CLI_CMD="$PROJECT_DIR/packages/cli/dist/cli/index.js"
 elif command -v agent-relay &> /dev/null; then
   CLI_CMD="agent-relay"
 else
@@ -141,7 +141,7 @@ trap cleanup EXIT
 # Phase 0: Build check
 log_phase "Phase 0: Build Check"
 
-if [ ! -f "$PROJECT_DIR/dist/src/cli/index.js" ]; then
+if [ ! -f "$PROJECT_DIR/packages/cli/dist/cli/index.js" ]; then
   log_info "Building project..."
   npm run build
 else

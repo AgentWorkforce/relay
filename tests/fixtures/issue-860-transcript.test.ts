@@ -6,7 +6,7 @@ import {
   type MessagingBrokerClient,
   type MessagingDependencies,
   type MessagingRelaycastClient,
-} from '../../src/cli/commands/messaging.js';
+} from '../../packages/cli/src/cli/commands/messaging.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {

@@ -7,7 +7,7 @@ import { AUTH_FILE_PATH } from '../packages/cloud/src/index.js';
 import {
   registerProactiveBootstrapCommands,
   type ProactiveBootstrapDependencies,
-} from '../src/cli/commands/proactive-bootstrap.js';
+} from '../packages/cli/src/cli/commands/proactive-bootstrap.js';
 
 function createHarness(overrides: Partial<ProactiveBootstrapDependencies> = {}) {
   const deps: ProactiveBootstrapDependencies = {

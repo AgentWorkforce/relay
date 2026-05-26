@@ -321,7 +321,7 @@ fi
 
 log_info "Inspecting installed CLI cloud command directory..."
 ls -la ./node_modules/agent-relay/dist/cli/commands/cloud/ 2>/dev/null || \
-    ls -la ./node_modules/agent-relay/dist/src/cli/commands/cloud/ 2>/dev/null || \
+    ls -la ./node_modules/agent-relay/dist/cli/commands/cloud/ 2>/dev/null || \
     log_warn "No packaged cloud command directory found; falling back to dist scan"
 
 log_info "Resolving packaged module that imports @agent-relay/utils..."
@@ -333,11 +333,11 @@ try {
     const pkgDir = path.dirname(require.resolve('agent-relay/package.json'));
     const candidates = [
         path.join(pkgDir, 'dist/cli/commands/cloud/connect.js'),
-        path.join(pkgDir, 'dist/src/cli/commands/cloud/connect.js'),
+        path.join(pkgDir, 'dist/cli/commands/cloud/connect.js'),
         path.join(pkgDir, 'dist/cli/commands/core.js'),
-        path.join(pkgDir, 'dist/src/cli/commands/core.js'),
+        path.join(pkgDir, 'dist/cli/commands/core.js'),
         path.join(pkgDir, 'dist/cli/bootstrap.js'),
-        path.join(pkgDir, 'dist/src/cli/bootstrap.js')
+        path.join(pkgDir, 'dist/cli/bootstrap.js')
     ];
 
     for (const candidate of candidates) {
