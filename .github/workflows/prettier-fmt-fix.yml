@@ -1,0 +1,78 @@
+name: Prettier Auto-Format
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.css'
+      - '**.html'
+      - '**.js'
+      - '**.json'
+      - '**.jsonc'
+      - '**.jsx'
+      - '**.md'
+      - '**.mdx'
+      - '**.scss'
+      - '**.ts'
+      - '**.tsx'
+      - '**.yaml'
+      - '**.yml'
+  pull_request:
+    paths:
+      - '**.css'
+      - '**.html'
+      - '**.js'
+      - '**.json'
+      - '**.jsonc'
+      - '**.jsx'
+      - '**.md'
+      - '**.mdx'
+      - '**.scss'
+      - '**.ts'
+      - '**.tsx'
+      - '**.yaml'
+      - '**.yml'
+
+jobs:
+  format:
+    name: Auto-format Prettier files
+    runs-on: ubuntu-latest
+    # Only run on same-repo PRs where the bot can push back formatting commits.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Prettier
+        run: npm run format
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit formatting changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: auto-format with Prettier"
+          git push
