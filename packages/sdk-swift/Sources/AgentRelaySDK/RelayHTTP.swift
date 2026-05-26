@@ -70,17 +70,28 @@ actor RelayHTTP {
     }
 
     private func url(for path: String) -> URL? {
+        Self.resolveAPIURL(baseURL: baseURL, path: path)
+    }
+
+    static func resolveAPIURL(baseURL: URL, path: String) -> URL? {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
         if components.scheme == "ws" { components.scheme = "http" }
         if components.scheme == "wss" { components.scheme = "https" }
 
-        let trimmedBase = (components.path).hasSuffix("/")
-            ? String(components.path.dropLast())
-            : components.path
+        var basePath = components.path
+        while basePath.hasSuffix("/") { basePath = String(basePath.dropLast()) }
+        if basePath.hasSuffix("/v1/ws") {
+            basePath = String(basePath.dropLast("/v1/ws".count))
+        } else if basePath.hasSuffix("/ws") {
+            basePath = String(basePath.dropLast("/ws".count))
+        }
+
         let normalizedPath = path.hasPrefix("/") ? path : "/" + path
-        components.path = trimmedBase + normalizedPath
+        components.path = basePath + normalizedPath
+        components.query = nil
+        components.fragment = nil
         return components.url
     }
 

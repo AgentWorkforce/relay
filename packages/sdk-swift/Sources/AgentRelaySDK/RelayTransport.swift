@@ -99,20 +99,32 @@ public actor RelayTransport {
     }
 
     private func websocketRequest() -> URLRequest {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        if components?.scheme == "http" { components?.scheme = "ws" }
-        if components?.scheme == "https" { components?.scheme = "wss" }
-        let existingPath = components?.path ?? ""
-        if existingPath.isEmpty || existingPath == "/" {
-            components?.path = "/ws"
-        } else if !existingPath.hasSuffix("/ws") && !existingPath.hasSuffix("/v1/ws") {
-            components?.path = existingPath.hasSuffix("/") ? existingPath + "ws" : existingPath + "/ws"
-        }
-
-        var request = URLRequest(url: components?.url ?? baseURL)
+        var request = URLRequest(url: Self.resolveWebSocketURL(baseURL: baseURL) ?? baseURL)
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         request.setValue(authToken, forHTTPHeaderField: "X-API-Key")
         return request
+    }
+
+    static func resolveWebSocketURL(baseURL: URL) -> URL? {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        if components?.scheme == "http" { components?.scheme = "ws" }
+        if components?.scheme == "https" { components?.scheme = "wss" }
+
+        var path = components?.path ?? ""
+        while path.hasSuffix("/") { path = String(path.dropLast()) }
+        if path.hasSuffix("/v1/ws") {
+            path = String(path.dropLast("/v1/ws".count))
+        } else if path.hasSuffix("/ws") {
+            path = String(path.dropLast("/ws".count))
+        }
+        components?.path = path + "/ws"
+
+        components?.queryItems = components?.queryItems?.filter { $0.name != "token" }
+        if components?.queryItems?.isEmpty == true {
+            components?.queryItems = nil
+        }
+
+        return components?.url
     }
 
     private func startReceiveLoop() {

@@ -117,7 +117,9 @@ actor RelayCore {
     }
 
     func releaseAgent(name: String, reason: String? = nil) async throws {
-        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        var pathSegmentAllowed = CharacterSet.urlPathAllowed
+        pathSegmentAllowed.remove(charactersIn: "/")
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? name
         let body: Data?
         if let reason {
             body = try encodeJSON(["reason": reason])
@@ -128,7 +130,8 @@ actor RelayCore {
     }
 
     func registerOrRotate(name: String) async throws -> AgentRegistration {
-        AgentRegistration(agentName: name, token: name) { agentName, token in
+        try await ensureConnected()
+        return AgentRegistration(agentName: name, token: name) { agentName, token in
             AgentClient(core: self, agentName: agentName, token: token)
         }
     }
