@@ -7,6 +7,7 @@ on:
       - 'install.sh'
       - 'src/**'
       - 'packages/**'
+      - '!packages/sdk-swift/**'
       - 'workflows/relay-e2e-meta-workflow.ts'
       - 'workflows/relay-clean-room-e2e-validation.ts'
       - 'scripts/run-relay-cleanroom-ci.sh'

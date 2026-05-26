@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/**'
       - 'packages/**'
+      - '!packages/sdk-swift/**'
       - 'scripts/e2e-test.sh'
       - 'scripts/e2e-sdk-lifecycle.mjs'
       - 'package.json'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'src/**'
       - 'packages/**'
+      - '!packages/sdk-swift/**'
       - 'scripts/e2e-test.sh'
       - 'scripts/e2e-sdk-lifecycle.mjs'
       - 'package.json'
