@@ -2,7 +2,7 @@
   "name": "@agent-relay/monorepo",
   "version": "7.1.1",
   "private": true,
-  "description": "Agent Relay monorepo — published CLI lives in packages/cli (name: agent-relay)",
+  "description": "Agent Relay monorepo",
   "type": "module",
   "workspaces": [
     "packages/*",
