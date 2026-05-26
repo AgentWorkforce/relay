@@ -63,7 +63,7 @@
     "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.6.0",
     "@slack/web-api": "^7.16.0",
-    "agent-trajectories": "^0.5.8",
+    "agent-trajectories": "^0.6.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "esbuild": "^0.27.2",
