@@ -28,15 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Fetch GitHub traffic and send it to PostHog
         env:
           GITHUB_REPOSITORY_NAME: ${{ github.repository }}
           # GitHub traffic endpoints require repository write access or a fine-grained
-          # token with Administration: read. GH_TRAFFIC_TOKEN is recommended; the
-          # workflow token remains a fallback for repositories where it is accepted.
-          GITHUB_TOKEN: ${{ secrets.GH_TRAFFIC_TOKEN || github.token }}
+          # token with Administration: read.
+          GITHUB_TOKEN: ${{ secrets.GH_TRAFFIC_TOKEN }}
           POSTHOG_PROJECT_API_KEY: ${{ secrets.POSTHOG_PROJECT_API_KEY }}
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
           # Avoid freezing yesterday's metrics before GitHub has settled them.

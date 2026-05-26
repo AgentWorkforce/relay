@@ -4,6 +4,7 @@ const DEFAULT_GITHUB_API_VERSION = '2022-11-28';
 const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
 const GITHUB_TRAFFIC_WINDOW_DAYS = 14;
 const DEFAULT_DAILY_LAG_HOURS = 8;
+const REQUEST_TIMEOUT_MS = 15_000;
 
 function readEnv(name, fallback = undefined) {
   const value = process.env[name];
@@ -92,6 +93,7 @@ function postHogEvent({ event, distinctId, timestamp, properties }) {
 async function githubGetJson({ owner, repo, path, githubToken, apiVersion }) {
   const url = new URL(`https://api.github.com/repos/${owner}/${repo}${path}`);
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${githubToken}`,
@@ -104,7 +106,7 @@ async function githubGetJson({ owner, repo, path, githubToken, apiVersion }) {
     const body = await response.text();
     const hint =
       response.status === 401 || response.status === 403
-        ? '\nGitHub traffic endpoints require repository write access or a fine-grained token with Administration: read. Configure GH_TRAFFIC_TOKEN as a repository secret if the default GITHUB_TOKEN is rejected.'
+        ? '\nGitHub traffic endpoints require repository write access or a fine-grained token with Administration: read. Configure GH_TRAFFIC_TOKEN as a repository secret.'
         : '';
     throw new Error(`GitHub API ${response.status} for ${path}: ${body}${hint}`);
   }
@@ -276,6 +278,7 @@ function buildSnapshotEvents({
 async function sendPostHogBatch({ host, apiKey, events }) {
   const response = await fetch(`${normalizeHost(host)}/batch/`, {
     method: 'POST',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
     },
