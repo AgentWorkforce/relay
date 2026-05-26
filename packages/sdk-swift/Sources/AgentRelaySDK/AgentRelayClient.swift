@@ -52,21 +52,20 @@ public struct AgentRegistration: Sendable {
 actor RelayCore {
     let apiKey: String
     let transport: RelayTransport
+    let http: RelayHTTP
     let encoder = JSONEncoder()
     let decoder = JSONDecoder()
 
-    private var handshakeInFlight = false
-    private var handshakeGeneration = 0
-    private var handshakeContinuations: [CheckedContinuation<Void, Error>] = []
     private var routerTask: Task<Void, Never>?
     private var channelContinuations: [String: [AsyncStream<RelayChannelEvent>.Continuation]] = [:]
     private var brokerEventContinuations: [AsyncStream<BrokerEvent>.Continuation] = []
     private var inboundMessageContinuations: [AsyncStream<InboundMessage>.Continuation] = []
     private var connectionStateContinuations: [AsyncStream<ConnectionStateChange>.Continuation] = []
 
-    init(apiKey: String, transport: RelayTransport) {
+    init(apiKey: String, transport: RelayTransport, http: RelayHTTP) {
         self.apiKey = apiKey
         self.transport = transport
+        self.http = http
     }
 
     func configureTransportCallbacks() async {
@@ -75,32 +74,17 @@ actor RelayCore {
         }
     }
 
+    /// Open the read-only event WebSocket if it's not already connected.
     func ensureConnected() async throws {
         if routerTask == nil || routerTask?.isCancelled == true {
             routerTask = Task { [weak self] in await self?.routeFrames() }
         }
-        if handshakeInFlight {
-            return try await waitForHandshake()
-        }
-        handshakeInFlight = true
-        handshakeGeneration &+= 1
         try await transport.connect()
-        try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0", apiKey: apiKey)))
-        try await waitForHandshake()
+        notifyConnectionState(.connected)
     }
 
     func transportDidConnect() async {
-        if handshakeInFlight {
-            finishHandshake(with: RelayError.connectionFailed("Transport reconnected before previous handshake completed"))
-        }
-        handshakeInFlight = true
-        handshakeGeneration &+= 1
         notifyConnectionState(.connected)
-        do {
-            try await send(.hello(HelloPayload(clientName: "AgentRelaySDK.Swift", clientVersion: "0.1.0", apiKey: apiKey)))
-        } catch {
-            finishHandshake(with: error)
-        }
     }
 
     func registerChannelContinuation(_ continuation: AsyncStream<RelayChannelEvent>.Continuation, for channel: String) {
@@ -120,23 +104,29 @@ actor RelayCore {
     }
 
     func sendChannelPost(channel: String, text: String) async throws {
-        try await ensureConnected()
-        try await send(.sendMessage(SendMessagePayload(to: channel, text: text, from: nil, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil)))
+        try await sendMessageHTTP(SendMessagePayload(to: channel, text: text, from: nil, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil))
     }
 
     func sendAgentMessage(from agentName: String, to target: String, text: String) async throws {
-        try await ensureConnected()
-        try await send(.sendMessage(SendMessagePayload(to: target, text: text, from: agentName, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil)))
+        try await sendMessageHTTP(SendMessagePayload(to: target, text: text, from: agentName, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil))
     }
 
     func spawnAgent(_ spec: AgentSpec, initialTask: String? = nil, skipRelayPrompt: Bool? = nil) async throws {
-        try await ensureConnected()
-        try await send(.spawnAgent(SpawnAgentPayload(agent: spec, initialTask: initialTask, skipRelayPrompt: skipRelayPrompt)))
+        let body = try encodeJSON(SpawnRequestBody(spec: spec, task: initialTask, skipRelayPrompt: skipRelayPrompt))
+        _ = try await http.post(path: "/api/spawn", body: body)
     }
 
     func releaseAgent(name: String, reason: String? = nil) async throws {
-        try await ensureConnected()
-        try await send(.releaseAgent(ReleaseAgentPayload(name: name, reason: reason)))
+        var pathSegmentAllowed = CharacterSet.urlPathAllowed
+        pathSegmentAllowed.remove(charactersIn: "/")
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? name
+        let body: Data?
+        if let reason {
+            body = try encodeJSON(["reason": reason])
+        } else {
+            body = nil
+        }
+        _ = try await http.delete(path: "/api/spawned/\(escaped)", body: body)
     }
 
     func registerOrRotate(name: String) async throws -> AgentRegistration {
@@ -149,12 +139,6 @@ actor RelayCore {
     func disconnect() async {
         routerTask?.cancel()
         routerTask = nil
-        handshakeInFlight = false
-        let pendingHandshakes = handshakeContinuations
-        handshakeContinuations.removeAll()
-        for continuation in pendingHandshakes {
-            continuation.resume(throwing: RelayError.notConnected)
-        }
         await transport.disconnect()
         notifyConnectionState(.disconnected)
         // Finish all event stream continuations
@@ -170,53 +154,17 @@ actor RelayCore {
         connectionStateContinuations.removeAll()
     }
 
-    private func send(_ message: OutboundMessage) async throws {
+    private func sendMessageHTTP(_ payload: SendMessagePayload) async throws {
+        let body = try encodeJSON(payload)
+        _ = try await http.post(path: "/api/send", body: body)
+    }
+
+    private func encodeJSON<T: Encodable>(_ value: T) throws -> Data {
         do {
-            let data = try encoder.encode(message)
-            try await transport.send(data)
-        } catch let error as RelayTransport.TransportError {
-            switch error {
-            case .notConnected: throw RelayError.notConnected
-            case .connectionFailed(let message), .sendFailed(let message): throw RelayError.connectionFailed(message)
-            case .invalidResponse: throw RelayError.connectionFailed("Invalid response")
-            }
+            return try encoder.encode(value)
         } catch {
             throw RelayError.encodingFailed(String(describing: error))
         }
-    }
-
-    private func waitForHandshake() async throws {
-        let generation = handshakeGeneration
-        try await withCheckedThrowingContinuation { continuation in
-            handshakeContinuations.append(continuation)
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                await self?.failHandshakeIfPending(generation: generation, with: RelayError.timeout("Timed out waiting for hello_ack"))
-            }
-        }
-    }
-
-    private func finishHandshake() {
-        handshakeInFlight = false
-        let continuations = handshakeContinuations
-        handshakeContinuations.removeAll()
-        for continuation in continuations {
-            continuation.resume(returning: ())
-        }
-    }
-
-    private func finishHandshake(with error: Error) {
-        handshakeInFlight = false
-        let continuations = handshakeContinuations
-        handshakeContinuations.removeAll()
-        for continuation in continuations {
-            continuation.resume(throwing: error)
-        }
-    }
-
-    private func failHandshakeIfPending(generation: Int, with error: Error) {
-        guard handshakeInFlight, handshakeGeneration == generation else { return }
-        finishHandshake(with: error)
     }
 
     private func notifyConnectionState(_ state: ConnectionStateChange) {
@@ -227,51 +175,83 @@ actor RelayCore {
 
     private func routeFrames() async {
         for await data in transport.inbound {
-            do {
-                let inbound = try decoder.decode(InboundMessage.self, from: data)
-
-                // Notify all raw inbound message subscribers
-                for continuation in inboundMessageContinuations {
-                    continuation.yield(inbound)
-                }
-
-                switch inbound {
-                case .helloAck:
-                    finishHandshake()
-                case .event(let event):
-                    // Notify all broker event subscribers
-                    for continuation in brokerEventContinuations {
-                        continuation.yield(event)
-                    }
-
-                    // Route relay_inbound events to channel subscribers
-                    if case .relayInbound(let relayEvent) = event {
-                        let message = RelayChannelEvent(from: relayEvent.from, body: relayEvent.body, threadId: relayEvent.threadId)
-                        for continuation in channelContinuations[relayEvent.target] ?? [] {
-                            continuation.yield(message)
-                        }
-                    }
-                case .deliverRelay(let delivery):
-                    // Route relay deliveries to channel subscribers as RelayChannelEvents
-                    let message = RelayChannelEvent(from: delivery.from, body: delivery.body, threadId: delivery.threadId)
-                    for continuation in channelContinuations[delivery.target] ?? [] {
-                        continuation.yield(message)
-                    }
-                case .error(let error):
-                    finishHandshake(with: RelayError.protocolError(code: error.code, message: error.message, retryable: error.retryable))
-                default:
-                    break
-                }
-            } catch {
+            guard let event = try? decoder.decode(BrokerEvent.self, from: data) else {
                 continue
             }
+
+            for continuation in inboundMessageContinuations {
+                continuation.yield(.event(event))
+            }
+            for continuation in brokerEventContinuations {
+                continuation.yield(event)
+            }
+
+            if case .relayInbound(let relayEvent) = event {
+                let message = RelayChannelEvent(from: relayEvent.from, body: relayEvent.body, threadId: relayEvent.threadId)
+                for continuation in channelContinuations[relayEvent.target] ?? [] {
+                    continuation.yield(message)
+                }
+            }
         }
-        // Transport stream ended (disconnection)
         notifyConnectionState(.disconnected)
     }
 }
 
-public final class RelayCast: @unchecked Sendable {
+/// Body shape for `POST /api/spawn` — flattens the AgentSpec fields onto the
+/// request as the broker expects (name, cli, runtime, args, channels, model,
+/// cwd, team, etc.) plus optional `task` and `skipRelayPrompt`.
+private struct SpawnRequestBody: Encodable {
+    let spec: AgentSpec
+    let task: String?
+    let skipRelayPrompt: Bool?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: SpawnCodingKeys.self)
+        try container.encode(spec.name, forKey: .name)
+        try container.encode(spec.runtime.rawValue, forKey: .runtime)
+        if let provider = spec.provider {
+            try container.encode(provider.rawValue, forKey: .cli)
+        } else if let cli = spec.cli {
+            try container.encode(cli, forKey: .cli)
+        }
+        if let model = spec.model {
+            try container.encode(model, forKey: .model)
+        }
+        try container.encode(spec.args ?? [], forKey: .args)
+        try container.encode(spec.channels ?? [], forKey: .channels)
+        if let cwd = spec.cwd {
+            try container.encode(cwd, forKey: .cwd)
+        }
+        if let team = spec.team {
+            try container.encode(team, forKey: .team)
+        }
+        if let shadowOf = spec.shadowOf {
+            try container.encode(shadowOf, forKey: .shadowOf)
+        }
+        if let shadowMode = spec.shadowMode {
+            try container.encode(shadowMode, forKey: .shadowMode)
+        }
+        if let restartPolicy = spec.restartPolicy {
+            try container.encode(restartPolicy, forKey: .restartPolicy)
+        }
+        if let task {
+            try container.encode(task, forKey: .task)
+        }
+        if let skipRelayPrompt {
+            try container.encode(skipRelayPrompt, forKey: .skipRelayPrompt)
+        }
+    }
+
+    enum SpawnCodingKeys: String, CodingKey {
+        case name, cli, runtime, model, args, channels, cwd, team, task
+        case shadowOf = "shadow_of"
+        case shadowMode = "shadow_mode"
+        case restartPolicy = "restart_policy"
+        case skipRelayPrompt = "skip_relay_prompt"
+    }
+}
+
+public final class AgentRelayClient: @unchecked Sendable {
     private let core: RelayCore
     public let apiKey: String
     public let baseURL: URL
@@ -281,7 +261,8 @@ public final class RelayCast: @unchecked Sendable {
         let resolved = Self.resolveBaseURL(from: baseURL)
         self.baseURL = resolved
         let transport = RelayTransport(baseURL: resolved, authToken: apiKey)
-        self.core = RelayCore(apiKey: apiKey, transport: transport)
+        let http = RelayHTTP(baseURL: resolved, apiKey: apiKey)
+        self.core = RelayCore(apiKey: apiKey, transport: transport, http: http)
         Task {
             await self.core.configureTransportCallbacks()
         }
@@ -331,10 +312,6 @@ public final class RelayCast: @unchecked Sendable {
     }
 
     /// Stream of all raw inbound protocol messages.
-    ///
-    /// This is the lowest-level event stream, including hello_ack, ok, error,
-    /// event, deliver_relay, worker_stream, worker_exited, and pong frames.
-    /// Use this when you need full protocol visibility.
     public var inboundMessages: AsyncStream<InboundMessage> {
         AsyncStream<InboundMessage> { continuation in
             Task { await core.registerInboundMessageContinuation(continuation) }
