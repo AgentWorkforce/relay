@@ -1,0 +1,46 @@
+name: Track GitHub Traffic in PostHog
+
+on:
+  schedule:
+    # Every 6 hours. Each run backfills the available 14-day GitHub traffic window.
+    - cron: '25 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      include_partial_day:
+        description: Include the current UTC day even though GitHub may still be updating it.
+        type: boolean
+        default: false
+      dry_run:
+        description: Fetch GitHub traffic and print the PostHog event payload without sending it.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-traffic-posthog
+  cancel-in-progress: false
+
+jobs:
+  capture-traffic:
+    name: Capture GitHub traffic snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch GitHub traffic and send it to PostHog
+        env:
+          GITHUB_REPOSITORY_NAME: ${{ github.repository }}
+          # GitHub traffic endpoints require repository write access or a fine-grained
+          # token with Administration: read. GH_TRAFFIC_TOKEN is recommended; the
+          # workflow token remains a fallback for repositories where it is accepted.
+          GITHUB_TOKEN: ${{ secrets.GH_TRAFFIC_TOKEN || github.token }}
+          POSTHOG_PROJECT_API_KEY: ${{ secrets.POSTHOG_PROJECT_API_KEY }}
+          POSTHOG_HOST: ${{ vars.POSTHOG_HOST || 'https://us.i.posthog.com' }}
+          # Avoid freezing yesterday's metrics before GitHub has settled them.
+          GITHUB_TRAFFIC_DAILY_LAG_HOURS: '8'
+          GITHUB_TRAFFIC_INCLUDE_PARTIAL_DAY: ${{ github.event_name == 'workflow_dispatch' && inputs.include_partial_day || 'false' }}
+          POSTHOG_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: node .github/scripts/sync-github-traffic-posthog.mjs
