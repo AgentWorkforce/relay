@@ -116,17 +116,12 @@
 }
 
 .stageLight {
-  background:
-    linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
 }
 
 .stageDark {
   background:
-    radial-gradient(
-      circle at top left,
-      color-mix(in srgb, #4a90c2 28%, transparent) 0%,
-      transparent 50%
-    ),
+    radial-gradient(circle at top left, color-mix(in srgb, #4a90c2 28%, transparent) 0%, transparent 50%),
     #0d1117;
   border-color: rgba(255, 255, 255, 0.08);
 }

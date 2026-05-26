@@ -38,10 +38,10 @@ export function DeployButtonShowcase() {
         <p className={s.eyebrow}>Brand · Launch Agent Button</p>
         <h1 className={s.title}>Launch Agent button</h1>
         <p className={s.lead}>
-          Embedded by users in their own README files to launch an agent from a repo. Two locked-in
-          variants — full and compact — hosted as SVG at <code>{HOST}/launch-agent.svg</code> and
-          <code> {HOST}/launch-agent_small.svg</code>. SVG renders natively on GitHub; PNG fallbacks
-          can be exported if needed for surfaces that strip SVG.
+          Embedded by users in their own README files to launch an agent from a repo. Two locked-in variants —
+          full and compact — hosted as SVG at <code>{HOST}/launch-agent.svg</code> and
+          <code> {HOST}/launch-agent_small.svg</code>. SVG renders natively on GitHub; PNG fallbacks can be
+          exported if needed for surfaces that strip SVG.
         </p>
       </section>
 
