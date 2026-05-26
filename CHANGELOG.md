@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
 - `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
 - `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
-- `sdk-swift`: renamed the broker client class `RelayCast` → `AgentRelayClient` to stop conflating it with the unrelated Relaycast cloud service.
+- `sdk-swift`: renamed the broker client class `RelayCast` → `AgentRelayClient`.
 
 ### Migration Guidance
 

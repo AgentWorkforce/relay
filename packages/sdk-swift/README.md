@@ -1,10 +1,7 @@
 # AgentRelaySDK
 
-Native Swift SDK for the Agent Relay broker.
-
-This SDK talks to a local or remote `agent-relay-broker` over its `/ws` event
-stream and `/api/*` HTTP endpoints. It is **not** a client for the separate
-Relaycast cloud service (`api.relaycast.dev`).
+Native Swift SDK for `agent-relay-broker`. Talks to the broker over its `/ws`
+event stream and `/api/*` HTTP endpoints.
 
 ## Installation
 
