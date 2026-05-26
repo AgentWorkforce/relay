@@ -9,7 +9,7 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && npm --prefix packages/cli exec -- tsc --noEmit",
+    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*'",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
@@ -22,11 +22,11 @@
     "build:hooks": "npm --prefix packages/hooks run build",
     "build:sdk": "npm --prefix packages/sdk run build",
     "build:telemetry": "npm --prefix packages/telemetry run build",
-    "dev:watch": "npm --prefix packages/cli exec -- tsc -w",
+    "dev:watch": "cd packages/cli && npx tsc -w",
     "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch packages/cli/dist/cli/index.js start dashboard.js claude\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
-    "predev": "npm run clean && npm run build:packages && npm --prefix packages/cli exec -- tsc && chmod +x packages/cli/dist/cli/index.js",
+    "predev": "npm run clean && npm run build:packages && cd packages/cli && npx tsc && cd ../.. && chmod +x packages/cli/dist/cli/index.js",
     "dev": "node packages/cli/dist/cli/index.js up --port 3888",
     "dev:local": "npm run build && npm --prefix packages/cli link && echo '✓ agent-relay linked globally'",
     "dev:unlink": "npm --prefix packages/cli unlink -g agent-relay && echo '✓ agent-relay unlinked'",

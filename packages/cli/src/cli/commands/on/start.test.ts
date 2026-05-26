@@ -14,7 +14,7 @@ vi.mock('./dotfiles.js', () => ({
 }));
 
 import { requestWorkspaceSession } from './start.js';
-import { createLocalJwksKeyPair } from '../../../../packages/sdk/src/provisioner/local-jwks.js';
+import { createLocalJwksKeyPair } from '../../../../../sdk/src/provisioner/local-jwks.js';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
