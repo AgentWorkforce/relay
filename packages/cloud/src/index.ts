@@ -99,10 +99,7 @@ export {
   type LocalJwksKeyPair,
   type LocalJwksSigningKey,
 } from './local-jwks.js';
-export {
-  PermissionAuditLog,
-  getDefaultPermissionAuditPath,
-} from './audit.js';
+export { PermissionAuditLog, getDefaultPermissionAuditPath } from './audit.js';
 
 export {
   type StoredAuth,

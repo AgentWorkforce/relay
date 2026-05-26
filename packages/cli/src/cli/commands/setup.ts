@@ -3,13 +3,7 @@ import { spawn as spawnProcess } from 'node:child_process';
 import { Command } from 'commander';
 import { getProjectPaths } from '@agent-relay/config';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import {
-  enableTelemetry,
-  disableTelemetry,
-  getStatus,
-  isDisabledByEnv,
-  track,
-} from '@agent-relay/telemetry';
+import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv, track } from '@agent-relay/telemetry';
 import { defaultExit } from '../lib/exit.js';
 
 type ExitFn = (code: number) => never;
