@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command } from 'commander';
@@ -355,17 +356,9 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     },
     holdOpen: () => new Promise(() => undefined),
     resolveTemplatesDir: () => {
-      // Walk up from __dirname to find the sdk package's builtin-templates dir
-      const dirname = path.dirname(fileURLToPath(import.meta.url));
-      let dir = dirname;
-      for (let i = 0; i < 8; i++) {
-        const candidate = path.join(dir, 'packages', 'sdk', 'src', 'workflows', 'builtin-templates');
-        if (fs.existsSync(candidate)) return candidate;
-        const distCandidate = path.join(dir, 'packages', 'sdk', 'dist', 'workflows', 'builtin-templates');
-        if (fs.existsSync(distCandidate)) return distCandidate;
-        dir = path.dirname(dir);
-      }
-      return path.join(dirname, 'builtin-templates');
+      const require = createRequire(import.meta.url);
+      const corePkg = require.resolve('@relayflows/core/package.json');
+      return path.join(path.dirname(corePkg), 'dist', 'builtin-templates');
     },
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),

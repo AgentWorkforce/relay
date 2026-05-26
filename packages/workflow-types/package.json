@@ -25,5 +25,8 @@
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
     "directory": "packages/workflow-types"
+  },
+  "dependencies": {
+    "@relayflows/core": "^0.1.0"
   }
 }
