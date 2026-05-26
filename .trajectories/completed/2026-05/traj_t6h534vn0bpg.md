@@ -18,6 +18,7 @@ Resolved origin/main merge conflicts for PR 977, preserved the owned agent-relay
 ## Key Decisions
 
 ### Resolved main merge by keeping the monorepo package move while preserving owned Agent Relay MCP behavior
+
 - **Chose:** Resolved main merge by keeping the monorepo package move while preserving owned Agent Relay MCP behavior
 - **Reasoning:** Root package metadata now stays monorepo-only, CLI package owns the agent-relay mcp export and @relaycast/sdk dependency, @relaycast/mcp remains removed, and runtime/test hints use underscore MCP names.
 
@@ -26,6 +27,7 @@ Resolved origin/main merge conflicts for PR 977, preserved the owned agent-relay
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Resolved main merge by keeping the monorepo package move while preserving owned Agent Relay MCP behavior: Resolved main merge by keeping the monorepo package move while preserving owned Agent Relay MCP behavior
