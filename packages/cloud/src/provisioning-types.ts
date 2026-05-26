@@ -35,27 +35,5 @@ export interface CompileInput {
   permissions: AgentPermissions;
 }
 
-// ── Seeder ──────────────────────────────────────────────────────────────────
-
-export interface SeedAclOptions {
-  relayfileBaseUrl: string;
-  token: string;
-  workspace: string;
-  aclRules: Record<string, string[]>;
-}
-
-export interface SeedWorkspaceOptions {
-  relayfileBaseUrl: string;
-  token: string;
-  workspace: string;
-  projectDir: string;
-  excludeDirs: string[];
-}
-
-export interface AgentAclSummary {
-  name: string;
-  summary: Pick<ProvisionSummary, 'readonly' | 'readwrite' | 'denied'>;
-}
-
 // Re-export upstream types for convenience.
 export type { AccessPreset, AgentPermissions, CompiledAgentPermissions, FilePermissions, PermissionSource };

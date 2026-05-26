@@ -14,7 +14,7 @@ vi.mock('./dotfiles.js', () => ({
 }));
 
 import { requestWorkspaceSession } from './start.js';
-import { createLocalJwksKeyPair } from '@agent-relay/cloud-sdk';
+import { createLocalJwksKeyPair } from '@agent-relay/cloud';
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {

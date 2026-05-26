@@ -7,8 +7,8 @@ import {
   discoverAgents as discoverAgentsFromCore,
   hasDotfiles as hasDotfilesFromCore,
 } from './dotfiles.js';
-import { mintAgentToken as mintToken } from '@agent-relay/cloud-sdk';
-import type { LocalJwksSigningKey } from '@agent-relay/cloud-sdk';
+import { mintAgentToken as mintToken } from '@agent-relay/cloud';
+import type { LocalJwksSigningKey } from '@agent-relay/cloud';
 
 interface ProvisionConfig {
   relayauthRoot: string;

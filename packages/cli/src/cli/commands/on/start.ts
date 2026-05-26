@@ -21,7 +21,7 @@ import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { launchOnMount } from '@relayfile/local-mount';
 import { mintToken } from './token.js';
 import { seedAclRules } from './workspace.js';
-import { seedWorkspace } from '@agent-relay/cloud-sdk';
+import { seedWorkspace } from '@agent-relay/cloud';
 import {
   createLocalJwks,
   exportPrivateKeyPem,
@@ -29,7 +29,7 @@ import {
   RELAYAUTH_JWT_KID_ENV,
   RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
   type LocalJwksSigningKey,
-} from '@agent-relay/cloud-sdk';
+} from '@agent-relay/cloud';
 import { ensureAuthenticated, readStoredAuth } from '@agent-relay/cloud';
 
 interface OnOptions {

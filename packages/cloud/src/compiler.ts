@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentPreset } from './permissions.js';
 
-import type { AgentPermissions, CompiledAgentPermissions, CompileInput, PermissionSource } from './types.js';
+import type { AgentPermissions, CompiledAgentPermissions, CompileInput, PermissionSource } from './provisioning-types.js';
 
 type FileAction = 'read' | 'write';
 

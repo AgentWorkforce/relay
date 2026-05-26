@@ -10,6 +10,26 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./permissions": {
+      "types": "./dist/permissions.d.ts",
+      "import": "./dist/permissions.js"
+    },
+    "./token": {
+      "types": "./dist/token.d.ts",
+      "import": "./dist/token.js"
+    },
+    "./local-jwks": {
+      "types": "./dist/local-jwks.d.ts",
+      "import": "./dist/local-jwks.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler.d.ts",
+      "import": "./dist/compiler.js"
+    },
+    "./audit": {
+      "types": "./dist/audit.d.ts",
+      "import": "./dist/audit.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
