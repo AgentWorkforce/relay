@@ -95,6 +95,7 @@ const ALL_SLUGS = [
   'communicate-openai-agents',
   'communicate-swarms',
   'communicate-crewai',
+  'doctor-orchestration-repros',
   'harness-runtime-config',
   'local-mode',
   'reference-openclaw',
