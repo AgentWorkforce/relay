@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
 - `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, so custom CLIs can be configured without Rust changes while spawn requests remain self-contained.
 - `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.

@@ -18,10 +18,12 @@ Merged origin/main into the harness runtime plans PR, resolved conflicts in pack
 ## Key Decisions
 
 ### Resolved SDK conflict by retaining ensureAgentHandle metadata flow
+
 - **Chose:** Resolved SDK conflict by retaining ensureAgentHandle metadata flow
 - **Reasoning:** The harness PR added pid/session metadata on spawned agents, so keeping the new result-aware handle creation preserves that behavior after merging main.
 
 ### Validated conflict resolution with SDK typecheck and broker cargo check
+
 - **Chose:** Validated conflict resolution with SDK typecheck and broker cargo check
 - **Reasoning:** The merge touched SDK and broker surfaces, so both checks cover the manually resolved TypeScript path and the incoming Rust changes.
 
@@ -30,7 +32,8 @@ Merged origin/main into the harness runtime plans PR, resolved conflicts in pack
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Resolved SDK conflict by retaining ensureAgentHandle metadata flow: Resolved SDK conflict by retaining ensureAgentHandle metadata flow
 - Validated conflict resolution with SDK typecheck and broker cargo check: Validated conflict resolution with SDK typecheck and broker cargo check
