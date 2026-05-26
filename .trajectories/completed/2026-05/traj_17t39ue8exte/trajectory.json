@@ -42,9 +42,7 @@
             "confidence": 0.82
           },
           "significance": "high",
-          "tags": [
-            "confidence:0.82"
-          ]
+          "tags": ["confidence:0.82"]
         }
       ]
     }
