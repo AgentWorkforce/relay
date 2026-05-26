@@ -19,6 +19,10 @@
       "import": "./dist/index.js",
       "default": "./dist/index.cjs"
     },
+    "./mcp": {
+      "types": "./dist/cli/relaycast-mcp.d.ts",
+      "import": "./dist/cli/relaycast-mcp.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -55,7 +59,6 @@
     "@agent-relay/utils": "7.1.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
-    "@relaycast/mcp": "1.0.0",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/local-mount": "^0.2.2",
     "@relayfile/sdk": "^0.6.0",

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startStdio } from '@relaycast/mcp/dist/transports.js';
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = path.join(EXTENSION_DIR, '.env');
@@ -72,18 +72,28 @@ writeStateFile({
   updatedAt: new Date().toISOString(),
 });
 
-await startStdio({
-  apiKey: workspaceKey,
-  baseUrl,
-  agentName,
-  agentToken,
-  agentType: 'agent',
-  strictAgentName: true,
-});
+await runAgentRelayMcp();
 
 function readEnv(name) {
   const value = process.env[name];
   return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function runAgentRelayMcp() {
+  return new Promise((resolve, reject) => {
+    const child = spawn('npx', ['-y', 'agent-relay', 'mcp'], {
+      stdio: 'inherit',
+      env: process.env,
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`agent-relay mcp exited with ${signal ?? code}`));
+    });
+  });
 }
 
 function loadDotEnv(filePath) {

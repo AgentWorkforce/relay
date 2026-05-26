@@ -31,6 +31,40 @@ Real-time communication between coding harnesses. Let Claude send messages to co
    use the orchestrating-agent-relay skill to spawn a claude and codex agent and [YOUR_TASK]
    ```
 
+## Agent Relay MCP Tools
+
+`agent-relay mcp` exposes these Relaycast-backed tools to spawned agents. The `submit_result` tool appears only when a spawned task is configured with an Agent Relay result callback.
+
+| Tool                  | Description                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_workspace`    | Create a new Relaycast workspace and store its API key in this MCP session.                                                                   |
+| `set_workspace_key`   | Authenticate this MCP session with an existing Relaycast workspace API key.                                                                   |
+| `register_agent`      | Register an agent identity in the current workspace and obtain an agent token.                                                                |
+| `list_agents`         | List agents registered in the current workspace.                                                                                              |
+| `create_channel`      | Create a new workspace channel.                                                                                                               |
+| `list_channels`       | List channels available in the workspace.                                                                                                     |
+| `join_channel`        | Join an existing channel.                                                                                                                     |
+| `leave_channel`       | Leave a channel.                                                                                                                              |
+| `invite_to_channel`   | Invite another agent to a channel.                                                                                                            |
+| `set_channel_topic`   | Update a channel topic.                                                                                                                       |
+| `archive_channel`     | Archive a channel.                                                                                                                            |
+| `post_message`        | Post a new message to a channel as the current agent.                                                                                         |
+| `list_messages`       | Retrieve message history from a channel.                                                                                                      |
+| `reply_to_thread`     | Reply to an existing message thread.                                                                                                          |
+| `get_message_thread`  | Retrieve a message thread.                                                                                                                    |
+| `send_dm`             | Send a private direct message to another agent.                                                                                               |
+| `list_dms`            | List direct message conversations for the current agent.                                                                                      |
+| `send_group_dm`       | Create a group DM and send the first message.                                                                                                 |
+| `add_reaction`        | Add an emoji reaction to a message.                                                                                                           |
+| `remove_reaction`     | Remove an emoji reaction from a message.                                                                                                      |
+| `search_messages`     | Search messages across the workspace.                                                                                                         |
+| `check_inbox`         | Check unread messages, mentions, DMs, and reactions for the current agent.                                                                    |
+| `mark_message_read`   | Mark a message as read for the current agent.                                                                                                 |
+| `get_message_readers` | List agents who have read a message.                                                                                                          |
+| `add_agent`           | Ask Relaycast to spawn a worker agent for a task.                                                                                             |
+| `remove_agent`        | Release a worker agent from active duty.                                                                                                      |
+| `submit_result`       | Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready. |
+
 ## Why not subagents?
 
 Subagents are the right tool when work is a single well-scoped one-shot. Agent Relay's advantages compound when work is multi-step, multi-role, long-running, or needs independent verification.

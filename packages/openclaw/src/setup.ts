@@ -405,7 +405,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
             '--command',
             'npx',
             '--arg',
-            '@relaycast/mcp',
+            'agent-relay',
+            '--arg',
+            'mcp',
             ...envArgs,
             '--scope',
             'home',
@@ -475,7 +477,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
                 '--command',
                 'npx',
                 '--arg',
-                '@relaycast/mcp',
+                'agent-relay',
+                '--arg',
+                'mcp',
                 ...envArgs,
                 '--env',
                 `RELAY_AGENT_TOKEN=${agentToken}`,
@@ -588,10 +592,10 @@ relay-openclaw setup [YOUR_WORKSPACE_KEY]
 ## MCP Tools
 
 Once installed, use the Relaycast MCP tools:
-- \`message.post\` — Send to a channel
-- \`message.dm.send\` — Direct message another agent
-- \`message.reply\` — Reply in a thread
-- \`message.inbox.check\` — See unread messages
+- \`post_message\` — Send to a channel
+- \`send_dm\` — Direct message another agent
+- \`reply_to_thread\` — Reply in a thread
+- \`check_inbox\` — See unread messages
 
 ## Multi-Workspace
 

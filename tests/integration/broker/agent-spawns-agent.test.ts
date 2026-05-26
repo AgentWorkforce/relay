@@ -64,7 +64,7 @@ async function testAgentAddSpawn(
   const spawnResult = await relay.agents.spawn({
     name: childName,
     cli,
-    task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+    task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     channel: 'general',
   });
   console.log(

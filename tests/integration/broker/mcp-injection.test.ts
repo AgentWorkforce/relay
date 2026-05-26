@@ -98,8 +98,8 @@ test(
         'Claude: injected message should include system-reminder wrapper'
       );
       assert.ok(
-        output.includes('mcp__relaycast__message_dm_send'),
-        'Claude: DM should hint to use mcp__relaycast__message_dm_send'
+        output.includes('mcp__relaycast__send_dm'),
+        'Claude: DM should hint to use mcp__relaycast__send_dm'
       );
       assert.ok(
         output.includes('Relay message from test-user'),
@@ -141,8 +141,8 @@ test('mcp-injection: claude — channel message injects post_message hint', { ti
     const output = collectStreamOutput(events, agentName);
 
     assert.ok(
-      output.includes('mcp__relaycast__message_post'),
-      'Claude: channel message should hint to use mcp__relaycast__message_post'
+      output.includes('mcp__relaycast__post_message'),
+      'Claude: channel message should hint to use mcp__relaycast__post_message'
     );
     assert.ok(output.includes('dev-team'), 'Claude: channel hint should mention the channel name');
 
@@ -164,7 +164,7 @@ test('mcp-injection: claude — agent uses MCP tools to respond (e2e)', { timeou
 
   try {
     await harness.spawnAgent(agentName, 'claude', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -215,7 +215,7 @@ test(
 
     try {
       await harness.spawnAgent(agentName, 'codex', ['general'], {
-        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
       });
       await sleep(15_000);
 
@@ -273,7 +273,7 @@ test(
 
     try {
       await harness.spawnAgent(agentName, 'opencode', ['general'], {
-        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
       });
       await sleep(15_000);
 
@@ -328,7 +328,7 @@ test('mcp-injection: gemini — pre-spawn mcp add enables MCP tools', { timeout:
 
   try {
     await harness.spawnAgent(agentName, 'gemini', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -382,7 +382,7 @@ test('mcp-injection: droid — pre-spawn mcp add enables MCP tools', { timeout: 
 
   try {
     await harness.spawnAgent(agentName, 'droid', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__message_dm_send tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -540,10 +540,10 @@ test(
     try {
       // Spawn both agents with MCP
       await harness.spawnAgent(claudeName, 'claude', ['general'], {
-        task: `You are a test agent named ${claudeName}. When you receive a message, respond using mcp__relaycast__message_dm_send to reply to the sender. Keep responses to one sentence.`,
+        task: `You are a test agent named ${claudeName}. When you receive a message, respond using mcp__relaycast__send_dm to reply to the sender. Keep responses to one sentence.`,
       });
       await harness.spawnAgent(codexName, 'codex', ['general'], {
-        task: `You are a test agent named ${codexName}. When you receive a message, respond using mcp__relaycast__message_dm_send to reply to the sender. Keep responses to one sentence.`,
+        task: `You are a test agent named ${codexName}. When you receive a message, respond using mcp__relaycast__send_dm to reply to the sender. Keep responses to one sentence.`,
       });
 
       await sleep(15_000);

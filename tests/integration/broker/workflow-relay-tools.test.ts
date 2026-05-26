@@ -5,7 +5,7 @@
  * Relaycast MCP tools — not just that the config is injected correctly.
  *
  * Bugs targeted:
- *   - Non-claude CLIs (codex, gemini, …) must call register() before other
+ *   - Non-claude CLIs (codex, gemini, …) must call register_agent() before other
  *     relay tools. The workflow runner now injects a RELAY SETUP preamble
  *     into every non-claude interactive agent task.
  *   - Sub-agents spawned by leads via mcp__relaycast__add_agent never received an agent
@@ -195,10 +195,10 @@ test('workflow-relay-tools: claude agent posts to channel and exits', { timeout:
 // ── Test 2: Codex agent registers and uses relay tools ───────────────────────
 //
 // Core regression test. Before the fix, codex agents got "Not registered"
-// errors on every relay tool call because they never called register() first.
+// errors on every relay tool call because they never called register_agent() first.
 //
 // The fix has two parts:
-//   1. runner.ts injects a "RELAY SETUP: call register(name=…)" preamble
+//   1. runner.ts injects a "RELAY SETUP: call register_agent(name=…)" preamble
 //   2. wrap.rs pre-registers sub-agents so they start with a valid token
 //
 // This test exercises part 1 (direct workflow step).

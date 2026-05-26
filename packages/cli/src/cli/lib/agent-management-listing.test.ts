@@ -304,7 +304,7 @@ describe('toPlainLogLines', () => {
     const raw = [
       `${ESC}[10;3HSt${ESC}[10;4Hta${ESC}[10;5Har${ESC}[10;6Hrt${ESC}[10;7Hti${ESC}[10;8Hin${ESC}[10;9Hng MCP servers`,
       `${ESC}[11;1H•${ESC}[11;3HW${ESC}[11;3HWo${ESC}[11;4Hor${ESC}[11;5Hrk${ESC}[11;6Hki${ESC}[11;7Hin${ESC}[11;8Hng`,
-      `${ESC}[14;1H•${ESC}[14;3HCalling${ESC}[15;3H└ relaycast.agent.remove(...)`,
+      `${ESC}[14;1H•${ESC}[14;3HCalling${ESC}[15;3H└ relaycast.remove_agent(...)`,
     ].join('');
 
     const cooked = toPlainLogLines(raw).join('\n');
@@ -312,7 +312,7 @@ describe('toPlainLogLines', () => {
     expect(cooked).toContain('Starting MCP servers');
     expect(cooked).toContain('• Working');
     expect(cooked).toContain('Calling');
-    expect(cooked).toContain('└ relaycast.agent.remove(...)');
+    expect(cooked).toContain('└ relaycast.remove_agent(...)');
     expect(cooked).not.toContain('Sttaarrtti');
     expect(cooked).not.toContain('WWoor');
   });

@@ -1,0 +1,53 @@
+{
+  "id": "traj_cszfl2icaj2t",
+  "version": 1,
+  "task": {
+    "title": "Add Prettier auto-format workflow"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-26T11:04:15.563Z",
+  "completedAt": "2026-05-26T11:05:23.716Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-26T11:05:19.607Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_adlddf0npf5n",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-26T11:05:19.607Z",
+      "endedAt": "2026-05-26T11:05:23.716Z",
+      "events": [
+        {
+          "ts": 1779793519608,
+          "type": "decision",
+          "content": "Added a same-repo PR Prettier auto-format workflow: Added a same-repo PR Prettier auto-format workflow",
+          "raw": {
+            "question": "Added a same-repo PR Prettier auto-format workflow",
+            "chosen": "Added a same-repo PR Prettier auto-format workflow",
+            "alternatives": [],
+            "reasoning": "The existing Rust auto-format workflow only runs cargo fmt. The new workflow runs npm run format for Prettier-owned file types and pushes a bot commit when same-repo PR formatting changes are detected."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added a Prettier auto-format workflow for same-repo PRs. The workflow runs npm ci, npm run format, commits changed files as github-actions[bot], and pushes them back to the PR branch.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-owned-mcp",
+  "tags": [],
+  "_trace": {
+    "startRef": "bb11e173952b500b74d3e173520d7021c4c16a49",
+    "endRef": "bb11e173952b500b74d3e173520d7021c4c16a49"
+  }
+}

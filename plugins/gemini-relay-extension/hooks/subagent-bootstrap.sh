@@ -7,9 +7,9 @@ AGENT_NAME="${RELAY_AGENT_NAME:-the assigned worker name}"
 cat <<EOF
 Relaycast worker setup — complete these steps IN ORDER:
 
-1. Call \`workspace.set_key(api_key: "$WORKSPACE_KEY")\`.
-2. Call \`agent.register(name: "$AGENT_NAME", type: "agent")\`.
-3. Call \`message.inbox.check()\` to get your task assignment.
+1. Call \`set_workspace_key(api_key: "$WORKSPACE_KEY")\`.
+2. Call \`register_agent(name: "$AGENT_NAME", type: "agent")\`.
+3. Call \`check_inbox()\` to get your task assignment.
 4. Send an ACK DM to your lead when you understand the task.
 5. When finished, send a DONE DM with results and then send DONE to the system.
 
