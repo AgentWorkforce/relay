@@ -1,12 +1,5 @@
 import Foundation
 
-/// Deprecated name for ``AgentRelayClient``. The class used to be called
-/// `RelayCast`, which conflated it with the separate Relaycast cloud service
-/// (`api.relaycast.dev`). This Swift class actually talks to a local or
-/// remote `agent-relay-broker` over its `/ws` and `/api/*` endpoints.
-@available(*, deprecated, renamed: "AgentRelayClient", message: "RelayCast was misnamed — it is a broker client, not the Relaycast cloud client. Use AgentRelayClient.")
-public typealias RelayCast = AgentRelayClient
-
 public enum RelayError: Error, Sendable {
     case invalidBaseURL(String)
     case connectionFailed(String)

@@ -45,7 +45,3 @@ for await event in channel.events {
 - `AgentRegistration.asClient()`
 - `AgentClient.post(to:message:)`
 - `AgentClient.dm(to:message:)`
-
-> The previous class name `RelayCast` is preserved as a deprecated typealias
-> for `AgentRelayClient`. It was renamed because it conflated this broker
-> client with the unrelated Relaycast cloud service.

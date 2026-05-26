@@ -19,14 +19,6 @@ final class AgentRelaySDKTests: XCTestCase {
         XCTAssertEqual(client.baseURL.port, 3889)
     }
 
-    /// Old name still resolves to the same type — guards against accidentally
-    /// removing the back-compat typealias.
-    @available(*, deprecated)
-    func testRelayCastTypealiasResolves() {
-        let legacy: RelayCast = AgentRelayClient(apiKey: "rk_test_key")
-        XCTAssertEqual(legacy.apiKey, "rk_test_key")
-    }
-
     /// v7 broker emits each event as a bare `{kind: ...}` JSON object on `/ws`.
     /// Make sure the SDK can still decode the broker's wire format.
     func testBrokerEventDecodesBarePayload() throws {
