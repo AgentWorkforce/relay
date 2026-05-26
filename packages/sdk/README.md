@@ -15,7 +15,7 @@ npm install @agent-relay/sdk
 The workflow builder is the primary way to define and run multi-agent workflows:
 
 ```ts
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 
 const result = await workflow('my-feature')
   .pattern('dag')
@@ -179,7 +179,7 @@ Notes:
 
 ```ts
 import { AgentRelayClient } from '@agent-relay/sdk/client';
-import { workflow, WorkflowBuilder } from '@agent-relay/sdk/workflows';
+import { workflow, WorkflowBuilder } from '@relayflows/core';
 import { ConsensusCoordinator } from '@agent-relay/sdk/consensus';
 import { ShadowCoordinator } from '@agent-relay/sdk/shadow';
 ```
@@ -189,7 +189,7 @@ import { ShadowCoordinator } from '@agent-relay/sdk/shadow';
 Built-in templates for common patterns:
 
 ```ts
-import { fanOut, pipeline, dag } from '@agent-relay/sdk/workflows';
+import { fanOut, pipeline, dag } from '@relayflows/core';
 
 // Fan-out: parallel execution with synthesis
 const builder = fanOut('analysis', {

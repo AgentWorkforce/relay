@@ -52,11 +52,6 @@
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
     },
-    "./workflows": {
-      "types": "./dist/workflows/index.d.ts",
-      "import": "./dist/workflows/index.js",
-      "default": "./dist/workflows/index.js"
-    },
     "./communicate": {
       "types": "./dist/communicate/index.d.ts",
       "import": "./dist/communicate/index.js",
@@ -182,7 +177,6 @@
     "@agentworkforce/persona-kit": "^3.0.20",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
-    "@relayflows/core": "^0.1.0",
     "@sinclair/typebox": "^0.34.48",
     "agent-trajectories": "^0.6.0",
     "chalk": "^4.1.2",

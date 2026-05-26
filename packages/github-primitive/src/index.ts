@@ -4,7 +4,6 @@ export * from './adapter.js';
 export * from './local-runtime.js';
 export * from './cloud-runtime.js';
 export * from './client.js';
-export * from './workflow-step.js';
 export * from './actions/branches.js';
 export * from './actions/commits.js';
 export * from './actions/repos.js';

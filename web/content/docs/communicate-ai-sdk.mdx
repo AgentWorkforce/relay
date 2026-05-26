@@ -68,7 +68,7 @@ import { streamText, wrapLanguageModel } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { Relay } from '@agent-relay/sdk/communicate';
 import { onRelay } from '@agent-relay/sdk/communicate/adapters/ai-sdk';
-import { runWorkflow } from '@agent-relay/sdk/workflows';
+import { runWorkflow } from '@relayflows/core';
 
 export async function POST(req: Request) {
   const { prompt, repo, escalate } = await req.json();

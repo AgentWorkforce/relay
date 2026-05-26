@@ -58,7 +58,7 @@ serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3001) });
 ```
 
 For the SDK-side wiring that lets workflow agents use the proxy transparently,
-see [`@agent-relay/sdk/workflows`'s proxy-env
+see [`@relayflows/core`'s proxy-env
 module](../sdk/src/workflows/proxy-env.ts) and the `credentialProxy` field on
 `SwarmConfig`.
 

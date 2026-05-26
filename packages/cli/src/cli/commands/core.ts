@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command } from 'commander';
@@ -124,7 +123,6 @@ export interface CoreDependencies {
   sleep: (ms: number) => Promise<void>;
   onSignal: (signal: NodeJS.Signals, handler: () => void | Promise<void>) => void;
   holdOpen: () => Promise<void>;
-  resolveTemplatesDir: () => string;
   isPortInUse: (port: number) => Promise<boolean>;
   findBrokerApiPort: () => Promise<number>;
   log: (...args: unknown[]) => void;
@@ -355,11 +353,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
       process.on(signal, () => runSignalHandler(handler));
     },
     holdOpen: () => new Promise(() => undefined),
-    resolveTemplatesDir: () => {
-      const require = createRequire(import.meta.url);
-      const corePkg = require.resolve('@relayflows/core/package.json');
-      return path.join(path.dirname(corePkg), 'dist', 'builtin-templates');
-    },
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     warn: (...args: unknown[]) => console.warn(...args),
@@ -524,27 +517,5 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         has_architect: options.architect !== undefined && options.architect !== false,
       });
       await runBridgeCommand(projectPaths, options, deps);
-    });
-
-  const workflowsCmd = program.command('workflows').description('Manage relay.yaml workflow templates');
-
-  workflowsCmd
-    .command('list')
-    .description('List available built-in workflow templates')
-    .action(() => {
-      const templatesDir = deps.resolveTemplatesDir();
-      if (!deps.fs.existsSync(templatesDir)) {
-        deps.log('No built-in templates found.');
-        return;
-      }
-      const files = deps.fs.readdirSync(templatesDir).filter((f) => f.endsWith('.yaml'));
-      if (files.length === 0) {
-        deps.log('No built-in templates found.');
-        return;
-      }
-      deps.log('Built-in workflow templates:');
-      for (const file of files) {
-        deps.log(`  ${file.replace(/\.yaml$/, '')}`);
-      }
     });
 }

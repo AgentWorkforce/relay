@@ -30,7 +30,6 @@
     "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/workflow-types": "7.1.1",
     "@slack/web-api": "^7.16.0"
   },
   "devDependencies": {

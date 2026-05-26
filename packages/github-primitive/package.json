@@ -31,9 +31,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "@agent-relay/workflow-types": "7.1.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",
