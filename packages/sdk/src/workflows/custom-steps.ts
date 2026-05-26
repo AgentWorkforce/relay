@@ -59,9 +59,9 @@ export function loadCustomSteps(cwd: string): Map<string, CustomStepDefinition> 
       throw new CustomStepsParseError(
         'Missing "steps" key',
         'Add a "steps" object containing your custom step definitions:\n\n' +
-        'steps:\n' +
-        '  my-step:\n' +
-        '    command: "echo hello"',
+          'steps:\n' +
+          '  my-step:\n' +
+          '    command: "echo hello"',
         stepsPath
       );
     }
@@ -85,11 +85,7 @@ export function loadCustomSteps(cwd: string): Map<string, CustomStepDefinition> 
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
-    throw new CustomStepsParseError(
-      'Failed to parse file',
-      message,
-      stepsPath
-    );
+    throw new CustomStepsParseError('Failed to parse file', message, stepsPath);
   }
 }
 
@@ -133,9 +129,9 @@ function validateCustomStepDefinition(
     throw new CustomStepsParseError(
       `Invalid step "${name}"`,
       'Each step must be an object with at least a "command" or "branch" field:\n\n' +
-      `steps:\n` +
-      `  ${name}:\n` +
-      `    command: "your-command-here"`,
+        `steps:\n` +
+        `  ${name}:\n` +
+        `    command: "your-command-here"`,
       filePath
     );
   }
@@ -163,13 +159,13 @@ function validateCustomStepDefinition(
     throw new CustomStepsParseError(
       `Step "${name}" is missing required fields`,
       'Deterministic steps need "command", worktree steps need "branch":\n\n' +
-      '# Deterministic step:\n' +
-      `  ${name}:\n` +
-      '    command: "your-command {{param}}"\n\n' +
-      '# Worktree step:\n' +
-      `  ${name}:\n` +
-      '    type: worktree\n' +
-      '    branch: "{{branch-name}}"',
+        '# Deterministic step:\n' +
+        `  ${name}:\n` +
+        '    command: "your-command {{param}}"\n\n' +
+        '# Worktree step:\n' +
+        `  ${name}:\n` +
+        '    type: worktree\n' +
+        '    branch: "{{branch-name}}"',
       filePath
     );
   }
@@ -177,9 +173,7 @@ function validateCustomStepDefinition(
   if (stepType === 'deterministic' && !hasCommand) {
     throw new CustomStepsParseError(
       `Deterministic step "${name}" is missing "command"`,
-      'Add a command field:\n\n' +
-      `  ${name}:\n` +
-      '    command: "your-shell-command"',
+      'Add a command field:\n\n' + `  ${name}:\n` + '    command: "your-shell-command"',
       filePath
     );
   }
@@ -188,9 +182,9 @@ function validateCustomStepDefinition(
     throw new CustomStepsParseError(
       `Worktree step "${name}" is missing "branch"`,
       'Add a branch field:\n\n' +
-      `  ${name}:\n` +
-      '    type: worktree\n' +
-      '    branch: "feature/{{branch-name}}"',
+        `  ${name}:\n` +
+        '    type: worktree\n' +
+        '    branch: "feature/{{branch-name}}"',
       filePath
     );
   }
@@ -201,12 +195,12 @@ function validateCustomStepDefinition(
       throw new CustomStepsParseError(
         `Invalid params for step "${name}"`,
         'Params must be an array:\n\n' +
-        `  ${name}:\n` +
-        '    params:\n' +
-        '      - name: myParam\n' +
-        '        required: true\n' +
-        '      - name: optionalParam\n' +
-        '        default: "value"',
+          `  ${name}:\n` +
+          '    params:\n' +
+          '      - name: myParam\n' +
+          '        required: true\n' +
+          '      - name: optionalParam\n' +
+          '        default: "value"',
         filePath
       );
     }
@@ -223,9 +217,7 @@ function validateCustomStepDefinition(
       if (!param.name || typeof param.name !== 'string') {
         throw new CustomStepsParseError(
           `Param at index ${i} for step "${name}" is missing "name"`,
-          'Add a name to the parameter:\n\n' +
-          '    params:\n' +
-          '      - name: myParam',
+          'Add a name to the parameter:\n\n' + '    params:\n' + '      - name: myParam',
           filePath
         );
       }
@@ -270,7 +262,7 @@ export function validateCustomStepsUsage(
       missingSteps.push(step.use);
       errors.push(
         `Step "${step.name}" uses undefined custom step "${step.use}". ` +
-        `Add it to .relay/steps.yaml or check for typos.`
+          `Add it to .relay/steps.yaml or check for typos.`
       );
       continue;
     }
@@ -306,7 +298,7 @@ export function validateCustomStepsUsage(
           unresolvedVariables.push({ step: step.name, variable });
           warnings.push(
             `Step "${step.name}": Variable "{{${variable}}}" in custom step "${step.use}" ` +
-            `is not defined as a parameter. It will not be interpolated.`
+              `is not defined as a parameter. It will not be interpolated.`
           );
         }
       }
@@ -354,9 +346,9 @@ export function resolveCustomStep(
       step.name,
       `Custom step "${step.use}" not found`,
       `Make sure "${step.use}" is defined in .relay/steps.yaml:\n\n` +
-      'steps:\n' +
-      `  ${step.use}:\n` +
-      '    command: "your-command"'
+        'steps:\n' +
+        `  ${step.use}:\n` +
+        '    command: "your-command"'
     );
   }
 
@@ -386,9 +378,9 @@ export function resolveCustomStep(
       step.name,
       `Missing required parameter(s) for custom step "${step.use}"`,
       `Add the following to your step:\n\n` +
-      `- name: ${step.name}\n` +
-      `  use: ${step.use}\n` +
-      missingRequired.map((p) => `  ${p}: <value>`).join('\n')
+        `- name: ${step.name}\n` +
+        `  use: ${step.use}\n` +
+        missingRequired.map((p) => `  ${p}: <value>`).join('\n')
     );
   }
 

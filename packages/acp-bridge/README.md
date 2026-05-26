@@ -49,13 +49,13 @@ relay-acp --help
 
 ### CLI Options
 
-| Option | Description |
-|--------|-------------|
-| `--name <name>` | Agent name for relay identification (default: `relay-acp`) |
-| `--socket <path>` | Path to relay broker socket |
-| `--debug` | Enable debug logging to stderr |
-| `--help, -h` | Show help message |
-| `--version, -v` | Show version |
+| Option            | Description                                                |
+| ----------------- | ---------------------------------------------------------- |
+| `--name <name>`   | Agent name for relay identification (default: `relay-acp`) |
+| `--socket <path>` | Path to relay broker socket                                |
+| `--debug`         | Enable debug logging to stderr                             |
+| `--help, -h`      | Show help message                                          |
+| `--version, -v`   | Show version                                               |
 
 ## Zed Integration
 
@@ -72,16 +72,19 @@ This adds an `agent_servers` entry to your Zed settings with the correct socket 
 ### Manual Setup
 
 1. Start the relay broker:
+
    ```bash
    agent-relay up
    ```
 
 2. Spawn relay agents:
+
    ```bash
    agent-relay spawn Worker1 claude "Help with coding tasks"
    ```
 
 3. Add to Zed settings (`~/.config/zed/settings.json`):
+
    ```json
    {
      "agent_servers": {
@@ -123,16 +126,16 @@ await agent.start();
 
 ## Configuration
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `agentName` | string | `'relay-acp'` | Name used when connecting to relay broker |
-| `socketPath` | string | auto | Path to relay broker socket |
-| `debug` | boolean | `false` | Enable debug logging |
+| Option       | Type    | Default       | Description                               |
+| ------------ | ------- | ------------- | ----------------------------------------- |
+| `agentName`  | string  | `'relay-acp'` | Name used when connecting to relay broker |
+| `socketPath` | string  | auto          | Path to relay broker socket               |
+| `debug`      | boolean | `false`       | Enable debug logging                      |
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
+| Variable       | Description                           |
+| -------------- | ------------------------------------- |
 | `WORKSPACE_ID` | Used to determine default socket path |
 
 ## ACP Compatibility
@@ -140,11 +143,13 @@ await agent.start();
 Implements ACP version `2025-03-26`:
 
 **Supported:**
+
 - Session management (new sessions)
 - Prompt handling with streaming responses
 - Cancellation
 
 **Not yet supported:**
+
 - Session loading/resumption
 - Tool calls
 - File operations via ACP

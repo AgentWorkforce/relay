@@ -18,10 +18,12 @@ Addressed PR 826 feedback by making deterministic repair opt-in, preserving fail
 ## Key Decisions
 
 ### Run repair agents from the failed gate resolved cwd
+
 - **Chose:** Run repair agents from the failed gate resolved cwd
 - **Reasoning:** The repair agent must see and edit the same filesystem context as the deterministic command that failed, especially when a step uses cwd or workdir overrides.
 
 ### Make deterministic gate repair opt-in in Relay SDK
+
 - **Chose:** Make deterministic gate repair opt-in in Relay SDK
 - **Reasoning:** PR feedback correctly identified that default repairRetries=2 would silently add LLM repair attempts, cost, and file mutation risk to existing workflows. Ricky-generated workflows can still opt in explicitly.
 
@@ -30,7 +32,8 @@ Addressed PR 826 feedback by making deterministic repair opt-in, preserving fail
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Run repair agents from the failed gate resolved cwd: Run repair agents from the failed gate resolved cwd
 - Make deterministic gate repair opt-in in Relay SDK: Make deterministic gate repair opt-in in Relay SDK

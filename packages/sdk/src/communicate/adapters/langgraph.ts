@@ -94,13 +94,11 @@ export interface LangGraphRelayResult {
  * @param relayOrName - Optional pre-configured Relay instance or agent name string (defaults to 'langgraph').
  * @returns Relay tools and an unsubscribe handle.
  */
-export function onRelay(
-  graph: CompiledGraphLike,
-  relayOrName?: RelayLike | string,
-): LangGraphRelayResult {
-  const r: RelayLike = typeof relayOrName === 'string'
-    ? new Relay(relayOrName) as unknown as RelayLike
-    : relayOrName ?? (new Relay('langgraph') as unknown as RelayLike);
+export function onRelay(graph: CompiledGraphLike, relayOrName?: RelayLike | string): LangGraphRelayResult {
+  const r: RelayLike =
+    typeof relayOrName === 'string'
+      ? (new Relay(relayOrName) as unknown as RelayLike)
+      : (relayOrName ?? (new Relay('langgraph') as unknown as RelayLike));
   const tools = createRelayTools(r);
 
   const unsubscribe = r.onMessage(async (message) => {

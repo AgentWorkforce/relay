@@ -7,7 +7,7 @@ import type { A2AConfig } from '../../communicate/a2a-types.js';
 /** Start a minimal A2A mock server and return its URL + cleanup fn. */
 function startMockA2AServer(
   agentCard: Record<string, unknown>,
-  onJsonRpc?: (body: Record<string, unknown>) => Record<string, unknown>,
+  onJsonRpc?: (body: Record<string, unknown>) => Record<string, unknown>
 ): Promise<{ url: string; close: () => Promise<void> }> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
@@ -27,9 +27,7 @@ function startMockA2AServer(
             result: {
               id: 'task-1',
               status: { state: 'completed' },
-              messages: [
-                { role: 'agent', parts: [{ text: 'mock reply' }] },
-              ],
+              messages: [{ role: 'agent', parts: [{ text: 'mock reply' }] }],
               artifacts: [],
             },
             id: body.id,
@@ -365,11 +363,13 @@ describe('A2ATransport', () => {
             req.on('end', () => {
               const body = JSON.parse(Buffer.concat(chunks).toString());
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                jsonrpc: '2.0',
-                result: { id: 't', status: { state: 'completed' }, messages: [], artifacts: [] },
-                id: body.id,
-              }));
+              res.end(
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  result: { id: 't', status: { state: 'completed' }, messages: [], artifacts: [] },
+                  id: body.id,
+                })
+              );
             });
             return;
           }
@@ -497,11 +497,13 @@ describe('A2ATransport', () => {
             req.on('end', () => {
               const body = JSON.parse(Buffer.concat(chunks).toString());
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({
-                jsonrpc: '2.0',
-                result: { id: 't', status: { state: 'completed' }, messages: [], artifacts: [] },
-                id: body.id,
-              }));
+              res.end(
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  result: { id: 't', status: { state: 'completed' }, messages: [], artifacts: [] },
+                  id: body.id,
+                })
+              );
             });
             return;
           }

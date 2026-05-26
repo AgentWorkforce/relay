@@ -22,10 +22,7 @@ import type {
 
 /** Minimal database client contract accepted by all services. */
 export interface DbClient {
-  query<T = Record<string, unknown>>(
-    sql: string,
-    params?: unknown[],
-  ): Promise<{ rows: T[] }>;
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
 // ── Topology types ──────────────────────────────────────────────────────────
@@ -55,8 +52,7 @@ const PATTERN_HEURISTICS: Array<{
   // ── Dependency-based patterns (highest priority) ──────────────────────
   {
     test: (c) =>
-      Array.isArray(c.workflows) &&
-      c.workflows.some((w) => w.steps.some((s) => s.dependsOn?.length)),
+      Array.isArray(c.workflows) && c.workflows.some((w) => w.steps.some((s) => s.dependsOn?.length)),
     pattern: 'dag',
   },
   {
@@ -72,8 +68,9 @@ const PATTERN_HEURISTICS: Array<{
   },
   {
     // Red-team: requires BOTH attacker/red-team AND defender/blue-team
-    test: (c) => c.agents.some((a) => a.role === 'attacker' || a.role === 'red-team') &&
-                 c.agents.some((a) => a.role === 'defender' || a.role === 'blue-team'),
+    test: (c) =>
+      c.agents.some((a) => a.role === 'attacker' || a.role === 'red-team') &&
+      c.agents.some((a) => a.role === 'defender' || a.role === 'blue-team'),
     pattern: 'red-team',
   },
   {
@@ -125,10 +122,10 @@ const PATTERN_HEURISTICS: Array<{
     // Review-loop: implementer + multiple reviewers (code review with feedback loop)
     test: (c) => {
       const hasImplementer = c.agents.some(
-        (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement'),
+        (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement')
       );
       const reviewerCount = c.agents.filter(
-        (a) => a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer'),
+        (a) => a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer')
       ).length;
       return hasImplementer && reviewerCount >= 2;
     },
@@ -216,9 +213,7 @@ export class SwarmCoordinator extends EventEmitter {
     const edges = new Map<string, string[]>();
 
     // Non-interactive agents have no inbound or outbound message edges
-    const nonInteractiveNames = new Set(
-      agents.filter((a) => a.interactive === false).map((a) => a.name),
-    );
+    const nonInteractiveNames = new Set(agents.filter((a) => a.interactive === false).map((a) => a.name));
     const names = agents.map((a) => a.name).filter((n) => !nonInteractiveNames.has(n));
 
     const topology = this.resolveInteractiveTopology(p, config, agents, edges, names);
@@ -233,7 +228,10 @@ export class SwarmCoordinator extends EventEmitter {
     }
     // Also filter out non-interactive agents from any edge targets
     for (const [agent, targets] of topologyEdges) {
-      topologyEdges.set(agent, targets.filter((t) => !nonInteractiveNames.has(t)));
+      topologyEdges.set(
+        agent,
+        targets.filter((t) => !nonInteractiveNames.has(t))
+      );
     }
 
     return topology;
@@ -245,7 +243,7 @@ export class SwarmCoordinator extends EventEmitter {
     config: RelayYamlConfig,
     agents: AgentDefinition[],
     edges: Map<string, string[]>,
-    names: string[],
+    names: string[]
   ): AgentTopology {
     switch (p) {
       case 'fan-out': {
@@ -279,7 +277,10 @@ export class SwarmCoordinator extends EventEmitter {
       case 'mesh': {
         // Full mesh — every agent can talk to every other.
         for (const n of names) {
-          edges.set(n, names.filter((o) => o !== n));
+          edges.set(
+            n,
+            names.filter((o) => o !== n)
+          );
         }
         return { pattern: p, agents, edges };
       }
@@ -325,7 +326,9 @@ export class SwarmCoordinator extends EventEmitter {
         const coordinator = this.pickHub(agents);
         const mappers = agents.filter((a) => a.role === 'mapper').map((a) => a.name);
         const reducers = agents.filter((a) => a.role === 'reducer').map((a) => a.name);
-        const others = names.filter((n) => n !== coordinator && !mappers.includes(n) && !reducers.includes(n));
+        const others = names.filter(
+          (n) => n !== coordinator && !mappers.includes(n) && !reducers.includes(n)
+        );
 
         // Coordinator → mappers (excluding self if coordinator is also a mapper)
         edges.set(coordinator, [...mappers.filter((m) => m !== coordinator), ...others]);
@@ -372,15 +375,23 @@ export class SwarmCoordinator extends EventEmitter {
           edges.set(critic, producers);
         } else {
           // Fallback: self-reflection via mesh
-          for (const n of names) edges.set(n, names.filter((o) => o !== n));
+          for (const n of names)
+            edges.set(
+              n,
+              names.filter((o) => o !== n)
+            );
         }
         return { pattern: p, agents, edges };
       }
 
       case 'red-team': {
         // Attacker ↔ Defender adversarial communication
-        const attackers = agents.filter((a) => a.role === 'attacker' || a.role === 'red-team').map((a) => a.name);
-        const defenders = agents.filter((a) => a.role === 'defender' || a.role === 'blue-team').map((a) => a.name);
+        const attackers = agents
+          .filter((a) => a.role === 'attacker' || a.role === 'red-team')
+          .map((a) => a.name);
+        const defenders = agents
+          .filter((a) => a.role === 'defender' || a.role === 'blue-team')
+          .map((a) => a.name);
         const judges = names.filter((n) => !attackers.includes(n) && !defenders.includes(n));
 
         // Attackers → defenders and judges
@@ -456,7 +467,10 @@ export class SwarmCoordinator extends EventEmitter {
         // Plus optional moderator
         const moderator = agents.find((a) => a.role === 'moderator')?.name;
         for (const n of names) {
-          edges.set(n, names.filter((o) => o !== n));
+          edges.set(
+            n,
+            names.filter((o) => o !== n)
+          );
         }
         return { pattern: p, agents, edges, hub: moderator };
       }
@@ -479,14 +493,15 @@ export class SwarmCoordinator extends EventEmitter {
       case 'review-loop': {
         // Implementer is hub; reviewers can communicate with implementer AND each other
         // This enables collaborative review where reviewers can discuss findings
-        const implementer = agents.find(
-          (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement'),
-        )?.name ?? this.pickHub(agents);
+        const implementer =
+          agents.find(
+            (a) => a.role?.toLowerCase().includes('implement') || a.name.toLowerCase().includes('implement')
+          )?.name ?? this.pickHub(agents);
         const reviewers = agents
           .filter(
             (a) =>
               a.name !== implementer &&
-              (a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer')),
+              (a.role?.toLowerCase().includes('reviewer') || a.name.toLowerCase().includes('reviewer'))
           )
           .map((a) => a.name);
         const others = names.filter((n) => n !== implementer && !reviewers.includes(n));
@@ -507,7 +522,10 @@ export class SwarmCoordinator extends EventEmitter {
       default: {
         // Fallback: full mesh.
         for (const n of names) {
-          edges.set(n, names.filter((o) => o !== n));
+          edges.set(
+            n,
+            names.filter((o) => o !== n)
+          );
         }
         return { pattern: p, agents, edges };
       }
@@ -516,10 +534,7 @@ export class SwarmCoordinator extends EventEmitter {
 
   // ── Lifecycle: create run ───────────────────────────────────────────────
 
-  async createRun(
-    workspaceId: string,
-    config: RelayYamlConfig,
-  ): Promise<WorkflowRunRow> {
+  async createRun(workspaceId: string, config: RelayYamlConfig): Promise<WorkflowRunRow> {
     const id = `run_${Date.now()}_${randomBytes(4).toString('hex')}`;
     const pattern = this.selectPattern(config);
     const now = new Date().toISOString();
@@ -528,7 +543,7 @@ export class SwarmCoordinator extends EventEmitter {
       `INSERT INTO workflow_runs (id, workspace_id, workflow_name, pattern, status, config, started_at, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $6, $6)
        RETURNING *`,
-      [id, workspaceId, config.name, pattern, JSON.stringify(config), now],
+      [id, workspaceId, config.name, pattern, JSON.stringify(config), now]
     );
 
     const run = rows[0];
@@ -544,7 +559,7 @@ export class SwarmCoordinator extends EventEmitter {
       `UPDATE workflow_runs SET status = 'running', started_at = $2, updated_at = $2
        WHERE id = $1 AND status = 'pending'
        RETURNING *`,
-      [runId, now],
+      [runId, now]
     );
 
     if (rows.length === 0) {
@@ -558,10 +573,7 @@ export class SwarmCoordinator extends EventEmitter {
 
   // ── Lifecycle: complete / fail / cancel ─────────────────────────────────
 
-  async completeRun(
-    runId: string,
-    stateSnapshot?: Record<string, unknown>,
-  ): Promise<WorkflowRunRow> {
+  async completeRun(runId: string, stateSnapshot?: Record<string, unknown>): Promise<WorkflowRunRow> {
     return this.transitionRun(runId, 'completed', undefined, stateSnapshot);
   }
 
@@ -575,10 +587,7 @@ export class SwarmCoordinator extends EventEmitter {
 
   // ── Step management ─────────────────────────────────────────────────────
 
-  async createSteps(
-    runId: string,
-    config: RelayYamlConfig,
-  ): Promise<WorkflowStepRow[]> {
+  async createSteps(runId: string, config: RelayYamlConfig): Promise<WorkflowStepRow[]> {
     const workflows = config.workflows ?? [];
     const created: WorkflowStepRow[] = [];
 
@@ -599,7 +608,7 @@ export class SwarmCoordinator extends EventEmitter {
             step.task ?? step.command ?? '',
             JSON.stringify(step.dependsOn ?? []),
             now,
-          ],
+          ]
         );
 
         created.push(rows[0]);
@@ -615,7 +624,7 @@ export class SwarmCoordinator extends EventEmitter {
       `UPDATE workflow_steps SET status = 'running', started_at = $2, updated_at = $2
        WHERE id = $1 AND status = 'pending'
        RETURNING *`,
-      [stepId, now],
+      [stepId, now]
     );
 
     if (rows.length === 0) {
@@ -633,7 +642,7 @@ export class SwarmCoordinator extends EventEmitter {
       `UPDATE workflow_steps SET status = 'completed', output = $2, completed_at = $3, updated_at = $3
        WHERE id = $1 AND status = 'running'
        RETURNING *`,
-      [stepId, output ?? null, now],
+      [stepId, output ?? null, now]
     );
 
     if (rows.length === 0) {
@@ -651,7 +660,7 @@ export class SwarmCoordinator extends EventEmitter {
       `UPDATE workflow_steps SET status = 'failed', error = $2, completed_at = $3, updated_at = $3
        WHERE id = $1 AND status = 'running'
        RETURNING *`,
-      [stepId, error, now],
+      [stepId, error, now]
     );
 
     if (rows.length === 0) {
@@ -669,7 +678,7 @@ export class SwarmCoordinator extends EventEmitter {
       `UPDATE workflow_steps SET status = 'skipped', completed_at = $2, updated_at = $2
        WHERE id = $1
        RETURNING *`,
-      [stepId, now],
+      [stepId, now]
     );
 
     if (rows.length === 0) {
@@ -682,26 +691,23 @@ export class SwarmCoordinator extends EventEmitter {
   // ── Queries ─────────────────────────────────────────────────────────────
 
   async getRun(runId: string): Promise<WorkflowRunRow | null> {
-    const { rows } = await this.db.query<WorkflowRunRow>(
-      `SELECT * FROM workflow_runs WHERE id = $1`,
-      [runId],
-    );
+    const { rows } = await this.db.query<WorkflowRunRow>(`SELECT * FROM workflow_runs WHERE id = $1`, [
+      runId,
+    ]);
     return rows[0] ?? null;
   }
 
   async getSteps(runId: string): Promise<WorkflowStepRow[]> {
     const { rows } = await this.db.query<WorkflowStepRow>(
       `SELECT * FROM workflow_steps WHERE run_id = $1 ORDER BY created_at ASC`,
-      [runId],
+      [runId]
     );
     return rows;
   }
 
   async getReadySteps(runId: string): Promise<WorkflowStepRow[]> {
     const steps = await this.getSteps(runId);
-    const completedNames = new Set(
-      steps.filter((s) => s.status === 'completed').map((s) => s.stepName),
-    );
+    const completedNames = new Set(steps.filter((s) => s.status === 'completed').map((s) => s.stepName));
 
     return steps.filter((s) => {
       if (s.status !== 'pending') return false;
@@ -710,20 +716,17 @@ export class SwarmCoordinator extends EventEmitter {
     });
   }
 
-  async getRunsByWorkspace(
-    workspaceId: string,
-    status?: WorkflowRunStatus,
-  ): Promise<WorkflowRunRow[]> {
+  async getRunsByWorkspace(workspaceId: string, status?: WorkflowRunStatus): Promise<WorkflowRunRow[]> {
     if (status) {
       const { rows } = await this.db.query<WorkflowRunRow>(
         `SELECT * FROM workflow_runs WHERE workspace_id = $1 AND status = $2 ORDER BY created_at DESC`,
-        [workspaceId, status],
+        [workspaceId, status]
       );
       return rows;
     }
     const { rows } = await this.db.query<WorkflowRunRow>(
       `SELECT * FROM workflow_runs WHERE workspace_id = $1 ORDER BY created_at DESC`,
-      [workspaceId],
+      [workspaceId]
     );
     return rows;
   }
@@ -734,7 +737,7 @@ export class SwarmCoordinator extends EventEmitter {
     runId: string,
     status: WorkflowRunStatus,
     error?: string,
-    stateSnapshot?: Record<string, unknown>,
+    stateSnapshot?: Record<string, unknown>
   ): Promise<WorkflowRunRow> {
     const now = new Date().toISOString();
     const { rows } = await this.db.query<WorkflowRunRow>(
@@ -742,13 +745,7 @@ export class SwarmCoordinator extends EventEmitter {
        SET status = $2, completed_at = $3, error = $4, state_snapshot = $5, updated_at = $3
        WHERE id = $1
        RETURNING *`,
-      [
-        runId,
-        status,
-        now,
-        error ?? null,
-        stateSnapshot ? JSON.stringify(stateSnapshot) : null,
-      ],
+      [runId, status, now, error ?? null, stateSnapshot ? JSON.stringify(stateSnapshot) : null]
     );
 
     if (rows.length === 0) {
@@ -765,16 +762,11 @@ export class SwarmCoordinator extends EventEmitter {
     // Prefer interactive agents as hub — non-interactive agents cannot receive messages
     const interactiveAgents = agents.filter((a) => a.interactive !== false);
     const pool = interactiveAgents.length > 0 ? interactiveAgents : agents;
-    const lead = pool.find(
-      (a) => a.role === 'lead' || a.role === 'hub' || a.role === 'coordinator',
-    );
+    const lead = pool.find((a) => a.role === 'lead' || a.role === 'hub' || a.role === 'coordinator');
     return lead?.name ?? pool[0].name;
   }
 
-  private resolvePipelineOrder(
-    config: RelayYamlConfig,
-    fallback: string[],
-  ): string[] {
+  private resolvePipelineOrder(config: RelayYamlConfig, fallback: string[]): string[] {
     const workflow = config.workflows?.[0];
     if (!workflow) return fallback;
 

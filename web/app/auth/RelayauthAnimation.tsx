@@ -259,9 +259,7 @@ function handleScriptEvents(tick: number, nodes: AgentNode[], messages: Message[
 }
 
 function findReadyIndices(nodes: AgentNode[]) {
-  return nodes
-    .map((node, index) => (isReadyNode(node) ? index : -1))
-    .filter((index) => index >= 0);
+  return nodes.map((node, index) => (isReadyNode(node) ? index : -1)).filter((index) => index >= 0);
 }
 
 function getActiveNeighbors(senderIdx: number, connections: [number, number][], nodes: AgentNode[]) {
@@ -335,11 +333,10 @@ function updateNodePositions(nodes: AgentNode[], now: number) {
   for (const node of nodes) {
     const t = now * node.driftSpeed + node.driftPhase;
     node.x = node.baseX + Math.sin(t) * node.driftAmplitudeX + Math.cos(t * 0.7) * node.driftAmplitudeX * 0.5;
-    node.y = node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
+    node.y =
+      node.baseY + Math.cos(t * 1.3) * node.driftAmplitudeY + Math.sin(t * 0.5) * node.driftAmplitudeY * 0.4;
 
-    node.opacity = node.active
-      ? Math.min(node.opacity + 0.08, 1)
-      : Math.max(node.opacity - 0.03, 0);
+    node.opacity = node.active ? Math.min(node.opacity + 0.08, 1) : Math.max(node.opacity - 0.03, 0);
 
     node.glowOpacity = node.glowing
       ? Math.min(node.glowOpacity + 0.06, 1)
@@ -465,9 +462,8 @@ function drawAuthPulse(ctx: CanvasRenderingContext2D, x: number, y: number, kind
 
   if (kind === 'allowed' || kind === 'denied') {
     drawShieldShape(ctx, x, y, 1, `rgba(${color}, ${0.92 * alpha})`, alpha);
-    ctx.strokeStyle = kind === 'allowed'
-      ? `rgba(234, 230, 221, ${0.95 * alpha})`
-      : `rgba(255, 220, 220, ${0.95 * alpha})`;
+    ctx.strokeStyle =
+      kind === 'allowed' ? `rgba(234, 230, 221, ${0.95 * alpha})` : `rgba(255, 220, 220, ${0.95 * alpha})`;
     ctx.lineWidth = 2.2;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -532,7 +528,12 @@ function drawAuthPulse(ctx: CanvasRenderingContext2D, x: number, y: number, kind
   ctx.restore();
 }
 
-function spawnLandingToast(toasts: LandingToast[], x: number, y: number, kind: Exclude<AuthEventKind, 'denied'>) {
+function spawnLandingToast(
+  toasts: LandingToast[],
+  x: number,
+  y: number,
+  kind: Exclude<AuthEventKind, 'denied'>
+) {
   toasts.push({
     x,
     y: y - 30,
@@ -553,11 +554,7 @@ function spawnBlockedMark(blockedMarks: BlockedMark[], x: number, y: number) {
   });
 }
 
-function handleMessageArrival(
-  message: Message,
-  nodes: AgentNode[],
-  messages: Message[]
-) {
+function handleMessageArrival(message: Message, nodes: AgentNode[], messages: Message[]) {
   const receiver = nodes[message.to];
   if (!receiver) {
     return;
@@ -579,7 +576,8 @@ function handleMessageArrival(
   }
 
   const branchTargets = message.branches.filter(
-    (branchTarget) => branchTarget !== message.to && branchTarget !== message.from && nodes[branchTarget]?.active
+    (branchTarget) =>
+      branchTarget !== message.to && branchTarget !== message.from && nodes[branchTarget]?.active
   );
 
   if (branchTargets.length === 0) {
@@ -664,9 +662,8 @@ function handleDeniedMessageFrame(
   }
 
   const blockedAge = message.blockedAge ?? 0;
-  const blinkAlpha = blockedAge < 10
-    ? (blockedAge % 2 === 0 ? 1 : 0.3)
-    : Math.max(0, 1 - (blockedAge - 10) / 30);
+  const blinkAlpha =
+    blockedAge < 10 ? (blockedAge % 2 === 0 ? 1 : 0.3) : Math.max(0, 1 - (blockedAge - 10) / 30);
 
   drawAuthPulse(ctx, x, y, message.kind, blinkAlpha);
 
@@ -889,14 +886,35 @@ function CopilotLogo() {
 function GeminiLogo() {
   return (
     <svg className={s.providerLogo} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="#3186FF" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#relayauth-g0)" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#relayauth-g1)" />
-      <path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="url(#relayauth-g2)" />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="#3186FF"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#relayauth-g0)"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#relayauth-g1)"
+      />
+      <path
+        d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"
+        fill="url(#relayauth-g2)"
+      />
       <defs>
-        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g0" x1="7" x2="11" y1="15.5" y2="12"><stop stopColor="#08B962" /><stop offset="1" stopColor="#08B962" stopOpacity="0" /></linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g1" x1="8" x2="11.5" y1="5.5" y2="11"><stop stopColor="#F94543" /><stop offset="1" stopColor="#F94543" stopOpacity="0" /></linearGradient>
-        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g2" x1="3.5" x2="17.5" y1="13.5" y2="12"><stop stopColor="#FABC12" /><stop offset=".46" stopColor="#FABC12" stopOpacity="0" /></linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g0" x1="7" x2="11" y1="15.5" y2="12">
+          <stop stopColor="#08B962" />
+          <stop offset="1" stopColor="#08B962" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g1" x1="8" x2="11.5" y1="5.5" y2="11">
+          <stop stopColor="#F94543" />
+          <stop offset="1" stopColor="#F94543" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient gradientUnits="userSpaceOnUse" id="relayauth-g2" x1="3.5" x2="17.5" y1="13.5" y2="12">
+          <stop stopColor="#FABC12" />
+          <stop offset=".46" stopColor="#FABC12" stopOpacity="0" />
+        </linearGradient>
       </defs>
     </svg>
   );
@@ -1042,9 +1060,10 @@ export function RelayauthAnimation() {
               top: `${node.y * 100}%`,
               opacity: node.opacity,
               transform: `scale(${0.92 + node.opacity * 0.08})`,
-              boxShadow: node.glowOpacity > 0
-                ? `0 0 ${18 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 10px rgba(0,0,0,0.08)`
-                : '0 2px 8px rgba(0,0,0,0.06)',
+              boxShadow:
+                node.glowOpacity > 0
+                  ? `0 0 ${18 * node.glowOpacity}px rgba(45, 79, 62, ${0.15 * node.glowOpacity}), 0 2px 10px rgba(0,0,0,0.08)`
+                  : '0 2px 8px rgba(0,0,0,0.06)',
               pointerEvents: node.opacity < 0.1 ? 'none' : undefined,
             }}
           >

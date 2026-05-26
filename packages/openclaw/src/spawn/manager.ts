@@ -53,26 +53,17 @@ export class SpawnManager {
   private readonly stateFile: string;
   private currentDepth: number;
 
-  constructor(options?: {
-    mode?: SpawnMode;
-    maxSpawns?: number;
-    maxDepth?: number;
-    spawnDepth?: number;
-  }) {
+  constructor(options?: { mode?: SpawnMode; maxSpawns?: number; maxDepth?: number; spawnDepth?: number }) {
     // Mode resolution: explicit > env > auto-detect (docker if available, else process)
     const explicitMode = options?.mode ?? (process.env.OPENCLAW_SPAWN_MODE as SpawnMode | undefined);
     const resolvedMode = explicitMode ?? (isDockerAvailable() ? 'docker' : 'process');
 
-    this.provider = resolvedMode === 'docker'
-      ? new DockerSpawnProvider()
-      : new ProcessSpawnProvider();
+    this.provider = resolvedMode === 'docker' ? new DockerSpawnProvider() : new ProcessSpawnProvider();
 
-    this.maxSpawns = options?.maxSpawns
-      ?? Number(process.env.OPENCLAW_MAX_SPAWNS || DEFAULT_MAX_SPAWNS);
-    this.maxDepth = options?.maxDepth
-      ?? Number(process.env.OPENCLAW_MAX_SPAWN_DEPTH || DEFAULT_MAX_SPAWN_DEPTH);
-    this.currentDepth = options?.spawnDepth
-      ?? Number(process.env.OPENCLAW_SPAWN_DEPTH || 0);
+    this.maxSpawns = options?.maxSpawns ?? Number(process.env.OPENCLAW_MAX_SPAWNS || DEFAULT_MAX_SPAWNS);
+    this.maxDepth =
+      options?.maxDepth ?? Number(process.env.OPENCLAW_MAX_SPAWN_DEPTH || DEFAULT_MAX_SPAWN_DEPTH);
+    this.currentDepth = options?.spawnDepth ?? Number(process.env.OPENCLAW_SPAWN_DEPTH || 0);
     this.stateFile = join(homedir(), '.openclaw', 'workspace', 'relaycast', 'spawns.json');
   }
 
@@ -81,7 +72,7 @@ export class SpawnManager {
     if (this.currentDepth >= this.maxDepth) {
       throw new Error(
         `Spawn depth limit reached (${this.maxDepth}). ` +
-        'Cannot spawn from a spawn chain this deep. Set OPENCLAW_MAX_SPAWN_DEPTH to increase.',
+          'Cannot spawn from a spawn chain this deep. Set OPENCLAW_MAX_SPAWN_DEPTH to increase.'
       );
     }
 
@@ -89,7 +80,7 @@ export class SpawnManager {
     if (this.handles.size >= this.maxSpawns) {
       throw new Error(
         `Maximum concurrent spawns reached (${this.maxSpawns}). ` +
-        'Release an existing OpenClaw before spawning a new one. Set OPENCLAW_MAX_SPAWNS to increase.',
+          'Release an existing OpenClaw before spawning a new one. Set OPENCLAW_MAX_SPAWNS to increase.'
       );
     }
 

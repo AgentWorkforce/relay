@@ -3,9 +3,7 @@
   "version": 1,
   "type": "compacted",
   "compactedAt": "2026-05-09T10:02:49.903Z",
-  "sourceTrajectories": [
-    "traj_lieyyspidhfj"
-  ],
+  "sourceTrajectories": ["traj_lieyyspidhfj"],
   "dateRange": {
     "start": "2026-05-09T08:37:17.563Z",
     "end": "2026-05-09T08:47:54.686Z"
@@ -13,9 +11,7 @@
   "summary": {
     "totalDecisions": 1,
     "totalEvents": 1,
-    "uniqueAgents": [
-      "default"
-    ]
+    "uniqueAgents": ["default"]
   },
   "decisionGroups": [
     {
@@ -102,13 +98,5 @@
     "src/cli/lib/broker-lifecycle.test.ts",
     "src/cli/lib/broker-lifecycle.ts"
   ],
-  "commits": [
-    "6fd439f1",
-    "bdd8bab7",
-    "2e3d8e9f",
-    "557fca0d",
-    "622ec7c7",
-    "03c174e5",
-    "4814ee3d"
-  ]
+  "commits": ["6fd439f1", "bdd8bab7", "2e3d8e9f", "557fca0d", "622ec7c7", "03c174e5", "4814ee3d"]
 }

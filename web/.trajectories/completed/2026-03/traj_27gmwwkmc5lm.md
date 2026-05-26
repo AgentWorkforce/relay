@@ -18,6 +18,7 @@ Created /app/file Relayfile product page with server metadata wrapper, client co
 ## Key Decisions
 
 ### Build Relayfile as a dedicated marketing page under /app/file using the existing landing-page layout and brand tokens
+
 - **Chose:** Build Relayfile as a dedicated marketing page under /app/file using the existing landing-page layout and brand tokens
 - **Reasoning:** This preserves consistency with the rest of the site while allowing file-specific sections and visuals without touching the home page.
 
@@ -26,6 +27,7 @@ Created /app/file Relayfile product page with server metadata wrapper, client co
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Build Relayfile as a dedicated marketing page under /app/file using the existing landing-page layout and brand tokens: Build Relayfile as a dedicated marketing page under /app/file using the existing landing-page layout and brand tokens

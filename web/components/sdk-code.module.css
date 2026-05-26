@@ -24,7 +24,9 @@
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: opacity 0.2s, border-color 0.2s;
+  transition:
+    opacity 0.2s,
+    border-color 0.2s;
 }
 
 .tab:hover {
@@ -50,7 +52,15 @@
 }
 
 /* Syntax — uses primary for keywords/types */
-.keyword { color: var(--primary); }
-.string { color: var(--syntax-string); }
-.type { color: var(--primary); }
-.method { color: var(--syntax-method); }
+.keyword {
+  color: var(--primary);
+}
+.string {
+  color: var(--syntax-string);
+}
+.type {
+  color: var(--primary);
+}
+.method {
+  color: var(--syntax-method);
+}

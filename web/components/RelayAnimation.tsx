@@ -24,9 +24,9 @@ const PULSE_CHANCE = 0.008;
 
 // Moss / forest palette
 const BG_CENTER = '#ece8e0'; // warm oatmeal, slightly lighter center
-const BG_EDGE = '#e5e1d8';   // slightly darker edge
-const NODE_LIGHT = 'rgba(45, 79, 62, 0.7)';   // #2D4F3E at 70%
-const NODE_DARK = 'rgba(58, 100, 78, 0.85)';   // slightly brighter moss
+const BG_EDGE = '#e5e1d8'; // slightly darker edge
+const NODE_LIGHT = 'rgba(45, 79, 62, 0.7)'; // #2D4F3E at 70%
+const NODE_DARK = 'rgba(58, 100, 78, 0.85)'; // slightly brighter moss
 const GLOW_COLOR = 'rgba(45, 79, 62, 0.12)';
 const LINE_COLOR_R = 45;
 const LINE_COLOR_G = 79;
@@ -121,10 +121,7 @@ function drawPulses(ctx: CanvasRenderingContext2D, nodes: Node[], pulses: Pulse[
 
 function drawNodes(ctx: CanvasRenderingContext2D, nodes: Node[]) {
   for (const node of nodes) {
-    const glowGrad = ctx.createRadialGradient(
-      node.x, node.y, 0,
-      node.x, node.y, node.radius * 5
-    );
+    const glowGrad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, node.radius * 5);
     glowGrad.addColorStop(0, GLOW_COLOR);
     glowGrad.addColorStop(1, 'rgba(45, 79, 62, 0)');
     ctx.beginPath();

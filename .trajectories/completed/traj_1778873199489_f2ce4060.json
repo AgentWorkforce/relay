@@ -137,14 +137,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "6 signal(s), 1 relevant channel post(s), 6 file change(s)",
-              "signals": [
-                "COMPLETE",
-                "COMPLETE",
-                ">7u",
-                "0",
-                "implement-",
-                "COMPLETE"
-              ],
+              "signals": ["COMPLETE", "COMPLETE", ">7u", "0", "implement-", "COMPLETE"],
               "channelPosts": [
                 "**[implement-slice] Output:**\n```\ntranscript)\n    ?? .trajectories/completed/2026-05/traj_1778873211616_6db3b2cd.json\n• Called\n  └ relaycast.message.dm.send({\"t"
               ],
@@ -554,8 +547,6 @@
     "approach": "dag workflow (4 agents)",
     "confidence": 0.4264705882352941,
     "learnings": [],
-    "challenges": [
-      "The agent process exited with a non-zero exit code. Check stderr for the root cause."
-    ]
+    "challenges": ["The agent process exited with a non-zero exit code. Check stderr for the root cause."]
   }
 }

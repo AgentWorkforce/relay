@@ -53,9 +53,7 @@ export function DocsLanguageProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <DocsLanguageContext.Provider value={{ language, setLanguage }}>
-      {children}
-    </DocsLanguageContext.Provider>
+    <DocsLanguageContext.Provider value={{ language, setLanguage }}>{children}</DocsLanguageContext.Provider>
   );
 }
 

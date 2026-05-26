@@ -48,20 +48,13 @@ type Tab = 'typescript' | 'python';
 
 function highlight(code: string, lang: Tab) {
   // Simple syntax highlighting via spans
-  const keywords = lang === 'typescript'
-    ? /\b(import|from|const|await|new)\b/g
-    : /\b(from|import|await)\b/g;
+  const keywords = lang === 'typescript' ? /\b(import|from|const|await|new)\b/g : /\b(from|import|await)\b/g;
 
   const methods = /\.(\w+)\(/g;
-  const types = lang === 'typescript'
-    ? /\b(AgentRelay)\b/g
-    : /\b(AgentRelay)\b/g;
+  const types = lang === 'typescript' ? /\b(AgentRelay)\b/g : /\b(AgentRelay)\b/g;
 
   // Process in stages to avoid overlapping
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   // Replace strings first (capture them)
   const parts: string[] = [];
@@ -83,12 +76,7 @@ function highlight(code: string, lang: Tab) {
   return parts.join('');
 }
 
-function highlightNonString(
-  text: string,
-  keywords: RegExp,
-  methods: RegExp,
-  types: RegExp
-): string {
+function highlightNonString(text: string, keywords: RegExp, methods: RegExp, types: RegExp): string {
   return text
     .replace(types, `<span class="${s.type}">$1</span>`)
     .replace(keywords, `<span class="${s.keyword}">$&</span>`)

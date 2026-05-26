@@ -25,9 +25,13 @@ function createClaudeFixture(homeDir: string, cwd: string, timestamp: number): s
   writeFileSync(
     path.join(claudeHome, 'history.jsonl'),
     [
-      JSON.stringify({ timestamp: timestamp - 1000, project: '/other/project', sessionId: 'ignored-session' }),
+      JSON.stringify({
+        timestamp: timestamp - 1000,
+        project: '/other/project',
+        sessionId: 'ignored-session',
+      }),
       JSON.stringify({ timestamp, project: cwd, sessionId }),
-    ].join('\n'),
+    ].join('\n')
   );
 
   writeFileSync(
@@ -48,7 +52,7 @@ function createClaudeFixture(homeDir: string, cwd: string, timestamp: number): s
           content: [{ text: 'Final concise summary' }],
         },
       }),
-    ].join('\n'),
+    ].join('\n')
   );
 
   return sessionId;

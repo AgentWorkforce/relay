@@ -130,7 +130,7 @@ async function main() {
   for (const { file, name, cli } of testsToRun) {
     await runTest(file, cli, name);
     // Brief pause between tests
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   // Print summary
@@ -138,14 +138,14 @@ async function main() {
   console.log('=== TEST RESULTS SUMMARY ===');
   console.log(`${'='.repeat(60)}\n`);
 
-  const passed = results.filter(r => r.status === 'PASSED');
-  const failed = results.filter(r => r.status === 'FAILED');
-  const errors = results.filter(r => r.status === 'ERROR');
+  const passed = results.filter((r) => r.status === 'PASSED');
+  const failed = results.filter((r) => r.status === 'FAILED');
+  const errors = results.filter((r) => r.status === 'ERROR');
 
   // Group by CLI
   for (const cli of cliTypes) {
     console.log(`\n--- ${cli.toUpperCase()} ---`);
-    const cliResults = results.filter(r => r.cli === cli);
+    const cliResults = results.filter((r) => r.cli === cli);
 
     for (const result of cliResults) {
       const icon = result.status === 'PASSED' ? '✓' : result.status === 'FAILED' ? '✗' : '!';
@@ -154,7 +154,9 @@ async function main() {
   }
 
   console.log(`\n${'─'.repeat(60)}`);
-  console.log(`Total: ${results.length} | Passed: ${passed.length} | Failed: ${failed.length} | Errors: ${errors.length}`);
+  console.log(
+    `Total: ${results.length} | Passed: ${passed.length} | Failed: ${failed.length} | Errors: ${errors.length}`
+  );
   console.log(`${'─'.repeat(60)}\n`);
 
   // Exit with appropriate code
@@ -162,7 +164,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
 });

@@ -42,19 +42,19 @@ export function FaqSection() {
             <div key={i} className={s.faqItem}>
               <button
                 className={s.faqQuestion}
-                onClick={() => setOpenFaqs(prev => {
-                  const next = new Set(prev);
-                  if (next.has(i)) {
-                    next.delete(i);
-                  } else {
-                    next.add(i);
-                  }
-                  return next;
-                })}
+                onClick={() =>
+                  setOpenFaqs((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(i)) {
+                      next.delete(i);
+                    } else {
+                      next.add(i);
+                    }
+                    return next;
+                  })
+                }
               >
-                <span className={s.faqNumber}>
-                  {String(i + 1).padStart(2, '0')}
-                </span>
+                <span className={s.faqNumber}>{String(i + 1).padStart(2, '0')}</span>
                 <span className={s.faqQuestionText}>{faq.q}</span>
                 <span className={s.faqChevron} aria-hidden="true">
                   {openFaqs.has(i) ? '↑' : '↓'}

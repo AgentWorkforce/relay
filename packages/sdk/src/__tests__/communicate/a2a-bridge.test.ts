@@ -14,21 +14,13 @@ const mockRelayConfig: RelayConfig = {
 describe('A2ABridge', () => {
   describe('construction', () => {
     it('creates bridge with correct properties', () => {
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        'http://localhost:9999',
-        'proxy-agent',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, 'http://localhost:9999', 'proxy-agent');
       expect(bridge.proxyName).toBe('proxy-agent');
       expect(bridge.a2aAgentUrl).toBe('http://localhost:9999');
     });
 
     it('strips trailing slashes from URL', () => {
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        'http://localhost:9999///',
-        'proxy-agent',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, 'http://localhost:9999///', 'proxy-agent');
       expect(bridge.a2aAgentUrl).toBe('http://localhost:9999');
     });
   });
@@ -51,7 +43,7 @@ describe('A2ABridge', () => {
               skills: [{ id: 'billing', name: 'Billing', description: 'Handles billing' }],
               defaultInputModes: ['text'],
               defaultOutputModes: ['text'],
-            }),
+            })
           );
         } else {
           res.writeHead(404);
@@ -72,11 +64,7 @@ describe('A2ABridge', () => {
     });
 
     it('discovers agent card from well-known URL', async () => {
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        `http://localhost:${port}`,
-        'proxy',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, `http://localhost:${port}`, 'proxy');
       const card = await bridge.discoverAgent();
       expect(card.name).toBe('test-a2a-agent');
       expect(card.description).toBe('A test agent');
@@ -93,7 +81,9 @@ describe('A2ABridge', () => {
       mockServer = http.createServer((req, res) => {
         if (req.method === 'POST') {
           let body = '';
-          req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          req.on('data', (chunk: Buffer) => {
+            body += chunk.toString();
+          });
           req.on('end', () => {
             const request = JSON.parse(body);
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -112,7 +102,7 @@ describe('A2ABridge', () => {
                   },
                   messages: [],
                 },
-              }),
+              })
             );
           });
         } else {
@@ -134,11 +124,7 @@ describe('A2ABridge', () => {
     });
 
     it('sends A2A message and gets response', async () => {
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        `http://localhost:${port}`,
-        'proxy',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, `http://localhost:${port}`, 'proxy');
       const response = await bridge.sendA2AMessage('Process refund for order #1042');
       expect(response).toBe('I processed your billing request');
     });
@@ -147,7 +133,9 @@ describe('A2ABridge', () => {
       await new Promise<void>((resolve) => mockServer.close(() => resolve()));
       mockServer = http.createServer((req, res) => {
         let body = '';
-        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('data', (chunk: Buffer) => {
+          body += chunk.toString();
+        });
         req.on('end', () => {
           const request = JSON.parse(body);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -156,7 +144,7 @@ describe('A2ABridge', () => {
               jsonrpc: '2.0',
               id: request.id,
               result: { id: 'task-002', status: { state: 'completed' }, messages: [] },
-            }),
+            })
           );
         });
       });
@@ -164,11 +152,7 @@ describe('A2ABridge', () => {
         mockServer.listen(port, () => resolve());
       });
 
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        `http://localhost:${port}`,
-        'proxy',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, `http://localhost:${port}`, 'proxy');
       const response = await bridge.sendA2AMessage('hello');
       expect(response).toBeNull();
     });
@@ -195,11 +179,7 @@ describe('A2ABridge', () => {
     });
 
     it('bridge discovers and communicates with A2AServer', async () => {
-      const bridge = new A2ABridge(
-        mockRelayConfig,
-        a2aServer.url,
-        'billing-proxy',
-      );
+      const bridge = new A2ABridge(mockRelayConfig, a2aServer.url, 'billing-proxy');
 
       const card = await bridge.discoverAgent();
       expect(card.name).toBe('billing-specialist');

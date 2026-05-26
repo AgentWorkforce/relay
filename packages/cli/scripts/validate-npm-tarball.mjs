@@ -81,8 +81,7 @@ function getWorkspacePackageDirs() {
 
 function getBundledWorkspacePackageDirs() {
   const rootPackageJson = readJson(ROOT_PACKAGE_JSON);
-  const bundledDependencies =
-    rootPackageJson.bundledDependencies ?? rootPackageJson.bundleDependencies ?? [];
+  const bundledDependencies = rootPackageJson.bundledDependencies ?? rootPackageJson.bundleDependencies ?? [];
   const workspaceDirsByName = getWorkspacePackageDirs();
   const bundledPackageDirs = new Set();
 
@@ -105,13 +104,7 @@ function getBundledWorkspacePackageDirs() {
 
 function cleanNestedWorkspaceArtifacts() {
   const packagesDir = path.join(REPO_ROOT, 'packages');
-  const artifactDirNames = new Set([
-    'node_modules',
-    '.npm',
-    '.cache',
-    '.parcel-cache',
-    '.turbo',
-  ]);
+  const artifactDirNames = new Set(['node_modules', '.npm', '.cache', '.parcel-cache', '.turbo']);
 
   if (!fs.existsSync(packagesDir)) {
     return [];
@@ -300,9 +293,7 @@ function createTemporaryPack() {
     return {
       tempDir,
       tarballPaths: [
-        path.isAbsolute(firstPack.filename)
-          ? firstPack.filename
-          : path.join(tempDir, firstPack.filename),
+        path.isAbsolute(firstPack.filename) ? firstPack.filename : path.join(tempDir, firstPack.filename),
       ],
     };
   } catch (error) {
@@ -344,7 +335,7 @@ async function main() {
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(`error: ${error.message}`);
   process.exit(2);
 });

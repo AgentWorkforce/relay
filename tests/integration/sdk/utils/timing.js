@@ -11,7 +11,7 @@
  * await sleep(1000); // Wait 1 second
  */
 export function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -27,11 +27,7 @@ export function sleep(ms) {
  * await waitFor(() => element.isVisible, { timeout: 3000 });
  */
 export async function waitFor(condition, options = {}) {
-  const {
-    timeout = 5000,
-    interval = 100,
-    message = 'Condition not met within timeout'
-  } = options;
+  const { timeout = 5000, interval = 100, message = 'Condition not met within timeout' } = options;
 
   const startTime = Date.now();
 
@@ -62,9 +58,7 @@ export async function waitFor(condition, options = {}) {
 export function withTimeout(promise, ms, message = 'Operation timed out') {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(message)), ms)
-    )
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
   ]);
 }
 

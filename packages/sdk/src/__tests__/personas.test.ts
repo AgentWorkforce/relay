@@ -63,8 +63,8 @@ function makeFixture(): { cwd: string; cleanup: () => void } {
         extras: {
           permissions: { allow: ['Bash(npm test)'], mode: 'default' },
         },
-      }),
-    ),
+      })
+    )
   );
 
   writeFileSync(
@@ -76,8 +76,8 @@ function makeFixture(): { cwd: string; cleanup: () => void } {
         harness: 'codex',
         model: 'openai-codex/gpt-5-codex',
         systemPrompt: 'You are an efficient code reviewer.',
-      }),
-    ),
+      })
+    )
   );
 
   writeFileSync(
@@ -89,8 +89,8 @@ function makeFixture(): { cwd: string; cleanup: () => void } {
         harness: 'opencode',
         model: 'opencode/gpt-5-nano',
         systemPrompt: 'You are a concise reviewer.',
-      }),
-    ),
+      })
+    )
   );
 
   return {
@@ -173,12 +173,9 @@ test('loadPersona reports "not found" when no valid persona with that id exists'
         systemPrompt: 'x',
         skills: [],
         harnessSettings: { reasoning: 'medium', timeoutSeconds: 900 },
-      }),
+      })
     );
-    assert.throws(
-      () => loadPersona('bad', { cwd: fix.cwd }),
-      /not found/,
-    );
+    assert.throws(() => loadPersona('bad', { cwd: fix.cwd }), /not found/);
   } finally {
     fix.cleanup();
   }
@@ -197,7 +194,7 @@ test('resolvePersona rejects handler-style personas missing harness/model/system
         skills: [],
         harnessSettings: { reasoning: 'medium', timeoutSeconds: 900 },
       } as unknown as Parameters<typeof resolvePersona>[0]),
-    /no harness/,
+    /no harness/
   );
 });
 
@@ -293,7 +290,7 @@ test('AgentRelay.spawnPersona honors constructor personaDirs and executes the pl
 
     let captured: { cli?: string; cwd?: string; args?: string[]; model?: string } = {};
     (relay as unknown as { spawnPty: (input: unknown) => Promise<unknown> }).spawnPty = async (
-      input: unknown,
+      input: unknown
     ) => {
       captured = input as typeof captured;
       return {
@@ -364,7 +361,7 @@ test('per-call searchDirs on spawnPersona overrides constructor defaults', async
 
     let captured: { cli?: string } = {};
     (relay as unknown as { spawnPty: (input: unknown) => Promise<unknown> }).spawnPty = async (
-      input: unknown,
+      input: unknown
     ) => {
       captured = input as { cli?: string };
       return {

@@ -120,10 +120,7 @@ function getDataDir(): string {
   } else if (platform === 'win32') {
     return join(process.env.APPDATA || homedir(), 'agent-relay');
   } else {
-    return join(
-      process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),
-      'agent-relay'
-    );
+    return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'agent-relay');
   }
 }
 
@@ -358,10 +355,7 @@ export async function getWorkspaceStatus(
   workspace: CloudWorkspace
 ): Promise<{ status: string; agents?: string[] } | null> {
   try {
-    const response = await cloudApiRequest(
-      workspace,
-      `/api/workspaces/${workspace.workspaceId}/status`
-    );
+    const response = await cloudApiRequest(workspace, `/api/workspaces/${workspace.workspaceId}/status`);
 
     if (!response.ok) {
       return null;
@@ -387,9 +381,7 @@ export async function getWorkspaceStatus(
  * @param options - Optional configuration overrides
  * @returns Connection info or null if broker not found
  */
-export function getConnectionInfo(
-  options: CloudConnectionOptions = {}
-): CloudConnectionInfo | null {
+export function getConnectionInfo(options: CloudConnectionOptions = {}): CloudConnectionInfo | null {
   const discovery = discoverSocket(options);
 
   if (!discovery) {

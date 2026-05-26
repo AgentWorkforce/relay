@@ -58,7 +58,7 @@ const RUNTIME_IDENTITY_PREAMBLE = [
   'platform=openclaw-gateway',
   'rule=never-claim-claude',
   'source=/workspace/config/runtime-identity.json',
-  '[/runtime-identity contract]'
+  '[/runtime-identity contract]',
 ].join('\n');
 
 // ── WebSocket RPC helpers ──────────────────────────────────────────────
@@ -85,12 +85,12 @@ function sendConnect() {
       displayName: 'openclaw-bridge',
       version: '1.0.0',
       platform: 'linux',
-      mode: 'backend'
+      mode: 'backend',
     },
     auth: {
-      token: GATEWAY_TOKEN
+      token: GATEWAY_TOKEN,
     },
-    scopes: ['operator.read', 'operator.write', 'chat.read', 'chat.write']
+    scopes: ['operator.read', 'operator.write', 'chat.read', 'chat.write'],
   });
 }
 
@@ -159,7 +159,9 @@ function scheduleReconnect() {
   }
   reconnectAttempts++;
   const delay = RECONNECT_DELAY_MS * Math.min(reconnectAttempts, 5);
-  process.stderr.write(`[bridge] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`);
+  process.stderr.write(
+    `[bridge] Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\n`
+  );
   setTimeout(connect, delay);
 }
 
@@ -240,7 +242,7 @@ function sendChatMessage(text) {
   sendRpc('chat.send', {
     sessionKey: SESSION_KEY,
     message: text,
-    idempotencyKey: randomUUID()
+    idempotencyKey: randomUUID(),
   });
 }
 

@@ -139,10 +139,7 @@ test('ci: cat agent — message delivery pipeline', { timeout: 30_000 }, async (
     await sleep(5_000);
 
     const events = harness.getEvents();
-    assert.ok(
-      countDeliveryProgress(events, agentName) >= 1,
-      `should see delivery progress for ${agentName}`
-    );
+    assert.ok(countDeliveryProgress(events, agentName) >= 1, `should see delivery progress for ${agentName}`);
     assertNoDroppedDeliveries(events);
 
     await harness.releaseAgent(agentName);
@@ -438,15 +435,11 @@ test('ci: agent lifecycle — spawn, release, re-spawn', { timeout: 45_000 }, as
     const events = harness.getEvents();
     const spawnEvents = events.filter(
       (e) =>
-        e.kind === 'agent_spawned' &&
-        'name' in e &&
-        (e as BrokerEvent & { name: string }).name === agentName
+        e.kind === 'agent_spawned' && 'name' in e && (e as BrokerEvent & { name: string }).name === agentName
     );
     const releaseEvents = events.filter(
       (e) =>
-        e.kind === 'agent_released' &&
-        'name' in e &&
-        (e as BrokerEvent & { name: string }).name === agentName
+        e.kind === 'agent_released' && 'name' in e && (e as BrokerEvent & { name: string }).name === agentName
     );
 
     assert.equal(spawnEvents.length, 2, 'should have 2 spawn events');

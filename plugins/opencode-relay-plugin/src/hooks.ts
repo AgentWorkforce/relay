@@ -39,9 +39,7 @@ export function registerHooks(ctx: HookContext, state: RelayState): void {
   ctx.hook('session.end', async () => handleSessionEnd(state));
 }
 
-async function handleSessionIdle(
-  state: RelayState
-): Promise<SessionIdleResult | void> {
+async function handleSessionIdle(state: RelayState): Promise<SessionIdleResult | void> {
   if (!state.connected || !state.token) {
     return;
   }
@@ -70,9 +68,7 @@ async function handleSessionIdle(
   };
 }
 
-function handleSessionCompacting(
-  state: RelayState
-): SessionCompactingResult | void {
+function handleSessionCompacting(state: RelayState): SessionCompactingResult | void {
   if (!state.connected) {
     return;
   }
@@ -144,9 +140,7 @@ function buildCompactionPreserve(state: RelayState): string {
     state.spawned.size === 0
       ? '  (none)'
       : Array.from(state.spawned.entries())
-          .map(
-            ([name, agent]) => `  - ${name}: ${agent.status} - "${agent.task}"`
-          )
+          .map(([name, agent]) => `  - ${name}: ${agent.status} - "${agent.task}"`)
           .join('\n');
 
   return [
@@ -163,7 +157,5 @@ function formatWorkspace(workspace: string | null): string {
     return '(unknown)';
   }
 
-  return workspace.length > 16
-    ? `${workspace.slice(0, 16)}...`
-    : workspace;
+  return workspace.length > 16 ? `${workspace.slice(0, 16)}...` : workspace;
 }

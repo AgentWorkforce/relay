@@ -660,15 +660,11 @@ export class AgentRelayClient {
     return this.spawnProvider({ ...input, transport: 'headless' });
   }
 
-  async spawnClaude(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<SpawnAgentResult> {
+  async spawnClaude(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'claude' });
   }
 
-  async spawnOpencode(
-    input: Omit<SpawnProviderInput, 'provider'>
-  ): Promise<SpawnAgentResult> {
+  async spawnOpencode(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
     return this.spawnProvider({ ...input, provider: 'opencode' });
   }
 

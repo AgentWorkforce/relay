@@ -18,6 +18,7 @@ Expanded the SDK workflow reliability contract suite from basic deterministic re
 ## Key Decisions
 
 ### Cover repair fallback, final validation, sibling isolation, and resume reliability
+
 - **Chose:** Cover repair fallback, final validation, sibling isolation, and resume reliability
 - **Reasoning:** These are the failure modes that let repairable workflow errors leak into terminal failures: final validation gates, fan-out sibling state, invalid/missing repair agent configuration, and start-from recovery context.
 
@@ -26,6 +27,7 @@ Expanded the SDK workflow reliability contract suite from basic deterministic re
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Cover repair fallback, final validation, sibling isolation, and resume reliability: Cover repair fallback, final validation, sibling isolation, and resume reliability

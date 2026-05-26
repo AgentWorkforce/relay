@@ -37,7 +37,10 @@ export function resolveCommand(command: string): string {
     }
   } catch (err: any) {
     // Command not found in PATH - log for debugging
-    console.warn(`[command-resolver] 'which ${command}' failed:`, err.message?.split('\n')[0] || 'unknown error');
+    console.warn(
+      `[command-resolver] 'which ${command}' failed:`,
+      err.message?.split('\n')[0] || 'unknown error'
+    );
   }
 
   // Return original command - spawn will fail with a clearer error

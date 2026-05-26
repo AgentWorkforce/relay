@@ -22,9 +22,7 @@ import {
   createA2ATaskStatus,
 } from './a2a-types.js';
 
-export type A2AMessageHandler = (
-  msg: A2AMessage,
-) => A2AMessage | null | Promise<A2AMessage | null>;
+export type A2AMessageHandler = (msg: A2AMessage) => A2AMessage | null | Promise<A2AMessage | null>;
 
 export class A2AServer {
   readonly agentName: string;
@@ -37,12 +35,7 @@ export class A2AServer {
   private _server?: http.Server;
   private _actualPort?: number;
 
-  constructor(
-    agentName: string,
-    port: number = 5000,
-    host: string = '0.0.0.0',
-    skills: A2ASkill[] = [],
-  ) {
+  constructor(agentName: string, port: number = 5000, host: string = '0.0.0.0', skills: A2ASkill[] = []) {
     this.agentName = agentName;
     this.port = port;
     this.host = host;
@@ -59,12 +52,9 @@ export class A2AServer {
   }
 
   getAgentCard(): A2AAgentCard {
-    return createA2AAgentCard(
-      this.agentName,
-      `Agent Relay agent: ${this.agentName}`,
-      this.url,
-      [...this.skills],
-    );
+    return createA2AAgentCard(this.agentName, `Agent Relay agent: ${this.agentName}`, this.url, [
+      ...this.skills,
+    ]);
   }
 
   async handleMessageSend(params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -194,7 +184,7 @@ export class A2AServer {
           jsonrpc: '2.0',
           error: { code: -32700, message: 'Parse error' },
           id: null,
-        }),
+        })
       );
       return;
     }
@@ -221,7 +211,7 @@ export class A2AServer {
             jsonrpc: '2.0',
             error: { code: -32601, message: `Method not found: ${method}` },
             id: rpcId,
-          }),
+          })
         );
         return;
       }
@@ -235,7 +225,7 @@ export class A2AServer {
           jsonrpc: '2.0',
           error: { code: -32602, message: String(err) },
           id: rpcId,
-        }),
+        })
       );
     }
   }

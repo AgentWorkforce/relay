@@ -1,7 +1,11 @@
 .page {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 14%, transparent) 0%, transparent 34%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--primary) 14%, transparent) 0%,
+      transparent 34%
+    ),
     linear-gradient(180deg, var(--hero-gradient) 0%, var(--bg) 36%, var(--bg) 100%);
   color: var(--fg);
   padding-bottom: 96px;
@@ -153,14 +157,30 @@
   background: color-mix(in srgb, var(--tone) calc(12% + var(--step, 0) * 10%), white);
 }
 
-.paletteScale span:nth-child(1) { background: color-mix(in srgb, var(--tone) 6%, black); }
-.paletteScale span:nth-child(2) { background: color-mix(in srgb, var(--tone) 18%, black); }
-.paletteScale span:nth-child(3) { background: color-mix(in srgb, var(--tone) 30%, white); }
-.paletteScale span:nth-child(4) { background: color-mix(in srgb, var(--tone) 44%, white); }
-.paletteScale span:nth-child(5) { background: color-mix(in srgb, var(--tone) 58%, white); }
-.paletteScale span:nth-child(6) { background: color-mix(in srgb, var(--tone) 72%, white); }
-.paletteScale span:nth-child(7) { background: color-mix(in srgb, var(--tone) 84%, white); }
-.paletteScale span:nth-child(8) { background: color-mix(in srgb, var(--tone) 92%, white); }
+.paletteScale span:nth-child(1) {
+  background: color-mix(in srgb, var(--tone) 6%, black);
+}
+.paletteScale span:nth-child(2) {
+  background: color-mix(in srgb, var(--tone) 18%, black);
+}
+.paletteScale span:nth-child(3) {
+  background: color-mix(in srgb, var(--tone) 30%, white);
+}
+.paletteScale span:nth-child(4) {
+  background: color-mix(in srgb, var(--tone) 44%, white);
+}
+.paletteScale span:nth-child(5) {
+  background: color-mix(in srgb, var(--tone) 58%, white);
+}
+.paletteScale span:nth-child(6) {
+  background: color-mix(in srgb, var(--tone) 72%, white);
+}
+.paletteScale span:nth-child(7) {
+  background: color-mix(in srgb, var(--tone) 84%, white);
+}
+.paletteScale span:nth-child(8) {
+  background: color-mix(in srgb, var(--tone) 92%, white);
+}
 
 /* Explicit scale strip (themes with defined steps like 50–950) */
 .paletteScaleExplicit {
@@ -346,7 +366,9 @@
   background: var(--bg-elevated);
   color: var(--fg-faint);
   font-size: 0.88rem;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .searchField:hover {
@@ -454,7 +476,11 @@
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 10%, transparent) 0%, transparent 35%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--primary) 10%, transparent) 0%,
+      transparent 35%
+    ),
     var(--section-bg);
   color: var(--primary);
 }
@@ -660,17 +686,35 @@
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   background:
-    linear-gradient(45deg, color-mix(in srgb, var(--fg) 5%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--fg) 5%, transparent) 75%),
-    linear-gradient(45deg, color-mix(in srgb, var(--fg) 5%, transparent) 25%, transparent 25%, transparent 75%, color-mix(in srgb, var(--fg) 5%, transparent) 75%),
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--fg) 5%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--fg) 5%, transparent) 75%
+    ),
+    linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--fg) 5%, transparent) 25%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--fg) 5%, transparent) 75%
+    ),
     var(--bg-elevated, var(--bg));
   background-size: 20px 20px;
-  background-position: 0 0, 10px 10px;
+  background-position:
+    0 0,
+    10px 10px;
   overflow: hidden;
 }
 
 .kitPreviewDark {
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 28%, transparent) 0%, transparent 50%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--primary) 28%, transparent) 0%,
+      transparent 50%
+    ),
     #111827;
   border-color: rgba(255, 255, 255, 0.08);
 }
@@ -1051,15 +1095,15 @@
 }
 
 .dotRed {
-  background: #FF5F57;
+  background: #ff5f57;
 }
 
 .dotYellow {
-  background: #FEBC2E;
+  background: #febc2e;
 }
 
 .dotGreen {
-  background: #28C840;
+  background: #28c840;
 }
 
 .codeBlock,

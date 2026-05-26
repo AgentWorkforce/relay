@@ -18,6 +18,7 @@ Implemented GitHub primitive repository, issue, pull request, and file actions w
 ## Key Decisions
 
 ### Implemented GitHub actions as adapter-driven REST helpers
+
 - **Chose:** Implemented GitHub actions as adapter-driven REST helpers
 - **Reasoning:** The existing local and cloud runtimes already share a request(method,path,options) abstraction, so action modules can work across gh CLI and Nango without runtime-specific branches.
 
@@ -26,6 +27,7 @@ Implemented GitHub primitive repository, issue, pull request, and file actions w
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Implemented GitHub actions as adapter-driven REST helpers: Implemented GitHub actions as adapter-driven REST helpers

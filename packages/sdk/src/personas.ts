@@ -43,11 +43,7 @@ import {
 
 // ── Re-exports for SDK consumers ───────────────────────────────────────────
 
-export {
-  HARNESS_VALUES,
-  buildPersonaSpawnPlan,
-  executePersonaSpawnPlan,
-};
+export { HARNESS_VALUES, buildPersonaSpawnPlan, executePersonaSpawnPlan };
 
 export type {
   ExecuteOptions,
@@ -205,10 +201,7 @@ export function listPersonas(options: PersonaLoadOptions = {}): DiscoveredPerson
  * Find a persona file by id across the search-dir cascade.
  * Returns undefined if not found.
  */
-export function findPersona(
-  id: string,
-  options: PersonaLoadOptions = {},
-): DiscoveredPersona | undefined {
+export function findPersona(id: string, options: PersonaLoadOptions = {}): DiscoveredPersona | undefined {
   const dirs = effectiveSearchDirs(options);
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
@@ -261,7 +254,7 @@ export function loadPersona(id: string, options: PersonaLoadOptions = {}): Perso
     const dirs = effectiveSearchDirs(options);
     throw new Error(
       `Persona "${id}" not found. Searched:\n  ${dirs.join('\n  ')}\n` +
-        'Set searchDirs / extraDirs to include the directory containing the persona file.',
+        'Set searchDirs / extraDirs to include the directory containing the persona file.'
     );
   }
   return discovered.spec;
@@ -288,7 +281,7 @@ export function resolvePersona(spec: PersonaSpec): ResolvedPersona {
   if (!harness) {
     throw new Error(
       `Persona "${spec.id}" has no harness — relay only spawns interactive personas. ` +
-        'Handler-style (onEvent-driven) personas should be deployed via the workforce CLI.',
+        'Handler-style (onEvent-driven) personas should be deployed via the workforce CLI.'
     );
   }
   if (!model) {
@@ -325,7 +318,7 @@ export interface PersonaSpawnPlanOptions extends PersonaLoadOptions, PlanOptions
  */
 export function getPersonaSpawnPlan(
   personaId: string,
-  options: PersonaSpawnPlanOptions = {},
+  options: PersonaSpawnPlanOptions = {}
 ): PersonaSpawnPlan {
   const spec = loadPersona(personaId, options);
   const resolved = resolvePersona(spec);
@@ -348,7 +341,7 @@ export function getPersonaSpawnPlan(
  */
 export function composePersonaTask(
   plan: Pick<PersonaSpawnPlan, 'initialPrompt'>,
-  userTask: string | undefined,
+  userTask: string | undefined
 ): string | undefined {
   if (!plan.initialPrompt) return userTask;
   if (!userTask) return plan.initialPrompt;

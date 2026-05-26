@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  encodeCodeFenceMeta,
-  extractCodeFenceToken,
-  parseCodeFenceMetaToken,
-} from '../code-fence-meta';
+import { encodeCodeFenceMeta, extractCodeFenceToken, parseCodeFenceMetaToken } from '../code-fence-meta';
 
 describe('code fence meta encoding', () => {
   it('round-trips filenames and labels that contain double underscores', () => {
@@ -23,9 +19,7 @@ describe('code fence meta encoding', () => {
 
   it('remains compatible with the legacy double-underscore format', () => {
     expect(
-      parseCodeFenceMetaToken(
-        'ar-meta__lang=typescript__label=TypeScript__file=src%2Fagent.ts'
-      )
+      parseCodeFenceMetaToken('ar-meta__lang=typescript__label=TypeScript__file=src%2Fagent.ts')
     ).toEqual({
       language: 'typescript',
       label: 'TypeScript',
@@ -40,8 +34,6 @@ describe('code fence meta encoding', () => {
       filename: 'package.json',
     });
 
-    expect(
-      extractCodeFenceToken(`language-bash language-${token} prose`)
-    ).toBe(token);
+    expect(extractCodeFenceToken(`language-bash language-${token} prose`)).toBe(token);
   });
 });

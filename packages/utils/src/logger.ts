@@ -62,9 +62,13 @@ function formatMessage(entry: LogEntry): string {
     return JSON.stringify(entry);
   }
   const { ts, level, component, msg, ...extra } = entry;
-  const extraStr = Object.keys(extra).length > 0
-    ? ' ' + Object.entries(extra).map(([k, v]) => `${k}=${v}`).join(' ')
-    : '';
+  const extraStr =
+    Object.keys(extra).length > 0
+      ? ' ' +
+        Object.entries(extra)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')
+      : '';
   return `${ts} [${level}] [${component}] ${msg}${extraStr}`;
 }
 

@@ -8,8 +8,7 @@ const root = dirname(here);
 const personasDir = join(root, 'personas');
 const KNOWN_HARNESSES = ['claude', 'codex', 'opencode'];
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
-const isPlainObject = (value) =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 async function loadPersonaFiles() {
   const entries = await readdir(personasDir, { withFileTypes: true });
@@ -70,7 +69,9 @@ function validatePersona(filename, persona) {
   // Workforce v3 removed the per-tier persona shape — runtime config is now
   // flat. Reject the legacy fields with a clear message.
   if ('tiers' in persona) {
-    errors.push('field "tiers" is no longer supported — hoist harness/model/systemPrompt to the top level (workforce v3)');
+    errors.push(
+      'field "tiers" is no longer supported — hoist harness/model/systemPrompt to the top level (workforce v3)'
+    );
   }
   if ('defaultTier' in persona) {
     errors.push('field "defaultTier" is no longer supported (workforce v3)');

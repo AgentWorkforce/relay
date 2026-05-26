@@ -117,9 +117,7 @@ async function fetchGoogleModels() {
   }
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`
-    );
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
     if (!response.ok) return null;
     const data = await response.json();
     return data.models?.map((m) => m.name.replace('models/', '')) || null;

@@ -124,17 +124,11 @@ export function getSpawnOptionRows(variant: SpawnOptionsTableVariant): SpawnOpti
   return variant === 'advanced' ? ADVANCED_ROWS : COMMON_ROWS;
 }
 
-export function getSpawnOptionName(
-  row: SpawnOptionRow,
-  language: SpawnOptionsLanguage
-): string[] {
+export function getSpawnOptionName(row: SpawnOptionRow, language: SpawnOptionsLanguage): string[] {
   return (language === 'python' ? row.python : row.typescript) ?? [];
 }
 
-export function getSpawnOptionDescription(
-  row: SpawnOptionRow,
-  language: SpawnOptionsLanguage
-): string {
+export function getSpawnOptionDescription(row: SpawnOptionRow, language: SpawnOptionsLanguage): string {
   if (typeof row.description === 'string') {
     return row.description;
   }

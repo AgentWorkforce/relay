@@ -76,10 +76,7 @@ function createRelayTools(relay: RelayLike): CrewAITool[] {
  * @param relay - Optional pre-configured Relay instance.
  * @returns Object with an `unsubscribe` function to stop message routing.
  */
-export function onRelay(
-  agent: CrewAIAgentLike,
-  relay?: RelayLike,
-): { unsubscribe: () => void } {
+export function onRelay(agent: CrewAIAgentLike, relay?: RelayLike): { unsubscribe: () => void } {
   const relayInstance: RelayLike = relay ?? new Relay(agent.role);
   const relayTools = createRelayTools(relayInstance);
 
@@ -120,10 +117,7 @@ export function onRelay(
  * @param relay - Optional pre-configured Relay instance.
  * @returns Object with an `unsubscribe` function to stop all message routing.
  */
-export function onCrewRelay(
-  crew: CrewAICrewLike,
-  relay?: RelayLike,
-): { unsubscribe: () => void } {
+export function onCrewRelay(crew: CrewAICrewLike, relay?: RelayLike): { unsubscribe: () => void } {
   const unsubscribers: Array<() => void> = [];
 
   for (const agent of crew.agents) {

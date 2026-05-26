@@ -96,9 +96,7 @@ describe('Integration tests', () => {
 
     // Lead checks inbox and sees the ACK
     const ackInbox = await createRelayInboxTool(state).handler({});
-    const ackMessage = ackInbox.messages.find(
-      (m) => m.from === 'Worker-1' && m.text.startsWith('ACK:')
-    );
+    const ackMessage = ackInbox.messages.find((m) => m.from === 'Worker-1' && m.text.startsWith('ACK:'));
     expect(ackMessage).toBeDefined();
 
     // Simulate worker sending DONE
@@ -106,9 +104,7 @@ describe('Integration tests', () => {
 
     // Lead checks inbox and sees the DONE
     const doneInbox = await createRelayInboxTool(state).handler({});
-    const doneMessage = doneInbox.messages.find(
-      (m) => m.from === 'Worker-1' && m.text.startsWith('DONE:')
-    );
+    const doneMessage = doneInbox.messages.find((m) => m.from === 'Worker-1' && m.text.startsWith('DONE:'));
     expect(doneMessage).toBeDefined();
 
     // Worker process exits successfully

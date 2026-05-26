@@ -39,18 +39,36 @@ function schema(props: Record<string, Record<string, unknown>>, required: string
 
 function createRelayTools(relay: RelayLike): FunctionToolLike[] {
   const defs: Array<[string, string, JsonObjectSchema, (p: Record<string, string>) => Promise<string>]> = [
-    ['relay_send', 'Send a direct message to another relay agent.',
+    [
+      'relay_send',
+      'Send a direct message to another relay agent.',
       schema({ to: { type: 'string' }, text: { type: 'string' } }, ['to', 'text']),
-      async (p) => { await relay.send(p.to, p.text); return `Sent relay message to ${p.to}.`; }],
-    ['relay_inbox', 'Drain and inspect newly received relay messages.',
+      async (p) => {
+        await relay.send(p.to, p.text);
+        return `Sent relay message to ${p.to}.`;
+      },
+    ],
+    [
+      'relay_inbox',
+      'Drain and inspect newly received relay messages.',
       schema({}, []),
-      async () => formatRelayInbox(await relay.inbox())],
-    ['relay_post', 'Post a message to a relay channel.',
+      async () => formatRelayInbox(await relay.inbox()),
+    ],
+    [
+      'relay_post',
+      'Post a message to a relay channel.',
       schema({ channel: { type: 'string' }, text: { type: 'string' } }, ['channel', 'text']),
-      async (p) => { await relay.post(p.channel, p.text); return `Posted relay message to #${p.channel}.`; }],
-    ['relay_agents', 'List currently online relay agents.',
+      async (p) => {
+        await relay.post(p.channel, p.text);
+        return `Posted relay message to #${p.channel}.`;
+      },
+    ],
+    [
+      'relay_agents',
+      'List currently online relay agents.',
       schema({}, []),
-      async () => (await relay.agents()).join('\n')],
+      async () => (await relay.agents()).join('\n'),
+    ],
   ];
 
   return defs.map(([name, description, parameters, run]) => ({
@@ -76,7 +94,7 @@ function createRelayTools(relay: RelayLike): FunctionToolLike[] {
  */
 export function onRelay<TAgent extends AgentLike>(
   agent: TAgent,
-  relay: RelayLike = new Relay(agent.name),
+  relay: RelayLike = new Relay(agent.name)
 ): { agent: TAgent; cleanup: () => void } {
   const relayTools = createRelayTools(relay);
   agent.tools = [...agent.tools, ...relayTools];
