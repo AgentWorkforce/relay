@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
 - `@agent-relay/sdk` adds `AgentRelay.getPersonaSpawnPlan(id)` and a `getPersonaSpawnPlan` export for dry-run inspection of a persona's resolved harness argv, skill installs, mount policy, sidecars, and inputs.
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastUpdated": "2026-05-26T11:05:23.883Z",
+  "lastUpdated": "2026-05-26T13:45:48.966Z",
   "trajectories": {
     "traj_05xg7j388bc4": {
       "title": "Add browser workflow step integration",
@@ -1149,6 +1149,20 @@
       "startedAt": "2026-05-26T11:04:15.563Z",
       "completedAt": "2026-05-26T11:05:23.716Z",
       "path": "/private/tmp/relay-owned-mcp/.trajectories/completed/2026-05/traj_cszfl2icaj2t.json"
+    },
+    "traj_17t39ue8exte": {
+      "title": "Add GitHub traffic to PostHog sync",
+      "status": "completed",
+      "startedAt": "2026-05-26T13:16:29.926Z",
+      "completedAt": "2026-05-26T13:17:08.417Z",
+      "path": "/private/tmp/relay-posthog-github-traffic/.trajectories/completed/2026-05/traj_17t39ue8exte/trajectory.json"
+    },
+    "traj_b3g40827t5zh": {
+      "title": "Address GitHub traffic PostHog PR review comments",
+      "status": "completed",
+      "startedAt": "2026-05-26T13:42:50.509Z",
+      "completedAt": "2026-05-26T13:44:38.186Z",
+      "path": "/private/tmp/relay-posthog-github-traffic/.trajectories/completed/2026-05/traj_b3g40827t5zh/trajectory.json"
     }
   }
 }
