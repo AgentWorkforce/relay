@@ -102,6 +102,6 @@ describe('CLI entrypoints', () => {
       bin?: Record<string, string>;
     };
 
-    expect(packageJson.bin?.['agent-relay']).toBe('dist/src/cli/index.js');
+    expect(packageJson.bin?.['agent-relay']).toBe('dist/cli/index.js');
   });
 });

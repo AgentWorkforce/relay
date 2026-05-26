@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'install.sh'
-      - 'src/**'
       - 'packages/**'
       - 'workflows/relay-e2e-meta-workflow.ts'
       - 'workflows/relay-clean-room-e2e-validation.ts'
@@ -50,7 +49,7 @@ jobs:
         run: npm run build
 
       - name: Link local CLI
-        run: npm link
+        run: cd packages/cli && npm link
 
       - name: Verify CLI
         run: agent-relay --version

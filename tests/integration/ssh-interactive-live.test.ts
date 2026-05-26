@@ -3,8 +3,8 @@ import { generateKeyPairSync } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import ssh2, { type AuthContext, type Connection } from 'ssh2';
 
-import { loadSSH2 } from '../../src/cli/lib/auth-ssh.js';
-import { runInteractiveSession } from '../../src/cli/lib/ssh-interactive.js';
+import { loadSSH2 } from '../../packages/cli/src/cli/lib/auth-ssh.js';
+import { runInteractiveSession } from '../../packages/cli/src/cli/lib/ssh-interactive.js';
 
 const { Server: SSH2Server } = ssh2;
 

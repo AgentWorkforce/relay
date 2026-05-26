@@ -4,10 +4,9 @@
  */
 
 export * from '@agent-relay/sdk';
-export * from './utils/index.js';
-export * from './hooks/index.js';
+export * from '@agent-relay/utils';
+export * from '@agent-relay/hooks';
 
-// Memory types and adapters for external consumers
 export {
   type MemoryAdapter,
   type MemoryEntry,
@@ -22,11 +21,10 @@ export {
   getMemoryHooks,
   InMemoryAdapter,
   SupermemoryAdapter,
-  // Context compaction
   ContextCompactor,
   createContextCompactor,
   estimateTokens,
   estimateContextTokens,
   type CompactionConfig,
   type CompactionResult,
-} from './memory/index.js';
+} from '@agent-relay/memory';

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'packages/cli/src/**'
       - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
       - 'scripts/stress-test-*.mts'
@@ -12,7 +12,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'packages/cli/src/**'
       - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
       - 'scripts/stress-test-*.mts'

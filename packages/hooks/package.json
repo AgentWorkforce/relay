@@ -10,11 +10,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./inbox-check": {
-      "types": "./dist/inbox-check/index.d.ts",
-      "import": "./dist/inbox-check/index.js",
-      "default": "./dist/inbox-check/index.js"
-    },
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js",

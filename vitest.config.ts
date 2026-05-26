@@ -61,13 +61,12 @@ export default defineConfig({
     threads: true,
     setupFiles: [path.resolve(__dirname, './test/vitest.setup.ts')],
     include: [
-      'src/**/*.test.ts',
-      'src/**/*.test.tsx',
       'test/**/*.test.ts',
       'test/**/*.test.tsx',
       'tests/fixtures/**/*.test.ts',
       'tests/integration/ssh-interactive-live.test.ts',
       'packages/**/src/**/*.test.ts',
+      'packages/**/src/**/*.test.tsx',
       'packages/**/tests/**/*.test.ts',
     ],
     exclude: [
