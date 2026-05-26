@@ -10,7 +10,7 @@ export function registerConnectCommands(program: Command): void {
     .action(async (providerArg: string) => {
       console.error(
         '\x1b[33m[DEPRECATED]\x1b[0m `agent-relay connect` has moved. Use:\n\n' +
-        `  agent-relay cloud connect ${providerArg}\n`
+          `  agent-relay cloud connect ${providerArg}\n`
       );
       process.exit(1);
     });

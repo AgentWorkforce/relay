@@ -48,7 +48,7 @@ npm rebuild better-sqlite3 2>/dev/null || true
 # Create runner script
 cat > "$RELEASE_DIR/agent-relay/agent-relay" << 'RUNNER'
 #!/usr/bin/env node
-import('./dist/src/cli/index.js');
+import('./packages/cli/dist/cli/index.js');
 RUNNER
 chmod +x "$RELEASE_DIR/agent-relay/agent-relay"
 

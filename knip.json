@@ -1,6 +1,6 @@
 {
-  "entry": ["src/cli/bootstrap.ts", "src/index.ts"],
-  "project": ["src/**/*.ts", "packages/*/src/**/*.ts"],
+  "entry": ["packages/cli/src/cli/bootstrap.ts", "packages/cli/src/index.ts"],
+  "project": ["packages/cli/src/**/*.ts", "packages/*/src/**/*.ts"],
   "ignore": ["**/*.test.ts", "**/__tests__/**", "scripts/**"],
   "ignoreDependencies": ["turbo", "concurrently"]
 }

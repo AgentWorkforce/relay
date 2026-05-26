@@ -143,10 +143,7 @@ function removeZedConfig(
   }
 }
 
-export async function runUpdateCommand(
-  options: { check?: boolean },
-  deps: CoreDependencies
-): Promise<void> {
+export async function runUpdateCommand(options: { check?: boolean }, deps: CoreDependencies): Promise<void> {
   const currentVersion = deps.getVersion();
   deps.log(`Current version: ${currentVersion}`);
   deps.log('Checking for updates...');
@@ -346,7 +343,9 @@ export async function runUninstallCommand(
       }
     }
   } else {
-    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server @agent-relay/acp-bridge');
+    deps.log(
+      '[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server @agent-relay/acp-bridge'
+    );
   }
 
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---

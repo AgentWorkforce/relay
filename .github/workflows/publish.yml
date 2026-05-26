@@ -265,7 +265,7 @@ jobs:
             --external=better-sqlite3 \
             --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
             --define="process.env.AGENT_RELAY_POSTHOG_KEY=\"${AGENT_RELAY_POSTHOG_KEY:-}\"" \
-            ./dist/src/cli/index.js \
+            ./packages/cli/dist/cli/index.js \
             --outfile release-binaries/${{ matrix.binary_name }}
 
       - name: Verify ssh2 is bundled into binary
@@ -1750,6 +1750,7 @@ jobs:
 
       - name: Pack npm tarball
         shell: bash
+        working-directory: packages/cli
         run: |
           set -euo pipefail
 
@@ -1768,7 +1769,7 @@ jobs:
           ls -lh "${TARBALLS[0]}"
 
       - name: Validate npm tarball
-        run: node scripts/validate-npm-tarball.mjs "$NPM_TARBALL"
+        run: node packages/cli/scripts/validate-npm-tarball.mjs "$NPM_TARBALL"
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
@@ -1781,7 +1782,7 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         run: |
           set -euo pipefail
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(node -p "require('./packages/cli/package.json').version")
           if npm view "agent-relay@${PKG_VERSION}" version >/dev/null 2>&1; then
             echo "agent-relay@${PKG_VERSION} already exists on npm; skipping publish"
             echo "published=false" >> "$GITHUB_OUTPUT"

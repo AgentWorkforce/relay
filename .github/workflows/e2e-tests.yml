@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
       - 'packages/**'
       - 'scripts/e2e-test.sh'
       - 'scripts/e2e-sdk-lifecycle.mjs'
@@ -13,7 +12,6 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/**'
       - 'packages/**'
       - 'scripts/e2e-test.sh'
       - 'scripts/e2e-sdk-lifecycle.mjs'
