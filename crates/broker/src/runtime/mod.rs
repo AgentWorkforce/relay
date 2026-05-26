@@ -49,7 +49,9 @@ use crate::{
     },
 };
 
-use crate::cli::{AppServerCommand, DumpPtyCommand, DumpPtyFormat, HeadlessCommand, InitCommand};
+use crate::cli::{
+    DumpPtyCommand, DumpPtyFormat, HeadlessAppServerCommand, HeadlessCommand, InitCommand,
+};
 use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{broker, listen_api, routing, worker_request};
 

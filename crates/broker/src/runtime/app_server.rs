@@ -10,7 +10,7 @@ struct AppServerAuthConfig {
 
 const APP_SERVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(crate) async fn run_app_server_worker(cmd: AppServerCommand) -> Result<()> {
+pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand) -> Result<()> {
     let protocol = cmd.protocol.trim().to_ascii_lowercase();
     let endpoint = cmd.endpoint.trim().trim_end_matches('/').to_string();
     let session_id = cmd.session_id.clone();
