@@ -20,8 +20,7 @@ import { compileDotfiles, hasDotfiles } from './dotfiles.js';
 import { ensureRelayfileMountBinary } from './relayfile-binary.js';
 import { launchOnMount } from '@relayfile/local-mount';
 import { mintToken } from './token.js';
-import { seedAclRules } from './workspace.js';
-import { seedWorkspace } from '@agent-relay/cloud';
+import { seedAclRules, seedWorkspace } from './workspace.js';
 import {
   createLocalJwks,
   exportPrivateKeyPem,

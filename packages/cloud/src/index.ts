@@ -88,10 +88,15 @@ export {
   type TokenClaims,
 } from './token.js';
 export {
+  createLocalJwks,
   createLocalJwksKeyPair,
+  exportPrivateKeyPem,
   importPrivateKeyPem,
+  RELAYAUTH_JWKS_URL_ENV,
   RELAYAUTH_JWT_KID_ENV,
   RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
+  type LocalJwks,
+  type LocalJwksKeyPair,
   type LocalJwksSigningKey,
 } from './local-jwks.js';
 export {
