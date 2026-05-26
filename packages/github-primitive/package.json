@@ -10,11 +10,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    },
-    "./workflow-step": {
-      "types": "./dist/workflow-step.d.ts",
-      "import": "./dist/workflow-step.js",
-      "default": "./dist/workflow-step.js"
     }
   },
   "files": [
@@ -31,9 +26,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "@agent-relay/workflow-types": "7.1.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.19.3",
     "typescript": "^5.9.3",

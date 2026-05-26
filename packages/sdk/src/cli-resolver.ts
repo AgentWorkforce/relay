@@ -11,7 +11,7 @@ import { accessSync, constants as constantsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import type { AgentCli } from './workflows/types.js';
+import type { AgentCli } from '@agent-relay/cloud';
 import { getCliDefinition, COMMON_SEARCH_PATHS } from './cli-registry.js';
 
 const execFileAsync = promisify(execFile);

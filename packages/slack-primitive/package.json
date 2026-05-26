@@ -10,11 +10,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    },
-    "./workflow-step": {
-      "types": "./dist/workflow-step.d.ts",
-      "import": "./dist/workflow-step.js",
-      "default": "./dist/workflow-step.js"
     }
   },
   "files": [
@@ -30,7 +25,6 @@
     "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/workflow-types": "7.1.1",
     "@slack/web-api": "^7.16.0"
   },
   "devDependencies": {

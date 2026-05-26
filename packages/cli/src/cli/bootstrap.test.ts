@@ -39,7 +39,6 @@ const expectedLeafCommands = [
   'telemetry',
   'on',
   'off',
-  'run',
   'connect',
   'view',
   'drive',
@@ -50,7 +49,6 @@ const expectedLeafCommands = [
   'dlq inspect',
   'dlq replay',
   'dlq purge',
-  'workflows list',
   'workspaces create',
   'tokens issue',
   'cloud login',
@@ -136,10 +134,8 @@ describe('bootstrap CLI', () => {
         'telemetry',
         'on',
         'off',
-        'run',
         'dlq',
         'workspaces',
-        'workflows',
         'tokens',
       ])
     );

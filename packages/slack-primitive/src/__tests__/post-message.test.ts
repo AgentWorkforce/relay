@@ -4,7 +4,6 @@ import { postMessage } from '../actions/post-message.js';
 import { resolveChannel } from '../actions/resolve-channel.js';
 import { SlackWebApiClient } from '../local-runtime.js';
 import { SlackPostBackError, type SlackWebApiLike } from '../types.js';
-import { renderSlackTemplates } from '../workflow-step.js';
 
 describe('Slack primitive', () => {
   afterEach(() => {
@@ -83,20 +82,6 @@ describe('Slack primitive', () => {
         text: 'PR opened',
       })
     ).rejects.toThrow('provide channel or set SLACK_DEFAULT_CHANNEL');
-  });
-
-  it('substitutes {{steps.X.output}} templates by nested path', () => {
-    const text = renderSlackTemplates('Opened {{steps.create-pr.output.htmlUrl}}', {
-      steps: {
-        'create-pr': {
-          output: {
-            htmlUrl: 'https://github.test/octo/repo/pull/7',
-          },
-        },
-      },
-    });
-
-    expect(text).toBe('Opened https://github.test/octo/repo/pull/7');
   });
 });
 

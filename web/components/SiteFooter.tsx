@@ -26,7 +26,7 @@ export function SiteFooter() {
             <Link href="/docs/spawning-an-agent" className={s.link}>
               Basics
             </Link>
-            <Link href="/docs/reference-workflows" className={s.link}>
+            <Link href="/docs/cloud" className={s.link}>
               Advanced
             </Link>
             <Link href="/docs/cli-overview" className={s.link}>

@@ -9,7 +9,7 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm --prefix packages/workflow-types run build && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:config && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*'",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
@@ -34,8 +34,7 @@
     "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk/bin && cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker.new && mv -f packages/sdk/bin/agent-relay-broker.new packages/sdk/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk/bin/'; else echo '⚠ Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
     "start": "node packages/cli/dist/cli/index.js",
     "pretest": "npm run build",
-    "test": "vitest run && npm run test:sdk:vitest",
-    "test:sdk:vitest": "cd packages/sdk && vitest run --config vitest.config.ts src/workflows/__tests__/run-script.test.ts",
+    "test": "vitest run",
     "pretest:coverage": "npm run build",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",

@@ -24,7 +24,6 @@ import {
   Smile,
   Terminal,
   Users,
-  Workflow,
   Zap,
 } from 'lucide-react';
 import { BsChatRightText } from 'react-icons/bs';
@@ -53,7 +52,6 @@ const navIcons: Record<string, NavIcon> = {
   authentication: Shield,
   permissions: PiLockKeyDuotone,
   scheduling: Clock3,
-  'reference-workflows': Workflow,
   cloud: Cloud,
   workforce: Users,
   'proactive-agents': Zap,
@@ -63,7 +61,6 @@ const navIcons: Record<string, NavIcon> = {
   'cli-broker-lifecycle': Power,
   'cli-agent-management': Bot,
   'cli-messaging': Send,
-  'cli-workflows': Workflow,
   'cli-cloud-commands': Cloud,
   'cli-on-the-relay': Plug,
   'reference-cli': BookOpen,

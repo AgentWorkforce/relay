@@ -36,7 +36,6 @@ export const docsNav: NavGroup[] = [
   {
     title: 'Advanced',
     items: [
-      { title: 'Workflows', slug: 'reference-workflows' },
       { title: 'Cloud', slug: 'cloud' },
       { title: 'Workforce', slug: 'workforce' },
       { title: 'Proactive agents', slug: 'proactive-agents' },
@@ -56,7 +55,6 @@ export const docsNav: NavGroup[] = [
       { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
       { title: 'Agent management', slug: 'cli-agent-management' },
       { title: 'Messaging', slug: 'cli-messaging' },
-      { title: 'Run workflows', slug: 'cli-workflows' },
       { title: 'Cloud commands', slug: 'cli-cloud-commands' },
       { title: 'On the relay', slug: 'cli-on-the-relay' },
       { title: 'CLI reference', slug: 'reference-cli' },
@@ -99,7 +97,6 @@ const ALL_SLUGS = [
   'harness-runtime-config',
   'local-mode',
   'reference-openclaw',
-  'reference-workflows',
 ];
 
 /** Flat list of all doc slugs for static generation */

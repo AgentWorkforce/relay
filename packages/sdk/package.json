@@ -52,11 +52,6 @@
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
     },
-    "./workflows": {
-      "types": "./dist/workflows/index.d.ts",
-      "import": "./dist/workflows/index.js",
-      "default": "./dist/workflows/index.js"
-    },
     "./communicate": {
       "types": "./dist/communicate/index.d.ts",
       "import": "./dist/communicate/index.js",
@@ -121,21 +116,6 @@
       "types": "./dist/slack.d.ts",
       "import": "./dist/slack.js",
       "default": "./dist/slack.js"
-    },
-    "./provisioner/seeder": {
-      "types": "./dist/provisioner/seeder.d.ts",
-      "import": "./dist/provisioner/seeder.js",
-      "default": "./dist/provisioner/seeder.js"
-    },
-    "./provisioner/local-jwks": {
-      "types": "./dist/provisioner/local-jwks.d.ts",
-      "import": "./dist/provisioner/local-jwks.js",
-      "default": "./dist/provisioner/local-jwks.js"
-    },
-    "./provisioner/token": {
-      "types": "./dist/provisioner/token.d.ts",
-      "import": "./dist/provisioner/token.js",
-      "default": "./dist/provisioner/token.js"
     }
   },
   "files": [
@@ -150,13 +130,12 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../workflow-types run build && npm --prefix ../github-primitive run build && npm --prefix ../slack-primitive run build && npm --prefix ../config run build && npm --prefix ../cloud run build",
+    "prebuild": "npm --prefix ../github-primitive run build && npm --prefix ../slack-primitive run build && npm --prefix ../config run build && npm --prefix ../cloud run build",
     "build": "npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/__tests__/integration.test.js && npm run test:vitest",
-    "test:vitest": "vitest run --config vitest.config.ts src/workflows/__tests__/run-script.test.ts",
+    "test": "npm run build && node --test dist/__tests__/integration.test.js",
     "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
     "quickstart": "node dist/examples/quickstart.js",
     "demo": "node dist/examples/demo.js",
@@ -174,7 +153,6 @@
     "@agent-relay/config": "7.1.1",
     "@agent-relay/github-primitive": "7.1.1",
     "@agent-relay/slack-primitive": "7.1.1",
-    "@agent-relay/workflow-types": "7.1.1",
     "@agentworkforce/persona-kit": "^3.0.20",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",

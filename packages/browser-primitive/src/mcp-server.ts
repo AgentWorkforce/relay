@@ -10,12 +10,6 @@ import type {
   BrowserConfig,
   BrowserSession,
 } from './types.js';
-import {
-  BrowserStepExecutor,
-  type BrowserStepConfig,
-  type BrowserStepExecutionResult,
-} from './workflow-step.js';
-
 export type JsonRpcId = string | number | null;
 
 export interface JsonRpcRequest {
@@ -66,11 +60,6 @@ export interface BrowserActionsExecuteParams {
   sessionId?: string;
   actions: BrowserActionRequest[];
   config?: BrowserConfig;
-}
-
-export interface BrowserStepExecuteParams {
-  step: BrowserStepConfig;
-  workspaceId?: string;
 }
 
 export class BrowserMcpSessionManager {
@@ -161,7 +150,6 @@ export class BrowserMcpServer {
   private readonly serverName: string;
   private readonly serverVersion: string;
   private readonly sessions: BrowserMcpSessionManager;
-  private readonly stepExecutor: BrowserStepExecutor;
   private rl?: ReadlineInterface;
 
   constructor(options: BrowserMcpServerOptions = {}) {
@@ -171,7 +159,6 @@ export class BrowserMcpServer {
     this.serverName = options.serverName ?? 'agent-relay-browser';
     this.serverVersion = options.serverVersion ?? '1.0.0';
     this.sessions = new BrowserMcpSessionManager(options.defaultConfig);
-    this.stepExecutor = new BrowserStepExecutor({ config: options.defaultConfig });
   }
 
   start(): void {
@@ -234,7 +221,6 @@ export class BrowserMcpServer {
 
   async shutdown(exitCode?: number): Promise<void> {
     await this.sessions.closeAll();
-    await this.stepExecutor.closeAll();
     if (exitCode !== undefined) {
       process.exit(exitCode);
     }
@@ -284,9 +270,6 @@ export class BrowserMcpServer {
       case 'browser.actions.execute':
         return this.executeActions(params);
 
-      case 'browser.step.execute':
-        return this.executeStep(params);
-
       default:
         throw jsonRpcMethodNotFound(method);
     }
@@ -315,10 +298,6 @@ export class BrowserMcpServer {
       case 'browser_actions_execute': {
         const result = await this.executeActions(args);
         return toMcpToolResult(result, hasActionErrors(result));
-      }
-      case 'browser_step_execute': {
-        const result = await this.executeStep(args);
-        return toMcpToolResult(result, !(result as BrowserStepExecutionResult).success);
       }
       default:
         throw new Error(`Unknown browser tool: ${name}`);
@@ -373,14 +352,6 @@ export class BrowserMcpServer {
     const client = await this.sessions.getOrCreate(sessionId, config);
 
     return client.executeMany(record.actions as BrowserActionRequest[]);
-  }
-
-  private async executeStep(params: unknown): Promise<BrowserStepExecutionResult> {
-    const record = requireRecord(params, 'browser.step.execute params');
-    const step = requireRecord(record.step, 'step') as unknown as BrowserStepConfig;
-    const workspaceId = typeof record.workspaceId === 'string' ? record.workspaceId : undefined;
-
-    return this.stepExecutor.execute(step, { workspaceId });
   }
 
   private writeResponse(response: JsonRpcResponse): void {
@@ -470,18 +441,6 @@ export function getBrowserToolDefinitions(): Array<Record<string, unknown>> {
           config: { type: 'object' },
         },
         required: ['actions'],
-      },
-    },
-    {
-      name: 'browser_step_execute',
-      description: 'Execute a BrowserStepConfig using the workflow step executor.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          workspaceId: { type: 'string' },
-          step: { type: 'object' },
-        },
-        required: ['step'],
       },
     },
   ];

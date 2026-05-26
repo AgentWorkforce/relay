@@ -27,7 +27,6 @@ const workspacePackages = [
   'telemetry',
   'trajectory',
   'utils',
-  'workflow-types',
 ] as const;
 
 const workspaceAliases = workspacePackages.flatMap((packageName) => {

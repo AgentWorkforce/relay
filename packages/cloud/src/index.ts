@@ -65,6 +65,42 @@ export {
   type AuthSshRuntime,
 } from './lib/ssh-runtime.js';
 
+// Cross-product identity, permissions, tokens, and audit primitives.
+export * from './permissions.js';
+export * from './provisioning-types.js';
+export {
+  defaultPermissionsForPreset,
+  expandPreset,
+  globsToScopes,
+  compileAgentPermissions,
+  mergeAcl,
+  resolveAgentPermissions,
+  compileAgentScopes,
+  mergePermissionSources,
+  expandAccessPreset,
+  globToScopes,
+} from './compiler.js';
+export {
+  DEFAULT_WORKFLOW_TOKEN_TTL_SECONDS,
+  DEFAULT_ADMIN_AGENT_NAME,
+  DEFAULT_ADMIN_SCOPES,
+  mintAgentToken,
+  type TokenClaims,
+} from './token.js';
+export {
+  createLocalJwks,
+  createLocalJwksKeyPair,
+  exportPrivateKeyPem,
+  importPrivateKeyPem,
+  RELAYAUTH_JWKS_URL_ENV,
+  RELAYAUTH_JWT_KID_ENV,
+  RELAYAUTH_JWT_PRIVATE_KEY_PEM_ENV,
+  type LocalJwks,
+  type LocalJwksKeyPair,
+  type LocalJwksSigningKey,
+} from './local-jwks.js';
+export { PermissionAuditLog, getDefaultPermissionAuditPath } from './audit.js';
+
 export {
   type StoredAuth,
   type WhoAmIResponse,
