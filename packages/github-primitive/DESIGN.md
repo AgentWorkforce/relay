@@ -18,7 +18,6 @@ packages/github-primitive/
 │   ├── adapter.ts          # Runtime detection, factory, base adapter
 │   ├── local-runtime.ts    # Local gh CLI implementation
 │   ├── cloud-runtime.ts    # Cloud Nango and relay-cloud implementation
-│   ├── workflow-step.ts    # Workflow step executor
 │   ├── actions/            # GitHub action implementations
 │   │   ├── branches.ts     # listBranches, createBranch operations
 │   │   ├── commits.ts      # listCommits, createCommit operations

@@ -3,10 +3,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@agent-relay/cloud', () => ({
-  readStoredAuth: vi.fn().mockResolvedValue(null),
-  ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
-}));
+vi.mock('@agent-relay/cloud', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agent-relay/cloud')>();
+  return {
+    ...actual,
+    readStoredAuth: vi.fn().mockResolvedValue(null),
+    ensureAuthenticated: vi.fn().mockResolvedValue({ accessToken: 'test-token' }),
+  };
+});
 
 vi.mock('./dotfiles.js', () => ({
   hasDotfiles: () => false,

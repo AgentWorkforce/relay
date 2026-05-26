@@ -35,28 +35,6 @@ The client and workflow step support:
 - Branches and commits: `listBranches`, `createBranch`, `listCommits`, `createCommit`
 - Identity: `getUser`, `listOrganizations`
 
-## Workflow Step
-
-```ts
-import { createGitHubStep } from '@agent-relay/github-primitive/workflow-step';
-
-createGitHubStep({
-  name: 'read-readme',
-  action: 'readFile',
-  repo: 'AgentWorkforce/relay',
-  params: {
-    path: 'README.md',
-  },
-  output: {
-    mode: 'data',
-    format: 'text',
-  },
-});
-```
-
-See `examples/github-step.ts` for a workflow runner example and
-`examples/github-client.ts` for a standalone client example.
-
 ## End-to-end PR workflow
 
 `examples/end-to-end-pr-workflow.ts` walks the full PR lifecycle against

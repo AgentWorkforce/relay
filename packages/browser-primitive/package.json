@@ -11,11 +11,6 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./workflow-step": {
-      "types": "./dist/workflow-step.d.ts",
-      "import": "./dist/workflow-step.js",
-      "default": "./dist/workflow-step.js"
-    },
     "./mcp-server": {
       "types": "./dist/mcp-server.d.ts",
       "import": "./dist/mcp-server.js",

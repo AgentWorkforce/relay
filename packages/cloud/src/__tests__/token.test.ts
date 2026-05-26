@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { createLocalJwksKeyPair } from '../local-jwks.js';
 import { DEFAULT_WORKFLOW_TOKEN_TTL_SECONDS, mintAgentToken, type TokenClaims } from '../token.js';

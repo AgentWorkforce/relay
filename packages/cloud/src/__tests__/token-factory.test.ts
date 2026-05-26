@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createPublicKey, createVerify } from 'node:crypto';
-import test from 'node:test';
+import { test } from 'vitest';
 
 import { createLocalJwksKeyPair } from '../local-jwks.js';
 import {
