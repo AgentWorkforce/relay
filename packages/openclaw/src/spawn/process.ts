@@ -171,7 +171,7 @@ export class ProcessSpawnProvider implements SpawnProvider {
         } as NodeJS.ProcessEnv,
       });
 
-      await relay.spawnPty({
+      await relay.spawnAgent({
         name: agentName,
         cli: 'node',
         args: [bridgePath],
