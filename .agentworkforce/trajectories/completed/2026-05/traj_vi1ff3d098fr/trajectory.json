@@ -14,15 +14,8 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [
-    "e744f007",
-    "c8c57cec"
-  ],
-  "filesChanged": [
-    "CHANGELOG.md",
-    "packages/cloud/src/auth.test.ts",
-    "packages/cloud/src/auth.ts"
-  ],
+  "commits": ["e744f007", "c8c57cec"],
+  "filesChanged": ["CHANGELOG.md", "packages/cloud/src/auth.test.ts", "packages/cloud/src/auth.ts"],
   "projectId": "/Users/will/Projects/AgentWorkforce/relay",
   "tags": [],
   "_trace": {
