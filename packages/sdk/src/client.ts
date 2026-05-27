@@ -224,6 +224,20 @@ function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Rec
   };
 }
 
+function applySpawnPatch<TInput extends SpawnPtyInput | SpawnCliInput>(
+  input: TInput,
+  patch: SpawnPatch
+): TInput {
+  if (Object.hasOwn(patch, 'args')) input.args = patch.args;
+  if (Object.hasOwn(patch, 'channels')) input.channels = patch.channels;
+  if (Object.hasOwn(patch, 'task')) input.task = patch.task;
+  if (Object.hasOwn(patch, 'model')) input.model = patch.model;
+  if (Object.hasOwn(patch, 'team')) input.team = patch.team;
+  if (Object.hasOwn(patch, 'agentToken')) input.agentToken = patch.agentToken;
+  if (Object.hasOwn(patch, 'harnessConfig')) input.harnessConfig = patch.harnessConfig;
+  return input;
+}
+
 function isProcessRunning(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -334,13 +348,17 @@ export class AgentRelayClient {
    * shallow-merged over the running result. Handler exceptions are caught
    * and logged but do not abort the chain.
    */
-  private async runBeforeSpawn(ctx: BeforeAgentSpawnContext): Promise<SpawnPtyInput | SpawnCliInput> {
-    let resolved: SpawnPtyInput | SpawnCliInput = { ...ctx.input };
-    for (const handler of this.eventBus.listeners('beforeAgentSpawn') as Array<BeforeAgentSpawnHandler>) {
+  private async runBeforeSpawn<TInput extends SpawnPtyInput | SpawnCliInput>(
+    ctx: BeforeAgentSpawnContext<TInput>
+  ): Promise<TInput> {
+    let resolved: TInput = { ...ctx.input };
+    for (const handler of this.eventBus.listeners<'beforeAgentSpawn', void | SpawnPatch>(
+      'beforeAgentSpawn'
+    )) {
       try {
-        const patch = await handler({ ...ctx, input: resolved as Readonly<typeof resolved> });
+        const patch = await handler({ ...ctx, input: resolved });
         if (patch && typeof patch === 'object') {
-          resolved = { ...resolved, ...(patch as SpawnPatch) } as SpawnPtyInput | SpawnCliInput;
+          resolved = applySpawnPatch(resolved, patch);
         }
       } catch (err) {
         console.error('[agent-relay] beforeAgentSpawn listener threw:', err);
@@ -603,7 +621,7 @@ export class AgentRelayClient {
   // ── Agent lifecycle ────────────────────────────────────────────────
 
   async spawnPty(input: SpawnPtyInput): Promise<SpawnAgentResult> {
-    const beforeCtx: BeforeAgentSpawnContext = {
+    const beforeCtx: BeforeAgentSpawnContext<SpawnPtyInput> = {
       kind: 'pty',
       input,
       spawnerPid: process.pid,
@@ -611,7 +629,7 @@ export class AgentRelayClient {
       baseUrl: this.baseUrl,
     };
     const t0 = Date.now();
-    const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnPtyInput;
+    const resolvedInput = await this.runBeforeSpawn(beforeCtx);
     try {
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
@@ -627,7 +645,7 @@ export class AgentRelayClient {
   }
 
   async spawnCli(input: SpawnCliInput): Promise<SpawnAgentResult> {
-    const beforeCtx: BeforeAgentSpawnContext = {
+    const beforeCtx: BeforeAgentSpawnContext<SpawnCliInput> = {
       kind: 'cli',
       input,
       spawnerPid: process.pid,
@@ -638,11 +656,11 @@ export class AgentRelayClient {
   }
 
   private async spawnCliWithContext(
-    beforeCtx: BeforeAgentSpawnContext,
+    beforeCtx: BeforeAgentSpawnContext<SpawnCliInput>,
     input: SpawnCliInput
   ): Promise<SpawnAgentResult> {
     const t0 = Date.now();
-    const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnCliInput;
+    const resolvedInput = await this.runBeforeSpawn(beforeCtx);
     const transport = resolveSpawnTransport(resolvedInput);
     if (
       transport === 'headless' &&
@@ -670,7 +688,7 @@ export class AgentRelayClient {
 
   async spawnHeadless(input: SpawnHeadlessInput): Promise<SpawnAgentResult> {
     const cliInput: SpawnCliInput = { ...input, transport: 'headless' };
-    const beforeCtx: BeforeAgentSpawnContext = {
+    const beforeCtx: BeforeAgentSpawnContext<SpawnCliInput> = {
       kind: 'headless',
       input: cliInput,
       spawnerPid: process.pid,
