@@ -13,7 +13,7 @@
  * relay.addListener('messageReceived', (message) => console.log(message));
  * relay.addListener('agentSpawned', (agent) => console.log("spawned", agent.name));
  *
- * const codex = await relay.spawnAgent({ name: "Codex", cli: "codex", runtime: "pty" });
+ * const codex = await relay.spawnAgent({ cli: "codex" });
  * const human = relay.human({ name: "System" });
  * await human.sendMessage({ to: codex.name, text: "Hello!" });
  *
@@ -123,6 +123,32 @@ function generateWorkspaceId(): string {
   return `${WORKSPACE_ID_PREFIX}${suffix}`;
 }
 
+const DEFAULT_AGENT_NAMES: Record<string, string> = {
+  aider: 'Aider',
+  agent: 'Agent',
+  claude: 'Claude',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  'cursor-agent': 'CursorAgent',
+  droid: 'Droid',
+  gemini: 'Gemini',
+  goose: 'Goose',
+  opencode: 'OpenCode',
+};
+
+function defaultAgentNameForCli(cli: string): string {
+  const trimmed = cli.trim();
+  const firstToken = trimmed.split(/\s+/)[0] ?? trimmed;
+  const base = firstToken.split(':')[0] ?? firstToken;
+  const knownName = DEFAULT_AGENT_NAMES[base.toLowerCase()];
+  if (knownName) return knownName;
+
+  const parts = base.split(/[^a-zA-Z0-9]+/).filter((part) => part.length > 0);
+  if (parts.length === 0) return 'Agent';
+
+  return parts.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+}
+
 function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
   if (!value || typeof value !== 'object') {
     return {};
@@ -201,12 +227,12 @@ type SpawnWithLifecycle<TInput, TAgentResult> = TInput &
   SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
 
 export type SpawnPtyAgentConfig<TAgentResult = unknown> = SpawnWithLifecycle<
-  SpawnPtyInput & { runtime: 'pty' },
+  Omit<SpawnPtyInput, 'name'> & { name?: string; runtime?: 'pty' },
   TAgentResult
 >;
 
 export type SpawnHeadlessAgentConfig<TAgentResult = unknown> = SpawnWithLifecycle<
-  ClientSpawnHeadlessInput & { runtime: 'headless' },
+  Omit<ClientSpawnHeadlessInput, 'name'> & { name?: string; runtime: 'headless' },
   TAgentResult
 >;
 
@@ -742,25 +768,29 @@ export class AgentRelay {
     config: SpawnAgentConfig<TAgentResult>
   ): Promise<Agent<TAgentResult>> {
     const client = await this.ensureStarted();
+    const name = config.name && config.name.trim() ? config.name : defaultAgentNameForCli(config.cli);
+    const runtime = config.runtime ?? 'pty';
+    const spawnOperation = `spawnAgent("${name}")`;
+
     if (!config.channels || config.channels.length === 0) {
       console.warn(
-        `[AgentRelay] spawnAgent("${config.name}"): no channels specified, defaulting to "general". ` +
+        `[AgentRelay] ${spawnOperation}: no channels specified, defaulting to "general". ` +
           'Set explicit channels for workflow isolation.'
       );
     }
     const channels = config.channels ?? ['general'];
     const lifecycleContext: SpawnLifecycleContext = {
-      name: config.name,
+      name,
       cli: config.cli,
       channels,
       task: config.task,
     };
-    await this.invokeLifecycleHook(config.onStart, lifecycleContext, `spawnAgent("${config.name}") onStart`);
+    await this.invokeLifecycleHook(config.onStart, lifecycleContext, `${spawnOperation} onStart`);
     let result: SpawnAgentResult;
     const resultContract = this.prepareAgentResultContract(config.result);
     try {
       const harnessConfig = this.resolveHarnessConfig({
-        name: config.name,
+        name,
         cli: config.cli,
         args: config.args,
         task: config.task,
@@ -769,7 +799,7 @@ export class AgentRelay {
         harnessConfig: config.harnessConfig,
       });
       const spawnInput = {
-        name: config.name,
+        name,
         cli: config.cli,
         args: config.args,
         channels,
@@ -789,9 +819,7 @@ export class AgentRelay {
       };
 
       result =
-        config.runtime === 'headless'
-          ? await client.spawnHeadless(spawnInput)
-          : await client.spawnPty(spawnInput);
+        runtime === 'headless' ? await client.spawnHeadless(spawnInput) : await client.spawnPty(spawnInput);
     } catch (error) {
       await this.invokeLifecycleHook(
         config.onError,
@@ -799,7 +827,7 @@ export class AgentRelay {
           ...lifecycleContext,
           error,
         },
-        `spawnAgent("${config.name}") onError`
+        `${spawnOperation} onError`
       );
       throw error;
     }
@@ -821,7 +849,7 @@ export class AgentRelay {
         runtime: result.runtime,
         sessionId: result.sessionId,
       },
-      `spawnAgent("${config.name}") onSuccess`
+      `${spawnOperation} onSuccess`
     );
     return agent;
   }

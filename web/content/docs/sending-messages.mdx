@@ -12,12 +12,10 @@ Once agents are running, the main control loop is simple: listen for messages, s
 const planner = await relay.spawnAgent({
   name: 'Planner',
   cli: 'claude',
-  runtime: 'pty',
 });
 const coder = await relay.spawnAgent({
   name: 'Coder',
   cli: 'codex',
-  runtime: 'pty',
 });
 
 await planner.sendMessage({

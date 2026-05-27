@@ -215,13 +215,11 @@ while (iteration < MAX_ITERATIONS) {
       relay.spawnAgent({
         name: `Architect-${story.id}-${roundLabel}`,
         cli: 'claude',
-        runtime: 'pty',
         channels: ['general'],
       }),
       relay.spawnAgent({
         name: `Builder-${story.id}-${roundLabel}`,
         cli: 'codex',
-        runtime: 'pty',
         args: ['--full-auto'],
         channels: ['general'],
       }),

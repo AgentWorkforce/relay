@@ -39,14 +39,12 @@ const [agentA, agentB] = await Promise.all([
   relay.spawnAgent({
     name: 'AgentA',
     cli: 'claude',
-    runtime: 'pty',
     args: ['--print'],
     channels: ['general'],
   }),
   relay.spawnAgent({
     name: 'AgentB',
     cli: 'claude',
-    runtime: 'pty',
     args: ['--print'],
     channels: ['general'],
   }),

@@ -59,7 +59,6 @@ const relay = new AgentRelay({
 await relay.spawnAgent({
   name: 'ClaudeReviewer',
   cli: 'company-claude',
-  runtime: 'pty',
   task: 'Review the current diff.',
   model: 'opus',
   args: ['--verbose'],
@@ -99,7 +98,6 @@ const sessionId = await createCodexSession({ cwd, task });
 await relay.spawnAgent({
   name: 'CodexReviewer',
   cli: 'codex',
-  runtime: 'pty',
   task,
   cwd,
   harnessConfig: codexResume(sessionId, cwd),

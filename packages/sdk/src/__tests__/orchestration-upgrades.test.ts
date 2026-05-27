@@ -466,6 +466,31 @@ describe('AgentRelayClient orchestration payloads', () => {
 });
 
 describe('AgentRelay orchestration handles', () => {
+  it('spawnAgent defaults missing name and runtime to a PTY spawn', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnAgent({
+        cli: 'codex',
+        channels: ['general'],
+      });
+
+      expect(agent.name).toBe('Codex');
+      expect(agent.runtime).toBe('pty');
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Codex',
+          cli: 'codex',
+          channels: ['general'],
+        })
+      );
+      expect(mock.spawnHeadless).not.toHaveBeenCalled();
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('spawnAgent forwards pty agentToken to the client', async () => {
     const { client, mock } = createMockFacadeClient();
     const relay = createWiredRelay(client);

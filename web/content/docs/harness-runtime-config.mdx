@@ -152,7 +152,6 @@ const sessionId = await createCodexSession({ cwd, task });
 await relay.spawnAgent({
   name: 'CodexReviewer',
   cli: 'codex',
-  runtime: 'pty',
   task,
   harnessConfig: {
     runtime: 'pty',

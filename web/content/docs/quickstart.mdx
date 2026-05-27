@@ -44,13 +44,11 @@ relay.onMessageReceived = (msg) => {
 const planner = await relay.spawnAgent({
   name: 'Planner',
   cli: 'claude',
-  runtime: 'pty',
   model: Models.Claude.OPUS,
 });
 const coder = await relay.spawnAgent({
   name: 'Coder',
   cli: 'codex',
-  runtime: 'pty',
   model: Models.Codex.GPT_5_3_CODEX,
 });
 const reviewer = await relay.spawnAgent({

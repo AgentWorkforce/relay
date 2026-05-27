@@ -14,7 +14,6 @@ const relay = new AgentRelay({ channels: ['general'] });
 await relay.spawnAgent({
   name: 'Coder',
   cli: 'codex',
-  runtime: 'pty',
   channels: ['dev', 'reviews'],
   task: 'Implement the patch and post updates in the team channels.',
 });

@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
-import type { SpawnAgentConfig, SpawnHeadlessAgentConfig } from '../relay.js';
+import type { SpawnAgentConfig, SpawnHeadlessAgentConfig, SpawnPtyAgentConfig } from '../relay.js';
 import type { SpawnCliInput, SpawnHeadlessInput, SpawnPtyInput } from '../types.js';
 
 describe('spawn input agentToken types', () => {
@@ -58,9 +58,15 @@ describe('spawn input agentToken types', () => {
     expectTypeOf<SpawnHeadlessInput['agentToken']>().toEqualTypeOf<string | undefined>();
   });
 
-  it('SpawnAgentConfig uses runtime and cli for the high-level facade', () => {
+  it('SpawnAgentConfig defaults name and runtime for the high-level facade', () => {
+    const minimalPty = {
+      cli: 'codex',
+    } satisfies SpawnPtyAgentConfig;
+
+    expectTypeOf(minimalPty).toMatchTypeOf<SpawnAgentConfig>();
+    expectTypeOf(minimalPty).toMatchTypeOf<SpawnPtyAgentConfig>();
+
     const withHeadlessHarness = {
-      name: 'headless-facade',
       cli: 'custom-app-server',
       runtime: 'headless',
       agentToken: 'jwt-token',

@@ -15,7 +15,6 @@ const relay = new AgentRelay({ channels: ['dev'] });
 const planner = await relay.spawnAgent({
   name: 'Planner',
   cli: 'claude',
-  runtime: 'pty',
   model: Models.Claude.SONNET,
   channels: ['dev'],
   task: 'Break the work into 3 implementation steps.',
@@ -53,7 +52,6 @@ const cli = 'claude';
 const reviewer = await relay.spawnAgent({
   name: 'Reviewer',
   cli,
-  runtime: 'pty',
   task: 'Review the migration plan and list the highest-risk steps.',
   channels: ['review'],
   model: 'sonnet',
@@ -83,23 +81,10 @@ reviewer = await relay.spawn(
 
 <CodeGroup>
 ```typescript TypeScript file="spawners.ts"
-const claudeWorker = await relay.spawnAgent({
-  name: 'Planner',
-  cli: 'claude',
-  runtime: 'pty',
-});
-const codexWorker = await relay.spawnAgent({
-  name: 'Coder',
-  cli: 'codex',
-  runtime: 'pty',
-});
-const geminiWorker = await relay.spawnAgent({
-  name: 'Researcher',
-  cli: 'gemini',
-  runtime: 'pty',
-});
+const claudeWorker = await relay.spawnAgent({ cli: 'claude' });
+const codexWorker = await relay.spawnAgent({ cli: 'codex' });
+const geminiWorker = await relay.spawnAgent({ cli: 'gemini' });
 const opencodeWorker = await relay.spawnAgent({
-  name: 'Reviewer',
   cli: 'opencode',
   runtime: 'headless',
 });
@@ -140,7 +125,6 @@ const Result = z.object({
 const reviewer = await relay.spawnAgent({
   name: 'Reviewer',
   cli: 'claude',
-  runtime: 'pty',
   task: 'Review the change and submit your decision as structured JSON.',
   result: { schema: Result },
 });

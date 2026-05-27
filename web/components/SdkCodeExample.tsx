@@ -11,14 +11,12 @@ const relay = new AgentRelay({ channels: ["quantum-error-correction"] });
 await relay.spawnAgent({
   name: "Research",
   cli: "claude",
-  runtime: "pty",
   task: "Discuss quantum error correction approaches with Build.",
 });
 
 await relay.spawnAgent({
   name: "Build",
   cli: "codex",
-  runtime: "pty",
   task: "Debate implementation strategies with Research.",
 });
 

@@ -46,7 +46,6 @@ relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
 const worker = await relay.spawnAgent({
   name: 'Worker1',
   cli: 'claude',
-  runtime: 'pty',
   channels: ['general'],
   // Lifecycle hooks can be sync or async functions.
   onStart: ({ name }) => console.log(`spawning ${name}`),
@@ -57,11 +56,12 @@ const worker = await relay.spawnAgent({
 const agent = await relay.spawnAgent({
   name: 'Worker2',
   cli: 'codex',
-  runtime: 'pty',
   task: 'Build the API',
   channels: ['dev'],
   model: 'gpt-4o',
 });
+
+const codex = await relay.spawnAgent({ cli: 'codex' }); // name: Codex, runtime: pty
 
 // Headless harnesses keep the same Agent handle surface
 const reviewer = await relay.spawnAgent({

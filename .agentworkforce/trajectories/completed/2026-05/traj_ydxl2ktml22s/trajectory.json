@@ -1,0 +1,29 @@
+{
+  "id": "traj_ydxl2ktml22s",
+  "version": 1,
+  "task": {
+    "title": "Default spawnAgent name and runtime",
+    "source": {
+      "system": "plain",
+      "id": "PR-1003"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:55:27.608Z",
+  "completedAt": "2026-05-27T15:03:14.940Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Made AgentRelay.spawnAgent default name from cli and default runtime to pty, updated docs/examples/changelog, and validated SDK plus web builds.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f82858623e83678d76a2018e3640bb5ea2b46a9a",
+    "endRef": "f82858623e83678d76a2018e3640bb5ea2b46a9a"
+  }
+}
