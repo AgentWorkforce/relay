@@ -58,9 +58,7 @@
     "approach": "Standard approach",
     "confidence": 0.86
   },
-  "commits": [
-    "6a456b7f"
-  ],
+  "commits": ["6a456b7f"],
   "filesChanged": [],
   "projectId": "/Users/will/Projects/AgentWorkforce/relay",
   "tags": [],

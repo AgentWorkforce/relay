@@ -19,10 +19,12 @@ Removed SDK persona loading, spawn, dry-run, exports, dependency, tests, and exa
 ## Key Decisions
 
 ### Removed SDK-owned persona APIs instead of relocating them in this repo
+
 - **Chose:** Removed SDK-owned persona APIs instead of relocating them in this repo
 - **Reasoning:** Issue 997 asks for @agent-relay/sdk to know nothing about personas; there is already a separate packages/personas pack, while persona execution side effects should be owned by AgentWorkforce CLI or a workforce package.
 
 ### Removed stale persona dist artifacts during SDK builds
+
 - **Chose:** Removed stale persona dist artifacts during SDK builds
 - **Reasoning:** Deleting the source and package export is not enough if an existing dist/personas.js survives a package-level build; the SDK build now deletes the persona outputs before compiling so npm pack cannot include them.
 
@@ -31,7 +33,8 @@ Removed SDK persona loading, spawn, dry-run, exports, dependency, tests, and exa
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Removed SDK-owned persona APIs instead of relocating them in this repo: Removed SDK-owned persona APIs instead of relocating them in this repo
 - Removed stale persona dist artifacts during SDK builds: Removed stale persona dist artifacts during SDK builds
