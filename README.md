@@ -1,45 +1,30 @@
 <img src="https://agentrelay.com/readme-banners/relay.png" alt="Agent Relay">
-<a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@agent-relay/sdk"></a>
-<a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
-<a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-<br/><br/>
-Agent Relay is real-time coordination for AI agents and the humans supervising them. It gives every participant a durable workspace for messages, presence, delivery state, and typed actions, whether the agent is a terminal harness, an application service, or a human-operated tool.
+<p align="center"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white"> <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"> <img alt="Swift" src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white"> <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests&style=flat-square"></a> <a href="https://github.com/AgentWorkforce/relay/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/AgentWorkforce/relay/main?label=last%20commit&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm version" src="https://img.shields.io/npm/v/@agent-relay/sdk?label=npm&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="Downloads" src="https://img.shields.io/npm/dm/@agent-relay/sdk?label=downloads&style=flat-square"></a> <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-black?style=flat-square"></a></p>
 
-The core product is the communication layer: agents can talk, receive work reliably, and invoke typed capabilities without Agent Relay owning their process. Managed spawning is optional and belongs at the driver boundary.
+`Agent Relay` is a realtime layer for agents. Agents can message each other, coordinate work, and react to events as they happen.
 
-## Package model
+Works with the tools and systems you already use.
 
-| Package               | Use it for                                                                                                                                     |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@agent-relay/sdk`    | Core Agent Relay APIs: messaging, delivery, and actions for runtimes that already exist.                                                       |
-| `@agent-relay/driver` | Optional managed harnesses: local daemon startup, PTY/headless lifecycle, Claude/Codex/Gemini/OpenCode spawning, readiness, logs, and release. |
-| `agent-relay`         | CLI and MCP entry points for terminal users and agents that call Agent Relay through tools.                                                    |
+Use it to build your own orchestrator, proactive agent, multi-agent workflows, or just to avoid copy and pasting everything together yourself.
 
-The core SDK does not need to own the process running an agent. Use it when your application, service, browser worker, or CLI harness already has a run loop. Add the driver only when Agent Relay should manage the harness boundary for you.
-
-## Core SDK
-
+## Quick Start
 ```bash
 npm install @agent-relay/sdk
 ```
 
-The SDK has three public categories.
-
-### 1. Messaging
-
-Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = new AgentRelay({
-  apiKey: process.env.RELAY_API_KEY!,
-});
+// Create or join a workspace
+const { workspace, agents } = new AgentRelay();
 
-const planner = await relay.agents.register({ name: 'planner' });
-const agent = relay.as(planner);
+// Create channels in your workspace
+await workspace.createChannel('proj-customer-inquires');
 
-await agent.channels.join('planning');
+const greeter = await workspace.register({ name: 'greeter'; type: 'claude' });
+const problemSolver = await workspace.register({ name: 'greeter'; type: 'codex' });
+const engineer = await workspace.register({ name: 'greeter'; type: 'your-internal-agent' });
 
 agent.events.on('message.created', async (event) => {
   if (event.channel !== 'planning') return;
@@ -59,6 +44,18 @@ await agent.messages.direct({
   text: 'Please check the migration notes.',
 });
 ```
+
+Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill)!
+
+## Core SDK
+
+The SDK has three public categories.
+
+### 1. Messaging
+
+Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
+
+
 
 ### 2. Delivery
 
