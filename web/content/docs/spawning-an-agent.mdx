@@ -12,8 +12,10 @@ import { AgentRelay, Models } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({ channels: ['dev'] });
 
-const planner = await relay.claude.spawn({
+const planner = await relay.spawnAgent({
   name: 'Planner',
+  cli: 'claude',
+  runtime: 'pty',
   model: Models.Claude.SONNET,
   channels: ['dev'],
   task: 'Break the work into 3 implementation steps.',
@@ -36,8 +38,7 @@ planner = await relay.claude.spawn(
 ```
 </CodeGroup>
 
-Spawned agents are either headless (Claude Code, OpenCode) or PTY-backed (Codex, Gemini all others). Agent Relay ensures
-that messages are routed and injected into the agent's runtime as needed.
+Spawned agents are either PTY-backed terminal sessions or headless app-server sessions. Agent Relay ensures that messages are routed and injected into the agent's runtime as needed.
 
 <Note>
 Agents can also spawn other agents via the CLI or MCP.
@@ -49,16 +50,15 @@ Agents can also spawn other agents via the CLI or MCP.
 
 const cli = 'claude';
 
-const reviewer = await relay.spawn(
-  'Reviewer',
+const reviewer = await relay.spawnAgent({
+  name: 'Reviewer',
   cli,
-  'Review the migration plan and list the highest-risk steps.',
-  {
-    channels: ['review'],
-    model: 'sonnet',
-    cwd: '/repo',
-  }
-);
+  runtime: 'pty',
+  task: 'Review the migration plan and list the highest-risk steps.',
+  channels: ['review'],
+  model: 'sonnet',
+  cwd: '/repo',
+});
 ```
 
 ```python Python file="dynamic_spawn.py"
@@ -79,14 +79,30 @@ reviewer = await relay.spawn(
 ```
 </CodeGroup>
 
-### Named Spawn
+### Common configs
 
 <CodeGroup>
 ```typescript TypeScript file="spawners.ts"
-const claudeWorker = await relay.claude.spawn({ name: 'Planner' });
-const codexWorker = await relay.codex.spawn({ name: 'Coder' });
-const geminiWorker = await relay.gemini.spawn({ name: 'Researcher' });
-const opencodeWorker = await relay.opencode.spawn({ name: 'Reviewer' });
+const claudeWorker = await relay.spawnAgent({
+  name: 'Planner',
+  cli: 'claude',
+  runtime: 'pty',
+});
+const codexWorker = await relay.spawnAgent({
+  name: 'Coder',
+  cli: 'codex',
+  runtime: 'pty',
+});
+const geminiWorker = await relay.spawnAgent({
+  name: 'Researcher',
+  cli: 'gemini',
+  runtime: 'pty',
+});
+const opencodeWorker = await relay.spawnAgent({
+  name: 'Reviewer',
+  cli: 'opencode',
+  runtime: 'headless',
+});
 ```
 
 ```python Python file="spawners.py"
@@ -105,7 +121,7 @@ These options control how the local broker/client is started before any agents a
 
 ## Per-agent spawn options
 
-These options are available on the shorthand helpers and on `relay.spawn(...)`:
+These options are available on TypeScript `relay.spawnAgent(...)` configs and Python spawn helpers:
 
 <SpawnOptionsTable variant="common" />
 
@@ -121,8 +137,10 @@ const Result = z.object({
   notes: z.array(z.string()),
 });
 
-const reviewer = await relay.claude.spawn({
+const reviewer = await relay.spawnAgent({
   name: 'Reviewer',
+  cli: 'claude',
+  runtime: 'pty',
   task: 'Review the change and submit your decision as structured JSON.',
   result: { schema: Result },
 });

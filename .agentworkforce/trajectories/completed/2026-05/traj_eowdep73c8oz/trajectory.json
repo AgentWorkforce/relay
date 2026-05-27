@@ -1,0 +1,29 @@
+{
+  "id": "traj_eowdep73c8oz",
+  "version": 1,
+  "task": {
+    "title": "Update web docs for spawnAgent facade",
+    "source": {
+      "system": "plain",
+      "id": "PR-1003"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:47:50.892Z",
+  "completedAt": "2026-05-27T14:52:12.473Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Updated web and README examples to use the TypeScript spawnAgent facade while leaving Python SDK examples on the Python API. Validated formatting, diff whitespace, and web build.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9adfd4c12bba63a108062d862ae84a8e7e06ef24",
+    "endRef": "9adfd4c12bba63a108062d862ae84a8e7e06ef24"
+  }
+}

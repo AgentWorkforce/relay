@@ -56,7 +56,11 @@ const relay = new AgentRelay({
   },
 });
 
-await relay.spawn('ClaudeReviewer', 'company-claude', 'Review the current diff.', {
+await relay.spawnAgent({
+  name: 'ClaudeReviewer',
+  cli: 'company-claude',
+  runtime: 'pty',
+  task: 'Review the current diff.',
   model: 'opus',
   args: ['--verbose'],
 });
@@ -92,7 +96,11 @@ const cwd = process.cwd();
 const task = 'Review the current diff.';
 const sessionId = await createCodexSession({ cwd, task });
 
-await relay.spawn('CodexReviewer', 'codex', task, {
+await relay.spawnAgent({
+  name: 'CodexReviewer',
+  cli: 'codex',
+  runtime: 'pty',
+  task,
   cwd,
   harnessConfig: codexResume(sessionId, cwd),
 });
@@ -126,7 +134,11 @@ function opencodeSession(input: {
 
 const relay = new AgentRelay();
 
-await relay.spawn('OpenCodeWorker', 'opencode', 'Inspect the repo.', {
+await relay.spawnAgent({
+  name: 'OpenCodeWorker',
+  cli: 'opencode',
+  runtime: 'headless',
+  task: 'Inspect the repo.',
   harnessConfig: opencodeSession({
     endpoint: 'http://127.0.0.1:4096',
     sessionId: 'ses_123',

@@ -9,8 +9,16 @@ Once agents are running, the main control loop is simple: listen for messages, s
 
 <CodeGroup>
 ```typescript TypeScript
-const planner = await relay.claude.spawn({ name: 'Planner' });
-const coder = await relay.codex.spawn({ name: 'Coder' });
+const planner = await relay.spawnAgent({
+  name: 'Planner',
+  cli: 'claude',
+  runtime: 'pty',
+});
+const coder = await relay.spawnAgent({
+  name: 'Coder',
+  cli: 'codex',
+  runtime: 'pty',
+});
 
 await planner.sendMessage({
   to: 'Coder',

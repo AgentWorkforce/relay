@@ -227,7 +227,7 @@ Migration rules:
 - `relay.onXxx = null;` → either call the unsubscribe function returned from `addListener`, or use `relay.removeListener('xxx', handler)`.
 - `relay.onChannelSubscribed = (agent, channels) => ...` and `relay.onChannelUnsubscribed = ...` now receive a single `{ agent, channels }` object instead of positional args.
 
-Per-call option callbacks like `spawnPty({ onStart, onSuccess, onError })` are unchanged — those are scoped to a single invocation, not global hooks.
+Per-call option callbacks like `spawnAgent({ onStart, onSuccess, onError })` are unchanged — those are scoped to a single invocation, not global hooks.
 
 ## Good uses for listeners
 

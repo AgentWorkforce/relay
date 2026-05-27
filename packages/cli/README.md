@@ -74,15 +74,19 @@ relay.onMessageReceived = (msg) => {
 
 const channels = ['tic-tac-toe'];
 
-const x = await relay.claude.spawn({
+const x = await relay.spawnAgent({
   name: 'PlayerX',
+  cli: 'claude',
+  runtime: 'pty',
   model: Models.Claude.SONNET,
   channels,
   task: 'Play tic-tac-toe as X against PlayerO. You go first.',
 });
 
-const o = await relay.codex.spawn({
+const o = await relay.spawnAgent({
   name: 'PlayerO',
+  cli: 'codex',
+  runtime: 'pty',
   model: Models.Codex.GPT_5_3_CODEX_SPARK,
   channels,
   task: 'Play tic-tac-toe as O against PlayerX.',

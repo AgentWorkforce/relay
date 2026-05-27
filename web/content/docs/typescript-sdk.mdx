@@ -37,14 +37,26 @@ const relay = new AgentRelay(options?: AgentRelayOptions);
 
 ## Spawning Agents
 
-### Shorthand Spawners
+### `relay.spawnAgent(config)`
 
 ```typescript
-// Spawn by CLI type
-const agent = await relay.claude.spawn(options?)
-const agent = await relay.codex.spawn(options?)
-const agent = await relay.gemini.spawn(options?)
-const agent = await relay.opencode.spawn(options?)
+const coder = await relay.spawnAgent({
+  name: 'Coder',
+  cli: 'codex',
+  runtime: 'pty',
+  model: Models.Codex.GPT_5_3_CODEX,
+  channels: ['dev'],
+  task: 'Implement the approved plan.',
+});
+
+const reviewer = await relay.spawnAgent({
+  name: 'Reviewer',
+  cli: 'opencode',
+  runtime: 'headless',
+  model: Models.Opencode.OPENAI_GPT_5_2,
+  channels: ['reviews'],
+  task: 'Review the branch and summarize risks.',
+});
 ```
 
 **Spawn options:**
@@ -52,6 +64,8 @@ const agent = await relay.opencode.spawn(options?)
 | Property    | Type       | Description                                      |
 | ----------- | ---------- | ------------------------------------------------ |
 | `name`      | `string`   | Agent name (defaults to CLI name)                |
+| `cli`       | `string`   | CLI or named harness to spawn                    |
+| `runtime`   | `'pty' \| 'headless'` | Runtime category for the agent          |
 | `model`     | `string`   | Model to use (see Models below)                  |
 | `task`      | `string`   | Initial task / prompt                            |
 | `channels`  | `string[]` | Channels to join                                 |
@@ -61,33 +75,15 @@ const agent = await relay.opencode.spawn(options?)
 | `onSuccess` | `function` | Sync/async callback after spawn succeeds         |
 | `onError`   | `function` | Sync/async callback when spawn fails             |
 
-### `relay.spawn(name, cli, task?, options?)`
+The returned `Agent` handle exposes readiness, idle, exit, output, messaging, release, and structured result helpers. To wait for the agent to become ready before continuing, call `await agent.waitForReady(timeoutMs)`.
 
-Spawn any CLI by name:
-
-```typescript
-const agent = await relay.spawn('Worker', 'claude', 'Help with refactoring', {
-  model: Models.Claude.SONNET,
-  channels: ['team'],
-});
-```
-
-### `relay.spawnAndWait(name, cli, task, options?)`
-
-Spawn and wait for the agent to be ready before returning:
-
-```typescript
-const agent = await relay.spawnAndWait('Worker', 'claude', 'Analyze the codebase', {
-  timeoutMs: 30000,
-  waitForMessage: false, // true = wait for first message, false = wait for process ready
-});
-```
+`runtime: 'pty'` is for terminal-backed CLIs such as Claude Code, Codex, and Gemini. `runtime: 'headless'` is for app-server sessions such as OpenCode.
 
 ---
 
 ## Agent
 
-All spawn methods return an `Agent`:
+`spawnAgent` returns an `Agent`:
 
 ```typescript
 interface Agent {
@@ -131,8 +127,10 @@ const Summary = z.object({
   findings: z.array(z.string()),
 });
 
-const reviewer = await relay.claude.spawn({
+const reviewer = await relay.spawnAgent({
   name: 'Reviewer',
+  cli: 'claude',
+  runtime: 'pty',
   task: 'Review the branch and submit the final JSON result.',
   result: {
     schema: Summary,
@@ -197,7 +195,7 @@ const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
 | Method | Broker route | Description |
 | ------ | ------------ | ----------- |
 | `client.spawnPty(input)` | `POST /api/spawn` | Spawn a PTY-backed worker. |
-| `client.spawnProvider(input)` | `POST /api/spawn` | Spawn by provider and transport. |
+| `client.spawnCli(input)` | `POST /api/spawn` | Spawn by CLI and transport. |
 | `client.spawnClaude(input)` | `POST /api/spawn` | Spawn a Claude worker. |
 | `client.spawnOpencode(input)` | `POST /api/spawn` | Spawn an OpenCode worker. |
 | `client.release(name, reason?)` | `DELETE /api/spawned/{name}` | Release a worker. |
@@ -411,14 +409,18 @@ relay.addListener('agentSpawned', (agent) => {
 });
 
 // Spawn agents
-const planner = await relay.claude.spawn({
+const planner = await relay.spawnAgent({
   name: 'Planner',
+  cli: 'claude',
+  runtime: 'pty',
   model: Models.Claude.OPUS,
   task: 'Plan the feature implementation',
 });
 
-const coder = await relay.codex.spawn({
+const coder = await relay.spawnAgent({
   name: 'Coder',
+  cli: 'codex',
+  runtime: 'pty',
   model: Models.Codex.GPT_5_3_CODEX,
   task: 'Implement the plan',
 });
@@ -469,7 +471,7 @@ Models.Opencode.OPENCODE_GPT_5_NANO; // 'opencode/gpt-5-nano'
 import { AgentRelayProtocolError, AgentRelayProcessError } from '@agent-relay/sdk';
 
 try {
-  await relay.claude.spawn({ name: 'Worker' });
+  await relay.spawnAgent({ name: 'Worker', cli: 'claude', runtime: 'pty' });
 } catch (err) {
   if (err instanceof AgentRelayProtocolError) {
     // Broker returned an error response (err.code available)
