@@ -165,11 +165,6 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
           status: 'error',
           detail: 'Invalid state parameter',
         });
-        if (!settled) {
-          settled = true;
-          server.close();
-          reject(new Error('Invalid state parameter in CLI login callback'));
-        }
         return;
       }
 
