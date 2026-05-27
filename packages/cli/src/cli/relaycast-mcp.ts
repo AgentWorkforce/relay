@@ -13,6 +13,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { RelayCast, SDK_VERSION, WsClient, type AgentClient } from '@relaycast/sdk';
 import {
+  INVALID_AGENT_TOKEN_CODE,
   agentTokenRecoveryMessage,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
@@ -631,7 +632,7 @@ function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
   return {
     content: [{ type: 'text', text }],
     structuredContent: {
-      error: { code: 'agent_token_invalid', message: text },
+      error: { code: INVALID_AGENT_TOKEN_CODE, message: text },
     },
     isError: true,
   };

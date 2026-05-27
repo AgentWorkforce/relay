@@ -206,9 +206,11 @@ pub const AGENT_TOKEN_INVALID_CODE: &str = "agent_token_invalid";
 const AGENT_TOKEN_INVALID_MESSAGE: &str = "Invalid agent token";
 
 /// True when `code` matches the relaycast `agent_token_invalid` contract.
-/// Comparison is case-insensitive to tolerate variant servers.
+/// Comparison is case-insensitive and ignores surrounding whitespace so
+/// `" agent_token_invalid "` matches — kept consistent with the TypeScript
+/// detector's `normalizeCode`.
 pub fn is_agent_token_invalid_code(code: &str) -> bool {
-    code.eq_ignore_ascii_case(AGENT_TOKEN_INVALID_CODE)
+    code.trim().eq_ignore_ascii_case(AGENT_TOKEN_INVALID_CODE)
 }
 
 /// True when the relaycast error indicates the agent token must be
@@ -825,10 +827,13 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
-            code: if code.is_empty() {
-                None
-            } else {
-                Some(code.clone())
+            code: {
+                let trimmed = code.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
             },
         }),
         _ => anyhow::anyhow!("{error}"),
@@ -883,6 +888,22 @@ mod tests {
         assert!(is_agent_token_invalid_code(AGENT_TOKEN_INVALID_CODE));
         assert!(is_agent_token_invalid_code("AGENT_TOKEN_INVALID"));
         assert!(!is_agent_token_invalid_code("unauthorized"));
+    }
+
+    #[test]
+    fn agent_token_invalid_code_tolerates_surrounding_whitespace() {
+        assert!(is_agent_token_invalid_code("  agent_token_invalid  "));
+        assert!(is_agent_token_invalid_code("\tagent_token_invalid\n"));
+    }
+
+    #[test]
+    fn anyhow_helper_normalizes_codes_with_surrounding_whitespace() {
+        let err = relay_error_to_anyhow(RelayError::Api {
+            code: "  agent_token_invalid  ".to_string(),
+            status: 401,
+            message: "Invalid agent token".to_string(),
+        });
+        assert!(is_agent_token_invalid_anyhow(&err));
     }
 
     #[test]

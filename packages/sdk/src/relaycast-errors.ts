@@ -61,9 +61,14 @@ function readBodyError(body: unknown): { code?: string; message?: string } | nul
  * True when `error` looks like an invalid-agent-token response from
  * Relaycast. Recognises both the typed `agent_token_invalid` code (PR #137)
  * and the legacy status-401 + "Invalid agent token" message pair.
+ *
+ * The optional `visited` set guards against cyclic `cause` graphs
+ * (`a.cause = b; b.cause = a`) — a `WeakSet` so we don't leak references.
  */
-export function isInvalidAgentTokenError(error: unknown): boolean {
+export function isInvalidAgentTokenError(error: unknown, visited: WeakSet<object> = new WeakSet()): boolean {
   if (!error || typeof error !== 'object') return false;
+  if (visited.has(error as object)) return false;
+  visited.add(error as object);
   const err = error as MaybeError;
 
   if (normalizeCode(err.code) === INVALID_AGENT_TOKEN_CODE) return true;
@@ -76,8 +81,8 @@ export function isInvalidAgentTokenError(error: unknown): boolean {
     (typeof err.message === 'string' ? err.message.trim() : '') || (bodyError?.message?.trim() ?? '');
   if (status === 401 && message === INVALID_AGENT_TOKEN_MESSAGE) return true;
 
-  if (err.cause && err.cause !== error) {
-    return isInvalidAgentTokenError(err.cause);
+  if (err.cause) {
+    return isInvalidAgentTokenError(err.cause, visited);
   }
   return false;
 }

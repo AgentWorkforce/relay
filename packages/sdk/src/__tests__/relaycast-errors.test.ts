@@ -43,6 +43,25 @@ describe('isInvalidAgentTokenError', () => {
     expect(isInvalidAgentTokenError(outer)).toBe(true);
   });
 
+  it('terminates on cyclic `cause` graphs without recursing forever', () => {
+    const a: { message: string; cause?: unknown } = { message: 'outer' };
+    const b: { message: string; cause?: unknown } = { message: 'inner' };
+    a.cause = b;
+    b.cause = a;
+    expect(isInvalidAgentTokenError(a)).toBe(false);
+  });
+
+  it('still finds the marker inside a cyclic chain when one node carries it', () => {
+    const a: { message: string; cause?: unknown } = { message: 'outer' };
+    const b: { statusCode: number; message: string; cause?: unknown } = {
+      statusCode: 401,
+      message: INVALID_AGENT_TOKEN_MESSAGE,
+    };
+    a.cause = b;
+    b.cause = a;
+    expect(isInvalidAgentTokenError(a)).toBe(true);
+  });
+
   it('ignores 401s that are not the agent token contract', () => {
     const err = Object.assign(new Error('Unauthorized'), { statusCode: 401 });
     expect(isInvalidAgentTokenError(err)).toBe(false);
