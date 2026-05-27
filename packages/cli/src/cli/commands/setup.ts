@@ -110,10 +110,14 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     if (shouldStartBroker) {
       io.log('');
       io.log('  Starting broker...');
-      const brokerProcess = spawnProcess(process.execPath, [process.argv[1], 'driver', 'up', '--background'], {
-        detached: true,
-        stdio: 'ignore',
-      });
+      const brokerProcess = spawnProcess(
+        process.execPath,
+        [process.argv[1], 'driver', 'up', '--background'],
+        {
+          detached: true,
+          stdio: 'ignore',
+        }
+      );
       brokerProcess.unref();
       await new Promise((resolve) => setTimeout(resolve, 2000));
       io.log('  ✓  Broker started in background');

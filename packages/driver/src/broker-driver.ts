@@ -41,9 +41,7 @@ export class BrokerDriver implements AgentDriver {
     const transport = input.transport ?? 'pty';
     const { transport: _transport, ...spawnInput } = input;
     const result =
-      transport === 'headless'
-        ? await client.spawnHeadless(spawnInput)
-        : await client.spawnPty(spawnInput);
+      transport === 'headless' ? await client.spawnHeadless(spawnInput) : await client.spawnPty(spawnInput);
 
     return this.runtimeHandle(client, result);
   }

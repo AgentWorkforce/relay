@@ -196,7 +196,7 @@ function isSourceCheckoutRoot(candidate: string): boolean {
   return (
     existsSync(join(repoRoot, 'Cargo.toml')) &&
     existsSync(join(repoRoot, 'crates', 'broker', 'src', 'main.rs')) &&
-      existsSync(join(repoRoot, 'packages', 'driver', 'package.json'))
+    existsSync(join(repoRoot, 'packages', 'driver', 'package.json'))
   );
 }
 

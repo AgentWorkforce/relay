@@ -102,7 +102,11 @@ type RelaycastAgentLike = {
   ): Promise<unknown>;
   messages(channel: string, options?: RelayMessageListOptions): Promise<unknown[]>;
   message(id: string): Promise<unknown>;
-  reply(id: string, text: string, options?: { blocks?: RelayMessageBlock[]; idempotencyKey?: string }): Promise<unknown>;
+  reply(
+    id: string,
+    text: string,
+    options?: { blocks?: RelayMessageBlock[]; idempotencyKey?: string }
+  ): Promise<unknown>;
   thread(id: string, options?: RelayMessageListOptions): Promise<unknown>;
   dm(
     agent: string,
@@ -116,7 +120,10 @@ type RelaycastAgentLike = {
   dms: {
     conversations(): Promise<unknown[]>;
     messages(conversationId: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-    createGroup(options: { participants: string[]; name?: string }, idempotency?: { idempotencyKey?: string }): Promise<unknown>;
+    createGroup(
+      options: { participants: string[]; name?: string },
+      idempotency?: { idempotencyKey?: string }
+    ): Promise<unknown>;
     sendMessage(
       conversationId: string,
       text: string,
@@ -205,7 +212,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private readonly relaycast: RelaycastWorkspaceLike;
   private readonly agentClient?: RelaycastAgentLike;
-  private readonly eventHandlers = new Map<keyof RelayMessagingEventMap, Set<(event: RelayMessagingEvent) => void | Promise<void>>>();
+  private readonly eventHandlers = new Map<
+    keyof RelayMessagingEventMap,
+    Set<(event: RelayMessagingEvent) => void | Promise<void>>
+  >();
   private eventUnsubscribe?: () => void;
 
   constructor(options: RelaycastMessagingOptions) {
@@ -236,14 +246,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   readonly channels = {
     list: async (options?: RelayListChannelsOptions): Promise<RelayChannel[]> => {
-      const channels = await this.relaycast.channels.list(definedOptions({ includeArchived: options?.includeArchived }));
+      const channels = await this.relaycast.channels.list(
+        definedOptions({ includeArchived: options?.includeArchived })
+      );
       return channels.map(normalizeChannel);
     },
-    get: async (name: string): Promise<RelayChannel> => normalizeChannel(await this.relaycast.channels.get(normalizeChannelName(name))),
+    get: async (name: string): Promise<RelayChannel> =>
+      normalizeChannel(await this.relaycast.channels.get(normalizeChannelName(name))),
     create: async (input: RelayCreateChannelInput): Promise<RelayChannel> =>
       normalizeChannel(await this.requireAgentClient('channels.create').channels.create(input)),
     update: async (name: string, input: RelayUpdateChannelInput): Promise<RelayChannel> =>
-      normalizeChannel(await this.requireAgentClient('channels.update').channels.update(normalizeChannelName(name), input)),
+      normalizeChannel(
+        await this.requireAgentClient('channels.update').channels.update(normalizeChannelName(name), input)
+      ),
     archive: async (name: string): Promise<void> => {
       await this.requireAgentClient('channels.archive').channels.archive(normalizeChannelName(name));
     },
@@ -257,7 +272,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       await this.requireAgentClient('channels.invite').channels.invite(normalizeChannelName(channel), agent);
     },
     members: async (name: string): Promise<RelayChannelMember[]> => {
-      const members = await this.requireAgentClient('channels.members').channels.members(normalizeChannelName(name));
+      const members = await this.requireAgentClient('channels.members').channels.members(
+        normalizeChannelName(name)
+      );
       return members.map(normalizeChannelMember);
     },
     mute: async (name: string): Promise<void> => {
@@ -294,13 +311,21 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         input.text,
         definedOptions({ blocks: input.blocks, idempotencyKey: input.idempotencyKey })
       );
-      return normalizeMessage(message, { kind: 'thread_reply', parentId: input.messageId, threadId: input.messageId });
+      return normalizeMessage(message, {
+        kind: 'thread_reply',
+        parentId: input.messageId,
+        threadId: input.messageId,
+      });
     },
     direct: async (input: RelaySendDirectMessageInput): Promise<RelayMessage> => {
       const response = await this.requireAgentClient('messages.direct').dm(
         input.to,
         input.text,
-        definedOptions({ attachments: input.attachments, mode: input.mode, idempotencyKey: input.idempotencyKey })
+        definedOptions({
+          attachments: input.attachments,
+          mode: input.mode,
+          idempotencyKey: input.idempotencyKey,
+        })
       );
       return this.normalizeDirectResponse(response, 'dm');
     },
@@ -316,17 +341,25 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         ).id;
 
       if (!conversationId) {
-        throw new Error('messages.groupDirect requires conversationId or participants that create a conversation.');
+        throw new Error(
+          'messages.groupDirect requires conversationId or participants that create a conversation.'
+        );
       }
 
       const response = await agent.dms.sendMessage(
         conversationId,
         input.text,
-        definedOptions({ attachments: input.attachments, mode: input.mode, idempotencyKey: input.idempotencyKey })
+        definedOptions({
+          attachments: input.attachments,
+          mode: input.mode,
+          idempotencyKey: input.idempotencyKey,
+        })
       );
       return this.normalizeDirectResponse(response, 'group_dm', conversationId);
     },
-    createGroupDirect: async (input: RelayCreateGroupDirectMessageInput): Promise<RelayGroupDirectConversation> =>
+    createGroupDirect: async (
+      input: RelayCreateGroupDirectMessageInput
+    ): Promise<RelayGroupDirectConversation> =>
       normalizeGroupDirectConversation(
         await this.requireAgentClient('messages.createGroupDirect').dms.createGroup(
           { participants: input.participants, ...(input.name ? { name: input.name } : {}) },
@@ -338,16 +371,22 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       const list = this.agentClient
         ? await this.agentClient.dms.messages(input.conversationId, options)
         : await this.requireWorkspaceDmMessages()(input.conversationId, options);
-      return list.map((message) => normalizeMessage(message, { kind: 'dm', conversationId: input.conversationId }));
+      return list.map((message) =>
+        normalizeMessage(message, { kind: 'dm', conversationId: input.conversationId })
+      );
     },
     markRead: async (messageId: string): Promise<RelayReadReceipt> =>
       normalizeReadReceipt(await this.requireAgentClient('messages.markRead').markRead(messageId)),
     readers: async (messageId: string): Promise<RelayReadReceipt[]> => {
       const readers = await this.requireAgentClient('messages.readers').readers(messageId);
-      return readers.map((reader) => normalizeReadReceipt({ ...((reader ?? {}) as Record<string, unknown>), messageId }));
+      return readers.map((reader) =>
+        normalizeReadReceipt({ ...((reader ?? {}) as Record<string, unknown>), messageId })
+      );
     },
     readStatus: async (channel: string): Promise<RelayChannelReadStatus[]> => {
-      const statuses = await this.requireAgentClient('messages.readStatus').readStatus(normalizeChannelName(channel));
+      const statuses = await this.requireAgentClient('messages.readStatus').readStatus(
+        normalizeChannelName(channel)
+      );
       return statuses.map(normalizeChannelReadStatus);
     },
     reactions: async (messageId: string): Promise<RelayMessageReaction[]> => {
@@ -387,16 +426,23 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   readonly inbox = {
     get: async (options?: { limit?: number }): Promise<RelayInbox> =>
-      normalizeInbox(await this.requireAgentClient('inbox.get').inbox(definedOptions({ limit: options?.limit }))),
+      normalizeInbox(
+        await this.requireAgentClient('inbox.get').inbox(definedOptions({ limit: options?.limit }))
+      ),
     list: async (_input?: InboxListInput): Promise<InboxListResult> => ({ items: [] }),
     subscribe: (_input?: InboxSubscribeInput): AsyncIterable<InboxItem> => this.emptyInboxSubscription(),
-    ack: async (input: InboxAckInput): Promise<RelayDeliveryUnsupportedResult> => this.unsupportedInboxDelivery('ack', input.inboxItemId),
+    ack: async (input: InboxAckInput): Promise<RelayDeliveryUnsupportedResult> =>
+      this.unsupportedInboxDelivery('ack', input.inboxItemId),
     fail: async (input: InboxFailInput): Promise<RelayDeliveryUnsupportedResult> =>
       this.unsupportedInboxDelivery('fail', input.inboxItemId, input.error),
     defer: async (input: InboxDeferInput): Promise<RelayDeliveryUnsupportedResult> =>
       this.unsupportedInboxDelivery('defer', input.inboxItemId, input.reason, input.availableAt),
     markRead: async (input: InboxMarkReadInput): Promise<RelayDeliveryUnsupportedResult> =>
-      this.unsupportedInboxDelivery('ack', input.inboxItemId, 'Inbox read state updates require server delivery state.'),
+      this.unsupportedInboxDelivery(
+        'ack',
+        input.inboxItemId,
+        'Inbox read state updates require server delivery state.'
+      ),
   };
 
   readonly events = {
@@ -438,7 +484,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       supported: false,
       action: 'fail',
       messageId,
-      ...(reason ? { reason } : { reason: 'Durable failure reporting is not supported by the Relaycast messaging backend yet.' }),
+      ...(reason
+        ? { reason }
+        : { reason: 'Durable failure reporting is not supported by the Relaycast messaging backend yet.' }),
     }),
     defer: async (messageId: string, deferUntil?: string): Promise<RelayDeliveryUnsupportedResult> => ({
       supported: false,
@@ -458,7 +506,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {
     if (!this.relaycast.dmMessages) {
-      throw new Error('RelaycastMessagingClient.messages.listDirect requires agentClient or relaycast.dmMessages.');
+      throw new Error(
+        'RelaycastMessagingClient.messages.listDirect requires agentClient or relaycast.dmMessages.'
+      );
     }
     return this.relaycast.dmMessages;
   }
@@ -477,13 +527,25 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       supported: false,
       action,
       messageId,
-      ...(reason ? { reason } : { reason: 'Relaycast messaging does not expose durable inbox delivery state in this SDK surface yet.' }),
+      ...(reason
+        ? { reason }
+        : {
+            reason:
+              'Relaycast messaging does not expose durable inbox delivery state in this SDK surface yet.',
+          }),
       ...(deferUntil ? { deferUntil } : {}),
     };
   }
 
-  private normalizeDirectResponse(input: unknown, kind: 'dm' | 'group_dm', conversationId?: string): RelayMessage {
-    const record = input !== null && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+  private normalizeDirectResponse(
+    input: unknown,
+    kind: 'dm' | 'group_dm',
+    conversationId?: string
+  ): RelayMessage {
+    const record =
+      input !== null && typeof input === 'object' && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
     const resolvedConversationId =
       conversationId ??
       (typeof record.conversationId === 'string'
@@ -492,7 +554,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           ? record.conversation_id
           : undefined);
     const createdAt =
-      typeof record.createdAt === 'string' ? record.createdAt : typeof record.created_at === 'string' ? record.created_at : undefined;
+      typeof record.createdAt === 'string'
+        ? record.createdAt
+        : typeof record.created_at === 'string'
+          ? record.created_at
+          : undefined;
 
     return normalizeMessage(record.message, {
       kind,

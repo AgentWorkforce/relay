@@ -26,12 +26,7 @@
       "project": ["src/**/*.ts"]
     }
   },
-  "ignore": [
-    "**/*.test.ts",
-    "scripts/**",
-    "plugins/**",
-    "tests/**"
-  ],
+  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**"],
   "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": [
     "packages/agent",

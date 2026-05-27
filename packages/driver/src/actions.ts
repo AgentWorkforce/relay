@@ -1,5 +1,10 @@
 import type { AgentRelayActions, JsonSchema } from '@agent-relay/sdk/actions';
-import type { AgentDriver, DriverRuntimeStatus, SpawnRuntimeInput, SpawnedAgentRuntime } from './driver-types.js';
+import type {
+  AgentDriver,
+  DriverRuntimeStatus,
+  SpawnRuntimeInput,
+  SpawnedAgentRuntime,
+} from './driver-types.js';
 
 export interface RegisterDriverActionsOptions {
   actionPrefix?: string;
