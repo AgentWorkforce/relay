@@ -607,6 +607,41 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
+  it('spawnHeadless stores result contracts under the finalized broker name', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+    const resultContracts = (relay as any).resultContracts as Map<string, unknown>;
+    const existingContract = { jsonSchema: { type: 'boolean' } };
+    const jsonSchema = { type: 'object', properties: { ok: { type: 'boolean' } } };
+
+    resultContracts.set('requested-headless', existingContract);
+    mock.spawnHeadless.mockImplementationOnce(async () => {
+      expect(resultContracts.get('requested-headless')).toBe(existingContract);
+      return { name: 'final-headless', runtime: 'headless' as const };
+    });
+
+    try {
+      const agent = await relay.spawnHeadless<{ ok: boolean }>({
+        name: 'requested-headless',
+        cli: 'custom-app',
+        channels: ['reviews'],
+        harnessConfig: {
+          runtime: 'headless',
+          protocol: 'custom-app',
+          endpoint: 'http://127.0.0.1:4099',
+          sessionId: 'session-headless',
+        },
+        result: { jsonSchema },
+      });
+
+      expect(agent.name).toBe('final-headless');
+      expect(resultContracts.get('requested-headless')).toBe(existingContract);
+      expect(resultContracts.get('final-headless')).toMatchObject({ jsonSchema });
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
   it('agent.waitForReady resolves after worker_ready event', async () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);

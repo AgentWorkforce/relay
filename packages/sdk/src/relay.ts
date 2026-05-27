@@ -945,9 +945,6 @@ export class AgentRelay {
     await this.invokeLifecycleHook(input.onStart, lifecycleContext, `${methodName}("${input.name}") onStart`);
     let result: SpawnAgentResult;
     const resultContract = this.prepareAgentResultContract(input.result);
-    if (resultContract) {
-      this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
-    }
     try {
       const harnessConfig = this.resolveHarnessConfig({
         name: input.name,
@@ -978,9 +975,6 @@ export class AgentRelay {
         agentResultSchema: resultContract?.jsonSchema ?? input.agentResultSchema,
       });
     } catch (error) {
-      if (resultContract) {
-        this.resultContracts.delete(input.name);
-      }
       await this.invokeLifecycleHook(
         input.onError,
         {
@@ -992,8 +986,7 @@ export class AgentRelay {
       throw error;
     }
     this.resetAgentLifecycleState(result.name);
-    if (result.name !== input.name && resultContract) {
-      this.resultContracts.delete(input.name);
+    if (resultContract) {
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
     const agent = this.ensureAgentHandle(
