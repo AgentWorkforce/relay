@@ -214,7 +214,10 @@ describe('ensureAuthenticated', () => {
     expect(strayResponse.status).toBe(302);
 
     const stillWaiting = await Promise.race([
-      authPromise.then(() => 'resolved', () => 'rejected'),
+      authPromise.then(
+        () => 'resolved',
+        () => 'rejected'
+      ),
       new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25)),
     ]);
     expect(stillWaiting).toBe('pending');
