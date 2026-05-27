@@ -1,4 +1,4 @@
-import type { SendMessageInput, SpawnProviderInput } from '@agent-relay/sdk';
+import type { SendMessageInput, SpawnCliInput } from '@agent-relay/sdk';
 
 export type SurfaceType = 'whatsapp' | 'slack' | 'telegram';
 
@@ -99,7 +99,7 @@ interface GatewayActionBase {
 
 export interface SpawnAgentAction extends GatewayActionBase {
   type: 'spawn_agent';
-  agent: SpawnProviderInput;
+  agent: SpawnCliInput;
   prompt?: string;
 }
 

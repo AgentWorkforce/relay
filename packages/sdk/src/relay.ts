@@ -200,9 +200,8 @@ export interface AgentResultOptions<T = unknown> {
 type SpawnWithLifecycle<TInput, TAgentResult> = TInput &
   SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
 
-export type SpawnHeadlessAgentInput<TAgentResult = unknown> = Omit<ClientSpawnHeadlessInput, 'provider'> & {
-  cli: string;
-} & SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
+export type SpawnHeadlessAgentInput<TAgentResult = unknown> = ClientSpawnHeadlessInput &
+  SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
 
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
 export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
@@ -961,7 +960,7 @@ export class AgentRelay {
       });
       result = await client.spawnHeadless({
         name: input.name,
-        provider: input.cli,
+        cli: input.cli,
         args: input.args,
         channels,
         task: input.task,

@@ -1,7 +1,7 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
 import type { SpawnHeadlessAgentInput } from '../relay.js';
-import type { SpawnHeadlessInput, SpawnProviderInput, SpawnPtyInput } from '../types.js';
+import type { SpawnCliInput, SpawnHeadlessInput, SpawnPtyInput } from '../types.js';
 
 describe('spawn input agentToken types', () => {
   it('SpawnPtyInput accepts agentToken when present or omitted', () => {
@@ -22,28 +22,28 @@ describe('spawn input agentToken types', () => {
     expectTypeOf<SpawnPtyInput['agentToken']>().toEqualTypeOf<string | undefined>();
   });
 
-  it('SpawnProviderInput accepts agentToken when present or omitted', () => {
+  it('SpawnCliInput accepts agentToken when present or omitted', () => {
     const withoutToken = {
-      name: 'provider-no-token',
-      provider: 'claude',
-    } satisfies SpawnProviderInput;
+      name: 'cli-no-token',
+      cli: 'claude',
+    } satisfies SpawnCliInput;
 
     const withToken = {
-      name: 'provider-with-token',
-      provider: 'claude',
+      name: 'cli-with-token',
+      cli: 'claude',
       agentToken: 'jwt-token',
-    } satisfies SpawnProviderInput;
+    } satisfies SpawnCliInput;
 
-    expectTypeOf(withoutToken).toMatchTypeOf<SpawnProviderInput>();
-    expectTypeOf(withToken).toMatchTypeOf<SpawnProviderInput>();
+    expectTypeOf(withoutToken).toMatchTypeOf<SpawnCliInput>();
+    expectTypeOf(withToken).toMatchTypeOf<SpawnCliInput>();
     expectTypeOf(withToken.agentToken).toEqualTypeOf<string>();
-    expectTypeOf<SpawnProviderInput['agentToken']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<SpawnCliInput['agentToken']>().toEqualTypeOf<string | undefined>();
   });
 
   it('SpawnHeadlessInput accepts custom harness metadata and agentToken', () => {
     const withHeadlessHarness = {
       name: 'headless-with-harness',
-      provider: 'custom-app-server',
+      cli: 'custom-app-server',
       agentToken: 'jwt-token',
       harnessConfig: {
         runtime: 'headless',
@@ -54,7 +54,7 @@ describe('spawn input agentToken types', () => {
     } satisfies SpawnHeadlessInput;
 
     expectTypeOf(withHeadlessHarness).toMatchTypeOf<SpawnHeadlessInput>();
-    expectTypeOf(withHeadlessHarness.provider).toMatchTypeOf<string>();
+    expectTypeOf(withHeadlessHarness.cli).toMatchTypeOf<string>();
     expectTypeOf<SpawnHeadlessInput['agentToken']>().toEqualTypeOf<string | undefined>();
   });
 

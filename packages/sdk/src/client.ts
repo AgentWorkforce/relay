@@ -36,9 +36,9 @@ import type {
 import type {
   AgentTransport,
   SpawnAgentResult,
+  SpawnCliInput,
   SpawnHeadlessInput,
   SpawnPtyInput,
-  SpawnProviderInput,
   SendMessageInput,
   ListAgent,
 } from './types.js';
@@ -164,14 +164,14 @@ interface BrokerStartupDebugContext {
 
 type BrokerExitListener = (info: BrokerExitInfo) => void;
 
-function isHeadlessProvider(value: string): value is HeadlessProvider {
+function isBundledHeadlessCli(value: string): value is HeadlessProvider {
   return value === 'claude' || value === 'opencode';
 }
 
-function resolveSpawnTransport(input: SpawnProviderInput): AgentTransport {
+function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
   if (input.transport) return input.transport;
   if (input.harnessConfig) return input.harnessConfig.runtime;
-  return input.provider === 'opencode' ? 'headless' : 'pty';
+  return input.cli === 'opencode' ? 'headless' : 'pty';
 }
 
 /**
@@ -201,13 +201,10 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
   };
 }
 
-function buildSpawnProviderBody(
-  input: SpawnProviderInput,
-  transport: AgentTransport
-): Record<string, unknown> {
+function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Record<string, unknown> {
   return {
     name: input.name,
-    cli: input.provider,
+    cli: input.cli,
     ...(input.model !== undefined ? { model: input.model } : {}),
     args: input.args ?? [],
     ...(input.task !== undefined ? { task: input.task } : {}),
@@ -337,13 +334,13 @@ export class AgentRelayClient {
    * shallow-merged over the running result. Handler exceptions are caught
    * and logged but do not abort the chain.
    */
-  private async runBeforeSpawn(ctx: BeforeAgentSpawnContext): Promise<SpawnPtyInput | SpawnProviderInput> {
-    let resolved: SpawnPtyInput | SpawnProviderInput = { ...ctx.input };
+  private async runBeforeSpawn(ctx: BeforeAgentSpawnContext): Promise<SpawnPtyInput | SpawnCliInput> {
+    let resolved: SpawnPtyInput | SpawnCliInput = { ...ctx.input };
     for (const handler of this.eventBus.listeners('beforeAgentSpawn') as Array<BeforeAgentSpawnHandler>) {
       try {
         const patch = await handler({ ...ctx, input: resolved as Readonly<typeof resolved> });
         if (patch && typeof patch === 'object') {
-          resolved = { ...resolved, ...(patch as SpawnPatch) } as SpawnPtyInput | SpawnProviderInput;
+          resolved = { ...resolved, ...(patch as SpawnPatch) } as SpawnPtyInput | SpawnCliInput;
         }
       } catch (err) {
         console.error('[agent-relay] beforeAgentSpawn listener threw:', err);
@@ -629,31 +626,38 @@ export class AgentRelayClient {
     }
   }
 
-  async spawnProvider(input: SpawnProviderInput): Promise<SpawnAgentResult> {
+  async spawnCli(input: SpawnCliInput): Promise<SpawnAgentResult> {
     const beforeCtx: BeforeAgentSpawnContext = {
-      kind: 'provider',
+      kind: 'cli',
       input,
       spawnerPid: process.pid,
       spawnStartTs: new Date().toISOString(),
       baseUrl: this.baseUrl,
     };
+    return this.spawnCliWithContext(beforeCtx, input);
+  }
+
+  private async spawnCliWithContext(
+    beforeCtx: BeforeAgentSpawnContext,
+    input: SpawnCliInput
+  ): Promise<SpawnAgentResult> {
     const t0 = Date.now();
-    const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnProviderInput;
+    const resolvedInput = (await this.runBeforeSpawn(beforeCtx)) as SpawnCliInput;
     const transport = resolveSpawnTransport(resolvedInput);
     if (
       transport === 'headless' &&
-      !isHeadlessProvider(resolvedInput.provider) &&
+      !isBundledHeadlessCli(resolvedInput.cli) &&
       !resolvedInput.harnessConfig
     ) {
       throw new Error(
-        `provider '${resolvedInput.provider}' does not support headless transport (supported: claude, opencode)`
+        `cli '${resolvedInput.cli}' does not support headless transport (supported: claude, opencode)`
       );
     }
 
     try {
       const rawResult = await this.transport.request<unknown>('/api/spawn', {
         method: 'POST',
-        body: JSON.stringify(buildSpawnProviderBody(resolvedInput, transport)),
+        body: JSON.stringify(buildSpawnCliBody(resolvedInput, transport)),
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
@@ -665,15 +669,23 @@ export class AgentRelayClient {
   }
 
   async spawnHeadless(input: SpawnHeadlessInput): Promise<SpawnAgentResult> {
-    return this.spawnProvider({ ...input, transport: 'headless' });
+    const cliInput: SpawnCliInput = { ...input, transport: 'headless' };
+    const beforeCtx: BeforeAgentSpawnContext = {
+      kind: 'headless',
+      input: cliInput,
+      spawnerPid: process.pid,
+      spawnStartTs: new Date().toISOString(),
+      baseUrl: this.baseUrl,
+    };
+    return this.spawnCliWithContext(beforeCtx, cliInput);
   }
 
-  async spawnClaude(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
-    return this.spawnProvider({ ...input, provider: 'claude' });
+  async spawnClaude(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnAgentResult> {
+    return this.spawnCli({ ...input, cli: 'claude' });
   }
 
-  async spawnOpencode(input: Omit<SpawnProviderInput, 'provider'>): Promise<SpawnAgentResult> {
-    return this.spawnProvider({ ...input, provider: 'opencode' });
+  async spawnOpencode(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnAgentResult> {
+    return this.spawnCli({ ...input, cli: 'opencode' });
   }
 
   async release(name: string, reason?: string): Promise<{ name: string }> {
@@ -707,7 +719,7 @@ export class AgentRelayClient {
 
   private async emitAfterSpawn(
     beforeCtx: BeforeAgentSpawnContext,
-    resolvedInput: SpawnPtyInput | SpawnProviderInput,
+    resolvedInput: SpawnPtyInput | SpawnCliInput,
     startMs: number,
     result: SpawnAgentResult | undefined,
     error: unknown

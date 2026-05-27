@@ -24,7 +24,7 @@ function createMockFacadeClient() {
 
   const mock = {
     spawnPty: vi.fn(async (input: { name: string }) => ({ name: input.name, runtime: 'pty' as const })),
-    spawnProvider: vi.fn(async (input: { name: string }) => ({
+    spawnCli: vi.fn(async (input: { name: string }) => ({
       name: input.name,
       runtime: 'headless' as const,
     })),
@@ -198,7 +198,7 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
-  it('spawnHeadless forwards agentToken to headless provider spawns', async () => {
+  it('spawnHeadless forwards agentToken to headless cli spawns', async () => {
     const client = createProtocolClient();
     const request = vi
       .spyOn((client as any).transport, 'request')
@@ -206,7 +206,7 @@ describe('AgentRelayClient orchestration payloads', () => {
 
     await client.spawnHeadless({
       name: 'agent-headless-token',
-      provider: 'opencode',
+      cli: 'opencode',
       channels: ['general'],
       task: 'run headless',
       agentToken: 'agent-token-headless',
@@ -538,7 +538,7 @@ describe('AgentRelay orchestration handles', () => {
       expect(mock.spawnHeadless).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'opencode-token',
-          provider: 'opencode',
+          cli: 'opencode',
           agentToken: 'agent-token-opencode',
         })
       );
@@ -595,7 +595,7 @@ describe('AgentRelay orchestration handles', () => {
       expect(mock.spawnHeadless).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'headless-facade',
-          provider: 'custom-app',
+          cli: 'custom-app',
           channels: ['reviews'],
           task: 'Review the change',
           harnessConfig,

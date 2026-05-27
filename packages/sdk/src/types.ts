@@ -42,7 +42,7 @@ export interface SpawnPtyInput {
 
 export interface SpawnHeadlessInput {
   name: string;
-  provider: string;
+  cli: string;
   args?: string[];
   channels?: string[];
   task?: string;
@@ -76,9 +76,9 @@ export interface SpawnAgentResult {
   pid?: number;
 }
 
-export interface SpawnProviderInput {
+export interface SpawnCliInput {
   name: string;
-  provider: string;
+  cli: string;
   transport?: AgentTransport;
   args?: string[];
   channels?: string[];

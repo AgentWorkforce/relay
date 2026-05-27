@@ -210,7 +210,7 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(captured!.kind).toBe('pty');
   });
 
-  it('spawnProvider fires the hooks with kind=provider', async () => {
+  it('spawnCli fires the hooks with kind=cli', async () => {
     const { fetchFn } = makeMockFetch();
     const client = makeClient(fetchFn);
     const before = vi.fn();
@@ -218,15 +218,15 @@ describe('AgentRelayClient lifecycle hooks', () => {
     client.addListener('beforeAgentSpawn', before);
     client.addListener('afterAgentSpawn', after);
 
-    await client.spawnProvider({ name: 'p', provider: 'claude' });
+    await client.spawnCli({ name: 'p', cli: 'claude' });
 
     expect(before).toHaveBeenCalledTimes(1);
-    expect((before.mock.calls[0][0] as BeforeAgentSpawnContext).kind).toBe('provider');
+    expect((before.mock.calls[0][0] as BeforeAgentSpawnContext).kind).toBe('cli');
     expect(after).toHaveBeenCalledTimes(1);
-    expect((after.mock.calls[0][0] as AfterAgentSpawnContext).kind).toBe('provider');
+    expect((after.mock.calls[0][0] as AfterAgentSpawnContext).kind).toBe('cli');
   });
 
-  it('recomputes provider transport after beforeAgentSpawn patches add a harness config', async () => {
+  it('recomputes cli transport after beforeAgentSpawn patches add a harness config', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
 
@@ -240,14 +240,14 @@ describe('AgentRelayClient lifecycle hooks', () => {
       },
     }));
 
-    await client.spawnProvider({
+    await client.spawnCli({
       name: 'patched-headless',
-      provider: 'custom-provider',
+      cli: 'custom-cli',
     });
 
     expect(captures[0].body).toMatchObject({
       name: 'patched-headless',
-      cli: 'custom-provider',
+      cli: 'custom-cli',
       transport: 'headless',
       harnessConfig: {
         runtime: 'headless',

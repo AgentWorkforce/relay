@@ -136,9 +136,9 @@ await codex.send('Review the current branch and report risks.');
 
 The Codex adapter uses `codex app-server` over stdio JSON-RPC instead of the foreground PTY path. That gives background workers structured `thread/*`, `turn/*`, and `item/*` events for steering and completion; it does not render the Codex TUI. On startup it ensures the `relaycast` MCP server is present in Codex config so the agent can use Relaycast tools in addition to injected inbox messages.
 
-### Provider + Transport Spawning (Opencode/Claude)
+### CLI + Transport Spawning (Opencode/Claude)
 
-Use provider-first spawn helpers and set `transport` when you want headless mode.
+Use CLI-first spawn helpers and set `transport` when you want headless mode.
 
 ```ts
 import { AgentRelayClient } from '@agent-relay/sdk';
@@ -168,10 +168,10 @@ await client.shutdown();
 
 Notes:
 
-- Transport is a setting (`'pty'` or `'headless'`) on provider spawn methods.
+- Transport is a setting (`'pty'` or `'headless'`) on CLI spawn methods.
 - `spawnClaude(...)` defaults to PTY unless you pass `transport: 'headless'`.
 - `spawnOpencode(...)` defaults to headless.
-- You can also use `client.spawnProvider({ provider, transport, ... })` for generic provider-driven spawning.
+- You can also use `client.spawnCli({ cli, transport, ... })` for generic CLI-driven spawning.
 
 ## Features
 
