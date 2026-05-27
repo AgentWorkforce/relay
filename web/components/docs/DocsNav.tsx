@@ -55,6 +55,7 @@ const navIcons: Record<string, NavIcon> = {
   cloud: Cloud,
   workforce: Users,
   'proactive-agents': Zap,
+  'agent-relay-mcp': Plug,
   'relay-dashboard': RiLayout5Line,
   observer: PiBroadcastFill,
   'cli-overview': Terminal,

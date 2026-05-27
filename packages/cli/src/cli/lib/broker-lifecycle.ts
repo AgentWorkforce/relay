@@ -5,7 +5,7 @@ import { AgentRelayClient } from '@agent-relay/sdk';
 import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
-import { buildBundledRelaycastMcpCommand } from './relaycast-mcp-command.js';
+import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 
 type UpOptions = {
@@ -451,14 +451,14 @@ async function killOrphanedBrokerProcesses(
   return { matchedCount, killedCount };
 }
 
-function ensureBundledRelaycastMcpCommand(deps: CoreDependencies): void {
-  if (deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
+function ensureBundledAgentRelayMcpCommand(deps: CoreDependencies): void {
+  if (deps.env.AGENT_RELAY_MCP_COMMAND?.trim()) {
     return;
   }
 
-  const command = buildBundledRelaycastMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
+  const command = buildBundledAgentRelayMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
   if (command) {
-    deps.env.RELAYCAST_MCP_COMMAND = command;
+    deps.env.AGENT_RELAY_MCP_COMMAND = command;
   }
 }
 
@@ -1220,7 +1220,7 @@ async function shutdownUpResources(
 
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
-  ensureBundledRelaycastMcpCommand(deps);
+  ensureBundledAgentRelayMcpCommand(deps);
 
   if (options.background && options.foreground) {
     deps.error('Cannot use --background and --foreground together.');

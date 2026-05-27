@@ -1,0 +1,25 @@
+{
+  "id": "traj_paoj645u94py",
+  "version": 1,
+  "task": {
+    "title": "Rename Agent Relay MCP module"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:20:49.987Z",
+  "completedAt": "2026-05-27T14:31:30.604Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Renamed the bundled Relay MCP implementation to Agent Relay MCP, added compatibility shims for relaycast-named imports and env vars, and updated configs/docs/tests to use agent-relay mcp.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-rename-agent-relay-mcp",
+  "tags": [],
+  "_trace": {
+    "startRef": "f904124865b9575c1def48d20e333298cc03a1f7",
+    "endRef": "f904124865b9575c1def48d20e333298cc03a1f7"
+  }
+}

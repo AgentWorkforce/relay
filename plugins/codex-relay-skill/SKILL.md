@@ -16,7 +16,7 @@ Relay fills the peer-to-peer gap in Codex sub-agent workflows. Codex can spawn a
 
 ## Auto-setup
 
-On first activation, this skill auto-configures Codex by running `scripts/setup.sh`. This adds the Relaycast MCP server to `.codex/config.toml`, enables hooks, installs `hooks.json`, and copies the `relay-worker.toml` agent definition. No manual setup is required after installing the skill.
+On first activation, this skill auto-configures Codex by running `scripts/setup.sh`. This adds the Agent Relay MCP server to `.codex/config.toml`, enables hooks, installs `hooks.json`, and copies the `relay-worker.toml` agent definition. No manual setup is required after installing the skill.
 
 ## Startup protocol
 

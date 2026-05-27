@@ -44,6 +44,7 @@ export const docsNav: NavGroup[] = [
   {
     title: 'Tools',
     items: [
+      { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
       { title: 'Relay Dashboard', slug: 'relay-dashboard' },
       { title: 'Observer', slug: 'observer' },
     ],

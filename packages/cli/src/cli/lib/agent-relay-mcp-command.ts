@@ -2,20 +2,20 @@ import path from 'node:path';
 
 type ExistsSyncLike = (filePath: string) => boolean;
 
-export function resolveBundledRelaycastMcpScript(
+export function resolveBundledAgentRelayMcpScript(
   cliScript: string,
   existsSync: ExistsSyncLike
 ): string | null {
-  const candidate = path.join(path.dirname(cliScript), 'relaycast-mcp.js');
+  const candidate = path.join(path.dirname(cliScript), 'agent-relay-mcp.js');
   return existsSync(candidate) ? candidate : null;
 }
 
-export function buildBundledRelaycastMcpCommand(
+export function buildBundledAgentRelayMcpCommand(
   execPath: string,
   cliScript: string,
   existsSync: ExistsSyncLike
 ): string | null {
-  const scriptPath = resolveBundledRelaycastMcpScript(cliScript, existsSync);
+  const scriptPath = resolveBundledAgentRelayMcpScript(cliScript, existsSync);
   if (!scriptPath) {
     return null;
   }

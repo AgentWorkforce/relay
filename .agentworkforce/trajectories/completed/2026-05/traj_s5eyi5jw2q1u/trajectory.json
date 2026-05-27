@@ -1,0 +1,53 @@
+{
+  "id": "traj_s5eyi5jw2q1u",
+  "version": 1,
+  "task": {
+    "title": "Move Agent Relay MCP tools table out of README"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:44:09.798Z",
+  "completedAt": "2026-05-27T14:51:37.123Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T14:51:33.203Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0kxsvc0njcbg",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T14:51:33.203Z",
+      "endedAt": "2026-05-27T14:51:37.123Z",
+      "events": [
+        {
+          "ts": 1779893493204,
+          "type": "decision",
+          "content": "Moved Agent Relay MCP tools into a dedicated docs reference: Moved Agent Relay MCP tools into a dedicated docs reference",
+          "raw": {
+            "question": "Moved Agent Relay MCP tools into a dedicated docs reference",
+            "chosen": "Moved Agent Relay MCP tools into a dedicated docs reference",
+            "alternatives": [],
+            "reasoning": "The tools table is detailed reference material, so the README and Claude plugin page now link to a focused docs page instead of duplicating the full table."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Moved the Agent Relay MCP tools table from the root README and Claude plugin page into a dedicated web docs reference, linked it from both pages, and added it to the docs navigation.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-rename-agent-relay-mcp",
+  "tags": [],
+  "_trace": {
+    "startRef": "2e3bf0914088834dc9fd83ae8f309cf092dd6d2b",
+    "endRef": "2e3bf0914088834dc9fd83ae8f309cf092dd6d2b"
+  }
+}

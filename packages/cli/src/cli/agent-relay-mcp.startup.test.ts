@@ -12,7 +12,7 @@ type RelayBehavior = {
   registerImpl: (input: { name: string; type?: string }) => Promise<{ name?: string; token: string }>;
 };
 
-async function loadRelaycastMcpModule(options: LoadOptions = {}) {
+async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   vi.resetModules();
 
   const originalArgv = process.argv;
@@ -229,7 +229,7 @@ async function loadRelaycastMcpModule(options: LoadOptions = {}) {
     SDK_VERSION: 'test-sdk-version',
   }));
 
-  const mod = await import('./relaycast-mcp.js');
+  const mod = await import('./agent-relay-mcp.js');
   if (options.forceEntrypoint) {
     process.argv = originalArgv;
   }
@@ -253,9 +253,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('relaycast-mcp startup helpers', () => {
+describe('agent-relay-mcp startup helpers', () => {
   it('parses startup options and helper flags from the environment', async () => {
-    const { mod } = await loadRelaycastMcpModule();
+    const { mod } = await loadAgentRelayMcpModule();
     vi.stubEnv('RELAY_API_KEY', 'rk_live_env');
     vi.stubEnv('RELAY_BASE_URL', 'https://api.relaycast.dev///');
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_env');
@@ -282,11 +282,11 @@ describe('relaycast-mcp startup helpers', () => {
   });
 });
 
-describe('createPatchedRelayMcpServer', () => {
+describe('createAgentRelayMcpServer', () => {
   it('registers owned tools, resources, prompt text, and strips execution metadata from tools/list', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
 
-    mod.createPatchedRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
+    mod.createAgentRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
     const server = mocks.serverInstances[0];
 
     expect(server.tools.get('create_workspace')).toBeDefined();
@@ -370,8 +370,8 @@ describe('createPatchedRelayMcpServer', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const { mod, mocks } = await loadRelaycastMcpModule();
-    mod.createPatchedRelayMcpServer({ agentName: 'ResultWorker' });
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentName: 'ResultWorker' });
 
     const server = mocks.serverInstances[0];
     const submitResult = server.tools.get('submit_result');
@@ -386,8 +386,8 @@ describe('createPatchedRelayMcpServer', () => {
   });
 
   it('dispatches websocket resource callbacks only to subscribed resources', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
-    mod.createPatchedRelayMcpServer({
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
@@ -407,8 +407,8 @@ describe('createPatchedRelayMcpServer', () => {
   });
 
   it('reinitializes the websocket bridge when the workspace changes', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
-    mod.createPatchedRelayMcpServer({
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
@@ -432,8 +432,8 @@ describe('createPatchedRelayMcpServer', () => {
   });
 
   it('preserves the current agent session when the workspace key does not change', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
-    mod.createPatchedRelayMcpServer({
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
@@ -457,8 +457,8 @@ describe('createPatchedRelayMcpServer', () => {
   });
 
   it('marks websocket initialization attempted even when bridge setup fails', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule({ wsClientThrows: true });
-    mod.createPatchedRelayMcpServer({
+    const { mod, mocks } = await loadAgentRelayMcpModule({ wsClientThrows: true });
+    mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
@@ -468,8 +468,8 @@ describe('createPatchedRelayMcpServer', () => {
   });
 
   it('swallows websocket resource update emission failures', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
-    mod.createPatchedRelayMcpServer({
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
       agentToken: 'at_live_existing',
       agentName: 'PinnedWorker',
@@ -488,16 +488,16 @@ describe('createPatchedRelayMcpServer', () => {
   });
 });
 
-describe('resolvePatchedStdioBootstrapOptions', () => {
+describe('resolveStdioBootstrapOptions', () => {
   it('returns options unchanged when workspace bootstrap inputs are incomplete', async () => {
-    const { mod } = await loadRelaycastMcpModule();
-    await expect(mod.resolvePatchedStdioBootstrapOptions({ agentName: 'WorkerA' })).resolves.toEqual({
+    const { mod } = await loadAgentRelayMcpModule();
+    await expect(mod.resolveStdioBootstrapOptions({ agentName: 'WorkerA' })).resolves.toEqual({
       agentName: 'WorkerA',
     });
   });
 
   it('trusts an at_live_* agent token without probing or rotating', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
     const options = {
       apiKey: 'rk_live_workspace',
       baseUrl: 'https://api.relaycast.dev',
@@ -506,7 +506,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       agentType: 'agent' as const,
     };
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions(options);
+    const result = await mod.resolveStdioBootstrapOptions(options);
 
     expect(result).toEqual(options);
     expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
@@ -514,7 +514,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
   });
 
   it('respects explicit bootstrap skipping', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
     const options = {
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
@@ -522,18 +522,18 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       skipBootstrap: true,
     };
 
-    await expect(mod.resolvePatchedStdioBootstrapOptions(options)).resolves.toEqual(options);
+    await expect(mod.resolveStdioBootstrapOptions(options)).resolves.toEqual(options);
     expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
   });
 
   it('mints a relaycast token when the caller provides a non-relaycast token (e.g. JWT)', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.behavior.registerImpl = vi.fn(async () => ({
       name: 'WorkerA',
       token: 'at_live_minted',
     }));
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions({
+    const result = await mod.resolveStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentToken: 'eyJhbGciOiJSUzI1NiJ9.payload.sig',
@@ -553,13 +553,13 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
   });
 
   it('mints a relaycast token when no agentToken is provided', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.behavior.registerImpl = vi.fn(async () => ({
       name: 'WorkerA',
       token: 'at_live_minted',
     }));
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions({
+    const result = await mod.resolveStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentType: 'agent',
@@ -573,11 +573,11 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
   });
 });
 
-describe('startPatchedStdio', () => {
+describe('startAgentRelayMcpStdio', () => {
   it('boots the MCP server on stdio transport after bootstrap', async () => {
-    const { mod, mocks } = await loadRelaycastMcpModule();
+    const { mod, mocks } = await loadAgentRelayMcpModule();
 
-    await mod.startPatchedStdio({
+    await mod.startAgentRelayMcpStdio({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentToken: 'at_live_existing',
@@ -592,7 +592,7 @@ describe('startPatchedStdio', () => {
     const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
-    await loadRelaycastMcpModule({ forceEntrypoint: true, connectThrows: true });
+    await loadAgentRelayMcpModule({ forceEntrypoint: true, connectThrows: true });
 
     await vi.waitFor(() => {
       expect(stderrWrite).toHaveBeenCalledWith(expect.stringContaining('stdio connect failed'));

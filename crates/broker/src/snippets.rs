@@ -269,9 +269,9 @@ fn relaycast_server_config(
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> Value {
     let mut server = Map::new();
-    // Allow overriding the MCP command for local development/testing.
-    // e.g. RELAYCAST_MCP_COMMAND="node /path/to/agent-relay/dist/src/cli/relaycast-mcp.js"
-    if let Ok(custom_cmd) = std::env::var("RELAYCAST_MCP_COMMAND") {
+    // Allow overriding the Agent Relay MCP command for local development/testing.
+    // e.g. AGENT_RELAY_MCP_COMMAND="node /path/to/agent-relay/dist/cli/agent-relay-mcp.js"
+    if let Ok(custom_cmd) = std::env::var("AGENT_RELAY_MCP_COMMAND") {
         let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
         if let Some((cmd, args_slice)) = parts.split_first() {
             server.insert("command".into(), Value::String(cmd.to_string()));
@@ -493,7 +493,7 @@ pub fn ensure_opencode_config_with_result(
     let mut agent = Map::new();
     agent.insert(
         "description".into(),
-        Value::String("Agent with Relaycast MCP enabled".into()),
+        Value::String("Agent with Agent Relay MCP enabled".into()),
     );
     let mut tools = Map::new();
     tools.insert("relaycast_*".into(), Value::Bool(true));
@@ -561,7 +561,7 @@ pub fn ensure_opencode_config_with_result(
 /// for idempotency). For Opencode this writes `opencode.json` on disk.
 ///
 /// # Parameters
-/// Write `.cursor/mcp.json` in the given directory with the Relaycast MCP server
+/// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP server
 /// configured with per-agent credentials (name + token).
 /// Returns `true` if the config was created or updated.
 #[allow(clippy::too_many_arguments)]
@@ -1825,7 +1825,7 @@ mod tests {
         let agent = &json["agent"]["relaycast"];
         assert_eq!(
             agent["description"].as_str(),
-            Some("Agent with Relaycast MCP enabled")
+            Some("Agent with Agent Relay MCP enabled")
         );
         assert_eq!(agent["tools"]["relaycast_*"].as_bool(), Some(true));
     }
