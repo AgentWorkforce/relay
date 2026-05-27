@@ -19,6 +19,7 @@ Removed unsafe before-spawn patch assertions by preserving concrete spawn input 
 ## Key Decisions
 
 ### Typed before-spawn patch flow instead of asserting patch shape
+
 - **Chose:** Typed before-spawn patch flow instead of asserting patch shape
 - **Reasoning:** The lifecycle hook return is SDK user code, not a broker response, so the safer fix is to preserve the concrete SpawnPtyInput or SpawnCliInput generic through runBeforeSpawn and apply only the allowed SpawnPatch fields without type assertions.
 
@@ -27,6 +28,7 @@ Removed unsafe before-spawn patch assertions by preserving concrete spawn input 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Typed before-spawn patch flow instead of asserting patch shape: Typed before-spawn patch flow instead of asserting patch shape
