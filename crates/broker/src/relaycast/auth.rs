@@ -825,7 +825,11 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
-            code: if code.is_empty() { None } else { Some(code.clone()) },
+            code: if code.is_empty() {
+                None
+            } else {
+                Some(code.clone())
+            },
         }),
         _ => anyhow::anyhow!("{error}"),
     }
