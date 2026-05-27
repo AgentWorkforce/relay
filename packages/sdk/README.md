@@ -58,10 +58,10 @@ const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
   model: 'gpt-4o',
 });
 
-// Provider-backed and headless harnesses keep the same Agent handle surface
+// Headless harnesses keep the same Agent handle surface
 const reviewer = await relay.spawnHeadless({
   name: 'HeadlessReviewer',
-  provider: 'opencode',
+  cli: 'opencode',
   channels: ['reviews'],
   task: 'Review the current branch',
 });

@@ -24,9 +24,9 @@ function createMockFacadeClient() {
 
   const mock = {
     spawnPty: vi.fn(async (input: { name: string }) => ({ name: input.name, runtime: 'pty' as const })),
-    spawnProvider: vi.fn(async (input: { name: string; transport?: 'pty' | 'headless' }) => ({
+    spawnProvider: vi.fn(async (input: { name: string }) => ({
       name: input.name,
-      runtime: input.transport === 'pty' ? ('pty' as const) : ('headless' as const),
+      runtime: 'headless' as const,
     })),
     spawnHeadless: vi.fn(async (input: { name: string }) => ({
       name: input.name,
@@ -535,48 +535,11 @@ describe('AgentRelay orchestration handles', () => {
           agentToken: 'agent-token-codex',
         })
       );
-      expect(mock.spawnProvider).toHaveBeenCalledWith(
+      expect(mock.spawnHeadless).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'opencode-token',
           provider: 'opencode',
-          transport: 'headless',
           agentToken: 'agent-token-opencode',
-        })
-      );
-    } finally {
-      await relay.shutdown();
-    }
-  });
-
-  it('spawnProvider exposes provider-backed spawns through the facade', async () => {
-    const { client, mock } = createMockFacadeClient();
-    const relay = createWiredRelay(client);
-
-    try {
-      const agent = await relay.spawnProvider({
-        name: 'provider-facade',
-        provider: 'claude',
-        transport: 'pty',
-        channels: ['ops'],
-        cwd: '/workspace/provider',
-        continueFrom: 'session-123',
-        agentToken: 'agent-token-provider',
-      });
-
-      expect(agent).toMatchObject({
-        name: 'provider-facade',
-        runtime: 'pty',
-        channels: ['ops'],
-      });
-      expect(mock.spawnProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'provider-facade',
-          provider: 'claude',
-          transport: 'pty',
-          channels: ['ops'],
-          cwd: '/workspace/provider',
-          continueFrom: 'session-123',
-          agentToken: 'agent-token-provider',
         })
       );
     } finally {
@@ -600,7 +563,7 @@ describe('AgentRelay orchestration handles', () => {
     try {
       const agent = await relay.spawnHeadless<{ ok: boolean }>({
         name: 'headless-facade',
-        provider: 'custom-app',
+        cli: 'custom-app',
         channels: ['reviews'],
         task: 'Review the change',
         harnessConfig,
@@ -618,7 +581,6 @@ describe('AgentRelay orchestration handles', () => {
         expect.objectContaining({
           name: 'headless-facade',
           cli: 'custom-app',
-          provider: 'custom-app',
           channels: ['reviews'],
           task: 'Review the change',
         })
@@ -627,7 +589,6 @@ describe('AgentRelay orchestration handles', () => {
         expect.objectContaining({
           name: 'headless-facade',
           cli: 'custom-app',
-          provider: 'custom-app',
           runtime: 'headless',
         })
       );
@@ -635,7 +596,6 @@ describe('AgentRelay orchestration handles', () => {
         expect.objectContaining({
           name: 'headless-facade',
           provider: 'custom-app',
-          transport: 'headless',
           channels: ['reviews'],
           task: 'Review the change',
           harnessConfig,

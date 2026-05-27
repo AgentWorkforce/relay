@@ -1,5 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
+import type { SpawnHeadlessAgentInput } from '../relay.js';
 import type { SpawnHeadlessInput, SpawnProviderInput, SpawnPtyInput } from '../types.js';
 
 describe('spawn input agentToken types', () => {
@@ -39,7 +40,7 @@ describe('spawn input agentToken types', () => {
     expectTypeOf<SpawnProviderInput['agentToken']>().toEqualTypeOf<string | undefined>();
   });
 
-  it('SpawnHeadlessInput accepts provider harness metadata and agentToken', () => {
+  it('SpawnHeadlessInput accepts custom harness metadata and agentToken', () => {
     const withHeadlessHarness = {
       name: 'headless-with-harness',
       provider: 'custom-app-server',
@@ -55,5 +56,22 @@ describe('spawn input agentToken types', () => {
     expectTypeOf(withHeadlessHarness).toMatchTypeOf<SpawnHeadlessInput>();
     expectTypeOf(withHeadlessHarness.provider).toMatchTypeOf<string>();
     expectTypeOf<SpawnHeadlessInput['agentToken']>().toEqualTypeOf<string | undefined>();
+  });
+
+  it('SpawnHeadlessAgentInput uses cli for the high-level facade', () => {
+    const withHeadlessHarness = {
+      name: 'headless-facade',
+      cli: 'custom-app-server',
+      agentToken: 'jwt-token',
+      harnessConfig: {
+        runtime: 'headless',
+        protocol: 'custom-app-server',
+        endpoint: 'http://127.0.0.1:4099',
+        sessionId: 'session-headless',
+      },
+    } satisfies SpawnHeadlessAgentInput;
+
+    expectTypeOf(withHeadlessHarness).toMatchTypeOf<SpawnHeadlessAgentInput>();
+    expectTypeOf(withHeadlessHarness.cli).toMatchTypeOf<string>();
   });
 });

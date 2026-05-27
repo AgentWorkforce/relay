@@ -42,12 +42,10 @@ import {
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import { AgentRelayProtocolError } from './transport.js';
 import type {
-  AgentTransport,
   JsonSchema,
   SendMessageInput,
   SpawnAgentResult,
-  SpawnHeadlessInput,
-  SpawnProviderInput,
+  SpawnHeadlessInput as ClientSpawnHeadlessInput,
   SpawnPtyInput,
 } from './types.js';
 import type {
@@ -202,6 +200,10 @@ export interface AgentResultOptions<T = unknown> {
 type SpawnWithLifecycle<TInput, TAgentResult> = TInput &
   SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
 
+export type SpawnHeadlessAgentInput<TAgentResult = unknown> = Omit<ClientSpawnHeadlessInput, 'provider'> & {
+  cli: string;
+} & SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
+
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
 export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
 export type DeliveryStateStatus = 'queued' | 'injected' | 'active' | 'verified' | 'failed';
@@ -240,10 +242,8 @@ export interface AgentActivityChange {
 
 export interface SpawnLifecycleContext {
   name: string;
-  /** CLI or provider identifier used to launch the agent. */
+  /** CLI identifier used to launch the agent. */
   cli: string;
-  /** Provider identifier for provider-backed spawns. */
-  provider?: string;
   channels: string[];
   task?: string;
 }
@@ -876,22 +876,10 @@ export class AgentRelay {
     return agent;
   }
 
-  async spawnProvider<TAgentResult = unknown>(
-    input: SpawnWithLifecycle<SpawnProviderInput, TAgentResult>
-  ): Promise<Agent<TAgentResult>> {
-    return this.spawnProviderWithLifecycle('spawnProvider', input, (client, request) =>
-      client.spawnProvider(request)
-    );
-  }
-
   async spawnHeadless<TAgentResult = unknown>(
-    input: SpawnWithLifecycle<SpawnHeadlessInput, TAgentResult>
+    input: SpawnHeadlessAgentInput<TAgentResult>
   ): Promise<Agent<TAgentResult>> {
-    return this.spawnProviderWithLifecycle(
-      'spawnHeadless',
-      { ...input, transport: 'headless' },
-      (client, request) => client.spawnHeadless(request)
-    );
+    return this.spawnHeadlessWithLifecycle('spawnHeadless', input);
   }
 
   async spawn<TAgentResult = unknown>(
@@ -937,11 +925,9 @@ export class AgentRelay {
     return this.waitForAgentReady(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
   }
 
-  private async spawnProviderWithLifecycle<TAgentResult = unknown>(
-    methodName: 'spawn' | 'spawnProvider' | 'spawnHeadless',
-    input: SpawnWithLifecycle<SpawnProviderInput, TAgentResult>,
-    invoke: (client: AgentRelayClient, request: SpawnProviderInput) => Promise<SpawnAgentResult>,
-    defaultTransport?: AgentTransport
+  private async spawnHeadlessWithLifecycle<TAgentResult = unknown>(
+    methodName: 'spawn' | 'spawnHeadless',
+    input: SpawnHeadlessAgentInput<TAgentResult>
   ): Promise<Agent<TAgentResult>> {
     const client = await this.ensureStarted();
     if (!input.channels || input.channels.length === 0) {
@@ -953,8 +939,7 @@ export class AgentRelay {
     const channels = input.channels ?? ['general'];
     const lifecycleContext: SpawnLifecycleContext = {
       name: input.name,
-      cli: input.provider,
-      provider: input.provider,
+      cli: input.cli,
       channels,
       task: input.task,
     };
@@ -967,17 +952,16 @@ export class AgentRelay {
     try {
       const harnessConfig = this.resolveHarnessConfig({
         name: input.name,
-        cli: input.provider,
+        cli: input.cli,
         args: input.args,
         task: input.task,
         model: input.model,
         cwd: input.cwd,
         harnessConfig: input.harnessConfig,
       });
-      result = await invoke(client, {
+      result = await client.spawnHeadless({
         name: input.name,
-        provider: input.provider,
-        transport: input.transport ?? harnessConfig?.runtime ?? defaultTransport,
+        provider: input.cli,
         args: input.args,
         channels,
         task: input.task,
@@ -2350,28 +2334,23 @@ export class AgentRelay {
           });
         }
 
-        return this.spawnProviderWithLifecycle(
-          'spawn',
-          {
-            name,
-            provider: cli,
-            args,
-            channels,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-            harnessConfig: options?.harnessConfig,
-            idleThresholdSecs: options?.idleThresholdSecs,
-            agentToken: options?.agentToken,
-            skipRelayPrompt: options?.skipRelayPrompt,
-            result: options?.result,
-            onStart: options?.onStart,
-            onSuccess: options?.onSuccess,
-            onError: options?.onError,
-          },
-          (client, request) => client.spawnProvider(request),
-          'headless'
-        );
+        return this.spawnHeadlessWithLifecycle('spawn', {
+          name,
+          cli,
+          args,
+          channels,
+          task,
+          model: options?.model,
+          cwd: options?.cwd,
+          harnessConfig: options?.harnessConfig,
+          idleThresholdSecs: options?.idleThresholdSecs,
+          agentToken: options?.agentToken,
+          skipRelayPrompt: options?.skipRelayPrompt,
+          result: options?.result,
+          onStart: options?.onStart,
+          onSuccess: options?.onSuccess,
+          onError: options?.onError,
+        });
       },
     };
   }
