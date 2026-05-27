@@ -14,9 +14,7 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [
-    "d1aa908c"
-  ],
+  "commits": ["d1aa908c"],
   "filesChanged": [
     ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/summary.md",
     ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/trajectory.json"

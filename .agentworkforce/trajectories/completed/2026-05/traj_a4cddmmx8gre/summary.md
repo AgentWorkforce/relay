@@ -18,6 +18,7 @@ Audited root directory clutter and identified safe local cleanup plus likely tra
 ## Key Decisions
 
 ### Classified root cleanup candidates
+
 - **Chose:** Classified root cleanup candidates
 - **Reasoning:** Separate ignored local artifacts from tracked repo files; likely tracked removals are stale MCP config, empty Claude settings, orphaned OpenClaw root skill, and unused single-test Vitest config, while core package and CI configs remain referenced.
 
@@ -26,7 +27,8 @@ Audited root directory clutter and identified safe local cleanup plus likely tra
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Classified root cleanup candidates: Classified root cleanup candidates
 

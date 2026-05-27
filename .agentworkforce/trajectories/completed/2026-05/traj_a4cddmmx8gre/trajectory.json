@@ -42,14 +42,7 @@
     "approach": "Standard approach",
     "confidence": 0.82
   },
-  "commits": [
-    "f9041248",
-    "9fcc4f68",
-    "e4938046",
-    "487f461e",
-    "b8b32bc8",
-    "224506d3"
-  ],
+  "commits": ["f9041248", "9fcc4f68", "e4938046", "487f461e", "b8b32bc8", "224506d3"],
   "filesChanged": [
     "CHANGELOG.md",
     "crates/broker/src/relaycast/auth.rs",
