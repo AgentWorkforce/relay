@@ -12,6 +12,11 @@ import {
   UnsubscribeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { RelayCast, SDK_VERSION, WsClient, type AgentClient } from '@relaycast/sdk';
+import {
+  agentTokenRecoveryMessage,
+  isInvalidAgentTokenError,
+  isInvalidAgentTokenToolResult,
+} from '@agent-relay/sdk';
 import { z } from 'zod';
 
 const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
@@ -80,7 +85,9 @@ interface SessionState {
   wsInitAttempted: boolean;
 }
 
-type RegistrationSession = Pick<SessionState, 'workspaceKey' | 'agentToken' | 'agentName'>;
+type RegistrationSession = Pick<SessionState, 'workspaceKey' | 'agentToken' | 'agentName'> & {
+  agents?: Map<string, RegisteredAgent>;
+};
 type SessionSetter = (partial: Partial<SessionState>) => void;
 type AgentResultCallbackConfig = {
   url: string;
@@ -337,12 +344,20 @@ export async function registerAgentWithRebind({
   }
 
   if (session.agentToken && effectiveName && strictAgentName) {
-    return {
-      name: effectiveName,
-      token: session.agentToken,
-      registered_name: effectiveName,
-      warnings,
-    };
+    // If the session tracks per-identity agents, only short-circuit when the
+    // strict-named identity is still registered. After an `agent_token_invalid`
+    // recovery the entry is dropped from the map, which lets this fall through
+    // to a fresh registerOrRotate instead of handing back the dead token.
+    const cachedAgent = session.agents?.get(effectiveName);
+    const knowsIdentities = session.agents !== undefined;
+    if (!knowsIdentities || cachedAgent) {
+      return {
+        name: effectiveName,
+        token: cachedAgent?.agentToken ?? session.agentToken,
+        registered_name: effectiveName,
+        warnings,
+      };
+    }
   }
 
   const relay = getRelay();
@@ -604,10 +619,29 @@ function formatInbox(inbox: any, selfName?: string | null): string {
   return lines.length === 1 ? '' : lines.join('\n');
 }
 
+function readAsIdentity(args: unknown[]): string | undefined {
+  const [input] = args;
+  if (typeof input !== 'object' || input === null) return undefined;
+  const as = (input as { as?: unknown }).as;
+  return typeof as === 'string' ? as : undefined;
+}
+
+function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
+  const text = agentTokenRecoveryMessage();
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: {
+      error: { code: 'agent_token_invalid', message: text },
+    },
+    isError: true,
+  };
+}
+
 function enableInboxPiggyback(
   mcpServer: McpServer,
   getSession: () => SessionState,
-  getAgentClient: (asIdentity?: string) => AgentClientLike
+  getAgentClient: (asIdentity?: string) => AgentClientLike,
+  invalidateAgentToken: (asIdentity?: string) => void
 ): void {
   const original = mcpServer.registerTool.bind(mcpServer);
   const mutableServer = mcpServer as McpServer & {
@@ -620,24 +654,47 @@ function enableInboxPiggyback(
     }
 
     const wrapped = async (...args: unknown[]) => {
-      const result = await handler(...args);
+      const asIdentity = readAsIdentity(args);
+
+      let result: any;
+      try {
+        result = await handler(...args);
+      } catch (err) {
+        // `register_agent` is the recovery path itself — never invalidate a
+        // freshly-issued token, and let registration errors bubble normally.
+        if (name !== 'register_agent' && isInvalidAgentTokenError(err)) {
+          invalidateAgentToken(asIdentity);
+          return invalidAgentTokenToolResult();
+        }
+        throw err;
+      }
+
+      // Successful response that still carries an "Invalid agent token" body.
+      if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {
+        invalidateAgentToken(asIdentity);
+        if (hasContentArray(result)) {
+          result.content.push({ type: 'text', text: agentTokenRecoveryMessage() });
+        }
+        return result;
+      }
+
       if (SKIP_PIGGYBACK.has(name) || !getSession().agentToken || !hasContentArray(result)) {
         return result;
       }
 
       try {
-        const [input] = args;
-        const asIdentity =
-          typeof input === 'object' && input !== null && typeof (input as { as?: unknown }).as === 'string'
-            ? (input as { as: string }).as
-            : undefined;
         const inbox = await getAgentClient(asIdentity).inbox();
         const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
         if (inboxText) {
           result.content.push({ type: 'text', text: inboxText });
         }
-      } catch {
-        // Inbox piggyback is opportunistic. The original tool result should win.
+      } catch (err) {
+        // Inbox piggyback is opportunistic; the original tool result should
+        // still win. But if the inbox fetch itself reveals an invalid token,
+        // clear the stale identity so the next call doesn't reuse it.
+        if (isInvalidAgentTokenError(err)) {
+          invalidateAgentToken(asIdentity);
+        }
       }
 
       return result;
@@ -1349,6 +1406,33 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
     }
   };
 
+  const invalidateAgentToken = (asIdentity?: string): void => {
+    const partial: Partial<SessionState> = {};
+    const targetName = asIdentity ?? session.agentName ?? null;
+
+    if (targetName && session.agents.has(targetName)) {
+      const nextAgents = new Map(session.agents);
+      nextAgents.delete(targetName);
+      partial.agents = nextAgents;
+    }
+
+    // Clear the active-session token when the invalidated identity is the
+    // active one (or the caller didn't pin to a particular identity). The
+    // active workspaceKey stays intact so `register_agent` can recover.
+    if (!asIdentity || asIdentity === session.agentName) {
+      if (session.agentToken !== null) {
+        partial.agentToken = null;
+      }
+      if (session.agentName !== null && (!asIdentity || asIdentity === session.agentName)) {
+        partial.agentName = null;
+      }
+    }
+
+    if (Object.keys(partial).length > 0) {
+      setSession(partial);
+    }
+  };
+
   const resolveAgentToken = (asIdentity?: string): string => {
     if (asIdentity) {
       const registered = session.agents.get(asIdentity);
@@ -1373,7 +1457,7 @@ export function createPatchedRelayMcpServer(options: PatchedMcpServerOptions): M
     }).as(agentToken, { autoHeartbeatMs: false });
   };
 
-  enableInboxPiggyback(mcpServer, getSession, getAgentClient);
+  enableInboxPiggyback(mcpServer, getSession, getAgentClient, invalidateAgentToken);
   registerResourceDefinitions(mcpServer, getAgentClient, getRelay);
   mcpServer.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
     session.subscriptions?.subscribe(req.params.uri);

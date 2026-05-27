@@ -192,6 +192,56 @@ impl AuthSessionSet {
 struct AuthHttpError {
     status: StatusCode,
     message: String,
+    /// Server-supplied error code (e.g. `agent_token_invalid`) when the
+    /// upstream `RelayError::Api` carried one. Kept here so that downstream
+    /// callers can distinguish a stale agent token from a generic 401.
+    code: Option<String>,
+}
+
+/// Error code returned by Relaycast when a previously-issued agent token has
+/// been revoked or expired. Mirrors the contract in relaycast PR #137: any
+/// 401 carrying this code (or the canonical `Invalid agent token` message)
+/// must be treated as recoverable via re-registration.
+pub const AGENT_TOKEN_INVALID_CODE: &str = "agent_token_invalid";
+const AGENT_TOKEN_INVALID_MESSAGE: &str = "Invalid agent token";
+
+/// True when `code` matches the relaycast `agent_token_invalid` contract.
+/// Comparison is case-insensitive to tolerate variant servers.
+pub fn is_agent_token_invalid_code(code: &str) -> bool {
+    code.eq_ignore_ascii_case(AGENT_TOKEN_INVALID_CODE)
+}
+
+/// True when the relaycast error indicates the agent token must be
+/// re-issued. Recognises both the typed `agent_token_invalid` code and the
+/// legacy 401 + `Invalid agent token` message pair so the helper works
+/// against both pre- and post-PR-#137 servers.
+pub fn is_agent_token_invalid(err: &RelayError) -> bool {
+    match err {
+        RelayError::Api {
+            code,
+            status,
+            message,
+        } => {
+            is_agent_token_invalid_code(code)
+                || (*status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE)
+        }
+        _ => false,
+    }
+}
+
+/// `anyhow::Error`-flavored counterpart to `is_agent_token_invalid` — works
+/// against the `AuthHttpError` wrappers produced by `relay_error_to_anyhow`.
+pub fn is_agent_token_invalid_anyhow(err: &anyhow::Error) -> bool {
+    if let Some(auth_err) = err.downcast_ref::<AuthHttpError>() {
+        if let Some(code) = &auth_err.code {
+            if is_agent_token_invalid_code(code) {
+                return true;
+            }
+        }
+        return auth_err.status == StatusCode::UNAUTHORIZED
+            && auth_err.message.trim() == AGENT_TOKEN_INVALID_MESSAGE;
+    }
+    false
 }
 
 /// Generate a deterministic workspace name based on the current user and working
@@ -658,6 +708,22 @@ impl AuthClient {
                         status: 409,
                     }));
                 }
+                Err(RelayError::Api {
+                    code,
+                    status,
+                    message,
+                }) if is_agent_token_invalid_code(&code)
+                    || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
+                {
+                    // Surface the typed code even when only the legacy
+                    // status+message pair is present, so downstream callers
+                    // can react with `is_agent_token_invalid_anyhow`.
+                    return Err(relay_error_to_anyhow(RelayError::Api {
+                        code: AGENT_TOKEN_INVALID_CODE.to_string(),
+                        status,
+                        message,
+                    }));
+                }
                 Err(error) => {
                     return Err(relay_error_to_anyhow(error));
                 }
@@ -748,14 +814,18 @@ fn build_relay_client(api_key: &str, base_url: &str) -> Result<RelayCast> {
 }
 
 /// Convert a `RelayError` into an `anyhow::Error`, preserving the HTTP status
-/// so that `is_auth_rejection`, `is_not_found`, and `is_rate_limited` still work.
+/// and server-supplied error code so that `is_auth_rejection`, `is_not_found`,
+/// `is_rate_limited`, and `is_agent_token_invalid_anyhow` still work.
 fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
     match &error {
         RelayError::Api {
-            status, message, ..
+            status,
+            message,
+            code,
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
+            code: if code.is_empty() { None } else { Some(code.clone()) },
         }),
         _ => anyhow::anyhow!("{error}"),
     }
@@ -796,9 +866,68 @@ mod tests {
     use httpmock::MockServer;
     use serde_json::json;
 
-    use super::{AuthClient, CredentialCache};
+    use super::{
+        is_agent_token_invalid, is_agent_token_invalid_anyhow, is_agent_token_invalid_code,
+        relay_error_to_anyhow, AuthClient, CredentialCache, AGENT_TOKEN_INVALID_CODE,
+    };
+    use relaycast::RelayError;
 
     static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn agent_token_invalid_code_matches_canonical_string_case_insensitively() {
+        assert!(is_agent_token_invalid_code(AGENT_TOKEN_INVALID_CODE));
+        assert!(is_agent_token_invalid_code("AGENT_TOKEN_INVALID"));
+        assert!(!is_agent_token_invalid_code("unauthorized"));
+    }
+
+    #[test]
+    fn agent_token_invalid_relay_error_detected_via_code_or_legacy_pair() {
+        let typed = RelayError::Api {
+            code: AGENT_TOKEN_INVALID_CODE.to_string(),
+            status: 401,
+            message: "anything".to_string(),
+        };
+        assert!(is_agent_token_invalid(&typed));
+
+        let legacy = RelayError::Api {
+            code: "unauthorized".to_string(),
+            status: 401,
+            message: "Invalid agent token".to_string(),
+        };
+        assert!(is_agent_token_invalid(&legacy));
+
+        let unrelated = RelayError::Api {
+            code: "unauthorized".to_string(),
+            status: 401,
+            message: "bad workspace key".to_string(),
+        };
+        assert!(!is_agent_token_invalid(&unrelated));
+    }
+
+    #[test]
+    fn anyhow_helper_survives_relay_error_to_anyhow_conversion() {
+        let err = relay_error_to_anyhow(RelayError::Api {
+            code: AGENT_TOKEN_INVALID_CODE.to_string(),
+            status: 401,
+            message: "Invalid agent token".to_string(),
+        });
+        assert!(is_agent_token_invalid_anyhow(&err));
+
+        let legacy = relay_error_to_anyhow(RelayError::Api {
+            code: String::new(),
+            status: 401,
+            message: "Invalid agent token".to_string(),
+        });
+        assert!(is_agent_token_invalid_anyhow(&legacy));
+
+        let unrelated = relay_error_to_anyhow(RelayError::Api {
+            code: "agent_already_exists".to_string(),
+            status: 409,
+            message: "name taken".to_string(),
+        });
+        assert!(!is_agent_token_invalid_anyhow(&unrelated));
+    }
 
     /// Remove RELAY_API_KEY from the environment so it doesn't interfere with
     /// mock-server tests. Tests use httpmock and only set up specific auth
