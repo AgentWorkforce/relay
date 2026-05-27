@@ -41,16 +41,20 @@ relay.onMessageReceived = (msg) => {
 };
 
 // Spawn three agents.
-const planner = await relay.claude.spawn({
+const planner = await relay.spawnAgent({
   name: 'Planner',
+  cli: 'claude',
   model: Models.Claude.OPUS,
 });
-const coder = await relay.codex.spawn({
+const coder = await relay.spawnAgent({
   name: 'Coder',
+  cli: 'codex',
   model: Models.Codex.GPT_5_3_CODEX,
 });
-const reviewer = await relay.opencode.spawn({
+const reviewer = await relay.spawnAgent({
   name: 'Reviewer',
+  cli: 'opencode',
+  runtime: 'headless',
   model: Models.Opencode.OPENAI_GPT_5_2,
 });
 

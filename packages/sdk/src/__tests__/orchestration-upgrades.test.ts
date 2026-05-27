@@ -24,7 +24,11 @@ function createMockFacadeClient() {
 
   const mock = {
     spawnPty: vi.fn(async (input: { name: string }) => ({ name: input.name, runtime: 'pty' as const })),
-    spawnProvider: vi.fn(async (input: { name: string }) => ({
+    spawnCli: vi.fn(async (input: { name: string }) => ({
+      name: input.name,
+      runtime: 'headless' as const,
+    })),
+    spawnHeadless: vi.fn(async (input: { name: string }) => ({
       name: input.name,
       runtime: 'headless' as const,
     })),
@@ -194,7 +198,7 @@ describe('AgentRelayClient orchestration payloads', () => {
     });
   });
 
-  it('spawnHeadless forwards agentToken to headless provider spawns', async () => {
+  it('spawnHeadless forwards agentToken to headless cli spawns', async () => {
     const client = createProtocolClient();
     const request = vi
       .spyOn((client as any).transport, 'request')
@@ -202,7 +206,7 @@ describe('AgentRelayClient orchestration payloads', () => {
 
     await client.spawnHeadless({
       name: 'agent-headless-token',
-      provider: 'opencode',
+      cli: 'opencode',
       channels: ['general'],
       task: 'run headless',
       agentToken: 'agent-token-headless',
@@ -462,12 +466,38 @@ describe('AgentRelayClient orchestration payloads', () => {
 });
 
 describe('AgentRelay orchestration handles', () => {
-  it('spawnPty forwards agentToken to the client', async () => {
+  it('spawnAgent defaults missing name and runtime to a PTY spawn', async () => {
     const { client, mock } = createMockFacadeClient();
     const relay = createWiredRelay(client);
 
     try {
-      await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        cli: 'codex',
+        channels: ['general'],
+      });
+
+      expect(agent.name).toBe('Codex');
+      expect(agent.runtime).toBe('pty');
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Codex',
+          cli: 'codex',
+          channels: ['general'],
+        })
+      );
+      expect(mock.spawnHeadless).not.toHaveBeenCalled();
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawnAgent forwards pty agentToken to the client', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      await relay.spawnAgent({
+        runtime: 'pty',
         name: 'token-pty',
         cli: 'claude',
         channels: ['general'],
@@ -486,12 +516,16 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('spawn forwards agentToken through the facade wrapper', async () => {
+  it('spawnAgent forwards task and agentToken through the facade wrapper', async () => {
     const { client, mock } = createMockFacadeClient();
     const relay = createWiredRelay(client);
 
     try {
-      await relay.spawn('token-wrapper', 'claude', 'Do work', {
+      await relay.spawnAgent({
+        runtime: 'pty',
+        name: 'token-wrapper',
+        cli: 'claude',
+        task: 'Do work',
         agentToken: 'agent-token-wrapper',
       });
 
@@ -508,18 +542,22 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('property spawners forward agentToken for pty and headless runtimes', async () => {
+  it('spawnAgent forwards agentToken for pty and headless runtimes', async () => {
     const { client, mock } = createMockFacadeClient();
     const relay = createWiredRelay(client);
 
     try {
-      await relay.codex.spawn({
+      await relay.spawnAgent({
+        runtime: 'pty',
         name: 'codex-token',
+        cli: 'codex',
         channels: ['general'],
         agentToken: 'agent-token-codex',
       });
-      await relay.opencode.spawn({
+      await relay.spawnAgent({
+        runtime: 'headless',
         name: 'opencode-token',
+        cli: 'opencode',
         channels: ['general'],
         agentToken: 'agent-token-opencode',
       });
@@ -531,14 +569,110 @@ describe('AgentRelay orchestration handles', () => {
           agentToken: 'agent-token-codex',
         })
       );
-      expect(mock.spawnProvider).toHaveBeenCalledWith(
+      expect(mock.spawnHeadless).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'opencode-token',
-          provider: 'opencode',
-          transport: 'headless',
+          cli: 'opencode',
           agentToken: 'agent-token-opencode',
         })
       );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawnAgent preserves facade lifecycle hooks and custom headless harness config', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+    const onStart = vi.fn();
+    const onSuccess = vi.fn();
+    const harnessConfig = {
+      runtime: 'headless' as const,
+      protocol: 'custom-app',
+      endpoint: 'http://127.0.0.1:4099',
+      sessionId: 'session-headless',
+    };
+    const jsonSchema = { type: 'object', properties: { ok: { type: 'boolean' } } };
+
+    try {
+      const agent = await relay.spawnAgent<{ ok: boolean }>({
+        runtime: 'headless',
+        name: 'headless-facade',
+        cli: 'custom-app',
+        channels: ['reviews'],
+        task: 'Review the change',
+        harnessConfig,
+        result: { jsonSchema },
+        onStart,
+        onSuccess,
+      });
+
+      expect(agent).toMatchObject({
+        name: 'headless-facade',
+        runtime: 'headless',
+        channels: ['reviews'],
+      });
+      expect(onStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          cli: 'custom-app',
+          channels: ['reviews'],
+          task: 'Review the change',
+        })
+      );
+      expect(onSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          cli: 'custom-app',
+          runtime: 'headless',
+        })
+      );
+      expect(mock.spawnHeadless).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          cli: 'custom-app',
+          channels: ['reviews'],
+          task: 'Review the change',
+          harnessConfig,
+          agentResultSchema: jsonSchema,
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawnAgent stores headless result contracts under the finalized broker name', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+    const resultContracts = (relay as any).resultContracts as Map<string, unknown>;
+    const existingContract = { jsonSchema: { type: 'boolean' } };
+    const jsonSchema = { type: 'object', properties: { ok: { type: 'boolean' } } };
+
+    resultContracts.set('requested-headless', existingContract);
+    mock.spawnHeadless.mockImplementationOnce(async () => {
+      expect(resultContracts.get('requested-headless')).toBe(existingContract);
+      return { name: 'final-headless', runtime: 'headless' as const };
+    });
+
+    try {
+      const agent = await relay.spawnAgent<{ ok: boolean }>({
+        runtime: 'headless',
+        name: 'requested-headless',
+        cli: 'custom-app',
+        channels: ['reviews'],
+        harnessConfig: {
+          runtime: 'headless',
+          protocol: 'custom-app',
+          endpoint: 'http://127.0.0.1:4099',
+          sessionId: 'session-headless',
+        },
+        result: { jsonSchema },
+      });
+
+      expect(agent.name).toBe('final-headless');
+      expect(resultContracts.get('requested-headless')).toBe(existingContract);
+      expect(resultContracts.get('final-headless')).toMatchObject({ jsonSchema });
     } finally {
       await relay.shutdown();
     }
@@ -548,10 +682,11 @@ describe('AgentRelay orchestration handles', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'ready-agent',
         cli: 'claude',
         channels: ['general'],
@@ -575,7 +710,8 @@ describe('AgentRelay orchestration handles', () => {
     relay.addListener('agentResult', (result) => globalResults.push(result));
 
     try {
-      const agent = await relay.spawnPty<{ ok: boolean }>({
+      const agent = await relay.spawnAgent<{ ok: boolean }>({
+        runtime: 'pty',
         name: 'result-agent',
         cli: 'claude',
         channels: ['general'],
@@ -642,7 +778,8 @@ describe('AgentRelay orchestration handles', () => {
     const relay = createWiredRelay(client);
 
     try {
-      const agent = await relay.spawnPty<{ ok: boolean }>({
+      const agent = await relay.spawnAgent<{ ok: boolean }>({
+        runtime: 'pty',
         name: 'reused-result-agent',
         cli: 'claude',
         result: { jsonSchema: true },
@@ -652,7 +789,8 @@ describe('AgentRelay orchestration handles', () => {
         (error) => error as Error
       );
 
-      await relay.spawnPty<{ ok: boolean }>({
+      await relay.spawnAgent<{ ok: boolean }>({
+        runtime: 'pty',
         name: 'reused-result-agent',
         cli: 'claude',
         result: { jsonSchema: true },
@@ -672,14 +810,10 @@ describe('AgentRelay orchestration handles', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      await relay.spawnPty({
-        name: 'msg-agent',
-        cli: 'claude',
-        channels: ['general'],
-      });
+      await relay.spawnAgent({ runtime: 'pty', name: 'msg-agent', cli: 'claude', channels: ['general'] });
 
       const waitPromise = relay.waitForAgentMessage('msg-agent', 1_000);
       let resolved = false;
@@ -705,28 +839,29 @@ describe('AgentRelay orchestration handles', () => {
     }
   });
 
-  it('spawnAndWait can wait for first agent message', async () => {
+  it('spawnAgent callers can wait explicitly for first agent message', async () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const spawnWaitPromise = relay.spawnAndWait('spawn-msg', 'claude', 'Do the task', {
-        waitForMessage: true,
-        timeoutMs: 1_000,
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
+        name: 'spawn-msg',
+        cli: 'claude',
+        task: 'Do the task',
       });
 
-      await vi.waitFor(() => {
-        expect(mock.spawnPty).toHaveBeenCalledWith(
-          expect.objectContaining({
-            name: 'spawn-msg',
-            cli: 'claude',
-            task: 'Do the task',
-          })
-        );
-      });
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'spawn-msg',
+          cli: 'claude',
+          task: 'Do the task',
+        })
+      );
 
+      const waitPromise = relay.waitForAgentMessage(agent.name, 1_000);
       emit({ kind: 'worker_ready', name: 'spawn-msg', runtime: 'pty' });
       emit({
         kind: 'relay_inbound',
@@ -736,36 +871,38 @@ describe('AgentRelay orchestration handles', () => {
         body: 'initialized',
       });
 
-      await expect(spawnWaitPromise).resolves.toMatchObject({ name: 'spawn-msg' });
+      await expect(waitPromise).resolves.toMatchObject({ name: 'spawn-msg' });
     } finally {
       await relay.shutdown();
     }
   });
 
-  it('spawnAndWait falls back to worker_ready when waitForMessage is false', async () => {
+  it('spawnAgent callers can wait explicitly for worker_ready', async () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const spawnWaitPromise = relay.spawnAndWait('spawn-ready', 'claude', 'Do the task', {
-        timeoutMs: 1_000,
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
+        name: 'spawn-ready',
+        cli: 'claude',
+        task: 'Do the task',
       });
 
-      await vi.waitFor(() => {
-        expect(mock.spawnPty).toHaveBeenCalledWith(
-          expect.objectContaining({
-            name: 'spawn-ready',
-            cli: 'claude',
-            task: 'Do the task',
-          })
-        );
-      });
+      expect(mock.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'spawn-ready',
+          cli: 'claude',
+          task: 'Do the task',
+        })
+      );
 
+      const waitPromise = agent.waitForReady(1_000);
       emit({ kind: 'worker_ready', name: 'spawn-ready', runtime: 'pty' });
 
-      await expect(spawnWaitPromise).resolves.toMatchObject({ name: 'spawn-ready' });
+      await expect(waitPromise).resolves.toBeUndefined();
     } finally {
       await relay.shutdown();
     }
@@ -782,7 +919,7 @@ describe('AgentRelay orchestration handles', () => {
     ]);
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
       const [agent] = await relay.listAgents();
@@ -801,14 +938,18 @@ describe('AgentRelay orchestration handles', () => {
     const { client } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const callOrder: string[] = [];
     const onStart = vi.fn(() => callOrder.push('start'));
     const onSuccess = vi.fn(() => callOrder.push('success'));
     const onError = vi.fn(() => callOrder.push('error'));
 
     try {
-      const agent = await relay.spawn('hook-agent', 'claude', 'do work', {
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
+        name: 'hook-agent',
+        cli: 'claude',
+        task: 'do work',
         channels: ['general'],
         onStart,
         onSuccess,
@@ -840,12 +981,16 @@ describe('AgentRelay orchestration handles', () => {
     const { client } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     let startDone = false;
     let successDone = false;
 
     try {
-      await relay.spawn('async-hook-agent', 'claude', 'do work', {
+      await relay.spawnAgent({
+        runtime: 'pty',
+        name: 'async-hook-agent',
+        cli: 'claude',
+        task: 'do work',
         channels: ['general'],
         onStart: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5));
@@ -869,13 +1014,14 @@ describe('AgentRelay orchestration handles', () => {
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
     mock.spawnPty.mockRejectedValueOnce(new Error('spawn failed'));
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const onStart = vi.fn();
     const onError = vi.fn();
 
     try {
       await expect(
-        relay.spawnPty({
+        relay.spawnAgent({
+          runtime: 'pty',
           name: 'hook-agent-fail',
           cli: 'claude',
           channels: ['general'],
@@ -907,10 +1053,11 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'reason-agent',
         cli: 'claude',
         channels: ['general'],
@@ -928,14 +1075,15 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const callOrder: string[] = [];
     const onStart = vi.fn(() => callOrder.push('start'));
     const onSuccess = vi.fn(() => callOrder.push('success'));
     const onError = vi.fn(() => callOrder.push('error'));
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-hook-agent',
         cli: 'claude',
         channels: ['general'],
@@ -968,10 +1116,11 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-after-exit',
         cli: 'claude',
         channels: ['general'],
@@ -997,10 +1146,11 @@ describe('AgentRelay orchestration handles', () => {
       })
     );
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-idempotent-race',
         cli: 'claude',
         channels: ['general'],
@@ -1018,12 +1168,13 @@ describe('AgentRelay orchestration handles', () => {
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
     mock.release.mockRejectedValueOnce(new Error('release failed'));
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const onStart = vi.fn();
     const onError = vi.fn();
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-hook-fail',
         cli: 'claude',
         channels: ['general'],
@@ -1057,11 +1208,12 @@ describe('AgentRelay orchestration handles', () => {
     const { client } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     let successDone = false;
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-async-hook-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1085,12 +1237,13 @@ describe('AgentRelay orchestration handles', () => {
     const { client } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const onStart = vi.fn();
     const onError = vi.fn();
 
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'release-startup-fail-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1117,7 +1270,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
 
     try {
       const system = relay.system();
@@ -1143,7 +1296,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       type DeliveryResult = Awaited<ReturnType<AgentRelay['sendAndWaitForDelivery']>>;
       expectTypeOf<DeliveryResult>().toEqualTypeOf<{
@@ -1191,7 +1344,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       const wait = relay.sendAndWaitForDelivery({
         to: 'worker',
@@ -1224,7 +1377,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       const wait = relay.sendAndWaitForDelivery({
         to: 'worker',
@@ -1264,7 +1417,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, mock, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       const wait = relay.sendAndWaitForDelivery({
         to: 'worker',
@@ -1311,7 +1464,7 @@ describe('AgentRelay orchestration handles', () => {
       targets: [timeoutFixture.target],
     });
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       const result = await relay.sendAndWaitForDelivery(
         { to: timeoutFixture.target, text: 'timeout contract probe' },
@@ -1349,7 +1502,7 @@ describe('AgentRelay orchestration handles', () => {
       cases: Array<{ input: string; normalized: string }>;
     }>('broker-identity-normalization.json');
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const seenFrom: string[] = [];
     relay.addListener('messageReceived', (message) => {
       seenFrom.push(message.from);
@@ -1380,7 +1533,7 @@ describe('AgentRelay orchestration handles', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
       await relay.listAgents();
 
@@ -1460,9 +1613,10 @@ describe('Agent.status computed getter', () => {
     const { client } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'status-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1478,9 +1632,10 @@ describe('Agent.status computed getter', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'status-ready',
         cli: 'claude',
         channels: ['general'],
@@ -1498,9 +1653,10 @@ describe('Agent.status computed getter', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'status-idle',
         cli: 'claude',
         channels: ['general'],
@@ -1520,9 +1676,10 @@ describe('Agent.status computed getter', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'status-exited',
         cli: 'claude',
         channels: ['general'],
@@ -1541,15 +1698,11 @@ describe('Agent.status computed getter', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     const exitedReasons: Array<string | undefined> = [];
     relay.addListener('agentExited', (agent) => exitedReasons.push(agent.exitReason));
     try {
-      await relay.spawnPty({
-        name: 'reason-exited',
-        cli: 'claude',
-        channels: ['general'],
-      });
+      await relay.spawnAgent({ runtime: 'pty', name: 'reason-exited', cli: 'claude', channels: ['general'] });
 
       emit({
         kind: 'agent_exited',
@@ -1569,9 +1722,10 @@ describe('Agent.status computed getter', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'status-resume',
         cli: 'claude',
         channels: ['general'],
@@ -1594,9 +1748,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'output-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1618,9 +1773,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'my-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1642,9 +1798,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'unsub-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1667,9 +1824,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'stream-filter-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1692,9 +1850,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'all-streams-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1716,9 +1875,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'stderr-filter-agent',
         cli: 'claude',
         channels: ['general'],
@@ -1740,9 +1900,10 @@ describe('Agent.onOutput', () => {
     const { client, emit } = createMockFacadeClient();
     vi.spyOn(AgentRelayClient, 'start').mockResolvedValue(client);
 
-    const relay = new AgentRelay();
+    const relay = new AgentRelay({ env: { RELAY_API_KEY: TEST_RELAY_API_KEY } });
     try {
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
+        runtime: 'pty',
         name: 'explicit-mode-agent',
         cli: 'claude',
         channels: ['general'],

@@ -1,0 +1,53 @@
+{
+  "id": "traj_33ykjz5a7avh",
+  "version": 1,
+  "task": {
+    "title": "Revise AgentRelay headless facade naming"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T12:32:23.768Z",
+  "completedAt": "2026-05-27T12:36:20.398Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T12:32:28.346Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_d3cnk7kkc43m",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T12:32:28.346Z",
+      "endedAt": "2026-05-27T12:36:20.398Z",
+      "events": [
+        {
+          "ts": 1779885148347,
+          "type": "decision",
+          "content": "Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider: Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider",
+          "raw": {
+            "question": "Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider",
+            "chosen": "Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider",
+            "alternatives": [],
+            "reasoning": "The high-level facade should present runtime choice as spawnPty versus spawnHeadless. Provider is a lower-level client implementation detail and reads poorly at the recipe layer where callers already resolve a CLI/harness plan."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Revised the PR API to avoid exposing provider terminology at the AgentRelay facade: removed public AgentRelay.spawnProvider, changed spawnHeadless to accept cli, routed headless property spawners through the same helper, and updated docs/tests/changelog.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "df9e4c5665d885b50219686d203671241d51bac3",
+    "endRef": "df9e4c5665d885b50219686d203671241d51bac3"
+  }
+}

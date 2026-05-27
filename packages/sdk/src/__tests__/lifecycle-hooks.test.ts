@@ -210,23 +210,25 @@ describe('AgentRelayClient lifecycle hooks', () => {
     expect(captured!.kind).toBe('pty');
   });
 
-  it('spawnProvider fires the hooks with kind=provider', async () => {
+  it('spawnCli fires the hooks with kind=cli', async () => {
     const { fetchFn } = makeMockFetch();
     const client = makeClient(fetchFn);
-    const before = vi.fn();
-    const after = vi.fn();
-    client.addListener('beforeAgentSpawn', before);
-    client.addListener('afterAgentSpawn', after);
+    const beforeKinds: Array<BeforeAgentSpawnContext['kind']> = [];
+    const afterKinds: Array<AfterAgentSpawnContext['kind']> = [];
+    client.addListener('beforeAgentSpawn', (ctx) => {
+      beforeKinds.push(ctx.kind);
+    });
+    client.addListener('afterAgentSpawn', (ctx) => {
+      afterKinds.push(ctx.kind);
+    });
 
-    await client.spawnProvider({ name: 'p', provider: 'claude' });
+    await client.spawnCli({ name: 'p', cli: 'claude' });
 
-    expect(before).toHaveBeenCalledTimes(1);
-    expect((before.mock.calls[0][0] as BeforeAgentSpawnContext).kind).toBe('provider');
-    expect(after).toHaveBeenCalledTimes(1);
-    expect((after.mock.calls[0][0] as AfterAgentSpawnContext).kind).toBe('provider');
+    expect(beforeKinds).toEqual(['cli']);
+    expect(afterKinds).toEqual(['cli']);
   });
 
-  it('recomputes provider transport after beforeAgentSpawn patches add a harness config', async () => {
+  it('recomputes cli transport after beforeAgentSpawn patches add a harness config', async () => {
     const { fetchFn, captures } = makeMockFetch();
     const client = makeClient(fetchFn);
 
@@ -240,14 +242,14 @@ describe('AgentRelayClient lifecycle hooks', () => {
       },
     }));
 
-    await client.spawnProvider({
+    await client.spawnCli({
       name: 'patched-headless',
-      provider: 'custom-provider',
+      cli: 'custom-cli',
     });
 
     expect(captures[0].body).toMatchObject({
       name: 'patched-headless',
-      cli: 'custom-provider',
+      cli: 'custom-cli',
       transport: 'headless',
       harnessConfig: {
         runtime: 'headless',

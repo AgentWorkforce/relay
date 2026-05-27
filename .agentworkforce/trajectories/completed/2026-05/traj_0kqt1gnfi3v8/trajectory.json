@@ -1,0 +1,57 @@
+{
+  "id": "traj_0kqt1gnfi3v8",
+  "version": 1,
+  "task": {
+    "title": "Remove unsafe spawn patch casts",
+    "source": {
+      "system": "plain",
+      "id": "PR-1003"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:17:32.363Z",
+  "completedAt": "2026-05-27T14:23:24.058Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T14:23:11.212Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_dkv8jcg4cvsh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T14:23:11.212Z",
+      "endedAt": "2026-05-27T14:23:24.058Z",
+      "events": [
+        {
+          "ts": 1779891791213,
+          "type": "decision",
+          "content": "Typed before-spawn patch flow instead of asserting patch shape: Typed before-spawn patch flow instead of asserting patch shape",
+          "raw": {
+            "question": "Typed before-spawn patch flow instead of asserting patch shape",
+            "chosen": "Typed before-spawn patch flow instead of asserting patch shape",
+            "alternatives": [],
+            "reasoning": "The lifecycle hook return is SDK user code, not a broker response, so the safer fix is to preserve the concrete SpawnPtyInput or SpawnCliInput generic through runBeforeSpawn and apply only the allowed SpawnPatch fields without type assertions."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed unsafe before-spawn patch assertions by preserving concrete spawn input types through runBeforeSpawn and applying allowed SpawnPatch fields explicitly; validated SDK check, lifecycle hook tests, formatting, diff check, and build.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9a709eec38f3f8b4ed697171f8c17807e5e70fb8",
+    "endRef": "9a709eec38f3f8b4ed697171f8c17807e5e70fb8"
+  }
+}

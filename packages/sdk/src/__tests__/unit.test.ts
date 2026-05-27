@@ -361,14 +361,11 @@ test('waitForIdle: idle resolves before timeout', async () => {
   const result = await promise;
   assert.equal(result, 'idle');
 });
-// ── shorthand spawners ───────────────────────────────────────────────────────
+// ── spawnAgent facade ───────────────────────────────────────────────────────
 
-test('AgentRelay: has shorthand spawners for major CLIs', () => {
+test('AgentRelay: has a single high-level spawnAgent facade', () => {
   const relay = new AgentRelay({ channels: ['general'] });
-  assert.ok(relay.claude, 'relay.claude should be defined');
-  assert.ok(relay.codex, 'relay.codex should be defined');
-  assert.ok(relay.gemini, 'relay.gemini should be defined');
-  assert.ok(relay.opencode, 'relay.opencode should be defined');
+  assert.equal(typeof relay.spawnAgent, 'function');
 });
 
 // ── agent.status ────────────────────────────────────────────────────────────

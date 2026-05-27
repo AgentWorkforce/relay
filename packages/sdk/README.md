@@ -42,9 +42,10 @@ relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
   updateThinkingBadge(name, active ? `Thinking (${pendingDeliveries})` : 'Idle');
 };
 
-// Spawn agents using shorthand spawners
-const worker = await relay.claude.spawn({
+// Spawn a PTY-backed agent
+const worker = await relay.spawnAgent({
   name: 'Worker1',
+  cli: 'claude',
   channels: ['general'],
   // Lifecycle hooks can be sync or async functions.
   onStart: ({ name }) => console.log(`spawning ${name}`),
@@ -52,10 +53,23 @@ const worker = await relay.claude.spawn({
   onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),
 });
 
-// Or use the generic spawn method
-const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
+const agent = await relay.spawnAgent({
+  name: 'Worker2',
+  cli: 'codex',
+  task: 'Build the API',
   channels: ['dev'],
   model: 'gpt-4o',
+});
+
+const codex = await relay.spawnAgent({ cli: 'codex' }); // name: Codex, runtime: pty
+
+// Headless harnesses keep the same Agent handle surface
+const reviewer = await relay.spawnAgent({
+  name: 'HeadlessReviewer',
+  cli: 'opencode',
+  runtime: 'headless',
+  channels: ['reviews'],
+  task: 'Review the current branch',
 });
 
 // Wait for agent to finish (go idle or exit)
@@ -128,9 +142,9 @@ await codex.send('Review the current branch and report risks.');
 
 The Codex adapter uses `codex app-server` over stdio JSON-RPC instead of the foreground PTY path. That gives background workers structured `thread/*`, `turn/*`, and `item/*` events for steering and completion; it does not render the Codex TUI. On startup it ensures the `relaycast` MCP server is present in Codex config so the agent can use Relaycast tools in addition to injected inbox messages.
 
-### Provider + Transport Spawning (Opencode/Claude)
+### CLI + Transport Spawning (Opencode/Claude)
 
-Use provider-first spawn helpers and set `transport` when you want headless mode.
+Use CLI-first spawn helpers and set `transport` when you want headless mode.
 
 ```ts
 import { AgentRelayClient } from '@agent-relay/sdk';
@@ -160,10 +174,10 @@ await client.shutdown();
 
 Notes:
 
-- Transport is a setting (`'pty'` or `'headless'`) on provider spawn methods.
+- Transport is a setting (`'pty'` or `'headless'`) on CLI spawn methods.
 - `spawnClaude(...)` defaults to PTY unless you pass `transport: 'headless'`.
 - `spawnOpencode(...)` defaults to headless.
-- You can also use `client.spawnProvider({ provider, transport, ... })` for generic provider-driven spawning.
+- You can also use `client.spawnCli({ cli, transport, ... })` for generic CLI-driven spawning.
 
 ## Features
 

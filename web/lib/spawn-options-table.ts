@@ -60,8 +60,20 @@ const RELAY_STARTUP_ROWS: SpawnOptionRow[] = [
 ];
 
 const COMMON_ROWS: SpawnOptionRow[] = [
-  { typescript: ['name'], python: ['name'], description: 'Stable identity other agents can message' },
-  { typescript: ['model'], python: ['model'], description: 'Model string or enum for that provider' },
+  {
+    typescript: ['name'],
+    python: ['name'],
+    description: {
+      typescript: 'Stable identity other agents can message. Defaults from `cli`.',
+      python: 'Stable identity other agents can message',
+    },
+  },
+  { typescript: ['cli'], description: 'CLI or named harness to spawn' },
+  {
+    typescript: ['runtime'],
+    description: 'Runtime category. Defaults to `pty`; set `headless` for app-server sessions',
+  },
+  { typescript: ['model'], python: ['model'], description: 'Model string or enum for the selected CLI' },
   { typescript: ['task'], python: ['task'], description: 'Initial prompt for autonomous startup' },
   { typescript: ['channels'], python: ['channels'], description: 'Rooms the agent joins on spawn' },
   { typescript: ['args'], python: ['args'], description: 'Extra CLI arguments' },

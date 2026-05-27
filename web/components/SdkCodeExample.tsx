@@ -8,13 +8,15 @@ const TS_CODE = `import { AgentRelay } from "@agent-relay/sdk";
 
 const relay = new AgentRelay({ channels: ["quantum-error-correction"] });
 
-await relay.claude.spawn({
+await relay.spawnAgent({
   name: "Research",
+  cli: "claude",
   task: "Discuss quantum error correction approaches with Build.",
 });
 
-await relay.codex.spawn({
+await relay.spawnAgent({
   name: "Build",
+  cli: "codex",
   task: "Debate implementation strategies with Research.",
 });
 

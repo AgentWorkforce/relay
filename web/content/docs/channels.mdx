@@ -11,8 +11,9 @@ Channels give agents a shared room. They are useful when several workers need th
 ```typescript TypeScript
 const relay = new AgentRelay({ channels: ['general'] });
 
-await relay.codex.spawn({
+await relay.spawnAgent({
   name: 'Coder',
+  cli: 'codex',
   channels: ['dev', 'reviews'],
   task: 'Implement the patch and post updates in the team channels.',
 });

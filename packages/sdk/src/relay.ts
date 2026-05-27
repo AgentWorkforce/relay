@@ -1,7 +1,7 @@
 /**
  * High-level facade for the Agent Relay SDK.
  *
- * Provides a clean, property-based API on top of the lower-level
+ * Provides a clean, handle-oriented API on top of the lower-level
  * {@link AgentRelayClient} protocol client.
  *
  * @example
@@ -13,7 +13,7 @@
  * relay.addListener('messageReceived', (message) => console.log(message));
  * relay.addListener('agentSpawned', (agent) => console.log("spawned", agent.name));
  *
- * const codex = await relay.codex.spawn();
+ * const codex = await relay.spawnAgent({ cli: "codex" });
  * const human = relay.human({ name: "System" });
  * await human.sendMessage({ to: codex.name, text: "Hello!" });
  *
@@ -41,12 +41,17 @@ import {
 } from './harness.js';
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import { AgentRelayProtocolError } from './transport.js';
-import type { JsonSchema, SendMessageInput, SpawnAgentResult, SpawnPtyInput } from './types.js';
+import type {
+  JsonSchema,
+  SendMessageInput,
+  SpawnAgentResult,
+  SpawnHeadlessInput as ClientSpawnHeadlessInput,
+  SpawnPtyInput,
+} from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
   BrokerStatus,
-  HeadlessProvider,
   MessageInjectionMode,
   RestartPolicy,
 } from './protocol.js';
@@ -116,6 +121,32 @@ function generateWorkspaceId(): string {
   }
 
   return `${WORKSPACE_ID_PREFIX}${suffix}`;
+}
+
+const DEFAULT_AGENT_NAMES: Record<string, string> = {
+  aider: 'Aider',
+  agent: 'Agent',
+  claude: 'Claude',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  'cursor-agent': 'CursorAgent',
+  droid: 'Droid',
+  gemini: 'Gemini',
+  goose: 'Goose',
+  opencode: 'OpenCode',
+};
+
+function defaultAgentNameForCli(cli: string): string {
+  const trimmed = cli.trim();
+  const firstToken = trimmed.split(/\s+/)[0] ?? trimmed;
+  const base = firstToken.split(':')[0] ?? firstToken;
+  const knownName = DEFAULT_AGENT_NAMES[base.toLowerCase()];
+  if (knownName) return knownName;
+
+  const parts = base.split(/[^a-zA-Z0-9]+/).filter((part) => part.length > 0);
+  if (parts.length === 0) return 'Agent';
+
+  return parts.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
 }
 
 function toWorkspaceRegistryEntry(value: unknown): WorkspaceRegistryEntry {
@@ -192,6 +223,23 @@ export interface AgentResultOptions<T = unknown> {
   onResult?: (data: T, meta: AgentResultMeta) => void | Promise<void>;
 }
 
+type SpawnWithLifecycle<TInput, TAgentResult> = TInput &
+  SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
+
+export type SpawnPtyAgentConfig<TAgentResult = unknown> = SpawnWithLifecycle<
+  Omit<SpawnPtyInput, 'name'> & { name?: string; runtime?: 'pty' },
+  TAgentResult
+>;
+
+export type SpawnHeadlessAgentConfig<TAgentResult = unknown> = SpawnWithLifecycle<
+  Omit<ClientSpawnHeadlessInput, 'name'> & { name?: string; runtime: 'headless' },
+  TAgentResult
+>;
+
+export type SpawnAgentConfig<TAgentResult = unknown> =
+  | SpawnPtyAgentConfig<TAgentResult>
+  | SpawnHeadlessAgentConfig<TAgentResult>;
+
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
 export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
 export type DeliveryStateStatus = 'queued' | 'injected' | 'active' | 'verified' | 'failed';
@@ -230,6 +278,7 @@ export interface AgentActivityChange {
 
 export interface SpawnLifecycleContext {
   name: string;
+  /** CLI identifier used to launch the agent. */
   cli: string;
   channels: string[];
   task?: string;
@@ -267,40 +316,6 @@ export interface ReleaseLifecycleHooks {
 
 export interface ReleaseOptions extends ReleaseLifecycleHooks {
   reason?: string;
-}
-
-export interface SpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHooks {
-  args?: string[];
-  channels?: string[];
-  model?: string;
-  cwd?: string;
-  team?: string;
-  shadowOf?: string;
-  shadowMode?: string;
-  idleThresholdSecs?: number;
-  restartPolicy?: RestartPolicy;
-  harnessConfig?: ResolvedHarnessConfig;
-  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
-   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
-   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
-   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
-   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
-   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
-   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
-  agentToken?: string;
-  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
-   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
-  skipRelayPrompt?: boolean;
-  /**
-   * Enables a structured-result MCP tool for the spawned agent and validates
-   * submissions on the SDK side.
-   */
-  result?: AgentResultOptions<TAgentResult>;
-}
-
-export interface SpawnAndWaitOptions<TAgentResult = unknown> extends SpawnOptions<TAgentResult> {
-  timeoutMs?: number;
-  waitForMessage?: boolean;
 }
 
 type AgentOutputPayload = { stream: string; chunk: string };
@@ -364,33 +379,6 @@ export interface HumanHandle {
     data?: Record<string, unknown>;
     mode?: MessageInjectionMode;
   }): Promise<Message>;
-}
-
-export interface AgentSpawner {
-  spawn<TAgentResult = unknown>(options?: SpawnerSpawnOptions<TAgentResult>): Promise<Agent<TAgentResult>>;
-}
-
-export interface SpawnerSpawnOptions<TAgentResult = unknown> extends SpawnLifecycleHooks {
-  name?: string;
-  args?: string[];
-  channels?: string[];
-  task?: string;
-  model?: string;
-  cwd?: string;
-  idleThresholdSecs?: number;
-  harnessConfig?: ResolvedHarnessConfig;
-  /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
-   *  `registerAgent(workspaceKey, name)` in `@agent-relay/sdk/http`). The
-   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
-   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
-   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
-   *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
-   *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
-  agentToken?: string;
-  /** When true, skip injecting the relay MCP configuration and protocol prompt into the spawned agent.
-   *  Useful for minor tasks where relay messaging is not needed, saving tokens. */
-  skipRelayPrompt?: boolean;
-  result?: AgentResultOptions<TAgentResult>;
 }
 
 export interface AgentRelayOptions {
@@ -540,12 +528,6 @@ export class AgentRelay {
     return `https://agentrelay.com/observer?key=${this.relayApiKey}`;
   }
 
-  // Shorthand spawners
-  readonly codex: AgentSpawner;
-  readonly claude: AgentSpawner;
-  readonly gemini: AgentSpawner;
-  readonly opencode: AgentSpawner;
-
   private readonly clientOptions: AgentRelaySpawnOptions;
   private readonly defaultChannels: string[];
   private readonly requestedWorkspaceId?: string;
@@ -603,11 +585,6 @@ export class AgentRelay {
       env: options.env,
       requestTimeoutMs: options.requestTimeoutMs,
     };
-
-    this.codex = this.createSpawner('codex', 'Codex', 'pty');
-    this.claude = this.createSpawner('claude', 'Claude', 'pty');
-    this.gemini = this.createSpawner('gemini', 'Gemini', 'pty');
-    this.opencode = this.createSpawner('opencode', 'OpenCode', 'headless');
   }
 
   private getWorkspaceRegistryPath(): string {
@@ -701,7 +678,7 @@ export class AgentRelay {
     this.harnesses[key] = definition;
   }
 
-  private findHarnessDefinition(cli: string): HarnessDefinition | undefined {
+  findHarnessDefinition(cli: string): HarnessDefinition | undefined {
     for (const key of harnessLookupKeys(cli)) {
       const definition = this.harnesses[key];
       if (definition) return definition;
@@ -781,66 +758,81 @@ export class AgentRelay {
 
   // ── Spawning ────────────────────────────────────────────────────────────
 
-  async spawnPty<TAgentResult = unknown>(
-    input: SpawnPtyInput & SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> }
+  async spawnAgent<TAgentResult = unknown>(
+    config: SpawnPtyAgentConfig<TAgentResult>
+  ): Promise<Agent<TAgentResult>>;
+  async spawnAgent<TAgentResult = unknown>(
+    config: SpawnHeadlessAgentConfig<TAgentResult>
+  ): Promise<Agent<TAgentResult>>;
+  async spawnAgent<TAgentResult = unknown>(
+    config: SpawnAgentConfig<TAgentResult>
   ): Promise<Agent<TAgentResult>> {
     const client = await this.ensureStarted();
-    if (!input.channels || input.channels.length === 0) {
+    const name = config.name && config.name.trim() ? config.name : defaultAgentNameForCli(config.cli);
+    const runtime = config.runtime ?? 'pty';
+    const spawnOperation = `spawnAgent("${name}")`;
+
+    if (!config.channels || config.channels.length === 0) {
       console.warn(
-        `[AgentRelay] spawnPty("${input.name}"): no channels specified, defaulting to "general". ` +
+        `[AgentRelay] ${spawnOperation}: no channels specified, defaulting to "general". ` +
           'Set explicit channels for workflow isolation.'
       );
     }
-    const channels = input.channels ?? ['general'];
+    const channels = config.channels ?? ['general'];
     const lifecycleContext: SpawnLifecycleContext = {
-      name: input.name,
-      cli: input.cli,
+      name,
+      cli: config.cli,
       channels,
-      task: input.task,
+      task: config.task,
     };
-    await this.invokeLifecycleHook(input.onStart, lifecycleContext, `spawnPty("${input.name}") onStart`);
+    await this.invokeLifecycleHook(config.onStart, lifecycleContext, `${spawnOperation} onStart`);
     let result: SpawnAgentResult;
-    const resultContract = this.prepareAgentResultContract(input.result);
-    if (resultContract) {
-      this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
-    }
+    const resultContract = this.prepareAgentResultContract(config.result);
     try {
-      const harnessConfig = this.resolveHarnessConfig(input);
-      result = await client.spawnPty({
-        name: input.name,
-        cli: input.cli,
-        args: input.args,
-        channels,
-        task: input.task,
-        model: input.model,
-        cwd: input.cwd,
-        team: input.team,
-        agentToken: input.agentToken,
-        shadowOf: input.shadowOf,
-        shadowMode: input.shadowMode,
-        idleThresholdSecs: input.idleThresholdSecs,
-        restartPolicy: input.restartPolicy,
-        harnessConfig,
-        skipRelayPrompt: input.skipRelayPrompt,
-        agentResultSchema: resultContract?.jsonSchema,
+      const harnessConfig = this.resolveHarnessConfig({
+        name,
+        cli: config.cli,
+        args: config.args,
+        task: config.task,
+        model: config.model,
+        cwd: config.cwd,
+        harnessConfig: config.harnessConfig,
       });
+      const spawnInput = {
+        name,
+        cli: config.cli,
+        args: config.args,
+        channels,
+        task: config.task,
+        model: config.model,
+        cwd: config.cwd,
+        team: config.team,
+        agentToken: config.agentToken,
+        shadowOf: config.shadowOf,
+        shadowMode: config.shadowMode,
+        idleThresholdSecs: config.idleThresholdSecs,
+        restartPolicy: config.restartPolicy,
+        continueFrom: config.continueFrom,
+        harnessConfig,
+        skipRelayPrompt: config.skipRelayPrompt,
+        agentResultSchema: resultContract?.jsonSchema ?? config.agentResultSchema,
+      };
+
+      result =
+        runtime === 'headless' ? await client.spawnHeadless(spawnInput) : await client.spawnPty(spawnInput);
     } catch (error) {
-      if (resultContract) {
-        this.resultContracts.delete(input.name);
-      }
       await this.invokeLifecycleHook(
-        input.onError,
+        config.onError,
         {
           ...lifecycleContext,
           error,
         },
-        `spawnPty("${input.name}") onError`
+        `${spawnOperation} onError`
       );
       throw error;
     }
     this.resetAgentLifecycleState(result.name);
-    if (result.name !== input.name && resultContract) {
-      this.resultContracts.delete(input.name);
+    if (resultContract) {
       this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
     }
     const agent = this.ensureAgentHandle(
@@ -850,59 +842,16 @@ export class AgentRelay {
       result
     ) as Agent<TAgentResult>;
     await this.invokeLifecycleHook(
-      input.onSuccess,
+      config.onSuccess,
       {
         ...lifecycleContext,
         name: result.name,
         runtime: result.runtime,
         sessionId: result.sessionId,
       },
-      `spawnPty("${input.name}") onSuccess`
+      `${spawnOperation} onSuccess`
     );
     return agent;
-  }
-
-  async spawn<TAgentResult = unknown>(
-    name: string,
-    cli: string,
-    task?: string,
-    options?: SpawnOptions<TAgentResult>
-  ): Promise<Agent<TAgentResult>> {
-    return this.spawnPty({
-      name,
-      cli,
-      task,
-      args: options?.args,
-      channels: options?.channels,
-      model: options?.model,
-      cwd: options?.cwd,
-      team: options?.team,
-      agentToken: options?.agentToken,
-      shadowOf: options?.shadowOf,
-      shadowMode: options?.shadowMode,
-      idleThresholdSecs: options?.idleThresholdSecs,
-      restartPolicy: options?.restartPolicy,
-      harnessConfig: options?.harnessConfig,
-      skipRelayPrompt: options?.skipRelayPrompt,
-      result: options?.result,
-      onStart: options?.onStart,
-      onSuccess: options?.onSuccess,
-      onError: options?.onError,
-    });
-  }
-
-  async spawnAndWait<TAgentResult = unknown>(
-    name: string,
-    cli: string,
-    task: string,
-    options?: SpawnAndWaitOptions<TAgentResult>
-  ): Promise<Agent<TAgentResult>> {
-    const { timeoutMs, waitForMessage, ...spawnOptions } = options ?? {};
-    await this.spawn(name, cli, task, spawnOptions);
-    if (waitForMessage) {
-      return this.waitForAgentMessage(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
-    }
-    return this.waitForAgentReady(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
   }
 
   // ── Human source ────────────────────────────────────────────────────────
@@ -2193,113 +2142,6 @@ export class AgentRelay {
       },
     };
     return agent;
-  }
-
-  private createSpawner(cli: string, defaultName: string, runtime: AgentRuntime): AgentSpawner {
-    return {
-      spawn: async <TAgentResult = unknown>(options?: SpawnerSpawnOptions<TAgentResult>) => {
-        const name = options?.name ?? defaultName;
-        const channels = options?.channels ?? ['general'];
-        const args = options?.args ?? [];
-
-        const task = options?.task;
-        if (runtime === 'pty') {
-          return this.spawnPty({
-            name,
-            cli,
-            args,
-            channels,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-            idleThresholdSecs: options?.idleThresholdSecs,
-            harnessConfig: options?.harnessConfig,
-            agentToken: options?.agentToken,
-            skipRelayPrompt: options?.skipRelayPrompt,
-            result: options?.result,
-            onStart: options?.onStart,
-            onSuccess: options?.onSuccess,
-            onError: options?.onError,
-          });
-        }
-
-        const client = await this.ensureStarted();
-        const lifecycleContext: SpawnLifecycleContext = {
-          name,
-          cli,
-          channels,
-          task,
-        };
-        await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
-        let result: SpawnAgentResult;
-        const resultContract = this.prepareAgentResultContract(options?.result);
-        if (resultContract) {
-          this.resultContracts.set(name, resultContract as InternalAgentResultContract);
-        }
-        try {
-          const harnessConfig = this.resolveHarnessConfig({
-            name,
-            cli,
-            args,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-            harnessConfig: options?.harnessConfig,
-          });
-          result = await client.spawnProvider({
-            name,
-            provider: cli as HeadlessProvider,
-            transport: harnessConfig?.runtime ?? 'headless',
-            args,
-            channels,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-            idleThresholdSecs: options?.idleThresholdSecs,
-            harnessConfig,
-            agentToken: options?.agentToken,
-            skipRelayPrompt: options?.skipRelayPrompt,
-            agentResultSchema: resultContract?.jsonSchema,
-          });
-        } catch (error) {
-          if (resultContract) {
-            this.resultContracts.delete(name);
-          }
-          await this.invokeLifecycleHook(
-            options?.onError,
-            {
-              ...lifecycleContext,
-              error,
-            },
-            `spawn("${name}") onError`
-          );
-          throw error;
-        }
-
-        this.resetAgentLifecycleState(result.name);
-        if (result.name !== name && resultContract) {
-          this.resultContracts.delete(name);
-          this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
-        }
-        const agent = this.ensureAgentHandle(
-          result.name,
-          result.runtime,
-          channels,
-          result
-        ) as Agent<TAgentResult>;
-        await this.invokeLifecycleHook(
-          options?.onSuccess,
-          {
-            ...lifecycleContext,
-            name: result.name,
-            runtime: result.runtime,
-            sessionId: result.sessionId,
-          },
-          `spawn("${name}") onSuccess`
-        );
-        return agent;
-      },
-    };
   }
 
   private async invokeLifecycleHook<T>(

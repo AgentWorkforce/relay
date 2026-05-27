@@ -149,7 +149,10 @@ Codex session:
 ```typescript
 const sessionId = await createCodexSession({ cwd, task });
 
-await relay.spawn('CodexReviewer', 'codex', task, {
+await relay.spawnAgent({
+  name: 'CodexReviewer',
+  cli: 'codex',
+  task,
   harnessConfig: {
     runtime: 'pty',
     command: 'codex',
@@ -185,4 +188,3 @@ allowlists.
 The broker rejects `harnessId`. Relaycast spawns that need custom behavior
 should also send a full inline `harnessConfig`, which keeps each spawn
 self-contained across local, remote, and multi-broker deployments.
-
