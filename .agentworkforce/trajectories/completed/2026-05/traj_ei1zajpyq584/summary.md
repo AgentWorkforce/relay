@@ -18,6 +18,7 @@ Renamed the SDK spawn API from provider terminology to CLI terminology for the m
 ## Key Decisions
 
 ### Rename SDK provider spawn vocabulary to cli/headless
+
 - **Chose:** Rename SDK provider spawn vocabulary to cli/headless
 - **Reasoning:** The broker payload already uses cli, and provider is stale terminology now that harness configs represent the execution harness. Because this is a major release, the SDK can remove the legacy SpawnProviderInput/spawnProvider surface instead of layering aliases.
 
@@ -26,6 +27,7 @@ Renamed the SDK spawn API from provider terminology to CLI terminology for the m
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Rename SDK provider spawn vocabulary to cli/headless: Rename SDK provider spawn vocabulary to cli/headless
