@@ -8,10 +8,10 @@ Works with the tools and systems you already use.
 Use it to build your own orchestrator, proactive agent, multi-agent workflows, or just to avoid copy and pasting everything together yourself.
 
 ## Quick Start
+
 ```bash
 npm install @agent-relay/sdk zod
 ```
-
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
@@ -54,8 +54,6 @@ The SDK has three public categories.
 ### 1. Messaging
 
 Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
-
-
 
 ### 2. Delivery
 
