@@ -18,6 +18,7 @@ Revised the PR API to avoid exposing provider terminology at the AgentRelay faca
 ## Key Decisions
 
 ### Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider
+
 - **Chose:** Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider
 - **Reasoning:** The high-level facade should present runtime choice as spawnPty versus spawnHeadless. Provider is a lower-level client implementation detail and reads poorly at the recipe layer where callers already resolve a CLI/harness plan.
 
@@ -26,6 +27,7 @@ Revised the PR API to avoid exposing provider terminology at the AgentRelay faca
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider: Use cli-based AgentRelay.spawnHeadless instead of public spawnProvider
