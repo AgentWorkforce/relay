@@ -31,7 +31,7 @@ vi.mock('@agent-relay/config', () => ({
   }),
 }));
 
-vi.mock('@agent-relay/sdk', () => ({
+vi.mock('@agent-relay/driver', () => ({
   AgentRelayClient: {
     connect: sdkMock.connect,
   },

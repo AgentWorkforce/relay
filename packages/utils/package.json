@@ -107,6 +107,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "esbuild": "^0.27.2",
     "@types/node": "^22.19.3",
     "vitest": "^3.2.4"
   },

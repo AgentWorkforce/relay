@@ -13,27 +13,10 @@ import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-rela
 
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
-import { registerAgentManagementCommands } from './commands/agent-management.js';
 import { registerMessagingCommands } from './commands/messaging.js';
-import { registerCloudCommands } from './commands/cloud.js';
-import { registerProactiveBootstrapCommands } from './commands/proactive-bootstrap.js';
 import { registerMonitoringCommands } from './commands/monitoring.js';
-import { registerAuthCommands } from './commands/auth.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands } from './commands/core.js';
-import { registerRelayRuntimeCommands } from './commands/relay-runtime.js';
-import { registerSwarmCommands } from './commands/swarm.js';
-import { registerConnectCommands } from './commands/connect.js';
-import { registerOnCommands } from './commands/on.js';
-import { registerDlqCommands } from './commands/dlq.js';
-import { registerViewCommands } from './commands/view.js';
-import { registerDriveCommands } from './commands/drive.js';
-import { registerPassthroughCommands } from './commands/passthrough.js';
-import { registerNewCommands } from './commands/new.js';
-import { registerRmCommands } from './commands/rm.js';
-import { registerActivityCommands } from './commands/activity.js';
-import { registerLogCommands } from './commands/log.js';
-import { parseVerblessAlias, runVerblessAliasDispatch } from './lib/spawn-and-attach.js';
 
 dotenvConfig({ quiet: true });
 
@@ -127,17 +110,7 @@ const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
 // invocations (spawn, send, etc.) to hit the npm registry on every call.
-const UPDATE_CHECK_COMMANDS = new Set([
-  'up',
-  'start',
-  'down',
-  'status',
-  'version',
-  '--version',
-  '-V',
-  '--help',
-  '-h',
-]);
+const UPDATE_CHECK_COMMANDS = new Set(['driver', 'version', '--version', '-V', '--help', '-h']);
 
 function detectCi(): boolean {
   const env = process.env;
@@ -211,8 +184,8 @@ function installTelemetryHooks(program: Command): void {
       command_name: commandPath,
       flags_used: flags,
       // stdin, not stdout — this property exists to distinguish interactive
-      // runs from scripted ones. `agent-relay status > file.txt` still has
-      // a TTY on stdin (human at the keyboard); `echo x | agent-relay spawn`
+      // runs from scripted ones. `agent-relay driver status > file.txt` still has
+      // a TTY on stdin (human at the keyboard); `echo x | agent-relay send`
       // doesn't (piped input). stdout.isTTY would get both wrong.
       is_tty: Boolean(process.stdin.isTTY),
       is_ci: detectCi(),
@@ -277,29 +250,11 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  registerCoreCommands(program);
-  registerAgentManagementCommands(program);
+  const driver = program.command('driver').description('Manage the optional Agent Relay driver harness');
+  registerCoreCommands(driver);
   registerMessagingCommands(program);
-  registerCloudCommands(program);
-  registerProactiveBootstrapCommands(program);
   registerMonitoringCommands(program);
-  registerAuthCommands(program);
-  registerRelayRuntimeCommands(program);
   registerSetupCommands(program);
-  registerSwarmCommands(program);
-  registerOnCommands(program);
-  registerConnectCommands(program);
-  registerDlqCommands(program);
-  registerViewCommands(program);
-  registerActivityCommands(program);
-  registerDriveCommands(program);
-  registerPassthroughCommands(program);
-  // The `run` command (registered by `registerSetupCommands` above) is the
-  // workflow-file runner and is intentionally untouched. The spawn-and-attach
-  // composition lives on `new --attach` — see `src/cli/commands/new.ts`.
-  registerNewCommands(program);
-  registerRmCommands(program);
-  registerLogCommands(program);
 
   program
     .command('mcp')
@@ -357,36 +312,6 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   const program = createProgram({ name: resolveProgramName(argv) });
   installTelemetryHooks(program);
   installExitHooks();
-
-  // Bare `-n NAME CLI` shorthand. `agent-relay -n NAME CLI [args...]`
-  // dispatches to `runSpawnAndAttach` with mode='passthrough' and ephemeral=true,
-  // which is equivalent to `agent-relay new NAME CLI --attach --mode passthrough --ephemeral`.
-  // Detected here BEFORE commander parses so the shorthand routes
-  // identically to the verbose form. See `parseVerblessAlias` in
-  // `lib/spawn-and-attach.ts`.
-  const knownVerbs = collectTopLevelVerbs(program);
-  const aliasMatch = parseVerblessAlias(argv.slice(2), knownVerbs);
-  if (aliasMatch) {
-    try {
-      const code = await runVerblessAliasDispatch(aliasMatch);
-      try {
-        await shutdownTelemetry();
-      } catch {
-        // Never let telemetry shutdown mask the real exit code.
-      }
-      if (code !== 0) {
-        process.exit(code);
-      }
-      return program;
-    } catch (err) {
-      try {
-        await shutdownTelemetry();
-      } catch {
-        // ignore
-      }
-      throw err;
-    }
-  }
 
   try {
     await program.parseAsync(argv);

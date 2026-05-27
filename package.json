@@ -9,16 +9,18 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
-    "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*'",
-    "build:packages": "turbo run build --filter='./packages/*'",
-    "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
+    "typecheck": "npm run build:config && npm run build:utils && npm run build:telemetry && npm run build:sdk && npm run build:driver && cd packages/cli && npx tsc --noEmit",
+    "build": "npm run clean && npm run build:rust && npm run build:core",
+    "build:core": "npm run build:config && npm run build:utils && npm run build:telemetry && npm run build:sdk && npm run build:driver && npm run build:cli",
+    "build:packages": "npm run build:core",
+    "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
     "build:policy": "npm --prefix packages/policy run build",
     "build:memory": "npm --prefix packages/memory run build",
     "build:utils": "npm --prefix packages/utils run build",
     "build:config": "npm --prefix packages/config run build",
     "build:trajectory": "npm --prefix packages/trajectory run build",
+    "build:driver": "npm --prefix packages/driver run build",
     "build:hooks": "npm --prefix packages/hooks run build",
     "build:sdk": "npm --prefix packages/sdk run build",
     "build:telemetry": "npm --prefix packages/telemetry run build",
@@ -31,7 +33,7 @@
     "dev:local": "npm run build && (cd packages/cli && npm link) && echo '✓ agent-relay linked globally'",
     "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/sdk/bin && cp target/release/agent-relay-broker packages/sdk/bin/agent-relay-broker.new && mv -f packages/sdk/bin/agent-relay-broker.new packages/sdk/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/sdk/bin/'; else echo '⚠ Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
+    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && mkdir -p packages/driver/bin && cp target/release/agent-relay-broker packages/driver/bin/agent-relay-broker.new && mv -f packages/driver/bin/agent-relay-broker.new packages/driver/bin/agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built and copied to packages/driver/bin/'; else echo '⚠ Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
     "start": "node packages/cli/dist/cli/index.js",
     "pretest": "npm run build",
     "test": "vitest run",
@@ -73,7 +75,6 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^14.3.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
@@ -90,7 +91,8 @@
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.7.0"
   },
   "engines": {
     "node": ">=18.0.0"

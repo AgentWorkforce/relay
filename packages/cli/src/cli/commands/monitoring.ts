@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient } from '@agent-relay/driver';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 

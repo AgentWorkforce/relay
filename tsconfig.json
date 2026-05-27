@@ -27,6 +27,8 @@
       "@agent-relay/memory/*": ["packages/memory/dist/*"],
       "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
       "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
+      "@agent-relay/driver": ["packages/driver/dist/index.d.ts"],
+      "@agent-relay/driver/*": ["packages/driver/dist/*"],
       "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
       "@agent-relay/utils/*": ["packages/utils/dist/*"],
       "@agent-relay/cloud": ["packages/cloud/dist/index.d.ts"],

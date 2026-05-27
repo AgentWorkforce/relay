@@ -1,4 +1,4 @@
-import { AgentRelayClient, type AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
+import { AgentRelayClient, type AgentRelayBrokerInitArgs } from '@agent-relay/driver';
 
 export interface CreateAgentRelayClientOptions {
   cwd: string;

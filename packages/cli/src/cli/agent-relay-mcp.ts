@@ -18,6 +18,13 @@ import {
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
 } from '@agent-relay/sdk';
+import type {
+  ActionAuditEvent,
+  AgentRelayActionDescriptor,
+  AgentRelayActions,
+  JsonSchema,
+  JsonSchemaLiteObject,
+} from '@agent-relay/sdk/actions';
 import { z } from 'zod';
 
 const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
@@ -69,6 +76,8 @@ export interface AgentRelayMcpServerOptions {
   strictAgentName?: boolean;
   telemetryTransport?: 'stdio' | 'http';
   skipBootstrap?: boolean;
+  actions?: AgentRelayActions;
+  onActionAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void;
 }
 
 interface RegisteredAgent {
@@ -308,6 +317,183 @@ function textContent(message: string, structuredContent: Record<string, unknown>
     content: [{ type: 'text' as const, text: message }],
     structuredContent,
   };
+}
+
+function isSchemaObject(schema: JsonSchema | undefined): schema is JsonSchemaLiteObject {
+  return Boolean(schema && typeof schema === 'object' && !Array.isArray(schema));
+}
+
+function getSchemaDescription(schema: JsonSchema | undefined): string | undefined {
+  return isSchemaObject(schema) && typeof schema.description === 'string' ? schema.description : undefined;
+}
+
+function zodFromJsonSchema(schema: JsonSchema | undefined): z.ZodTypeAny {
+  if (schema === false) {
+    return z.never();
+  }
+
+  if (!isSchemaObject(schema)) {
+    return z.unknown();
+  }
+
+  let zodType: z.ZodTypeAny;
+  const schemaType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  switch (schemaType) {
+    case 'array':
+      zodType = z.array(zodFromJsonSchema(schema.items));
+      break;
+    case 'boolean':
+      zodType = z.boolean();
+      break;
+    case 'integer':
+      zodType = z.number().int();
+      break;
+    case 'number':
+      zodType = z.number();
+      break;
+    case 'object':
+      if (schema.properties) {
+        const required = new Set(schema.required ?? []);
+        const shape: Record<string, z.ZodTypeAny> = {};
+        for (const [key, childSchema] of Object.entries(schema.properties)) {
+          const child = zodFromJsonSchema(childSchema);
+          shape[key] = required.has(key) ? child : child.optional();
+        }
+        zodType = z.object(shape).passthrough();
+      } else {
+        zodType = z.record(z.string(), z.unknown());
+      }
+      break;
+    case 'string':
+      zodType = z.string();
+      break;
+    default:
+      zodType = z.unknown();
+      break;
+  }
+
+  const description = getSchemaDescription(schema);
+  return description ? zodType.describe(description) : zodType;
+}
+
+function actionToolInputSchema(schema: JsonSchema): Record<string, z.ZodTypeAny> {
+  if (!isSchemaObject(schema) || schema.type !== 'object') {
+    return {
+      input: z.unknown().describe('Action input payload. The action registry performs final validation.'),
+    };
+  }
+
+  const required = new Set(schema.required ?? []);
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, childSchema] of Object.entries(schema.properties ?? {})) {
+    const child = zodFromJsonSchema(childSchema);
+    shape[key] = required.has(key) ? child : child.optional();
+  }
+  return shape;
+}
+
+function actionInvocationInput(descriptor: AgentRelayActionDescriptor, args: unknown): unknown {
+  const schema = descriptor.inputSchema;
+  if (!isSchemaObject(schema) || schema.type !== 'object') {
+    return typeof args === 'object' && args !== null && 'input' in args
+      ? (args as { input?: unknown }).input
+      : args;
+  }
+  return args;
+}
+
+function registerAgentRelayActionTools(
+  server: McpServer,
+  actions: AgentRelayActions | undefined,
+  getSession: () => SessionState,
+  onAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void
+): void {
+  if (!actions) {
+    return;
+  }
+
+  server.registerTool(
+    'list_actions',
+    {
+      title: 'List Actions',
+      description: 'List Agent Relay actions registered by this MCP host.',
+      inputSchema: {},
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => jsonContent({ actions: await actions.list({ visibility: 'agent' }) })
+  );
+
+  server.registerTool(
+    'invoke_action',
+    {
+      title: 'Invoke Action',
+      description: 'Invoke a registered Agent Relay action by name.',
+      inputSchema: {
+        name: z.string().describe('Registered action name'),
+        input: z.unknown().describe('Action input payload'),
+      },
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ name, input }: { name: string; input: unknown }) => {
+      const session = getSession();
+      const result = await actions.invoke({
+        name,
+        input,
+        context: {
+          caller: { name: session.agentName ?? 'mcp', type: 'agent' },
+          emit: onAuditEvent,
+        },
+      });
+      return result.ok ? jsonContent(result) : { ...jsonContent(result), isError: true };
+    }
+  );
+
+  void actions
+    .list({ visibility: 'agent' })
+    .then((descriptors) => {
+      for (const descriptor of descriptors) {
+        server.registerTool(
+          descriptor.name,
+          {
+            title: descriptor.name,
+            description: descriptor.description,
+            inputSchema: actionToolInputSchema(descriptor.inputSchema),
+            outputSchema: jsonResult,
+            annotations: {
+              readOnlyHint: false,
+              destructiveHint: false,
+              idempotentHint: false,
+              openWorldHint: false,
+            },
+          },
+          async (args: unknown) => {
+            const session = getSession();
+            const result = await actions.invoke({
+              name: descriptor.name,
+              input: actionInvocationInput(descriptor, args),
+              context: {
+                caller: { name: session.agentName ?? 'mcp', type: 'agent' },
+                emit: onAuditEvent,
+              },
+            });
+            return result.ok ? jsonContent(result) : { ...jsonContent(result), isError: true };
+          }
+        );
+      }
+    })
+    .catch(() => undefined);
 }
 
 function createRegisteredAgent(agentName: string, agentToken: string): RegisteredAgent {
@@ -1479,6 +1665,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.agentName,
     options.agentType
   );
+  registerAgentRelayActionTools(mcpServer, options.actions, getSession, options.onActionAuditEvent);
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
 
   mcpServer.registerPrompt(

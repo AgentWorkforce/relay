@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { AgentRelayClient, type BrokerStatus } from '@agent-relay/sdk';
+import { AgentRelayClient, type BrokerStatus } from '@agent-relay/driver';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, Relaycast transport, and optional managed harnesses in `@agent-relay/driver`.
+- `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs over Relaycast: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
+- `@agent-relay/driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and driver-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
+- `agent-relay mcp` can expose registered SDK actions as explicit MCP tools plus `list_actions` and `invoke_action`.
 - `agent-relay mcp` recovers from stale Relaycast agent tokens mid-session: a 401 carrying `agent_token_invalid` (or the legacy `Invalid agent token` message) now clears the dead token from the MCP session, returns recovery guidance pointing at `register_agent`, and lets strict-named sessions re-register without a process restart.
 - `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
 - `agent-relay-broker` adds `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`, and `is_agent_token_invalid_code` on `crates/broker/src/relaycast/auth.rs`, and preserves the upstream `RelayError::Api` code through `relay_error_to_anyhow` so the same recovery signal is available to Rust callers.
@@ -21,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `README.md` and `packages/sdk/README.md` now present Agent Relay as the public product, Relaycast as the backing transport, and `@agent-relay/sdk` as the core messaging, delivery/read state, presence, and action SDK.
+- `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
+- Root builds now validate the simplified core package set: config, utils, telemetry, SDK, driver, and CLI.
 - `agent-relay mcp`: Agent Relay now ships its own Relaycast-backed MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp` instead of `@relaycast/mcp`.
 - `agent-relay mcp`: renamed the bundled implementation and command override to Agent Relay MCP (`AGENT_RELAY_MCP_COMMAND`).
 - `agent-relay up`: broker startup no longer writes Relaycast MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
@@ -29,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `@agent-relay/sdk` is scoped to Relaycast-backed communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/driver`.
+- `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, and GitHub/Slack primitive adapters.
+- `agent-relay` removes spawn-first, cloud, attach/view/drive/passthrough, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
+- Legacy `@agent-relay/acp-bridge` and `@agent-relay/openclaw` packages are removed because they depended on the old spawn-first SDK facade.
 - `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
 - `@agent-relay/sdk` removes persona support from the SDK surface: the `./personas` subpath, persona helper/type exports, `AgentRelay.spawnPersona()`, `AgentRelay.getPersonaSpawnPlan()`, and `AgentRelayOptions.personaDirs` are gone. The SDK no longer depends on `@agentworkforce/persona-kit`.
 - `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `AgentRelayClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
@@ -39,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration Guidance
 
+- Install `@agent-relay/driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
+- Replace `agent-relay up/status/down` with `agent-relay driver up/status/down` when you want Agent Relay to manage the local harness boundary.
+- Replace SDK spawn calls with driver actions (`agent.create`, `agent.release`, `agent.status`) when agents need to request managed harness work through MCP.
 - Personas relying on `tiers.*` need to be flattened to a single top-level `harness` / `model` / `systemPrompt`. The shape that persona-kit (and the `agentworkforce` CLI) consumes is now the only supported shape.
 - Callers that previously used `spawnPersona` to "just launch the harness" — without persona-kit's skill / mount / sidecar side effects — should use `AgentRelay.getPersonaSpawnPlan(id)` to inspect the plan and call `spawnAgent({ cli, args })` themselves.
 - Launch personas through the owning CLI or package and pass the resulting command to `relay.spawnAgent({ cli, ... })` or `relay.spawnAgent({ runtime: "headless", cli, ... })`; for AgentWorkforce personas, use `npx agentworkforce persona run <id>` once available so persona side effects remain CLI-owned.

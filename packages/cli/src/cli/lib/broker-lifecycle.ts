@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient } from '@agent-relay/driver';
 import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';

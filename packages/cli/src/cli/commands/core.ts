@@ -13,7 +13,7 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
-import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
+import type { AgentRelayBrokerInitArgs } from '@agent-relay/driver';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 import { track } from '@agent-relay/telemetry';
 
@@ -183,26 +183,6 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
     );
     if (fileSystem.existsSync(siblingWorkspaceBuild)) {
       return siblingWorkspaceBuild;
-    }
-  }
-
-  // In workspace / local dev mode, try resolving the dashboard-server package directly
-  if (process.env.RELAY_LOCAL_DEV === '1') {
-    try {
-      const pkgPath = require.resolve('@agent-relay/dashboard-server/package.json');
-      const pkgDir = path.dirname(pkgPath);
-      const pkgJson = JSON.parse(fileSystem.readFileSync(pkgPath, 'utf-8')) as {
-        bin?: Record<string, string>;
-      };
-      const binEntry = pkgJson.bin?.['relay-dashboard-server'];
-      if (binEntry) {
-        const binPath = path.resolve(pkgDir, binEntry);
-        if (fileSystem.existsSync(binPath)) {
-          return binPath;
-        }
-      }
-    } catch {
-      // Package not resolvable, fall through to other search methods.
     }
   }
 

@@ -29,12 +29,14 @@
       "@agent-relay/memory/*": ["../memory/dist/*"],
       "@agent-relay/sdk": ["../sdk/dist/index.d.ts"],
       "@agent-relay/sdk/*": ["../sdk/dist/*"],
+      "@agent-relay/driver": ["../driver/dist/index.d.ts"],
+      "@agent-relay/driver/*": ["../driver/dist/*"],
       "@agent-relay/utils": ["../utils/dist/index.d.ts"],
       "@agent-relay/utils/*": ["../utils/dist/*"],
       "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
       "@agent-relay/cloud/*": ["../cloud/dist/*"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/index.ts", "src/cli/index.ts", "src/cli/bootstrap.ts", "src/cli/agent-relay-mcp.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

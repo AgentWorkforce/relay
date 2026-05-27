@@ -7,7 +7,7 @@ const sdkStatusClient = {
   disconnect: vi.fn(() => undefined),
 };
 
-vi.mock('@agent-relay/sdk', () => ({
+vi.mock('@agent-relay/driver', () => ({
   AgentRelayClient: vi.fn().mockImplementation(() => sdkStatusClient),
 }));
 

@@ -110,7 +110,7 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
     if (shouldStartBroker) {
       io.log('');
       io.log('  Starting broker...');
-      const brokerProcess = spawnProcess(process.execPath, [process.argv[1], 'up', '--background'], {
+      const brokerProcess = spawnProcess(process.execPath, [process.argv[1], 'driver', 'up', '--background'], {
         detached: true,
         stdio: 'ignore',
       });
@@ -142,8 +142,8 @@ async function runInitDefault(options: RunInitOptions, io: SetupIo): Promise<voi
   io.log('       "Spawn a worker named TestRunner to run the tests"');
   io.log('');
   io.log('  Commands:');
-  io.log('    agent-relay up        Start broker with dashboard');
-  io.log('    agent-relay status    Check broker status');
+  io.log('    agent-relay driver up        Start the optional driver harness with dashboard');
+  io.log('    agent-relay driver status    Check driver harness status');
   io.log('    agent-relay who       List online agents');
   io.log('');
   io.log('  Dashboard: http://localhost:3888 (when broker is running)');

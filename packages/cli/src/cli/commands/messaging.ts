@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { RelayCast, AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelayClient } from '@agent-relay/driver';
+import { RelayCast } from '@relaycast/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
 import { defaultExit } from '../lib/exit.js';

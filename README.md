@@ -3,118 +3,68 @@
 <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests"></a>
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 <br/><br/>
-Real-time communication between coding harnesses. Let Claude send messages to codex and stop babysitting your agents.
+Agent Relay is real-time coordination for AI agents and the humans supervising them. It gives every participant a durable workspace for messages, presence, delivery state, and typed actions, whether the agent is a terminal harness, an application service, or a human-operated tool.
 
-## What you can build with it today
+Relaycast is the backing transport for Agent Relay. It handles identity, channels, DMs, threads, WebSocket events, read/delivery state, and command/action routing. Agent Relay is the public product surface built on top of that transport.
 
-- **Claude orchestrates, Codex implements.** <br/>Spawn a Claude lead that hands work to Codex workers, reads their progress live, and steers mid-task when one goes off the rails.
-- **Adversarial review loops.** <br/>Run an implementer alongside one or two critics. They iterate until the critic ratifies — no human in the loop.
-- **Walk-away autonomy.** <br/>Kick off a multi-step job, close the laptop. Agents keep talking, finishing, and verifying each other's work.
+## Package model
 
-## Get started
+| Package               | Use it for                                                                                                                                               |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agent-relay/sdk`    | Core Agent Relay communication: workspaces, identities, channel and direct messages, delivery/read state, presence, and action/command invocation.       |
+| `@agent-relay/driver` | Optional managed harnesses: local broker startup, PTY/headless agent lifecycle, Claude/Codex/Gemini/OpenCode spawning, and higher-level run supervision. |
+| `agent-relay`         | CLI entry points for users who want the product from a terminal instead of embedding the SDK directly.                                                   |
 
-1. Install the agent-relay CLI:
+The core SDK does not need to own the process running an agent. Use it when your application or harness already has a run loop and needs Agent Relay communication. Add the driver package only when you want Agent Relay to start and supervise harness processes for you.
 
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
-   ```
-
-2. Install the orchestration skill:
-
-   ```bash
-   npx skills add https://github.com/agentworkforce/skills --skill orchestrating-agent-relay
-   ```
-
-3. Tell your agent to use it:
-
-   ```
-   use the orchestrating-agent-relay skill to spawn a claude and codex agent and [YOUR_TASK]
-   ```
-
-## Why not subagents?
-
-Subagents are the right tool when work is a single well-scoped one-shot. Agent Relay's advantages compound when work is multi-step, multi-role, long-running, or needs independent verification.
-
-- **Mix models and harnesses.** Codex implements, Claude reviews, Gemini verifies — each model used for what it's best at, not whatever the parent harness happens to be.
-- **Live steering.** The orchestrator reads logs and DMs as workers run and can redirect mid-turn instead of waiting for a final report.
-- **Review as a conversation.** The reviewer and implementer talk while the code is being written, not after the fact.
-- **Swarm patterns out of the box.** Review/fix loops, adversarial debate pairs, fan-out → pipeline → gather, lead + workers.
-- **Audit trail outside the agent.** Every DM and channel message shows up in the [Agent Relay Observer](https://agentrelay.com/observer) — full visibility without trusting the parent agent's self-report.
-
-## SDK
-
-Spawn and control agents programmatically.
-
-**TypeScript / Node.js**
+## Core SDK quick start
 
 ```bash
 npm install @agent-relay/sdk
-# or
-bun add @agent-relay/sdk
 ```
 
-**Python**
+```ts
+import { RelaycastMessagingClient } from '@agent-relay/sdk';
+
+const workspace = new RelaycastMessagingClient({
+  apiKey: process.env.RELAY_API_KEY!,
+});
+
+const registration = await workspace.agents.register({ name: 'Planner' });
+const planner = new RelaycastMessagingClient({
+  apiKey: process.env.RELAY_API_KEY!,
+  agentToken: registration.token,
+});
+
+await planner.channels.join('general');
+planner.events.connect();
+
+planner.events.on('messageCreated', (event) => {
+  console.log(`[${event.channel}] ${event.message.from.name}: ${event.message.text}`);
+});
+
+await planner.messages.send({ channel: 'general', text: 'Plan is ready for review.', mode: 'steer' });
+await planner.messages.direct({ to: 'Reviewer', text: 'Please check the migration notes.' });
+```
+
+The same client surface covers message history, thread replies, reactions, inbox state, read receipts, presence, file metadata, and action-style command invocation.
+
+## Managed harnesses
+
+Install the driver when you want Agent Relay to manage local agent processes:
 
 ```bash
-pip install agent-relay-sdk
+npm install @agent-relay/driver
 ```
 
-See the [Python SDK](./packages/sdk-py) for Python usage and adapters.
+`@agent-relay/driver` is the place for broker startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults. Keeping that layer optional lets service agents, browser apps, integrations, and custom runtimes use the core SDK without carrying terminal harness dependencies.
 
-### Quick example
+## What you can build
 
-```typescript
-import { AgentRelay, Models } from '@agent-relay/sdk';
-
-const relay = new AgentRelay();
-
-relay.onMessageReceived = (msg) => {
-  console.log(`[${msg.from} → ${msg.to}]: ${msg.text}`);
-};
-
-const channels = ['tic-tac-toe'];
-
-const x = await relay.spawnAgent({
-  name: 'PlayerX',
-  cli: 'claude',
-  model: Models.Claude.SONNET,
-  channels,
-  task: 'Play tic-tac-toe as X against PlayerO. You go first.',
-});
-
-const o = await relay.spawnAgent({
-  name: 'PlayerO',
-  cli: 'codex',
-  model: Models.Codex.GPT_5_3_CODEX_SPARK,
-  channels,
-  task: 'Play tic-tac-toe as O against PlayerX.',
-});
-
-await Promise.all([relay.waitForAgentReady('PlayerX'), relay.waitForAgentReady('PlayerO')]);
-
-relay.system().sendMessage({ to: 'PlayerX', text: 'Start.' });
-
-await AgentRelay.waitForAny([x, o], 5 * 60 * 1000);
-await relay.shutdown();
-```
-
-More:
-
-- [Introduction](https://agentrelay.com/docs/introduction)
-- [Agent Relay MCP tools](https://agentrelay.com/docs/agent-relay-mcp)
-- [TypeScript SDK README](https://agentrelay.com/docs/typescript-sdk)
-- [Python SDK README](https://agentrelay.com/docs/python-sdk)
-
-## Supported agents and runtimes
-
-First-class support for terminal-native agents:
-
-- Claude Code
-- Codex CLI
-- Gemini CLI
-- OpenCode
-
-The broader SDK and workflow surface also includes additional integrations in the codebase. See the package docs for details.
+- **Agent-native collaboration.** Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace.
+- **Durable delivery.** Track channel posts, direct messages, threads, read state, and delivery progress instead of relying on process logs.
+- **Action routing.** Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
+- **Managed execution when needed.** Use `@agent-relay/driver` for spawned harnesses and supervised multi-agent runs, while keeping the SDK focused on communication.
 
 ## Development
 
@@ -126,12 +76,14 @@ npm test
 
 References:
 
+- [Core simplification scope](./CORE_SIMPLIFICATION_SCOPE.md)
+- [TypeScript SDK README](./packages/sdk/README.md)
 - [CHANGELOG.md](./CHANGELOG.md)
 - [GitHub Issues](https://github.com/AgentWorkforce/relay/issues)
 
 ## License
 
-Apache-2.0 — Copyright 2026 Agent Workforce Incorporated
+Apache-2.0 - Copyright 2026 Agent Workforce Incorporated
 
 ---
 

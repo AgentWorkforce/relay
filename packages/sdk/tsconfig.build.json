@@ -21,6 +21,13 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/index.ts",
+    "src/capabilities.ts",
+    "src/relaycast-errors.ts",
+    "src/messaging/**/*.ts",
+    "src/delivery/**/*.ts",
+    "src/actions/**/*.ts"
+  ],
   "exclude": ["src/__tests__/**"]
 }

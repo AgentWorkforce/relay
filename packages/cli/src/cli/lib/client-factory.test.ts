@@ -9,7 +9,7 @@ const mockConnectedClient = {
   spawnPty: vi.fn(async () => undefined),
 };
 
-vi.mock('@agent-relay/sdk', () => {
+vi.mock('@agent-relay/driver', () => {
   return {
     AgentRelayClient: {
       spawn: (...args: unknown[]) => {

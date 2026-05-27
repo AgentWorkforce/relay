@@ -23,7 +23,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/sdk": "7.1.1"
+    "@agent-relay/driver": "7.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",

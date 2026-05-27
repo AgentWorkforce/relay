@@ -11,16 +11,15 @@ import path from 'node:path';
 //
 // When you add a new workspace package, add it here too.
 const workspacePackages = [
-  'acp-bridge',
   'agent',
   'cloud',
   'config',
+  'driver',
   'events',
   'gateway',
   'github-primitive',
   'hooks',
   'memory',
-  'openclaw',
   'policy',
   'sdk',
   'slack-primitive',
