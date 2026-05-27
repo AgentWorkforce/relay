@@ -54,7 +54,6 @@ export * from './harness.js';
 export * from './spawn-from-env.js';
 export * from './cli-registry.js';
 export * from './cli-resolver.js';
-export * from './personas.js';
 export * as github from './github.js';
 export { GitHubClient } from '@agent-relay/github-primitive';
 export * as slack from './slack.js';

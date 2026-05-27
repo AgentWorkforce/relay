@@ -1,0 +1,69 @@
+{
+  "id": "traj_kbxzde45cjlw",
+  "version": 1,
+  "task": {
+    "title": "Remove personas from @agent-relay/sdk",
+    "source": {
+      "system": "plain",
+      "id": "GH-997"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T09:22:37.342Z",
+  "completedAt": "2026-05-27T09:33:18.299Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T09:27:46.189Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_m2xsvvdw25ze",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T09:27:46.189Z",
+      "endedAt": "2026-05-27T09:33:18.299Z",
+      "events": [
+        {
+          "ts": 1779874066190,
+          "type": "decision",
+          "content": "Removed SDK-owned persona APIs instead of relocating them in this repo: Removed SDK-owned persona APIs instead of relocating them in this repo",
+          "raw": {
+            "question": "Removed SDK-owned persona APIs instead of relocating them in this repo",
+            "chosen": "Removed SDK-owned persona APIs instead of relocating them in this repo",
+            "alternatives": [],
+            "reasoning": "Issue 997 asks for @agent-relay/sdk to know nothing about personas; there is already a separate packages/personas pack, while persona execution side effects should be owned by AgentWorkforce CLI or a workforce package."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779874377461,
+          "type": "decision",
+          "content": "Removed stale persona dist artifacts during SDK builds: Removed stale persona dist artifacts during SDK builds",
+          "raw": {
+            "question": "Removed stale persona dist artifacts during SDK builds",
+            "chosen": "Removed stale persona dist artifacts during SDK builds",
+            "alternatives": [],
+            "reasoning": "Deleting the source and package export is not enough if an existing dist/personas.js survives a package-level build; the SDK build now deletes the persona outputs before compiling so npm pack cannot include them."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed SDK persona loading, spawn, dry-run, exports, dependency, tests, and example; updated migration notes and ensured SDK builds remove stale persona dist outputs before packing.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": ["6a456b7f"],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3f2a3f9cd27b5d978e39d07302cf1c2f34ab85de",
+    "endRef": "3f2a3f9cd27b5d978e39d07302cf1c2f34ab85de"
+  }
+}
