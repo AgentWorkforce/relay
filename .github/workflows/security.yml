@@ -111,7 +111,7 @@ jobs:
 
       - name: Run gitleaks
         run: |
-          ./gitleaks detect --source . --verbose --redact --config .gitleaks.toml || {
+          ./gitleaks detect --source . --verbose --redact --config .github/gitleaks.toml || {
             echo ""
             echo "WARNING: Potential secrets detected in codebase."
             echo "Review the findings above and remove or rotate any exposed secrets."

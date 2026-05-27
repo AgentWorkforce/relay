@@ -1,4 +1,4 @@
-![Agent Relay](../../readme-banner.png)
+![Agent Relay](https://agentrelay.com/readme-banners/relay.png)
 
 <div align="center">
 
