@@ -211,13 +211,11 @@ describe('ensureAuthenticated', () => {
     expect(state).toBeTruthy();
 
     const strayResponse = await fetch(callbackUrl, { redirect: 'manual' });
-    expect(strayResponse.status).toBe(302);
+    expect(strayResponse.status).toBe(400);
+    await expect(strayResponse.text()).resolves.toContain('Ignored invalid CLI login callback');
 
     const stillWaiting = await Promise.race([
-      authPromise.then(
-        () => 'resolved',
-        () => 'rejected'
-      ),
+      authPromise.then(() => 'resolved', () => 'rejected'),
       new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25)),
     ]);
     expect(stillWaiting).toBe('pending');

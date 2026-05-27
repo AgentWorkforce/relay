@@ -161,10 +161,9 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       // Validate state parameter first (CSRF protection) — this check
       // must run unconditionally, before any user-controlled values.
       if (returnedState !== state) {
-        redirectToHostedCliAuthPage(response, apiUrl, {
-          status: 'error',
-          detail: 'Invalid state parameter',
-        });
+        response.statusCode = 400;
+        response.setHeader('content-type', 'text/plain; charset=utf-8');
+        response.end('Ignored invalid CLI login callback. Return to your terminal to continue login.');
         return;
       }
 
