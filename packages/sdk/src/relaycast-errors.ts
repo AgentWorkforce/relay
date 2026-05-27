@@ -73,8 +73,7 @@ export function isInvalidAgentTokenError(error: unknown): boolean {
 
   const status = readStatus(err.statusCode) ?? readStatus(err.status);
   const message =
-    (typeof err.message === 'string' ? err.message.trim() : '') ||
-    (bodyError?.message?.trim() ?? '');
+    (typeof err.message === 'string' ? err.message.trim() : '') || (bodyError?.message?.trim() ?? '');
   if (status === 401 && message === INVALID_AGENT_TOKEN_MESSAGE) return true;
 
   if (err.cause && err.cause !== error) {
