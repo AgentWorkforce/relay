@@ -56,6 +56,9 @@ export function SiteFooter() {
             <Link href="/privacy" className={s.link}>
               Privacy
             </Link>
+            <Link href="/terms" className={s.link}>
+              Terms
+            </Link>
             <a href={`mailto:${SITE_EMAIL}`} className={s.link}>
               Contact
             </a>

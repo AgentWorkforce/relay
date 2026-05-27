@@ -56,6 +56,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'yearly',
       priority: 0.4,
     },
+    {
+      url: absoluteUrl('/terms'),
+      lastModified: now,
+      changeFrequency: 'yearly',
+      priority: 0.4,
+    },
   ];
 
   const docsRoutes: MetadataRoute.Sitemap = getAllDocSlugs().map((slug) => ({

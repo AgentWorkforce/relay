@@ -5,7 +5,7 @@ import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { absoluteUrl, SITE_EMAIL } from '../../lib/site';
-import s from './privacy.module.css';
+import s from '../legal.module.css';
 
 export const metadata: Metadata = {
   title: 'Privacy Policy - Agent Relay',
