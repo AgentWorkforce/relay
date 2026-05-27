@@ -73,7 +73,7 @@ fi
 
 export RUST_LOG=debug
 export RELAY_DASHBOARD_STATIC_DIR=/Users/khaliqgant/Projects/agent-workforce/relay-dashboard/packages/dashboard/out
-export RELAYCAST_MCP_COMMAND="node dist/src/cli/relaycast-mcp.js"
+export AGENT_RELAY_MCP_COMMAND="node dist/cli/agent-relay-mcp.js"
 export AGENT_RELAY_BIN=/Users/khaliqgant/Projects/agent-workforce/relay-cli-uses-broker/target/debug/agent-relay-broker
 export RELAY_DASHBOARD_BINARY=/Users/khaliqgant/Projects/agent-workforce/relay-dashboard/packages/dashboard-server/dist/start.js
 

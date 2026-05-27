@@ -27,7 +27,7 @@ def on_relay(options: Any, relay: "Relay | None" = None, *, name: str | None = N
     if getattr(options, "hooks", None) is None:
         options.hooks = SimpleNamespace(post_tool_use=None, stop=None)
 
-    # 1. Inject Relaycast MCP server
+    # 1. Inject Agent Relay MCP server
     mcp_config = {"name": "relaycast", "command": "agent-relay", "args": ["mcp"]}
     if hasattr(options, "mcp_servers"):
         options.mcp_servers.append(mcp_config)

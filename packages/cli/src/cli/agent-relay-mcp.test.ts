@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { optionsFromEnv, registerAgentWithRebind } from './relaycast-mcp.js';
+import { optionsFromEnv, registerAgentWithRebind } from './agent-relay-mcp.js';
 
 describe('registerAgentWithRebind', () => {
   it('reuses the pre-registered strict token without re-registering', async () => {

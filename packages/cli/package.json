@@ -20,8 +20,8 @@
       "default": "./dist/index.cjs"
     },
     "./mcp": {
-      "types": "./dist/cli/relaycast-mcp.d.ts",
-      "import": "./dist/cli/relaycast-mcp.js"
+      "types": "./dist/cli/agent-relay-mcp.d.ts",
+      "import": "./dist/cli/agent-relay-mcp.js"
     },
     "./package.json": "./package.json"
   },

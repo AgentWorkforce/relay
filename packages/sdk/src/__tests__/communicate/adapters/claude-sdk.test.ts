@@ -35,7 +35,7 @@ function getAddedHook(options: any, eventName: 'PostToolUse' | 'Stop') {
   return matcher.hooks[0];
 }
 
-test('Claude onRelay injects the Relaycast MCP server into query options', async () => {
+test('Claude onRelay injects the Agent Relay MCP server into query options', async () => {
   const { onRelay } = await loadClaudeAdapterModule();
   const relay = new FakeRelay();
 

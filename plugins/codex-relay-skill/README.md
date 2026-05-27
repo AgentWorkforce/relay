@@ -10,7 +10,7 @@ It includes:
 
 - a Codex skill that teaches lead and worker messaging protocol
 - an MCP dependency declaration for Relaycast
-- a template Relaycast MCP config block for `.codex/config.toml`
+- a template Agent Relay MCP config block for `.codex/config.toml`
 - a `relay-worker` custom agent template for `.codex/agents/`
 
 With these pieces installed, Codex can:
@@ -31,7 +31,7 @@ That's it. Everything else is automatic.
 
 On first use, the skill self-installs by running `scripts/setup.sh`, which:
 
-- adds the Relaycast MCP server to `.codex/config.toml`
+- adds the Agent Relay MCP server to `.codex/config.toml`
 - enables `features.codex_hooks = true`
 - writes `.codex/hooks.json` with SessionStart, UserPromptSubmit, and Stop hooks
 - installs `.codex/agents/relay-worker.toml`
@@ -135,7 +135,7 @@ codex-relay-skill/
   SKILL.md                    # Codex skill manifest and workflow instructions
   README.md                   # Installation and usage docs
   agents/
-    openai.yaml              # Relaycast MCP dependency metadata
+    openai.yaml              # Agent Relay MCP dependency metadata
   codex-config/
     config.toml              # Template MCP server config for .codex/config.toml
     relay-worker.toml        # Template custom worker agent for .codex/agents/
@@ -152,7 +152,7 @@ Installed layout in a project typically looks like:
 
 ```text
 .agents/skills/agent-relay/   # Skill directory Codex scans
-.codex/config.toml            # Runtime Relaycast MCP server + features.codex_hooks
+.codex/config.toml            # Runtime Agent Relay MCP server + features.codex_hooks
 .codex/hooks.json             # Hook wiring (copied from skill)
 .codex/agents/relay-worker.toml
 ```

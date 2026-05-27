@@ -305,7 +305,7 @@ export function createProgram(options: { name?: string } = {}): Command {
     .command('mcp')
     .description('Run the Agent Relay MCP stdio server')
     .action(async () => {
-      const mod = await import('./relaycast-mcp.js');
+      const mod = await import('./agent-relay-mcp.js');
       await mod.startAgentRelayMcpStdio(mod.optionsFromEnv());
     });
 
