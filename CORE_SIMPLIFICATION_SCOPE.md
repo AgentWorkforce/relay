@@ -6,9 +6,7 @@ This document defines the package boundary for the SemVer-major Agent Relay core
 
 Agent Relay is the public product. It provides real-time coordination between AI agents, tools, services, and humans through shared workspaces.
 
-Relaycast is the backing transport. It owns the low-level message bus responsibilities: workspace identity, agent identity, channels, direct messages, threads, WebSocket events, presence, read state, delivery state, and command/action routing.
-
-The docs should lead with Agent Relay. Relaycast should appear as the transport layer when users need to understand routing, credentials, or compatibility.
+The backing message bus is an implementation detail. Public docs should lead with Agent Relay concepts: messaging, delivery, and actions. Transport-specific names should appear only in code internals, compatibility notes, or migration details that cannot be explained accurately otherwise.
 
 ## Core SDK scope
 
@@ -20,7 +18,7 @@ The docs should lead with Agent Relay. Relaycast should appear as the transport 
 - WebSocket subscriptions for message, thread, DM, channel, presence, file, webhook, and command events.
 - Presence, inbox, read receipts, read status, and idempotent sends.
 - Command/action registration and invocation for typed handoffs between agents, services, and tools.
-- Relaycast error helpers and transport-level types needed by SDK consumers.
+- Agent token recovery helpers and transport-level types needed by SDK consumers.
 
 The core SDK should remain useful in service agents, hosted agents, browser-compatible clients, tests, terminal harness integrations, and human-operated tooling.
 
@@ -42,7 +40,7 @@ Those features can still exist in Agent Relay. They should be documented as opti
 
 | Package               | Responsibility                                                                                                                      |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `@agent-relay/sdk`    | Core Agent Relay communication over the Relaycast transport.                                                                        |
+| `@agent-relay/sdk`    | Core Agent Relay communication: messaging, delivery, and actions.                                                                   |
 | `@agent-relay/driver` | Optional managed harness package for broker startup, PTY/headless transports, spawn/release, harness defaults, and supervised runs. |
 | `agent-relay`         | CLI product entry point that can compose the SDK and driver for terminal users.                                                     |
 | Primitive packages    | Domain-specific integrations that communicate through SDK messages/actions instead of living in the core SDK.                       |
@@ -51,8 +49,8 @@ The dependency direction should stay simple: driver depends on the SDK, not the 
 
 ## Documentation requirements
 
-- Describe Agent Relay as the public product and Relaycast as the backing transport.
-- Present `@agent-relay/sdk` as messaging, delivery/read state, presence, and action/command APIs.
+- Describe Agent Relay as the public product. Keep the backing transport out of public examples.
+- Present `@agent-relay/sdk` as messaging, delivery/read state, presence, and action APIs.
 - Present `@agent-relay/driver` as optional managed harness infrastructure.
 - Avoid putting spawn-first examples in the root README or SDK README.
 - Keep managed Claude/Codex/Gemini/OpenCode examples in driver or CLI documentation.
@@ -63,7 +61,7 @@ The dependency direction should stay simple: driver depends on the SDK, not the 
 - Keep code that only registers identities, sends messages, reads inbox state, handles commands, or subscribes to events on `@agent-relay/sdk`.
 - Move code that starts brokers, spawns harnesses, injects into PTYs/headless sessions, waits for idle, or shuts down managed runs to `@agent-relay/driver`.
 - Treat old all-in-one SDK examples as driver examples unless they only use communication primitives.
-- Preserve Relaycast compatibility terms where credentials, environment variables, or wire-level transport behavior require them.
+- Preserve transport compatibility terms only where credentials, environment variables, or wire-level behavior require them.
 
 ## Removed from this branch
 
@@ -74,6 +72,6 @@ The dependency direction should stay simple: driver depends on the SDK, not the 
 
 ## Non-goals
 
-- This branch does not define a new Relaycast wire protocol.
+- This branch does not define a new wire protocol.
 - This branch does not migrate Python/Swift SDKs.
 - This branch does not remove primitive packages that can still integrate through SDK messages/actions.

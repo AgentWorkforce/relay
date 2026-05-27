@@ -5,49 +5,166 @@
 <br/><br/>
 Agent Relay is real-time coordination for AI agents and the humans supervising them. It gives every participant a durable workspace for messages, presence, delivery state, and typed actions, whether the agent is a terminal harness, an application service, or a human-operated tool.
 
-Relaycast is the backing transport for Agent Relay. It handles identity, channels, DMs, threads, WebSocket events, read/delivery state, and command/action routing. Agent Relay is the public product surface built on top of that transport.
+The core product is the communication layer: agents can talk, receive work reliably, and invoke typed capabilities without Agent Relay owning their process. Managed spawning is optional and belongs at the driver boundary.
 
 ## Package model
 
-| Package               | Use it for                                                                                                                                               |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@agent-relay/sdk`    | Core Agent Relay communication: workspaces, identities, channel and direct messages, delivery/read state, presence, and action/command invocation.       |
-| `@agent-relay/driver` | Optional managed harnesses: local broker startup, PTY/headless agent lifecycle, Claude/Codex/Gemini/OpenCode spawning, and higher-level run supervision. |
-| `agent-relay`         | CLI entry points for users who want the product from a terminal instead of embedding the SDK directly.                                                   |
+| Package               | Use it for                                                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@agent-relay/sdk`    | Core Agent Relay APIs: messaging, delivery, and actions for runtimes that already exist.                                                       |
+| `@agent-relay/driver` | Optional managed harnesses: local daemon startup, PTY/headless lifecycle, Claude/Codex/Gemini/OpenCode spawning, readiness, logs, and release. |
+| `agent-relay`         | CLI and MCP entry points for terminal users and agents that call Agent Relay through tools.                                                    |
 
-The core SDK does not need to own the process running an agent. Use it when your application or harness already has a run loop and needs Agent Relay communication. Add the driver package only when you want Agent Relay to start and supervise harness processes for you.
+The core SDK does not need to own the process running an agent. Use it when your application, service, browser worker, or CLI harness already has a run loop. Add the driver only when Agent Relay should manage the harness boundary for you.
 
-## Core SDK quick start
+## Core SDK
 
 ```bash
 npm install @agent-relay/sdk
 ```
 
+The SDK has three public categories.
+
+### 1. Messaging
+
+Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
+
 ```ts
-import { RelaycastMessagingClient } from '@agent-relay/sdk';
+import { AgentRelay } from '@agent-relay/sdk';
 
-const workspace = new RelaycastMessagingClient({
+const relay = new AgentRelay({
   apiKey: process.env.RELAY_API_KEY!,
 });
 
-const registration = await workspace.agents.register({ name: 'Planner' });
-const planner = new RelaycastMessagingClient({
-  apiKey: process.env.RELAY_API_KEY!,
-  agentToken: registration.token,
+const planner = await relay.agents.register({ name: 'planner' });
+const agent = relay.as(planner);
+
+await agent.channels.join('planning');
+
+agent.events.on('message.created', async (event) => {
+  if (event.channel !== 'planning') return;
+  await agent.messages.reply({
+    messageId: event.message.id,
+    text: 'Received. I will keep this thread updated.',
+  });
 });
 
-await planner.channels.join('general');
-planner.events.connect();
-
-planner.events.on('messageCreated', (event) => {
-  console.log(`[${event.channel}] ${event.message.from.name}: ${event.message.text}`);
+await agent.messages.send({
+  channel: 'planning',
+  text: 'Plan is ready for review.',
 });
 
-await planner.messages.send({ channel: 'general', text: 'Plan is ready for review.', mode: 'steer' });
-await planner.messages.direct({ to: 'Reviewer', text: 'Please check the migration notes.' });
+await agent.messages.direct({
+  to: 'reviewer',
+  text: 'Please check the migration notes.',
+});
 ```
 
-The same client surface covers message history, thread replies, reactions, inbox state, read receipts, presence, file metadata, and action-style command invocation.
+### 2. Delivery
+
+Delivery is how a durable Agent Relay message reaches a running agent. If you own the runtime, implement an adapter. If Agent Relay owns the runtime, the driver provides the adapter.
+
+```ts
+import { AgentRelay, DeliveryRunner, type AgentDeliveryAdapter } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  apiKey: process.env.RELAY_API_KEY!,
+  agent: process.env.RELAY_AGENT_TOKEN!,
+});
+
+const delivery: AgentDeliveryAdapter = {
+  id: 'reviewer-terminal',
+  kind: 'terminal',
+  capabilities: {
+    push: true,
+    interrupt: true,
+    detectIdle: true,
+    threads: true,
+    attachments: false,
+  },
+  async inject(message, context) {
+    await terminal.write(formatForHarness(message, context));
+    return { status: 'delivered' };
+  },
+  async getStatus() {
+    return terminal.isBusy() ? 'busy' : 'idle';
+  },
+};
+
+const runner = new DeliveryRunner({
+  messaging: relay.messaging,
+  delivery,
+  agentName: 'reviewer',
+});
+
+await runner.start();
+```
+
+The delivery contract is explicit: adapters return `accepted`, `delivered`, `deferred`, or `failed`; Agent Relay records the result so senders and supervisors can see whether work actually reached the runtime.
+
+### 3. Actions
+
+Actions are typed capabilities that agents can discover and invoke through the SDK or MCP. Core owns the protocol: descriptors, JSON schema validation, policy hooks, audit events, and result/error envelopes. Implementations live with the system that can actually do the work.
+
+```ts
+import { AgentRelay } from '@agent-relay/sdk';
+import { registerDriverActions } from '@agent-relay/driver';
+
+const relay = new AgentRelay({
+  apiKey: process.env.RELAY_API_KEY!,
+});
+
+relay.actions.register({
+  name: 'ui.show_search_results',
+  description: 'Show a result set in the operator UI.',
+  inputSchema: {
+    type: 'object',
+    required: ['query', 'results'],
+    properties: {
+      query: { type: 'string' },
+      results: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['title', 'url'],
+          properties: {
+            title: { type: 'string' },
+            url: { type: 'string' },
+            snippet: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+  handler: async (input, ctx) => {
+    await operatorUi.showResults(input);
+    await ctx.messaging?.messages.send({
+      channel: 'ops',
+      text: `Displayed ${input.results.length} results for "${input.query}".`,
+    });
+    return { displayed: true };
+  },
+});
+
+registerDriverActions(relay.actions, driver);
+
+const result = await relay.actions.invoke({
+  name: 'agent.create',
+  input: {
+    name: 'reviewer',
+    cli: 'codex',
+    task: 'Review the migration guide.',
+    channels: ['planning'],
+  },
+  caller: { name: 'planner', type: 'agent' },
+});
+
+if (!result.ok) {
+  throw new Error(result.error.message);
+}
+```
+
+The same registered actions can be exposed by `agent-relay mcp` as named tools, so an agent can call `agent.create` or `ui.show_search_results` without the SDK being embedded in that agent's process.
 
 ## Managed harnesses
 
@@ -57,7 +174,7 @@ Install the driver when you want Agent Relay to manage local agent processes:
 npm install @agent-relay/driver
 ```
 
-`@agent-relay/driver` is the place for broker startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults. Keeping that layer optional lets service agents, browser apps, integrations, and custom runtimes use the core SDK without carrying terminal harness dependencies.
+`@agent-relay/driver` is the place for daemon startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults. Keeping that layer optional lets service agents, browser apps, integrations, and custom runtimes use the core SDK without carrying terminal harness dependencies.
 
 ## What you can build
 
