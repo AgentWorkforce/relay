@@ -452,14 +452,13 @@ async function killOrphanedBrokerProcesses(
 }
 
 function ensureBundledAgentRelayMcpCommand(deps: CoreDependencies): void {
-  if (deps.env.AGENT_RELAY_MCP_COMMAND?.trim() || deps.env.RELAYCAST_MCP_COMMAND?.trim()) {
+  if (deps.env.AGENT_RELAY_MCP_COMMAND?.trim()) {
     return;
   }
 
   const command = buildBundledAgentRelayMcpCommand(deps.execPath, deps.cliScript, deps.fs.existsSync);
   if (command) {
     deps.env.AGENT_RELAY_MCP_COMMAND = command;
-    deps.env.RELAYCAST_MCP_COMMAND = command;
   }
 }
 

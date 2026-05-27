@@ -271,9 +271,7 @@ fn relaycast_server_config(
     let mut server = Map::new();
     // Allow overriding the Agent Relay MCP command for local development/testing.
     // e.g. AGENT_RELAY_MCP_COMMAND="node /path/to/agent-relay/dist/cli/agent-relay-mcp.js"
-    if let Ok(custom_cmd) =
-        std::env::var("AGENT_RELAY_MCP_COMMAND").or_else(|_| std::env::var("RELAYCAST_MCP_COMMAND"))
-    {
+    if let Ok(custom_cmd) = std::env::var("AGENT_RELAY_MCP_COMMAND") {
         let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
         if let Some((cmd, args_slice)) = parts.split_first() {
             server.insert("command".into(), Value::String(cmd.to_string()));

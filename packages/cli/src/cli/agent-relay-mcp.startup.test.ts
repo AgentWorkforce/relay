@@ -488,10 +488,10 @@ describe('createAgentRelayMcpServer', () => {
   });
 });
 
-describe('resolvePatchedStdioBootstrapOptions', () => {
+describe('resolveStdioBootstrapOptions', () => {
   it('returns options unchanged when workspace bootstrap inputs are incomplete', async () => {
     const { mod } = await loadAgentRelayMcpModule();
-    await expect(mod.resolvePatchedStdioBootstrapOptions({ agentName: 'WorkerA' })).resolves.toEqual({
+    await expect(mod.resolveStdioBootstrapOptions({ agentName: 'WorkerA' })).resolves.toEqual({
       agentName: 'WorkerA',
     });
   });
@@ -506,7 +506,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       agentType: 'agent' as const,
     };
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions(options);
+    const result = await mod.resolveStdioBootstrapOptions(options);
 
     expect(result).toEqual(options);
     expect(mocks.behavior.inboxImpl).not.toHaveBeenCalled();
@@ -522,7 +522,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       skipBootstrap: true,
     };
 
-    await expect(mod.resolvePatchedStdioBootstrapOptions(options)).resolves.toEqual(options);
+    await expect(mod.resolveStdioBootstrapOptions(options)).resolves.toEqual(options);
     expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
   });
 
@@ -533,7 +533,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       token: 'at_live_minted',
     }));
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions({
+    const result = await mod.resolveStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentToken: 'eyJhbGciOiJSUzI1NiJ9.payload.sig',
@@ -559,7 +559,7 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
       token: 'at_live_minted',
     }));
 
-    const result = await mod.resolvePatchedStdioBootstrapOptions({
+    const result = await mod.resolveStdioBootstrapOptions({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentType: 'agent',
@@ -573,11 +573,11 @@ describe('resolvePatchedStdioBootstrapOptions', () => {
   });
 });
 
-describe('startPatchedStdio', () => {
+describe('startAgentRelayMcpStdio', () => {
   it('boots the MCP server on stdio transport after bootstrap', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
 
-    await mod.startPatchedStdio({
+    await mod.startAgentRelayMcpStdio({
       apiKey: 'rk_live_workspace',
       agentName: 'WorkerA',
       agentToken: 'at_live_existing',

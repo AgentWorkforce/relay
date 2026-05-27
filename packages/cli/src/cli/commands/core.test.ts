@@ -1281,20 +1281,6 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(env.AGENT_RELAY_MCP_COMMAND).toBe('/usr/bin/node /tmp/agent-relay-mcp.js');
-    expect(env.RELAYCAST_MCP_COMMAND).toBe('/usr/bin/node /tmp/agent-relay-mcp.js');
-  });
-
-  it('up preserves an explicit RELAYCAST_MCP_COMMAND override', async () => {
-    const env: NodeJS.ProcessEnv = { RELAYCAST_MCP_COMMAND: 'node /custom/relaycast-mcp.js' };
-    const fs = createFsMock({ '/tmp/agent-relay-mcp.js': '' });
-    const relay = createRelayMock();
-    const { program } = createHarness({ relay, env, fs });
-
-    const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
-
-    expect(exitCode).toBeUndefined();
-    expect(env.AGENT_RELAY_MCP_COMMAND).toBeUndefined();
-    expect(env.RELAYCAST_MCP_COMMAND).toBe('node /custom/relaycast-mcp.js');
   });
 
   it('up preserves an explicit AGENT_RELAY_MCP_COMMAND override', async () => {
@@ -1307,7 +1293,6 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(env.AGENT_RELAY_MCP_COMMAND).toBe('node /custom/agent-relay-mcp.js');
-    expect(env.RELAYCAST_MCP_COMMAND).toBeUndefined();
   });
 
   it('up logs "unknown" when workspace key is unexpectedly missing', async () => {

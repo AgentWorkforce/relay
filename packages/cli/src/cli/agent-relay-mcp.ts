@@ -60,7 +60,7 @@ type AgentType = 'agent' | 'human';
 type RelayCastLike = Pick<RelayCast, 'agents'>;
 type AgentClientLike = AgentClient;
 
-export interface PatchedMcpServerOptions {
+export interface AgentRelayMcpServerOptions {
   apiKey?: string;
   baseUrl?: string;
   agentToken?: string;
@@ -1329,7 +1329,7 @@ function registerAgentRelayTools(
   );
 }
 
-export function createAgentRelayMcpServer(options: PatchedMcpServerOptions): McpServer {
+export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): McpServer {
   const session = createInitialSession({
     workspaceKey: options.apiKey ?? null,
     agentToken: options.agentToken ?? null,
@@ -1532,8 +1532,6 @@ export function createAgentRelayMcpServer(options: PatchedMcpServerOptions): Mcp
   return mcpServer;
 }
 
-export const createPatchedRelayMcpServer = createAgentRelayMcpServer;
-
 /** Relaycast agent tokens are opaque `at_live_<hex>` literals. Anything else
  * (for example a RelayAuth JWT carried in RELAY_AGENT_TOKEN by `relay on start`)
  * is not a valid Relaycast credential and must be replaced. */
@@ -1541,9 +1539,9 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
   return typeof token === 'string' && token.startsWith('at_live_');
 }
 
-export async function resolvePatchedStdioBootstrapOptions(
-  options: PatchedMcpServerOptions
-): Promise<PatchedMcpServerOptions> {
+export async function resolveStdioBootstrapOptions(
+  options: AgentRelayMcpServerOptions
+): Promise<AgentRelayMcpServerOptions> {
   if (isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
     return options;
   }
@@ -1568,8 +1566,8 @@ export async function resolvePatchedStdioBootstrapOptions(
   };
 }
 
-export async function startPatchedStdio(options: PatchedMcpServerOptions): Promise<void> {
-  const bootstrappedOptions = await resolvePatchedStdioBootstrapOptions(options);
+export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
+  const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
     telemetryTransport: 'stdio',
@@ -1578,9 +1576,7 @@ export async function startPatchedStdio(options: PatchedMcpServerOptions): Promi
   await mcpServer.connect(transport);
 }
 
-export const startAgentRelayMcpStdio = startPatchedStdio;
-
-export function optionsFromEnv(): PatchedMcpServerOptions {
+export function optionsFromEnv(): AgentRelayMcpServerOptions {
   const apiKey = resolveEnv('RELAY_API_KEY');
   const agentName =
     resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME') ?? (apiKey ? 'orchestrator' : undefined);
@@ -1596,7 +1592,7 @@ export function optionsFromEnv(): PatchedMcpServerOptions {
 }
 
 if (isEntrypoint()) {
-  startPatchedStdio(optionsFromEnv()).catch((error) => {
+  startAgentRelayMcpStdio(optionsFromEnv()).catch((error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     process.stderr.write(`${message}\n`);
     process.exit(1);
