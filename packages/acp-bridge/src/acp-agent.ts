@@ -736,7 +736,7 @@ export class RelayACPAgent implements acp.Agent {
 
     try {
       const relay = this.relay!;
-      const agent = await relay.spawnPty({
+      const agent = await relay.spawnAgent({
         name,
         cli,
         task,
