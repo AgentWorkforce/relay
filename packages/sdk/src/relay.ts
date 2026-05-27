@@ -41,12 +41,19 @@ import {
 } from './harness.js';
 import type { AgentRelayEvents, BeforeAgentSpawnHandler } from './lifecycle-hooks.js';
 import { AgentRelayProtocolError } from './transport.js';
-import type { JsonSchema, SendMessageInput, SpawnAgentResult, SpawnPtyInput } from './types.js';
+import type {
+  AgentTransport,
+  JsonSchema,
+  SendMessageInput,
+  SpawnAgentResult,
+  SpawnHeadlessInput,
+  SpawnProviderInput,
+  SpawnPtyInput,
+} from './types.js';
 import type {
   AgentRuntime,
   BrokerEvent,
   BrokerStatus,
-  HeadlessProvider,
   MessageInjectionMode,
   RestartPolicy,
 } from './protocol.js';
@@ -192,6 +199,9 @@ export interface AgentResultOptions<T = unknown> {
   onResult?: (data: T, meta: AgentResultMeta) => void | Promise<void>;
 }
 
+type SpawnWithLifecycle<TInput, TAgentResult> = TInput &
+  SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> };
+
 export type AgentStatus = 'spawning' | 'ready' | 'idle' | 'exited';
 export type DeliveryWaitStatus = 'ack' | 'failed' | 'timeout';
 export type DeliveryStateStatus = 'queued' | 'injected' | 'active' | 'verified' | 'failed';
@@ -230,7 +240,10 @@ export interface AgentActivityChange {
 
 export interface SpawnLifecycleContext {
   name: string;
+  /** CLI or provider identifier used to launch the agent. */
   cli: string;
+  /** Provider identifier for provider-backed spawns. */
+  provider?: string;
   channels: string[];
   task?: string;
 }
@@ -701,7 +714,7 @@ export class AgentRelay {
     this.harnesses[key] = definition;
   }
 
-  private findHarnessDefinition(cli: string): HarnessDefinition | undefined {
+  findHarnessDefinition(cli: string): HarnessDefinition | undefined {
     for (const key of harnessLookupKeys(cli)) {
       const definition = this.harnesses[key];
       if (definition) return definition;
@@ -782,7 +795,7 @@ export class AgentRelay {
   // ── Spawning ────────────────────────────────────────────────────────────
 
   async spawnPty<TAgentResult = unknown>(
-    input: SpawnPtyInput & SpawnLifecycleHooks & { result?: AgentResultOptions<TAgentResult> }
+    input: SpawnWithLifecycle<SpawnPtyInput, TAgentResult>
   ): Promise<Agent<TAgentResult>> {
     const client = await this.ensureStarted();
     if (!input.channels || input.channels.length === 0) {
@@ -818,11 +831,12 @@ export class AgentRelay {
         agentToken: input.agentToken,
         shadowOf: input.shadowOf,
         shadowMode: input.shadowMode,
+        continueFrom: input.continueFrom,
         idleThresholdSecs: input.idleThresholdSecs,
         restartPolicy: input.restartPolicy,
         harnessConfig,
         skipRelayPrompt: input.skipRelayPrompt,
-        agentResultSchema: resultContract?.jsonSchema,
+        agentResultSchema: resultContract?.jsonSchema ?? input.agentResultSchema,
       });
     } catch (error) {
       if (resultContract) {
@@ -860,6 +874,24 @@ export class AgentRelay {
       `spawnPty("${input.name}") onSuccess`
     );
     return agent;
+  }
+
+  async spawnProvider<TAgentResult = unknown>(
+    input: SpawnWithLifecycle<SpawnProviderInput, TAgentResult>
+  ): Promise<Agent<TAgentResult>> {
+    return this.spawnProviderWithLifecycle('spawnProvider', input, (client, request) =>
+      client.spawnProvider(request)
+    );
+  }
+
+  async spawnHeadless<TAgentResult = unknown>(
+    input: SpawnWithLifecycle<SpawnHeadlessInput, TAgentResult>
+  ): Promise<Agent<TAgentResult>> {
+    return this.spawnProviderWithLifecycle(
+      'spawnHeadless',
+      { ...input, transport: 'headless' },
+      (client, request) => client.spawnHeadless(request)
+    );
   }
 
   async spawn<TAgentResult = unknown>(
@@ -903,6 +935,101 @@ export class AgentRelay {
       return this.waitForAgentMessage(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
     }
     return this.waitForAgentReady(name, timeoutMs ?? 60_000) as Promise<Agent<TAgentResult>>;
+  }
+
+  private async spawnProviderWithLifecycle<TAgentResult = unknown>(
+    methodName: 'spawn' | 'spawnProvider' | 'spawnHeadless',
+    input: SpawnWithLifecycle<SpawnProviderInput, TAgentResult>,
+    invoke: (client: AgentRelayClient, request: SpawnProviderInput) => Promise<SpawnAgentResult>,
+    defaultTransport?: AgentTransport
+  ): Promise<Agent<TAgentResult>> {
+    const client = await this.ensureStarted();
+    if (!input.channels || input.channels.length === 0) {
+      console.warn(
+        `[AgentRelay] ${methodName}("${input.name}"): no channels specified, defaulting to "general". ` +
+          'Set explicit channels for workflow isolation.'
+      );
+    }
+    const channels = input.channels ?? ['general'];
+    const lifecycleContext: SpawnLifecycleContext = {
+      name: input.name,
+      cli: input.provider,
+      provider: input.provider,
+      channels,
+      task: input.task,
+    };
+    await this.invokeLifecycleHook(input.onStart, lifecycleContext, `${methodName}("${input.name}") onStart`);
+    let result: SpawnAgentResult;
+    const resultContract = this.prepareAgentResultContract(input.result);
+    if (resultContract) {
+      this.resultContracts.set(input.name, resultContract as InternalAgentResultContract);
+    }
+    try {
+      const harnessConfig = this.resolveHarnessConfig({
+        name: input.name,
+        cli: input.provider,
+        args: input.args,
+        task: input.task,
+        model: input.model,
+        cwd: input.cwd,
+        harnessConfig: input.harnessConfig,
+      });
+      result = await invoke(client, {
+        name: input.name,
+        provider: input.provider,
+        transport: input.transport ?? harnessConfig?.runtime ?? defaultTransport,
+        args: input.args,
+        channels,
+        task: input.task,
+        model: input.model,
+        cwd: input.cwd,
+        team: input.team,
+        agentToken: input.agentToken,
+        shadowOf: input.shadowOf,
+        shadowMode: input.shadowMode,
+        idleThresholdSecs: input.idleThresholdSecs,
+        restartPolicy: input.restartPolicy,
+        continueFrom: input.continueFrom,
+        harnessConfig,
+        skipRelayPrompt: input.skipRelayPrompt,
+        agentResultSchema: resultContract?.jsonSchema ?? input.agentResultSchema,
+      });
+    } catch (error) {
+      if (resultContract) {
+        this.resultContracts.delete(input.name);
+      }
+      await this.invokeLifecycleHook(
+        input.onError,
+        {
+          ...lifecycleContext,
+          error,
+        },
+        `${methodName}("${input.name}") onError`
+      );
+      throw error;
+    }
+    this.resetAgentLifecycleState(result.name);
+    if (result.name !== input.name && resultContract) {
+      this.resultContracts.delete(input.name);
+      this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
+    }
+    const agent = this.ensureAgentHandle(
+      result.name,
+      result.runtime,
+      channels,
+      result
+    ) as Agent<TAgentResult>;
+    await this.invokeLifecycleHook(
+      input.onSuccess,
+      {
+        ...lifecycleContext,
+        name: result.name,
+        runtime: result.runtime,
+        sessionId: result.sessionId,
+      },
+      `${methodName}("${input.name}") onSuccess`
+    );
+    return agent;
   }
 
   // ── Human source ────────────────────────────────────────────────────────
@@ -2223,81 +2350,28 @@ export class AgentRelay {
           });
         }
 
-        const client = await this.ensureStarted();
-        const lifecycleContext: SpawnLifecycleContext = {
-          name,
-          cli,
-          channels,
-          task,
-        };
-        await this.invokeLifecycleHook(options?.onStart, lifecycleContext, `spawn("${name}") onStart`);
-        let result: SpawnAgentResult;
-        const resultContract = this.prepareAgentResultContract(options?.result);
-        if (resultContract) {
-          this.resultContracts.set(name, resultContract as InternalAgentResultContract);
-        }
-        try {
-          const harnessConfig = this.resolveHarnessConfig({
+        return this.spawnProviderWithLifecycle(
+          'spawn',
+          {
             name,
-            cli,
-            args,
-            task,
-            model: options?.model,
-            cwd: options?.cwd,
-            harnessConfig: options?.harnessConfig,
-          });
-          result = await client.spawnProvider({
-            name,
-            provider: cli as HeadlessProvider,
-            transport: harnessConfig?.runtime ?? 'headless',
+            provider: cli,
             args,
             channels,
             task,
             model: options?.model,
             cwd: options?.cwd,
+            harnessConfig: options?.harnessConfig,
             idleThresholdSecs: options?.idleThresholdSecs,
-            harnessConfig,
             agentToken: options?.agentToken,
             skipRelayPrompt: options?.skipRelayPrompt,
-            agentResultSchema: resultContract?.jsonSchema,
-          });
-        } catch (error) {
-          if (resultContract) {
-            this.resultContracts.delete(name);
-          }
-          await this.invokeLifecycleHook(
-            options?.onError,
-            {
-              ...lifecycleContext,
-              error,
-            },
-            `spawn("${name}") onError`
-          );
-          throw error;
-        }
-
-        this.resetAgentLifecycleState(result.name);
-        if (result.name !== name && resultContract) {
-          this.resultContracts.delete(name);
-          this.resultContracts.set(result.name, resultContract as InternalAgentResultContract);
-        }
-        const agent = this.ensureAgentHandle(
-          result.name,
-          result.runtime,
-          channels,
-          result
-        ) as Agent<TAgentResult>;
-        await this.invokeLifecycleHook(
-          options?.onSuccess,
-          {
-            ...lifecycleContext,
-            name: result.name,
-            runtime: result.runtime,
-            sessionId: result.sessionId,
+            result: options?.result,
+            onStart: options?.onStart,
+            onSuccess: options?.onSuccess,
+            onError: options?.onError,
           },
-          `spawn("${name}") onSuccess`
+          (client, request) => client.spawnProvider(request),
+          'headless'
         );
-        return agent;
       },
     };
   }

@@ -24,7 +24,11 @@ function createMockFacadeClient() {
 
   const mock = {
     spawnPty: vi.fn(async (input: { name: string }) => ({ name: input.name, runtime: 'pty' as const })),
-    spawnProvider: vi.fn(async (input: { name: string }) => ({
+    spawnProvider: vi.fn(async (input: { name: string; transport?: 'pty' | 'headless' }) => ({
+      name: input.name,
+      runtime: input.transport === 'pty' ? ('pty' as const) : ('headless' as const),
+    })),
+    spawnHeadless: vi.fn(async (input: { name: string }) => ({
       name: input.name,
       runtime: 'headless' as const,
     })),
@@ -537,6 +541,105 @@ describe('AgentRelay orchestration handles', () => {
           provider: 'opencode',
           transport: 'headless',
           agentToken: 'agent-token-opencode',
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawnProvider exposes provider-backed spawns through the facade', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+
+    try {
+      const agent = await relay.spawnProvider({
+        name: 'provider-facade',
+        provider: 'claude',
+        transport: 'pty',
+        channels: ['ops'],
+        cwd: '/workspace/provider',
+        continueFrom: 'session-123',
+        agentToken: 'agent-token-provider',
+      });
+
+      expect(agent).toMatchObject({
+        name: 'provider-facade',
+        runtime: 'pty',
+        channels: ['ops'],
+      });
+      expect(mock.spawnProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'provider-facade',
+          provider: 'claude',
+          transport: 'pty',
+          channels: ['ops'],
+          cwd: '/workspace/provider',
+          continueFrom: 'session-123',
+          agentToken: 'agent-token-provider',
+        })
+      );
+    } finally {
+      await relay.shutdown();
+    }
+  });
+
+  it('spawnHeadless preserves facade lifecycle hooks and custom headless harness config', async () => {
+    const { client, mock } = createMockFacadeClient();
+    const relay = createWiredRelay(client);
+    const onStart = vi.fn();
+    const onSuccess = vi.fn();
+    const harnessConfig = {
+      runtime: 'headless' as const,
+      protocol: 'custom-app',
+      endpoint: 'http://127.0.0.1:4099',
+      sessionId: 'session-headless',
+    };
+    const jsonSchema = { type: 'object', properties: { ok: { type: 'boolean' } } };
+
+    try {
+      const agent = await relay.spawnHeadless<{ ok: boolean }>({
+        name: 'headless-facade',
+        provider: 'custom-app',
+        channels: ['reviews'],
+        task: 'Review the change',
+        harnessConfig,
+        result: { jsonSchema },
+        onStart,
+        onSuccess,
+      });
+
+      expect(agent).toMatchObject({
+        name: 'headless-facade',
+        runtime: 'headless',
+        channels: ['reviews'],
+      });
+      expect(onStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          cli: 'custom-app',
+          provider: 'custom-app',
+          channels: ['reviews'],
+          task: 'Review the change',
+        })
+      );
+      expect(onSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          cli: 'custom-app',
+          provider: 'custom-app',
+          runtime: 'headless',
+        })
+      );
+      expect(mock.spawnHeadless).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'headless-facade',
+          provider: 'custom-app',
+          transport: 'headless',
+          channels: ['reviews'],
+          task: 'Review the change',
+          harnessConfig,
+          agentResultSchema: jsonSchema,
         })
       );
     } finally {

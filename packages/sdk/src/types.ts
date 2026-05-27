@@ -42,10 +42,19 @@ export interface SpawnPtyInput {
 
 export interface SpawnHeadlessInput {
   name: string;
-  provider: HeadlessProvider;
+  provider: string;
   args?: string[];
   channels?: string[];
   task?: string;
+  model?: string;
+  cwd?: string;
+  team?: string;
+  shadowOf?: string;
+  shadowMode?: string;
+  idleThresholdSecs?: number;
+  restartPolicy?: RestartPolicy;
+  continueFrom?: string;
+  harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
