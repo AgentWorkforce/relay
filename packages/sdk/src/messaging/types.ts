@@ -500,7 +500,10 @@ export interface RelayMessagingClient {
     reactions(messageId: string): Promise<RelayMessageReaction[]>;
     react(messageId: string, emoji: string): Promise<RelayMessageReaction>;
     unreact(messageId: string, emoji: string): Promise<void>;
-    search(query: string, options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }): Promise<RelaySearchResult[]>;
+    search(
+      query: string,
+      options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }
+    ): Promise<RelaySearchResult[]>;
   };
   readonly threads: {
     get(messageId: string, options?: RelayMessageListOptions): Promise<RelayThread>;

@@ -67,7 +67,10 @@ function readArray(record: UnknownRecord | undefined, ...keys: string[]): unknow
   return Array.isArray(value) ? value : [];
 }
 
-function readRecord(record: UnknownRecord | undefined, ...keys: string[]): Record<string, unknown> | undefined {
+function readRecord(
+  record: UnknownRecord | undefined,
+  ...keys: string[]
+): Record<string, unknown> | undefined {
   const value = readValue(record, ...keys);
   return isRecord(value) ? { ...value } : undefined;
 }
@@ -117,13 +120,18 @@ export function normalizeAgentChannel(input: unknown): RelayAgentChannel {
     id: readString(record, 'id', 'channelId', 'channel_id') ?? name,
     name,
     role: normalizeRole(readString(record, 'role')),
-    ...(readString(record, 'joinedAt', 'joined_at') ? { joinedAt: readString(record, 'joinedAt', 'joined_at') } : {}),
+    ...(readString(record, 'joinedAt', 'joined_at')
+      ? { joinedAt: readString(record, 'joinedAt', 'joined_at') }
+      : {}),
   };
 }
 
 export function normalizeAgent(input: unknown): RelayAgent {
   const record = isRecord(input) ? input : {};
-  const id = readString(record, 'id', 'agentId', 'agent_id') ?? readString(record, 'name', 'agentName', 'agent_name') ?? '';
+  const id =
+    readString(record, 'id', 'agentId', 'agent_id') ??
+    readString(record, 'name', 'agentName', 'agent_name') ??
+    '';
   const name = readString(record, 'name', 'agentName', 'agent_name') ?? id;
   const lastSeenAt = readString(record, 'lastSeenAt', 'last_seen', 'lastSeen');
   const createdAt = readString(record, 'createdAt', 'created_at');
@@ -175,7 +183,9 @@ export function normalizeChannelMember(input: unknown): RelayChannelMember {
     agentId,
     agentName,
     role: normalizeRole(readString(record, 'role')),
-    ...(readString(record, 'joinedAt', 'joined_at') ? { joinedAt: readString(record, 'joinedAt', 'joined_at') } : {}),
+    ...(readString(record, 'joinedAt', 'joined_at')
+      ? { joinedAt: readString(record, 'joinedAt', 'joined_at') }
+      : {}),
     muted: readBoolean(record, 'muted', 'isMuted', 'is_muted') ?? false,
   };
 }
@@ -236,7 +246,9 @@ interface MessageContext {
 
 export function normalizeMessage(input: unknown, context: MessageContext = {}): RelayMessage {
   const record = isRecord(input) ? input : {};
-  const fromRecord = isRecord(readValue(record, 'from', 'sender', 'agent')) ? (readValue(record, 'from', 'sender', 'agent') as UnknownRecord) : undefined;
+  const fromRecord = isRecord(readValue(record, 'from', 'sender', 'agent'))
+    ? (readValue(record, 'from', 'sender', 'agent') as UnknownRecord)
+    : undefined;
   const channelName =
     context.channelName ??
     normalizeOptionalChannelName(readString(record, 'channelName', 'channel_name', 'channel'));
@@ -258,15 +270,16 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
     kind,
     text: readString(record, 'text', 'body') ?? '',
     from: {
-      ...(readString(record, 'agentId', 'agent_id', 'fromId', 'from_id') ?? readString(fromRecord, 'id', 'agentId', 'agent_id')
+      ...((readString(record, 'agentId', 'agent_id', 'fromId', 'from_id') ??
+      readString(fromRecord, 'id', 'agentId', 'agent_id'))
         ? {
             id:
               readString(record, 'agentId', 'agent_id', 'fromId', 'from_id') ??
               readString(fromRecord, 'id', 'agentId', 'agent_id'),
           }
         : {}),
-      ...(readString(record, 'agentName', 'agent_name', 'fromName', 'from_name', 'from') ??
-      readString(fromRecord, 'name', 'agentName', 'agent_name')
+      ...((readString(record, 'agentName', 'agent_name', 'fromName', 'from_name', 'from') ??
+      readString(fromRecord, 'name', 'agentName', 'agent_name'))
         ? {
             name:
               readString(record, 'agentName', 'agent_name', 'fromName', 'from_name', 'from') ??
@@ -285,9 +298,11 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
     ...(conversationId ? { conversationId } : {}),
     ...(threadId ? { threadId } : {}),
     ...(parentId ? { parentId } : {}),
-    ...(normalizeMode(readString(record, 'mode', 'injectionMode', 'injection_mode')) ? {
-      mode: normalizeMode(readString(record, 'mode', 'injectionMode', 'injection_mode')),
-    } : {}),
+    ...(normalizeMode(readString(record, 'mode', 'injectionMode', 'injection_mode'))
+      ? {
+          mode: normalizeMode(readString(record, 'mode', 'injectionMode', 'injection_mode')),
+        }
+      : {}),
     ...(createdAt ? { createdAt } : {}),
     ...(updatedAt ? { updatedAt } : {}),
     ...(metadata ? { metadata } : {}),
@@ -342,7 +357,8 @@ function normalizeInboxReaction(input: unknown): RelayInboxReactionSummary {
   const createdAt = readString(record, 'createdAt', 'created_at');
   return {
     messageId: readString(record, 'messageId', 'message_id') ?? '',
-    channelName: normalizeOptionalChannelName(readString(record, 'channelName', 'channel_name', 'channel')) ?? '',
+    channelName:
+      normalizeOptionalChannelName(readString(record, 'channelName', 'channel_name', 'channel')) ?? '',
     emoji: readString(record, 'emoji') ?? '',
     agentName: readString(record, 'agentName', 'agent_name') ?? '',
     ...(createdAt ? { createdAt } : {}),
@@ -355,7 +371,9 @@ export function normalizeInbox(input: unknown): RelayInbox {
     unreadChannels: readArray(record, 'unreadChannels', 'unread_channels').map((item) => {
       const itemRecord = isRecord(item) ? item : {};
       return {
-        channelName: normalizeOptionalChannelName(readString(itemRecord, 'channelName', 'channel_name', 'channel')) ?? '',
+        channelName:
+          normalizeOptionalChannelName(readString(itemRecord, 'channelName', 'channel_name', 'channel')) ??
+          '',
         unreadCount: readNumber(itemRecord, 'unreadCount', 'unread_count') ?? 0,
       };
     }),
@@ -363,7 +381,9 @@ export function normalizeInbox(input: unknown): RelayInbox {
       const itemRecord = isRecord(item) ? item : {};
       return normalizeMessage(itemRecord, {
         kind: 'channel',
-        channelName: normalizeOptionalChannelName(readString(itemRecord, 'channelName', 'channel_name', 'channel')),
+        channelName: normalizeOptionalChannelName(
+          readString(itemRecord, 'channelName', 'channel_name', 'channel')
+        ),
       });
     }),
     unreadDms: readArray(record, 'unreadDms', 'unread_dms').map(normalizeInboxDirect),
@@ -376,8 +396,12 @@ export function normalizeReadReceipt(input: unknown): RelayReadReceipt {
   const readAt = readString(record, 'readAt', 'read_at');
   return {
     messageId: readString(record, 'messageId', 'message_id') ?? '',
-    ...(readString(record, 'agentId', 'agent_id') ? { agentId: readString(record, 'agentId', 'agent_id') } : {}),
-    ...(readString(record, 'agentName', 'agent_name') ? { agentName: readString(record, 'agentName', 'agent_name') } : {}),
+    ...(readString(record, 'agentId', 'agent_id')
+      ? { agentId: readString(record, 'agentId', 'agent_id') }
+      : {}),
+    ...(readString(record, 'agentName', 'agent_name')
+      ? { agentName: readString(record, 'agentName', 'agent_name') }
+      : {}),
     ...(readAt ? { readAt } : {}),
   };
 }
@@ -398,7 +422,8 @@ export function normalizeSearchResult(input: unknown): RelaySearchResult {
   const createdAt = readString(record, 'createdAt', 'created_at');
   return {
     id: readString(record, 'id', 'messageId', 'message_id') ?? '',
-    channelName: normalizeOptionalChannelName(readString(record, 'channelName', 'channel_name', 'channel')) ?? '',
+    channelName:
+      normalizeOptionalChannelName(readString(record, 'channelName', 'channel_name', 'channel')) ?? '',
     agentName: readString(record, 'agentName', 'agent_name') ?? '',
     text: readString(record, 'text', 'body') ?? '',
     ...(createdAt ? { createdAt } : {}),
@@ -412,7 +437,9 @@ export function normalizeGroupDirectConversation(input: unknown): RelayGroupDire
   const createdAt = readString(record, 'createdAt', 'created_at');
   return {
     id: readString(record, 'id', 'conversationId', 'conversation_id') ?? '',
-    ...(readString(record, 'channelId', 'channel_id') ? { channelId: readString(record, 'channelId', 'channel_id') } : {}),
+    ...(readString(record, 'channelId', 'channel_id')
+      ? { channelId: readString(record, 'channelId', 'channel_id') }
+      : {}),
     ...(name ? { name } : {}),
     participants: readArray(record, 'participants')
       .map((participant) => {
@@ -481,12 +508,28 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
     case 'agent.online':
       return {
         type: 'agentOnline',
-        agent: { name: readString(isRecord(readValue(record, 'agent')) ? (readValue(record, 'agent') as UnknownRecord) : undefined, 'name') ?? '' },
+        agent: {
+          name:
+            readString(
+              isRecord(readValue(record, 'agent'))
+                ? (readValue(record, 'agent') as UnknownRecord)
+                : undefined,
+              'name'
+            ) ?? '',
+        },
       };
     case 'agent.offline':
       return {
         type: 'agentOffline',
-        agent: { name: readString(isRecord(readValue(record, 'agent')) ? (readValue(record, 'agent') as UnknownRecord) : undefined, 'name') ?? '' },
+        agent: {
+          name:
+            readString(
+              isRecord(readValue(record, 'agent'))
+                ? (readValue(record, 'agent') as UnknownRecord)
+                : undefined,
+              'name'
+            ) ?? '',
+        },
       };
     case 'agent.spawn_requested': {
       const agent = isRecord(readValue(record, 'agent')) ? (readValue(record, 'agent') as UnknownRecord) : {};
@@ -515,7 +558,9 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
     }
     case 'channel.created':
     case 'channel.updated': {
-      const channel = isRecord(readValue(record, 'channel')) ? (readValue(record, 'channel') as UnknownRecord) : {};
+      const channel = isRecord(readValue(record, 'channel'))
+        ? (readValue(record, 'channel') as UnknownRecord)
+        : {};
       const topic = readNullableString(channel, 'topic');
       return {
         type: sourceType === 'channel.created' ? 'channelCreated' : 'channelUpdated',
@@ -526,7 +571,9 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
       };
     }
     case 'channel.archived': {
-      const channel = isRecord(readValue(record, 'channel')) ? (readValue(record, 'channel') as UnknownRecord) : {};
+      const channel = isRecord(readValue(record, 'channel'))
+        ? (readValue(record, 'channel') as UnknownRecord)
+        : {};
       return {
         type: 'channelArchived',
         channel: { name: normalizeOptionalChannelName(readString(channel, 'name')) ?? '' },
@@ -555,7 +602,9 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
         type: 'messageRead',
         messageId: readString(record, 'messageId', 'message_id') ?? '',
         agentName: readString(record, 'agentName', 'agent_name') ?? '',
-        ...(readString(record, 'readAt', 'read_at') ? { readAt: readString(record, 'readAt', 'read_at') } : {}),
+        ...(readString(record, 'readAt', 'read_at')
+          ? { readAt: readString(record, 'readAt', 'read_at') }
+          : {}),
       };
     case 'reaction.added':
     case 'reaction.removed':

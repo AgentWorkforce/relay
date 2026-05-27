@@ -31,7 +31,12 @@ function createWorkspace() {
         status: 'offline',
         created_at: '2026-05-27T10:10:00.000Z',
       })),
-      update: vi.fn(async (_name: string, input: unknown) => ({ id: 'agent-1', name: 'WorkerA', type: 'agent', ...input })),
+      update: vi.fn(async (_name: string, input: unknown) => ({
+        id: 'agent-1',
+        name: 'WorkerA',
+        type: 'agent',
+        ...input,
+      })),
       delete: vi.fn(async () => undefined),
       presence: vi.fn(async () => [{ agent_id: 'agent-1', agent_name: 'WorkerA', status: 'online' }]),
     },
@@ -45,7 +50,14 @@ function createWorkspace() {
           created_at: '2026-05-27T08:00:00.000Z',
           is_archived: false,
           member_count: 2,
-          members: [{ agent_id: 'agent-1', agent_name: 'WorkerA', role: 'member', joined_at: '2026-05-27T09:00:00.000Z' }],
+          members: [
+            {
+              agent_id: 'agent-1',
+              agent_name: 'WorkerA',
+              role: 'member',
+              joined_at: '2026-05-27T09:00:00.000Z',
+            },
+          ],
         },
       ]),
       get: vi.fn(async () => ({ id: 'ch-1', name: 'general', topic: null, members: [] })),
@@ -69,11 +81,21 @@ function createWorkspace() {
       get: vi.fn(async () => ({ id: 'm-1', agent_name: 'WorkerA', text: 'hello', attachments: [] })),
       thread: vi.fn(async () => ({
         parent: { id: 'm-1', channel_id: 'ch-1', agent_name: 'Lead', text: 'parent', attachments: [] },
-        replies: [{ id: 'm-2', agent_name: 'WorkerA', text: 'reply', attachments: [], created_at: '2026-05-27T11:05:00.000Z' }],
+        replies: [
+          {
+            id: 'm-2',
+            agent_name: 'WorkerA',
+            text: 'reply',
+            attachments: [],
+            created_at: '2026-05-27T11:05:00.000Z',
+          },
+        ],
       })),
       reactions: vi.fn(async () => [{ emoji: 'eyes', count: 2, agents: ['Lead', 'WorkerA'] }]),
     },
-    dmMessages: vi.fn(async () => [{ id: 'dm-1', agent_name: 'Lead', text: 'direct', created_at: '2026-05-27T11:10:00.000Z' }]),
+    dmMessages: vi.fn(async () => [
+      { id: 'dm-1', agent_name: 'Lead', text: 'direct', created_at: '2026-05-27T11:10:00.000Z' },
+    ]),
   };
 }
 
@@ -128,24 +150,59 @@ function createAgentClient() {
         setTopic: vi.fn(async () => ({ id: 'ch-1', name: 'general', topic: 'topic', members: [] })),
         archive: vi.fn(async () => undefined),
         invite: vi.fn(async () => ({ channel: 'general', agent: 'WorkerB' })),
-        members: vi.fn(async () => [{ agent_id: 'agent-1', agent_name: 'WorkerA', role: 'member', is_muted: true }]),
+        members: vi.fn(async () => [
+          { agent_id: 'agent-1', agent_name: 'WorkerA', role: 'member', is_muted: true },
+        ]),
         update: vi.fn(async () => ({ id: 'ch-1', name: 'general', topic: 'updated', members: [] })),
         mute: vi.fn(async () => undefined),
         unmute: vi.fn(async () => undefined),
       },
       inbox: vi.fn(async () => ({
         unread_channels: [{ channel_name: '#general', unread_count: 3 }],
-        mentions: [{ id: 'm-mention', channel_name: '#general', agent_name: 'Lead', text: '@WorkerA', created_at: '2026-05-27T11:30:00.000Z' }],
-        unread_dms: [{ conversation_id: 'dm-1', from: 'Lead', unread_count: 1, last_message: { id: 'dm-last', text: 'ping', created_at: '2026-05-27T11:31:00.000Z' } }],
-        recent_reactions: [{ message_id: 'm-1', channel_name: '#general', emoji: 'eyes', agent_name: 'Lead', created_at: '2026-05-27T11:32:00.000Z' }],
+        mentions: [
+          {
+            id: 'm-mention',
+            channel_name: '#general',
+            agent_name: 'Lead',
+            text: '@WorkerA',
+            created_at: '2026-05-27T11:30:00.000Z',
+          },
+        ],
+        unread_dms: [
+          {
+            conversation_id: 'dm-1',
+            from: 'Lead',
+            unread_count: 1,
+            last_message: { id: 'dm-last', text: 'ping', created_at: '2026-05-27T11:31:00.000Z' },
+          },
+        ],
+        recent_reactions: [
+          {
+            message_id: 'm-1',
+            channel_name: '#general',
+            emoji: 'eyes',
+            agent_name: 'Lead',
+            created_at: '2026-05-27T11:32:00.000Z',
+          },
+        ],
       })),
-      markRead: vi.fn(async () => ({ message_id: 'm-1', agent_id: 'agent-1', read_at: '2026-05-27T11:33:00.000Z' })),
-      readers: vi.fn(async () => [{ agent_id: 'agent-1', agent_name: 'WorkerA', read_at: '2026-05-27T11:33:00.000Z' }]),
-      readStatus: vi.fn(async () => [{ agent_name: 'WorkerA', last_read_id: 'm-1', last_read_at: '2026-05-27T11:33:00.000Z' }]),
+      markRead: vi.fn(async () => ({
+        message_id: 'm-1',
+        agent_id: 'agent-1',
+        read_at: '2026-05-27T11:33:00.000Z',
+      })),
+      readers: vi.fn(async () => [
+        { agent_id: 'agent-1', agent_name: 'WorkerA', read_at: '2026-05-27T11:33:00.000Z' },
+      ]),
+      readStatus: vi.fn(async () => [
+        { agent_name: 'WorkerA', last_read_id: 'm-1', last_read_at: '2026-05-27T11:33:00.000Z' },
+      ]),
       reactions: vi.fn(async () => [{ emoji: 'eyes', count: 2, agents: ['Lead', 'WorkerA'] }]),
       react: vi.fn(async () => ({ emoji: 'eyes', count: 1, agents: ['WorkerA'] })),
       unreact: vi.fn(async () => undefined),
-      search: vi.fn(async () => [{ id: 'm-1', channel_name: '#general', agent_name: 'Lead', text: 'hello', relevance_score: 0.9 }]),
+      search: vi.fn(async () => [
+        { id: 'm-1', channel_name: '#general', agent_name: 'Lead', text: 'hello', relevance_score: 0.9 },
+      ]),
       on: {
         any: vi.fn((handler: (event: unknown) => void) => {
           anyHandlers.add(handler);
@@ -204,7 +261,10 @@ describe('RelaycastMessagingClient', () => {
       mode: 'steer',
       idempotencyKey: 'idem-1',
     });
-    expect(agentClient.send).toHaveBeenCalledWith('#general', 'sent', { mode: 'steer', idempotencyKey: 'idem-1' });
+    expect(agentClient.send).toHaveBeenCalledWith('#general', 'sent', {
+      mode: 'steer',
+      idempotencyKey: 'idem-1',
+    });
     expect(sent).toMatchObject({ id: 'm-send', kind: 'channel', channel: { name: 'general' } });
 
     const direct = await client.messages.direct({ to: 'Lead', text: 'direct' });
@@ -221,7 +281,10 @@ describe('RelaycastMessagingClient', () => {
       name: 'team',
       text: 'group direct',
     });
-    expect(agentClient.dms.createGroup).toHaveBeenCalledWith({ participants: ['Lead', 'WorkerB'], name: 'team' }, {});
+    expect(agentClient.dms.createGroup).toHaveBeenCalledWith(
+      { participants: ['Lead', 'WorkerB'], name: 'team' },
+      {}
+    );
     expect(agentClient.dms.sendMessage).toHaveBeenCalledWith('gdm-1', 'group direct', {});
     expect(groupDirect).toMatchObject({ id: 'gdm-send', kind: 'group_dm', conversationId: 'gdm-1' });
   });
@@ -269,7 +332,13 @@ describe('RelaycastMessagingClient', () => {
       handler({
         type: 'message.created',
         channel: '#general',
-        message: { id: 'm-event', agent_id: 'agent-1', agent_name: 'WorkerA', text: 'event', attachments: [] },
+        message: {
+          id: 'm-event',
+          agent_id: 'agent-1',
+          agent_name: 'WorkerA',
+          text: 'event',
+          attachments: [],
+        },
       });
       handler({ type: 'member.channel_muted', channel: '#general', agent_name: 'WorkerA' });
     }
@@ -278,7 +347,13 @@ describe('RelaycastMessagingClient', () => {
       normalizeMessagingEvent({
         type: 'message.created',
         channel: '#general',
-        message: { id: 'm-event', agent_id: 'agent-1', agent_name: 'WorkerA', text: 'event', attachments: [] },
+        message: {
+          id: 'm-event',
+          agent_id: 'agent-1',
+          agent_name: 'WorkerA',
+          text: 'event',
+          attachments: [],
+        },
       }),
     ]);
     expect(allEvents.map((event) => event.type)).toEqual(['messageCreated', 'channelMuted']);
