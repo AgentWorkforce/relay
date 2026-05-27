@@ -32,8 +32,8 @@ export default function TermsPage() {
         <section className={s.section}>
           <h2>Agreement</h2>
           <p>
-            These Terms of Service are an agreement between you and Agent Workforce for use of Agent Relay.
-            If you use Agent Relay on behalf of an organization, you represent that you have authority to bind
+            These Terms of Service are an agreement between you and Agent Workforce for use of Agent Relay. If
+            you use Agent Relay on behalf of an organization, you represent that you have authority to bind
             that organization to these terms.
           </p>
           <p>
@@ -59,7 +59,9 @@ export default function TermsPage() {
           <h2>Accounts and access</h2>
           <ul className={s.list}>
             <li>You are responsible for keeping account credentials and API tokens secure.</li>
-            <li>You are responsible for activity under your account, workspace, organization, or integration.</li>
+            <li>
+              You are responsible for activity under your account, workspace, organization, or integration.
+            </li>
             <li>You must provide accurate account, billing, and contact information when required.</li>
             <li>You may not share access in a way that bypasses plan limits or security controls.</li>
           </ul>
@@ -81,10 +83,10 @@ export default function TermsPage() {
         <section className={s.section}>
           <h2>Your content</h2>
           <p>
-            You retain ownership of source code, prompts, messages, files, repository content, Slack
-            messages, issue text, pull request text, agent output, and other content you provide or connect.
-            You grant Agent Relay the rights needed to process that content to provide, secure, and improve
-            the services.
+            You retain ownership of source code, prompts, messages, files, repository content, Slack messages,
+            issue text, pull request text, agent output, and other content you provide or connect. You grant
+            Agent Relay the rights needed to process that content to provide, secure, and improve the
+            services.
           </p>
           <p>
             You are responsible for ensuring that you have the rights and permissions needed to submit,
@@ -101,8 +103,8 @@ export default function TermsPage() {
             you authorize.
           </p>
           <p>
-            You may disconnect integrations at any time, but doing so may limit or disable related Agent
-            Relay features.
+            You may disconnect integrations at any time, but doing so may limit or disable related Agent Relay
+            features.
           </p>
         </section>
 
