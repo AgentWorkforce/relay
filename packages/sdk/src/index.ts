@@ -36,6 +36,13 @@ export type {
 export * from './models.js';
 export { RelayCast, RelayError, AgentClient } from '@relaycast/sdk';
 export type { RelayCastOptions, ClientOptions } from '@relaycast/sdk';
+export {
+  INVALID_AGENT_TOKEN_CODE,
+  INVALID_AGENT_TOKEN_MESSAGE,
+  agentTokenRecoveryMessage,
+  isInvalidAgentTokenError,
+  isInvalidAgentTokenToolResult,
+} from './relaycast-errors.js';
 export * from './pty.js';
 export * from './relay.js';
 export * from './logs.js';

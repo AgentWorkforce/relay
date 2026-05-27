@@ -37,6 +37,95 @@ describe('registerAgentWithRebind', () => {
     });
   });
 
+  it('re-registers when the strict-named identity was dropped from the agents map', async () => {
+    // After an `agent_token_invalid` recovery, the active token is null and
+    // the identity is missing from session.agents. The short-circuit must
+    // fall through to registerOrRotate instead of handing back the dead token.
+    const setSession = vi.fn();
+    const registerOrRotate = vi.fn().mockResolvedValue({
+      id: 'agent_456',
+      name: 'WorkerA',
+      token: 'at_live_fresh',
+      status: 'online',
+    });
+
+    const payload = await registerAgentWithRebind({
+      session: {
+        workspaceKey: 'rk_live_test',
+        agentToken: null,
+        agentName: 'WorkerA',
+        agents: new Map(),
+      },
+      setSession,
+      getRelay: () =>
+        ({
+          agents: { registerOrRotate },
+        }) as never,
+      name: 'WorkerA',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(registerOrRotate).toHaveBeenCalledOnce();
+    expect(payload).toMatchObject({ token: 'at_live_fresh', registered_name: 'WorkerA' });
+  });
+
+  it('re-registers when the agents map exists but the strict name is absent', async () => {
+    // Edge case: token is still set but the identity was evicted. The session
+    // is in an inconsistent state, so a fresh registration is the safe path.
+    const setSession = vi.fn();
+    const registerOrRotate = vi.fn().mockResolvedValue({
+      id: 'agent_789',
+      name: 'WorkerA',
+      token: 'at_live_rotated',
+      status: 'online',
+    });
+
+    await registerAgentWithRebind({
+      session: {
+        workspaceKey: 'rk_live_test',
+        agentToken: 'at_live_dead',
+        agentName: null,
+        agents: new Map(),
+      },
+      setSession,
+      getRelay: () =>
+        ({
+          agents: { registerOrRotate },
+        }) as never,
+      name: 'WorkerA',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(registerOrRotate).toHaveBeenCalledOnce();
+  });
+
+  it('prefers the per-identity token from the agents map when available', async () => {
+    const setSession = vi.fn();
+    const registerOrRotate = vi.fn();
+
+    const payload = await registerAgentWithRebind({
+      session: {
+        workspaceKey: 'rk_live_test',
+        agentToken: 'at_live_stale_active',
+        agentName: 'WorkerA',
+        agents: new Map([['WorkerA', { agentName: 'WorkerA', agentToken: 'at_live_per_identity' }]]),
+      },
+      setSession,
+      getRelay: () =>
+        ({
+          agents: { registerOrRotate },
+        }) as never,
+      name: 'WorkerA',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(registerOrRotate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({ token: 'at_live_per_identity' });
+  });
+
   it('registers or rotates and updates the bound session token', async () => {
     const setSession = vi.fn();
     const registerOrRotate = vi.fn().mockResolvedValue({

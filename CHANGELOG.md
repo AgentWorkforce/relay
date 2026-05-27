@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay mcp` recovers from stale Relaycast agent tokens mid-session: a 401 carrying `agent_token_invalid` (or the legacy `Invalid agent token` message) now clears the dead token from the MCP session, returns recovery guidance pointing at `register_agent`, and lets strict-named sessions re-register without a process restart.
+- `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
+- `agent-relay-broker` adds `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`, and `is_agent_token_invalid_code` on `crates/broker/src/relaycast/auth.rs`, and preserves the upstream `RelayError::Api` code through `relay_error_to_anyhow` so the same recovery signal is available to Rust callers.
 - GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
 - Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
 - `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, so custom CLIs can be configured without Rust changes while spawn requests remain self-contained.
