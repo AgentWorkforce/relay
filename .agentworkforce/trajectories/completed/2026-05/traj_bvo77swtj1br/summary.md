@@ -18,6 +18,7 @@ Added high-level AgentRelay.spawnProvider and AgentRelay.spawnHeadless facade me
 ## Key Decisions
 
 ### Expose typed AgentRelay spawnProvider and spawnHeadless methods
+
 - **Chose:** Expose typed AgentRelay spawnProvider and spawnHeadless methods
 - **Reasoning:** Issue 998 needs provider-backed and headless app-server agents to use the high-level facade lifecycle hooks, result contracts, channel handles, and harness resolution instead of dropping to AgentRelayClient.
 
@@ -26,6 +27,7 @@ Added high-level AgentRelay.spawnProvider and AgentRelay.spawnHeadless facade me
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Expose typed AgentRelay spawnProvider and spawnHeadless methods: Expose typed AgentRelay spawnProvider and spawnHeadless methods
