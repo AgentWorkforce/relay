@@ -1,0 +1,31 @@
+{
+  "id": "traj_xkp9t9riveqk",
+  "version": 1,
+  "task": {
+    "title": "Inspect Agent Relay MCP result callback support"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:12:37.196Z",
+  "completedAt": "2026-05-27T14:15:15.340Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Confirmed Agent Relay MCP lives in packages/cli/src/cli/relaycast-mcp.ts and supports SDK structured result callbacks through submit_result, broker callback env injection, /api/agent-result, and SDK agent_result event dispatch.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "d1aa908c"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/summary.md",
+    ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/trajectory.json"
+  ],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "900b8528d6cbcfa148af53fad904c426afa3e412",
+    "endRef": "d1aa908c0fa2319c8e0ff22faf716718e425015e",
+    "traceId": "fb52a05c-ab07-4036-ab29-f94533cff865"
+  }
+}

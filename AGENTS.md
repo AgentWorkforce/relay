@@ -70,7 +70,7 @@ trail start "Task description"
 If not globally installed, use npx to run from local installation:
 
 ```bash
-npx trail start "Task description"
+npx --yes agent-trajectories start "Task description"
 ```
 
 ## When Starting Work

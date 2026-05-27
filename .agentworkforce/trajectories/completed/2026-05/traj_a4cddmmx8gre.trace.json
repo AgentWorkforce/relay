@@ -1,0 +1,189 @@
+{
+  "version": "1.0.0",
+  "id": "349243c1-c405-4982-a6d1-035f4fa4d17d",
+  "timestamp": "2026-05-27T11:14:24.674Z",
+  "trajectory": "traj_a4cddmmx8gre",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 17,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/relaycast/auth.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 192,
+              "end_line": 249,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 710,
+              "end_line": 731,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 816,
+              "end_line": 840,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 875,
+              "end_line": 959,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/relaycast/mod.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 8,
+              "end_line": 17,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/relaycast-mcp.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 37,
+              "end_line": 131,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/relaycast-mcp.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 12,
+              "end_line": 23,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 86,
+              "end_line": 94,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 345,
+              "end_line": 364,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 620,
+              "end_line": 648,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 655,
+              "end_line": 701,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 1407,
+              "end_line": 1439,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            },
+            {
+              "start_line": 1458,
+              "end_line": 1464,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/__tests__/relaycast-errors.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 108,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 36,
+              "end_line": 48,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/relaycast-errors.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 125,
+              "revision": "f904124865b9575c1def48d20e333298cc03a1f7"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

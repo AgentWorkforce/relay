@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "id": "fb52a05c-ab07-4036-ab29-f94533cff865",
+  "timestamp": "2026-05-27T14:15:15.428Z",
+  "trajectory": "traj_xkp9t9riveqk",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 18,
+              "end_line": 24,
+              "revision": "d1aa908c0fa2319c8e0ff22faf716718e425015e"
+            },
+            {
+              "start_line": 27,
+              "end_line": 33,
+              "revision": "d1aa908c0fa2319c8e0ff22faf716718e425015e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-05/traj_ei1zajpyq584/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 50,
+              "end_line": 53,
+              "revision": "d1aa908c0fa2319c8e0ff22faf716718e425015e"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

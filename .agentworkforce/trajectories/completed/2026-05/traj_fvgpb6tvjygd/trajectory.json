@@ -1,0 +1,25 @@
+{
+  "id": "traj_fvgpb6tvjygd",
+  "version": 1,
+  "task": {
+    "title": "Move ESLint config out of repo root"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T15:27:25.367Z",
+  "completedAt": "2026-05-27T15:27:54.223Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Moved ESLint config from repository root to packages/cli where the lint script runs; verified root npm run lint still succeeds.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d4bc060ab727e844095d91a65dc655122b57d4d5",
+    "endRef": "d4bc060ab727e844095d91a65dc655122b57d4d5"
+  }
+}
