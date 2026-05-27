@@ -210,12 +210,12 @@ Keep application-level messaging code on `@agent-relay/sdk`; add `@agent-relay/d
 
 ## Migration from the pre-simplification SDK
 
-| Previous SDK surface                                                                        | SemVer-major target                                                    |
-| ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Spawn methods on `AgentRelay`, `AgentRelayClient.spawn()`, `spawnAgent()`, PTY/headless helpers | Move to `@agent-relay/driver`.                                    |
-| Workflow builder, consensus, shadow agents, and managed run helpers                         | Move to `@agent-relay/driver` or workflow-specific packages.           |
-| Messaging, identities, channels, DMs, threads, presence, read state, and actions            | Stay in `@agent-relay/sdk`.                                            |
-| Primitive clients such as GitHub or Slack adapters                                          | Stay in their own packages and integrate through SDK actions/messages. |
+| Previous SDK surface                                                                            | SemVer-major target                                                    |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Spawn methods on `AgentRelay`, `AgentRelayClient.spawn()`, `spawnAgent()`, PTY/headless helpers | Move to `@agent-relay/driver`.                                         |
+| Workflow builder, consensus, shadow agents, and managed run helpers                             | Move to `@agent-relay/driver` or workflow-specific packages.           |
+| Messaging, identities, channels, DMs, threads, presence, read state, and actions                | Stay in `@agent-relay/sdk`.                                            |
+| Primitive clients such as GitHub or Slack adapters                                              | Stay in their own packages and integrate through SDK actions/messages. |
 
 Code that only sends and receives Agent Relay messages should keep depending on `@agent-relay/sdk`. Code that starts agents, injects messages into harnesses, or supervises local runs should add `@agent-relay/driver`.
 
