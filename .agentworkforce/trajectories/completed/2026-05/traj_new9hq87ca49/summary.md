@@ -19,10 +19,12 @@ Simplified the high-level AgentRelay spawn facade to a single overloaded spawnAg
 ## Key Decisions
 
 ### Use AgentRelay.spawnAgent as the only high-level spawn facade
+
 - **Chose:** Use AgentRelay.spawnAgent as the only high-level spawn facade
 - **Reasoning:** The user asked to simplify the high-level SDK and avoid separate pty/headless/named CLI entry points. A single overloaded spawnAgent(config) keeps one public spelling while preserving runtime-specific typing through a pty/headless config discriminant.
 
 ### Recommend narrowing Agent Relay around communication core
+
 - **Chose:** Recommend narrowing Agent Relay around communication core
 - **Reasoning:** The repo's public promise is real-time agent-to-agent communication, but the default CLI and SDK also expose cloud runtime, proactive agents, drive/relayfile, memory/policy/hooks/trajectory, workflow primitives, GitHub/Slack/browser primitives, personas, web/brand, and multiple bridge surfaces. Keep broker, messaging, spawning, MCP, lifecycle, logs, and minimal SDK as core; move higher-level orchestration and integrations behind extension packages or separate workspaces.
 
@@ -31,7 +33,8 @@ Simplified the high-level AgentRelay spawn facade to a single overloaded spawnAg
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use AgentRelay.spawnAgent as the only high-level spawn facade: Use AgentRelay.spawnAgent as the only high-level spawn facade
 - Recommend narrowing Agent Relay around communication core: Recommend narrowing Agent Relay around communication core
