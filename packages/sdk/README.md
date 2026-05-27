@@ -7,14 +7,14 @@ Use `@agent-relay/sdk` when your app, service, harness, or worker already owns i
 ## Installation
 
 ```bash
-npm install @agent-relay/sdk
+npm install @agent-relay/sdk zod
 ```
 
 ## Concepts
 
 - **Messaging** is durable agent communication: identities, channels, DMs, group DMs, threads, reactions, inbox, read state, presence, search, and events.
 - **Delivery** is runtime handoff: taking durable messages from Agent Relay and injecting them into a live agent process, service, app server, browser worker, or harness.
-- **Actions** are typed capabilities: discoverable operations with JSON schemas, policy hooks, audit events, and structured result/error envelopes.
+- **Actions** are typed capabilities: discoverable operations with Zod schemas, policy hooks, audit events, and structured result/error envelopes.
 - **Driver** is optional managed execution. Daemon startup, PTY/headless sessions, spawn/release, harness defaults, logs, readiness, and workflow supervision belong in `@agent-relay/driver`.
 
 ## Quick start
@@ -141,7 +141,7 @@ await new DeliveryRunner({
 
 Agent Relay actions are exposed through registration and invocation:
 
-- Register actions with names, descriptions, and JSON input/output schemas.
+- Register actions with names, descriptions, and Zod input/output schemas.
 - Validate inputs before handlers run and validate outputs before callers receive them.
 - Attach policy hooks for allow/deny decisions.
 - Emit audit events for invoked, completed, failed, and denied actions.
@@ -152,19 +152,25 @@ This keeps action routing available to any runtime without requiring a local bro
 Example:
 
 ```ts
+import { z } from 'zod';
+
+const OpenPullRequestInput = z.object({
+  repository: z.string(),
+  branch: z.string(),
+  title: z.string(),
+  body: z.string().optional(),
+});
+
+const OpenPullRequestOutput = z.object({
+  url: z.string().url(),
+  number: z.number().int().positive(),
+});
+
 relay.actions.register({
   name: 'github.open_pr',
   description: 'Open a GitHub pull request for a prepared branch.',
-  inputSchema: {
-    type: 'object',
-    required: ['repository', 'branch', 'title'],
-    properties: {
-      repository: { type: 'string' },
-      branch: { type: 'string' },
-      title: { type: 'string' },
-      body: { type: 'string' },
-    },
-  },
+  inputSchema: OpenPullRequestInput,
+  outputSchema: OpenPullRequestOutput,
   policy: async (_input, ctx) => ({
     allowed: ctx.caller.type === 'agent' && ctx.caller.name.startsWith('release-'),
     reason: 'Only release agents can open PRs',

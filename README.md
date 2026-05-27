@@ -9,7 +9,7 @@ Use it to build your own orchestrator, proactive agent, multi-agent workflows, o
 
 ## Quick Start
 ```bash
-npm install @agent-relay/sdk
+npm install @agent-relay/sdk zod
 ```
 
 
@@ -101,11 +101,27 @@ The delivery contract is explicit: adapters return `accepted`, `delivered`, `def
 
 ### 3. Actions
 
-Actions are typed capabilities that agents can discover and invoke through the SDK or MCP. Core owns the protocol: descriptors, JSON schema validation, policy hooks, audit events, and result/error envelopes. Implementations live with the system that can actually do the work.
+Actions are typed capabilities that agents can discover and invoke through the SDK or MCP. Core owns the protocol: descriptors, Zod validation, policy hooks, audit events, and result/error envelopes. Implementations live with the system that can actually do the work.
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 import { registerDriverActions } from '@agent-relay/driver';
+import { z } from 'zod';
+
+const ShowSearchResultsInput = z.object({
+  query: z.string(),
+  results: z.array(
+    z.object({
+      title: z.string(),
+      url: z.string().url(),
+      snippet: z.string().optional(),
+    })
+  ),
+});
+
+const ShowSearchResultsOutput = z.object({
+  displayed: z.boolean(),
+});
 
 const relay = new AgentRelay({
   apiKey: process.env.RELAY_API_KEY!,
@@ -114,25 +130,8 @@ const relay = new AgentRelay({
 relay.actions.register({
   name: 'ui.show_search_results',
   description: 'Show a result set in the operator UI.',
-  inputSchema: {
-    type: 'object',
-    required: ['query', 'results'],
-    properties: {
-      query: { type: 'string' },
-      results: {
-        type: 'array',
-        items: {
-          type: 'object',
-          required: ['title', 'url'],
-          properties: {
-            title: { type: 'string' },
-            url: { type: 'string' },
-            snippet: { type: 'string' },
-          },
-        },
-      },
-    },
-  },
+  inputSchema: ShowSearchResultsInput,
+  outputSchema: ShowSearchResultsOutput,
   handler: async (input, ctx) => {
     await operatorUi.showResults(input);
     await ctx.messaging?.messages.send({
