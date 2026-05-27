@@ -63,7 +63,8 @@ test('facade: spawn with initial task delivers task after worker_ready', async (
   relay.addListener('agentReady', (agent) => readyNames.push(agent.name));
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Task-${suffix}`,
       cli: 'cat',
       channels: ['general'],
@@ -95,7 +96,8 @@ test('facade: agentReady listener fires when worker becomes ready', async (t) =>
   relay.addListener('agentReady', (agent) => readyAgents.push(agent));
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Ready-${suffix}`,
       cli: 'cat',
       channels: ['general'],
@@ -128,7 +130,8 @@ test('facade: broadcast sends to all agents', async (t) => {
   relay.addListener('messageSent', (msg) => sentMessages.push(msg));
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Broadcast-${suffix}`,
       cli: 'cat',
       channels: ['general'],
@@ -162,8 +165,8 @@ test('facade: waitForAny returns first agent to exit', async (t) => {
 
   try {
     const [a, b] = await Promise.all([
-      relay.spawnPty({ name: `WaitA-${suffix}`, cli: 'cat', channels: ['general'] }),
-      relay.spawnPty({ name: `WaitB-${suffix}`, cli: 'cat', channels: ['general'] }),
+      relay.spawnAgent({ runtime: 'pty', name: `WaitA-${suffix}`, cli: 'cat', channels: ['general'] }),
+      relay.spawnAgent({ runtime: 'pty', name: `WaitB-${suffix}`, cli: 'cat', channels: ['general'] }),
     ]);
 
     // Release agent A — it should be the first to exit
@@ -190,7 +193,8 @@ test('facade: waitForAny respects timeout', async (t) => {
   const relay = makeRelay(bin);
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Timeout-${suffix}`,
       cli: 'cat',
       channels: ['general'],
@@ -218,7 +222,8 @@ test('facade: agentExited listener populates exitCode and exitSignal', async (t)
   relay.addListener('agentExited', (agent) => exitedAgents.push(agent));
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Exit-${suffix}`,
       cli: 'cat',
       channels: ['general'],
@@ -255,7 +260,8 @@ test('facade: getLogs returns log content for agent', async (t) => {
   const relay = makeRelay(bin);
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Logs-${suffix}`,
       cli: 'cat',
       channels: ['general'],

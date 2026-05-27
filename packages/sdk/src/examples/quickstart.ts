@@ -39,16 +39,17 @@ relay.addListener('agentExited', (agent) => {
 // ── Create agents with sane defaults, running locally ───────────────────────
 
 const [codex, claude, gemini] = await Promise.all([
-  relay.codex.spawn(),
-  relay.claude.spawn(),
-  relay.gemini.spawn(),
+  relay.spawnAgent({ name: 'Codex', cli: 'codex', runtime: 'pty' }),
+  relay.spawnAgent({ name: 'Claude', cli: 'claude', runtime: 'pty' }),
+  relay.spawnAgent({ name: 'Gemini', cli: 'gemini', runtime: 'pty' }),
 ]);
 
 // ── Configure messaging with custom CLI agents ─────────────────────────────
 
-const worker1 = await relay.spawnPty({
+const worker1 = await relay.spawnAgent({
   name: 'Worker1',
   cli: 'codex',
+  runtime: 'pty',
   args: ['--model', 'gpt-5'],
   channels: ['general'],
 });

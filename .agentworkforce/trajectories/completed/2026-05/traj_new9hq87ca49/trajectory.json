@@ -1,0 +1,69 @@
+{
+  "id": "traj_new9hq87ca49",
+  "version": 1,
+  "task": {
+    "title": "Simplify high-level spawn facade",
+    "source": {
+      "system": "plain",
+      "id": "PR-1003"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T14:33:21.756Z",
+  "completedAt": "2026-05-27T14:43:14.398Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T14:35:38.895Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_b6rs7s6fn18n",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T14:35:38.895Z",
+      "endedAt": "2026-05-27T14:43:14.398Z",
+      "events": [
+        {
+          "ts": 1779892538896,
+          "type": "decision",
+          "content": "Use AgentRelay.spawnAgent as the only high-level spawn facade: Use AgentRelay.spawnAgent as the only high-level spawn facade",
+          "raw": {
+            "question": "Use AgentRelay.spawnAgent as the only high-level spawn facade",
+            "chosen": "Use AgentRelay.spawnAgent as the only high-level spawn facade",
+            "alternatives": [],
+            "reasoning": "The user asked to simplify the high-level SDK and avoid separate pty/headless/named CLI entry points. A single overloaded spawnAgent(config) keeps one public spelling while preserving runtime-specific typing through a pty/headless config discriminant."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1779892640276,
+          "type": "decision",
+          "content": "Recommend narrowing Agent Relay around communication core: Recommend narrowing Agent Relay around communication core",
+          "raw": {
+            "question": "Recommend narrowing Agent Relay around communication core",
+            "chosen": "Recommend narrowing Agent Relay around communication core",
+            "alternatives": [],
+            "reasoning": "The repo's public promise is real-time agent-to-agent communication, but the default CLI and SDK also expose cloud runtime, proactive agents, drive/relayfile, memory/policy/hooks/trajectory, workflow primitives, GitHub/Slack/browser primitives, personas, web/brand, and multiple bridge surfaces. Keep broker, messaging, spawning, MCP, lifecycle, logs, and minimal SDK as core; move higher-level orchestration and integrations behind extension packages or separate workspaces."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Simplified the high-level AgentRelay spawn facade to a single overloaded spawnAgent(config) API with runtime-discriminated pty/headless configs; removed shorthand CLI spawners and high-level spawnPty/spawnHeadless/spawn/spawnAndWait surfaces; updated SDK docs, examples, and focused tests.",
+    "approach": "Standard approach",
+    "confidence": 0.91
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b9a68bbbb2d028b9169422bf1d344f08d009b57a",
+    "endRef": "b9a68bbbb2d028b9169422bf1d344f08d009b57a"
+  }
+}

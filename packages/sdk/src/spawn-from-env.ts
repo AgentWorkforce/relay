@@ -221,9 +221,10 @@ export async function spawnFromEnv(options: SpawnFromEnvOptions = {}): Promise<S
   });
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
       name: policy.name,
       cli: policy.cli,
+      runtime: 'pty',
       args: policy.args,
       channels: policy.channels,
       task: policy.task,

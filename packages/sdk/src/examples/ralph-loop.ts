@@ -212,12 +212,16 @@ while (iteration < MAX_ITERATIONS) {
     console.log(`  ⚡ Spawning Claude (architect) + Codex (builder) — round: ${roundLabel}`);
 
     const [architect, builder] = await Promise.all([
-      relay.claude.spawn({
+      relay.spawnAgent({
         name: `Architect-${story.id}-${roundLabel}`,
+        cli: 'claude',
+        runtime: 'pty',
         channels: ['general'],
       }),
-      relay.codex.spawn({
+      relay.spawnAgent({
         name: `Builder-${story.id}-${roundLabel}`,
+        cli: 'codex',
+        runtime: 'pty',
         args: ['--full-auto'],
         channels: ['general'],
       }),

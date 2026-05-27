@@ -36,8 +36,20 @@ relay.addListener('agentExited', (agent) => {
 console.log('\n─── Spawning agents ───\n');
 
 const [agentA, agentB] = await Promise.all([
-  relay.spawnPty({ name: 'AgentA', cli: 'claude', args: ['--print'], channels: ['general'] }),
-  relay.spawnPty({ name: 'AgentB', cli: 'claude', args: ['--print'], channels: ['general'] }),
+  relay.spawnAgent({
+    name: 'AgentA',
+    cli: 'claude',
+    runtime: 'pty',
+    args: ['--print'],
+    channels: ['general'],
+  }),
+  relay.spawnAgent({
+    name: 'AgentB',
+    cli: 'claude',
+    runtime: 'pty',
+    args: ['--print'],
+    channels: ['general'],
+  }),
 ]);
 
 // ── Send messages ───────────────────────────────────────────────────────────

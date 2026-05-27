@@ -69,8 +69,9 @@ test('facade: spawn → message → list → release → shutdown', async (t) =>
   try {
     // Spawn two agents in parallel
     const [codex, worker1] = await Promise.all([
-      relay.codex.spawn({ name: `Codex-${suffix}` }),
-      relay.spawnPty({
+      relay.spawnAgent({ name: `Codex-${suffix}`, cli: 'codex', runtime: 'pty' }),
+      relay.spawnAgent({
+        runtime: 'pty',
         name: `Worker1-${suffix}`,
         cli: 'cat',
         channels: ['general'],
@@ -142,8 +143,8 @@ test('facade: agent.sendMessage sends from the agent identity', async (t) => {
 
   try {
     const [a, b] = await Promise.all([
-      relay.spawnPty({ name: `A-${suffix}`, cli: 'cat', channels: ['general'] }),
-      relay.spawnPty({ name: `B-${suffix}`, cli: 'cat', channels: ['general'] }),
+      relay.spawnAgent({ runtime: 'pty', name: `A-${suffix}`, cli: 'cat', channels: ['general'] }),
+      relay.spawnAgent({ runtime: 'pty', name: `B-${suffix}`, cli: 'cat', channels: ['general'] }),
     ]);
 
     const msg = await a.sendMessage({ to: b.name, text: 'ping' });
@@ -174,7 +175,8 @@ test('facade: message threading with threadId', async (t) => {
   });
 
   try {
-    const agent = await relay.spawnPty({
+    const agent = await relay.spawnAgent({
+      runtime: 'pty',
       name: `Thread-${suffix}`,
       cli: 'cat',
       channels: ['general'],

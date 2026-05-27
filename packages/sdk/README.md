@@ -42,9 +42,11 @@ relay.onAgentActivityChanged = ({ name, active, pendingDeliveries }) => {
   updateThinkingBadge(name, active ? `Thinking (${pendingDeliveries})` : 'Idle');
 };
 
-// Spawn agents using shorthand spawners
-const worker = await relay.claude.spawn({
+// Spawn a PTY-backed agent
+const worker = await relay.spawnAgent({
   name: 'Worker1',
+  cli: 'claude',
+  runtime: 'pty',
   channels: ['general'],
   // Lifecycle hooks can be sync or async functions.
   onStart: ({ name }) => console.log(`spawning ${name}`),
@@ -52,16 +54,20 @@ const worker = await relay.claude.spawn({
   onError: ({ name, error }) => console.error(`failed to spawn ${name}`, error),
 });
 
-// Or use the generic spawn method
-const agent = await relay.spawn('Worker2', 'codex', 'Build the API', {
+const agent = await relay.spawnAgent({
+  name: 'Worker2',
+  cli: 'codex',
+  runtime: 'pty',
+  task: 'Build the API',
   channels: ['dev'],
   model: 'gpt-4o',
 });
 
 // Headless harnesses keep the same Agent handle surface
-const reviewer = await relay.spawnHeadless({
+const reviewer = await relay.spawnAgent({
   name: 'HeadlessReviewer',
   cli: 'opencode',
+  runtime: 'headless',
   channels: ['reviews'],
   task: 'Review the current branch',
 });
