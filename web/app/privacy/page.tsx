@@ -9,7 +9,8 @@ import s from './privacy.module.css';
 
 export const metadata: Metadata = {
   title: 'Privacy Policy - Agent Relay',
-  description: 'How Agent Relay collects, uses, and protects information for the website, open-source tools, and cloud services.',
+  description:
+    'How Agent Relay collects, uses, and protects information for the website, open-source tools, and cloud services.',
   alternates: {
     canonical: absoluteUrl('/privacy'),
   },
@@ -33,9 +34,9 @@ export default function PrivacyPage() {
           <h2>Scope</h2>
           <p>
             This policy applies to Agent Relay products and services operated by Agent Workforce, including
-            the Agent Relay website, CLI telemetry, hosted cloud workspaces, integrations, billing, and support
-            communications. Open-source use of Agent Relay can run locally without an Agent Relay Cloud
-            account.
+            the Agent Relay website, CLI telemetry, hosted cloud workspaces, integrations, billing, and
+            support communications. Open-source use of Agent Relay can run locally without an Agent Relay
+            Cloud account.
           </p>
         </section>
 
@@ -53,37 +54,66 @@ export default function PrivacyPage() {
               <tbody>
                 <tr>
                   <td>Account</td>
-                  <td>Email address, display name, GitHub username, GitHub ID, avatar URL, plan, verification status</td>
-                  <td>Create accounts, authenticate users, manage plans, and show profile context in the product</td>
+                  <td>
+                    Email address, display name, GitHub username, GitHub ID, avatar URL, plan, verification
+                    status
+                  </td>
+                  <td>
+                    Create accounts, authenticate users, manage plans, and show profile context in the product
+                  </td>
                 </tr>
                 <tr>
                   <td>Cloud workspaces</td>
-                  <td>Workspace names, status, compute provider IDs, public URLs, custom domains, team memberships</td>
+                  <td>
+                    Workspace names, status, compute provider IDs, public URLs, custom domains, team
+                    memberships
+                  </td>
                   <td>Provision, operate, secure, and troubleshoot hosted agent workspaces</td>
                 </tr>
                 <tr>
                   <td>Repositories and projects</td>
-                  <td>Repository full names, GitHub repository IDs, default branches, private/public status, project group settings</td>
-                  <td>Connect workspaces to repositories, route agent work, and maintain project configuration</td>
+                  <td>
+                    Repository full names, GitHub repository IDs, default branches, private/public status,
+                    project group settings
+                  </td>
+                  <td>
+                    Connect workspaces to repositories, route agent work, and maintain project configuration
+                  </td>
                 </tr>
                 <tr>
                   <td>Agent activity</td>
-                  <td>Agent names, session status, summaries, end markers, memory metrics, crash details, alerts, queued message metadata</td>
-                  <td>Run cloud agents, preserve session context when enabled, diagnose failures, and deliver requested work</td>
+                  <td>
+                    Agent names, session status, summaries, end markers, memory metrics, crash details,
+                    alerts, queued message metadata
+                  </td>
+                  <td>
+                    Run cloud agents, preserve session context when enabled, diagnose failures, and deliver
+                    requested work
+                  </td>
                 </tr>
                 <tr>
                   <td>Integrations</td>
-                  <td>GitHub App installation IDs, granted permissions, provider account IDs, scopes, Slack team/channel/thread/user IDs</td>
+                  <td>
+                    GitHub App installation IDs, granted permissions, provider account IDs, scopes, Slack
+                    team/channel/thread/user IDs
+                  </td>
                   <td>Connect Agent Relay to GitHub, Slack, and other services you authorize</td>
                 </tr>
                 <tr>
                   <td>Billing and usage</td>
-                  <td>Stripe customer and subscription IDs, plan status, invoice references, usage metrics</td>
-                  <td>Process subscriptions, enforce limits, prepare invoices, and support billing questions</td>
+                  <td>
+                    Stripe customer and subscription IDs, plan status, invoice references, usage metrics
+                  </td>
+                  <td>
+                    Process subscriptions, enforce limits, prepare invoices, and support billing questions
+                  </td>
                 </tr>
                 <tr>
                   <td>Website and telemetry</td>
-                  <td>Page views, browser information, coarse location, CLI version, operating system, command names</td>
+                  <td>
+                    Page views, browser information, coarse location, CLI version, operating system, command
+                    names
+                  </td>
                   <td>Understand product usage, improve reliability, and prioritize fixes</td>
                 </tr>
               </tbody>
@@ -108,8 +138,8 @@ export default function PrivacyPage() {
           </p>
           <p>
             Cloud session persistence features may store structured summaries, decisions, completed tasks,
-            file references, and other context emitted by agents. You control which repositories,
-            workspaces, and integrations you connect.
+            file references, and other context emitted by agents. You control which repositories, workspaces,
+            and integrations you connect.
           </p>
         </section>
 
@@ -143,8 +173,8 @@ export default function PrivacyPage() {
         <section className={s.section}>
           <h2>How we share information</h2>
           <p>
-            We do not sell personal information. We share information with service providers only as needed
-            to operate Agent Relay, with integrations you connect, as directed by workspace administrators, to
+            We do not sell personal information. We share information with service providers only as needed to
+            operate Agent Relay, with integrations you connect, as directed by workspace administrators, to
             comply with law, or to protect the security and integrity of the service.
           </p>
         </section>
@@ -168,7 +198,10 @@ export default function PrivacyPage() {
           <h2>Your choices</h2>
           <ul className={s.list}>
             <li>Disable CLI telemetry by following the instructions on the telemetry page.</li>
-            <li>Disconnect GitHub, Slack, or other integrations from the relevant provider or Agent Relay settings.</li>
+            <li>
+              Disconnect GitHub, Slack, or other integrations from the relevant provider or Agent Relay
+              settings.
+            </li>
             <li>Delete workspaces and repositories you no longer want Agent Relay Cloud to operate on.</li>
             <li>Use local open-source Agent Relay workflows when you do not need hosted cloud services.</li>
             <li>Contact us to request access, correction, export, or deletion of account information.</li>
