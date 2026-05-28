@@ -130,14 +130,6 @@ That means message sending can happen a few different ways:
 
 WebSockets are the fast path for live coordination, not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
-Delivery policy controls how aggressive Relay should be after the durable message exists:
-
-- `immediate`: inject or notify now, even if the runtime is active.
-- `next-message`: wait until the harness is about to send or receive another message.
-- `next-tool-call`: wait until the next tool-use boundary, which is safer for many CLI agents.
-- `on-idle`: wait until the harness reports that the agent is idle.
-- `manual`: hold the message for explicit flush or human/operator action.
-
 ## Harnesses
 
 A harness is any runtime boundary that can implement our Agent Relay adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
@@ -158,20 +150,27 @@ We support many of the common harnesses with our optional [`@agent-relay/harness
 
 ### Message Delivery
 
+At the harness boundary, delivery means taking a durable Relay message and making it visible to the runtime at the right moment.
+
 A harness has one true requirement: accept messages.
 
 ```ts
 
 ```
 
+Delivery policy controls how aggressive Relay should be after the durable message exists:
+
+- `immediate`: inject or notify now, even if the runtime is active.
+- `next-message`: wait until the harness is about to send or receive another message.
+- `next-tool-call`: wait until the next tool-use boundary, which is safer for many CLI agents.
+- `on-idle`: wait until the harness reports that the agent is idle.
+- `manual`: hold the message for explicit flush or human/operator action.
+
 Ideally, it also can send messages
 
 ```ts
 
 ```
-
-> [!NOTE]
-> CLI harnesses such as Claude Code and Codex usually receive messages by injection, and send messages back through the MCP tools or SDK hooks provided to the process.
 
 The target SDK contract should look like this as an interface:
 
