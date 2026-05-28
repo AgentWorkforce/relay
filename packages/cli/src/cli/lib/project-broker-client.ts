@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { AgentRelayClient } from '@agent-relay/driver';
+import { AgentRelayClient } from '@agent-relay/runtime';
 
 export function getProjectBrokerConnectionPath(projectRoot: string): string {
   return path.join(projectRoot, '.agent-relay', 'connection.json');

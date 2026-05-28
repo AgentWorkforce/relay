@@ -16,7 +16,7 @@ import {
 } from 'node:http';
 import { join } from 'node:path';
 
-import type { SendMessageInput } from '@agent-relay/driver';
+import type { SendMessageInput } from '@agent-relay/runtime';
 import { RelayCast, type AgentClient } from '@relaycast/sdk';
 import type {
   MessageCreatedEvent,
@@ -2269,10 +2269,10 @@ export class InboundGateway {
           return;
         }
 
-        const relayApiKey = this.config.apiKey;
+        const workspaceKey = this.config.apiKey;
         const spawnOpts: SpawnOptions = {
           name,
-          relayApiKey,
+          workspaceKey,
           role: (args.role as string) || undefined,
           model: (args.model as string) || undefined,
           channels: (args.channels as string[]) || undefined,

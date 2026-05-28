@@ -34,7 +34,7 @@ export interface SpawnPtyInput {
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
    *  authenticates with. When omitted, the relaycast MCP auto-mints a token
-   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
   agentToken?: string;
@@ -61,7 +61,7 @@ export interface SpawnHeadlessInput {
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
    *  authenticates with. When omitted, the relaycast MCP auto-mints a token
-   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
   agentToken?: string;
@@ -98,7 +98,7 @@ export interface SpawnCliInput {
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
    *  authenticates with. When omitted, the relaycast MCP auto-mints a token
-   *  using `RELAY_API_KEY` + the spawn name; that is the recommended path.
+   *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
   agentToken?: string;

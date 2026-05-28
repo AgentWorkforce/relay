@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/driver`.
+- `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/runtime`.
 - `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
 - `@agent-relay/sdk` adds the public session/harness contract: `HarnessConfig`, `AgentSession`, session identity, capabilities, delivery modes, message receipts, and session event types.
-- `@agent-relay/driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and driver-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
+- `@agent-relay/runtime` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and runtime-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
 - `agent-relay mcp` can expose registered SDK actions as explicit MCP tools plus `list_actions` and `invoke_action`.
 - `agent-relay mcp` recovers from stale agent tokens mid-session: a 401 carrying `agent_token_invalid` (or the legacy `Invalid agent token` message) now clears the dead token from the MCP session, returns recovery guidance pointing at `register_agent`, and lets strict-named sessions re-register without a process restart.
 - `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
@@ -29,17 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
 - `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
-- Root builds now validate the simplified core package set: config, utils, telemetry, SDK, driver, and CLI.
+- Root builds now validate the simplified core package set: config, utils, telemetry, SDK, runtime, harnesses, and CLI.
 - `agent-relay mcp`: Agent Relay now ships its own MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp`.
 - `agent-relay mcp`: renamed the bundled implementation and command override to Agent Relay MCP (`AGENT_RELAY_MCP_COMMAND`).
 - `agent-relay up`: broker startup no longer writes external MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
 - Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
-- `@agent-relay/openclaw` remains available as an optional OpenClaw adapter package, with managed spawn internals moved to `@agent-relay/driver` instead of the core SDK.
+- `@agent-relay/openclaw` remains available as an optional OpenClaw adapter package, with managed spawn internals moved to `@agent-relay/runtime` instead of the core SDK.
+- Workspace setup now leads with creating an Agent Relay workspace through the SDK, MCP, or OpenClaw setup instead of requiring a pre-provisioned Agent Relay API key; existing workspace keys are treated as join secrets.
 - `@agent-relay/sdk` `spawnPersona` now runs the full `@agentworkforce/persona-kit` lifecycle (skill installs, mount policy, `CLAUDE.md` / `AGENTS.md` sidecars, persona inputs) before launching the harness, and reverses every side effect when the agent exits. Previously it only translated the harness argv and silently dropped the rest of the schema.
 
 ### Breaking Changes
 
-- `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/driver`.
+- `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/runtime`.
 - `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, and GitHub/Slack primitive adapters.
 - `agent-relay` removes spawn-first, cloud, attach/view/drive/passthrough, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
 - `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
@@ -52,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration Guidance
 
-- Install `@agent-relay/driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
+- Install `@agent-relay/runtime` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
 - Replace `agent-relay up/status/down` with `agent-relay driver up/status/down` when you want Agent Relay to manage the local harness boundary.
 - Replace SDK spawn calls with driver actions (`agent.create`, `agent.release`, `agent.status`) when agents need to request managed harness work through MCP.
 - Personas relying on `tiers.*` need to be flattened to a single top-level `harness` / `model` / `systemPrompt`. The shape that persona-kit (and the `agentworkforce` CLI) consumes is now the only supported shape.

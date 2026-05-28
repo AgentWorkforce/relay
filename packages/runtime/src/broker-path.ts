@@ -2,7 +2,7 @@
  * Resolves the agent-relay-broker binary path at runtime.
  *
  * Usage:
- *   import { getBrokerBinaryPath } from '@agent-relay/driver/broker-path';
+ *   import { getBrokerBinaryPath } from '@agent-relay/runtime/broker-path';
  *   const binPath = getBrokerBinaryPath();
  */
 
@@ -125,7 +125,7 @@ function getDriverBinDirs(): string[] {
   const currentModuleReference = getCurrentModuleReference();
   if (currentModuleReference) {
     try {
-      const driverEntry = createRequire(currentModuleReference).resolve('@agent-relay/driver');
+      const driverEntry = createRequire(currentModuleReference).resolve('@agent-relay/runtime');
       addUniquePath(binDirs, resolve(dirname(driverEntry), '..', 'bin'));
     } catch {
       // Continue with other resolution strategies.
@@ -196,7 +196,7 @@ function isSourceCheckoutRoot(candidate: string): boolean {
   return (
     existsSync(join(repoRoot, 'Cargo.toml')) &&
     existsSync(join(repoRoot, 'crates', 'broker', 'src', 'main.rs')) &&
-    existsSync(join(repoRoot, 'packages', 'driver', 'package.json'))
+    existsSync(join(repoRoot, 'packages', 'runtime', 'package.json'))
   );
 }
 
@@ -236,7 +236,7 @@ export function getBrokerBinaryPath(): string | null {
   }
 
   // 1. Prefer a local Cargo build when this SDK is being used from a source checkout.
-  // In development, a binary staged in packages/driver/bin can be stale relative
+  // In development, a binary staged in packages/runtime/bin can be stale relative
   // to the current Rust build in target/release.
   for (const developmentPath of getSourceCheckoutBinaryPaths(ext, binDirs)) {
     if (existsSync(developmentPath)) {
@@ -299,9 +299,9 @@ export function getBrokerBinaryPath(): string | null {
 export function formatBrokerNotFoundError(): string {
   const pkgName = getOptionalDepPackageName();
   return (
-    `@agent-relay/driver couldn't find an agent-relay-broker binary for ` +
+    `@agent-relay/runtime couldn't find an agent-relay-broker binary for ` +
     `${process.platform}-${process.arch}. The optional dependency ` +
-    `${pkgName} is expected to be installed alongside @agent-relay/driver. ` +
+    `${pkgName} is expected to be installed alongside @agent-relay/runtime. ` +
     `Try reinstalling with --include=optional, or set BROKER_BINARY_PATH ` +
     `to point at a broker binary you've downloaded manually.`
   );

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { AgentRelayClient } from '@agent-relay/driver';
+import { AgentRelayClient } from '@agent-relay/runtime';
 
 function csv(value) {
   return value

@@ -1,8 +1,10 @@
 export interface SpawnOptions {
   /** Display name for the new OpenClaw (e.g. "researcher"). */
   name: string;
-  /** Relay API key for Relaycast messaging. */
-  relayApiKey: string;
+  /** Agent Relay workspace key for messaging. */
+  workspaceKey?: string;
+  /** @deprecated Use workspaceKey. */
+  relayApiKey?: string;
   /** Channels to auto-join. */
   channels?: string[];
   /** Agent role description. */

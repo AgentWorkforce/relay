@@ -34,11 +34,12 @@ export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SD
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
 ## Getting Started
-1. If no workspace key is configured, call "create_workspace" or "set_workspace_key"
-2. When RELAY_API_KEY is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
-3. Use "list_channels" to see available channels
-4. Use "join_channel" to join channels of interest
-5. Use "check_inbox" to see unread messages and mentions
+1. If no workspace is configured, call "create_workspace"
+2. If someone shared an existing workspace key with you, call "set_workspace_key"
+3. When a workspace key is provided at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
+4. Use "list_channels" to see available channels
+5. Use "join_channel" to join channels of interest
+6. Use "check_inbox" to see unread messages and mentions
 
 ## Communication
 - Post messages to channels with "post_message"
@@ -69,6 +70,8 @@ type RelayCastLike = Pick<RelayCast, 'agents'>;
 type AgentClientLike = AgentClient;
 
 export interface AgentRelayMcpServerOptions {
+  workspaceKey?: string;
+  /** @deprecated Use workspaceKey. */
   apiKey?: string;
   baseUrl?: string;
   agentToken?: string;
@@ -289,12 +292,37 @@ async function createWorkspace(name: string, baseUrl?: string): Promise<Record<s
   return (await RelayCast.createWorkspace(name, { baseUrl })) as Record<string, unknown>;
 }
 
+function extractWorkspaceKey(payload: Record<string, unknown>): string | undefined {
+  const data =
+    payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {};
+  const value =
+    payload.workspaceKey ??
+    payload.workspace_key ??
+    payload.apiKey ??
+    payload.api_key ??
+    data.workspaceKey ??
+    data.workspace_key ??
+    data.apiKey ??
+    data.api_key;
+
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function extractWorkspaceName(payload: Record<string, unknown>, fallback: string): string {
+  const data =
+    payload.data && typeof payload.data === 'object' ? (payload.data as Record<string, unknown>) : {};
+  const value = payload.workspaceName ?? payload.workspace_name ?? payload.name ?? data.workspaceName;
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
 function requireWorkspaceKey(session: RegistrationSession): void {
   if (session.workspaceKey) {
     return;
   }
 
-  throw new Error('Workspace key not configured. Call "create_workspace" or "set_workspace_key" first.');
+  throw new Error(
+    'Workspace key not configured. Call "create_workspace" first, or "set_workspace_key" if someone shared a workspace key.'
+  );
 }
 
 type JsonToolResult = {
@@ -978,7 +1006,7 @@ function registerAgentRelayTools(
     'create_workspace',
     {
       title: 'Create Workspace',
-      description: 'Create a new Relaycast workspace and store its API key in this MCP session.',
+      description: 'Create a new Agent Relay workspace and store its workspace key in this MCP session.',
       inputSchema: {
         name: z.string().describe('Human-readable workspace name'),
       },
@@ -992,10 +1020,11 @@ function registerAgentRelayTools(
     },
     async ({ name }: any) => {
       const workspace = await createWorkspace(name, baseUrl);
-      const workspaceKey = workspace.apiKey ?? workspace.api_key;
+      const workspaceKey = extractWorkspaceKey(workspace);
       if (!workspaceKey || typeof workspaceKey !== 'string') {
-        throw new Error('Workspace created, but the response did not include apiKey');
+        throw new Error('Workspace created, but the response did not include a workspace key.');
       }
+      const workspaceName = extractWorkspaceName(workspace, name);
 
       setSession({
         workspaceKey,
@@ -1003,7 +1032,10 @@ function registerAgentRelayTools(
         agentName: null,
         agents: new Map(),
       });
-      return jsonContent(workspace);
+      return jsonContent({
+        workspaceKey,
+        workspaceName,
+      });
     }
   );
 
@@ -1011,9 +1043,10 @@ function registerAgentRelayTools(
     'set_workspace_key',
     {
       title: 'Set Workspace Key',
-      description: 'Authenticate this MCP session with an existing Relaycast workspace API key.',
+      description: 'Join this MCP session to an existing Agent Relay workspace using a shared workspace key.',
       inputSchema: {
-        api_key: z.string().describe('Workspace API key starting with "rk_live_"'),
+        workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_"'),
+        api_key: z.string().optional().describe('Deprecated alias for workspace_key'),
       },
       outputSchema: messageResult,
       annotations: {
@@ -1023,22 +1056,26 @@ function registerAgentRelayTools(
         openWorldHint: false,
       },
     },
-    async ({ api_key }: any) => {
-      if (!api_key.startsWith('rk_live_')) {
+    async ({ workspace_key, api_key }: any) => {
+      const key = workspace_key ?? api_key;
+      if (!key || typeof key !== 'string') {
+        throw new Error('Workspace key is required.');
+      }
+      if (!key.startsWith('rk_live_')) {
         throw new Error('Workspace key must start with "rk_live_"');
       }
 
       const session = getSession();
-      const switchingWorkspace = session.workspaceKey !== api_key;
+      const switchingWorkspace = session.workspaceKey !== key;
       if (switchingWorkspace) {
         setSession({
-          workspaceKey: api_key,
+          workspaceKey: key,
           agentToken: null,
           agentName: null,
           agents: new Map(),
         });
       } else {
-        setSession({ workspaceKey: api_key });
+        setSession({ workspaceKey: key });
       }
 
       const message = switchingWorkspace
@@ -1573,7 +1610,7 @@ function registerAgentRelayTools(
 
 export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): McpServer {
   const session = createInitialSession({
-    workspaceKey: options.apiKey ?? null,
+    workspaceKey: options.workspaceKey ?? options.apiKey ?? null,
     agentToken: options.agentToken ?? null,
     agentName: options.agentName ?? null,
   });
@@ -1594,7 +1631,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     const workspaceKey = session.workspaceKey;
     if (!workspaceKey) {
       throw new Error(
-        'Workspace key not configured. Set RELAY_API_KEY at startup, or call "create_workspace" or "set_workspace_key" first.'
+        'Workspace key not configured. Call "create_workspace" first, or provide a shared workspace key with "set_workspace_key".'
       );
     }
 
@@ -1789,12 +1826,14 @@ export async function resolveStdioBootstrapOptions(
     return options;
   }
 
-  if (!options.apiKey || !options.agentName) {
+  const workspaceKey = options.workspaceKey ?? options.apiKey;
+
+  if (!workspaceKey || !options.agentName) {
     return options;
   }
 
   const relay = new RelayCast({
-    apiKey: options.apiKey,
+    apiKey: workspaceKey,
     baseUrl: options.baseUrl,
   });
 
@@ -1820,11 +1859,13 @@ export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOption
 }
 
 export function optionsFromEnv(): AgentRelayMcpServerOptions {
-  const apiKey = resolveEnv('RELAY_API_KEY');
+  const workspaceKey = resolveEnv('RELAY_WORKSPACE_KEY') ?? resolveEnv('RELAY_API_KEY');
   const agentName =
-    resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME') ?? (apiKey ? 'orchestrator' : undefined);
+    resolveEnv('RELAY_AGENT_NAME') ??
+    resolveEnv('RELAY_CLAW_NAME') ??
+    (workspaceKey ? 'orchestrator' : undefined);
   return {
-    apiKey,
+    workspaceKey,
     baseUrl: resolveEnv('RELAY_BASE_URL'),
     agentToken: resolveEnv('RELAY_AGENT_TOKEN'),
     agentName,

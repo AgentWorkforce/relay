@@ -7,7 +7,7 @@ const sdkStatusClient = {
   disconnect: vi.fn(() => undefined),
 };
 
-vi.mock('@agent-relay/driver', () => ({
+vi.mock('@agent-relay/runtime', () => ({
   AgentRelayClient: vi.fn().mockImplementation(() => sdkStatusClient),
 }));
 
@@ -1241,7 +1241,7 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_auto456');
   });
 
-  it('up --workspace-key sets RELAY_API_KEY in env before broker starts', async () => {
+  it('up --workspace-key sets RELAY_WORKSPACE_KEY in env before broker starts', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock({ workspaceKey: 'rk_live_custom' });
     const { program, deps } = createHarness({ relay, env });
@@ -1255,12 +1255,13 @@ describe('registerCoreCommands', () => {
     ]);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_custom');
     expect(env.RELAY_API_KEY).toBe('rk_live_custom');
     expect(deps.createRelay).toHaveBeenCalled();
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_custom');
   });
 
-  it('up without --workspace-key does not set RELAY_API_KEY in env', async () => {
+  it('up without --workspace-key does not set workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = {};
     const relay = createRelayMock();
     const { program } = createHarness({ relay, env });
@@ -1268,6 +1269,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--no-dashboard', '--foreground']);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBeUndefined();
     expect(env.RELAY_API_KEY).toBeUndefined();
   });
 
@@ -1328,7 +1330,7 @@ describe('registerCoreCommands', () => {
     );
   });
 
-  it('up --workspace-key overrides existing RELAY_API_KEY in env', async () => {
+  it('up --workspace-key overrides existing workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = { RELAY_API_KEY: 'rk_live_old' };
     const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
     const { program, deps } = createHarness({ relay, env });
@@ -1342,6 +1344,7 @@ describe('registerCoreCommands', () => {
     ]);
 
     expect(exitCode).toBeUndefined();
+    expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_new');
     expect(env.RELAY_API_KEY).toBe('rk_live_new');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
   });

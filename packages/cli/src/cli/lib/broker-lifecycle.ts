@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AgentRelayClient } from '@agent-relay/driver';
+import { AgentRelayClient } from '@agent-relay/runtime';
 import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
@@ -770,10 +770,15 @@ function getDashboardSpawnEnv(
     RELAY_URL: relayUrl,
     VERBOSE: enableVerboseLogging || deps.env.VERBOSE === 'true' ? 'true' : deps.env.VERBOSE,
   };
-  // Pass the workspace API key so the dashboard can make Relaycast API calls
+  // Pass the workspace key so the dashboard can make Agent Relay calls
   // (e.g. posting thread replies) without requiring a relaycast.json file.
-  if (relayApiKey && !env.RELAY_API_KEY) {
-    env.RELAY_API_KEY = relayApiKey;
+  if (relayApiKey) {
+    if (!env.RELAY_WORKSPACE_KEY) {
+      env.RELAY_WORKSPACE_KEY = relayApiKey;
+    }
+    if (!env.RELAY_API_KEY) {
+      env.RELAY_API_KEY = relayApiKey;
+    }
   }
   // Pass the broker API key so the dashboard can authenticate with the
   // broker's HTTP API (e.g. /api/spawn, /api/spawned).
@@ -1459,8 +1464,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     // If a workspace key was explicitly provided, inject it into the environment
-    // so the Rust broker picks it up via RELAY_API_KEY.
+    // for both current tools and older compatibility paths.
     if (options.workspaceKey) {
+      deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 

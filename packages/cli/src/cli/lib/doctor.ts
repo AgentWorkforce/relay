@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { AgentRelayClient, type BrokerStatus } from '@agent-relay/driver';
+import { AgentRelayClient, type BrokerStatus } from '@agent-relay/runtime';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -143,12 +143,15 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   let client: AgentRelayClient | undefined;
   const paths = getProjectPaths();
   const connection = readBrokerConnectionFile(paths.dataDir);
+  const relayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY);
   const relayApiKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY);
-  const relayApiKeyResult: CheckResult | null = relayApiKeyTemplate
+  const relayKeyTemplate = relayWorkspaceKeyTemplate ?? relayApiKeyTemplate;
+  const relayKeyEnvName = relayWorkspaceKeyTemplate ? 'RELAY_WORKSPACE_KEY' : 'RELAY_API_KEY';
+  const relayApiKeyResult: CheckResult | null = relayKeyTemplate
     ? {
-        name: 'Relaycast API key',
+        name: 'Agent Relay workspace key',
         ok: false,
-        message: `Unresolved RELAY_API_KEY template (${relayApiKeyTemplate})`,
+        message: `Unresolved ${relayKeyEnvName} template (${relayKeyTemplate})`,
         remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
       }
     : null;

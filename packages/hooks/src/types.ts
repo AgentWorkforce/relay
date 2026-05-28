@@ -5,7 +5,7 @@
  * and modify behavior at various points in the agent lifecycle.
  */
 
-import { PROTOCOL_VERSION } from '@agent-relay/driver/protocol';
+import { PROTOCOL_VERSION } from '@agent-relay/runtime/protocol';
 
 export type PayloadKind = 'message' | 'action' | 'state' | 'thinking';
 

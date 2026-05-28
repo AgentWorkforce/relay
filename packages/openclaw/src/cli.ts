@@ -23,7 +23,7 @@ function printUsage(): void {
 relay-openclaw — Agent Relay bridge for OpenClaw
 
 Usage:
-  relay-openclaw setup [key]     Install & configure Agent Relay bridge
+  relay-openclaw setup [key]     Create or join a workspace and configure Agent Relay
   relay-openclaw gateway         Start inbound message gateway
   relay-openclaw status          Check connection status
   relay-openclaw spawn           Spawn an OpenClaw via ClawRunner control API
@@ -40,7 +40,7 @@ Usage:
 Setup options:
   --name <name>          Claw name (default: hostname)
   --channels <ch1,ch2>   Channels to join (default: general)
-  --base-url <url>       Relaycast API URL (default: https://api.relaycast.dev)
+  --base-url <url>       Agent Relay workspace service URL (default: https://api.relaycast.dev)
 
 Control API options:
   --workspace-id <id>    Workspace UUID (required for spawn/list/release)
@@ -58,8 +58,8 @@ Multi-workspace options:
   --default              Set as the default workspace
 
 Examples:
-  relay-openclaw setup rk_live_abc123
   relay-openclaw setup --name my-claw --channels general,alerts
+  relay-openclaw setup rk_live_shared --name teammate-claw
   relay-openclaw gateway
   relay-openclaw spawn --workspace-id ws_uuid --name researcher-1
   relay-openclaw list --workspace-id ws_uuid
@@ -102,19 +102,19 @@ function parseArgs(argv: string[]): {
 }
 
 async function runSetup(positional: string[], flags: Record<string, string>): Promise<void> {
-  const apiKey = positional[0] ?? undefined;
+  const workspaceKey = positional[0] ?? undefined;
   const clawName = flags['name'] ?? undefined;
   const channels = flags['channels']?.split(',').map((c) => c.trim());
   const baseUrl = flags['base-url'] ?? undefined;
 
   console.log('Setting up Agent Relay bridge for OpenClaw...\n');
 
-  const result = await setup({ apiKey, clawName, channels, baseUrl });
+  const result = await setup({ workspaceKey, clawName, channels, baseUrl });
 
   if (result.ok) {
     console.log(result.message);
-    const maskedApiKey = result.apiKey.slice(0, 12) + '...';
-    console.log(`\nWorkspace key: ${maskedApiKey}`);
+    const maskedWorkspaceKey = (result.workspaceKey ?? result.apiKey).slice(0, 12) + '...';
+    console.log(`\nWorkspace key: ${maskedWorkspaceKey}`);
     console.log('Share this key with other claws to join the same workspace.');
   } else {
     console.error(`Setup failed: ${result.message}`);
@@ -163,14 +163,16 @@ async function runStatus(): Promise<void> {
   console.log(`Claw name: ${config.clawName}`);
   console.log(`Channels: ${config.channels.join(', ')}`);
   console.log(`Base URL: ${config.baseUrl}`);
-  console.log(`API key: ${config.apiKey.slice(0, 12)}...`);
+  console.log(`Workspace key: ${config.apiKey.slice(0, 12)}...`);
 
   // Try to check connectivity
   try {
     const res = await fetch(`${config.baseUrl}/health`);
-    console.log(`API connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`);
+    console.log(`Workspace service connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`);
   } catch (err) {
-    console.log(`API connectivity: UNREACHABLE (${err instanceof Error ? err.message : String(err)})`);
+    console.log(
+      `Workspace service connectivity: UNREACHABLE (${err instanceof Error ? err.message : String(err)})`
+    );
   }
 }
 
@@ -243,9 +245,9 @@ async function runRuntimeSetup(flags: Record<string, string>): Promise<void> {
 }
 
 async function runAddWorkspace(positional: string[], flags: Record<string, string>): Promise<void> {
-  const apiKey = positional[0];
-  if (!apiKey) {
-    console.error('add-workspace requires a workspace API key as the first argument.');
+  const workspaceKey = positional[0];
+  if (!workspaceKey) {
+    console.error('add-workspace requires a workspace key as the first argument.');
     console.error(
       'Usage: relay-openclaw add-workspace <rk_live_...> [--alias <name>] [--workspace-id <id>] [--default]'
     );
@@ -253,14 +255,14 @@ async function runAddWorkspace(positional: string[], flags: Record<string, strin
   }
 
   const config = await addWorkspace({
-    api_key: apiKey,
+    api_key: workspaceKey,
     ...(flags['alias'] ? { workspace_alias: flags['alias'] } : {}),
     ...(flags['workspace-id'] ? { workspace_id: flags['workspace-id'] } : {}),
     ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
   });
 
-  const entry = config.workspaces.find((w) => w.api_key === apiKey);
-  const label = entry?.workspace_alias ?? entry?.workspace_id ?? apiKey.slice(0, 12) + '...';
+  const entry = config.workspaces.find((w) => w.api_key === workspaceKey);
+  const label = entry?.workspace_alias ?? entry?.workspace_id ?? workspaceKey.slice(0, 12) + '...';
   console.log(`Workspace "${label}" added.`);
   console.log(`Total workspaces: ${config.workspaces.length}`);
   if (config.default_workspace) {

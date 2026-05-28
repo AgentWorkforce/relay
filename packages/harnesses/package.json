@@ -1,7 +1,7 @@
 {
-  "name": "@agent-relay/gateway",
+  "name": "@agent-relay/harnesses",
   "version": "7.1.1",
-  "description": "Shared gateway contracts for Agent Relay surface adapters and webhook routing",
+  "description": "Pre-built harness definitions for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,20 +14,15 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "package.json"
   ],
   "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@agent-relay/runtime": "7.1.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.19.3",
-    "vitest": "^3.2.4"
   },
   "publishConfig": {
     "access": "public"
@@ -35,6 +30,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
-    "directory": "packages/gateway"
-  }
+    "directory": "packages/harnesses"
+  },
+  "license": "Apache-2.0"
 }

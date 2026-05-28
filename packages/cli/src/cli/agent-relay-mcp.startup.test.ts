@@ -37,7 +37,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }> = [];
   const behavior: RelayBehavior = {
     createWorkspaceImpl: vi.fn(async () => ({
-      apiKey: 'rk_live_created',
+      workspaceKey: 'rk_live_created',
       workspaceName: 'Test Workspace',
     })),
     inboxImpl: vi.fn(async () => ({
@@ -256,7 +256,7 @@ afterEach(() => {
 describe('agent-relay-mcp startup helpers', () => {
   it('parses startup options and helper flags from the environment', async () => {
     const { mod } = await loadAgentRelayMcpModule();
-    vi.stubEnv('RELAY_API_KEY', 'rk_live_env');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_env');
     vi.stubEnv('RELAY_BASE_URL', 'https://api.relaycast.dev///');
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_env');
     vi.stubEnv('RELAY_AGENT_NAME', '');
@@ -271,7 +271,7 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mod.normalizeAgentType('agent')).toBe('agent');
     expect(mod.normalizeAgentType('robot')).toBeUndefined();
     expect(mod.optionsFromEnv()).toEqual({
-      apiKey: 'rk_live_env',
+      workspaceKey: 'rk_live_env',
       baseUrl: 'https://api.relaycast.dev///',
       agentToken: 'at_live_env',
       agentName: 'FallbackClaw',
@@ -300,10 +300,10 @@ describe('createAgentRelayMcpServer', () => {
     expect(server.prompts.get('system')).toBeDefined();
 
     await expect(server.resources.get('agents')?.handler(new URL('relay://agents'))).rejects.toThrow(
-      'Workspace key not configured. Set RELAY_API_KEY at startup, or call "create_workspace" or "set_workspace_key" first.'
+      'Workspace key not configured. Call "create_workspace" first, or provide a shared workspace key with "set_workspace_key".'
     );
     await expect(server.tools.get('register_agent')?.handler({ name: 'WorkerA' })).rejects.toThrow(
-      'Workspace key not configured. Call "create_workspace" or "set_workspace_key" first.'
+      'Workspace key not configured. Call "create_workspace" first, or "set_workspace_key" if someone shared a workspace key.'
     );
 
     const workspaceResult = await server.tools
@@ -313,7 +313,7 @@ describe('createAgentRelayMcpServer', () => {
       baseUrl: 'https://api.relaycast.dev/',
     });
     expect(workspaceResult.structuredContent).toEqual({
-      apiKey: 'rk_live_created',
+      workspaceKey: 'rk_live_created',
       workspaceName: 'Test Workspace',
     });
 
@@ -424,7 +424,7 @@ describe('createAgentRelayMcpServer', () => {
       'Workspace key must start with "rk_live_"'
     );
 
-    const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_other' });
+    const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_other' });
     expect(ws.disconnect).toHaveBeenCalledTimes(1);
     expect(result.structuredContent).toEqual({
       message: 'Workspace key set. Call "register_agent" to join this workspace.',
@@ -444,7 +444,7 @@ describe('createAgentRelayMcpServer', () => {
     const ws = mocks.wsClientInstances[0];
     const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
 
-    const result = await setWorkspaceKeyTool?.handler({ api_key: 'rk_live_existing' });
+    const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_existing' });
 
     expect(ws.disconnect).not.toHaveBeenCalled();
     expect(result.structuredContent).toEqual({

@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@agent-relay/config": "7.1.1",
-    "@agent-relay/driver": "7.1.1",
+    "@agent-relay/runtime": "7.1.1",
     "@agent-relay/sdk": "7.1.1",
     "@agent-relay/telemetry": "7.1.1",
     "@agent-relay/utils": "7.1.1",

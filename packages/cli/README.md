@@ -36,5 +36,5 @@ The driver owns broker startup, PTY/headless lifecycle, readiness, logs, and man
 ## Packages
 
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
-- `@agent-relay/driver`: optional managed harness runtime.
+- `@agent-relay/runtime`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.

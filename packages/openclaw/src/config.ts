@@ -195,7 +195,7 @@ export async function loadGatewayConfig(): Promise<GatewayConfig | null> {
       vars[trimmed.slice(0, eqIdx)] = value;
     }
 
-    const apiKey = envValue(vars, 'RELAY_API_KEY');
+    const apiKey = envValue(vars, 'RELAY_WORKSPACE_KEY') ?? envValue(vars, 'RELAY_API_KEY');
     const clawName = envValue(vars, 'RELAY_CLAW_NAME');
     const relayChannels = envValue(vars, 'RELAY_CHANNELS');
 
@@ -274,7 +274,9 @@ export async function saveGatewayConfig(config: GatewayConfig): Promise<void> {
   await mkdir(relaycastDir, { recursive: true });
 
   const lines = [
-    '# Relaycast configuration for this OpenClaw skill',
+    '# Agent Relay workspace configuration for this OpenClaw skill',
+    `RELAY_WORKSPACE_KEY=${config.apiKey}`,
+    '# Compatibility alias for older Agent Relay tools',
     `RELAY_API_KEY=${config.apiKey}`,
     `RELAY_CLAW_NAME=${config.clawName}`,
     `RELAY_BASE_URL=${config.baseUrl}`,

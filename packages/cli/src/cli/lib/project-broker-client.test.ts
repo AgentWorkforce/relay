@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const connectMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@agent-relay/driver', () => ({
+vi.mock('@agent-relay/runtime', () => ({
   AgentRelayClient: {
     connect: connectMock,
   },

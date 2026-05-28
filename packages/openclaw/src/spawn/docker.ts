@@ -163,6 +163,10 @@ export class DockerSpawnProvider implements SpawnProvider {
     const identityTask = buildIdentityTask(agentName, workspaceId, modelRef);
     const channels = options.channels?.length ? options.channels : ['general'];
     const gatewayToken = randomUUID().replace(/-/g, '').slice(0, 32);
+    const workspaceKey = options.workspaceKey ?? options.relayApiKey;
+    if (!workspaceKey) {
+      throw new Error('workspaceKey is required to spawn an OpenClaw agent');
+    }
 
     const suffix = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     const containerName = `openclaw-${sanitizeContainerSegment(agentName)}-${suffix}`.slice(0, 63);
@@ -184,7 +188,8 @@ export class DockerSpawnProvider implements SpawnProvider {
       // Bridge path: resolved dynamically inside the container via the entrypoint script.
       // The entrypoint writes the resolved path to /tmp/bridge-path.txt after runtime-setup.
       AGENT_ARGS: '/tmp/openclaw-bridge.mjs',
-      RELAY_API_KEY: options.relayApiKey,
+      RELAY_WORKSPACE_KEY: workspaceKey,
+      RELAY_API_KEY: workspaceKey,
       RELAY_BASE_URL: options.relayBaseUrl ?? '',
       AGENT_TASK: options.systemPrompt ? `${options.systemPrompt}\n\n${identityTask}` : identityTask,
       AGENT_CWD: '/workspace',

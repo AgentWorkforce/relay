@@ -13,7 +13,7 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
-import type { AgentRelayBrokerInitArgs } from '@agent-relay/driver';
+import type { AgentRelayBrokerInitArgs } from '@agent-relay/runtime';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 import { track } from '@agent-relay/telemetry';
 
@@ -73,7 +73,7 @@ export interface CoreRelay {
   }) => Promise<unknown>;
   getStatus: () => Promise<unknown>;
   shutdown: () => Promise<unknown>;
-  /** Relaycast workspace API key, available after the hello handshake. */
+  /** Agent Relay workspace key, available after the hello handshake. */
   workspaceKey?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;

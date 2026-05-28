@@ -1,5 +1,5 @@
 {
-  "name": "@agent-relay/driver",
+  "name": "@agent-relay/runtime",
   "version": "7.1.1",
   "description": "Managed harness driver for Agent Relay — attach, wrap, spawn, inject, and observe agent runtimes",
   "type": "module",
@@ -31,6 +31,11 @@
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
     },
+    "./harnesses": {
+      "types": "./dist/harnesses.d.ts",
+      "import": "./dist/harnesses.js",
+      "default": "./dist/harnesses.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -61,7 +66,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AgentWorkforce/relay.git",
-    "directory": "packages/driver"
+    "directory": "packages/runtime"
   },
   "license": "Apache-2.0"
 }

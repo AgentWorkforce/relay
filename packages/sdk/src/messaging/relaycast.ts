@@ -165,6 +165,9 @@ type RelaycastAgentLike = {
 };
 
 export interface RelaycastMessagingOptions {
+  /** Workspace key returned when creating or joining an Agent Relay workspace. */
+  workspaceKey?: string;
+  /** @deprecated Use workspaceKey for public Agent Relay flows. */
   apiKey?: string;
   baseUrl?: string;
   retryPolicy?: RelayCastOptions['retryPolicy'];
@@ -196,13 +199,14 @@ function serializeAttachmentInputs(input?: RelayMessageAttachmentInput[]): strin
 
 function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWorkspaceLike {
   if (options.relaycast) return options.relaycast;
-  if (!options.apiKey) {
-    throw new Error('RelaycastMessagingClient requires apiKey when relaycast is not provided.');
+  const workspaceKey = options.workspaceKey ?? options.apiKey;
+  if (!workspaceKey) {
+    throw new Error('RelaycastMessagingClient requires workspaceKey when relaycast is not provided.');
   }
 
   return new RelayCast(
     definedOptions({
-      apiKey: options.apiKey,
+      apiKey: workspaceKey,
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
     }) as RelayCastOptions

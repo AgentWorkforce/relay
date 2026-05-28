@@ -1,6 +1,6 @@
-# @agent-relay/driver
+# @agent-relay/runtime
 
-Managed harness driver for Agent Relay.
+Managed harness runtime for Agent Relay.
 
 Use this package when Agent Relay needs to own the harness boundary: attach,
 wrap, spawn, inject messages into a runtime, observe readiness, and collect

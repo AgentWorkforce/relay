@@ -2,7 +2,7 @@
 
 Core TypeScript SDK for Agent Relay communication. The SDK gives agents and applications three public capabilities: messaging, delivery, and actions.
 
-Use `@agent-relay/sdk` when your app, service, harness, or worker already owns its runtime and needs to participate in Agent Relay. Use `@agent-relay/driver` when you want Agent Relay to start and supervise Claude, Codex, Gemini, OpenCode, or other local harness processes.
+Use `@agent-relay/sdk` when your app, service, harness, or worker already owns its runtime and needs to participate in Agent Relay. Use `@agent-relay/runtime` when you want Agent Relay to start and supervise Claude, Codex, Gemini, OpenCode, or other local harness processes.
 
 ## Installation
 
@@ -15,7 +15,7 @@ npm install @agent-relay/sdk zod
 - **Messaging** is durable agent communication: identities, channels, DMs, group DMs, threads, reactions, inbox, read state, presence, search, and events.
 - **Delivery** is runtime handoff: taking durable messages from Agent Relay and injecting them into a live agent process, service, app server, browser worker, or harness.
 - **Actions** are typed capabilities: discoverable operations with Zod schemas, policy hooks, audit events, and structured result/error envelopes.
-- **Driver** is optional managed execution. Daemon startup, PTY/headless sessions, spawn/release, harness defaults, logs, readiness, and workflow supervision belong in `@agent-relay/driver`.
+- **Runtime** is optional managed execution. Daemon startup, PTY/headless sessions, spawn/release, harness defaults, logs, readiness, and workflow supervision belong in `@agent-relay/runtime`.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ npm install @agent-relay/sdk zod
 import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({
-  apiKey: process.env.RELAY_API_KEY!,
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
 });
 
 const reviewer = await relay.agents.register({ name: 'reviewer' });
@@ -44,6 +44,14 @@ agent.events.on('message.created', async (event) => {
 await agent.messages.send({
   channel: 'reviews',
   text: 'Reviewer is online.',
+});
+```
+
+You can also create a new workspace directly:
+
+```ts
+const relay = await AgentRelay.createWorkspace({
+  name: 'review-workspace',
 });
 ```
 
@@ -95,7 +103,7 @@ Delivery is the session handoff contract. Relay stores messages durably; a sessi
 - `DeliveryRunner` can drain inbox items into either a session `receiveMessage(...)` contract or a legacy `inject(...)` adapter.
 - Send operations support idempotency keys so retries do not duplicate messages.
 
-Managed harness delivery, such as injecting messages into a PTY or headless app server, belongs in `@agent-relay/driver`. The SDK stays responsible for the public delivery contract.
+Managed harness delivery, such as injecting messages into a PTY or headless app server, belongs in `@agent-relay/runtime`. The SDK stays responsible for the public delivery contract.
 
 Minimum session contract:
 
@@ -204,13 +212,13 @@ const pr = await relay.actions.invoke({
 
 ## Optional managed harnesses
 
-Install the driver package for managed local execution:
+Install the runtime package for managed local execution:
 
 ```bash
-npm install @agent-relay/driver
+npm install @agent-relay/runtime
 ```
 
-`@agent-relay/driver` owns:
+`@agent-relay/runtime` owns:
 
 - Local broker process startup and connection files.
 - PTY and headless harness transports.
@@ -218,18 +226,18 @@ npm install @agent-relay/driver
 - Agent lifecycle hooks, session metadata, idle detection, managed release, and shutdown.
 - Workflow and supervision helpers that coordinate multiple spawned harnesses.
 
-Keep application-level messaging code on `@agent-relay/sdk`; add `@agent-relay/driver` only at the boundary that owns local agent processes.
+Keep application-level messaging code on `@agent-relay/sdk`; add `@agent-relay/runtime` only at the boundary that owns local agent processes.
 
 ## Migration from the pre-simplification SDK
 
 | Previous SDK surface                                                                            | SemVer-major target                                                    |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Spawn methods on `AgentRelay`, `AgentRelayClient.spawn()`, `spawnAgent()`, PTY/headless helpers | Move to `@agent-relay/driver`.                                         |
-| Workflow builder, consensus, shadow agents, and managed run helpers                             | Move to `@agent-relay/driver` or workflow-specific packages.           |
+| Spawn methods on `AgentRelay`, `AgentRelayClient.spawn()`, `spawnAgent()`, PTY/headless helpers | Move to `@agent-relay/runtime`.                                        |
+| Workflow builder, consensus, shadow agents, and managed run helpers                             | Move to `@agent-relay/runtime` or workflow-specific packages.          |
 | Messaging, identities, channels, DMs, threads, presence, read state, and actions                | Stay in `@agent-relay/sdk`.                                            |
 | Primitive clients such as GitHub or Slack adapters                                              | Stay in their own packages and integrate through SDK actions/messages. |
 
-Code that only sends and receives Agent Relay messages should keep depending on `@agent-relay/sdk`. Code that starts agents, injects messages into harnesses, or supervises local runs should add `@agent-relay/driver`.
+Code that only sends and receives Agent Relay messages should keep depending on `@agent-relay/sdk`. Code that starts agents, injects messages into harnesses, or supervises local runs should add `@agent-relay/runtime`.
 
 ## Development
 

@@ -25,23 +25,25 @@ After installing the sdk it's simple to integrate into your application.
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
+import { z } from 'zod';
 
 // Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server. They can be
 // running anywhere (they don't need to be on the same machine) as long as they have access to the internet
-import { claude, codex } from '@agent-relay/driver';
+import { claude, codex } from '@agent-relay/harnesses';
 import { myCustomHarness } from './my-custom-harness';
 
-// Creating a new Relay is as simple as defining which harnesses are available
+// Creating a Relay starts by creating a workspace. No Agent Relay API key is required.
 // Websockets power real time communication for instant orchestration.
-const relay = new AgentRelay({
-  harnesses: [claude, codex, myCustomHarness],
+const relay = await AgentRelay.createWorkspace({
+  name: 'support-triage',
 });
+const harnesses = { claude, codex, custom: myCustomHarness };
 
 /// A Relay agent is one that can receive and send messages
 // CLI Agents can be saddled with our pty-based driver or you can make your own
-const complaintTriager = await claude.create({ model: 'sonnet' });
-const engineer = await codex.create({ model: 'gpt-5.5' });
-const taskManager = await myCustomHarness();
+const complaintTriager = await harnesses.claude.create({ model: 'sonnet' });
+const engineer = await harnesses.codex.create({ model: 'gpt-5.5' });
+const taskManager = await harnesses.custom.create();
 
 /// Once the agents are registered to the Relay workspaces, agents will have access to
 /// send & receive messages, join channels, emoji respond, trigger SDK callbacks and much more
@@ -453,7 +455,7 @@ Actions are typed capabilities that agents can discover and invoke through the S
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
-import { registerDriverActions } from '@agent-relay/driver';
+import { registerDriverActions } from '@agent-relay/runtime';
 import { z } from 'zod';
 
 const ShowSearchResultsInput = z.object({
@@ -471,8 +473,8 @@ const ShowSearchResultsOutput = z.object({
   displayed: z.boolean(),
 });
 
-const relay = new AgentRelay({
-  apiKey: process.env.RELAY_API_KEY!,
+const relay = await AgentRelay.createWorkspace({
+  name: 'operator-workspace',
 });
 
 relay.actions.register({
@@ -515,7 +517,7 @@ The same registered actions can be exposed by `agent-relay mcp` as named tools, 
 - **Agent-native collaboration.** Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace.
 - **Durable delivery.** Track channel posts, direct messages, threads, read state, and delivery progress instead of relying on process logs.
 - **Action routing.** Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
-- **Managed execution when needed.** Use `@agent-relay/driver` for spawned harnesses and supervised multi-agent runs, while keeping the SDK focused on communication.
+- **Managed execution when needed.** Use `@agent-relay/runtime` for spawned harnesses and supervised multi-agent runs, while keeping the SDK focused on communication.
 
 ## Development
 

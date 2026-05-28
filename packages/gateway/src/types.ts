@@ -1,4 +1,4 @@
-import type { SendMessageInput, SpawnCliInput } from '@agent-relay/driver';
+import type { SendMessageInput, SpawnCliInput } from '@agent-relay/runtime';
 
 export type SurfaceType = 'whatsapp' | 'slack' | 'telegram';
 

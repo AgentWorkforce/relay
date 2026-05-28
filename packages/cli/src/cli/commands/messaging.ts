@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { AgentRelayClient } from '@agent-relay/driver';
+import { AgentRelayClient } from '@agent-relay/runtime';
 import { RelayCast } from '@relaycast/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
@@ -810,7 +810,7 @@ async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> 
 }
 
 async function resolveRelaycastApiKey(cwd: string): Promise<string> {
-  const envApiKey = process.env.RELAY_API_KEY?.trim();
+  const envApiKey = process.env.RELAY_WORKSPACE_KEY?.trim() ?? process.env.RELAY_API_KEY?.trim();
   if (envApiKey) {
     return envApiKey;
   }
@@ -820,7 +820,7 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     client = connectProjectBrokerClient(cwd);
   } catch {
     throw new Error(
-      'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_API_KEY.'
+      'Failed to read broker connection metadata. Start the broker with `agent-relay up` or set RELAY_WORKSPACE_KEY.'
     );
   }
 
@@ -837,7 +837,9 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     client.disconnect();
   }
 
-  throw new Error('No Relaycast workspace key found. Set RELAY_API_KEY or start broker with agent-relay up.');
+  throw new Error(
+    'No Agent Relay workspace key found. Set RELAY_WORKSPACE_KEY or start broker with agent-relay up.'
+  );
 }
 
 async function createDefaultRelaycastClient(options: {

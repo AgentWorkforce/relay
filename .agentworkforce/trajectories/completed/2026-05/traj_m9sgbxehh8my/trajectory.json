@@ -1,0 +1,53 @@
+{
+  "id": "traj_m9sgbxehh8my",
+  "version": 1,
+  "task": {
+    "title": "Workspace-first Agent Relay setup"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T20:43:31.561Z",
+  "completedAt": "2026-05-28T20:43:39.681Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-28T20:43:36.066Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8amjhjckubva",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-28T20:43:36.066Z",
+      "endedAt": "2026-05-28T20:43:39.681Z",
+      "events": [
+        {
+          "ts": 1780001016067,
+          "type": "decision",
+          "content": "Prefer workspace keys over Agent Relay API keys: Prefer workspace keys over Agent Relay API keys",
+          "raw": {
+            "question": "Prefer workspace keys over Agent Relay API keys",
+            "chosen": "Prefer workspace keys over Agent Relay API keys",
+            "alternatives": [],
+            "reasoning": "Workspace creation should be the default onboarding path; RELAY_WORKSPACE_KEY and workspaceKey are now first-class while RELAY_API_KEY/apiKey remain compatibility aliases for existing tools."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added workspace-first SDK/MCP/OpenClaw setup with RELAY_WORKSPACE_KEY as the preferred credential name, retained legacy API-key aliases, and validated SDK, CLI, runtime, harnesses, and OpenClaw builds/tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b01ee3f89143a028f91a2c44b7b39fdc8d07ca0a",
+    "endRef": "b01ee3f89143a028f91a2c44b7b39fdc8d07ca0a"
+  }
+}

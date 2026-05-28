@@ -13,7 +13,10 @@
     "packages/sdk": {
       "project": ["src/**/*.ts"]
     },
-    "packages/driver": {
+    "packages/runtime": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/harnesses": {
       "project": ["src/**/*.ts"]
     },
     "packages/config": {
@@ -26,7 +29,7 @@
       "project": ["src/**/*.ts"]
     }
   },
-  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**"],
+  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
   "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": [
     "packages/agent",

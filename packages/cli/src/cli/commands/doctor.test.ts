@@ -31,7 +31,7 @@ vi.mock('@agent-relay/config', () => ({
   }),
 }));
 
-vi.mock('@agent-relay/driver', () => ({
+vi.mock('@agent-relay/runtime', () => ({
   AgentRelayClient: {
     connect: sdkMock.connect,
   },
@@ -356,10 +356,10 @@ describe('doctor diagnostics', () => {
     expect(sdkMock.shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it('fails when a literal RELAY_API_KEY template is still unresolved', async () => {
+  it('fails when a literal RELAY_WORKSPACE_KEY template is still unresolved', async () => {
     process.env.AGENT_RELAY_DOCTOR_FORCE_NODE_SQLITE = '1';
     process.env.AGENT_RELAY_DOCTOR_FORCE_BETTER_SQLITE3 = '1';
-    process.env.RELAY_API_KEY = '${RELAY_API_KEY}';
+    process.env.RELAY_WORKSPACE_KEY = '${RELAY_WORKSPACE_KEY}';
     const { logs, restore } = collectLogs();
     const { runDoctor } = await loadDoctor();
 
@@ -367,8 +367,8 @@ describe('doctor diagnostics', () => {
 
     restore();
     const output = logs.join('\n');
-    expect(output).toContain('Relaycast API key');
-    expect(output).toContain('Unresolved RELAY_API_KEY template (${RELAY_API_KEY})');
+    expect(output).toContain('Agent Relay workspace key');
+    expect(output).toContain('Unresolved RELAY_WORKSPACE_KEY template (${RELAY_WORKSPACE_KEY})');
     expect(output).toContain('real rk_live_... workspace key');
     expect(output).toContain('Some checks failed');
     expect(process.exitCode).toBe(1);

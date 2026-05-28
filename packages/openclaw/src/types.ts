@@ -31,7 +31,7 @@ export interface GatewayTransportConfig {
 }
 
 export interface GatewayConfig {
-  /** Relaycast workspace API key (rk_live_*). */
+  /** Agent Relay workspace key (rk_live_*). */
   apiKey: string;
   /** Name for this claw in the Relaycast workspace. */
   clawName: string;
@@ -71,7 +71,7 @@ export interface InboundMessage {
  * Matches the broker's WorkspaceSource schema in src/auth.rs.
  */
 export interface WorkspaceEntry {
-  /** Workspace API key (rk_live_*). */
+  /** Workspace key (rk_live_*). */
   api_key: string;
   /** Optional workspace ID (ws_*). */
   workspace_id?: string;
