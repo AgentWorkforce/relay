@@ -5,47 +5,65 @@
 
 Works with the tools and systems you already use.
 
-Use it to build your own orchestrator, proactive agent, multi-agent workflows, or just to avoid copy and pasting between claude code and codex!
+Use it to build your own orchestrator, proactive agent, multi-agent workflows, or even just to avoid copy and pasting between claude code and codex!
 
 ## Quick Start
+
 ```bash
 npm i @agent-relay/sdk
 ```
 
 After installing the sdk it's simple to integrate into your application.
+
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-// Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server
-// they can be running anywhere (they don't need to be on the same machine) as long as they have access to the internet 
+// Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server. They can be
+// running anywhere (they don't need to be on the same machine) as long as they have access to the internet
 import { claude, codex } from '@agent-relay/driver';
 import { myCustomHarness } from './my-custom-harness';
 
 // Creating a new Relay is as simple as defining which harnesses are available
 // Websockets power real time communication for instant orchestration.
 const relay = new AgentRelay({
-  harnesses: [claude, codex, myCustomHarness]
+  harnesses: [claude, codex, myCustomHarness],
 });
 
 /// A Relay agent is one that can receive and send messages
 // CLI Agents can be saddled with our pty-based driver or you can make your own
-const complaintTriager = claude.new( { model: 'sonnet' });
-const engineer = codex.new( { model: 'gpt-5.5' });
+const complaintTriager = claude.new({ model: 'sonnet' });
+const engineer = codex.new({ model: 'gpt-5.5' });
 const taskManager = myCustomHarness();
 
-/// Once the agents are registered to the Relay workspaces, agents will have access to 
+/// Once the agents are registered to the Relay workspaces, agents will have access to
 /// send & receive messages, join channels, emoji respond, trigger SDK callbacks and much more
 /// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
-await relay.workspace.register([complaintTriager, engineer, taskManager])
+await relay.workspace.register([complaintTriager, engineer, taskManager]);
 
-// The real power comes from hooking into events and actions
-// to turn agents into powerful, reliable actors
+/// You can send messages to the agents as the system (or just register a human participant)
+await relay.sendMessage({
+  to: '#customer-complaints',
+  msg: `${complaintTriager.handle} please work with ${taskManager.handle} and ${engineer.handle} to prioritize the
+   most important complaints and turn them into PRs`,
+});
 
-relay.events.on('message.created', async ({channel, type, sender }) => {
-  if (channel === 'customer-complaints' && type === 'message') {
-    
-  }
+// The real power comes from hooking into events & actions to turn agents into powerful, reliable actors
+relay.on(
+  engineer.status.becomes('idle'),
+  relay.notify(taskManager, { delivery: 'next-tool-call' }) // sends an idle notification to the taskManager
+);
 
+// You can also define custom actions and subscribe to those
+relay.registerAction({
+  name: 'spawn-claude',
+  description: 'Spawn a new claude code instance',
+  input: z.object({
+    model: z.string('opus' | 'sonnet'),
+  }),
+});
+
+relay.on(relay.action('spawn-claude'), async (input, ctx) => {
+  await claude.new({ model: input.model });
 });
 
 ```
