@@ -231,45 +231,8 @@ type AgentSessionEventType =
   ```
 
 
-### Bring your own harness into a AgentRelayRuntime
-We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
-
-```ts
-import { createHarness } from '@agent-relay/sdk';
-
-// The most minimum config 
-const config: HarnessConfig = {
-  name: string;
-  capabilities: 
-  async init():void
-  async create(): ??
-  async receiveMessage(): ??
-}
-
-export const ClaudiaCode = createHarness(config);
-
-```
-
-
 ### Message Delivery
 
-At the harness boundary, delivery means taking a durable Relay message and making it visible to the runtime at the right moment.
-
-A harness has one true requirement: accept messages.
-
-```ts
-
-```
-
-Delivery policy controls how aggressive Relay should be after the durable message exists:
-
-- `immediate`: inject or notify now, even if the runtime is active.
-- `next-message`: wait until the harness is about to send or receive another message.
-- `next-tool-call`: wait until the next tool-use boundary, which is safer for many CLI agents.
-- `on-idle`: wait until the harness reports that the agent is idle.
-- `manual`: hold the message for explicit flush or human/operator action.
-
-Ideally, it also can send messages
 
 ```ts
 
