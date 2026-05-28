@@ -18,6 +18,7 @@ Kept @agent-relay/acp-bridge in the simplification PR, restored its workspace pa
 ## Key Decisions
 
 ### Retain ACP bridge as an adapter package
+
 - **Chose:** Retain ACP bridge as an adapter package
 - **Reasoning:** ACP is still a useful editor integration. It should not be part of the core SDK, but it can stay in the repo if it uses SDK messaging/actions instead of the removed spawn-first SDK facade.
 
@@ -26,6 +27,7 @@ Kept @agent-relay/acp-bridge in the simplification PR, restored its workspace pa
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Retain ACP bridge as an adapter package: Retain ACP bridge as an adapter package
