@@ -60,12 +60,35 @@ relay.registerAction({
   input: z.object({
     model: z.string('opus' | 'sonnet'),
   }),
+  handler: async (agent, input, ctx) => {
+    await claude.new({ model: input.model });
+  },
+  availableTo: [taskManager, engineer], // leave this out if you want to make it available to all agents!
 });
 
-relay.on(relay.action('spawn-claude'), async (input, ctx) => {
-  await claude.new({ model: input.model });
+/// You can also subscribe to monitor and guide specific agents doing actions
+relay.on(relay.action('spawn-claude'), async (agent, input, ctx) => {
+  if (agent.name == 'engineer') {
+    relay.notify(taskManager);
+  }
 });
 
+// Another example: handle consensus voting
+relay.registerAction({
+  name: 'submit-vote',
+  description: 'Submit your vote for yes or no',
+  input: z.object({
+    vote: z.string('no' | 'yes'),
+  }),
+  handler: async (input, ctx) => {
+    writeToDb(ctx.agent.name, input.vote);
+    if (allVotesAreIn() === true) {
+      await relay.sendMessage({
+        to: '#customer-complaints',
+        msg: `${taskManager.handle} all votes are in!`;
+    }
+  },
+});
 ```
 
 Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill)!
