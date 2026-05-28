@@ -105,91 +105,214 @@ relay.registerAction({
 Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill) to get started!
 
 ## How it works
-Each agent gets a queryable identity:
 
-name
-status (active, blocked, listening)
-inbox
-transcript in structured chunks
-event log of every status change, file edit, tool call and action
+The README describes the SDK shape we are building toward. Some surfaces below are target contracts: the point is to make the desired product boundary clear before we finish wiring every package to it.
 
-### What Agents can do 
-Message each other in real-time: intent, replies, bundled context for handoffs.
+Every Relay agent gets a queryable identity:
 
-Observe each other: transcripts, file edits, terminal screens, command history.
+- `name`, `handle`, and stable `id`
+- status such as `active`, `idle`, `blocked`, `waiting`, or `offline`
+- channel memberships, direct-message inbox, and pending deliveries
+- actions it can call and actions it provides
+- optional harness observations such as transcript chunks, tool calls, file edits, terminal output, and screenshots
 
-Subscribe to each other: notify on status changes, file edits, and actions. React automatically.
-
-Spawn, fork, resume, release each other, in any terminal emulator or headless.
-
-The SDK has three public categories.
+Agent Relay does not need to own the process to coordinate it. If a runtime can receive messages, report state, and expose useful observations, it can participate.
 
 ## Messaging
 
-Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
+Messaging is the shared conversation layer. It covers agents, humans, channels, direct messages, group DMs, threads, reactions, inbox state, read receipts, mentions, and context bundles.
 
-[go into deeper detail here]
-
-## Harnesses
-Harnesses need to implement the delivery adapter to work with Agent Relay. 
+Messages are durable coordination records. A message is not just text; it is an addressable unit of work:
 
 ```ts
+const message = await relay.messages.send({
+  to: '#customer-complaints',
+  from: taskManager,
+  text: `${engineer.handle} please turn the top billing complaint into a PR.`,
+  mentions: [engineer],
+  mode: 'wait',
+  context: [
+    { type: 'url', url: 'https://linear.app/acme/issue/BILL-123' },
+    { type: 'file', path: 'support/export/customer-complaints.csv' },
+  ],
+  idempotencyKey: `complaint:${complaint.id}:triage-request`,
+});
 
+await relay.messages.reply({
+  thread: message.thread,
+  from: engineer,
+  text: 'I am checking the billing repro now.',
+});
+
+await relay.messages.react({
+  message: message.id,
+  agent: taskManager,
+  emoji: 'eyes',
+});
 ```
+
+Core messaging should answer practical orchestration questions:
+
+- Who said what, and where?
+- Which agent was mentioned or assigned?
+- Has the target seen it?
+- Was it delivered to the runtime?
+- Is there a thread with follow-up work?
+- What context was bundled with the request?
+
+The high-level `relay.sendMessage(...)` helper is shorthand for the same messaging contract when you do not need all of the fields.
+
+## Listeners and event handlers
+
+The listener system lets agents and apps react to Agent Relay events without polling. Listeners are built from event predicates and handlers:
+
+```ts
+const unsubscribe = relay.on(
+  relay.events.message.created().in('#customer-complaints').mentions(engineer),
+  async (event) => {
+    await relay.messages.direct({
+      to: taskManager,
+      text: `${engineer.handle} was asked to handle ${event.message.id}`,
+    });
+  }
+);
+```
+
+Predicates should compose across the things agents care about:
+
+```ts
+relay.on(
+  engineer.status.becomes('idle'),
+  relay.notify(taskManager, {
+    type: 'agent.status.idle',
+    subject: engineer,
+    delivery: 'next-tool-call',
+  })
+);
+
+relay.on(
+  relay.action('spawn-claude').calledBy(engineer),
+  relay.notify(taskManager, {
+    type: 'action.called',
+    action: 'spawn-claude',
+    subject: engineer,
+  })
+);
+
+relay.on(
+  engineer.tools.called('bash').where((call) => call.input.command.includes('npm test')),
+  async (event) => {
+    await relay.messages.send({
+      to: '#customer-complaints',
+      text: `${engineer.handle} started tests for ${event.run.id}`,
+    });
+  }
+);
+```
+
+The event stream should include core events and harness-provided observations:
+
+- `message.created`, `message.read`, `message.reacted`
+- `delivery.accepted`, `delivery.injected`, `delivery.deferred`, `delivery.failed`
+- `agent.status.changed`, `agent.idle`, `agent.blocked`
+- `action.invoked`, `action.completed`, `action.failed`, `action.denied`
+- `harness.tool.called`, `harness.tool.completed`, `harness.tool.failed`
+- `harness.transcript.chunk`, `harness.file.changed`, `harness.terminal.output`
+
+Delivery policy is part of the listener contract. A notification can be delivered `immediate`, `next-message`, `next-tool-call`, `on-idle`, or held for manual flush. That lets you decide whether a running agent should be interrupted or guided at the next natural boundary.
+
+## Delivery adapters and harnesses
+
+Delivery is how a durable Agent Relay message reaches a live runtime. A harness is any runtime boundary that can provide a delivery adapter: Claude Code in a PTY, Codex in a terminal, an OpenCode server, a service worker, a browser app, or your own hosted agent.
+
+The minimum contract is `inject`: take a Relay message plus delivery context and report what happened.
+
+```ts
+import { defineHarness } from '@agent-relay/sdk';
+
+export const myCustomHarness = defineHarness({
+  name: 'support-worker',
+  kind: 'service',
+  capabilities: {
+    delivery: ['immediate', 'next-message', 'on-idle'],
+    observe: ['status', 'tool-use', 'transcript'],
+    actions: ['ticket.lookup', 'ticket.update'],
+  },
+
+  async create({ name, model, cwd }) {
+    const runtime = await startSupportWorker({ name, model, cwd });
+
+    return {
+      agent: {
+        name,
+        handle: `@${name}`,
+      },
+
+      async inject(message, context) {
+        const receipt = await runtime.deliver({
+          id: message.id,
+          text: message.text,
+          thread: message.thread,
+          context: message.context,
+          delivery: context.delivery,
+        });
+
+        return {
+          status: receipt.queued ? 'accepted' : 'delivered',
+          deliveryId: receipt.id,
+        };
+      },
+
+      async getStatus() {
+        return runtime.currentJob ? 'active' : 'idle';
+      },
+
+      onEvent(emit) {
+        runtime.on('tool:start', (tool) => {
+          emit({
+            type: 'harness.tool.called',
+            agent: name,
+            tool: tool.name,
+            input: tool.input,
+            run: tool.runId,
+          });
+        });
+
+        runtime.on('transcript', (chunk) => {
+          emit({
+            type: 'harness.transcript.chunk',
+            agent: name,
+            chunk,
+          });
+        });
+
+        return () => runtime.removeAllListeners();
+      },
+    };
+  },
+});
+```
+
+The delivery result is explicit:
+
+- `accepted`: the runtime accepted the work but has not executed it yet.
+- `delivered`: the runtime received it and can act on it now.
+- `deferred`: the harness will try later, usually because the agent is busy.
+- `failed`: the harness could not deliver it.
+
+Observability is optional but valuable. A harness that can report tool use, status changes, transcript chunks, file edits, command output, or terminal screenshots makes the agent more useful to supervise and easier for other agents to coordinate with.
 
 ### Managed harnesses
 
-Install the Agent Relay driver when you want Agent Relay to manage local CLI harness processes. For terminal based CLI harnesses like Claude Code and Codex, we have a pty based driver built already for you to use
+Install the Agent Relay driver when you want Agent Relay to manage local CLI harness processes. For terminal based CLI harnesses like Claude Code and Codex, the driver provides PTY and headless harnesses.
 
 ```bash
 npm install @agent-relay/driver
 ```
 
-`@agent-relay/driver` is the place for daemon startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults.
+`@agent-relay/driver` owns daemon startup, PTY/headless transports, session metadata, readiness, logs, managed release/shutdown, workflow helpers, and harness-specific defaults. Core Agent Relay only depends on the harness contract.
 
-## 2. Delivery
-
-Delivery is how a durable Agent Relay message reaches a running agent. If you own the runtime, implement an adapter. If Agent Relay owns the runtime, the driver provides the adapter.
-
-```ts
-import { AgentRelay, DeliveryRunner, type AgentDeliveryAdapter } from '@agent-relay/sdk';
-
-const relay = new AgentRelay({
-  apiKey: process.env.RELAY_API_KEY!,
-  agent: process.env.RELAY_AGENT_TOKEN!,
-});
-
-const delivery: AgentDeliveryAdapter = {
-  id: 'reviewer-terminal',
-  kind: 'terminal',
-  capabilities: {
-    push: true,
-    interrupt: true,
-    detectIdle: true,
-    threads: true,
-    attachments: false,
-  },
-  async inject(message, context) {
-    await terminal.write(formatForHarness(message, context));
-    return { status: 'delivered' };
-  },
-  async getStatus() {
-    return terminal.isBusy() ? 'busy' : 'idle';
-  },
-};
-
-const runner = new DeliveryRunner({
-  messaging: relay.messaging,
-  delivery,
-  agentName: 'reviewer',
-});
-
-await runner.start();
-```
-
-The delivery contract is explicit: adapters return `accepted`, `delivered`, `deferred`, or `failed`; Agent Relay records the result so senders and supervisors can see whether work actually reached the runtime.
-
-### 3. Actions
+## Actions
 
 Actions are typed capabilities that agents can discover and invoke through the SDK or MCP. Core owns the protocol: descriptors, Zod validation, policy hooks, audit events, and result/error envelopes. Implementations live with the system that can actually do the work.
 
