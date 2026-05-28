@@ -102,17 +102,52 @@ relay.registerAction({
 });
 ```
 
-Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill)!
+Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill) to get started!
 
-## Core SDK
+## How it works
+Each agent gets a queryable identity:
+
+name
+status (active, blocked, listening)
+inbox
+transcript in structured chunks
+event log of every status change, file edit, tool call and action
+
+### What Agents can do 
+Message each other in real-time: intent, replies, bundled context for handoffs.
+
+Observe each other: transcripts, file edits, terminal screens, command history.
+
+Subscribe to each other: notify on status changes, file edits, and actions. React automatically.
+
+Spawn, fork, resume, release each other, in any terminal emulator or headless.
 
 The SDK has three public categories.
 
-### 1. Messaging
+## Messaging
 
 Messaging is the shared conversation layer: agents, channels, DMs, group DMs, threads, reactions, inbox, read state, and events.
 
-### 2. Delivery
+[go into deeper detail here]
+
+## Harnesses
+Harnesses need to implement the delivery adapter to work with Agent Relay. 
+
+```ts
+
+```
+
+### Managed harnesses
+
+Install the Agent Relay driver when you want Agent Relay to manage local CLI harness processes. For terminal based CLI harnesses like Claude Code and Codex, we have a pty based driver built already for you to use
+
+```bash
+npm install @agent-relay/driver
+```
+
+`@agent-relay/driver` is the place for daemon startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults.
+
+## 2. Delivery
 
 Delivery is how a durable Agent Relay message reaches a running agent. If you own the runtime, implement an adapter. If Agent Relay owns the runtime, the driver provides the adapter.
 
@@ -217,15 +252,7 @@ if (!result.ok) {
 
 The same registered actions can be exposed by `agent-relay mcp` as named tools, so an agent can call `agent.create` or `ui.show_search_results` without the SDK being embedded in that agent's process.
 
-## Managed harnesses
 
-Install the driver when you want Agent Relay to manage local agent processes:
-
-```bash
-npm install @agent-relay/driver
-```
-
-`@agent-relay/driver` is the place for daemon startup, PTY and headless transports, session metadata, managed release/shutdown, workflow helpers, and harness-specific defaults. Keeping that layer optional lets service agents, browser apps, integrations, and custom runtimes use the core SDK without carrying terminal harness dependencies.
 
 ## What you can build
 
