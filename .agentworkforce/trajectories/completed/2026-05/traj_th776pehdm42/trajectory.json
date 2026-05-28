@@ -1,0 +1,53 @@
+{
+  "id": "traj_th776pehdm42",
+  "version": 1,
+  "task": {
+    "title": "Keep ACP bridge adapter in core simplification PR"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T19:54:56.551Z",
+  "completedAt": "2026-05-28T20:02:00.695Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-28T20:01:33.825Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_h4t431aupaqz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-28T20:01:33.825Z",
+      "endedAt": "2026-05-28T20:02:00.695Z",
+      "events": [
+        {
+          "ts": 1779998493826,
+          "type": "decision",
+          "content": "Retain ACP bridge as an adapter package: Retain ACP bridge as an adapter package",
+          "raw": {
+            "question": "Retain ACP bridge as an adapter package",
+            "chosen": "Retain ACP bridge as an adapter package",
+            "alternatives": [],
+            "reasoning": "ACP is still a useful editor integration. It should not be part of the core SDK, but it can stay in the repo if it uses SDK messaging/actions instead of the removed spawn-first SDK facade."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Kept @agent-relay/acp-bridge in the simplification PR, restored its workspace package and lockfile entries, and updated it to use SDK messaging/actions instead of removed spawn-first SDK APIs.",
+    "approach": "Standard approach",
+    "confidence": 0.84
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f7ed8bfd7f5fb643e0fe9d72611106ef1f7a23ad",
+    "endRef": "f7ed8bfd7f5fb643e0fe9d72611106ef1f7a23ad"
+  }
+}

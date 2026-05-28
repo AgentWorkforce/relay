@@ -67,8 +67,12 @@ The dependency direction should stay simple: driver depends on the SDK, not the 
 
 - The old all-in-one TypeScript SDK facade, broker client exports, communicate adapters, workflow/consensus/shadow helpers, GitHub/Slack SDK exports, browser/worker SDK exports, examples, and tests.
 - Spawn-first CLI commands and attach/cloud/onboarding command trees that are not part of messaging, MCP, diagnostics, or the optional driver command group.
-- Legacy ACP/OpenClaw packages that depended on the removed spawn-first SDK facade.
+- Legacy OpenClaw packages that depended on the removed spawn-first SDK facade.
 - CLI install hooks for bundled dashboard/acp/relayfile surfaces.
+
+## Kept as adapters
+
+- `@agent-relay/acp-bridge` remains as an editor adapter package and uses SDK messaging/actions instead of spawn-first SDK APIs.
 
 ## Non-goals
 
