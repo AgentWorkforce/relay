@@ -9,22 +9,34 @@ const futureAuth = {
   accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
 };
 
+const scopes = ['relayfile:fs:read:/slack/**', 'relayfile:fs:write:/slack/**'];
+
+function jsonResponse(body: unknown) {
+  return { ok: true, status: 200, statusText: 'OK', json: async () => body, text: async () => '' };
+}
+
 describe('bootstrapGatewayAccess', () => {
-  it('calls the cloud bootstrap endpoint and returns gateway access', async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => ({
-        workspaceId: 'ws_real',
-        gatewayUrl: 'wss://api.agentgateway.dev/v1/agent-events',
-        apiKey: 'scoped-key',
-      }),
-      text: async () => '',
-    })) as unknown as typeof fetch;
+  it('resolves the gateway URL then provisions a scoped token', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (url.endsWith('/agent-events')) {
+        return jsonResponse({
+          workspaceId: 'ws_real',
+          gatewayUrl: 'wss://api.agentgateway.dev/v1/agent-events',
+        });
+      }
+      if (url.endsWith('/agents/provision')) {
+        expect(init?.method).toBe('POST');
+        const payload = JSON.parse(init?.body ?? '{}');
+        expect(payload.workspaceId).toBe('ws_real');
+        expect(payload.agents[0].scopes).toEqual(scopes);
+        return jsonResponse({ agents: [{ name: payload.agents[0].name, token: 'scoped-token', scopes }] });
+      }
+      throw new Error(`unexpected url ${url}`);
+    }) as unknown as typeof fetch;
 
     const access = await bootstrapGatewayAccess({
       workspace: 'my-team',
+      scopes,
       fetchImpl,
       readAuth: async () => futureAuth,
       refreshAuth: async () => futureAuth,
@@ -33,19 +45,20 @@ describe('bootstrapGatewayAccess', () => {
     expect(access).toEqual({
       workspaceId: 'ws_real',
       gatewayUrl: 'wss://api.agentgateway.dev/v1/agent-events',
-      apiKey: 'scoped-key',
+      apiKey: 'scoped-token',
     });
-    const calledUrl = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
-    expect(calledUrl).toBe('https://app.agentrelay.com/api/v1/workspaces/my-team/agent-events');
+    const calls = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls[0][0]).toBe('https://app.agentrelay.com/api/v1/workspaces/my-team/agent-events');
+    expect(calls[1][0]).toBe('https://app.agentrelay.com/api/v1/agents/provision');
   });
 
   it('throws a clear error when not logged in', async () => {
     await expect(
-      bootstrapGatewayAccess({ workspace: 'my-team', readAuth: async () => null })
+      bootstrapGatewayAccess({ workspace: 'my-team', scopes, readAuth: async () => null })
     ).rejects.toThrow(/Not logged in/);
   });
 
-  it('surfaces endpoint failures', async () => {
+  it('surfaces config-endpoint failures', async () => {
     const fetchImpl = vi.fn(async () => ({
       ok: false,
       status: 403,
@@ -57,10 +70,11 @@ describe('bootstrapGatewayAccess', () => {
     await expect(
       bootstrapGatewayAccess({
         workspace: 'my-team',
+        scopes,
         fetchImpl,
         readAuth: async () => futureAuth,
         refreshAuth: async () => futureAuth,
       })
-    ).rejects.toThrow(/Gateway bootstrap failed: 403/);
+    ).rejects.toThrow(/Gateway bootstrap failed \(config\): 403/);
   });
 });

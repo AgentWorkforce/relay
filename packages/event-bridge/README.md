@@ -28,10 +28,10 @@ provider adapters.
 
 ## Run
 
-The bridge bootstraps the gateway URL + a scoped token from cloud using your
-stored login (the same `GET /api/v1/workspaces/<ws>/agent-events` endpoint
-cloud's own hosted agents use) — so you reuse the deployed cloud and run nothing
-locally:
+The bridge bootstraps from cloud using your stored login — so you reuse the
+deployed cloud and run nothing locally. It resolves the deployed gateway URL
+(`GET /api/v1/workspaces/<ws>/agent-events`) and provisions a token scoped to
+your providers' roots (e.g. `/slack/**`, via `POST /api/v1/agents/provision`):
 
 ```bash
 agent-relay login                       # once — stores your cloud session

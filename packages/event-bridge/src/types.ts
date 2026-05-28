@@ -55,6 +55,12 @@ export interface ProviderAdapter {
   /** Watch globs registered with the gateway, e.g. `['/slack/channels/**']`. */
   readonly watch: string[];
   /**
+   * Relayfile scopes the bridge needs for this provider when minting a gateway
+   * token — read for inbound, write for the reply writeback. Typically the
+   * provider root, e.g. `['relayfile:fs:read:/slack/**', 'relayfile:fs:write:/slack/**']`.
+   */
+  readonly scopes: string[];
+  /**
    * Decide whether a relayfile change is an actionable inbound item.
    *
    * Return `null` to ignore the change — used for the bridge's own writeback

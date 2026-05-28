@@ -34,6 +34,7 @@ export function slackProvider(options: SlackProviderOptions = {}): ProviderAdapt
   return {
     name: 'slack',
     watch: ['/slack/channels/**'],
+    scopes: ['relayfile:fs:read:/slack/**', 'relayfile:fs:write:/slack/**'],
     resolveInbound(
       event: RelayfileChangeEvent,
       file: WorkspaceFileLike | null,

@@ -6,7 +6,7 @@ export interface GatewayAccess {
   workspaceId: string;
   /** WebSocket URL of the deployed agent-events gateway. */
   gatewayUrl: string;
-  /** Scoped token for the gateway + relayfile writes. */
+  /** Token scoped to the requested provider roots, for the gateway + writes. */
   apiKey: string;
 }
 
@@ -14,6 +14,15 @@ export interface GatewayAccess {
 export interface BootstrapOptions {
   /** Workspace name or id (passed to cloud's bootstrap endpoint). */
   workspace: string;
+  /**
+   * Relayfile scopes to mint the token with, e.g.
+   * `['relayfile:fs:read:/slack/**', 'relayfile:fs:write:/slack/**']`. These
+   * must cover every provider's watch + writeback paths, or the gateway will
+   * not surface inbound events / accept reply writes.
+   */
+  scopes: string[];
+  /** Provisioned gateway identity for the token. Defaults to `event-bridge`. */
+  agentName?: string;
   /** Cloud API base URL. Defaults to the stored login's apiUrl, then {@link defaultApiUrl}. */
   apiUrl?: string;
   /** Injectable fetch + auth reader for testing. */
@@ -23,14 +32,22 @@ export interface BootstrapOptions {
 }
 
 const REFRESH_BEFORE_MS = 60_000;
+const DEFAULT_BRIDGE_AGENT = 'event-bridge';
 
 /**
- * Discover the agent-events gateway URL and a scoped token for a workspace by
- * calling cloud's bootstrap endpoint with the operator's stored cloud login —
- * the same path cloud's own hosted agents use. Reuses the deployed cloud; runs
- * nothing locally.
+ * Discover gateway access for a workspace by reusing the deployed cloud (runs
+ * nothing locally). Two calls with the operator's stored cloud login:
  *
- * @throws if not logged in, or the endpoint rejects the request.
+ *   1. `GET /api/v1/workspaces/<ws>/agent-events` → the deployed gateway URL +
+ *      canonical workspace id.
+ *   2. `POST /api/v1/agents/provision` → a token scoped to `options.scopes`
+ *      (the provider roots, e.g. `/slack/**`).
+ *
+ * The config endpoint's own token is intentionally scoped to `/integrations/**`
+ * and would not authorize `/slack/**`, so we provision a correctly-scoped token
+ * instead and use the config endpoint only for the URL.
+ *
+ * @throws if not logged in, or either endpoint rejects the request.
  */
 export async function bootstrapGatewayAccess(options: BootstrapOptions): Promise<GatewayAccess> {
   const readAuth = options.readAuth ?? readStoredAuth;
@@ -46,37 +63,56 @@ export async function bootstrapGatewayAccess(options: BootstrapOptions): Promise
 
   const auth = (await maybeRefresh(stored, refreshAuth)) ?? stored;
   const apiUrl = options.apiUrl ?? auth.apiUrl ?? defaultApiUrl();
-  const endpoint = joinUrl(
+  const authHeader = { authorization: `Bearer ${auth.accessToken}` };
+
+  // 1. Gateway URL + canonical workspace id.
+  const configUrl = joinUrl(
     apiUrl,
     `/api/v1/workspaces/${encodeURIComponent(options.workspace)}/agent-events`
   );
-
-  const response = await fetchImpl(endpoint, {
-    headers: { authorization: `Bearer ${auth.accessToken}` },
-  });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(
-      `Gateway bootstrap failed: ${response.status} ${response.statusText} (${endpoint})${
-        detail ? ` — ${detail.slice(0, 200)}` : ''
-      }`
-    );
-  }
-
-  const body = (await response.json().catch(() => null)) as {
+  const configResponse = await fetchImpl(configUrl, { headers: authHeader });
+  await assertOk(configResponse, 'config', configUrl);
+  const config = (await configResponse.json().catch(() => null)) as {
     workspaceId?: string;
     gatewayUrl?: string;
-    apiKey?: string;
   } | null;
-  if (!body?.gatewayUrl || !body.apiKey) {
-    throw new Error('Gateway bootstrap response missing gatewayUrl/apiKey');
+  if (!config?.gatewayUrl) {
+    throw new Error('Gateway bootstrap response missing gatewayUrl');
+  }
+  const workspaceId = config.workspaceId ?? options.workspace;
+
+  // 2. Provision a token scoped to the providers' roots (config token is /integrations/** only).
+  const provisionUrl = joinUrl(apiUrl, '/api/v1/agents/provision');
+  const provisionResponse = await fetchImpl(provisionUrl, {
+    method: 'POST',
+    headers: { ...authHeader, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      workspaceId,
+      agents: [{ name: options.agentName ?? DEFAULT_BRIDGE_AGENT, scopes: options.scopes }],
+    }),
+  });
+  await assertOk(provisionResponse, 'provision', provisionUrl);
+  const provision = (await provisionResponse.json().catch(() => null)) as {
+    agents?: Array<{ token?: string }>;
+  } | null;
+  const apiKey = provision?.agents?.[0]?.token;
+  if (!apiKey) {
+    throw new Error('Gateway bootstrap provision response missing a token');
   }
 
-  return {
-    workspaceId: body.workspaceId ?? options.workspace,
-    gatewayUrl: body.gatewayUrl,
-    apiKey: body.apiKey,
-  };
+  return { workspaceId, gatewayUrl: config.gatewayUrl, apiKey };
+}
+
+async function assertOk(response: Response, stage: string, url: string): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+  const detail = await response.text().catch(() => '');
+  throw new Error(
+    `Gateway bootstrap failed (${stage}): ${response.status} ${response.statusText} (${url})${
+      detail ? ` — ${detail.slice(0, 200)}` : ''
+    }`
+  );
 }
 
 async function maybeRefresh(

@@ -2,6 +2,7 @@
 import { bootstrapGatewayAccess } from './bootstrap.js';
 import { createEventBridge } from './bridge.js';
 import type { EventBridgeConfig } from './config.js';
+import { createProvider } from './providers/index.js';
 
 /**
  * Run the event bridge as a daemon.
@@ -36,9 +37,13 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const providers = csv(flags.providers ?? env.EVENT_BRIDGE_PROVIDERS) ?? ['slack'];
+  const providerNames = csv(flags.providers ?? env.EVENT_BRIDGE_PROVIDERS) ?? ['slack'];
   const outboxDir = flags.outbox ?? env.EVENT_BRIDGE_OUTBOX ?? './outbox';
   const injectMode = (flags['inject-mode'] ?? env.EVENT_BRIDGE_INJECT_MODE) === 'steer' ? 'steer' : 'wait';
+
+  // Construct the adapters once; reuse for scope derivation and the bridge.
+  const providers = providerNames.map(createProvider);
+  const scopes = [...new Set(providers.flatMap((provider) => provider.scopes))];
 
   let resolvedWorkspace = workspace;
   let gatewayUrl = flags['gateway-url'] ?? env.RELAY_GATEWAY_URL;
@@ -52,19 +57,21 @@ async function main(): Promise<void> {
     console.error(`[event-bridge] bootstrapping gateway access for workspace "${workspace}" from cloud…`);
     const access = await bootstrapGatewayAccess({
       workspace,
+      scopes,
+      agentName: `event-bridge-${agentName}`,
       ...(flags['api-url'] ? { apiUrl: flags['api-url'] } : {}),
     });
     resolvedWorkspace = access.workspaceId;
     gatewayUrl = gatewayUrl ?? access.gatewayUrl;
     apiKey = apiKey ?? access.apiKey;
-    console.error(`[event-bridge] gateway: ${gatewayUrl}`);
+    console.error(`[event-bridge] gateway: ${gatewayUrl} (scopes: ${scopes.join(', ')})`);
   }
 
   const config: EventBridgeConfig = {
     workspace: resolvedWorkspace,
     apiKey,
     agentName,
-    providers,
+    providers: providerNames,
     outboxDir,
     gatewayUrl,
     injectMode,
@@ -76,6 +83,7 @@ async function main(): Promise<void> {
   };
 
   const bridge = createEventBridge(config, {
+    providers,
     logger: (message, fields) =>
       console.error(`[event-bridge] ${message}${fields ? ` ${JSON.stringify(fields)}` : ''}`),
   });
