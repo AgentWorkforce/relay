@@ -18,6 +18,7 @@ Restored @agent-relay/openclaw as an optional adapter, moved its managed spawn b
 ## Key Decisions
 
 ### Keep OpenClaw as an optional adapter
+
 - **Chose:** Keep OpenClaw as an optional adapter
 - **Reasoning:** OpenClaw still serves as a useful adapter, but any managed spawn implementation belongs behind @agent-relay/driver so the core SDK remains messaging/delivery/actions focused.
 
@@ -26,6 +27,7 @@ Restored @agent-relay/openclaw as an optional adapter, moved its managed spawn b
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Keep OpenClaw as an optional adapter: Keep OpenClaw as an optional adapter
