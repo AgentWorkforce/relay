@@ -102,21 +102,110 @@ relay.registerAction({
 });
 ```
 
-Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill) to get started!
-
 ## How it works
-
-The README describes the SDK shape we are building toward. Some surfaces below are target contracts: the point is to make the desired product boundary clear before we finish wiring every package to it.
-
-Every Relay agent gets a queryable identity:
+Once registered, agents are put "on the relay" and get an identity
 
 - `name`, `handle`, and stable `id`
 - status such as `active`, `idle`, `blocked`, `waiting`, or `offline`
 - channel memberships, direct-message inbox, and pending deliveries
 - actions it can call and actions it provides
-- optional harness observations such as transcript chunks, tool calls, file edits, terminal output, and screenshots
+- transcripts of tool calls, file edits and other outputs
 
-Agent Relay does not need to own the process to coordinate it. If a runtime can receive messages, report state, and expose useful observations, it can participate.
+
+Agent Relay does not need to own the process to coordinate it, but comes bundled with tools that can make some of the most common agent harnesses work out of the box.
+
+## Harnesses
+A harness is any runtime boundary that can implement our delivery adapter: Claude Code or Codex in a terminal, an OpenCode server, a service worker, a browser app, or your own hosted agent.
+
+We support many of the common harnesses with our optional `@agent-relay/harnesses` package, but you can also define them yourself.
+
+The minimum contract is `inject`: take a Relay message plus delivery context and report what happened.
+
+```ts
+import { defineHarness } from '@agent-relay/sdk';
+
+export const myCustomHarness = defineHarness({
+  name: 'bob-code',
+  kind: 'cli',
+  capabilities: {
+    delivery: ['immediate', 'next-message', 'on-idle'],
+    observe: ['status', 'tool-use', 'transcript'],
+  },
+
+  async create({ name, model, cwd }) {
+    const runtime = await startSupportWorker({ name, model, cwd });
+
+    return {
+      agent: {
+        name,
+        handle: `@${name}`,
+      },
+
+      async inject(message, context) {
+        const receipt = await runtime.deliver({
+          id: message.id,
+          text: message.text,
+          thread: message.thread,
+          context: message.context,
+          delivery: context.delivery,
+        });
+
+        return {
+          status: receipt.queued ? 'accepted' : 'delivered',
+          deliveryId: receipt.id,
+        };
+      },
+
+      async getStatus() {
+        return runtime.currentJob ? 'active' : 'idle';
+      },
+
+      onEvent(emit) {
+        runtime.on('tool:start', (tool) => {
+          emit({
+            type: 'harness.tool.called',
+            agent: name,
+            tool: tool.name,
+            input: tool.input,
+            run: tool.runId,
+          });
+        });
+
+        runtime.on('transcript', (chunk) => {
+          emit({
+            type: 'harness.transcript.chunk',
+            agent: name,
+            chunk,
+          });
+        });
+
+        return () => runtime.removeAllListeners();
+      },
+    };
+  },
+});
+```
+
+### Full Harness Contract
+
+
+### Managed Harnesses
+Agent Relay supports Claude Code, Codex and OpenCode. We're open to contributions for more managed harnesses!
+
+
+
+## Learn More
+
+Learn more about some of the key concepts:
+
+- [Messaging](https://agentrelay.com/docs/messaging)
+- [Delivery]()
+- [Harness]()
+- [Actions]()
+
+
+
+
 
 ## Messaging
 
@@ -223,75 +312,7 @@ Delivery policy is part of the listener contract. A notification can be delivere
 
 ## Delivery adapters and harnesses
 
-Delivery is how a durable Agent Relay message reaches a live runtime. A harness is any runtime boundary that can provide a delivery adapter: Claude Code in a PTY, Codex in a terminal, an OpenCode server, a service worker, a browser app, or your own hosted agent.
 
-The minimum contract is `inject`: take a Relay message plus delivery context and report what happened.
-
-```ts
-import { defineHarness } from '@agent-relay/sdk';
-
-export const myCustomHarness = defineHarness({
-  name: 'support-worker',
-  kind: 'service',
-  capabilities: {
-    delivery: ['immediate', 'next-message', 'on-idle'],
-    observe: ['status', 'tool-use', 'transcript'],
-    actions: ['ticket.lookup', 'ticket.update'],
-  },
-
-  async create({ name, model, cwd }) {
-    const runtime = await startSupportWorker({ name, model, cwd });
-
-    return {
-      agent: {
-        name,
-        handle: `@${name}`,
-      },
-
-      async inject(message, context) {
-        const receipt = await runtime.deliver({
-          id: message.id,
-          text: message.text,
-          thread: message.thread,
-          context: message.context,
-          delivery: context.delivery,
-        });
-
-        return {
-          status: receipt.queued ? 'accepted' : 'delivered',
-          deliveryId: receipt.id,
-        };
-      },
-
-      async getStatus() {
-        return runtime.currentJob ? 'active' : 'idle';
-      },
-
-      onEvent(emit) {
-        runtime.on('tool:start', (tool) => {
-          emit({
-            type: 'harness.tool.called',
-            agent: name,
-            tool: tool.name,
-            input: tool.input,
-            run: tool.runId,
-          });
-        });
-
-        runtime.on('transcript', (chunk) => {
-          emit({
-            type: 'harness.transcript.chunk',
-            agent: name,
-            chunk,
-          });
-        });
-
-        return () => runtime.removeAllListeners();
-      },
-    };
-  },
-});
-```
 
 The delivery result is explicit:
 
