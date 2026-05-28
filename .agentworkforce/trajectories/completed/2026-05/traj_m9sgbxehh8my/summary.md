@@ -18,6 +18,7 @@ Added workspace-first SDK/MCP/OpenClaw setup with RELAY_WORKSPACE_KEY as the pre
 ## Key Decisions
 
 ### Prefer workspace keys over Agent Relay API keys
+
 - **Chose:** Prefer workspace keys over Agent Relay API keys
 - **Reasoning:** Workspace creation should be the default onboarding path; RELAY_WORKSPACE_KEY and workspaceKey are now first-class while RELAY_API_KEY/apiKey remain compatibility aliases for existing tools.
 
@@ -26,6 +27,7 @@ Added workspace-first SDK/MCP/OpenClaw setup with RELAY_WORKSPACE_KEY as the pre
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Prefer workspace keys over Agent Relay API keys: Prefer workspace keys over Agent Relay API keys
