@@ -43,49 +43,60 @@ await relay.workspace.register([complaintTriager, engineer, taskManager]);
 /// You can send messages to the agents as the system (or just register a human participant)
 await relay.sendMessage({
   to: '#customer-complaints',
-  msg: `${complaintTriager.handle} please work with ${taskManager.handle} and ${engineer.handle} to prioritize the
-   most important complaints and turn them into PRs`,
+  msg: `${complaintTriager.handle} please work with ${taskManager.handle} and ${engineer.handle} to prioritize the most important complaints and turn them into PRs`,
 });
 
 // The real power comes from hooking into events & actions to turn agents into powerful, reliable actors
 relay.on(
   engineer.status.becomes('idle'),
-  relay.notify(taskManager, { delivery: 'next-tool-call' }) // sends an idle notification to the taskManager
+  relay.notify(taskManager, {
+    type: 'agent.status.idle',
+    subject: engineer,
+    delivery: 'next-tool-call', // or immediate|next-message|on-idle
+  })
 );
 
 // You can also define custom actions and subscribe to those
 relay.registerAction({
   name: 'spawn-claude',
-  description: 'Spawn a new claude code instance',
+  description: 'Spawn a new Claude Code instance',
   input: z.object({
-    model: z.string('opus' | 'sonnet'),
+    model: z.enum(['opus', 'sonnet']),
   }),
-  handler: async (agent, input, ctx) => {
-    await claude.new({ model: input.model });
-  },
   availableTo: [taskManager, engineer], // leave this out if you want to make it available to all agents!
+  handler: async ({ input }) => {
+    const agent = claude.new({ model: input.model });
+    await relay.workspace.register(agent);
+    return {
+      agentId: agent.id,
+      handle: agent.handle,
+    };
+  },
 });
 
 /// You can also subscribe to monitor and guide specific agents doing actions
-relay.on(relay.action('spawn-claude'), async (agent, input, ctx) => {
-  if (agent.name == 'engineer') {
-    relay.notify(taskManager);
-  }
-});
+relay.on(
+  relay.action('spawn-claude').calledBy(engineer),
+  relay.notify(taskManager, {
+    action: 'spawn-claude',
+    subject: engineer,
+  })
+);
 
 // Another example: handle consensus voting
 relay.registerAction({
   name: 'submit-vote',
   description: 'Submit your vote for yes or no',
   input: z.object({
-    vote: z.string('no' | 'yes'),
+    vote: z.enum(['yes', 'no']),
   }),
-  handler: async (input, ctx) => {
-    writeToDb(ctx.agent.name, input.vote);
-    if (allVotesAreIn() === true) {
+  handler: async ({ agent, input }) => {
+    await writeToDb(agent.name, input.vote);
+    if (await allVotesAreIn()) {
       await relay.sendMessage({
         to: '#customer-complaints',
-        msg: `${taskManager.handle} all votes are in!`;
+        msg: `${taskManager.handle} all votes are in!`,
+      });
     }
   },
 });
