@@ -116,227 +116,56 @@ Agent Relay does not need to own the process to coordinate it, but comes bundled
 
 ## Harnesses
 
-A harness is any runtime boundary that can implement our delivery adapter: Claude Code or Codex in a terminal, an OpenCode server, a service worker, a browser app, or your own hosted agent.
+A harness is any runtime boundary that can implement our delivery adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
 
 We support many of the common harnesses with our optional `@agent-relay/harnesses` package, but you can also define them yourself.
 
-The minimum contract is `inject`: take a Relay message plus delivery context and report what happened.
-
-```ts
-import { defineHarness } from '@agent-relay/sdk';
-
-export const myCustomHarness = defineHarness({
-  name: 'bob-code',
-  kind: 'cli',
-  capabilities: {
-    delivery: ['immediate', 'next-message', 'on-idle'],
-    observe: ['status', 'tool-use', 'transcript'],
-  },
-
-  async create({ name, model, cwd }) {
-    const runtime = await startSupportWorker({ name, model, cwd });
-
-    return {
-      agent: {
-        name,
-        handle: `@${name}`,
-      },
-
-      async inject(message, context) {
-        const receipt = await runtime.deliver({
-          id: message.id,
-          text: message.text,
-          thread: message.thread,
-          context: message.context,
-          delivery: context.delivery,
-        });
-
-        return {
-          status: receipt.queued ? 'accepted' : 'delivered',
-          deliveryId: receipt.id,
-        };
-      },
-
-      async getStatus() {
-        return runtime.currentJob ? 'active' : 'idle';
-      },
-
-      onEvent(emit) {
-        runtime.on('tool:start', (tool) => {
-          emit({
-            type: 'harness.tool.called',
-            agent: name,
-            tool: tool.name,
-            input: tool.input,
-            run: tool.runId,
-          });
-        });
-
-        runtime.on('transcript', (chunk) => {
-          emit({
-            type: 'harness.transcript.chunk',
-            agent: name,
-            chunk,
-          });
-        });
-
-        return () => runtime.removeAllListeners();
-      },
-    };
-  },
-});
-```
+The minimum contract is `inject`: take a Relay message plus delivery context and report what happened. A full harness contract also declares lifecycle, delivery modes, observable events, and optional actions.
 
 ### Full Harness Contract
 
 A harness has one job: make a runtime legible to Agent Relay. It tells Relay how to create or attach to an agent, how messages should be delivered, what the runtime can observe, and which lifecycle operations are safe.
 
-The target SDK contract should look like this:
+The target SDK contract should look like this as an interface:
 
 ```ts
-import { defineHarness, type HarnessSession } from '@agent-relay/sdk';
-import { z } from 'zod';
+import type { z } from 'zod';
 
-export const bobCode = defineHarness({
-  name: 'bob-code',
-  kind: 'cli',
-  version: '1.0.0',
-  description: 'Runs Bob Code through a local PTY.',
+type HarnessKind = 'cli' | 'sdk' | 'server' | 'browser' | 'service' | 'custom';
+type DeliveryMode = 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
+type LifecycleCapability = 'create' | 'attach' | 'resume' | 'release' | 'fork' | 'observe';
+type ObservationCapability =
+  | 'status'
+  | 'transcript'
+  | 'tool-use'
+  | 'file-edits'
+  | 'terminal-output'
+  | 'screenshots'
+  | 'command-history';
 
-  createInput: z.object({
-    model: z.string().optional(),
-    cwd: z.string().optional(),
-    systemPrompt: z.string().optional(),
-  }),
-
+type HarnessDefinition<TCreateInput extends z.ZodTypeAny = z.ZodTypeAny> = {
+  name: string;
+  kind: HarnessKind;
+  version?: string;
+  description?: string;
+  createInput?: TCreateInput;
   capabilities: {
     delivery: {
-      modes: ['immediate', 'next-message', 'next-tool-call', 'on-idle', 'manual'],
-      interrupt: true,
-      queue: true,
-      threads: true,
-      attachments: false,
-      context: ['text', 'url', 'file-ref'],
-    },
-    lifecycle: ['create', 'attach', 'resume', 'release', 'fork'],
-    observe: ['status', 'transcript', 'tool-use', 'file-edits', 'terminal-output', 'screenshots'],
-    actions: ['agent.release', 'agent.status'],
-  },
-
-  async create(input, ctx): Promise<HarnessSession> {
-    const runtime = await startBobCode({
-      name: ctx.agent.name,
-      model: input.model,
-      cwd: input.cwd ?? ctx.workspace.cwd,
-      env: ctx.env,
-      signal: ctx.signal,
-    });
-
-    return {
-      agent: {
-        id: ctx.agent.id,
-        name: ctx.agent.name,
-        handle: ctx.agent.handle,
-        status: 'active',
-        metadata: {
-          harness: 'bob-code',
-          model: input.model,
-        },
-      },
-
-      async inject(message, delivery) {
-        const receipt = await runtime.inject({
-          deliveryId: delivery.id,
-          text: message.text,
-          thread: message.thread,
-          mentions: message.mentions,
-          context: message.context,
-          mode: delivery.mode,
-          priority: delivery.priority,
-        });
-
-        return {
-          status: receipt.delivered ? 'delivered' : 'accepted',
-          deliveryId: receipt.id,
-          retryable: true,
-          metadata: {
-            queuedAt: receipt.queuedAt,
-          },
-        };
-      },
-
-      async interrupt(reason) {
-        await runtime.interrupt(reason);
-      },
-
-      async flush() {
-        await runtime.flushQueuedMessages();
-      },
-
-      async getStatus() {
-        if (runtime.isBlocked()) return { status: 'blocked', reason: runtime.blockedReason() };
-        if (runtime.isBusy()) return { status: 'active' };
-        return { status: 'idle' };
-      },
-
-      async getTranscript(cursor) {
-        return runtime.transcript({ after: cursor });
-      },
-
-      onEvent(emit) {
-        runtime.on('tool:start', (tool) => {
-          emit({
-            type: 'harness.tool.called',
-            agent: ctx.agent.id,
-            run: tool.runId,
-            tool: tool.name,
-            input: tool.input,
-          });
-        });
-
-        runtime.on('tool:end', (tool) => {
-          emit({
-            type: 'harness.tool.completed',
-            agent: ctx.agent.id,
-            run: tool.runId,
-            tool: tool.name,
-            output: tool.output,
-            durationMs: tool.durationMs,
-          });
-        });
-
-        runtime.on('file:change', (file) => {
-          emit({
-            type: 'harness.file.changed',
-            agent: ctx.agent.id,
-            path: file.path,
-            operation: file.operation,
-            diff: file.diff,
-          });
-        });
-
-        runtime.on('transcript', (chunk) => {
-          emit({
-            type: 'harness.transcript.chunk',
-            agent: ctx.agent.id,
-            chunk,
-          });
-        });
-
-        return () => runtime.removeAllListeners();
-      },
-
-      async release(reason) {
-        await runtime.shutdown({ reason });
-      },
+      modes: DeliveryMode[];
+      interrupt: boolean;
+      queue: boolean;
+      threads: boolean;
+      attachments: boolean;
+      context: Array<'text' | 'url' | 'file-ref' | 'image' | 'structured-data'>;
     };
-  },
-});
-```
+    lifecycle: LifecycleCapability[];
+    observe: ObservationCapability[];
+    actions?: string[];
+  };
+  create?(input: z.infer<TCreateInput>, ctx: HarnessCreateContext): Promise<HarnessSession>;
+  attach?(input: AttachHarnessInput, ctx: HarnessCreateContext): Promise<HarnessSession>;
+};
 
-The interface behind that example is:
-
-```ts
 type HarnessCreateContext = {
   relay: AgentRelay;
   workspace: {
@@ -354,6 +183,14 @@ type HarnessCreateContext = {
   env: Record<string, string>;
   secrets?: Record<string, string>;
   signal: AbortSignal;
+};
+
+type AttachHarnessInput = {
+  agentId?: string;
+  name?: string;
+  endpoint?: string;
+  pid?: number;
+  metadata?: Record<string, unknown>;
 };
 
 type TranscriptPage = {
