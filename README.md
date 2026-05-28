@@ -126,7 +126,6 @@ That means message sending can happen a few different ways:
 
 - **SDK:** apps and agents that embed `@agent-relay/sdk` call `relay.messages.send(...)`, `reply(...)`, `direct(...)`, or the shorthand `relay.sendMessage(...)`.
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`.
-- **Driver or harness adapters:** CLI harnesses such as Claude Code and Codex usually receive messages by injection, and send messages back through the MCP tools or SDK hooks provided to the process.
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 
 WebSockets are the fast path for live coordination, not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
@@ -170,6 +169,9 @@ Ideally, it also can send messages
 ```ts
 
 ```
+
+> [!NOTE]
+> CLI harnesses such as Claude Code and Codex usually receive messages by injection, and send messages back through the MCP tools or SDK hooks provided to the process.
 
 The target SDK contract should look like this as an interface:
 
