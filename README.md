@@ -103,6 +103,7 @@ relay.registerAction({
 ```
 
 ## How it works
+
 Once registered, agents are put "on the relay" and get an identity
 
 - `name`, `handle`, and stable `id`
@@ -111,10 +112,10 @@ Once registered, agents are put "on the relay" and get an identity
 - actions it can call and actions it provides
 - transcripts of tool calls, file edits and other outputs
 
-
 Agent Relay does not need to own the process to coordinate it, but comes bundled with tools that can make some of the most common agent harnesses work out of the box.
 
 ## Harnesses
+
 A harness is any runtime boundary that can implement our delivery adapter: Claude Code or Codex in a terminal, an OpenCode server, a service worker, a browser app, or your own hosted agent.
 
 We support many of the common harnesses with our optional `@agent-relay/harnesses` package, but you can also define them yourself.
@@ -188,11 +189,282 @@ export const myCustomHarness = defineHarness({
 
 ### Full Harness Contract
 
+A harness has one job: make a runtime legible to Agent Relay. It tells Relay how to create or attach to an agent, how messages should be delivered, what the runtime can observe, and which lifecycle operations are safe.
+
+The target SDK contract should look like this:
+
+```ts
+import { defineHarness, type HarnessSession } from '@agent-relay/sdk';
+import { z } from 'zod';
+
+export const bobCode = defineHarness({
+  name: 'bob-code',
+  kind: 'cli',
+  version: '1.0.0',
+  description: 'Runs Bob Code through a local PTY.',
+
+  createInput: z.object({
+    model: z.string().optional(),
+    cwd: z.string().optional(),
+    systemPrompt: z.string().optional(),
+  }),
+
+  capabilities: {
+    delivery: {
+      modes: ['immediate', 'next-message', 'next-tool-call', 'on-idle', 'manual'],
+      interrupt: true,
+      queue: true,
+      threads: true,
+      attachments: false,
+      context: ['text', 'url', 'file-ref'],
+    },
+    lifecycle: ['create', 'attach', 'resume', 'release', 'fork'],
+    observe: ['status', 'transcript', 'tool-use', 'file-edits', 'terminal-output', 'screenshots'],
+    actions: ['agent.release', 'agent.status'],
+  },
+
+  async create(input, ctx): Promise<HarnessSession> {
+    const runtime = await startBobCode({
+      name: ctx.agent.name,
+      model: input.model,
+      cwd: input.cwd ?? ctx.workspace.cwd,
+      env: ctx.env,
+      signal: ctx.signal,
+    });
+
+    return {
+      agent: {
+        id: ctx.agent.id,
+        name: ctx.agent.name,
+        handle: ctx.agent.handle,
+        status: 'active',
+        metadata: {
+          harness: 'bob-code',
+          model: input.model,
+        },
+      },
+
+      async inject(message, delivery) {
+        const receipt = await runtime.inject({
+          deliveryId: delivery.id,
+          text: message.text,
+          thread: message.thread,
+          mentions: message.mentions,
+          context: message.context,
+          mode: delivery.mode,
+          priority: delivery.priority,
+        });
+
+        return {
+          status: receipt.delivered ? 'delivered' : 'accepted',
+          deliveryId: receipt.id,
+          retryable: true,
+          metadata: {
+            queuedAt: receipt.queuedAt,
+          },
+        };
+      },
+
+      async interrupt(reason) {
+        await runtime.interrupt(reason);
+      },
+
+      async flush() {
+        await runtime.flushQueuedMessages();
+      },
+
+      async getStatus() {
+        if (runtime.isBlocked()) return { status: 'blocked', reason: runtime.blockedReason() };
+        if (runtime.isBusy()) return { status: 'active' };
+        return { status: 'idle' };
+      },
+
+      async getTranscript(cursor) {
+        return runtime.transcript({ after: cursor });
+      },
+
+      onEvent(emit) {
+        runtime.on('tool:start', (tool) => {
+          emit({
+            type: 'harness.tool.called',
+            agent: ctx.agent.id,
+            run: tool.runId,
+            tool: tool.name,
+            input: tool.input,
+          });
+        });
+
+        runtime.on('tool:end', (tool) => {
+          emit({
+            type: 'harness.tool.completed',
+            agent: ctx.agent.id,
+            run: tool.runId,
+            tool: tool.name,
+            output: tool.output,
+            durationMs: tool.durationMs,
+          });
+        });
+
+        runtime.on('file:change', (file) => {
+          emit({
+            type: 'harness.file.changed',
+            agent: ctx.agent.id,
+            path: file.path,
+            operation: file.operation,
+            diff: file.diff,
+          });
+        });
+
+        runtime.on('transcript', (chunk) => {
+          emit({
+            type: 'harness.transcript.chunk',
+            agent: ctx.agent.id,
+            chunk,
+          });
+        });
+
+        return () => runtime.removeAllListeners();
+      },
+
+      async release(reason) {
+        await runtime.shutdown({ reason });
+      },
+    };
+  },
+});
+```
+
+The interface behind that example is:
+
+```ts
+type HarnessCreateContext = {
+  relay: AgentRelay;
+  workspace: {
+    id: string;
+    name?: string;
+    cwd?: string;
+  };
+  agent: {
+    id: string;
+    name: string;
+    handle: string;
+    channels: string[];
+    requestedBy?: string;
+  };
+  env: Record<string, string>;
+  secrets?: Record<string, string>;
+  signal: AbortSignal;
+};
+
+type TranscriptPage = {
+  chunks: TranscriptChunk[];
+  nextCursor?: string;
+};
+
+type HarnessSession = {
+  agent: {
+    id: string;
+    name: string;
+    handle: string;
+    status?: 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
+    metadata?: Record<string, unknown>;
+  };
+
+  inject(message: RelayMessage, delivery: DeliveryContext): Promise<DeliveryResult>;
+  getStatus?(): Promise<{ status: HarnessSession['agent']['status']; reason?: string }>;
+  interrupt?(reason?: string): Promise<void>;
+  flush?(): Promise<void>;
+  getTranscript?(cursor?: string): Promise<TranscriptPage>;
+  onEvent?(emit: (event: HarnessEvent) => void): () => void;
+  release?(reason?: string): Promise<void>;
+};
+```
+
+The important pieces are:
+
+| Piece                         | Required     | Purpose                                                                                                                                                                      |
+| ----------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`, `kind`, `version`     | Yes          | Stable harness identity for configuration, action names, logs, and debugging.                                                                                                |
+| `createInput`                 | Recommended  | Zod schema for harness-specific options such as `model`, `cwd`, permissions, or resume IDs.                                                                                  |
+| `capabilities.delivery`       | Yes          | Declares how Relay may deliver work: immediate injection, wait for idle, next message, next tool call, manual queueing, interrupts, threads, attachments, and context types. |
+| `capabilities.lifecycle`      | Yes          | Declares whether Relay may create, attach, resume, fork, release, or only observe an existing runtime.                                                                       |
+| `capabilities.observe`        | Yes          | Declares which observations the harness can emit: status, transcript, tool use, file edits, terminal output, screenshots, command history, or custom events.                 |
+| `capabilities.actions`        | Optional     | Lists harness-provided actions that should be exposed through the action registry or MCP.                                                                                    |
+| `create(...)` / `attach(...)` | One required | Starts or binds to a runtime and returns a session. Core can use both without knowing how the runtime is implemented.                                                        |
+| `inject(...)`                 | Yes          | Delivers a durable Relay message to the runtime and returns a delivery result.                                                                                               |
+| `getStatus(...)`              | Recommended  | Lets Relay know whether the agent is active, idle, waiting, blocked, or offline.                                                                                             |
+| `onEvent(...)`                | Recommended  | Streams harness observations into the Relay listener system.                                                                                                                 |
+| `release(...)`                | Recommended  | Gives Relay a safe way to stop, detach, or archive the runtime.                                                                                                              |
+
+Delivery context is how Relay tells a harness when and how to interrupt a runtime:
+
+```ts
+type DeliveryContext = {
+  id: string;
+  mode: 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
+  reason: 'message' | 'mention' | 'dm' | 'thread-reply' | 'action-result' | 'notification';
+  priority: 'normal' | 'urgent';
+  deadline?: Date;
+  idempotencyKey?: string;
+};
+```
+
+Delivery results must be explicit:
+
+```ts
+type DeliveryResult =
+  | { status: 'accepted'; deliveryId: string; retryable?: boolean; metadata?: Record<string, unknown> }
+  | { status: 'delivered'; deliveryId: string; metadata?: Record<string, unknown> }
+  | { status: 'deferred'; availableAt: Date; reason?: string; metadata?: Record<string, unknown> }
+  | { status: 'failed'; reason: string; retryable?: boolean; metadata?: Record<string, unknown> };
+```
+
+Harness events are what make listeners and supervision work. The core event names should be stable, even if each harness has different raw logs:
+
+```ts
+type TranscriptChunk = {
+  id: string;
+  at: Date;
+  role: 'agent' | 'user' | 'system' | 'tool';
+  content: string;
+  sequence: number;
+  metadata?: Record<string, unknown>;
+};
+
+type HarnessEvent =
+  | {
+      type: 'harness.status.changed';
+      agent: string;
+      status: 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
+      reason?: string;
+    }
+  | { type: 'harness.tool.called'; agent: string; run: string; tool: string; input: unknown }
+  | {
+      type: 'harness.tool.completed';
+      agent: string;
+      run: string;
+      tool: string;
+      output?: unknown;
+      durationMs?: number;
+    }
+  | { type: 'harness.tool.failed'; agent: string; run: string; tool: string; error: string }
+  | { type: 'harness.transcript.chunk'; agent: string; chunk: TranscriptChunk }
+  | {
+      type: 'harness.file.changed';
+      agent: string;
+      path: string;
+      operation: 'create' | 'update' | 'delete';
+      diff?: string;
+    }
+  | { type: 'harness.terminal.output'; agent: string; stream: 'stdout' | 'stderr'; text: string }
+  | { type: 'harness.screenshot.captured'; agent: string; image: string };
+```
+
+Harnesses should redact secrets before emitting events, make duplicate delivery IDs idempotent, preserve event ordering per agent, and return stable unsubscribe functions from every event subscription. That lets Agent Relay safely expose observations to other agents, humans, and MCP tools without requiring every runtime to behave the same way internally.
 
 ### Managed Harnesses
+
 Agent Relay supports Claude Code, Codex and OpenCode. We're open to contributions for more managed harnesses!
-
-
 
 ## Learn More
 
@@ -202,10 +474,6 @@ Learn more about some of the key concepts:
 - [Delivery]()
 - [Harness]()
 - [Actions]()
-
-
-
-
 
 ## Messaging
 
@@ -310,29 +578,6 @@ The event stream should include core events and harness-provided observations:
 
 Delivery policy is part of the listener contract. A notification can be delivered `immediate`, `next-message`, `next-tool-call`, `on-idle`, or held for manual flush. That lets you decide whether a running agent should be interrupted or guided at the next natural boundary.
 
-## Delivery adapters and harnesses
-
-
-
-The delivery result is explicit:
-
-- `accepted`: the runtime accepted the work but has not executed it yet.
-- `delivered`: the runtime received it and can act on it now.
-- `deferred`: the harness will try later, usually because the agent is busy.
-- `failed`: the harness could not deliver it.
-
-Observability is optional but valuable. A harness that can report tool use, status changes, transcript chunks, file edits, command output, or terminal screenshots makes the agent more useful to supervise and easier for other agents to coordinate with.
-
-### Managed harnesses
-
-Install the Agent Relay driver when you want Agent Relay to manage local CLI harness processes. For terminal based CLI harnesses like Claude Code and Codex, the driver provides PTY and headless harnesses.
-
-```bash
-npm install @agent-relay/driver
-```
-
-`@agent-relay/driver` owns daemon startup, PTY/headless transports, session metadata, readiness, logs, managed release/shutdown, workflow helpers, and harness-specific defaults. Core Agent Relay only depends on the harness contract.
-
 ## Actions
 
 Actions are typed capabilities that agents can discover and invoke through the SDK or MCP. Core owns the protocol: descriptors, Zod validation, policy hooks, audit events, and result/error envelopes. Implementations live with the system that can actually do the work.
@@ -395,8 +640,6 @@ if (!result.ok) {
 ```
 
 The same registered actions can be exposed by `agent-relay mcp` as named tools, so an agent can call `agent.create` or `ui.show_search_results` without the SDK being embedded in that agent's process.
-
-
 
 ## What you can build
 
