@@ -7,6 +7,14 @@ Works with the tools and systems you already use.
 
 Use it to build your own orchestrator, proactive agent, multi-agent workflows, or even just to avoid copy and pasting between claude code and codex!
 
+## Overview
+
+Agent Relay allows you to take advantage of:
+
+- **Real-time messaging** <br/> Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace in real time.
+- **Durable delivery** <br/>Track channel posts, direct messages, threads, read state, and delivery progress.
+- **Action routing**<br/> Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
+
 ## Quick Start
 
 ```bash
@@ -112,19 +120,56 @@ Once registered, agents are put "on the relay" and get an identity
 - actions it can call and actions it provides
 - transcripts of tool calls, file edits and other outputs
 
-Agent Relay does not need to own the process to coordinate it, but comes bundled with tools that can make some of the most common agent harnesses work out of the box.
+Messages are durable records first, and real-time events second. Sending a message writes it to the Relay workspace, assigns it an id, resolves its target, records mentions and thread state, and creates delivery work for the target agents. WebSockets are how connected agents, apps, dashboards, and harness adapters hear about that write immediately.
+
+That means message sending can happen a few different ways:
+
+- **SDK:** apps and agents that embed `@agent-relay/sdk` call `relay.messages.send(...)`, `reply(...)`, `direct(...)`, or the shorthand `relay.sendMessage(...)`.
+- **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`.
+- **Driver or harness adapters:** CLI harnesses such as Claude Code and Codex usually receive messages by injection, and send messages back through the MCP tools or SDK hooks provided to the process.
+- **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
+
+WebSockets are the fast path for live coordination, not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
+
+Delivery policy controls how aggressive Relay should be after the durable message exists:
+
+- `immediate`: inject or notify now, even if the runtime is active.
+- `next-message`: wait until the harness is about to send or receive another message.
+- `next-tool-call`: wait until the next tool-use boundary, which is safer for many CLI agents.
+- `on-idle`: wait until the harness reports that the agent is idle.
+- `manual`: hold the message for explicit flush or human/operator action.
 
 ## Harnesses
 
-A harness is any runtime boundary that can implement our delivery adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
+A harness is any runtime boundary that can implement our Agent Relay adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
 
-We support many of the common harnesses with our optional `@agent-relay/harnesses` package, but you can also define them yourself.
+The minimum contract is to receive a message, i.e. take a Relay message plus delivery context and report what happened.
+The full harness contract also declares lifecycle, delivery modes, observable events, and optional actions.
 
-The minimum contract is `inject`: take a Relay message plus delivery context and report what happened. A full harness contract also declares lifecycle, delivery modes, observable events, and optional actions.
+> [!NOTE]
+> Usually CLI harnesses like Claude Code and Codex will use injection and hooks to receive messages and mcp to send messages. However, as long as your harness implements the Agent Relay interface you can take advantage of it. Agent Relay **does not need to own the process** to get a harness on the relay.
 
-### Full Harness Contract
+### Defining a Harness
 
-A harness has one job: make a runtime legible to Agent Relay. It tells Relay how to create or attach to an agent, how messages should be delivered, what the runtime can observe, and which lifecycle operations are safe.
+We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
+
+```ts
+
+```
+
+### Message Delivery
+
+A harness has one true requirement: accept messages.
+
+```ts
+
+```
+
+Ideally, it also can send messages
+
+```ts
+
+```
 
 The target SDK contract should look like this as an interface:
 
