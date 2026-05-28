@@ -110,8 +110,7 @@ relay.registerAction({
 });
 ```
 
-## High Level how it works
-
+## How it works
 Once registered, agents are put "on the relay" and get an identity
 
 - `name`, `handle`, and stable `id`
@@ -120,7 +119,9 @@ Once registered, agents are put "on the relay" and get an identity
 - actions it can call and actions it provides
 - transcripts of tool calls, file edits and other outputs
 
-Messages are durable records first, and real-time events second. Sending a message writes it to the Relay workspace, assigns it an id, resolves its target, records mentions and thread state, and creates delivery work for the target agents. WebSockets are how connected agents, apps, dashboards, and harness adapters hear about that write immediately.
+Messages are durable records first, and real-time events second.
+
+Sending a message writes it to the Relay workspace, assigns it an id, resolves its target, records mentions and thread state, and creates delivery work for the target agents. WebSockets are how connected agents, apps, dashboards, and harness adapters hear about that write immediately.
 
 That means message sending can happen a few different ways:
 
@@ -128,31 +129,10 @@ That means message sending can happen a few different ways:
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 
-WebSockets are the fast path for live coordination, not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
+While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
-## Getting Agents "on the Relay"
-
-
-
-### Agent runtime
-Everything addressable on the Relay needs to adhere to the minimum runtime contract.
-
-```ts
-type RelayAgentRuntime = {
- agent: AgentIdentity;
- capabilities: AgentRuntimeCapabilities;
-  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
-  onEvent(emit: (event: AgentRuntimeEvent) => void): () => void;
-  release(reason?: string): Promise<void>;
-};
-```
-
-### Agent Identity
-
-
-## Harnesses
-
-A harness is any runtime boundary that can implement our Agent Relay adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
+### Agent Harnesses
+A harness is any runtime boundary that can implement the Agent Relay runtime adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
 
 The minimum contract is to receive a message, i.e. take a Relay message plus delivery context and report what happened.
 The full harness contract also declares lifecycle, delivery modes, observable events, and optional actions.
@@ -160,7 +140,98 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 > [!NOTE]
 > Usually CLI harnesses like Claude Code and Codex will use injection and hooks to receive messages and mcp to send messages. However, as long as your harness implements the Agent Relay interface you can take advantage of it. Agent Relay **does not need to own the process** to get a harness on the relay.
 
-### Defining a Harness
+#### Define a harness
+We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
+
+At a minimum a harness just needs to be able to create a session that can receive messages and be released.
+```ts
+type HarnessConfig<TInput = void> = {
+  name: string;
+  create(input: TInput, ctx: HarnessCreateContext): Promise<AgentSession>;
+};
+
+type AgentSession = {
+  identity: AgentIdentity;
+  capabilities: SessionCapabilities;
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  release(reason?: string): Promise<void>;
+};
+```
+
+#### Agent Session Capabilities
+Every harness may not be able to support all the possible features supported by Agent Relay. For example, Claude code's hooks are much more robust and enable more features than Codex. 
+
+The minimum capabilities required:
+```json
+{
+  messaging: { receive: true },
+  delivery: { modes: ['immediate'] },
+  events: { emits: ['status.changed'] },
+  lifecycle: { release: true },
+}
+```
+
+The full list of capabilities support by Agent Relay:
+```ts
+type AgentSessionCapabilities = {
+  messaging: {
+    receive: true;
+    send?: boolean;
+    attachments: Array<'text' | 'image'>;
+  };
+
+  delivery: {
+    modes: Array<'interrupt' | 'next-message' | 'next-tool-call' | 'on-idle' >;
+    queue?: boolean;
+  };
+
+  events: {
+    emits: AgentSessionEventType[];
+  };
+
+ actions: {
+    invoke: boolean;
+    expose: boolean;
+  };
+
+  lifecycle: {
+    release: true;
+    pause?: boolean;
+    resume?: boolean;
+    fork?: boolean;
+    snapshot?: boolean;
+  };
+};
+```
+
+#### Agent SessionEvents 
+The list of supported harness events are as follows
+
+```ts
+type AgentSessionEventType =
+  | 'status.changed'
+  | 'status.idle'
+  | 'status.active'
+  | 'status.blocked'
+  | 'status.waiting'
+  | 'status.offline'
+  | 'tool.called'
+  | 'tool.completed'
+  | 'tool.failed'
+  | 'tool.output'
+  | 'transcript.chunk'
+  | 'file.changed'
+  | 'command.started'
+  | 'command.completed'
+  | 'command.failed'
+  | 'terminal.output'
+  | 'terminal.screen'
+  | 'usage.updated'
+  | 'error';
+  ```
+
+
+### Bring your own harness into a AgentRelayRuntime
 We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
 
 ```ts
