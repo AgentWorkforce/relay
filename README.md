@@ -1,48 +1,53 @@
 <img src="https://agentrelay.com/readme-banners/relay.png" alt="Agent Relay">
 <p align="center"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white"> <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"> <img alt="Swift" src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white"> <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests&style=flat-square"></a> <a href="https://github.com/AgentWorkforce/relay/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/AgentWorkforce/relay/main?label=last%20commit&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm version" src="https://img.shields.io/npm/v/@agent-relay/sdk?label=npm&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="Downloads" src="https://img.shields.io/npm/dm/@agent-relay/sdk?label=downloads&style=flat-square"></a> <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-black?style=flat-square"></a></p>
 
-`Agent Relay` is a realtime layer for agents. Agents can message each other, coordinate work, and react to events as they happen.
+`Agent Relay` is a framework for agent communication. Agents can message each other, coordinate work, and react to events as they happen.
 
 Works with the tools and systems you already use.
 
-Use it to build your own orchestrator, proactive agent, multi-agent workflows, or just to avoid copy and pasting everything together yourself.
+Use it to build your own orchestrator, proactive agent, multi-agent workflows, or just to avoid copy and pasting between claude code and codex!
 
 ## Quick Start
-
 ```bash
-npm install @agent-relay/sdk zod
+npm i @agent-relay/sdk
 ```
 
+After installing the sdk it's simple to integrate into your application.
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-// Create or join a workspace
-const { workspace, agents } = new AgentRelay();
+// Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server
+// they can be running anywhere (they don't need to be on the same machine) as long as they have access to the internet 
+import { claude, codex } from '@agent-relay/driver';
+import { myCustomHarness } from './my-custom-harness';
 
-// Create channels in your workspace
-await workspace.createChannel('proj-customer-inquires');
-
-const greeter = await workspace.register({ name: 'greeter'; type: 'claude' });
-const problemSolver = await workspace.register({ name: 'greeter'; type: 'codex' });
-const engineer = await workspace.register({ name: 'greeter'; type: 'your-internal-agent' });
-
-agent.events.on('message.created', async (event) => {
-  if (event.channel !== 'planning') return;
-  await agent.messages.reply({
-    messageId: event.message.id,
-    text: 'Received. I will keep this thread updated.',
-  });
+// Creating a new Relay is as simple as defining which harnesses are available
+// Websockets power real time communication for instant orchestration.
+const relay = new AgentRelay({
+  harnesses: [claude, codex, myCustomHarness]
 });
 
-await agent.messages.send({
-  channel: 'planning',
-  text: 'Plan is ready for review.',
+/// A Relay agent is one that can receive and send messages
+// CLI Agents can be saddled with our pty-based driver or you can make your own
+const complaintTriager = claude.new( { model: 'sonnet' });
+const engineer = codex.new( { model: 'gpt-5.5' });
+const taskManager = myCustomHarness();
+
+/// Once the agents are registered to the Relay workspaces, agents will have access to 
+/// send & receive messages, join channels, emoji respond, trigger SDK callbacks and much more
+/// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
+await relay.workspace.register([complaintTriager, engineer, taskManager])
+
+// The real power comes from hooking into events and actions
+// to turn agents into powerful, reliable actors
+
+relay.events.on('message.created', async ({channel, type, sender }) => {
+  if (channel === 'customer-complaints' && type === 'message') {
+    
+  }
+
 });
 
-await agent.messages.direct({
-  to: 'reviewer',
-  text: 'Please check the migration notes.',
-});
 ```
 
 Let's be serious though, you're just going to give this to an agent. Hook them up with this [skill](./skill)!
