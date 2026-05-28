@@ -18,6 +18,7 @@ Aligned the SDK with the README target by adding AgentRelay facade exports, sess
 ## Key Decisions
 
 ### Add an additive session module instead of rewriting DeliveryRunner in place
+
 - **Chose:** Add an additive session module instead of rewriting DeliveryRunner in place
 - **Reasoning:** The README target distinguishes harness/session contracts from durable inbox delivery. Keeping DeliveryRunner compatible avoids breaking existing SDK behavior while exposing the new create/receive/release contract.
 
@@ -26,6 +27,7 @@ Aligned the SDK with the README target by adding AgentRelay facade exports, sess
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Add an additive session module instead of rewriting DeliveryRunner in place: Add an additive session module instead of rewriting DeliveryRunner in place
