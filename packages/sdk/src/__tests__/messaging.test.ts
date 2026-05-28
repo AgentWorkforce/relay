@@ -7,6 +7,7 @@ import {
   normalizeThread,
   type RelayMessagingEvent,
 } from '../messaging/index.js';
+import { ActionRegistry, AgentRelay } from '../index.js';
 
 function createWorkspace() {
   return {
@@ -214,6 +215,19 @@ function createAgentClient() {
 }
 
 describe('RelaycastMessagingClient', () => {
+  it('exposes a public AgentRelay facade over messaging and actions', async () => {
+    const workspace = createWorkspace();
+    const { client: agentClient } = createAgentClient();
+    const messaging = new RelaycastMessagingClient({ relaycast: workspace, agentClient });
+    const actions = new ActionRegistry();
+    const relay = new AgentRelay({ messaging, actions });
+
+    expect(relay.messaging).toBe(messaging);
+    expect(relay.actions).toBe(actions);
+    expect(relay.messages).toBe(messaging.messages);
+    await expect(relay.agents.list()).resolves.toHaveLength(1);
+  });
+
   it('normalizes agents, channels, and channel messages from Relaycast', async () => {
     const workspace = createWorkspace();
     const client = new RelaycastMessagingClient({ relaycast: workspace });
@@ -258,10 +272,12 @@ describe('RelaycastMessagingClient', () => {
     const sent = await client.messages.send({
       channel: '#general',
       text: 'sent',
+      attachments: [{ type: 'link', url: 'https://example.com/repro', label: 'repro' }],
       mode: 'steer',
       idempotencyKey: 'idem-1',
     });
     expect(agentClient.send).toHaveBeenCalledWith('#general', 'sent', {
+      attachments: ['{"type":"link","url":"https://example.com/repro","label":"repro"}'],
       mode: 'steer',
       idempotencyKey: 'idem-1',
     });

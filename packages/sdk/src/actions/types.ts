@@ -33,6 +33,30 @@ export interface JsonSchemaLiteObject {
 
 export type JsonSchema = JsonSchemaLite;
 
+export interface ZodLikeIssue {
+  path?: Array<string | number>;
+  message: string;
+  code?: string;
+  expected?: string;
+  received?: string;
+}
+
+export interface ZodLikeError {
+  issues?: ZodLikeIssue[];
+  message?: string;
+}
+
+export type ZodLikeParseResult<TOutput = unknown> =
+  | { success: true; data: TOutput }
+  | { success: false; error: ZodLikeError };
+
+export interface ZodLikeSchema<TOutput = unknown> {
+  safeParse(input: unknown): ZodLikeParseResult<TOutput>;
+  description?: string;
+}
+
+export type ActionSchema<TOutput = unknown> = JsonSchema | ZodLikeSchema<TOutput>;
+
 export interface ActionValidationIssue {
   path: string;
   message: string;
@@ -48,8 +72,8 @@ export interface ActionValidationResult {
 export interface AgentRelayActionDescriptor {
   name: string;
   description: string;
-  inputSchema: JsonSchema;
-  outputSchema?: JsonSchema;
+  inputSchema?: ActionSchema;
+  outputSchema?: ActionSchema;
   visibility: 'agent' | 'human' | 'internal';
 }
 
@@ -76,9 +100,11 @@ export type ActionPolicy = (
 
 export interface ActionDefinition<TInput = unknown, TOutput = unknown> {
   name: string;
-  description: string;
-  inputSchema: JsonSchema;
-  outputSchema?: JsonSchema;
+  description?: string;
+  input?: ActionSchema<TInput>;
+  inputSchema?: ActionSchema<TInput>;
+  output?: ActionSchema<TOutput>;
+  outputSchema?: ActionSchema<TOutput>;
   visibility?: 'agent' | 'human' | 'internal';
   policy?: ActionPolicy;
   handler(input: TInput, context: ActionContext): Promise<TOutput> | TOutput;
@@ -87,7 +113,11 @@ export interface ActionDefinition<TInput = unknown, TOutput = unknown> {
 export interface InvokeActionInput {
   name: string;
   input: unknown;
-  context: ActionContext;
+  context?: ActionContext;
+  caller?: ActionContext['caller'];
+  workspaceId?: string;
+  messaging?: RelayMessaging;
+  emit?(event: ActionAuditEvent): Promise<void> | void;
 }
 
 export interface ActionResult<TOutput = unknown> {

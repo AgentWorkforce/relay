@@ -57,12 +57,73 @@ export interface RelayChannel {
   members: RelayChannelMember[];
 }
 
-export interface RelayMessageAttachment {
+export interface RelayStoredAttachment {
   id: string;
+  type?: 'stored';
   filename?: string;
   contentType?: string;
   sizeBytes?: number;
 }
+
+export interface RelayTextAttachment {
+  type: 'text';
+  text: string;
+  label?: string;
+}
+
+export interface RelayImageAttachment {
+  type: 'image';
+  url?: string;
+  data?: string;
+  mimeType?: string;
+  alt?: string;
+  label?: string;
+}
+
+export interface RelayLinkAttachment {
+  type: 'link';
+  url: string;
+  title?: string;
+  label?: string;
+}
+
+export interface RelayFileAttachment {
+  type: 'file';
+  path: string;
+  line?: number;
+  label?: string;
+}
+
+export interface RelayJsonAttachment {
+  type: 'json';
+  value: unknown;
+  label?: string;
+}
+
+export interface RelayDiffAttachment {
+  type: 'diff';
+  patch: string;
+  label?: string;
+}
+
+export interface RelayArtifactAttachment {
+  type: 'artifact';
+  id: string;
+  url?: string;
+  label?: string;
+}
+
+export type RelayMessageAttachment =
+  | RelayStoredAttachment
+  | RelayTextAttachment
+  | RelayImageAttachment
+  | RelayLinkAttachment
+  | RelayFileAttachment
+  | RelayJsonAttachment
+  | RelayDiffAttachment
+  | RelayArtifactAttachment;
+
+export type RelayMessageAttachmentInput = string | RelayMessageAttachment;
 
 export type RelayMessageBlock = Record<string, unknown>;
 
@@ -213,7 +274,7 @@ export interface RelaySendChannelMessageInput {
   channel: string;
   text: string;
   blocks?: RelayMessageBlock[];
-  attachments?: string[];
+  attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
 }
@@ -228,7 +289,7 @@ export interface RelayReplyMessageInput {
 export interface RelaySendDirectMessageInput {
   to: string;
   text: string;
-  attachments?: string[];
+  attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
 }
@@ -238,7 +299,7 @@ export interface RelaySendGroupDirectMessageInput {
   participants?: string[];
   name?: string;
   text: string;
-  attachments?: string[];
+  attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
 }

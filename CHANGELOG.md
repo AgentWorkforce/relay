@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/driver`.
 - `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
+- `@agent-relay/sdk` adds the public session/harness contract: `HarnessConfig`, `AgentSession`, session identity, capabilities, delivery modes, message receipts, and session event types.
 - `@agent-relay/driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and driver-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
 - `agent-relay mcp` can expose registered SDK actions as explicit MCP tools plus `list_actions` and `invoke_action`.
 - `agent-relay mcp` recovers from stale agent tokens mid-session: a 401 carrying `agent_token_invalid` (or the legacy `Invalid agent token` message) now clears the dead token from the MCP session, returns recovery guidance pointing at `register_agent`, and lets strict-named sessions re-register without a process restart.
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
+- `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
 - Root builds now validate the simplified core package set: config, utils, telemetry, SDK, driver, and CLI.
 - `agent-relay mcp`: Agent Relay now ships its own MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp`.

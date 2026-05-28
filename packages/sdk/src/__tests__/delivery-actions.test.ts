@@ -14,6 +14,46 @@ import {
   type InjectionResult,
 } from '../delivery/index.js';
 import type { InboxItem, RelayMessaging } from '../messaging/index.js';
+import {
+  MINIMAL_AGENT_SESSION_CAPABILITIES,
+  defineHarness,
+  normalizeAgentIdentity,
+  type AgentSession,
+  type ZodLikeSchema,
+} from '../index.js';
+
+describe('session contract helpers', () => {
+  it('defines harnesses that create sessions with identity, capabilities, receive, and release', async () => {
+    const harness = defineHarness<{ name: string }>({
+      name: 'test-harness',
+      create: async (input, context) => ({
+        identity: normalizeAgentIdentity({
+          id: context.agent.id,
+          name: input.name,
+          handle: context.agent.handle,
+        }),
+        capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
+        receiveMessage: async () => ({ status: 'delivered', deliveryId: 'del_session' }),
+        release: async () => {},
+      }),
+    });
+
+    const session = await harness.create(
+      { name: 'reviewer' },
+      { agent: { id: 'agent_reviewer', name: 'reviewer', handle: '@reviewer' } }
+    );
+
+    expect(session.identity).toEqual({ id: 'agent_reviewer', name: 'reviewer', handle: '@reviewer' });
+    expect(session.capabilities.delivery.modes).toEqual(['immediate']);
+    await expect(
+      session.receiveMessage(makeInboxItem('in_session', 'hello').message, {
+        id: 'del_session',
+        mode: 'immediate',
+        reason: 'message',
+      })
+    ).resolves.toEqual({ status: 'delivered', deliveryId: 'del_session' });
+  });
+});
 
 describe('JSON-schema-lite validation', () => {
   it('validates the schema subset used by SDK action contracts', () => {
@@ -154,6 +194,52 @@ describe('ActionRegistry', () => {
       phase: 'output',
     } satisfies Partial<ActionValidationError>);
   });
+
+  it('accepts Zod-like schemas and passes parsed values to handlers', async () => {
+    const registry = new ActionRegistry();
+    const inputSchema: ZodLikeSchema<{ count: number }> = {
+      safeParse: (input) => {
+        if (
+          input &&
+          typeof input === 'object' &&
+          'count' in input &&
+          typeof (input as { count?: unknown }).count === 'string'
+        ) {
+          return { success: true, data: { count: Number((input as { count: string }).count) } };
+        }
+        return {
+          success: false,
+          error: { issues: [{ path: ['count'], message: 'expected string count' }] },
+        };
+      },
+    };
+
+    registry.register({
+      name: 'coerce-count',
+      inputSchema,
+      handler: (input) => ({ doubled: input.count * 2 }),
+    });
+
+    await expect(
+      registry.invoke({
+        name: 'coerce-count',
+        input: { count: '21' },
+        caller: { name: 'planner', type: 'agent' },
+      })
+    ).resolves.toEqual({ action: 'coerce-count', ok: true, output: { doubled: 42 } });
+
+    await expect(
+      registry.invoke({
+        name: 'coerce-count',
+        input: { count: 21 },
+        caller: { name: 'planner', type: 'agent' },
+      })
+    ).resolves.toMatchObject({
+      action: 'coerce-count',
+      ok: false,
+      error: { code: 'invalid_input', message: '$.count: expected string count' },
+    });
+  });
 });
 
 describe('DeliveryRunner', () => {
@@ -244,6 +330,34 @@ describe('DeliveryRunner', () => {
       retry: true,
     });
   });
+
+  it('can deliver inbox items to a session receiveMessage contract', async () => {
+    const item = makeInboxItem('in_4', 'session delivery');
+    const session = makeSession({ status: 'delivered', deliveryId: 'del_4' });
+    const messaging = makeMessaging([item]);
+    const runner = new DeliveryRunner({
+      messaging,
+      delivery: session,
+      context: { mode: 'next-tool-call', reason: 'mention' },
+    });
+
+    await runner.start();
+
+    expect(session.receiveMessage).toHaveBeenCalledWith(item.message, {
+      id: 'in_4',
+      mode: 'next-tool-call',
+      reason: 'mention',
+      priority: undefined,
+      deadline: undefined,
+      idempotencyKey: undefined,
+      metadata: undefined,
+    });
+    expect(messaging.inbox.ack).toHaveBeenCalledWith({
+      inboxItemId: 'in_4',
+      state: 'delivered',
+      metadata: undefined,
+    });
+  });
 });
 
 function makeDeliveryAdapter(result: InjectionResult): AgentDeliveryAdapter {
@@ -260,6 +374,16 @@ function makeDeliveryAdapter(result: InjectionResult): AgentDeliveryAdapter {
     connect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     inject: vi.fn(async () => result),
+  };
+}
+
+function makeSession(result: Awaited<ReturnType<AgentSession['receiveMessage']>>): AgentSession {
+  return {
+    identity: normalizeAgentIdentity({ id: 'agent_worker', name: 'worker', handle: '@worker' }),
+    capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
+    receiveMessage: vi.fn(async () => result),
+    onEvent: vi.fn(() => () => {}),
+    release: vi.fn(async () => {}),
   };
 }
 

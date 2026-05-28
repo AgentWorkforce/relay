@@ -1,7 +1,16 @@
 import type { RelayMessage } from '../messaging/index.js';
 import type { Unsubscribe } from '../capabilities.js';
+import type {
+  AgentSession,
+  AgentSessionDeliveryMode,
+  MessageContext,
+  MessageReceipt,
+} from '../session/index.js';
 
 export type AgentRuntimeStatus = 'idle' | 'busy' | 'offline' | 'unknown';
+export type DeliveryMode = AgentSessionDeliveryMode;
+export type DeliveryContext = MessageContext;
+export type DeliveryResult = MessageReceipt;
 
 export interface DeliveryCapabilities {
   push: boolean;
@@ -33,12 +42,15 @@ export interface AgentActivityEvent {
 
 export interface AgentDeliveryAdapter {
   readonly id: string;
-  readonly kind: string;
+  readonly kind?: string;
   readonly capabilities: DeliveryCapabilities;
   connect?(): Promise<void>;
   disconnect?(): Promise<void>;
-  inject(message: RelayMessage, context: InjectionContext): Promise<InjectionResult>;
+  inject?(message: RelayMessage, context: InjectionContext): Promise<InjectionResult>;
+  receiveMessage?(message: RelayMessage, context: MessageContext): Promise<MessageReceipt>;
   getStatus?(): Promise<AgentRuntimeStatus>;
   interrupt?(): Promise<void>;
   onActivity?(handler: (event: AgentActivityEvent) => void): Unsubscribe;
 }
+
+export type MessageDeliveryTarget = AgentDeliveryAdapter | AgentSession;

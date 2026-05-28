@@ -87,52 +87,58 @@ await lead.messages.react({
 
 ## Delivery
 
-Delivery is part of the communication contract, not only a harness concern:
+Delivery is the session handoff contract. Relay stores messages durably; a session is the thing that can receive those messages inside an agent, service, browser worker, or managed harness:
 
-- Agent presence can be marked online, heartbeated, and marked offline.
-- Readers can mark messages read and inspect read receipts.
-- Agents can use inbox and read-status APIs to decide what still needs attention.
+- Harnesses create sessions with stable agent identity.
+- Sessions declare capabilities such as delivery modes, observable events, actions, and lifecycle operations.
+- Sessions receive durable Relay messages with delivery context and return explicit receipts: `accepted`, `delivered`, `deferred`, or `failed`.
+- `DeliveryRunner` can drain inbox items into either a session `receiveMessage(...)` contract or a legacy `inject(...)` adapter.
 - Send operations support idempotency keys so retries do not duplicate messages.
-- Delivery adapters report whether a message was `accepted`, `delivered`, `deferred`, or `failed`.
-- Message mode lets senders distinguish blocking work from mid-run steering.
 
 Managed harness delivery, such as injecting messages into a PTY or headless app server, belongs in `@agent-relay/driver`. The SDK stays responsible for the public delivery contract.
 
-Example adapter for a runtime you own:
+Minimum session contract:
 
 ```ts
-import { DeliveryRunner, type AgentDeliveryAdapter } from '@agent-relay/sdk';
+import {
+  DeliveryRunner,
+  MINIMAL_AGENT_SESSION_CAPABILITIES,
+  normalizeAgentIdentity,
+  type AgentSession,
+} from '@agent-relay/sdk';
 
-const adapter: AgentDeliveryAdapter = {
-  id: 'reviewer-service',
-  kind: 'service',
+const session: AgentSession = {
+  identity: normalizeAgentIdentity({ id: 'agent_reviewer', name: 'reviewer', handle: '@reviewer' }),
   capabilities: {
-    push: true,
-    interrupt: false,
-    detectIdle: true,
-    threads: true,
-    attachments: true,
+    ...MINIMAL_AGENT_SESSION_CAPABILITIES,
+    delivery: { modes: ['immediate', 'next-tool-call', 'on-idle'], queue: true },
+    events: { emits: ['status.changed', 'tool.called', 'tool.completed', 'file.changed'] },
+    actions: { invoke: true, expose: false },
   },
-  async inject(message, context) {
-    const queued = await service.enqueue({
+  async receiveMessage(message, context) {
+    const job = await service.enqueue({
       id: message.id,
       text: message.text,
       threadId: message.threadId,
       priority: context.priority ?? 'normal',
+      deliveryMode: context.mode,
     });
 
-    return queued.ready
-      ? { status: 'delivered', injectionId: queued.id }
-      : { status: 'deferred', injectionId: queued.id, availableAt: queued.availableAt };
+    return job.ready
+      ? { status: 'delivered', deliveryId: job.id }
+      : { status: 'deferred', deliveryId: job.id, availableAt: job.availableAt };
   },
-  async getStatus() {
-    return service.hasActiveJob() ? 'busy' : 'idle';
+  onEvent(emit) {
+    return service.onStatus((status) => emit({ type: 'status.changed', status }));
+  },
+  async release(reason) {
+    await service.release(reason);
   },
 };
 
 await new DeliveryRunner({
-  messaging: relay.asAgent('reviewer').messaging,
-  delivery: adapter,
+  messaging: relay.as(reviewer).messaging,
+  delivery: session,
   agentName: 'reviewer',
 }).start();
 ```

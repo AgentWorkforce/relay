@@ -1,12 +1,25 @@
 import { RelayCapabilityError } from '../capabilities.js';
 import type { InboxItem, RelayMessaging } from '../messaging/index.js';
-import type { AgentDeliveryAdapter, InjectionContext, InjectionResult } from './types.js';
+import type {
+  AgentDeliveryAdapter,
+  InjectionContext,
+  InjectionResult,
+  MessageDeliveryTarget,
+} from './types.js';
+import type { MessageContext, MessageReceipt } from '../session/index.js';
+
+export type DeliveryRunnerContext = Partial<
+  Omit<InjectionContext, 'reason' | 'mode'> & Omit<MessageContext, 'reason' | 'mode'>
+> & {
+  reason?: InjectionContext['reason'] | MessageContext['reason'];
+  mode?: InjectionContext['mode'] | MessageContext['mode'];
+};
 
 export interface DeliveryRunnerOptions {
   messaging: RelayMessaging;
-  delivery: AgentDeliveryAdapter;
+  delivery: MessageDeliveryTarget;
   agentName?: string;
-  context?: Partial<InjectionContext>;
+  context?: DeliveryRunnerContext;
   onResult?: (item: InboxItem, result: InjectionResult) => void | Promise<void>;
   onError?: (item: InboxItem, error: unknown) => void | Promise<void>;
 }
@@ -33,7 +46,7 @@ export class DeliveryRunner {
   }
 
   private async run(): Promise<void> {
-    await this.options.delivery.connect?.();
+    await deliveryAdapter(this.options.delivery).connect?.();
     try {
       for await (const item of this.options.messaging.inbox.subscribe({
         agentName: this.options.agentName,
@@ -42,17 +55,13 @@ export class DeliveryRunner {
         await this.deliver(item);
       }
     } finally {
-      await this.options.delivery.disconnect?.();
+      await deliveryAdapter(this.options.delivery).disconnect?.();
     }
   }
 
   private async deliver(item: InboxItem): Promise<void> {
     try {
-      const result = await this.options.delivery.inject(item.message, {
-        reason: this.options.context?.reason ?? 'message',
-        priority: this.options.context?.priority,
-        mode: this.options.context?.mode,
-      });
+      const result = await deliverToTarget(this.options.delivery, item, this.options.context);
       await Promise.resolve(this.options.onResult?.(item, result));
       if (result.status === 'deferred') {
         await this.options.messaging.inbox.defer({
@@ -86,4 +95,125 @@ export class DeliveryRunner {
       });
     }
   }
+}
+
+async function deliverToTarget(
+  target: MessageDeliveryTarget,
+  item: InboxItem,
+  context: DeliveryRunnerContext | undefined
+): Promise<InjectionResult> {
+  if (typeof target.receiveMessage === 'function') {
+    return receiptToInjectionResult(
+      await target.receiveMessage(item.message, {
+        id: context?.id ?? item.id,
+        mode: toMessageMode(context?.mode),
+        reason: toMessageReason(context?.reason),
+        priority: context?.priority,
+        deadline: context?.deadline,
+        idempotencyKey: context?.idempotencyKey,
+        metadata: context?.metadata,
+      })
+    );
+  }
+
+  const adapter = deliveryAdapter(target);
+  if (typeof adapter.inject !== 'function') {
+    throw new Error('Delivery target must implement receiveMessage(...) or inject(...).');
+  }
+
+  return adapter.inject(item.message, {
+    reason: toInjectionReason(context?.reason),
+    priority: context?.priority,
+    mode: toInjectionMode(context?.mode),
+  });
+}
+
+function deliveryAdapter(target: MessageDeliveryTarget): AgentDeliveryAdapter {
+  return target as AgentDeliveryAdapter;
+}
+
+function receiptToInjectionResult(receipt: MessageReceipt): InjectionResult {
+  return {
+    status: receipt.status,
+    ...('deliveryId' in receipt && receipt.deliveryId ? { injectionId: receipt.deliveryId } : {}),
+    ...('availableAt' in receipt ? { availableAt: dateToString(receipt.availableAt) } : {}),
+    ...('reason' in receipt && receipt.reason ? { reason: receipt.reason } : {}),
+    ...('metadata' in receipt && receipt.metadata ? { metadata: receipt.metadata } : {}),
+  };
+}
+
+function toMessageMode(mode: DeliveryRunnerContext['mode']): MessageContext['mode'] {
+  switch (mode) {
+    case 'append':
+      return 'next-message';
+    case 'interrupt':
+      return 'immediate';
+    case 'wait_until_idle':
+      return 'on-idle';
+    case 'next-message':
+    case 'next-tool-call':
+    case 'on-idle':
+    case 'manual':
+    case 'immediate':
+      return mode;
+    default:
+      return 'immediate';
+  }
+}
+
+function toMessageReason(reason: DeliveryRunnerContext['reason']): MessageContext['reason'] {
+  switch (reason) {
+    case 'thread_reply':
+      return 'thread-reply';
+    case 'action_result':
+      return 'action-result';
+    case 'dm':
+    case 'mention':
+    case 'message':
+      return reason;
+    default:
+      return 'message';
+  }
+}
+
+function toInjectionReason(reason: DeliveryRunnerContext['reason']): InjectionContext['reason'] {
+  switch (reason) {
+    case 'thread-reply':
+      return 'thread_reply';
+    case 'action-result':
+      return 'action_result';
+    case 'notification':
+      return 'message';
+    case 'dm':
+    case 'mention':
+    case 'message':
+    case 'channel':
+    case 'thread_reply':
+    case 'action_result':
+      return reason;
+    default:
+      return 'message';
+  }
+}
+
+function toInjectionMode(mode: DeliveryRunnerContext['mode']): InjectionContext['mode'] | undefined {
+  switch (mode) {
+    case 'immediate':
+      return 'interrupt';
+    case 'next-message':
+    case 'manual':
+      return 'append';
+    case 'on-idle':
+      return 'wait_until_idle';
+    case 'append':
+    case 'interrupt':
+    case 'wait_until_idle':
+      return mode;
+    default:
+      return undefined;
+  }
+}
+
+function dateToString(input: Date | string): string {
+  return input instanceof Date ? input.toISOString() : input;
 }

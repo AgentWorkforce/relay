@@ -1,0 +1,53 @@
+{
+  "id": "traj_ypjl6xx3fr12",
+  "version": 1,
+  "task": {
+    "title": "Align SDK harness session contract with README"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T18:37:34.396Z",
+  "completedAt": "2026-05-28T18:53:22.136Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-28T18:39:50.264Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_flo81mlt0pfs",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-28T18:39:50.264Z",
+      "endedAt": "2026-05-28T18:53:22.136Z",
+      "events": [
+        {
+          "ts": 1779993590265,
+          "type": "decision",
+          "content": "Add an additive session module instead of rewriting DeliveryRunner in place: Add an additive session module instead of rewriting DeliveryRunner in place",
+          "raw": {
+            "question": "Add an additive session module instead of rewriting DeliveryRunner in place",
+            "chosen": "Add an additive session module instead of rewriting DeliveryRunner in place",
+            "alternatives": [],
+            "reasoning": "The README target distinguishes harness/session contracts from durable inbox delivery. Keeping DeliveryRunner compatible avoids breaking existing SDK behavior while exposing the new create/receive/release contract."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Aligned the SDK with the README target by adding AgentRelay facade exports, session/harness contracts, Zod-like action schemas, receiveMessage delivery support, rich message attachment types, docs updates, and focused tests.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "40d9d402da2b8525fa5f94e8ce88df0a63b1a98d",
+    "endRef": "40d9d402da2b8525fa5f94e8ce88df0a63b1a98d"
+  }
+}

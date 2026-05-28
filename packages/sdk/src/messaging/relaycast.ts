@@ -42,6 +42,7 @@ import type {
   RelayListChannelsOptions,
   RelayListDirectMessagesInput,
   RelayMessage,
+  RelayMessageAttachmentInput,
   RelayMessageBlock,
   RelayMessageListOptions,
   RelayMessageReaction,
@@ -186,6 +187,13 @@ function toMessageListOptions(options?: RelayMessageListOptions): RelayMessageLi
   });
 }
 
+function serializeAttachmentInputs(input?: RelayMessageAttachmentInput[]): string[] | undefined {
+  if (!input) return undefined;
+  return input.map((attachment) =>
+    typeof attachment === 'string' ? attachment : JSON.stringify(attachment)
+  );
+}
+
 function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWorkspaceLike {
   if (options.relaycast) return options.relaycast;
   if (!options.apiKey) {
@@ -291,7 +299,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         input.channel,
         input.text,
         definedOptions({
-          attachments: input.attachments,
+          attachments: serializeAttachmentInputs(input.attachments),
           blocks: input.blocks,
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
@@ -322,7 +330,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         input.to,
         input.text,
         definedOptions({
-          attachments: input.attachments,
+          attachments: serializeAttachmentInputs(input.attachments),
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
         })
@@ -350,7 +358,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         conversationId,
         input.text,
         definedOptions({
-          attachments: input.attachments,
+          attachments: serializeAttachmentInputs(input.attachments),
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
         })

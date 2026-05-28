@@ -20,10 +20,11 @@ import {
 } from '@agent-relay/sdk';
 import type {
   ActionAuditEvent,
+  ActionSchema,
   AgentRelayActionDescriptor,
   AgentRelayActions,
-  JsonSchema,
   JsonSchemaLiteObject,
+  ZodLikeSchema,
 } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
 
@@ -319,15 +320,20 @@ function textContent(message: string, structuredContent: Record<string, unknown>
   };
 }
 
-function isSchemaObject(schema: JsonSchema | undefined): schema is JsonSchemaLiteObject {
-  return Boolean(schema && typeof schema === 'object' && !Array.isArray(schema));
+function isSchemaObject(schema: ActionSchema | undefined): schema is JsonSchemaLiteObject {
+  return Boolean(
+    schema &&
+    typeof schema === 'object' &&
+    !Array.isArray(schema) &&
+    typeof (schema as { safeParse?: unknown }).safeParse !== 'function'
+  );
 }
 
-function getSchemaDescription(schema: JsonSchema | undefined): string | undefined {
+function getSchemaDescription(schema: ActionSchema | undefined): string | undefined {
   return isSchemaObject(schema) && typeof schema.description === 'string' ? schema.description : undefined;
 }
 
-function zodFromJsonSchema(schema: JsonSchema | undefined): z.ZodTypeAny {
+function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodTypeAny {
   if (schema === false) {
     return z.never();
   }
@@ -376,7 +382,12 @@ function zodFromJsonSchema(schema: JsonSchema | undefined): z.ZodTypeAny {
   return description ? zodType.describe(description) : zodType;
 }
 
-function actionToolInputSchema(schema: JsonSchema): Record<string, z.ZodTypeAny> {
+function actionToolInputSchema(schema: ActionSchema | undefined): Record<string, z.ZodTypeAny> {
+  const zodShape = zodObjectShape(schema);
+  if (zodShape) {
+    return zodShape;
+  }
+
   if (!isSchemaObject(schema) || schema.type !== 'object') {
     return {
       input: z.unknown().describe('Action input payload. The action registry performs final validation.'),
@@ -394,12 +405,54 @@ function actionToolInputSchema(schema: JsonSchema): Record<string, z.ZodTypeAny>
 
 function actionInvocationInput(descriptor: AgentRelayActionDescriptor, args: unknown): unknown {
   const schema = descriptor.inputSchema;
+  if (zodObjectShape(schema)) {
+    return args;
+  }
   if (!isSchemaObject(schema) || schema.type !== 'object') {
     return typeof args === 'object' && args !== null && 'input' in args
       ? (args as { input?: unknown }).input
       : args;
   }
   return args;
+}
+
+function zodObjectShape(schema: ActionSchema | undefined): Record<string, z.ZodTypeAny> | undefined {
+  if (schema instanceof z.ZodObject) {
+    return schema.shape;
+  }
+  return undefined;
+}
+
+function serializableActionDescriptor(descriptor: AgentRelayActionDescriptor): Record<string, unknown> {
+  return {
+    name: descriptor.name,
+    description: descriptor.description,
+    visibility: descriptor.visibility,
+    ...(descriptor.inputSchema ? { inputSchema: serializableActionSchema(descriptor.inputSchema) } : {}),
+    ...(descriptor.outputSchema ? { outputSchema: serializableActionSchema(descriptor.outputSchema) } : {}),
+  };
+}
+
+function serializableActionSchema(schema: ActionSchema): unknown {
+  if (isSchemaObject(schema)) {
+    return schema;
+  }
+  if (isZodLikeSchema(schema)) {
+    return {
+      type: 'zod',
+      ...(schema.description ? { description: schema.description } : {}),
+    };
+  }
+  return schema;
+}
+
+function isZodLikeSchema(schema: ActionSchema | undefined): schema is ZodLikeSchema {
+  return Boolean(
+    schema &&
+    typeof schema === 'object' &&
+    !Array.isArray(schema) &&
+    typeof (schema as { safeParse?: unknown }).safeParse === 'function'
+  );
 }
 
 function registerAgentRelayActionTools(
@@ -426,7 +479,10 @@ function registerAgentRelayActionTools(
         openWorldHint: false,
       },
     },
-    async () => jsonContent({ actions: await actions.list({ visibility: 'agent' }) })
+    async () =>
+      jsonContent({
+        actions: (await actions.list({ visibility: 'agent' })).map(serializableActionDescriptor),
+      })
   );
 
   server.registerTool(

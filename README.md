@@ -111,6 +111,7 @@ relay.registerAction({
 ```
 
 ## How it works
+
 Once registered, agents are put "on the relay" and get an identity
 
 - `name`, `handle`, and stable `id`
@@ -132,6 +133,7 @@ That means message sending can happen a few different ways:
 While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
 ### Agent Harnesses
+
 A harness is any runtime boundary that can implement the Agent Relay runtime adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
 
 The minimum contract is to receive a message, i.e. take a Relay message plus delivery context and report what happened.
@@ -141,9 +143,11 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 > Usually CLI harnesses like Claude Code and Codex will use injection and hooks to receive messages and mcp to send messages. However, as long as your harness implements the Agent Relay interface you can take advantage of it. Agent Relay **does not need to own the process** to get a harness on the relay.
 
 #### Define a harness
+
 We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
 
 At a minimum a harness just needs to be able to create a session that can receive messages and be released.
+
 ```ts
 type HarnessConfig<TInput = void> = {
   name: string;
@@ -152,26 +156,29 @@ type HarnessConfig<TInput = void> = {
 
 type AgentSession = {
   identity: AgentIdentity;
-  capabilities: SessionCapabilities;
+  capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
   release(reason?: string): Promise<void>;
 };
 ```
 
 #### Agent Session Capabilities
-Every harness may not be able to support all the possible features supported by Agent Relay. For example, Claude code's hooks are much more robust and enable more features than Codex. 
+
+Every harness may not be able to support all the possible features supported by Agent Relay. For example, Claude code's hooks are much more robust and enable more features than Codex.
 
 The minimum capabilities required:
-```json
-{
+
+```ts
+const capabilities: AgentSessionCapabilities = {
   messaging: { receive: true },
   delivery: { modes: ['immediate'] },
   events: { emits: ['status.changed'] },
   lifecycle: { release: true },
-}
+};
 ```
 
 The full list of capabilities support by Agent Relay:
+
 ```ts
 type AgentSessionCapabilities = {
   messaging: {
@@ -181,7 +188,7 @@ type AgentSessionCapabilities = {
   };
 
   delivery: {
-    modes: Array<'interrupt' | 'next-message' | 'next-tool-call' | 'on-idle' >;
+    modes: Array<'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual'>;
     queue?: boolean;
   };
 
@@ -189,9 +196,9 @@ type AgentSessionCapabilities = {
     emits: AgentSessionEventType[];
   };
 
- actions: {
-    invoke: boolean;
-    expose: boolean;
+  actions?: {
+    invoke?: boolean;
+    expose?: boolean;
   };
 
   lifecycle: {
@@ -204,7 +211,8 @@ type AgentSessionCapabilities = {
 };
 ```
 
-#### Agent SessionEvents 
+#### Agent Session Events
+
 The list of supported harness events are as follows
 
 ```ts
@@ -219,6 +227,16 @@ type AgentSessionEventType =
   | 'tool.completed'
   | 'tool.failed'
   | 'tool.output'
+  | 'message.received'
+  | 'message.sent'
+  | 'delivery.accepted'
+  | 'delivery.delivered'
+  | 'delivery.deferred'
+  | 'delivery.failed'
+  | 'action.invoked'
+  | 'action.completed'
+  | 'action.failed'
+  | 'action.denied'
   | 'transcript.chunk'
   | 'file.changed'
   | 'command.started'
@@ -227,148 +245,64 @@ type AgentSessionEventType =
   | 'terminal.output'
   | 'terminal.screen'
   | 'usage.updated'
+  | 'session.started'
+  | 'session.released'
+  | 'session.resumed'
+  | 'session.forked'
+  | 'log'
   | 'error';
-  ```
-
+```
 
 ### Message Delivery
 
+Delivery context is how Relay tells a session why a message exists and when it should be delivered. Delivery modes are semantic. Relay does not need to know whether a harness uses a PTY, headless app server, SDK callback, webhook, or queue underneath.
 
 ```ts
-
-```
-
-The target SDK contract should look like this as an interface:
-
-```ts
-import type { z } from 'zod';
-
-type HarnessKind = 'cli' | 'sdk' | 'server' | 'browser' | 'service' | 'custom';
 type DeliveryMode = 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
-type LifecycleCapability = 'create' | 'attach' | 'resume' | 'release' | 'fork' | 'observe';
-type ObservationCapability =
-  | 'status'
-  | 'transcript'
-  | 'tool-use'
-  | 'file-edits'
-  | 'terminal-output'
-  | 'screenshots'
-  | 'command-history';
 
-type HarnessDefinition<TCreateInput extends z.ZodTypeAny = z.ZodTypeAny> = {
-  name: string;
-  kind: HarnessKind;
-  version?: string;
-  description?: string;
-  createInput?: TCreateInput;
-  capabilities: {
-    delivery: {
-      modes: DeliveryMode[];
-      interrupt: boolean;
-      queue: boolean;
-      threads: boolean;
-      attachments: boolean;
-      context: Array<'text' | 'url' | 'file-ref' | 'image' | 'structured-data'>;
-    };
-    lifecycle: LifecycleCapability[];
-    observe: ObservationCapability[];
-    actions?: string[];
-  };
-  create?(input: z.infer<TCreateInput>, ctx: HarnessCreateContext): Promise<HarnessSession>;
-  attach?(input: AttachHarnessInput, ctx: HarnessCreateContext): Promise<HarnessSession>;
-};
-
-type HarnessCreateContext = {
-  relay: AgentRelay;
-  workspace: {
-    id: string;
-    name?: string;
-    cwd?: string;
-  };
-  agent: {
-    id: string;
-    name: string;
-    handle: string;
-    channels: string[];
-    requestedBy?: string;
-  };
-  env: Record<string, string>;
-  secrets?: Record<string, string>;
-  signal: AbortSignal;
-};
-
-type AttachHarnessInput = {
-  agentId?: string;
-  name?: string;
-  endpoint?: string;
-  pid?: number;
+type MessageContext = {
+  id: string;
+  mode: DeliveryMode;
+  reason: 'message' | 'mention' | 'dm' | 'thread-reply' | 'action-result' | 'notification';
+  priority?: 'normal' | 'urgent';
+  deadline?: Date | string;
+  idempotencyKey?: string;
   metadata?: Record<string, unknown>;
 };
 
-type TranscriptPage = {
-  chunks: TranscriptChunk[];
-  nextCursor?: string;
-};
-
-type HarnessSession = {
-  agent: {
-    id: string;
-    name: string;
-    handle: string;
-    status?: 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
-    metadata?: Record<string, unknown>;
-  };
-
-  inject(message: RelayMessage, delivery: DeliveryContext): Promise<DeliveryResult>;
-  getStatus?(): Promise<{ status: HarnessSession['agent']['status']; reason?: string }>;
-  interrupt?(reason?: string): Promise<void>;
-  flush?(): Promise<void>;
-  getTranscript?(cursor?: string): Promise<TranscriptPage>;
-  onEvent?(emit: (event: HarnessEvent) => void): () => void;
-  release?(reason?: string): Promise<void>;
-};
+type MessageReceipt =
+  | { status: 'accepted'; deliveryId: string; retryable?: boolean; metadata?: Record<string, unknown> }
+  | { status: 'delivered'; deliveryId: string; metadata?: Record<string, unknown> }
+  | {
+      status: 'deferred';
+      deliveryId?: string;
+      availableAt: Date | string;
+      reason?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      status: 'failed';
+      deliveryId?: string;
+      reason: string;
+      retryable?: boolean;
+      metadata?: Record<string, unknown>;
+    };
 ```
 
 The important pieces are:
 
-| Piece                         | Required     | Purpose                                                                                                                                                                      |
-| ----------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`, `kind`, `version`     | Yes          | Stable harness identity for configuration, action names, logs, and debugging.                                                                                                |
-| `createInput`                 | Recommended  | Zod schema for harness-specific options such as `model`, `cwd`, permissions, or resume IDs.                                                                                  |
-| `capabilities.delivery`       | Yes          | Declares how Relay may deliver work: immediate injection, wait for idle, next message, next tool call, manual queueing, interrupts, threads, attachments, and context types. |
-| `capabilities.lifecycle`      | Yes          | Declares whether Relay may create, attach, resume, fork, release, or only observe an existing runtime.                                                                       |
-| `capabilities.observe`        | Yes          | Declares which observations the harness can emit: status, transcript, tool use, file edits, terminal output, screenshots, command history, or custom events.                 |
-| `capabilities.actions`        | Optional     | Lists harness-provided actions that should be exposed through the action registry or MCP.                                                                                    |
-| `create(...)` / `attach(...)` | One required | Starts or binds to a runtime and returns a session. Core can use both without knowing how the runtime is implemented.                                                        |
-| `inject(...)`                 | Yes          | Delivers a durable Relay message to the runtime and returns a delivery result.                                                                                               |
-| `getStatus(...)`              | Recommended  | Lets Relay know whether the agent is active, idle, waiting, blocked, or offline.                                                                                             |
-| `onEvent(...)`                | Recommended  | Streams harness observations into the Relay listener system.                                                                                                                 |
-| `release(...)`                | Recommended  | Gives Relay a safe way to stop, detach, or archive the runtime.                                                                                                              |
+| Piece                              | Required    | Purpose                                                                                           |
+| ---------------------------------- | ----------- | ------------------------------------------------------------------------------------------------- |
+| `HarnessConfig.name`               | Yes         | Stable harness identity for configuration, logs, and debugging.                                   |
+| `HarnessConfig.init(...)`          | Optional    | Prepare shared resources before sessions are created.                                             |
+| `HarnessConfig.create(...)`        | Yes         | Create a Relay session. The harness may spawn, attach, register, connect, or allocate underneath. |
+| `AgentSession.identity`            | Yes         | Stable `id`, `name`, and `handle`; no status or capability state lives here.                      |
+| `AgentSession.capabilities`        | Yes         | Declares what this created session can receive, emit, invoke, expose, and release.                |
+| `AgentSession.receiveMessage(...)` | Yes         | Delivers a durable Relay message to the session and returns an explicit receipt.                  |
+| `AgentSession.onEvent(...)`        | Recommended | Streams session observations into the Relay listener system.                                      |
+| `AgentSession.release(...)`        | Yes         | Reverses what `create(...)` did: stop, detach, archive, or mark released.                         |
 
-Delivery context is how Relay tells a harness when and how to interrupt a runtime:
-
-```ts
-type DeliveryContext = {
-  id: string;
-  mode: 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
-  reason: 'message' | 'mention' | 'dm' | 'thread-reply' | 'action-result' | 'notification';
-  priority: 'normal' | 'urgent';
-  deadline?: Date;
-  idempotencyKey?: string;
-};
-```
-
-Delivery results must be explicit:
-
-```ts
-type DeliveryResult =
-  | { status: 'accepted'; deliveryId: string; retryable?: boolean; metadata?: Record<string, unknown> }
-  | { status: 'delivered'; deliveryId: string; metadata?: Record<string, unknown> }
-  | { status: 'deferred'; availableAt: Date; reason?: string; metadata?: Record<string, unknown> }
-  | { status: 'failed'; reason: string; retryable?: boolean; metadata?: Record<string, unknown> };
-```
-
-Harness events are what make listeners and supervision work. The core event names should be stable, even if each harness has different raw logs:
+Session events are what make listeners and supervision work. The core event names should be stable, even if each harness has different raw logs:
 
 ```ts
 type TranscriptChunk = {
@@ -380,36 +314,22 @@ type TranscriptChunk = {
   metadata?: Record<string, unknown>;
 };
 
-type HarnessEvent =
+type AgentSessionEvent =
   | {
-      type: 'harness.status.changed';
-      agent: string;
+      type: 'status.changed';
       status: 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
       reason?: string;
     }
-  | { type: 'harness.tool.called'; agent: string; run: string; tool: string; input: unknown }
-  | {
-      type: 'harness.tool.completed';
-      agent: string;
-      run: string;
-      tool: string;
-      output?: unknown;
-      durationMs?: number;
-    }
-  | { type: 'harness.tool.failed'; agent: string; run: string; tool: string; error: string }
-  | { type: 'harness.transcript.chunk'; agent: string; chunk: TranscriptChunk }
-  | {
-      type: 'harness.file.changed';
-      agent: string;
-      path: string;
-      operation: 'create' | 'update' | 'delete';
-      diff?: string;
-    }
-  | { type: 'harness.terminal.output'; agent: string; stream: 'stdout' | 'stderr'; text: string }
-  | { type: 'harness.screenshot.captured'; agent: string; image: string };
+  | { type: 'tool.called'; run?: string; tool: string; input?: unknown }
+  | { type: 'tool.completed'; run?: string; tool: string; output?: unknown; durationMs?: number }
+  | { type: 'tool.failed'; run?: string; tool: string; error: string }
+  | { type: 'transcript.chunk'; chunk: TranscriptChunk }
+  | { type: 'file.changed'; path: string; operation: 'create' | 'update' | 'delete'; diff?: string }
+  | { type: 'terminal.output'; stream?: 'stdout' | 'stderr' | 'combined'; text: string }
+  | { type: 'error'; error: string; code?: string; retryable?: boolean };
 ```
 
-Harnesses should redact secrets before emitting events, make duplicate delivery IDs idempotent, preserve event ordering per agent, and return stable unsubscribe functions from every event subscription. That lets Agent Relay safely expose observations to other agents, humans, and MCP tools without requiring every runtime to behave the same way internally.
+Harnesses should redact secrets before emitting events, make duplicate delivery IDs idempotent, preserve event ordering per session, and return stable unsubscribe functions from every event subscription. That lets Agent Relay safely expose observations to other agents, humans, and MCP tools without requiring every runtime to behave the same way internally.
 
 ### Managed Harnesses
 
@@ -426,7 +346,7 @@ Learn more about some of the key concepts:
 
 ## Messaging
 
-Messaging is the shared conversation layer. It covers agents, humans, channels, direct messages, group DMs, threads, reactions, inbox state, read receipts, mentions, and context bundles.
+Messaging is the shared conversation layer. It covers agents, humans, channels, direct messages, group DMs, threads, reactions, inbox state, read receipts, mentions, and attachments.
 
 Messages are durable coordination records. A message is not just text; it is an addressable unit of work:
 
@@ -437,8 +357,8 @@ const message = await relay.messages.send({
   text: `${engineer.handle} please turn the top billing complaint into a PR.`,
   mentions: [engineer],
   mode: 'wait',
-  context: [
-    { type: 'url', url: 'https://linear.app/acme/issue/BILL-123' },
+  attachments: [
+    { type: 'link', url: 'https://linear.app/acme/issue/BILL-123' },
     { type: 'file', path: 'support/export/customer-complaints.csv' },
   ],
   idempotencyKey: `complaint:${complaint.id}:triage-request`,
@@ -464,7 +384,7 @@ Core messaging should answer practical orchestration questions:
 - Has the target seen it?
 - Was it delivered to the runtime?
 - Is there a thread with follow-up work?
-- What context was bundled with the request?
+- What attachments were bundled with the request?
 
 The high-level `relay.sendMessage(...)` helper is shorthand for the same messaging contract when you do not need all of the fields.
 

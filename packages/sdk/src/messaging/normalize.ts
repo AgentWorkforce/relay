@@ -213,6 +213,65 @@ export function normalizeChannel(input: unknown): RelayChannel {
 
 export function normalizeAttachment(input: unknown): RelayMessageAttachment {
   const record = isRecord(input) ? input : {};
+  const type = readString(record, 'type');
+  if (type === 'text') {
+    return {
+      type,
+      text: readString(record, 'text', 'content') ?? '',
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'image') {
+    return {
+      type,
+      ...(readString(record, 'url') ? { url: readString(record, 'url') } : {}),
+      ...(readString(record, 'data') ? { data: readString(record, 'data') } : {}),
+      ...(readString(record, 'mimeType', 'mime_type')
+        ? { mimeType: readString(record, 'mimeType', 'mime_type') }
+        : {}),
+      ...(readString(record, 'alt') ? { alt: readString(record, 'alt') } : {}),
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'link') {
+    return {
+      type,
+      url: readString(record, 'url') ?? '',
+      ...(readString(record, 'title') ? { title: readString(record, 'title') } : {}),
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'file') {
+    return {
+      type,
+      path: readString(record, 'path') ?? readString(record, 'filename', 'name') ?? '',
+      ...(readNumber(record, 'line') !== undefined ? { line: readNumber(record, 'line') } : {}),
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'json') {
+    return {
+      type,
+      value: readValue(record, 'value'),
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'diff') {
+    return {
+      type,
+      patch: readString(record, 'patch', 'diff') ?? '',
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+  if (type === 'artifact') {
+    return {
+      type,
+      id: readString(record, 'id', 'artifactId', 'artifact_id') ?? '',
+      ...(readString(record, 'url') ? { url: readString(record, 'url') } : {}),
+      ...(readString(record, 'label') ? { label: readString(record, 'label') } : {}),
+    };
+  }
+
   const filename = readString(record, 'filename', 'name');
   const contentType = readString(record, 'contentType', 'content_type');
   const sizeBytes = readNumber(record, 'sizeBytes', 'size_bytes');
