@@ -87,7 +87,12 @@ export function AgentSetupPrompt() {
   }
 
   return (
-    <button className={s.agentPromptCopy} type="button" onClick={handleCopy} aria-label="Copy agent setup prompt">
+    <button
+      className={s.agentPromptCopy}
+      type="button"
+      onClick={handleCopy}
+      aria-label="Copy agent setup prompt"
+    >
       <span className={s.agentPromptText}>
         <span className={s.agentPromptPreview}>{AGENT_SETUP_PROMPT_PREVIEW}</span>
       </span>
