@@ -258,10 +258,13 @@ jobs:
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
-      - name: Build full workspace
+      - name: Build Rust broker
+        run: npm run build:rust
+
+      - name: Build TypeScript packages
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run build
+        run: npm run clean && ./node_modules/.bin/turbo run build --filter='./packages/*' --concurrency=2
 
   standalone-macos-smoke:
     name: Standalone macOS Smoke
