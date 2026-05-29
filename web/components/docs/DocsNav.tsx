@@ -92,7 +92,11 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
   const docsVersion = getDocsVersionForPath(pathname ?? '/docs');
   const navGroups = docsVersion === 'v7.1.1' ? legacyDocsNav : docsNav;
   const docsBasePath =
-    docsVersion === 'v8' ? v8DocsBasePath : (pathname ?? '').startsWith(legacyDocsBasePath) ? legacyDocsBasePath : '/docs';
+    docsVersion === 'v8'
+      ? v8DocsBasePath
+      : (pathname ?? '').startsWith(legacyDocsBasePath)
+        ? legacyDocsBasePath
+        : '/docs';
 
   useEffect(() => {
     if (!isSidebar) return;
