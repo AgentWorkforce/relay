@@ -101,7 +101,7 @@
       "types": "./dist/broker-path.d.ts",
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
-    },
+    }
   },
   "files": [
     "dist",
