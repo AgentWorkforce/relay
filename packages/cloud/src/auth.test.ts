@@ -7,9 +7,19 @@ const fsMocks = vi.hoisted(() => ({
   rm: vi.fn(),
 }));
 
+const childProcessMocks = vi.hoisted(() => ({
+  spawn: vi.fn(() => ({
+    unref: vi.fn(),
+  })),
+}));
+
 vi.mock('node:fs/promises', () => ({
   default: fsMocks,
   ...fsMocks,
+}));
+
+vi.mock('node:child_process', () => ({
+  spawn: childProcessMocks.spawn,
 }));
 
 import { ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
@@ -52,6 +62,7 @@ beforeEach(() => {
   fsMocks.mkdir.mockResolvedValue(undefined);
   fsMocks.rm.mockReset();
   fsMocks.rm.mockResolvedValue(undefined);
+  childProcessMocks.spawn.mockClear();
 });
 
 describe('readStoredAuth', () => {
@@ -179,6 +190,57 @@ describe('ensureAuthenticated', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const calledUrl = String(fetchSpy.mock.calls[0][0]);
     expect(calledUrl).toContain('origin.example');
+  });
+
+  it('keeps waiting after a stray local callback with an invalid state', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const authPromise = ensureAuthenticated('https://example.com/cloud', { force: true });
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    expect(loginLine).toBeTruthy();
+
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    const state = loginUrl.searchParams.get('state');
+    expect(state).toBeTruthy();
+
+    const strayResponse = await fetch(callbackUrl, { redirect: 'manual' });
+    expect(strayResponse.status).toBe(400);
+    await expect(strayResponse.text()).resolves.toContain('Ignored invalid CLI login callback');
+
+    const stillWaiting = await Promise.race([
+      authPromise.then(
+        () => 'resolved',
+        () => 'rejected'
+      ),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 25)),
+    ]);
+    expect(stillWaiting).toBe('pending');
+
+    callbackUrl.searchParams.set('state', String(state));
+    callbackUrl.searchParams.set('access_token', 'access-token');
+    callbackUrl.searchParams.set('refresh_token', 'refresh-token');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'https://example.com/cloud');
+
+    const successResponse = await fetch(callbackUrl, { redirect: 'manual' });
+    expect(successResponse.status).toBe(302);
+
+    await expect(authPromise).resolves.toEqual({
+      apiUrl: 'https://example.com/cloud',
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    expect(fsMocks.writeFile).toHaveBeenCalledOnce();
+
+    logSpy.mockRestore();
   });
 });
 
