@@ -247,6 +247,47 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     ],
     successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /ready/i],
   },
+  xai: {
+    command: 'grok',
+    args: ['login'],
+    deviceFlowArgs: ['login', '--device-auth'],
+    supportsDeviceFlow: true,
+    urlPattern: /(https:\/\/[^\s]+)/,
+    credentialPath: '~/.grok/auth.json',
+    displayName: 'Grok',
+    installCommand:
+      'mkdir -p "$HOME/.local/bin" && curl -fsSL https://x.ai/cli/install.sh | GROK_BIN_DIR="$HOME/.local/bin" bash',
+    waitTimeout: 30000,
+    prompts: [
+      {
+        pattern: /open.*browser|press.*enter|sign\s*in|log\s*in|authenticate/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login prompt',
+      },
+      {
+        pattern: /device\s*code|verification\s*code|one-time\s*code/i,
+        response: '\r',
+        delay: 200,
+        description: 'Device code prompt',
+      },
+    ],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /signed\s*in/i],
+    errorPatterns: [
+      {
+        pattern: /auth.*failed|authentication\s*error|oauth\s*error|invalid\s*(?:code|token)/i,
+        message: 'Grok authentication failed',
+        recoverable: true,
+        hint: 'Please try logging in again. In SSH or container environments, use the device-code flow.',
+      },
+      {
+        pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
+        message: 'Network error during Grok authentication',
+        recoverable: true,
+        hint: 'Please check network access to auth.x.ai and cli-chat-proxy.grok.com, then try again.',
+      },
+    ],
+  },
   opencode: {
     command: 'opencode',
     args: ['auth', 'login'],

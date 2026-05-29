@@ -16,6 +16,7 @@ export type AgentCli =
   | 'goose'
   | 'opencode'
   | 'droid'
+  | 'grok'
   | 'cursor'
   | 'cursor-agent'
   | 'agent'

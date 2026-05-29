@@ -205,7 +205,15 @@ export type GetPatchesResponse = {
   patches: Record<string, { patch: string; hasChanges: boolean }>;
 };
 
-export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
+export const SUPPORTED_PROVIDERS = [
+  'anthropic',
+  'openai',
+  'google',
+  'xai',
+  'cursor',
+  'opencode',
+  'droid',
+] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
 export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');

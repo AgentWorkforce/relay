@@ -229,6 +229,13 @@ fn side_effect_files_for(cli: &str, existing_args: &[String], cwd: &Path) -> Res
             .collect());
     }
 
+    if cli_lower == "grok" {
+        return Ok(home_dir_from_env()
+            .map(|home| home.join(".grok").join("config.toml"))
+            .into_iter()
+            .collect());
+    }
+
     Ok(Vec::new())
 }
 

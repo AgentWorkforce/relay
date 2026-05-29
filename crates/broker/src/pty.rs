@@ -191,7 +191,7 @@ fn resolve_command_path(command: &str) -> String {
             {
                 let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
                 OsString::from(format!(
-                    "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+                    "{home}/.local/bin:{home}/.grok/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
                 ))
             }
             #[cfg(windows)]

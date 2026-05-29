@@ -19,6 +19,7 @@ const PROVIDER_ALIASES: Record<string, string> = {
   claude: 'anthropic',
   codex: 'openai',
   gemini: 'google',
+  grok: 'xai',
 };
 
 export function getProviderHelpText(): string {
@@ -42,7 +43,7 @@ export interface ConnectProviderIo {
 }
 
 export interface ConnectProviderOptions {
-  /** Provider id or alias (`anthropic`/`claude`, `openai`/`codex`, `google`/`gemini`, …). */
+  /** Provider id or alias (`anthropic`/`claude`, `openai`/`codex`, `google`/`gemini`, `xai`/`grok`, …). */
   provider: string;
   /** Override the Cloud API URL. Defaults to `defaultApiUrl()`. */
   apiUrl?: string;

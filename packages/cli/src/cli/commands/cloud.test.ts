@@ -19,7 +19,7 @@ vi.mock('@agent-relay/cloud', () => ({
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
   getProviderHelpText: () =>
-    'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
+    'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), xai (alias: grok), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
@@ -89,6 +89,7 @@ describe('registerCloudCommands', () => {
     expect(connect?.registeredArguments[0]?.description).toContain('anthropic (alias: claude)');
     expect(connect?.registeredArguments[0]?.description).toContain('openai (alias: codex)');
     expect(connect?.registeredArguments[0]?.description).toContain('google (alias: gemini)');
+    expect(connect?.registeredArguments[0]?.description).toContain('xai (alias: grok)');
   });
 
   it('run requires a workflow argument', () => {

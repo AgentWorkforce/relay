@@ -19,4 +19,12 @@ describe('CLI auth config', () => {
 
     expect(CLI_AUTH_CONFIG.opencode.successPatterns.some((pattern) => pattern.test(transcript))).toBe(true);
   });
+
+  it('configures Grok auth through the xAI provider', () => {
+    expect(CLI_AUTH_CONFIG.xai.command).toBe('grok');
+    expect(CLI_AUTH_CONFIG.xai.args).toEqual(['login']);
+    expect(CLI_AUTH_CONFIG.xai.deviceFlowArgs).toEqual(['login', '--device-auth']);
+    expect(CLI_AUTH_CONFIG.xai.credentialPath).toBe('~/.grok/auth.json');
+    expect(CLI_AUTH_CONFIG.xai.installCommand).toContain('https://x.ai/cli/install.sh');
+  });
 });

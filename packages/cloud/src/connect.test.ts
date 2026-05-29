@@ -7,6 +7,7 @@ describe('normalizeProvider', () => {
     expect(normalizeProvider('claude')).toBe('anthropic');
     expect(normalizeProvider('codex')).toBe('openai');
     expect(normalizeProvider('gemini')).toBe('google');
+    expect(normalizeProvider('grok')).toBe('xai');
   });
 
   it('lowercases and trims unknown values without rewriting them', () => {
@@ -23,5 +24,6 @@ describe('getProviderHelpText', () => {
     expect(help).toContain('anthropic (alias: claude)');
     expect(help).toContain('openai (alias: codex)');
     expect(help).toContain('google (alias: gemini)');
+    expect(help).toContain('xai (alias: grok)');
   });
 });

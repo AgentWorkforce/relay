@@ -50,6 +50,7 @@ function normalizeProvider(providerArg: string): string {
     claude: 'anthropic',
     codex: 'openai',
     gemini: 'google',
+    grok: 'xai',
   };
   return providerMap[providerInput] || providerInput;
 }

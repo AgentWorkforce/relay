@@ -133,6 +133,7 @@ const DEFAULT_AGENT_NAMES: Record<string, string> = {
   droid: 'Droid',
   gemini: 'Gemini',
   goose: 'Goose',
+  grok: 'Grok',
   opencode: 'OpenCode',
 };
 

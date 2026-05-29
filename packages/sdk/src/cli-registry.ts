@@ -40,6 +40,7 @@ export interface CliDefinition {
  */
 export const COMMON_SEARCH_PATHS = [
   '~/.local/bin',
+  '~/.grok/bin',
   '~/.opencode/bin',
   '~/.claude/local',
   '/usr/local/bin',
@@ -84,6 +85,12 @@ const CLI_REGISTRY: Record<AgentCli, CliDefinition> = {
   droid: {
     binaries: ['droid'],
     nonInteractiveArgs: (task, extra = []) => ['exec', task, ...extra],
+  },
+  grok: {
+    binaries: ['grok'],
+    nonInteractiveArgs: (task, extra = []) => ['-p', task, ...extra],
+    bypassFlag: '--always-approve',
+    searchPaths: ['~/.grok/bin'],
   },
   aider: {
     binaries: ['aider'],

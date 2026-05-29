@@ -557,8 +557,8 @@ pub fn ensure_opencode_config_with_result(
 /// Configure the relaycast MCP server for any supported CLI tool.
 ///
 /// Returns extra CLI arguments to append when spawning the agent.
-/// For Gemini/Droid this runs a pre-spawn `mcp add` command (removing first
-/// for idempotency). For Opencode this writes `opencode.json` on disk.
+/// For Gemini/Droid/Grok this runs a pre-spawn `mcp add` command (removing
+/// first for idempotency). For Opencode this writes `opencode.json` on disk.
 ///
 /// # Parameters
 /// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP server
@@ -646,7 +646,7 @@ pub fn ensure_cursor_mcp_config(
     Ok(changed)
 }
 
-/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "opencode", "cursor")
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
 /// - `base_url`: optional relay base URL (empty or `None` means omit)
@@ -723,6 +723,7 @@ pub async fn configure_relaycast_mcp_with_result(
     let is_codex = cli_lower == "codex";
     let is_gemini = cli_lower == "gemini";
     let is_droid = cli_lower == "droid";
+    let is_grok = cli_lower == "grok";
     let is_opencode = cli_lower == "opencode";
     let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
@@ -881,6 +882,17 @@ pub async fn configure_relaycast_mcp_with_result(
             workspaces_json,
             default_workspace,
             None,
+        )
+        .await?;
+    } else if is_grok {
+        configure_grok_mcp(
+            cli,
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
         )
         .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
@@ -1134,6 +1146,127 @@ async fn configure_gemini_droid_mcp(
                         "failed to configure relaycast MCP for {cli}: `{cli} mcp add` timed out after 15s. \
                          Please configure the relaycast MCP server manually:\n  {manual_cmd}"
                     );
+            }
+            _ => {}
+        },
+        Err(error) => {
+            anyhow::bail!(
+                "failed to configure relaycast MCP for {cli}: could not run `{cli} mcp add`: {error}. \
+                 Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn grok_manual_mcp_add_cmd(cli: &str) -> String {
+    format!(
+        "{cli} mcp add relaycast --command npx --args=-y --args=agent-relay --args=mcp --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url>"
+    )
+}
+
+fn grok_mcp_add_args(
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        "relaycast".to_string(),
+        "--command".to_string(),
+        "npx".to_string(),
+        "--args=-y".to_string(),
+        format!("--args={AGENT_RELAY_MCP_PACKAGE}"),
+        format!("--args={AGENT_RELAY_MCP_SUBCOMMAND}"),
+    ];
+
+    let mut push_env = |key: &str, value: Option<&str>| {
+        if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+            args.push("--env".to_string());
+            args.push(format!("{key}={value}"));
+        }
+    };
+
+    push_env("RELAY_API_KEY", api_key);
+    push_env("RELAY_BASE_URL", base_url);
+    push_env("RELAY_AGENT_NAME", agent_name);
+    push_env("RELAY_AGENT_TYPE", Some("agent"));
+    push_env("RELAY_STRICT_AGENT_NAME", Some("1"));
+    if agent_token
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        push_env("RELAY_AGENT_TOKEN", agent_token);
+        push_env("RELAY_SKIP_BOOTSTRAP", Some("1"));
+    }
+    push_env("RELAY_WORKSPACES_JSON", workspaces_json);
+    push_env("RELAY_DEFAULT_WORKSPACE", default_workspace);
+
+    args
+}
+
+async fn configure_grok_mcp(
+    cli: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+) -> Result<()> {
+    let exe = shlex::split(cli)
+        .and_then(|parts| parts.first().cloned())
+        .unwrap_or_else(|| cli.trim().to_string());
+    let manual_cmd = grok_manual_mcp_add_cmd(&exe);
+
+    let _ = std::process::Command::new(&exe)
+        .args(["mcp", "remove", "relaycast"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .and_then(|mut child| child.wait());
+
+    let mut mcp_cmd = Command::new(&exe);
+    mcp_cmd.args(grok_mcp_add_args(
+        api_key,
+        base_url,
+        agent_name,
+        agent_token,
+        workspaces_json,
+        default_workspace,
+    ));
+    mcp_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    match mcp_cmd.spawn() {
+        Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+            Ok(Ok(status)) if !status.success() => {
+                anyhow::bail!(
+                    "failed to configure relaycast MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
+                     Please configure the relaycast MCP server manually:\n  {manual_cmd}",
+                    status.code()
+                );
+            }
+            Ok(Err(error)) => {
+                anyhow::bail!(
+                    "failed to configure relaycast MCP for {cli}: {error}. \
+                     Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                );
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                anyhow::bail!(
+                    "failed to configure relaycast MCP for {cli}: `{cli} mcp add` timed out after 15s. \
+                     Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                );
             }
             _ => {}
         },
@@ -1583,6 +1716,37 @@ mod tests {
         assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
         assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_droid_123".to_string()));
+    }
+
+    #[test]
+    fn grok_mcp_add_args_use_equals_form_for_dash_args() {
+        let args = super::grok_mcp_add_args(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            Some("GrokWorker"),
+            Some("tok_grok_123"),
+            Some(r#"{"workspaces":["rw_1"]}"#),
+            Some("rw_1"),
+        );
+
+        assert_eq!(args[0], "mcp");
+        assert_eq!(args[1], "add");
+        assert_eq!(args[2], "relaycast");
+        assert!(args.contains(&"--command".to_string()));
+        assert!(args.contains(&"npx".to_string()));
+        assert!(args.contains(&"--args=-y".to_string()));
+        assert!(args.contains(&"--args=agent-relay".to_string()));
+        assert!(args.contains(&"--args=mcp".to_string()));
+        assert!(args.contains(&"--env".to_string()));
+        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(args.contains(&"RELAY_BASE_URL=https://api.relaycast.dev".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_NAME=GrokWorker".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
+        assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_grok_123".to_string()));
+        assert!(args.contains(&"RELAY_SKIP_BOOTSTRAP=1".to_string()));
+        assert!(args.contains(&r#"RELAY_WORKSPACES_JSON={"workspaces":["rw_1"]}"#.to_string()));
+        assert!(args.contains(&"RELAY_DEFAULT_WORKSPACE=rw_1".to_string()));
     }
 
     #[test]
