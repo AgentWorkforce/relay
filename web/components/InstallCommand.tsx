@@ -113,7 +113,11 @@ export function AgentSetupPrompt() {
       </span>
 
       {showPrompt ? (
-        <div className={s.agentPromptPanel} id="agent-setup-prompt" onClick={(event) => event.stopPropagation()}>
+        <div
+          className={s.agentPromptPanel}
+          id="agent-setup-prompt"
+          onClick={(event) => event.stopPropagation()}
+        >
           <span className={s.agentPromptPanelTitle}>Prompt</span>
           <span className={s.agentPromptPanelBody}>{AGENT_SETUP_PROMPT}</span>
         </div>
