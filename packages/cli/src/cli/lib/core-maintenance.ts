@@ -334,7 +334,7 @@ export async function runUninstallCommand(
 
   // Remove npm-installed packages
   if (!isDryRun) {
-    for (const pkg of ['agent-relay', '@agent-relay/dashboard-server', '@agent-relay/acp-bridge']) {
+    for (const pkg of ['agent-relay', '@agent-relay/dashboard-server']) {
       try {
         await deps.execCommand(`npm uninstall -g ${pkg}`);
         deps.log(`Uninstalled npm package: ${pkg}`);
@@ -343,9 +343,7 @@ export async function runUninstallCommand(
       }
     }
   } else {
-    deps.log(
-      '[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server @agent-relay/acp-bridge'
-    );
+    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server');
   }
 
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---

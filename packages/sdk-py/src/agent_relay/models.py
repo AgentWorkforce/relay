@@ -1,6 +1,6 @@
 """
 AUTO-GENERATED FILE - DO NOT EDIT
-Generated from packages/shared/cli-registry.yaml
+Generated from packages/utils/cli-registry.yaml
 Run: npm run codegen:models
 """
 
@@ -8,7 +8,7 @@ from typing import Final, TypedDict, List
 
 
 class CLIVersions:
-    """CLI tool versions. Update packages/shared/cli-registry.yaml to change versions."""
+    """CLI tool versions. Update packages/utils/cli-registry.yaml to change versions."""
     CLAUDE: Final[str] = "2.1.72"  # Claude Code
     CODEX: Final[str] = "0.130.0"  # Codex CLI
     GEMINI: Final[str] = "0.39.1"  # Gemini CLI

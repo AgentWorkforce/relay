@@ -318,108 +318,6 @@ jobs:
           path: release-binaries/${{ matrix.binary_name }}
           retention-days: 1
 
-  # Build relay-acp standalone binary for Zed editor integration
-  build-acp-standalone:
-    name: Build relay-acp (${{ matrix.target }})
-    needs: build
-    runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: bun-darwin-arm64
-            binary_name: relay-acp-darwin-arm64
-          - os: macos-latest
-            target: bun-darwin-x64
-            binary_name: relay-acp-darwin-x64
-          - os: ubuntu-latest
-            target: bun-linux-x64
-            binary_name: relay-acp-linux-x64
-          - os: ubuntu-latest
-            target: bun-linux-arm64
-            binary_name: relay-acp-linux-arm64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.14.0'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Build relay-acp standalone binary
-        # See the standalone agent-relay build above — same rationale for
-        # baking the PostHog key in via --define, same `POSTHOG_PROJECT_KEY`
-        # repository variable.
-        env:
-          AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
-        run: |
-          mkdir -p release-binaries
-          bun build \
-            --compile \
-            --minify \
-            --target=${{ matrix.target }} \
-            --external better-sqlite3 \
-            --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
-            --define="process.env.AGENT_RELAY_POSTHOG_KEY=\"${AGENT_RELAY_POSTHOG_KEY:-}\"" \
-            ./packages/acp-bridge/dist/cli.js \
-            --outfile release-binaries/${{ matrix.binary_name }}
-
-      - name: Sign macOS binary
-        if: startsWith(matrix.target, 'bun-darwin-')
-        run: scripts/sign-macos-binary.sh release-binaries/${{ matrix.binary_name }}
-
-      - name: Verify Linux binary
-        if: matrix.target == 'bun-linux-x64'
-        run: |
-          chmod +x release-binaries/${{ matrix.binary_name }}
-          ./release-binaries/${{ matrix.binary_name }} --version
-
-      - name: Verify macOS binary
-        if: startsWith(matrix.target, 'bun-darwin-')
-        run: |
-          if [ "${{ matrix.target }}" = "bun-darwin-arm64" ]; then
-            EXPECTED_ARCH="arm64"
-          else
-            EXPECTED_ARCH="x86_64"
-          fi
-          scripts/verify-macos-binary.sh release-binaries/${{ matrix.binary_name }} "$EXPECTED_ARCH" -- --help
-
-      - name: Compress binary with gzip
-        run: |
-          gzip -9 -k release-binaries/${{ matrix.binary_name }}
-          echo "Uncompressed: $(du -h release-binaries/${{ matrix.binary_name }} | cut -f1)"
-          echo "Compressed: $(du -h release-binaries/${{ matrix.binary_name }}.gz | cut -f1)"
-
-      - name: Upload compressed binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}.gz
-          path: release-binaries/${{ matrix.binary_name }}.gz
-          retention-days: 1
-
-      - name: Upload uncompressed binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}
-          path: release-binaries/${{ matrix.binary_name }}
-          retention-days: 1
-
   # Build all packages once, version them, and upload
   build:
     name: Build & Version
@@ -684,8 +582,6 @@ jobs:
           # `dependencies` whenever a new internal dep is added.
           (cd packages/cloud && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          (cd packages/github-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          (cd packages/slack-primitive && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           ls -lh "$TARBALLS"
 
       - name: Install tarballs into scratch project
@@ -701,12 +597,9 @@ jobs:
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
           CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
-          SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CLOUD_TGZ + $CONFIG_TGZ + $GITHUB_PRIMITIVE_TGZ + $SLACK_PRIMITIVE_TGZ"
+          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CLOUD_TGZ + $CONFIG_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
-            "$SDK_TGZ" "$BROKER_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ" \
-            "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ"
+            "$SDK_TGZ" "$BROKER_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
           ls node_modules/@agent-relay/
 
       - name: Resolver smoke — getBrokerBinaryPath()
@@ -758,14 +651,12 @@ jobs:
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
           CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          GITHUB_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-github-primitive-*.tgz | head -n1)
-          SLACK_PRIMITIVE_TGZ=$(ls "$TARBALLS"/agent-relay-slack-primitive-*.tgz | head -n1)
           # Install SDK + every internal required dep whose bumped version
           # isn't on the registry yet, but skip the broker optional deps
           # entirely. The resolver should return null and spawn() should
           # throw the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ" "$GITHUB_PRIMITIVE_TGZ" "$SLACK_PRIMITIVE_TGZ"
+            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
           node --input-type=module -e "
             import { AgentRelayClient } from '@agent-relay/sdk';
             try {
@@ -801,9 +692,6 @@ jobs:
         package:
           - cloud
           - config
-          - events
-          - github-primitive
-          - slack-primitive
 
     steps:
       - name: Checkout code
@@ -1017,21 +905,11 @@ jobs:
         package:
           # All publishable npm packages - published in parallel
           - policy
-          - memory
           - utils
-          - trajectory
-          - hooks
           - cloud
           - sdk
           - telemetry
-          - acp-bridge
-          - openclaw
           - brand
-          - gateway
-          - credential-proxy
-          - browser-primitive
-          - personas
-          - agent
 
     steps:
       - name: Checkout code
@@ -1111,10 +989,8 @@ jobs:
         package:
           - cloud
           - config
-          - hooks
           - sdk
           - telemetry
-          - trajectory
           - utils
 
     steps:
@@ -1495,104 +1371,24 @@ jobs:
           scripts/verify-macos-binary.sh "/tmp/${{ matrix.binary_name }}-test" "${{ matrix.expected_arch }}" -- --version
           echo "✓ Compressed binary decompresses and verifies"
 
-  # Verify relay-acp binaries on Linux
-  verify-acp-linux:
-    name: Verify relay-acp (Linux)
-    needs: [build-acp-standalone]
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
-
-    steps:
-      - name: Download Linux binary
-        uses: actions/download-artifact@v4
-        with:
-          name: relay-acp-linux-x64
-          path: bin/
-
-      - name: Download compressed binary
-        uses: actions/download-artifact@v4
-        with:
-          name: relay-acp-linux-x64.gz
-          path: bin/
-
-      - name: Verify uncompressed binary
-        run: |
-          chmod +x bin/relay-acp-linux-x64
-          echo "Testing uncompressed binary..."
-          ./bin/relay-acp-linux-x64 --help
-          echo "✓ Uncompressed relay-acp binary works"
-
-      - name: Verify compressed binary
-        run: |
-          echo "Testing compressed binary decompression..."
-          gunzip -c bin/relay-acp-linux-x64.gz > /tmp/relay-acp-test
-          chmod +x /tmp/relay-acp-test
-          /tmp/relay-acp-test --help
-          echo "✓ Compressed relay-acp binary decompresses and works"
-
-  # Verify relay-acp binaries on macOS
-  verify-acp-macos:
-    name: Verify relay-acp (macOS)
-    needs: [build-acp-standalone]
-    runs-on: macos-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - binary_name: relay-acp-darwin-arm64
-            expected_arch: arm64
-          - binary_name: relay-acp-darwin-x64
-            expected_arch: x86_64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download macOS binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}
-          path: bin/
-
-      - name: Download compressed binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}.gz
-          path: bin/
-
-      - name: Verify uncompressed binary
-        run: |
-          echo "Testing uncompressed binary..."
-          scripts/verify-macos-binary.sh "bin/${{ matrix.binary_name }}" "${{ matrix.expected_arch }}" -- --help
-          echo "✓ Uncompressed relay-acp binary verified"
-
-      - name: Verify compressed binary
-        run: |
-          echo "Testing compressed binary decompression..."
-          gunzip -c "bin/${{ matrix.binary_name }}.gz" > "/tmp/${{ matrix.binary_name }}-test"
-          scripts/verify-macos-binary.sh "/tmp/${{ matrix.binary_name }}-test" "${{ matrix.expected_arch }}" -- --help
-          echo "✓ Compressed relay-acp binary decompresses and verifies"
-
   # Gate job that requires both Linux and macOS verification to pass
   verify-binaries:
     name: All Binaries Verified
-    needs: [verify-standalone-linux, verify-standalone-macos, verify-acp-linux, verify-acp-macos]
+    needs: [verify-standalone-linux, verify-standalone-macos]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     steps:
       - name: All binary checks passed
         run: |
-          echo "✅ All binary verification checks passed!"
+          echo "All binary verification checks passed!"
           {
             echo ""
             echo "## Binary Verification Gate"
-            echo "✅ All platform binaries verified and ready for publish"
+            echo "All platform binaries verified and ready for publish"
             echo ""
             echo "### Verified Binaries"
             echo "- agent-relay-broker: Linux x64, Linux ARM64, macOS x64, macOS ARM64"
             echo "- agent-relay: Linux x64, macOS x64, macOS ARM64 (compressed and uncompressed)"
-            echo "- relay-acp: Linux x64, macOS x64, macOS ARM64 (compressed and uncompressed)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Publish main package
@@ -1743,7 +1539,7 @@ jobs:
   # Create git tag and release
   create-release:
     name: Create Release
-    needs: [build, build-broker, build-standalone, build-acp-standalone, verify-binaries, publish-main]
+    needs: [build, build-broker, build-standalone, verify-binaries, publish-main]
     runs-on: ubuntu-latest
     if: |
       always() &&
@@ -1776,13 +1572,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: agent-relay-*
-          path: release-binaries/
-          merge-multiple: true
-
-      - name: Download relay-acp binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: relay-acp-*
           path: release-binaries/
           merge-multiple: true
 
@@ -1825,16 +1614,6 @@ jobs:
             else
               echo "⚠ MISSING: ${BINARY}.gz (compressed version)"
               # Don't fail on missing .gz - uncompressed is fallback
-            fi
-          done
-
-          # Check relay-acp binaries (for Zed editor)
-          for BINARY in relay-acp-darwin-arm64 relay-acp-darwin-x64 relay-acp-linux-x64 relay-acp-linux-arm64; do
-            if [ -f "release-binaries/$BINARY" ]; then
-              echo "✓ $BINARY"
-            else
-              echo "⚠ MISSING: $BINARY (Zed ACP bridge)"
-              # Don't fail on missing - acp-bridge is optional
             fi
           done
 
@@ -2147,12 +1926,6 @@ jobs:
             - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
             - `agent-relay-broker-win32-x64.exe` - Windows x86_64
 
-            ### relay-acp binaries (Zed editor integration)
-            ACP bridge for Zed editor:
-            - `relay-acp-linux-x64` - Linux x86_64
-            - `relay-acp-linux-arm64` - Linux ARM64
-            - `relay-acp-darwin-x64` - macOS Intel
-            - `relay-acp-darwin-arm64` - macOS Apple Silicon
           files: |
             release-binaries/*
           generate_release_notes: true
@@ -2192,9 +1965,8 @@ jobs:
             | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
             | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
 
-            ### agent-relay-broker / relay-acp binaries
+            ### agent-relay-broker binaries
             - `agent-relay-broker-{linux,darwin}-{x64,arm64}`
-            - `relay-acp-{linux,darwin}-{x64,arm64}`
 
             ### Next Steps
             1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with `relay_version=${{ needs.build.outputs.new_version }}`
@@ -2246,12 +2018,9 @@ jobs:
         build,
         build-broker,
         build-standalone,
-        build-acp-standalone,
         verify-binaries,
         verify-standalone-linux,
         verify-standalone-macos,
-        verify-acp-linux,
-        verify-acp-macos,
         smoke-broker-packages,
         publish-sdk-internal-deps,
         publish-broker-packages,
@@ -2291,12 +2060,9 @@ jobs:
           echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Broker (Rust) | ${{ needs.build-broker.result == 'success' && '✅' || (needs.build-broker.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-broker.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Standalone (Bun) | ${{ needs.build-standalone.result == 'success' && '✅' || (needs.build-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build relay-acp (Bun) | ${{ needs.build-acp-standalone.result == 'success' && '✅' || (needs.build-acp-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-acp-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Binaries | ${{ needs.verify-binaries.result == 'success' && '✅' || (needs.verify-binaries.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-binaries.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Standalone (Linux) | ${{ needs.verify-standalone-linux.result == 'success' && '✅' || (needs.verify-standalone-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-linux.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Verify Standalone (macOS) | ${{ needs.verify-standalone-macos.result == 'success' && '✅' || (needs.verify-standalone-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-standalone-macos.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Verify relay-acp (Linux) | ${{ needs.verify-acp-linux.result == 'success' && '✅' || (needs.verify-acp-linux.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-linux.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Verify relay-acp (macOS) | ${{ needs.verify-acp-macos.result == 'success' && '✅' || (needs.verify-acp-macos.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-acp-macos.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Smoke Broker Packages | ${{ needs.smoke-broker-packages.result == 'success' && '✅' || (needs.smoke-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.smoke-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish SDK Internal Deps | ${{ needs.publish-sdk-internal-deps.result == 'success' && '✅' || (needs.publish-sdk-internal-deps.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-internal-deps.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
