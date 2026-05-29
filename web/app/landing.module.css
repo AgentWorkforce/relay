@@ -425,7 +425,7 @@
   transform: translateY(-1px);
 }
 
-.agentPromptCopy:focus-visible {
+.agentPromptCopy:focus-within {
   outline: 2px solid color-mix(in srgb, var(--primary) 55%, white 20%);
   outline-offset: 3px;
 }
@@ -433,9 +433,11 @@
 .agentPromptText {
   position: relative;
   min-width: 0;
+  flex: 1 1 auto;
   display: grid;
   gap: 4px;
   padding-left: 14px;
+  transition: margin-left 0.18s ease;
 }
 
 .agentPromptText::before {
@@ -451,7 +453,7 @@
 
 .agentPromptPreview {
   display: block;
-  max-width: 42ch;
+  max-width: none;
   overflow: hidden;
   color: var(--fg-muted);
   font-family: var(--font-geist-mono), monospace;
@@ -461,10 +463,10 @@
   white-space: nowrap;
 }
 
-.agentPromptHover {
+.agentPromptPanel {
   position: absolute;
   right: 0;
-  bottom: calc(100% - 1px);
+  bottom: calc(100% + 8px);
   width: min(560px, calc(100vw - 48px));
   max-height: min(440px, calc(100vh - 160px));
   overflow: auto;
@@ -474,23 +476,10 @@
   background: color-mix(in srgb, var(--bg-elevated) 96%, var(--primary) 4%);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
   color: var(--fg);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(6px);
-  transition:
-    opacity 0.16s,
-    transform 0.16s;
   z-index: 8;
 }
 
-.agentPromptCopy:hover .agentPromptHover,
-.agentPromptCopy:focus-visible .agentPromptHover {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-.agentPromptHoverTitle {
+.agentPromptPanelTitle {
   position: sticky;
   top: 0;
   display: block;
@@ -505,7 +494,7 @@
   text-transform: uppercase;
 }
 
-.agentPromptHoverBody {
+.agentPromptPanelBody {
   display: block;
   padding: 0.85rem;
   color: var(--fg-muted);
@@ -515,18 +504,76 @@
   white-space: pre-wrap;
 }
 
+.agentPromptActions {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.agentPromptShow,
 .agentPromptCta {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  color: var(--primary);
-  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  cursor: pointer;
 }
 
+.agentPromptShow {
+  position: absolute;
+  top: 50%;
+  left: 0.9rem;
+  color: var(--fg-muted);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translate(4px, -50%);
+  transition:
+    color 0.18s,
+    opacity 0.18s,
+    transform 0.18s;
+}
+
+.agentPromptCopy:hover .agentPromptText,
+.agentPromptCopy:focus .agentPromptText,
+.agentPromptCopy:focus-within .agentPromptText,
+.agentPromptCopy[data-prompt-open='true'] .agentPromptText {
+  margin-left: 7.9rem;
+}
+
+.agentPromptCopy:hover .agentPromptShow,
+.agentPromptCopy:focus .agentPromptShow,
+.agentPromptCopy:focus-within .agentPromptShow,
+.agentPromptCopy[data-prompt-open='true'] .agentPromptShow {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(0, -50%);
+}
+
+.agentPromptShow:hover {
+  color: var(--fg);
+}
+
+.agentPromptCta {
+  color: var(--primary);
+  pointer-events: none;
+  transition: color 0.18s ease;
+}
+
+.agentPromptCopy:hover .agentPromptCta,
+.agentPromptCopy:focus .agentPromptCta,
+.agentPromptCopy:focus-within .agentPromptCta {
+  color: var(--primary-hover);
+}
+
+.agentPromptShow svg,
 .agentPromptCta svg {
   width: 0.95rem;
   height: 0.95rem;
@@ -754,7 +801,7 @@
   color: var(--terminal-type);
 }
 .codeMethod {
-  color: var(--terminal-method);
+  color: var(--primary);
 }
 .codeComment {
   color: var(--terminal-muted);
@@ -1759,5 +1806,22 @@
   .agentPromptCopy {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .agentPromptActions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .agentPromptShow {
+    position: static;
+    transform: translateX(4px);
+  }
+
+  .agentPromptCopy:hover .agentPromptShow,
+  .agentPromptCopy:focus .agentPromptShow,
+  .agentPromptCopy:focus-within .agentPromptShow,
+  .agentPromptCopy[data-prompt-open='true'] .agentPromptShow {
+    transform: translateX(0);
   }
 }

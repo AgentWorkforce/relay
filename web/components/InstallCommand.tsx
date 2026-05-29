@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { type KeyboardEvent, type MouseEvent, useState } from 'react';
+import { Check, Copy, Eye, EyeOff } from 'lucide-react';
 
 import s from '../app/landing.module.css';
 
 const INSTALL_COMMAND = 'npm install @agent-relay/sdk';
-const AGENT_SETUP_PROMPT = `Add Agent Relay to this project.
+const AGENT_SETUP_PROMPT = `Add Agent Relay from https://github.com/AgentWorkforce/relay to this project.
 
 First inspect the README, package manager files, app entrypoints, worker scripts, existing agent/session/harness code, and test commands. Then propose the smallest integration that fits this project.
 
@@ -79,6 +79,7 @@ export function InstallCommand() {
 
 export function AgentSetupPrompt() {
   const [copied, setCopied] = useState(false);
+  const [showPrompt, setShowPrompt] = useState(false);
 
   async function handleCopy() {
     await copyText(AGENT_SETUP_PROMPT);
@@ -86,33 +87,63 @@ export function AgentSetupPrompt() {
     window.setTimeout(() => setCopied(false), 1800);
   }
 
+  function handlePromptKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    void handleCopy();
+  }
+
+  function handleShowPrompt(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    setShowPrompt((value) => !value);
+  }
+
   return (
-    <button
+    <div
       className={s.agentPromptCopy}
-      type="button"
+      data-prompt-open={showPrompt}
+      role="button"
+      tabIndex={0}
       onClick={handleCopy}
+      onKeyDown={handlePromptKeyDown}
       aria-label="Copy agent setup prompt"
     >
       <span className={s.agentPromptText}>
         <span className={s.agentPromptPreview}>{AGENT_SETUP_PROMPT_PREVIEW}</span>
       </span>
-      <span className={s.agentPromptHover} aria-hidden="true">
-        <span className={s.agentPromptHoverTitle}>Copy prompt</span>
-        <span className={s.agentPromptHoverBody}>{AGENT_SETUP_PROMPT}</span>
+
+      {showPrompt ? (
+        <div className={s.agentPromptPanel} id="agent-setup-prompt" onClick={(event) => event.stopPropagation()}>
+          <span className={s.agentPromptPanelTitle}>Prompt</span>
+          <span className={s.agentPromptPanelBody}>{AGENT_SETUP_PROMPT}</span>
+        </div>
+      ) : null}
+
+      <span className={s.agentPromptActions}>
+        <button
+          className={s.agentPromptShow}
+          type="button"
+          aria-controls="agent-setup-prompt"
+          aria-expanded={showPrompt}
+          onClick={handleShowPrompt}
+        >
+          {showPrompt ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+          {showPrompt ? 'Hide prompt' : 'Show prompt'}
+        </button>
+        <span className={s.agentPromptCta}>
+          {copied ? (
+            <>
+              <Check aria-hidden="true" />
+              Copied
+            </>
+          ) : (
+            <>
+              <Copy aria-hidden="true" />
+              Copy prompt
+            </>
+          )}
+        </span>
       </span>
-      <span className={s.agentPromptCta}>
-        {copied ? (
-          <>
-            <Check aria-hidden="true" />
-            Copied
-          </>
-        ) : (
-          <>
-            <Copy aria-hidden="true" />
-            Copy prompt
-          </>
-        )}
-      </span>
-    </button>
+    </div>
   );
 }
