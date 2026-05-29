@@ -1,0 +1,245 @@
+---
+title: 'Actions'
+description: 'Actions are typed capabilities agents can discover and invoke through the SDK or MCP, validated with Zod and audited by Relay.'
+---
+
+Actions are how agents trigger work outside plain messaging.
+
+An action can create another managed session, update an operator UI, submit a vote, write a ticket, run a deployment, query an internal system, or publish a result. The implementation lives with the system that can actually perform the work. Relay owns the protocol around it.
+
+## Core Contract
+
+Core Agent Relay owns:
+
+- action descriptors
+- Zod input and output schemas
+- capability discovery
+- invocation
+- result and error envelopes
+- policy hooks
+- audit events
+- MCP tool generation
+
+The action implementation can live in your SDK process, a runtime package, a server, or an adapter.
+
+## Register An Action
+
+```ts file="actions.ts"
+import { z } from 'zod';
+
+const ShowSearchResultsInput = z.object({
+  query: z.string(),
+  results: z.array(
+    z.object({
+      title: z.string(),
+      url: z.string().url(),
+      snippet: z.string().optional(),
+    })
+  ),
+});
+
+const ShowSearchResultsOutput = z.object({
+  displayed: z.boolean(),
+});
+
+relay.actions.register({
+  name: 'ui.show_search_results',
+  description: 'Show a result set in the operator UI.',
+  inputSchema: ShowSearchResultsInput,
+  outputSchema: ShowSearchResultsOutput,
+  availableTo: ['planner', 'engineer'],
+  handler: async (input, ctx) => {
+    await operatorUi.showResults(input);
+
+    await ctx.messaging.messages.send({
+      to: '#ops',
+      text: `Displayed ${input.results.length} results for "${input.query}".`,
+    });
+
+    return { displayed: true };
+  },
+});
+```
+
+Actions should use Zod schemas in user-facing examples because the SDK can infer TypeScript types and generate JSON Schema for MCP tools from the same source.
+
+## Descriptor Shape
+
+```ts
+type AgentRelayAction<Input, Output> = {
+  name: string;
+  description: string;
+  inputSchema: ZodSchema<Input>;
+  outputSchema?: ZodSchema<Output>;
+  availableTo?: AgentSelector[];
+  policy?: ActionPolicyHook<Input>;
+  handler: (input: Input, ctx: ActionContext) => Promise<Output> | Output;
+};
+```
+
+Names should be stable and namespaced by the system that owns the behavior:
+
+- `agent.create`
+- `agent.release`
+- `agent.status`
+- `ui.show_search_results`
+- `review.submit_vote`
+- `ticket.create`
+- `deploy.preview`
+
+## Invoke An Action
+
+```ts file="invoke.ts"
+const result = await relay.actions.invoke({
+  name: 'ui.show_search_results',
+  input: {
+    query: 'billing regressions',
+    results: [
+      {
+        title: 'BILL-123',
+        url: 'https://linear.app/acme/issue/BILL-123',
+        snippet: 'Refund calculation fails for prorated plans.',
+      },
+    ],
+  },
+  caller: { type: 'agent', id: planner.identity.id },
+});
+
+if (result.ok) {
+  console.log(result.output.displayed);
+} else {
+  console.error(result.error.code, result.error.message);
+}
+```
+
+## Result Envelope
+
+Every action call returns a structured envelope.
+
+```ts
+type ActionResult<Output = unknown> =
+  | {
+      ok: true;
+      action: string;
+      invocationId: string;
+      output: Output;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      ok: false;
+      action: string;
+      invocationId: string;
+      error: {
+        code: 'validation_failed' | 'not_found' | 'permission_denied' | 'handler_failed';
+        message: string;
+        details?: unknown;
+        retryable?: boolean;
+      };
+    };
+```
+
+Agents should not need to parse ad hoc text to know whether an action succeeded.
+
+## Policy Hooks
+
+Policy hooks run after input validation and before the handler.
+
+```ts file="policy.ts"
+relay.actions.register({
+  name: 'deploy.preview',
+  description: 'Deploy a preview environment for a branch.',
+  inputSchema: z.object({
+    branch: z.string(),
+  }),
+  policy: async (input, ctx) => {
+    if (!ctx.caller || ctx.caller.type !== 'agent') {
+      return { allow: false, reason: 'Only agents may deploy previews.' };
+    }
+
+    if (!ctx.caller.capabilities?.actions?.invoke) {
+      return { allow: false, reason: 'Caller cannot invoke SDK actions.' };
+    }
+
+    return { allow: true };
+  },
+  handler: async ({ branch }) => deployPreview(branch),
+});
+```
+
+Policies should return structured denials so Relay can emit `action.denied` and expose a useful MCP error to the caller.
+
+## Audit Events
+
+Actions produce events even when they fail.
+
+```ts
+type ActionEvent =
+  | { type: 'action.registered'; action: string }
+  | { type: 'action.invoked'; action: string; invocationId: string; caller?: AgentIdentity }
+  | { type: 'action.completed'; action: string; invocationId: string; durationMs?: number }
+  | { type: 'action.failed'; action: string; invocationId: string; error: string; retryable?: boolean }
+  | { type: 'action.denied'; action: string; invocationId: string; reason: string };
+```
+
+Those events let agents subscribe to capability use:
+
+```ts file="action-listener.ts"
+relay.on(
+  relay.action('agent.create').calledBy(planner),
+  relay.notify('#ops', {
+    type: 'action.called',
+    action: 'agent.create',
+    subject: planner,
+  })
+);
+```
+
+## MCP Tool Generation
+
+`agent-relay mcp` should expose registered actions as explicit tools whenever possible.
+
+For the action above, an MCP host can present a tool named `ui.show_search_results` with JSON Schema generated from the Zod input schema. The result envelope is returned to the agent as structured tool output.
+
+Generic `actions.list` and `actions.invoke` tools can exist for dynamic hosts, but explicit generated tools are better for most agents because they are easier for models to discover and call correctly.
+
+## Runtime Actions
+
+Managed session lifecycle belongs to the runtime package, but creation is still an action.
+
+```ts file="agent-create.ts"
+import { registerRuntimeActions } from '@agent-relay/runtime';
+import { z } from 'zod';
+
+const SpawnAgentInput = z.object({
+  name: z.string(),
+  harness: z.enum(['claude', 'codex', 'opencode', 'openclaw']),
+  task: z.string(),
+  channels: z.array(z.string()).default([]),
+});
+
+relay.actions.register({
+  name: 'agent.create',
+  description: 'Create a managed agent session.',
+  inputSchema: SpawnAgentInput,
+  handler: async (input, ctx) => runtime.create(input, ctx),
+});
+
+registerRuntimeActions(relay.actions, runtime);
+```
+
+Core does not need a `spawnAgent` method to support this. The SDK action registry and MCP tool generation are enough for agents to ask the runtime to create sessions.
+
+## Actions And Events
+
+Actions are not just events because actions require request/response semantics, input validation, policy checks, and result envelopes. Events are observations that something happened.
+
+The relationship is:
+
+- Registering an action makes a capability discoverable.
+- Invoking an action creates an action request.
+- The handler returns an action result.
+- Relay emits action events for audit, subscriptions, and supervision.
+
+<BannerLink href="/docs/agent-relay-mcp" icon="docs">
+  Continue to MCP tools for messaging and generated actions.
+</BannerLink>

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import type { TocItem } from '../../lib/docs';
 import { useDocsLanguage } from './DocsLanguageContext';
+import { DocsVersionSelect } from './DocsVersionSelect';
 import styles from './docs.module.css';
 
 export function TableOfContents({ items }: { items: TocItem[] }) {
@@ -46,6 +47,7 @@ export function TableOfContents({ items }: { items: TocItem[] }) {
           </select>
         </label>
       </div>
+      <DocsVersionSelect />
 
       {items.length > 0 && (
         <nav className={styles.tocNav} aria-label="On this page">

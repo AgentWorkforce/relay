@@ -1,0 +1,197 @@
+---
+title: 'Migration Guide'
+description: 'Move from spawn-first and broker-oriented Agent Relay docs to the workspace-first messaging, delivery, actions, and sessions model.'
+---
+
+This migration guide describes the target public shape. It is intentionally SemVer-major: core docs should stop teaching APIs that do not belong in Agent Relay core.
+
+## Product Framing
+
+Use this language:
+
+- Agent Relay is the public product.
+- Workspaces are the coordination boundary.
+- Messaging, delivery, and actions are core.
+- Harnesses create sessions.
+- Runtime manages optional session lifecycle.
+- MCP exposes messaging and registered actions to agents.
+
+Avoid front-facing docs that make users learn internal transport, broker, or process-management details before they can send messages.
+
+## Setup Migration
+
+Before:
+
+```ts
+const relay = new AgentRelay({
+  apiKey: process.env.RELAY_API_KEY,
+  workspaceName: 'support-triage',
+});
+```
+
+After:
+
+```ts
+const relay = await AgentRelay.createWorkspace({
+  name: 'support-triage',
+});
+
+// Or:
+const relay = await AgentRelay.connect({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY,
+});
+```
+
+Use `workspaceKey` and `RELAY_WORKSPACE_KEY` in new examples. Compatibility aliases can exist, but they should not be the teaching path.
+
+## Spawn Migration
+
+Before:
+
+```ts
+const reviewer = await relay.spawnAgent({
+  cli: 'codex',
+  task: 'Review the branch.',
+});
+```
+
+After:
+
+```ts
+const result = await relay.actions.invoke({
+  name: 'agent.create',
+  input: {
+    name: 'reviewer',
+    harness: 'codex',
+    task: 'Review the branch.',
+    channels: ['#reviews'],
+  },
+  caller: { type: 'agent', id: planner.identity.id },
+});
+```
+
+The runtime package registers `agent.create`. Core owns the action protocol, not the managed process implementation.
+
+## Broker Migration
+
+Before:
+
+```ts
+const client = await AgentRelayClient.spawn({ cwd: process.cwd() });
+await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
+```
+
+After:
+
+```ts
+const runtime = await createRuntime({ relay, harnesses });
+registerRuntimeActions(relay.actions, runtime);
+```
+
+Broker and PTY details can remain inside runtime/driver packages. Core docs should describe sessions and harnesses.
+
+## Messaging Migration
+
+Before:
+
+```ts
+await relay.system().sendMessage({
+  to: 'Planner',
+  text: 'Coordinate with Coder.',
+});
+```
+
+After:
+
+```ts
+await relay.messages.send({
+  to: '#planning',
+  from: 'system',
+  text: `${planner.identity.handle} coordinate with ${engineer.identity.handle}.`,
+  mentions: [planner.identity.id, engineer.identity.id],
+});
+```
+
+Prefer normalized messaging concepts: channels, DMs, group DMs, threads, reactions, mentions, attachments, inbox, and delivery state.
+
+## Events Migration
+
+Before:
+
+```ts
+relay.onMessageReceived = (message) => {
+  console.log(message.text);
+};
+```
+
+After:
+
+```ts
+relay.on(
+  relay.events.message.created().in('#planning'),
+  async (event) => {
+    console.log(event.message.text);
+  }
+);
+```
+
+Use listener predicates for message, delivery, action, status, tool, transcript, file, terminal, and lifecycle events.
+
+## Actions Migration
+
+Before:
+
+```ts
+relay.addTool('submit-vote', async (input) => {
+  return vote(input);
+});
+```
+
+After:
+
+```ts
+relay.actions.register({
+  name: 'review.submit_vote',
+  description: 'Submit a review vote.',
+  inputSchema: z.object({
+    proposalId: z.string(),
+    vote: z.enum(['approve', 'request_changes', 'abstain']),
+  }),
+  outputSchema: z.object({
+    recorded: z.boolean(),
+  }),
+  handler: async (input, ctx) => {
+    await voteStore.record(ctx.caller, input);
+    return { recorded: true };
+  },
+});
+```
+
+Actions should be Zod-backed and produce structured result envelopes.
+
+## Docs And CLI Pruning
+
+Remove or move docs that teach these as core Agent Relay:
+
+- cloud account setup as a prerequisite
+- broker lifecycle
+- low-level broker HTTP or WebSocket APIs
+- workflow, swarm, consensus, or proactive-agent APIs
+- file, auth, scheduling, or primitive products
+- provider-specific plugin docs that do not implement the harness/session contract
+- Python, Swift, and React SDK references until they match the new core model
+
+Keep adapter docs when the adapter fits the harness/session model. OpenClaw and ACP bridge can remain as useful adapters.
+
+## Acceptance Checklist
+
+The docs are aligned when:
+
+- the first examples create or connect to a workspace
+- no basic setup requires an Agent Relay API key
+- messaging, delivery, and actions are the main categories
+- actions use Zod schemas
+- spawning is shown as a runtime-provided action, not a core SDK method
+- harnesses define `create`, sessions define `receiveMessage`, `onEvent`, capabilities, and `release`
+- MCP exposes messaging and generated action tools
+- runtime/driver details are optional managed lifecycle docs

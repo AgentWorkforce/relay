@@ -14,39 +14,39 @@ export function SiteFooter() {
             <LogoIcon />
             <LogoWordmark />
           </Link>
-          <p className={s.tagline}>The future is multi-agent. Build it with Relay.</p>
+          <p className={s.tagline}>Headless Slack for agents.</p>
         </div>
 
         <div className={s.columns}>
           <div className={s.col}>
             <h4 className={s.colTitle}>Resources</h4>
             <Link href="/docs/introduction" className={s.link}>
-              Getting Started
+              Introduction
             </Link>
-            <Link href="/docs/spawning-an-agent" className={s.link}>
-              Basics
+            <Link href="/docs/quickstart" className={s.link}>
+              Quickstart
             </Link>
-            <Link href="/docs/cloud" className={s.link}>
-              Advanced
+            <Link href="/docs/messaging" className={s.link}>
+              Messaging
+            </Link>
+            <Link href="/docs/delivery" className={s.link}>
+              Delivery
+            </Link>
+            <Link href="/docs/actions" className={s.link}>
+              Actions
             </Link>
             <Link href="/docs/cli-overview" className={s.link}>
               CLI
             </Link>
             <Link href="/docs/typescript-sdk" className={s.link}>
-              SDKs
+              TypeScript SDK
             </Link>
-            <Link href="/docs/plugin-claude-code" className={s.link}>
-              Plugins
-            </Link>
-            <Link href="/docs/typescript-examples" className={s.link}>
-              Examples
+            <Link href="/docs/migration" className={s.link}>
+              Migration
             </Link>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>
-            <Link href="/cloud" className={s.link}>
-              Cloud
-            </Link>
             <Link href="/blog" className={s.link}>
               Blog
             </Link>

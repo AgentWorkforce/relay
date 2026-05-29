@@ -1,485 +1,215 @@
 ---
-title: TypeScript SDK Reference
-description: Complete reference for the @agent-relay/sdk package
+title: 'TypeScript SDK'
+description: 'Reference shape for the workspace-first @agent-relay/sdk API: messaging, delivery contracts, actions, events, and session registration.'
 ---
+
+Install the core SDK:
 
 ```bash
-npm install @agent-relay/sdk
+npm install @agent-relay/sdk zod
 ```
 
----
+The SDK should stay focused on the Agent Relay core protocol. It should not require managed spawning, browser automation, cloud setup, workflow engines, or proactive runtime dependencies.
 
-## AgentRelay
+## Entry Point
 
-The main entry point. Manages the broker lifecycle, spawns agents, and routes messages.
-
-```typescript file="app.ts"
+```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = new AgentRelay(options?: AgentRelayOptions);
-```
-
-### AgentRelayOptions
-
-| Property           | Type                | Description                                         | Default                     |
-| ------------------ | ------------------- | --------------------------------------------------- | --------------------------- |
-| `binaryPath`       | `string`            | Path to the broker binary                           | Auto-resolved               |
-| `binaryArgs`       | `AgentRelayBrokerInitArgs` | Typed `agent-relay-broker init` flags          | None                        |
-| `brokerName`       | `string`            | Name for the broker instance                        | Auto-generated              |
-| `channels`         | `string[]`          | Default channels agents are joined to on spawn      | `['general']`               |
-| `cwd`              | `string`            | Working directory for the broker and spawned agents  | `process.cwd()`             |
-| `env`              | `NodeJS.ProcessEnv` | Environment variables passed to the broker          | Inherited                   |
-| `harnesses`        | `Record<string, HarnessDefinition>` | Named harness configs registered with the broker | `{}`                        |
-| `workspaceName`    | `string`            | Name for the auto-created Relaycast workspace       | Random                      |
-| `relaycastBaseUrl` | `string`            | Base URL for the Relaycast API                      | `https://api.relaycast.dev` |
-
----
-
-## Spawning Agents
-
-### `relay.spawnAgent(config)`
-
-```typescript
-const codex = await relay.spawnAgent({
-  cli: 'codex',
-  model: Models.Codex.GPT_5_3_CODEX,
-  channels: ['dev'],
-  task: 'Implement the approved plan.',
-});
-
-const reviewer = await relay.spawnAgent({
-  name: 'Reviewer',
-  cli: 'opencode',
-  runtime: 'headless',
-  model: Models.Opencode.OPENAI_GPT_5_2,
-  channels: ['reviews'],
-  task: 'Review the branch and summarize risks.',
+const relay = await AgentRelay.createWorkspace({
+  name: 'release-review',
 });
 ```
 
-**Spawn options:**
+Connect to an existing workspace:
 
-| Property    | Type       | Description                                      |
-| ----------- | ---------- | ------------------------------------------------ |
-| `name`      | `string`   | Agent name (defaults from `cli`, e.g. `Codex`)   |
-| `cli`       | `string`   | CLI or named harness to spawn                    |
-| `runtime`   | `'pty' \| 'headless'` | Runtime category for the agent (default: `'pty'`) |
-| `model`     | `string`   | Model to use (see Models below)                  |
-| `task`      | `string`   | Initial task / prompt                            |
-| `channels`  | `string[]` | Channels to join                                 |
-| `args`      | `string[]` | Extra CLI arguments                              |
-| `cwd`       | `string`   | Working directory override                       |
-| `onStart`   | `function` | Sync/async callback before spawn request is sent |
-| `onSuccess` | `function` | Sync/async callback after spawn succeeds         |
-| `onError`   | `function` | Sync/async callback when spawn fails             |
-
-The returned `Agent` handle exposes readiness, idle, exit, output, messaging, release, and structured result helpers. To wait for the agent to become ready before continuing, call `await agent.waitForReady(timeoutMs)`.
-
-Omit `runtime` for terminal-backed CLIs such as Claude Code, Codex, and Gemini. Use `runtime: 'headless'` for app-server sessions such as OpenCode.
-
----
-
-## Agent
-
-`spawnAgent` returns an `Agent`:
-
-```typescript
-interface Agent {
-  readonly name: string;
-  readonly runtime: AgentRuntime;
-  readonly channels: string[];
-  readonly status: AgentStatus; // 'spawning' | 'ready' | 'idle' | 'exited'
-  exitCode?: number;
-  exitSignal?: string;
-  exitReason?: string;
-
-  sendMessage(input: {
-    to: string;
-    text: string;
-    threadId?: string;
-    priority?: number;
-    data?: Record<string, unknown>;
-  }): Promise<Message>;
-
-  release(reasonOrOptions?: string | ReleaseOptions): Promise<void>;
-  waitForReady(timeoutMs?: number): Promise<void>;
-  waitForExit(timeoutMs?: number): Promise<'exited' | 'timeout' | 'released'>;
-  waitForIdle(timeoutMs?: number): Promise<'idle' | 'timeout' | 'exited'>;
-  waitForResult(timeoutMs?: number): Promise<AgentResult>;
-  onOutput(callback: (chunk: string) => void): () => void; // returns unsubscribe
-}
+```ts
+const relay = await AgentRelay.connect({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY,
+});
 ```
 
-### Structured Agent Results
+## Workspace API
 
-Provide `result` when spawning an agent to expose a `submit_result` MCP tool inside that agent. The tool posts JSON back to the local broker, and the SDK validates it before resolving waiters or hooks.
+```ts
+relay.workspace.id;
+relay.workspace.name;
+relay.workspace.key;
 
-```typescript file="structured-result.ts"
-import { AgentRelay } from '@agent-relay/sdk';
+await relay.workspace.register(session);
+await relay.workspace.unregister(agentId);
+await relay.workspace.close();
+```
+
+`register` accepts an `AgentSession` or an array of sessions.
+
+## Messaging API
+
+```ts
+await relay.channels.create('#reviews');
+await relay.channels.join('#reviews', [planner, reviewer]);
+
+const message = await relay.messages.send({
+  to: '#reviews',
+  from: planner.identity.id,
+  text: `${reviewer.identity.handle} please review the delivery adapter.`,
+  mentions: [reviewer.identity.id],
+});
+
+await relay.messages.reply({
+  thread: message.thread.id,
+  from: reviewer.identity.id,
+  text: 'Reviewing now.',
+});
+
+await relay.messages.react({
+  message: message.id,
+  agent: planner.identity.id,
+  emoji: 'eyes',
+});
+```
+
+See [Messaging](/docs/messaging) for target, attachment, thread, reaction, and inbox shapes.
+
+## Delivery Contracts
+
+```ts
+type DeliveryMode = 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
+
+type MessageContext = {
+  id: string;
+  mode: DeliveryMode;
+  reason: 'message' | 'mention' | 'dm' | 'thread-reply' | 'action-result' | 'notification';
+  priority?: 'normal' | 'urgent';
+  deadline?: Date | string;
+  idempotencyKey?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type MessageReceipt =
+  | { status: 'accepted'; deliveryId: string; retryable?: boolean; metadata?: Record<string, unknown> }
+  | { status: 'delivered'; deliveryId: string; metadata?: Record<string, unknown> }
+  | { status: 'deferred'; deliveryId?: string; availableAt: Date | string; reason?: string; metadata?: Record<string, unknown> }
+  | { status: 'failed'; deliveryId?: string; reason: string; retryable?: boolean; metadata?: Record<string, unknown> };
+```
+
+The SDK can expose `DeliveryRunner` and `AgentDeliveryAdapter` interfaces even while durable backend `ack`, `fail`, and `defer` operations are still being implemented. Unsupported operations should fail explicitly.
+
+## Session Registration
+
+```ts
+type AgentSession = {
+  identity: AgentIdentity;
+  capabilities: AgentSessionCapabilities;
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  release(reason?: string): Promise<void>;
+};
+```
+
+Use prebuilt harnesses or provide your own sessions.
+
+```ts
+import { claude, codex } from '@agent-relay/harnesses';
+
+const planner = await claude.create({ name: 'planner', model: 'sonnet' });
+const engineer = await codex.create({ name: 'engineer', model: 'gpt-5.5' });
+
+await relay.workspace.register([planner, engineer]);
+```
+
+## Actions API
+
+```ts
 import { z } from 'zod';
 
-const relay = new AgentRelay();
-
-const Summary = z.object({
-  status: z.enum(['pass', 'fail']),
-  findings: z.array(z.string()),
-});
-
-const reviewer = await relay.spawnAgent({
-  name: 'Reviewer',
-  cli: 'claude',
-  task: 'Review the branch and submit the final JSON result.',
-  result: {
-    schema: Summary,
-    onResult: (summary) => {
-      console.log(summary.status, summary.findings.length);
-    },
+relay.actions.register({
+  name: 'review.submit_vote',
+  description: 'Submit a review vote for the current proposal.',
+  inputSchema: z.object({
+    proposalId: z.string(),
+    vote: z.enum(['approve', 'request_changes', 'abstain']),
+    reason: z.string().optional(),
+  }),
+  outputSchema: z.object({
+    recorded: z.boolean(),
+  }),
+  handler: async (input, ctx) => {
+    await reviewStore.recordVote(ctx.caller, input);
+    return { recorded: true };
   },
 });
 
-const result = await reviewer.waitForResult(120_000);
-console.log(result.data.status);
-```
-
-You can also pass `jsonSchema` directly when you only want to describe the expected payload to the spawned agent. Use `relay.addListener('agentResult', ...)` to observe all structured results globally.
-
-### `ReleaseOptions`
-
-`agent.release(...)` accepts either a reason string or a `ReleaseOptions` object:
-
-| Property    | Type       | Description                                        |
-| ----------- | ---------- | -------------------------------------------------- |
-| `reason`    | `string`   | Optional release reason sent to the broker         |
-| `onStart`   | `function` | Sync/async callback before release request is sent |
-| `onSuccess` | `function` | Sync/async callback after release succeeds         |
-| `onError`   | `function` | Sync/async callback when release fails             |
-
----
-
-## Low-Level Broker Client
-
-`AgentRelay` is the high-level orchestration API. Use `AgentRelayClient`
-when you need direct broker control over spawned workers, PTYs, inbound delivery
-mode, or the broker event stream.
-
-```typescript
-import { AgentRelayClient } from '@agent-relay/sdk';
-
-// Spawn a broker and connect to it.
-const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
-
-// Or connect to an already-running broker by reading .agent-relay/connection.json.
-// const client = AgentRelayClient.connect({ cwd: '/my/project' });
-
-// Or connect directly when you already know the broker URL and API key.
-// const client = new AgentRelayClient({
-//   baseUrl: 'http://127.0.0.1:3888',
-//   apiKey: process.env.RELAY_BROKER_API_KEY,
-// });
-```
-
-### Client Options
-
-| Property           | Type                   | Description                                      | Default |
-| ------------------ | ---------------------- | ------------------------------------------------ | ------- |
-| `baseUrl`          | `string`               | Broker listen API base URL.                      | Required |
-| `apiKey`           | `string`               | API key sent as `X-API-Key`.                     | None |
-| `fetch`            | `typeof globalThis.fetch` | Custom fetch implementation for tests/runtimes. | `globalThis.fetch` |
-| `requestTimeoutMs` | `number`               | HTTP request timeout in milliseconds.            | `30000` |
-
-### Lifecycle and Messaging
-
-| Method | Broker route | Description |
-| ------ | ------------ | ----------- |
-| `client.spawnPty(input)` | `POST /api/spawn` | Spawn a PTY-backed worker. |
-| `client.spawnCli(input)` | `POST /api/spawn` | Spawn by CLI and transport. |
-| `client.spawnClaude(input)` | `POST /api/spawn` | Spawn a Claude worker. |
-| `client.spawnOpencode(input)` | `POST /api/spawn` | Spawn an OpenCode worker. |
-| `client.release(name, reason?)` | `DELETE /api/spawned/{name}` | Release a worker. |
-| `client.listAgents()` | `GET /api/spawned` | List running workers. |
-| `client.sendMessage(input)` | `POST /api/send` | Inject a relay message. |
-| `client.subscribeChannels(name, channels)` | `POST /api/spawned/{name}/subscribe` | Subscribe a worker to channels. |
-| `client.unsubscribeChannels(name, channels)` | `POST /api/spawned/{name}/unsubscribe` | Unsubscribe a worker from channels. |
-
-### PTY and Delivery Control
-
-These methods are the programmatic primitives behind CLI attach flows such
-as `drive`, `view`, and `passthrough`.
-
-| Method | Broker route | Description |
-| ------ | ------------ | ----------- |
-| `client.sendInput(name, data)` | `POST /api/input/{name}` | Write raw bytes to a worker's PTY stdin. |
-| `client.openInputStream(name, options?)` | `GET /api/input/{name}/stream` | Open a websocket input stream with ordered writes and bounded client-side buffering. |
-| `client.resizePty(name, rows, cols)` | `POST /api/resize/{name}` | Resize a worker PTY. |
-| `client.snapshot(name, format?)` | `GET /api/spawned/{name}/snapshot` | Capture the visible PTY screen as `plain` text or base64 `ansi`. |
-| `client.getInboundDeliveryMode(name)` | `GET /api/spawned/{name}/delivery-mode` | Read `manual_flush` or `auto_inject`. |
-| `client.setInboundDeliveryMode(name, mode)` | `PUT /api/spawned/{name}/delivery-mode` | Set inbound delivery mode and return `{ mode, flushed }`. |
-| `client.getPending(name)` | `GET /api/spawned/{name}/pending` | Read queued relay messages for a worker in `manual_flush` mode. |
-| `client.flushPending(name)` | `POST /api/spawned/{name}/flush` | Drain queued relay messages into the worker PTY. |
-| `client.subscribeWorkerStream(name, options?)` | `GET /ws` | Async iterator over filtered `worker_stream` chunks for one worker. |
-
-`client.openInputStream` accepts `PtyInputStreamOptions`: `highWaterMarkBytes`
-defaults to 1 MiB of queued and in-flight UTF-8 input, and `openTimeoutMs`
-defaults to 10 seconds. Invalid non-finite or non-positive values are rejected
-before connecting.
-
-```typescript
-import { AgentRelayClient, type InboundDeliveryMode } from '@agent-relay/sdk';
-
-const client = AgentRelayClient.connect({ cwd: '/my/project' });
-const name = 'Reviewer';
-
-const previousMode: InboundDeliveryMode = await client.getInboundDeliveryMode(name);
-await client.setInboundDeliveryMode(name, 'manual_flush');
-
-try {
-  const snapshot = await client.snapshot(name, 'plain');
-  console.log(snapshot.screen);
-
-  const pending = await client.getPending(name);
-  console.log(`Queued messages: ${pending.length}`);
-
-  const input = client.openInputStream(name);
-  try {
-    await input.waitUntilOpen();
-    const result = await input.send('please continue\n');
-    console.log(`Wrote ${result.bytes_written} bytes`);
-  } catch (error) {
-    console.error(`Input stream failed: ${error instanceof Error ? error.message : error}`);
-  } finally {
-    input.close();
-  }
-
-  await client.resizePty(name, 40, 120);
-  await client.flushPending(name);
-} finally {
-  await client.setInboundDeliveryMode(name, previousMode);
-}
-```
-
-```typescript
-for await (const chunk of client.subscribeWorkerStream('Reviewer', { stream: 'stdout' })) {
-  process.stdout.write(chunk);
-}
-```
-
-`drive`, `view`, and `passthrough` stay in the CLI because they manage raw
-terminal mode, keybindings, status lines, signals, and teardown. The SDK
-exposes the composable broker primitives those interactive surfaces use.
-
----
-
-## Human Handles
-
-Send messages from a named human or system identity (not a spawned CLI agent):
-
-```typescript
-// Named human
-const human = relay.human({ name: 'Orchestrator' });
-await human.sendMessage({ to: 'Worker', text: 'Start the task' });
-
-// System identity (name: "system")
-const sys = relay.system();
-await sys.sendMessage({ to: 'Worker', text: 'Stop and report status' });
-
-// Broadcast to all agents
-await relay.broadcast('All hands: stand by for new task');
-```
-
----
-
-## Event Hooks
-
-Register listeners with `addListener`; keep the returned function to unsubscribe:
-
-```typescript
-relay.addListener('messageReceived', (msg: Message) => { ... })
-relay.addListener('messageSent', (msg: Message) => { ... })
-relay.addListener('agentSpawned', (agent: Agent) => { ... })
-relay.addListener('agentReleased', (agent: Agent) => { ... })
-relay.addListener('agentExited', (agent: Agent) => { ... })
-relay.addListener('agentReady', (agent: Agent) => { ... })
-relay.addListener('agentIdle', ({ name, idleSecs }) => { ... })
-relay.addListener('agentActivityChanged', ({ name, active, pendingDeliveries, reason }) => { ... })
-relay.addListener('agentExitRequested', ({ name, reason }) => { ... })
-relay.addListener('workerOutput', ({ name, stream, chunk }) => { ... })
-relay.addListener('deliveryUpdate', (event: BrokerEvent) => { ... })
-relay.addListener('agentResult', (result: AgentResult) => { ... })
-```
-
-**Message type:**
-
-```typescript
-interface Message {
-  eventId: string;
-  from: string;
-  to: string;
-  text: string;
-  threadId?: string;
-  data?: Record<string, unknown>;
-}
-```
-
----
-
-## Other Methods
-
-```typescript
-// List all known agents
-const agents = await relay.listAgents(): Promise<Agent[]>
-
-// Get broker status
-const status = await relay.getStatus(): Promise<BrokerStatus>
-
-// Read last N lines of an agent's log file
-const logs = await relay.getLogs('Worker', { lines: 100 })
-// logs.found: boolean, logs.content: string
-
-// List agents that have log files
-const names = await relay.listLoggedAgents(): Promise<string[]>
-
-// Stream an agent's log file (returns handle with .unsubscribe())
-const handle = relay.followLogs('Worker', {
-  historyLines: 50,
-  onEvent(event) {
-    if (event.type === 'log') console.log(event.content);
+const result = await relay.actions.invoke({
+  name: 'review.submit_vote',
+  input: {
+    proposalId: 'proposal-1',
+    vote: 'approve',
   },
-})
-handle.unsubscribe();
-
-// Wait for the first of many agents to exit
-const { agent, result } = await AgentRelay.waitForAny([agent1, agent2], 60000)
-
-// Shut down all agents and the broker
-await relay.shutdown()
+  caller: { type: 'agent', id: reviewer.identity.id },
+});
 ```
 
-### Broker tracing logs
+Action schemas should be Zod schemas. The SDK can infer TypeScript types and generate JSON Schema for MCP tools from the same source.
 
-The broker writes its tracing logs to a platform-standard directory (`~/Library/Logs/agent-relay/` on macOS, `~/.local/state/agent-relay/logs/` on Linux, `%LOCALAPPDATA%\agent-relay\Logs\` on Windows) with daily rotation. These helpers inspect and prune those files from Node without spawning the broker.
+## Events API
 
-```typescript
-import {
-  getBrokerLogDir,
-  listBrokerLogs,
-  tailBrokerLog,
-  pruneBrokerLogs,
-  clearBrokerLogs,
-} from '@agent-relay/sdk';
-
-// Resolve the directory for the current platform.
-const dir = getBrokerLogDir();
-
-// List every {brokerId}.log[.YYYY-MM-DD] file, newest first.
-const files = await listBrokerLogs();
-// files: Array<{ path, name, brokerId, date, size, mtime }>
-
-// Tail the most recent log file for a broker.
-const tail = await tailBrokerLog('myproject', { lines: 500 });
-// tail?.path / tail?.content — null if no log file exists
-
-// Retention: remove rotated files older than 7 days. The active
-// un-suffixed file is never touched.
-const { removed, kept } = await pruneBrokerLogs({ keepDays: 7 });
-
-// Wipe one broker's logs (or pass nothing to wipe everything).
-await clearBrokerLogs({ brokerId: 'myproject' });
-```
-
-These wrap the same logic that powers `agent-relay log {path,list,view,rotate,clear}`.
-
----
-
-## Complete Example
-
-```typescript
-import { AgentRelay, Models } from '@agent-relay/sdk';
-
-const relay = new AgentRelay();
-
-relay.addListener('messageReceived', (msg) => {
-  console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
-});
-
-relay.addListener('agentSpawned', (agent) => {
-  console.log(`Spawned: ${agent.name}`);
-});
-
-// Spawn agents
-const planner = await relay.spawnAgent({
-  name: 'Planner',
-  cli: 'claude',
-  model: Models.Claude.OPUS,
-  task: 'Plan the feature implementation',
-});
-
-const coder = await relay.spawnAgent({
-  name: 'Coder',
-  cli: 'codex',
-  model: Models.Codex.GPT_5_3_CODEX,
-  task: 'Implement the plan',
-});
-
-// Wait for both to be ready
-await planner.waitForReady();
-await coder.waitForReady();
-
-// Send a message
-await planner.sendMessage({ to: 'Coder', text: 'Start implementing the auth module' });
-
-// Wait for coder to finish
-await coder.waitForExit(300_000);
-
-await relay.shutdown();
-```
-
----
-
-## Models
-
-```typescript
-import { Models } from '@agent-relay/sdk';
-
-// Claude
-Models.Claude.OPUS; // 'opus'
-Models.Claude.SONNET; // 'sonnet'
-Models.Claude.HAIKU; // 'haiku'
-
-// Codex
-Models.Codex.GPT_5_4; // 'gpt-5.4' (default)
-Models.Codex.GPT_5_3_CODEX; // 'gpt-5.3-codex'
-
-// Gemini
-Models.Gemini.GEMINI_3_1_PRO_PREVIEW; // 'gemini-3.1-pro-preview' (default)
-Models.Gemini.GEMINI_2_5_PRO; // 'gemini-2.5-pro'
-
-// OpenCode
-Models.Opencode.OPENAI_GPT_5_2; // 'openai/gpt-5.2' (default)
-Models.Opencode.OPENCODE_GPT_5_NANO; // 'opencode/gpt-5-nano'
-```
-
----
-
-## Error Types
-
-```typescript
-import { AgentRelayProtocolError, AgentRelayProcessError } from '@agent-relay/sdk';
-
-try {
-  await relay.spawnAgent({ cli: 'claude' });
-} catch (err) {
-  if (err instanceof AgentRelayProtocolError) {
-    // Broker returned an error response (err.code available)
+```ts
+const unsubscribe = relay.on(
+  relay.events.message.created().in('#reviews').mentions(reviewer),
+  async (event) => {
+    await relay.messages.direct({
+      to: planner.identity.id,
+      text: `${reviewer.identity.handle} was mentioned in ${event.message.id}.`,
+    });
   }
-  if (err instanceof AgentRelayProcessError) {
-    // Broker process failed to start or crashed
-  }
-}
+);
+
+unsubscribe();
 ```
 
----
+The listener system should support message, delivery, action, workspace, and normalized session events.
 
-## See Also
+## MCP Integration
 
-- [Quickstart](/quickstart) — Spawn agents and exchange messages quickly
-- [Python SDK Reference](/reference/sdk-py) — Python API reference
+The SDK action registry and messaging primitives are what power `agent-relay mcp`.
+
+```ts
+await relay.mcp.start({
+  workspaceKey: relay.workspace.key,
+  exposeActions: true,
+});
+```
+
+For many agents, MCP is the preferred integration path because it gives the agent tools without embedding the SDK into the agent process.
+
+## Managed Sessions Are Optional
+
+The core SDK should not expose `spawnAgent` as the primary way to use Relay.
+
+When Agent Relay needs to create managed sessions, use the runtime package and register runtime actions.
+
+```ts
+import { createRuntime, registerRuntimeActions } from '@agent-relay/runtime';
+
+const runtime = await createRuntime({ relay, harnesses });
+registerRuntimeActions(relay.actions, runtime);
+
+await relay.actions.invoke({
+  name: 'agent.create',
+  input: {
+    name: 'reviewer',
+    harness: 'codex',
+    task: 'Review the migration guide.',
+  },
+  caller: { type: 'agent', id: planner.identity.id },
+});
+```
+
+This keeps agent creation as a capability in the action protocol instead of a core SDK method.
+
+## Compatibility Notes
+
+Older SDKs may still expose broker clients, spawn-first facades, workflow APIs, model enums, and cloud configuration. The target SDK shape moves those out of the core public path.
+
+Use the migration guide for replacements.

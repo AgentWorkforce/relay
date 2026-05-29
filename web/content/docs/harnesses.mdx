@@ -1,182 +1,219 @@
 ---
-title: Harnesses
-description: Define custom PTY and headless harness configs in the SDK.
+title: 'Harnesses'
+description: 'A harness is the adapter that creates sessions, receives Relay messages, emits observations, and releases the session boundary.'
 ---
 
-A harness is the thing Relay controls for an agent. The broker only executes
-serializable `HarnessConfig` data. SDK "adapters" are helpers that return those
-configs before a spawn request is sent.
+A harness is how a concrete agent environment gets on Relay.
 
-Relay supports two runtime categories:
+Claude Code in a terminal, Codex in a managed session, OpenCode as an app server, OpenClaw through an adapter, a browser app, and your own hosted worker can all be harnesses. Relay does not need to own the process. It needs the harness to create a session that can receive messages, emit events, and be released.
 
-| Runtime | Use for | Broker capabilities |
-| --- | --- | --- |
-| `pty` | Terminal-backed CLIs such as Codex or Claude Code | stream, input, resize, snapshot, delivery, release |
-| `headless` | Non-terminal sessions such as OpenCode app-server | delivery, release |
+## The Line Between Harness And Session
 
-When `runtime` is `headless`, `driver` defaults to `app_server`.
+The harness is the factory and adapter definition. The session is the created thing Relay can address.
 
-## Naming
+```ts
+type HarnessConfig<TInput = void> = {
+  name: string;
+  init?(ctx: HarnessInitContext): Promise<void> | void;
+  create(input: TInput, ctx: HarnessCreateContext): Promise<AgentSession>;
+};
 
-| Name | Meaning |
-| --- | --- |
-| Harness config | Concrete `pty` or `headless` JSON the broker can validate and run |
-| Harness adapter | SDK helper that returns a harness config |
-| Named harness | SDK-side shortcut in `new AgentRelay({ harnesses })` |
-| `harnessConfig` | Spawn field carrying the concrete config to the broker |
+type AgentSession = {
+  identity: AgentIdentity;
+  capabilities: AgentSessionCapabilities;
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  release(reason?: string): Promise<void>;
+};
+```
 
-The broker boundary is always explicit config data. Named harnesses are resolved
-by the SDK before spawn; Relaycast and multi-broker spawns should send
-`harnessConfig` directly.
+The harness owns provider-specific setup: binaries, SDK clients, app-server URLs, environment variables, credentials, terminal emulators, hooks, headless modes, and connection pools.
 
-## Claude PTY Config
+The session owns per-agent state: identity, capabilities, delivery, observation events, and release.
 
-Use a named harness when the command is stable across spawns:
+## Why `create` Is General
 
-```typescript file="claude-harness.ts"
-import { AgentRelay } from '@agent-relay/sdk';
+`create` does not have to mean spawn.
 
-const relay = new AgentRelay({
-  harnesses: {
-    'company-claude': {
-      runtime: 'pty',
-      command: 'claude',
-      args: [
-        '--dangerously-skip-permissions',
-        '--append-system-prompt',
-        'Follow the company review rubric.',
-        '{modelArgs}',
-        '{args}',
-      ],
-      modelArgs: ['--model', '{model}'],
-      env: {
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+For different harnesses it may mean:
+
+- start a CLI process
+- attach to an existing terminal
+- connect to an app-server session
+- resume a previous conversation
+- allocate a hosted worker
+- register a browser tab or UI agent
+- return a handle to something that already exists
+
+Relay should not force a public distinction between own, attach, wrap, and spawn. Those are implementation details inside the harness.
+
+## Minimum Harness
+
+The minimum useful harness creates a session that can receive messages and be released.
+
+```ts file="minimum-harness.ts"
+const customHarness: HarnessConfig<{ name: string }> = {
+  name: 'custom',
+
+  async create(input, ctx) {
+    return {
+      identity: {
+        id: ctx.ids.agent(input.name),
+        name: input.name,
+        handle: `@${input.name}`,
+        kind: 'agent',
       },
-    },
+      capabilities: {
+        messaging: { receive: true, send: true, attachments: ['text'] },
+        delivery: { modes: ['immediate'] },
+        events: { emits: ['status.changed', 'message.received'] },
+        actions: { invoke: true },
+        lifecycle: { release: true },
+      },
+      async receiveMessage(message, delivery) {
+        await deliverToMyAgent(message, delivery);
+        return { status: 'delivered', deliveryId: delivery.id };
+      },
+      async release(reason) {
+        await stopOrDetach(reason);
+      },
+    };
   },
-});
-
-await relay.spawnAgent({
-  name: 'ClaudeReviewer',
-  cli: 'company-claude',
-  task: 'Review the current diff.',
-  model: 'opus',
-  args: ['--verbose'],
-});
+};
 ```
 
-The SDK turns `company-claude` into an inline `harnessConfig` for that spawn.
-The broker does not keep a named harness registry.
+Most real harnesses will also implement `init`, `onEvent`, richer delivery modes, and action support.
 
-## Codex Per-Spawn Config
+## Harness Context
 
-Use direct `harnessConfig` when setup produces a different config for each
-spawn, such as creating or resuming a Codex session:
+```ts
+type HarnessInitContext = {
+  workspace: Workspace;
+  logger: RelayLogger;
+  env: Record<string, string | undefined>;
+};
 
-```typescript file="codex-harness.ts"
-import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
-
-function codexResume(sessionId: string, cwd: string): ResolvedHarnessConfig {
-  return {
-    runtime: 'pty',
-    command: 'codex',
-    args: ['resume', sessionId],
-    cwd,
-    env: {
-      PATH: process.env.PATH ?? '',
-      CODEX_HOME: process.env.CODEX_HOME ?? '',
-    },
-    sessionId,
+type HarnessCreateContext = HarnessInitContext & {
+  ids: {
+    agent(name: string): string;
+    session(name: string): string;
   };
-}
-
-const relay = new AgentRelay();
-const cwd = process.cwd();
-const task = 'Review the current diff.';
-const sessionId = await createCodexSession({ cwd, task });
-
-await relay.spawnAgent({
-  name: 'CodexReviewer',
-  cli: 'codex',
-  task,
-  cwd,
-  harnessConfig: codexResume(sessionId, cwd),
-});
+  messaging: RelayMessaging;
+  actions: AgentRelayActions;
+  events: AgentRelayEvents;
+  signal?: AbortSignal;
+};
 ```
 
-Do not copy the whole process environment into `env`. Pass only the keys the
-harness needs.
+The context gives the harness workspace information and access to Relay services without requiring the harness to import app-specific globals.
 
-## OpenCode Headless Config
+## Session Identity
 
-Use `headless` for an agent that already exists inside an app-server session.
-OpenCode `serve` is the first supported protocol:
+Identity is stable routing information. It is not capability state and it is not lifecycle state.
 
-```typescript file="opencode-harness.ts"
-import { AgentRelay, type ResolvedHarnessConfig } from '@agent-relay/sdk';
-
-function opencodeSession(input: {
-  endpoint: string;
-  sessionId: string;
-  pid?: number;
-}): ResolvedHarnessConfig {
-  return {
-    runtime: 'headless',
-    protocol: 'opencode',
-    endpoint: input.endpoint,
-    sessionId: input.sessionId,
-    host: { ownership: 'attached', pid: input.pid },
-    release: 'abort',
-  };
-}
-
-const relay = new AgentRelay();
-
-await relay.spawnAgent({
-  name: 'OpenCodeWorker',
-  cli: 'opencode',
-  runtime: 'headless',
-  task: 'Inspect the repo.',
-  harnessConfig: opencodeSession({
-    endpoint: 'http://127.0.0.1:4096',
-    sessionId: 'ses_123',
-    pid: 34567,
-  }),
-});
+```ts
+type AgentIdentity = {
+  id: string;
+  name: string;
+  handle: string;
+  kind?: 'agent' | 'human' | 'system' | 'service';
+  metadata?: Record<string, unknown>;
+};
 ```
 
-For OpenCode, Relay delivers messages to `POST /session/:id/prompt_async`.
-For now, app-server configs must use `protocol: 'opencode'`, an `http` or
-`https` endpoint, a non-empty `sessionId`, and attached host ownership.
-`broker-owned` app-server hosts are reserved for later broker supervision.
+Status belongs in events. Capabilities belong on the session. A session may emit `status.changed` events over time while keeping the same identity.
 
-## Relaycast Spawns
+## Receive Messages
 
-Agent-crafted spawns should send the full config:
+`receiveMessage` is the core delivery method.
 
-```json
-{
-  "agent": {
-    "name": "CodexReviewer",
-    "cli": "codex",
-    "task": "Review the current diff.",
-    "harnessConfig": {
-      "runtime": "pty",
-      "command": "codex",
-      "args": ["resume", "session_123"],
-      "sessionId": "session_123"
-    }
+```ts
+async receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt> {
+  if (!this.supports(ctx.mode)) {
+    return {
+      status: 'deferred',
+      deliveryId: ctx.id,
+      availableAt: new Date(Date.now() + 30_000),
+      reason: `Mode ${ctx.mode} is not available yet.`,
+    };
   }
+
+  await this.inject(message, ctx);
+  return { status: 'delivered', deliveryId: ctx.id };
 }
 ```
 
-Relay intentionally avoids a broker-local harness registry for now. A spawn
-request should be self-contained so behavior does not depend on hidden runtime
-state or which broker receives it.
+The harness can implement delivery with whatever mechanism is correct for its agent environment. Relay only needs the receipt.
 
-## See Also
+## Emit Events
 
-- [Harness runtime config](/docs/harness-runtime-config) - Exact config shapes
-- [Spawning an agent](/docs/spawning-an-agent) - High-level spawn APIs
-- [Event handlers](/docs/event-handlers) - SDK event subscriptions
-- [Broker HTTP / WS API](/docs/reference-broker-api) - Broker API routes
+`onEvent` connects harness observations to Relay listeners.
+
+```ts
+const unsubscribe = session.onEvent?.((event) => {
+  relay.events.emitSessionEvent(session.identity, event);
+});
+```
+
+Harnesses should normalize provider-specific observations into stable session events. They should redact secrets before emitting terminal output, transcript chunks, tool inputs, or file diffs.
+
+## Actions From Sessions
+
+A session can support action invocation without knowing every action name in advance.
+
+```ts
+capabilities: {
+  actions: { invoke: true },
+}
+```
+
+This means the session can call SDK actions through the Relay action protocol, usually through MCP tools. Individual action availability is governed by the action registry and policy hooks, not by enumerating every action in session capabilities.
+
+A session can also expose actions when it is itself the implementation boundary.
+
+```ts
+capabilities: {
+  actions: { invoke: true, expose: true },
+}
+```
+
+For example, a UI harness might expose `ui.show_search_results`, while a managed runtime harness might expose `agent.create`.
+
+## Release
+
+`release` reverses what `create` did.
+
+```ts
+await session.release('review completed');
+```
+
+Depending on the harness, release may:
+
+- kill a process
+- detach from an existing process
+- close a WebSocket
+- archive a session
+- mark a hosted agent unavailable
+- remove a participant from active delivery
+
+Relay should call the session method and record the lifecycle event. The harness owns the implementation.
+
+## Prebuilt Harnesses
+
+`@agent-relay/harnesses` can provide prebuilt definitions for common environments such as Claude Code, Codex, OpenCode, and OpenClaw.
+
+```ts file="prebuilt.ts"
+import { claude, codex, openclaw } from '@agent-relay/harnesses';
+
+const planner = await claude.create({ name: 'planner', model: 'sonnet' });
+const engineer = await codex.create({ name: 'engineer', model: 'gpt-5.5' });
+const claw = await openclaw.create({ name: 'claw-reviewer' });
+
+await relay.workspace.register([planner, engineer, claw]);
+```
+
+The prebuilt harnesses should feel consistent at the Agent Relay layer even when their underlying provider mechanics are different.
+
+<BannerLink href="/docs/session-capabilities" icon="docs">
+  Continue to session capabilities and the full event list.
+</BannerLink>

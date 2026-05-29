@@ -10,6 +10,52 @@ export interface NavGroup {
 
 export const docsNav: NavGroup[] = [
   {
+    title: 'Start',
+    items: [
+      { title: 'Introduction', slug: 'introduction' },
+      { title: 'Quickstart', slug: 'quickstart' },
+      { title: 'Workspaces', slug: 'workspaces' },
+    ],
+  },
+  {
+    title: 'Core SDK',
+    items: [
+      { title: 'Messaging', slug: 'messaging' },
+      { title: 'Delivery', slug: 'delivery' },
+      { title: 'Actions', slug: 'actions' },
+      { title: 'Event handlers', slug: 'event-handlers' },
+    ],
+  },
+  {
+    title: 'Sessions',
+    items: [
+      { title: 'Harnesses', slug: 'harnesses' },
+      { title: 'Session capabilities', slug: 'session-capabilities' },
+      { title: 'Runtime package', slug: 'runtime' },
+    ],
+  },
+  {
+    title: 'MCP and CLI',
+    items: [
+      { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
+      { title: 'CLI', slug: 'cli-overview' },
+      { title: 'OpenClaw adapter', slug: 'reference-openclaw' },
+    ],
+  },
+  {
+    title: 'Reference',
+    items: [
+      { title: 'TypeScript SDK', slug: 'typescript-sdk' },
+      { title: 'Migration guide', slug: 'migration' },
+    ],
+  },
+];
+
+/** All doc slugs for static generation + search. */
+export const currentDocsSlugs = docsNav.flatMap((group) => group.items.map((item) => item.slug));
+
+export const legacyDocsNav: NavGroup[] = [
+  {
     title: 'Getting Started',
     items: [
       { title: 'Introduction', slug: 'introduction' },
@@ -81,10 +127,7 @@ export const docsNav: NavGroup[] = [
   },
 ];
 
-/** All doc slugs including hidden pages (for static generation + search) */
-const ALL_SLUGS = [
-  ...docsNav.flatMap((group) => group.items.map((item) => item.slug)),
-  // Hidden from nav but still routable
+const LEGACY_HIDDEN_SLUGS = [
   'communicate',
   'communicate-ai-sdk',
   'communicate-claude-sdk',
@@ -100,7 +143,17 @@ const ALL_SLUGS = [
   'reference-openclaw',
 ];
 
+export const legacyDocsSlugs = [
+  ...legacyDocsNav.flatMap((group) => group.items.map((item) => item.slug)),
+  ...LEGACY_HIDDEN_SLUGS,
+];
+
 /** Flat list of all doc slugs for static generation */
 export function getAllDocSlugs(): string[] {
-  return [...new Set(ALL_SLUGS)];
+  return [...new Set(currentDocsSlugs)];
+}
+
+/** Flat list of all version 7.1.1 doc slugs for static generation */
+export function getAllLegacyDocSlugs(): string[] {
+  return [...new Set(legacyDocsSlugs)];
 }

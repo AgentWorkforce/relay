@@ -3,7 +3,7 @@ import { ImageResponse } from 'next/og';
 import { SITE_HOST } from '../lib/site';
 
 export const runtime = 'nodejs';
-export const alt = 'Agent Relay — Slack for agents';
+export const alt = 'Agent Relay — Headless Slack for agents';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
@@ -90,9 +90,9 @@ export default async function OGImage() {
             color: '#EDF4FB',
           }}
         >
-          Slack for
+          Headless Slack
           <br />
-          agents
+          for agents
         </div>
         <div
           style={{
@@ -103,8 +103,7 @@ export default async function OGImage() {
             maxWidth: 420,
           }}
         >
-          Build agents that communicate, coordinate, and take action. Spawn from code and organize them with
-          channels, messages, and reactions.
+          Add channels, DMs, durable delivery, event listeners, and typed actions to any agent runtime.
         </div>
       </div>
 

@@ -1,37 +1,100 @@
 ---
-title: 'CLI Overview'
-description: 'Use the agent-relay CLI to run the broker, manage agents, send messages, and execute workflows.'
+title: 'CLI'
+description: 'Use the CLI for workspace setup, MCP installation, messaging diagnostics, action inspection, and optional managed session commands.'
 ---
 
-The `agent-relay` CLI is the operational layer for local broker management, agent spawning, messaging, workflow execution, and cloud runs.
+The CLI should teach the same product shape as the SDK:
 
-## Install
+- create or connect to a workspace
+- install and run MCP
+- inspect agents, channels, messages, deliveries, and actions
+- send diagnostic messages
+- run optional managed session commands through the runtime/driver group
 
-```bash
-npm install -g agent-relay
-agent-relay --help
-agent-relay --version
-```
+It should not make cloud setup, broker internals, workflows, primitives, or spawn-first orchestration the default story.
 
-## Main command groups
-
-- Broker lifecycle: `up`, `status`, `down`, `update`, `uninstall`, `log path|list|view|rotate|clear`
-- Agent management: `spawn`, `who`, `release`, `set-model`, `agents:logs`, `view`
-- Messaging: `send`, `history`, `replies`, `inbox`
-- Workflows: `run`, `workflows list`
-- Cloud: `cloud login`, `cloud connect`, `cloud run`, `cloud status`, `cloud logs`, `cloud sync`
-- Sandbox entry: `on`, `off`
-
-## Typical local session
+## Workspace Setup
 
 ```bash
-agent-relay up
-agent-relay spawn reviewer claude "Review the latest auth changes"
-agent-relay send reviewer "Start with the middleware and summarize risks."
-agent-relay who
+agent-relay workspace create support-triage
+agent-relay workspace show
+agent-relay workspace env
 ```
 
-## Other useful commands
+The output should give the user a workspace key they can pass to SDK code, MCP, harness adapters, or managed sessions.
 
-- `agent-relay telemetry status` shows whether anonymous telemetry is enabled.
-- `agent-relay telemetry disable` turns telemetry off for the local machine.
+```bash
+export RELAY_WORKSPACE_KEY="relay_ws_..."
+```
+
+## MCP Setup
+
+```bash
+agent-relay mcp install --workspace "$RELAY_WORKSPACE_KEY"
+agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
+agent-relay mcp doctor
+```
+
+The MCP commands should focus on making messaging and registered actions available to agents as tools.
+
+## Messaging Diagnostics
+
+```bash
+agent-relay agents list
+agent-relay channels list
+agent-relay channels join '#reviews' --agent reviewer
+agent-relay messages send '#reviews' 'Reviewer, please check the migration page.'
+agent-relay inbox list --agent reviewer
+agent-relay deliveries list --agent reviewer
+```
+
+These commands are for humans and scripts to inspect the same workspace state exposed by the SDK.
+
+## Action Diagnostics
+
+```bash
+agent-relay actions list
+agent-relay actions describe ui.show_search_results
+agent-relay actions invoke review.submit_vote --json '{"proposalId":"p1","vote":"approve"}'
+```
+
+Action commands should validate input, identify the caller, return structured result envelopes, and emit audit events.
+
+## Optional Managed Sessions
+
+Managed lifecycle belongs under a runtime or driver command group.
+
+```bash
+agent-relay driver create reviewer --harness codex --channel '#reviews' --task 'Review the SDK docs.'
+agent-relay driver status reviewer
+agent-relay driver logs reviewer
+agent-relay driver release reviewer
+```
+
+The command name can remain `driver` if that is the current implementation, but docs should frame it as optional managed session lifecycle. Core Agent Relay is still messaging, delivery, and actions.
+
+## What To Remove From The Core CLI Story
+
+The default docs should not advertise:
+
+- broker lifecycle as a first-class user concept
+- cloud commands as a prerequisite
+- workflow, swarm, consensus, or proactive-agent commands
+- primitive-specific products such as file, auth, or scheduling
+- low-level PTY controls unless the user is in the runtime/driver reference
+- API-key setup for the basic workspace flow
+
+Those surfaces may exist as adapters, compatibility shims, or separate products, but they do not belong in the core Agent Relay docs.
+
+## Useful Doctor Checks
+
+`agent-relay doctor` should answer practical questions:
+
+- Is there a workspace key?
+- Can the CLI connect to the workspace?
+- Can MCP start?
+- Which agents are registered?
+- Are there stuck deliveries?
+- Are action schemas valid?
+- Are runtime harnesses installed when runtime commands are used?
+- Are stale config files still referencing old API-key or broker terminology?

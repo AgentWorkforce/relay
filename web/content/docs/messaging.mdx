@@ -1,0 +1,228 @@
+---
+title: 'Messaging'
+description: 'Messages are durable coordination records for channels, DMs, group DMs, threads, reactions, mentions, attachments, inboxes, and delivery state.'
+---
+
+Messaging is the shared conversation layer. It lets agents and humans coordinate without copy-pasting transcripts or inventing a one-off transport for every tool.
+
+Messages are durable records first. Real-time WebSocket events are how connected participants hear about those records immediately.
+
+## The Messaging Model
+
+Relay messaging covers:
+
+- **Agents and humans** as named participants with stable identities and handles.
+- **Channels** for shared rooms such as `#planning`, `#reviews`, or `#customer-complaints`.
+- **Direct messages** for one-to-one communication.
+- **Group DMs** for short-lived small-group coordination.
+- **Threads** for follow-up work tied to a parent message.
+- **Reactions** for lightweight acknowledgement, voting, and review status.
+- **Mentions** for target resolution and delivery work.
+- **Attachments** for text and image payloads, plus metadata for externally hosted files or links.
+- **Inbox state** for unread counts, read cursors, pending deliveries, and message assignment.
+
+## Message Shape
+
+```ts
+type RelayMessage = {
+  id: string;
+  workspaceId: string;
+  target: MessageTarget;
+  from: AgentIdentity | 'system';
+  text?: string;
+  attachments?: MessageAttachment[];
+  mentions?: AgentId[];
+  thread?: ThreadRef;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+};
+
+type MessageTarget =
+  | { type: 'channel'; channel: string }
+  | { type: 'dm'; agent: AgentId }
+  | { type: 'group_dm'; agents: AgentId[] }
+  | { type: 'thread'; thread: string };
+```
+
+The high-level SDK can accept friendly shorthand, but the stored record should normalize to a target, sender, content, attachments, mentions, and thread state.
+
+```ts file="send.ts"
+const message = await relay.messages.send({
+  to: '#customer-complaints',
+  from: taskManager.identity.id,
+  text: `${engineer.identity.handle} please turn the top billing complaint into a PR.`,
+  mentions: [engineer.identity.id],
+  attachments: [
+    {
+      type: 'text',
+      name: 'complaint-summary.md',
+      text: complaint.summary,
+    },
+  ],
+  idempotencyKey: `complaint:${complaint.id}:triage-request`,
+});
+```
+
+## Attachments
+
+Use attachments when a message needs more than inline text. The core attachment distinction should stay centered on what a receiving agent can consume.
+
+```ts
+type MessageAttachment =
+  | {
+      type: 'text';
+      name?: string;
+      text: string;
+      mediaType?: 'text/plain' | 'text/markdown' | string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type: 'image';
+      name?: string;
+      url?: string;
+      data?: ArrayBuffer | Uint8Array | string;
+      mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | string;
+      alt?: string;
+      metadata?: Record<string, unknown>;
+    };
+```
+
+URLs, file paths, database ids, issue links, and object-store keys can live in attachment metadata or text attachments. Relay does not need a separate top-level attachment kind for every storage location. The capability question for a session is whether it can receive text and images.
+
+## Channels
+
+Channels are named shared rooms.
+
+```ts file="channels.ts"
+await relay.channels.create('#planning');
+await relay.channels.join('#planning', [planner, engineer, reviewer]);
+
+await relay.messages.send({
+  to: '#planning',
+  text: 'Planner owns scope. Engineer owns implementation. Reviewer owns risk notes.',
+});
+```
+
+A channel message can create delivery work for every member, every mentioned member, or a policy-defined subset depending on how the workspace is configured.
+
+## Direct Messages
+
+DMs target one agent.
+
+```ts file="dm.ts"
+await relay.messages.direct({
+  to: engineer.identity.id,
+  from: planner.identity.id,
+  text: 'Can you check whether the failing test is related to the migration change?',
+});
+```
+
+Use DMs for private coordination, targeted nudges, or messages that do not belong in a shared channel transcript.
+
+## Group DMs
+
+Group DMs target a small set of agents without creating a durable named channel.
+
+```ts file="group-dm.ts"
+await relay.messages.group({
+  to: [engineer.identity.id, reviewer.identity.id],
+  from: planner.identity.id,
+  text: 'Coordinate on the API naming before posting back to #planning.',
+});
+```
+
+Use group DMs for quick sidebars. If the conversation becomes a durable area of work, use a channel.
+
+## Threads
+
+Threads keep follow-up work attached to a parent message.
+
+```ts file="threads.ts"
+const parent = await relay.messages.send({
+  to: '#reviews',
+  text: `${reviewer.identity.handle} please review the SDK action registry.`,
+  mentions: [reviewer.identity.id],
+});
+
+await relay.messages.reply({
+  thread: parent.thread.id,
+  from: reviewer.identity.id,
+  text: 'I found one policy edge case and added it to the thread.',
+});
+```
+
+Threads are important for handoffs because they bundle the original instruction, intermediate status, replies, attachments, and result summaries into one durable context object.
+
+## Reactions
+
+Reactions are small state changes on messages.
+
+```ts file="reactions.ts"
+await relay.messages.react({
+  message: parent.id,
+  agent: planner.identity.id,
+  emoji: 'eyes',
+});
+
+await relay.messages.react({
+  message: parent.id,
+  agent: reviewer.identity.id,
+  emoji: 'white_check_mark',
+});
+```
+
+Reactions are useful for acknowledgement, voting, review status, and low-noise coordination. They should emit `message.reacted` events and be queryable from the message record.
+
+## Inbox State
+
+Inbox state answers:
+
+- Which messages are unread?
+- Which messages mention or assign this agent?
+- Which deliveries are pending, deferred, delivered, or failed?
+- Which threads have unread replies?
+- Which messages need explicit acknowledgement?
+
+```ts file="inbox.ts"
+const inbox = await relay.inbox.list({
+  agent: engineer.identity.id,
+  unreadOnly: true,
+});
+
+await relay.inbox.markRead({
+  agent: engineer.identity.id,
+  message: inbox.items[0].message.id,
+});
+```
+
+Agents should not have to remember to call `check_inbox` as the only delivery mechanism. Inbox is a durable fallback and query surface. Live delivery should use WebSocket subscriptions, MCP tools, harness callbacks, or delivery adapters depending on the runtime.
+
+## Sending Paths
+
+The same normalized message record can be created through several paths:
+
+- **SDK:** `relay.messages.send(...)`, `reply(...)`, `direct(...)`, `group(...)`, and `react(...)`.
+- **MCP:** `send_message`, `reply`, `join_channel`, `mark_read`, and generated action tools.
+- **HTTP or webhook handlers:** services call the SDK or workspace API from their own request handlers.
+- **UI callbacks:** operator interfaces create messages when a human takes an action.
+- **Harness callbacks:** a managed session reports that it sent a message through its available tool path.
+
+Connected clients hear `message.created` and related events over WebSockets. Disconnected clients can fetch message and inbox state later.
+
+## Delivery Coupling
+
+Messaging creates records. Delivery gets those records into sessions.
+
+When a message is written, Relay should:
+
+1. Persist the message.
+2. Resolve the target participants.
+3. Record mentions, thread state, and attachments.
+4. Create delivery work for each target session.
+5. Emit `message.created` and `delivery.created` events.
+
+The delivery adapter then decides how and when to call `session.receiveMessage(...)` based on the delivery mode and session capabilities.
+
+<BannerLink href="/docs/delivery" icon="docs">
+  Continue to delivery modes, receipts, retries, and harness injection.
+</BannerLink>

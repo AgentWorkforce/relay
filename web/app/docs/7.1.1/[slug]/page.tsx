@@ -6,22 +6,19 @@ import { Fragment } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import remarkGfm from 'remark-gfm';
 
-import { Card } from '../../../components/docs/Card';
-import { CardGroup } from '../../../components/docs/CardGroup';
-import { BannerLink } from '../../../components/docs/BannerLink';
-import { CodeGroup } from '../../../components/docs/CodeGroup';
-import { DocsPageActions } from '../../../components/docs/DocsPageActions';
-import { HighlightedPre } from '../../../components/docs/HighlightedCode';
-import { LegacySpawnOptionsTable } from '../../../components/docs/LegacySpawnOptionsTable';
-import { Note } from '../../../components/docs/Note';
-import { Warning } from '../../../components/docs/Warning';
-import { TableOfContents } from '../../../components/docs/TableOfContents';
-import styles from '../../../components/docs/docs.module.css';
-import { getDoc } from '../../../lib/docs';
-import { getDocMarkdownUrl } from '../../../lib/docs-markdown';
-import { getAllDocSlugs, getAllLegacyDocSlugs } from '../../../lib/docs-nav';
-import { getDefaultDocsVersionForSlug } from '../../../lib/docs-versions';
-import { absoluteUrl } from '../../../lib/site';
+import { BannerLink } from '../../../../components/docs/BannerLink';
+import { Card } from '../../../../components/docs/Card';
+import { CardGroup } from '../../../../components/docs/CardGroup';
+import { CodeGroup } from '../../../../components/docs/CodeGroup';
+import { HighlightedPre } from '../../../../components/docs/HighlightedCode';
+import { LegacySpawnOptionsTable } from '../../../../components/docs/LegacySpawnOptionsTable';
+import { Note } from '../../../../components/docs/Note';
+import { TableOfContents } from '../../../../components/docs/TableOfContents';
+import { Warning } from '../../../../components/docs/Warning';
+import styles from '../../../../components/docs/docs.module.css';
+import { getDoc } from '../../../../lib/docs';
+import { getAllLegacyDocSlugs } from '../../../../lib/docs-nav';
+import { absoluteUrl } from '../../../../lib/site';
 
 function slugify(text: string): string {
   return text
@@ -45,10 +42,10 @@ function HeadingWithId(level: 2 | 3) {
 }
 
 const components = {
-  CodeGroup,
+  BannerLink,
   Card,
   CardGroup,
-  BannerLink,
+  CodeGroup,
   Note,
   Warning,
   SpawnOptionsTable: LegacySpawnOptionsTable,
@@ -62,37 +59,35 @@ type PageProps = {
 };
 
 export async function generateStaticParams() {
-  return [...new Set([...getAllLegacyDocSlugs(), ...getAllDocSlugs()])].map((slug) => ({ slug }));
+  return getAllLegacyDocSlugs().map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const version = getDefaultDocsVersionForSlug(slug);
-  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
+  const doc = getDoc(slug, 'v7.1.1');
 
   if (!doc) {
     return { title: 'Not Found' };
   }
 
   return {
-    title: doc.frontmatter.title,
+    title: `${doc.frontmatter.title} - Version 7.1.1`,
     description: doc.frontmatter.description,
     alternates: {
-      canonical: absoluteUrl(`/docs/${slug}`),
+      canonical: absoluteUrl(`/docs/7.1.1/${slug}`),
     },
     openGraph: {
-      title: doc.frontmatter.title,
+      title: `${doc.frontmatter.title} - Version 7.1.1`,
       description: doc.frontmatter.description,
-      url: absoluteUrl(`/docs/${slug}`),
+      url: absoluteUrl(`/docs/7.1.1/${slug}`),
       type: 'article',
     },
   };
 }
 
-export default async function DocsPage({ params }: PageProps) {
+export default async function LegacyDocsPage({ params }: PageProps) {
   const { slug } = await params;
-  const version = getDefaultDocsVersionForSlug(slug);
-  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
+  const doc = getDoc(slug, 'v7.1.1');
 
   if (!doc) {
     notFound();
@@ -105,11 +100,6 @@ export default async function DocsPage({ params }: PageProps) {
     remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
 
-  const pageUrl = absoluteUrl(`/docs/${slug}`);
-  const markdownPath = `/docs/markdown/${slug}.md`;
-  const markdownUrl = getDocMarkdownUrl(slug);
-  const showPageActions = version === 'v8';
-
   return (
     <div className={styles.articleWrapper}>
       <article className={styles.article}>
@@ -117,14 +107,6 @@ export default async function DocsPage({ params }: PageProps) {
           <div className={styles.articleHeading}>
             <h1>{doc.frontmatter.title}</h1>
           </div>
-          {showPageActions && (
-            <DocsPageActions
-              title={doc.frontmatter.title}
-              pageUrl={pageUrl}
-              markdownPath={markdownPath}
-              markdownUrl={markdownUrl}
-            />
-          )}
         </div>
         {doc.frontmatter.description && (
           <p className={styles.articleDescription}>{doc.frontmatter.description}</p>

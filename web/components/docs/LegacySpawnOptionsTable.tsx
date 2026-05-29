@@ -1,8 +1,14 @@
-export type SpawnOptionsTableVariant = 'relay-startup' | 'common' | 'advanced';
-export type SpawnOptionsLanguage = 'typescript' | 'python';
+'use client';
+
+import { Fragment } from 'react';
+
+import { useDocsLanguage } from './DocsLanguageContext';
+
+type SpawnOptionsTableVariant = 'relay-startup' | 'common' | 'advanced';
+type SpawnOptionsLanguage = 'typescript' | 'python';
 type SpawnOptionDescription = string | Partial<Record<SpawnOptionsLanguage, string>>;
 
-export type SpawnOptionRow = {
+type SpawnOptionRow = {
   typescript?: string[];
   python?: string[];
   description: SpawnOptionDescription;
@@ -128,7 +134,7 @@ const ADVANCED_ROWS: SpawnOptionRow[] = [
   },
 ];
 
-export function getSpawnOptionRows(variant: SpawnOptionsTableVariant): SpawnOptionRow[] {
+function getRows(variant: SpawnOptionsTableVariant): SpawnOptionRow[] {
   if (variant === 'relay-startup') {
     return RELAY_STARTUP_ROWS;
   }
@@ -136,14 +142,49 @@ export function getSpawnOptionRows(variant: SpawnOptionsTableVariant): SpawnOpti
   return variant === 'advanced' ? ADVANCED_ROWS : COMMON_ROWS;
 }
 
-export function getSpawnOptionName(row: SpawnOptionRow, language: SpawnOptionsLanguage): string[] {
+function getOptionNames(row: SpawnOptionRow, language: SpawnOptionsLanguage): string[] {
   return (language === 'python' ? row.python : row.typescript) ?? [];
 }
 
-export function getSpawnOptionDescription(row: SpawnOptionRow, language: SpawnOptionsLanguage): string {
+function getDescription(row: SpawnOptionRow, language: SpawnOptionsLanguage): string {
   if (typeof row.description === 'string') {
     return row.description;
   }
 
   return row.description[language] ?? row.description.typescript ?? row.description.python ?? '';
+}
+
+export function LegacySpawnOptionsTable({ variant }: { variant: SpawnOptionsTableVariant }) {
+  const { language } = useDocsLanguage();
+  const rows = getRows(variant).filter((row) => getOptionNames(row, language).length > 0);
+
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Option</th>
+          <th>What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const optionNames = getOptionNames(row, language);
+          const description = getDescription(row, language);
+          return (
+            <tr key={`${variant}:${optionNames.join(',')}`}>
+              <td>
+                {optionNames.map((name, index) => (
+                  <Fragment key={name}>
+                    {index > 0 ? ', ' : null}
+                    <code>{name}</code>
+                  </Fragment>
+                ))}
+              </td>
+              <td>{description}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
 }

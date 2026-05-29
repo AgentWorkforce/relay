@@ -4,8 +4,10 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import { encodeCodeFenceMeta } from './code-fence-meta';
 import { resolveContentDir } from './content-paths';
+import type { DocsVersionId } from './docs-versions';
 
 const DOCS_DIR = resolveContentDir('docs');
+const LEGACY_7_1_1_DOCS_DIR = path.join(DOCS_DIR, '7.1.1');
 
 export interface DocFrontmatter {
   title: string;
@@ -134,12 +136,26 @@ function buildSearchSnippet(content: string): string {
   return textLines.join(' ').slice(0, 500);
 }
 
+function getDocsDir(version: DocsVersionId): string {
+  return version === 'v7.1.1' ? LEGACY_7_1_1_DOCS_DIR : DOCS_DIR;
+}
+
+function rewriteLegacyDocsLinks(content: string, basePath: string): string {
+  return content
+    .replace(/\((\/docs\/)(?!7\.1\.1\/|8\.0\.0\/|markdown\/)/g, `(${basePath}/`)
+    .replace(/href="\/docs\/(?!7\.1\.1\/|8\.0\.0\/|markdown\/)/g, `href="${basePath}/`);
+}
+
 /**
  * Load and parse an MDX doc by slug.
  * @param slug - e.g. "quickstart" or "reference/sdk"
  */
-export function getDoc(slug: string): DocContent | null {
-  const filePath = path.join(DOCS_DIR, `${slug}.mdx`);
+export function getDoc(
+  slug: string,
+  version: DocsVersionId = 'v8',
+  options: { linkBasePath?: string } = {}
+): DocContent | null {
+  const filePath = path.join(getDocsDir(version), `${slug}.mdx`);
 
   if (!fs.existsSync(filePath)) {
     return null;
@@ -147,13 +163,15 @@ export function getDoc(slug: string): DocContent | null {
 
   const raw = fs.readFileSync(filePath, 'utf8');
   const { data, content } = matter(raw);
-  const processed = preprocessMdx(content);
+  const legacyLinkBasePath = options.linkBasePath ?? '/docs/7.1.1';
+  const docContent = version === 'v7.1.1' ? rewriteLegacyDocsLinks(content, legacyLinkBasePath) : content;
+  const processed = preprocessMdx(docContent);
 
   // Extract h2 and h3 headings for table of contents
   const toc: TocItem[] = [];
   const headingRegex = /^(#{2,3})\s+(.+)$/gm;
   let match;
-  while ((match = headingRegex.exec(content)) !== null) {
+  while ((match = headingRegex.exec(docContent)) !== null) {
     const text = match[2].replace(/`([^`]+)`/g, '$1').trim();
     const id = text
       .toLowerCase()

@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     template: '%s | Agent Relay',
   },
   description:
-    'Build AI systems where agents communicate, share context, and coordinate work through channels, messages, files, and workflows.',
+    'Add channels, DMs, durable delivery, event listeners, and Zod-typed actions to any agent runtime.',
   keywords: [
     'Agent Relay',
     'multi-agent',
@@ -38,7 +38,9 @@ export const metadata: Metadata = {
     'MCP',
     'AI SDK',
     'agent relay',
-    'slack for agents',
+    'headless slack for agents',
+    'agent actions',
+    'agent delivery',
   ],
   robots: {
     index: true,

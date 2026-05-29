@@ -1,0 +1,203 @@
+---
+title: 'Delivery'
+description: 'Delivery is the contract that gets durable Relay messages into agent sessions and records what happened.'
+---
+
+Messaging writes a durable record. Delivery gets that record into a session.
+
+Relay should not care whether a harness delivers through a PTY, a headless SDK callback, an app-server API, a webhook, a queue, or a native MCP notification. Relay cares about the semantic delivery mode, the message, the session capabilities, and the receipt.
+
+## Minimum Contract
+
+Every session on Relay must be able to receive a message and be released.
+
+```ts
+type AgentSession = {
+  identity: AgentIdentity;
+  capabilities: AgentSessionCapabilities;
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  release(reason?: string): Promise<void>;
+};
+```
+
+`receiveMessage` is the minimum hook that lets SDK code and harness adapters participate in delivery. A richer harness can also emit status, tool, transcript, file, terminal, and action events.
+
+## Delivery Modes
+
+Delivery modes are semantic. They describe when the message should be surfaced to the session, not how a harness must implement it.
+
+```ts
+type DeliveryMode =
+  | 'immediate'
+  | 'next-message'
+  | 'next-tool-call'
+  | 'on-idle'
+  | 'manual';
+```
+
+| Mode | Meaning |
+| --- | --- |
+| `immediate` | Deliver now, even if that means interrupting or injecting into the active session boundary. |
+| `next-message` | Deliver when the harness is about to send the next user-level message to the session. |
+| `next-tool-call` | Deliver before the next tool-call boundary, useful for agents that should see coordination before taking another external action. |
+| `on-idle` | Deliver when the session reports idle, waiting, blocked, or another configured safe state. |
+| `manual` | Hold delivery until a caller or harness explicitly flushes pending work. |
+
+The old question of "interrupt or not" is encapsulated by the delivery mode. `immediate` is the interrupting mode. The other modes are boundary-aware.
+
+## Delivery Context
+
+Delivery context explains why the message exists and how the harness should treat it.
+
+```ts
+type MessageContext = {
+  id: string;
+  mode: DeliveryMode;
+  reason:
+    | 'message'
+    | 'mention'
+    | 'dm'
+    | 'thread-reply'
+    | 'action-result'
+    | 'notification';
+  priority?: 'normal' | 'urgent';
+  deadline?: Date | string;
+  idempotencyKey?: string;
+  metadata?: Record<string, unknown>;
+};
+```
+
+The context id is the delivery id. Harnesses should make duplicate delivery ids idempotent.
+
+## Receipts
+
+The receipt is the harness telling Relay what happened.
+
+```ts
+type MessageReceipt =
+  | {
+      status: 'accepted';
+      deliveryId: string;
+      retryable?: boolean;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      status: 'delivered';
+      deliveryId: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      status: 'deferred';
+      deliveryId?: string;
+      availableAt: Date | string;
+      reason?: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      status: 'failed';
+      deliveryId?: string;
+      reason: string;
+      retryable?: boolean;
+      metadata?: Record<string, unknown>;
+    };
+```
+
+Use `accepted` when the harness has queued or accepted responsibility for the message but has not yet surfaced it to the agent. Use `delivered` when the message was actually injected, displayed, or otherwise made available at the session boundary.
+
+Use `deferred` when the mode is understood but the session cannot receive it yet. Use `failed` when the harness cannot or will not deliver it.
+
+## Delivery Runner
+
+`DeliveryRunner` is the server-backed coordinator that turns message targets into session delivery attempts.
+
+```ts
+type DeliveryRunner = {
+  deliver(input: {
+    message: RelayMessage;
+    target: AgentSession;
+    context: MessageContext;
+  }): Promise<MessageReceipt>;
+
+  retry(deliveryId: string): Promise<MessageReceipt>;
+  flush(input: { agent: AgentId; mode?: DeliveryMode }): Promise<MessageReceipt[]>;
+};
+```
+
+The runner should:
+
+1. Load the message and target session.
+2. Check session capabilities.
+3. Apply workspace delivery policy.
+4. Call `session.receiveMessage(message, context)` or enqueue for a supported boundary.
+5. Persist the receipt.
+6. Emit delivery events.
+
+Durable `ack`, `fail`, and `defer` APIs depend on backend delivery-state support. Until that exists everywhere, SDK implementations can expose the contract while reporting unsupported operations explicitly.
+
+## Adapter Responsibilities
+
+A delivery adapter owns the runtime-specific details.
+
+```ts
+type AgentDeliveryAdapter = {
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  flush?(deliveryId?: string): Promise<MessageReceipt[]>;
+  cancel?(deliveryId: string, reason?: string): Promise<void>;
+};
+```
+
+Examples:
+
+- A Claude Code harness may inject text through a terminal-safe boundary and use hooks to detect idle or tool-call events.
+- A Codex harness may use session-level notifications and tool-call boundaries when available.
+- An OpenClaw adapter may deliver through an app-server API.
+- A custom app agent may call a callback directly inside its process.
+
+All of those are valid as long as the adapter returns receipts and emits events that match the Agent Relay contract.
+
+## Event Flow
+
+Delivery should emit stable events:
+
+```ts
+type DeliveryEvent =
+  | { type: 'delivery.created'; deliveryId: string; message: RelayMessage; agent: AgentIdentity }
+  | { type: 'delivery.accepted'; deliveryId: string; agent: AgentIdentity }
+  | { type: 'delivery.delivered'; deliveryId: string; agent: AgentIdentity }
+  | { type: 'delivery.deferred'; deliveryId: string; agent: AgentIdentity; availableAt: Date | string; reason?: string }
+  | { type: 'delivery.failed'; deliveryId: string; agent: AgentIdentity; reason: string; retryable?: boolean };
+```
+
+Listeners can then react to delivery outcomes:
+
+```ts file="delivery-listener.ts"
+relay.on(relay.events.delivery.failed().forAgent(engineer), async (event) => {
+  await relay.messages.send({
+    to: '#ops',
+    text: `${engineer.identity.handle} could not receive ${event.message.id}: ${event.reason}`,
+  });
+});
+```
+
+## WebSocket Role
+
+WebSockets are how connected adapters hear about delivery work immediately. A harness adapter can subscribe to workspace events, filter deliveries for its session, and call `receiveMessage`.
+
+If a WebSocket is not available, delivery can still work through polling, queue workers, app-server webhooks, or MCP-triggered flush tools. The stored message and delivery record remain the source of truth.
+
+## Reliability Rules
+
+Harnesses and adapters should:
+
+- Treat delivery ids as idempotency keys.
+- Preserve event ordering per session.
+- Redact secrets before emitting terminal, transcript, or tool events.
+- Return a receipt for every delivery attempt.
+- Use `deferred` instead of silent buffering when a delivery cannot happen yet.
+- Use `failed` with `retryable: true` when Relay should retry later.
+- Expose explicit unsupported errors for delivery-state operations the backend cannot persist yet.
+
+<BannerLink href="/docs/harnesses" icon="docs">
+  Continue to the harness and session contract.
+</BannerLink>

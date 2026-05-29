@@ -33,7 +33,9 @@ import { PiBroadcastFill, PiLockKeyDuotone } from 'react-icons/pi';
 import { RiLayout5Line } from 'react-icons/ri';
 import { SiClaude, SiPython, SiTypescript } from 'react-icons/si';
 
-import { docsNav } from '../../lib/docs-nav';
+import { docsNav, legacyDocsNav } from '../../lib/docs-nav';
+import { getDocsVersionForPath, legacyDocsBasePath, v8DocsBasePath } from '../../lib/docs-versions';
+import { DocsVersionSelect } from './DocsVersionSelect';
 import styles from './docs.module.css';
 
 type NavIcon = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
@@ -41,6 +43,10 @@ type NavIcon = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'tr
 const navIcons: Record<string, NavIcon> = {
   introduction: Compass,
   quickstart: Rocket,
+  workspaces: Users,
+  messaging: Send,
+  delivery: Network,
+  actions: Zap,
   'spawning-an-agent': Bot,
   'sending-messages': Send,
   'event-handlers': Activity,
@@ -55,6 +61,9 @@ const navIcons: Record<string, NavIcon> = {
   cloud: Cloud,
   workforce: Users,
   'proactive-agents': Zap,
+  harnesses: Bot,
+  'session-capabilities': Shield,
+  runtime: Power,
   'agent-relay-mcp': Plug,
   'relay-dashboard': RiLayout5Line,
   observer: PiBroadcastFill,
@@ -66,18 +75,24 @@ const navIcons: Record<string, NavIcon> = {
   'cli-on-the-relay': Plug,
   'reference-cli': BookOpen,
   'reference-broker-api': Network,
+  'reference-openclaw': Bot,
   'typescript-sdk': SiTypescript,
-  'react-sdk': FaReact,
   'python-sdk': SiPython,
+  'react-sdk': FaReact,
   'swift-sdk': GrSwift,
   'plugin-claude-code': SiClaude,
   'typescript-examples': PlayCircle,
+  migration: BookOpen,
 };
 
 export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobileMenu' } = {}) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement | null>(null);
   const isSidebar = variant === 'sidebar';
+  const docsVersion = getDocsVersionForPath(pathname ?? '/docs');
+  const navGroups = docsVersion === 'v7.1.1' ? legacyDocsNav : docsNav;
+  const docsBasePath =
+    docsVersion === 'v8' ? v8DocsBasePath : (pathname ?? '').startsWith(legacyDocsBasePath) ? legacyDocsBasePath : '/docs';
 
   useEffect(() => {
     if (!isSidebar) return;
@@ -126,14 +141,18 @@ export function DocsNav({ variant = 'sidebar' }: { variant?: 'sidebar' | 'mobile
       className={`${styles.sidebar} ${!isSidebar ? styles.mobileSidebar : ''}`}
       aria-label="Documentation"
     >
-      {docsNav.map((group) => (
+      {!isSidebar && <DocsVersionSelect />}
+      {navGroups.map((group) => (
         <div key={group.title} className={styles.navGroup}>
           <h4 className={styles.navGroupTitle}>{group.title}</h4>
           <ul className={styles.navList}>
             {group.items.map((item) => {
-              const href = `/docs/${item.slug}`;
-              const isActive = pathname === href || (item.slug === 'introduction' && pathname === '/docs');
-              const Icon = navIcons[item.slug];
+              const href = `${docsBasePath}/${item.slug}`;
+              const isActive =
+                pathname === href ||
+                (item.slug === 'introduction' &&
+                  (pathname === '/docs' || pathname === legacyDocsBasePath || pathname === v8DocsBasePath));
+              const Icon = navIcons[item.slug] ?? BookOpen;
               return (
                 <li key={item.slug}>
                   <Link href={href} className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}>

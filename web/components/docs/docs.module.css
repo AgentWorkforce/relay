@@ -77,6 +77,12 @@
   opacity: 0.9;
 }
 
+.mobileSidebar .versionControl {
+  margin: 0.45rem 0 0.95rem;
+  padding: 0.95rem 0.9rem 0;
+  border-top: 1px solid var(--nav-border);
+}
+
 .sidebarLogo {
   display: none;
 }
@@ -202,6 +208,63 @@
 .tocActive {
   color: var(--primary);
   border-left-color: var(--primary);
+}
+
+.versionControl {
+  margin: 0 0 1.25rem;
+}
+
+.versionLabel {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 0 0 8px;
+}
+
+.versionSelectWrap {
+  position: relative;
+  display: block;
+}
+
+.versionSelect {
+  width: 100%;
+  height: 2rem;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.35rem 1.7rem 0.35rem 0.65rem;
+  cursor: pointer;
+}
+
+.versionSelect:hover {
+  color: var(--fg-muted);
+}
+
+.versionSelect:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.versionChevron {
+  position: absolute;
+  top: 50%;
+  right: 0.65rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  color: var(--fg-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .navGroup {
