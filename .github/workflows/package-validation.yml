@@ -156,7 +156,6 @@ jobs:
             const packages = [
               '@agent-relay/sdk',
               '@agent-relay/config',
-              '@agent-relay/hooks',
               '@agent-relay/utils',
             ];
 
