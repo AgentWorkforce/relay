@@ -8,9 +8,7 @@
       "@agent-relay/config": ["../config/dist/index.d.ts"],
       "@agent-relay/config/*": ["../config/dist/*"],
       "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["../cloud/dist/*"],
-      "@agent-relay/github-primitive": ["../github-primitive/dist/index.d.ts"],
-      "@agent-relay/slack-primitive": ["../slack-primitive/dist/index.d.ts"]
+      "@agent-relay/cloud/*": ["../cloud/dist/*"]
     },
     "strict": true,
     "declaration": true,

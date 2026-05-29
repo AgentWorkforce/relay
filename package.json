@@ -9,17 +9,14 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm --prefix packages/github-primitive run build && npm --prefix packages/slack-primitive run build && npm --prefix packages/cloud run build && npm run build:utils && npm run build:trajectory && npm run build:policy && npm run build:sdk && npm run build:hooks && npm run build:memory && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:config && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:telemetry && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && turbo run build --filter='./packages/*'",
     "build:packages": "turbo run build --filter='./packages/*'",
     "build:packages:watch": "turbo run build --filter='./packages/*' --watch",
     "build:cli": "npm --prefix packages/cli run build",
     "build:policy": "npm --prefix packages/policy run build",
-    "build:memory": "npm --prefix packages/memory run build",
     "build:utils": "npm --prefix packages/utils run build",
     "build:config": "npm --prefix packages/config run build",
-    "build:trajectory": "npm --prefix packages/trajectory run build",
-    "build:hooks": "npm --prefix packages/hooks run build",
     "build:sdk": "npm --prefix packages/sdk run build",
     "build:telemetry": "npm --prefix packages/telemetry run build",
     "dev:watch": "cd packages/cli && npx tsc -w",
@@ -53,11 +50,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "todo:scan": "bash scripts/todo-scan.sh",
-    "codegen:models": "node packages/shared/codegen-ts.mjs && node packages/shared/codegen-py.mjs",
+    "codegen:models": "node packages/utils/codegen-ts.mjs && node packages/utils/codegen-py.mjs",
     "check:cli-versions": "node scripts/check-cli-versions.mjs",
     "update:cli-versions": "node scripts/check-cli-versions.mjs --update && npm run codegen:models",
-    "codegen:models:ts": "node packages/shared/codegen-ts.mjs",
-    "codegen:models:py": "node packages/shared/codegen-py.mjs",
+    "codegen:models:ts": "node packages/utils/codegen-ts.mjs",
+    "codegen:models:py": "node packages/utils/codegen-py.mjs",
     "dev:web": "cd web && ../node_modules/.bin/sst dev",
     "web": "cd web && npm run dev"
   },
@@ -90,7 +87,8 @@
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "zod": "^3.25.76"
   },
   "engines": {
     "node": ">=18.0.0"

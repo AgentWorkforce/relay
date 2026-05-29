@@ -80,10 +80,9 @@ jobs:
         id: cache-modules
         uses: actions/cache/restore@v4
         with:
-          # Include nested workspace node_modules so unhoisted deps
-          # (e.g. @slack/web-api under packages/slack-primitive) survive
-          # a cache hit — otherwise the cache restores only the root tree
-          # and skipping `npm ci` leaves the bundler unable to resolve
+          # Include nested workspace node_modules so unhoisted workspace deps
+          # survive a cache hit — otherwise the cache restores only the root
+          # tree and skipping `npm ci` can leave the bundler unable to resolve
           # them.
           path: |
             node_modules
@@ -156,7 +155,6 @@ jobs:
             const packages = [
               '@agent-relay/sdk',
               '@agent-relay/config',
-              '@agent-relay/hooks',
               '@agent-relay/utils',
             ];
 
@@ -259,8 +257,13 @@ jobs:
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
-      - name: Build full workspace
-        run: npm run build
+      - name: Build Rust broker
+        run: npm run build:rust
+
+      - name: Build TypeScript packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run clean && ./node_modules/.bin/turbo run build --filter='./packages/*' --concurrency=2
 
   standalone-macos-smoke:
     name: Standalone macOS Smoke

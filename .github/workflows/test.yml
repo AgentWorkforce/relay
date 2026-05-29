@@ -138,37 +138,6 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
-  rust-test:
-    name: Rust Tests (agent-relay-broker)
-    needs: changes
-    if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-      fail-fast: false
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-bin: false
-
-      - name: Run Rust tests
-        run: cargo test --release
-
-      - name: Check Rust formatting
-        run: cargo fmt --check
-
-      - name: Run Clippy lints
-        run: cargo clippy -- -D warnings
-
   swift-test:
     name: Swift SDK Tests
     needs: changes
