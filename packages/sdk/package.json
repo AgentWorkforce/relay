@@ -102,16 +102,6 @@
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
     },
-    "./github": {
-      "types": "./dist/github.d.ts",
-      "import": "./dist/github.js",
-      "default": "./dist/github.js"
-    },
-    "./slack": {
-      "types": "./dist/slack.d.ts",
-      "import": "./dist/slack.js",
-      "default": "./dist/slack.js"
-    }
   },
   "files": [
     "dist",
@@ -125,7 +115,7 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../github-primitive run build && npm --prefix ../slack-primitive run build && npm --prefix ../config run build && npm --prefix ../cloud run build",
+    "prebuild": "npm --prefix ../config run build && npm --prefix ../cloud run build",
     "build": "node -e \"const fs=require('fs');for(const f of ['dist/personas.js','dist/personas.js.map','dist/personas.d.ts','dist/personas.d.ts.map'])fs.rmSync(f,{force:true})\" && npx tsc -p tsconfig.build.json",
     "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
     "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
@@ -146,8 +136,6 @@
   "dependencies": {
     "@agent-relay/cloud": "7.1.1",
     "@agent-relay/config": "7.1.1",
-    "@agent-relay/github-primitive": "7.1.1",
-    "@agent-relay/slack-primitive": "7.1.1",
     "@relaycast/sdk": "^1.1.0",
     "@relayfile/sdk": ">=0.1.2 <1",
     "@sinclair/typebox": "^0.34.48",
@@ -169,7 +157,6 @@
     "@agent-relay/broker-win32-x64": "7.1.1"
   },
   "peerDependencies": {
-    "@agent-relay/credential-proxy": "7.1.1",
     "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
     "@google/adk": ">=0.5.0",
     "@langchain/langgraph": ">=1.2.0",
@@ -179,9 +166,6 @@
     "crewai": ">=1.0.0"
   },
   "peerDependenciesMeta": {
-    "@agent-relay/credential-proxy": {
-      "optional": true
-    },
     "@anthropic-ai/claude-agent-sdk": {
       "optional": true
     },

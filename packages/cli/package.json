@@ -51,11 +51,8 @@
   "dependencies": {
     "@agent-relay/cloud": "7.1.1",
     "@agent-relay/config": "7.1.1",
-    "@agent-relay/hooks": "7.1.1",
-    "@agent-relay/memory": "7.1.1",
     "@agent-relay/sdk": "7.1.1",
     "@agent-relay/telemetry": "7.1.1",
-    "@agent-relay/trajectory": "7.1.1",
     "@agent-relay/utils": "7.1.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relayauth/core": "^0.1.2",
