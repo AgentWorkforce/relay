@@ -343,9 +343,7 @@ export async function runUninstallCommand(
       }
     }
   } else {
-    deps.log(
-      '[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server'
-    );
+    deps.log('[dry-run] Would run: npm uninstall -g agent-relay @agent-relay/dashboard-server');
   }
 
   // --- Snippet cleanup (CLAUDE.md, GEMINI.md, AGENTS.md) ---
