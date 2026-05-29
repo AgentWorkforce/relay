@@ -154,6 +154,71 @@
   padding-top: 4px;
 }
 
+.installCommand {
+  width: min(100%, 480px);
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.72rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--line));
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--bg-elevated) 86%, var(--primary) 14%);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    transform 0.15s;
+}
+
+.installCommand:hover {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--line));
+  transform: translateY(-1px);
+}
+
+.installCommand:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, white 20%);
+  outline-offset: 3px;
+}
+
+.installPrompt {
+  color: var(--fg-faint);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.installCommand code {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.installCopy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.installCopy svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
 .ctaPrimary {
   display: inline-flex;
   align-items: center;
@@ -161,23 +226,25 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   padding: 12px 28px;
-  background: var(--btn-bg);
+  background: #2d6a9c;
   color: var(--primary-fg);
-  border: none;
+  border: 1.5px solid #234969;
   border-radius: 100px;
   text-decoration: none;
   transition:
     background 0.2s,
+    border-color 0.2s,
     transform 0.15s,
     box-shadow 0.2s;
   cursor: pointer;
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
+  box-shadow: none;
 }
 
 .ctaPrimary:hover {
-  background: var(--btn-hover);
+  background: #4a90c2;
+  border-color: #234969;
   transform: translateY(-1px);
-  box-shadow: 0 4px 20px color-mix(in srgb, var(--btn-bg) 35%, transparent);
+  box-shadow: none;
 }
 
 .ctaSecondary {
@@ -206,6 +273,265 @@
   transform: translateY(-1px);
 }
 
+.installSection {
+  display: flex;
+  justify-content: center;
+  padding: 44px 40px 72px;
+  background: var(--surface);
+  border-block: 1px solid var(--line);
+  position: relative;
+  z-index: 3;
+}
+
+.installInner {
+  width: min(100%, 960px);
+  display: grid;
+  gap: 18px;
+}
+
+.installHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.installHeaderText {
+  flex: 1 1 auto;
+  max-width: 560px;
+  display: grid;
+  gap: 8px;
+}
+
+.installTitle {
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(1.3rem, 2vw, 1.7rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: var(--fg);
+  margin: 0;
+}
+
+.installSubtitle {
+  max-width: 60ch;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.installAgentLogos {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 0;
+  padding-right: 22px;
+}
+
+.installAgentLogo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  margin-right: -14px;
+  color: var(--fg);
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.28));
+  transition:
+    color 0.2s,
+    filter 0.2s,
+    margin-right 0.2s,
+    transform 0.2s;
+}
+
+.installAgentLogos:hover .installAgentLogo {
+  margin-right: 10px;
+}
+
+.installAgentTooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: max-content;
+  max-width: 290px;
+  padding: 0.58rem 0.72rem;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 94%, var(--primary) 6%);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+  color: var(--fg);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity 0.16s,
+    transform 0.16s;
+  z-index: 4;
+}
+
+.installAgentLogos:hover .installAgentTooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.installAgentLogo:hover {
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.34));
+  transform: translateY(-3px);
+}
+
+.installAgentLogoIcon {
+  width: 2rem;
+  height: 2rem;
+  color: currentColor;
+  flex-shrink: 0;
+}
+
+.installActions {
+  display: grid;
+  grid-template-columns: minmax(280px, 480px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.agentPromptCopy {
+  position: relative;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0.72rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s;
+}
+
+.agentPromptCopy:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  transform: translateY(-1px);
+}
+
+.agentPromptCopy:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, white 20%);
+  outline-offset: 3px;
+}
+
+.agentPromptText {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding-left: 14px;
+}
+
+.agentPromptText::before {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 52%, var(--line));
+  content: '';
+}
+
+.agentPromptPreview {
+  display: block;
+  max-width: 42ch;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentPromptHover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% - 1px);
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(440px, calc(100vh - 160px));
+  overflow: auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, var(--primary) 4%);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+  color: var(--fg);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition:
+    opacity 0.16s,
+    transform 0.16s;
+  z-index: 8;
+}
+
+.agentPromptCopy:hover .agentPromptHover,
+.agentPromptCopy:focus-visible .agentPromptHover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.agentPromptHoverTitle {
+  position: sticky;
+  top: 0;
+  display: block;
+  padding: 0.72rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-elevated) 96%, var(--primary) 4%);
+  color: var(--primary);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.agentPromptHoverBody {
+  display: block;
+  padding: 0.85rem;
+  color: var(--fg-muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.agentPromptCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--primary);
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agentPromptCta svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
 /* ---- FEATURES SECTION ---- */
 
 .featuresWrapper {
@@ -217,9 +543,9 @@
 
 .featuresHeader {
   text-align: center;
-  max-width: 1280px;
+  max-width: 760px;
   margin: 0 auto;
-  padding: 64px 40px 48px;
+  padding: 112px 40px 84px;
 }
 
 .featuresTitle {
@@ -236,7 +562,7 @@
   font-size: 1.05rem;
   line-height: 1.6;
   color: var(--fg-muted);
-  margin: 0;
+  margin: 0 auto;
 }
 
 .featuresSection {
@@ -245,13 +571,24 @@
   gap: 28px;
   max-width: 1280px;
   margin: 0 auto;
-  padding: 0 40px 80px;
-  margin-top: -20px;
+  padding: 0 40px 156px;
 }
 
 .featureCol {
   display: flex;
   flex-direction: column;
+}
+
+.messagingFeature {
+  order: 1;
+}
+
+.deliveryFeature {
+  order: 2;
+}
+
+.flowFeature {
+  order: 3;
 }
 
 .featurePreview {
@@ -348,6 +685,18 @@
   box-shadow: -4px -4px 24px color-mix(in srgb, black 20%, transparent);
 }
 
+.flowFeature .previewTerminal {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  bottom: 14px;
+  left: 0;
+  height: auto;
+  margin: 0;
+  border-radius: 0 0 10px 0;
+  box-shadow: 4px -4px 24px color-mix(in srgb, black 20%, transparent);
+}
+
 .previewTitleBar {
   display: flex;
   align-items: center;
@@ -388,6 +737,12 @@
   white-space: pre;
 }
 
+.flowPreviewCode {
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  line-height: 1.52;
+}
+
 /* Terminal syntax colors */
 .codeKeyword {
   color: var(--terminal-keyword);
@@ -422,18 +777,28 @@
 
 /* Preview: Chat */
 .previewChat {
-  height: 100%;
+  position: absolute;
+  top: 14px;
+  right: 0;
+  bottom: 0;
+  left: 34px;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 12px;
+  padding: 12px;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px 0 12px 0;
+  background: color-mix(in srgb, var(--surface) 94%, white 6%);
+  box-shadow: -10px 10px 28px color-mix(in srgb, var(--fg) 14%, transparent);
+  overflow: hidden;
 }
 
 .chatMsg {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: 10px;
   background: var(--card-bg);
   border: 1px solid var(--line);
@@ -458,14 +823,14 @@
 }
 
 .chatText {
-  font-size: 0.75rem;
-  line-height: 1.5;
+  font-size: 0.7rem;
+  line-height: 1.42;
   color: var(--fg-muted);
 }
 
 .chatInput {
   margin-top: auto;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: var(--card-bg);
@@ -499,13 +864,36 @@
   background-size: cover;
 }
 
+.previewAccentBlue {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, #2d6a9c 0%, #4a90c2 48%, #7eb8da 100%);
+  z-index: 0;
+}
+
+.previewAccentBlue::before {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 50% 70% at 18% 26%, rgba(255, 255, 255, 0.16) 0%, transparent 70%),
+    radial-gradient(ellipse 42% 50% at 82% 76%, rgba(255, 255, 255, 0.12) 0%, transparent 66%);
+  content: '';
+}
+
+.previewAccentBlue::after {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 320'%3E%3Cpath d='M-20,70 Q110,20 250,110 T500,80' fill='none' stroke='rgba(255,255,255,0.24)' stroke-width='2'/%3E%3Cpath d='M-20,130 Q120,70 280,160 T520,130' fill='none' stroke='rgba(255,255,255,0.16)' stroke-width='1.5'/%3E%3Cpath d='M-20,210 Q80,160 220,235 T500,210' fill='none' stroke='rgba(255,255,255,0.12)' stroke-width='1.25'/%3E%3C/svg%3E");
+  background-size: cover;
+  content: '';
+}
+
 /* Preview: Dashboard */
 .previewDashboard {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 14px;
-  bottom: 14px;
+  inset: 0;
+  width: auto;
+  height: auto;
   z-index: 1;
   display: flex;
   flex-direction: column;
@@ -514,6 +902,7 @@
   background: var(--surface);
   border-radius: 10px 10px 10px 10px;
   box-shadow: 4px 4px 24px color-mix(in srgb, var(--fg) 15%, transparent);
+  transform: none;
   overflow: hidden;
 }
 
@@ -570,9 +959,13 @@
 }
 
 @media (max-width: 960px) {
+  .featuresHeader {
+    padding-top: 96px;
+  }
+
   .featuresSection {
     grid-template-columns: 1fr;
-    padding: 40px 24px 60px;
+    padding: 48px 24px 96px;
     gap: 40px;
   }
 
@@ -1277,6 +1670,39 @@
     padding: 18px 20px;
     min-width: 80px;
   }
+
+  .installSection {
+    padding: 36px 32px 56px;
+  }
+
+  .installHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .installAgentLogos {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    max-width: none;
+    padding-right: 0;
+    gap: 8px;
+  }
+
+  .installAgentLogo,
+  .installAgentLogos:hover .installAgentLogo {
+    margin-right: 0;
+  }
+
+  .installActions {
+    grid-template-columns: 1fr;
+  }
+
+  .installCommand,
+  .agentPromptCopy {
+    width: 100%;
+    max-width: none;
+  }
 }
 
 @media (max-width: 600px) {
@@ -1314,5 +1740,24 @@
 
   .heroRight {
     min-height: 300px;
+  }
+
+  .installSection {
+    padding: 32px 28px 52px;
+  }
+
+  .installAgentLogo {
+    width: 38px;
+    height: 38px;
+  }
+
+  .installAgentLogoIcon {
+    width: 1.7rem;
+    height: 1.7rem;
+  }
+
+  .agentPromptCopy {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
