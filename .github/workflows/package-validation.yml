@@ -259,6 +259,8 @@ jobs:
         run: npm install --no-save rollup || true
 
       - name: Build full workspace
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
 
   standalone-macos-smoke:
