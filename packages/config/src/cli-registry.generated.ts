@@ -1,6 +1,6 @@
 /**
  * CLI Registry - AUTO-GENERATED FILE - DO NOT EDIT
- * Generated from packages/shared/cli-registry.yaml
+ * Generated from packages/utils/cli-registry.yaml
  * Run: npm run codegen:models
  *
  * This is the single source of truth for CLI tools, versions, and models.
@@ -9,7 +9,7 @@
 
 /**
  * CLI tool versions.
- * Update packages/shared/cli-registry.yaml to change versions.
+ * Update packages/utils/cli-registry.yaml to change versions.
  */
 export const CLIVersions = {
   /** Claude Code v2.1.72 */

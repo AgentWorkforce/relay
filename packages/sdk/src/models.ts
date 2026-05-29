@@ -2,7 +2,7 @@
  * Model and CLI Constants
  *
  * Re-exports from @agent-relay/config package.
- * Source of truth: packages/shared/cli-registry.yaml
+ * Source of truth: packages/utils/cli-registry.yaml
  * Run `npm run codegen:models` after editing the YAML.
  */
 

@@ -84,7 +84,7 @@ jobs:
       # with exponential backoff so the first run after publish doesn't miss.
       # The SDK pins internal runtime deps to the exact same release version;
       # wait for those too so npm/Bun installs cannot resolve a half-published
-      # SDK that later fails at runtime inside @agent-relay/sdk/workflows.
+      # SDK that later fails at runtime.
       #
       # The matching broker package is included because npm silently skips
       # optionalDependencies that 404 — if the broker tarball hasn't reached
@@ -107,9 +107,7 @@ jobs:
           PACKAGES=(
             "$SPEC"
             "@agent-relay/config@$VERSION"
-            "@agent-relay/github-primitive@$VERSION"
-            "@agent-relay/slack-primitive@$VERSION"
-            "@agent-relay/workflow-types@$VERSION"
+            "@agent-relay/cloud@$VERSION"
             "${EXPECTED_BROKER}@$VERSION"
           )
 
@@ -165,17 +163,17 @@ jobs:
           echo "=== installed @agent-relay/ packages ==="
           ls node_modules/@agent-relay/
 
-      - name: Verify workflow module imports
+      - name: Verify SDK public entrypoint imports
         shell: bash
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            const workflows = await import('@agent-relay/sdk/workflows');
-            if (!workflows.WorkflowRunner || !workflows.workflow) {
-              console.error('FAIL: @agent-relay/sdk/workflows missing expected exports');
+            const sdk = await import('@agent-relay/sdk');
+            if (!sdk.AgentRelayClient) {
+              console.error('FAIL: @agent-relay/sdk missing AgentRelayClient export');
               process.exit(1);
             }
-            console.log('OK: @agent-relay/sdk/workflows imports with workflow-types installed');
+            console.log('OK: @agent-relay/sdk public entrypoint imports');
           "
 
       - name: Verify only the matching broker package was installed

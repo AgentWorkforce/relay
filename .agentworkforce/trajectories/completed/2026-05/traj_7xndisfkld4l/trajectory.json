@@ -1,0 +1,53 @@
+{
+  "id": "traj_7xndisfkld4l",
+  "version": 1,
+  "task": {
+    "title": "Clean stale CI references after package removals"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-29T11:04:57.643Z",
+  "completedAt": "2026-05-29T11:12:22.313Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-29T11:08:20.355Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vsiadmtvqn42",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-29T11:08:20.355Z",
+      "endedAt": "2026-05-29T11:12:22.313Z",
+      "events": [
+        {
+          "ts": 1780052900356,
+          "type": "decision",
+          "content": "Centralized Rust CI coverage in rust-ci.yml: Centralized Rust CI coverage in rust-ci.yml",
+          "raw": {
+            "question": "Centralized Rust CI coverage in rust-ci.yml",
+            "chosen": "Centralized Rust CI coverage in rust-ci.yml",
+            "alternatives": [],
+            "reasoning": "Subagent audit found test.yml release Rust tests and macOS clippy were not fully redundant; moved release tests and macOS clippy coverage into rust-ci.yml before removing the duplicate Rust job from test.yml."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Cleaned stale CI references after removing packages, moved remaining Rust release and macOS clippy coverage into rust-ci.yml, and removed duplicate Rust job from test.yml.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay/.claude/worktrees/remove-migrated-packages",
+  "tags": [],
+  "_trace": {
+    "startRef": "9221fabe063210333385a5e50c19abe4c77b8310",
+    "endRef": "9221fabe063210333385a5e50c19abe4c77b8310"
+  }
+}

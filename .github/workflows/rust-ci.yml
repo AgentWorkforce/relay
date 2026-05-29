@@ -62,7 +62,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
-      - run: cargo test
+      - name: Run Rust tests
+        run: cargo test
+      - name: Run Rust tests (release)
+        run: cargo test --release
 
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
@@ -99,10 +102,14 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 
   rust-clippy:
-    name: Clippy
+    name: Clippy (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.web_only != 'true' && needs.changes.outputs.sdk_swift_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

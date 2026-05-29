@@ -3,13 +3,13 @@ name: Codegen Models
 on:
   push:
     paths:
-      - 'packages/shared/cli-registry.yaml'
+      - 'packages/utils/cli-registry.yaml'
     branches:
       - main
       - 'feature/**'
   pull_request:
     paths:
-      - 'packages/shared/cli-registry.yaml'
+      - 'packages/utils/cli-registry.yaml'
 
 jobs:
   codegen:

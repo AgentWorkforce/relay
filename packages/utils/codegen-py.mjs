@@ -33,7 +33,7 @@ function toSnakeCase(str) {
 
 let output = `"""
 AUTO-GENERATED FILE - DO NOT EDIT
-Generated from packages/shared/cli-registry.yaml
+Generated from packages/utils/cli-registry.yaml
 Run: npm run codegen:models
 """
 
@@ -44,7 +44,7 @@ from typing import Final, TypedDict, List
 
 // Generate CLI versions
 output += `class CLIVersions:
-    """CLI tool versions. Update packages/shared/cli-registry.yaml to change versions."""
+    """CLI tool versions. Update packages/utils/cli-registry.yaml to change versions."""
 `;
 for (const [cli, config] of Object.entries(registry.clis)) {
   output += `    ${toSnakeCase(cli)}: Final[str] = "${config.version}"  # ${config.name}\n`;
