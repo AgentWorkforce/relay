@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -142,7 +143,7 @@ function redirectToHostedCliAuthPage(
 }
 
 async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
-  const state = crypto.randomUUID();
+  const state = randomUUID();
 
   return new Promise<StoredAuth>((resolve, reject) => {
     let settled = false;
