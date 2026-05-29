@@ -87,7 +87,8 @@
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "zod": "^3.25.76"
   },
   "engines": {
     "node": ">=18.0.0"
