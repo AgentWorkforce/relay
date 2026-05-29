@@ -168,7 +168,8 @@ export default function HomePage() {
               </div>
 
               <p className={s.installSubtitle}>
-                  Human or agent, sometimes it's just easier to start building with stuff to figure out if it's useful. Fortunately, we've made that really easy for both.
+                Human or agent, sometimes it's just easier to start building with stuff to figure out if it's
+                useful. Fortunately, we've made that really easy for both.
               </p>
             </div>
           </div>
