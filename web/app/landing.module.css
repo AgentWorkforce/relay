@@ -155,11 +155,11 @@
 }
 
 .installCommand {
-  width: min(100%, 480px);
+  width: 100%;
   min-height: 64px;
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 14px;
   padding: 0.72rem 0.9rem;
   border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--line));
   border-radius: 0.75rem;
@@ -276,7 +276,7 @@
 .installSection {
   display: flex;
   justify-content: center;
-  padding: 44px 40px 72px;
+  padding: 44px 0 72px;
   background: var(--surface);
   border-block: 1px solid var(--line);
   position: relative;
@@ -284,23 +284,31 @@
 }
 
 .installInner {
-  width: min(100%, 960px);
+  width: 100%;
+  max-width: 760px;
   display: grid;
-  gap: 18px;
+  gap: 30px;
+  padding: 0 40px;
 }
 
 .installHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
+  display: block;
 }
 
 .installHeaderText {
-  flex: 1 1 auto;
-  max-width: 560px;
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
   display: grid;
   gap: 8px;
+}
+
+.installTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 42px;
 }
 
 .installTitle {
@@ -328,7 +336,9 @@
   flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 0;
-  padding-right: 22px;
+  width: 260px;
+  height: 42px;
+  padding-right: 0;
 }
 
 .installAgentLogo {
@@ -353,7 +363,8 @@
 
 .installAgentTooltip {
   position: absolute;
-  top: calc(100% + 10px);
+  top: auto;
+  bottom: calc(100% + 10px);
   right: 0;
   width: max-content;
   max-width: 290px;
@@ -368,7 +379,7 @@
   line-height: 1.35;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-4px);
+  transform: translateY(4px);
   transition:
     opacity 0.16s,
     transform 0.16s;
@@ -394,9 +405,12 @@
 
 .installActions {
   display: grid;
-  grid-template-columns: minmax(280px, 480px) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   align-items: stretch;
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
 }
 
 .agentPromptCopy {
@@ -1719,7 +1733,11 @@
   }
 
   .installSection {
-    padding: 36px 32px 56px;
+    padding: 36px 0 56px;
+  }
+
+  .installInner {
+    padding: 0 32px;
   }
 
   .installHeader {
@@ -1790,7 +1808,21 @@
   }
 
   .installSection {
-    padding: 32px 28px 52px;
+    padding: 32px 0 52px;
+  }
+
+  .installInner {
+    padding: 0 28px;
+  }
+
+  .installTitleRow {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .installAgentLogos {
+    width: 100%;
   }
 
   .installAgentLogo {

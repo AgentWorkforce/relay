@@ -143,7 +143,7 @@ export function AgentSetupPrompt() {
           ) : (
             <>
               <Copy aria-hidden="true" />
-              Copy prompt
+              Copy
             </>
           )}
         </span>

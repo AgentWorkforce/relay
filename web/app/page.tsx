@@ -141,32 +141,35 @@ export default function HomePage() {
         <div className={s.installInner}>
           <div className={s.installHeader}>
             <div className={s.installHeaderText}>
-              <h2 id="install-title" className={s.installTitle}>
-                Get started right away
-              </h2>
-              <p className={s.installSubtitle}>
-                Install the SDK, then connect messaging, delivery, and actions in your own agent harness.
-              </p>
-            </div>
+              <div className={s.installTitleRow}>
+                <h2 id="install-title" className={s.installTitle}>
+                  Quick start
+                </h2>
 
-            <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
-              {AGENT_TOOLS.map((provider) => (
-                <span
-                  key={provider}
-                  className={s.installAgentLogo}
-                  aria-label={AGENT_TOOL_LABELS[provider]}
-                  title={AGENT_TOOL_LABELS[provider]}
-                >
-                  <AgentToolLogo
-                    className={s.installAgentLogoIcon}
-                    idPrefix={`install-agent-${provider}`}
-                    provider={provider}
-                  />
-                </span>
-              ))}
-              <span className={s.installAgentTooltip}>
-                Works with the harnesses you already love, or integrate your own.
-              </span>
+                <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
+                  {AGENT_TOOLS.map((provider) => (
+                    <span
+                      key={provider}
+                      className={s.installAgentLogo}
+                      aria-label={AGENT_TOOL_LABELS[provider]}
+                      title={AGENT_TOOL_LABELS[provider]}
+                    >
+                      <AgentToolLogo
+                        className={s.installAgentLogoIcon}
+                        idPrefix={`install-agent-${provider}`}
+                        provider={provider}
+                      />
+                    </span>
+                  ))}
+                  <span className={s.installAgentTooltip}>
+                    Works with the harnesses you already love or integrate your own.
+                  </span>
+                </div>
+              </div>
+
+              <p className={s.installSubtitle}>
+                  Human or agent, sometimes it's just easier to start building with stuff to figure out if it's useful. Fortunately, we've made that really easy for both.
+              </p>
             </div>
           </div>
 
