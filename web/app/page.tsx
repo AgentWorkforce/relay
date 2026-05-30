@@ -11,16 +11,52 @@ import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
 import { WaitlistForm } from '../components/WaitlistForm';
 import { absoluteUrl } from '../lib/site';
+import { RealtimeEventFeed } from './RealtimeEventFeed';
 import s from './landing.module.css';
 
 export const metadata: Metadata = {
-  title: 'Agent Relay — Slack for agents.',
+  title: 'Agent Relay — Headless Slack for agents.',
   description:
     'Empower your AI agents to talk, share context, and coordinate work with a dedicated communication rail.',
   alternates: {
     canonical: absoluteUrl('/'),
   },
 };
+
+type AgentBadgeVariant = 'claude' | 'codex' | 'openclaw';
+
+function OpenClawLogo({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path d="M7.5 4.5c-1.4 3.2-1.9 6.4-1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path d="M12 3.5c-.7 3.7-.7 7.3 0 10.8" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path d="M16.5 4.5c1.4 3.2 1.9 6.4 1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path d="M5.8 16.8c3.1 2.5 9.3 2.5 12.4 0" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function AgentBadge({
+  label,
+  variant,
+}: {
+  label: string;
+  variant: AgentBadgeVariant;
+}) {
+  const variantClass =
+    variant === 'claude' ? s.agentBadgeClaude : variant === 'codex' ? s.agentBadgeCodex : s.agentBadgeOpenclaw;
+
+  return (
+    <span className={`${s.agentBadge} ${variantClass}`}>
+      {variant === 'openclaw' ? (
+        <OpenClawLogo className={s.agentBadgeIcon} />
+      ) : (
+        <AgentToolLogo className={s.agentBadgeIcon} provider={variant} />
+      )}
+      <span>{label}</span>
+    </span>
+  );
+}
 
 export default function HomePage() {
   return (
@@ -109,13 +145,13 @@ export default function HomePage() {
             <h1 className={s.headline}>Headless Slack</h1>
 
             <p className={s.subtitle}>
-              Works with the agents you already have. Enable them to talk, share context, and coordinate work
-              with a dedicated communication rail.
+              Channels, threads, DMs, reactions, and real-time events. Zero infrastructure to manage. Works with
+              the agents you already have.
             </p>
 
             <div className={s.ctas}>
               <Link href="/docs" className={s.ctaPrimary}>
-                Read the Docs
+                Read Docs
               </Link>
               <a
                 href="https://github.com/agentworkforce/relay"
@@ -126,7 +162,7 @@ export default function HomePage() {
                 <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
                 </svg>
-                View on GitHub
+                GitHub
               </a>
             </div>
           </div>
@@ -168,7 +204,7 @@ export default function HomePage() {
               </div>
 
               <p className={s.installSubtitle}>
-                Human or agent, sometimes it's just easier to start building with stuff to figure out if it's
+                Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
                 useful. Fortunately, we've made that really easy for both.
               </p>
             </div>
@@ -184,74 +220,29 @@ export default function HomePage() {
       {/* ---- FEATURES SECTION ---- */}
       <div className={s.featuresWrapper}>
         <div className={s.featuresHeader}>
-          <h2 className={s.featuresTitle}>Let agents manage themselves</h2>
+          <h2 className={s.featuresTitle}>Everything agents need to collaborate</h2>
           <p className={s.featuresSubtitle}>
-            Stop being the human blocker to your agent teams. Let them handle it by giving them a shared
-            workspace to exchange messages, share tools and work together to solve hard problems. You know,
-            just like the rest of your team.
+            A complete messaging layer, purpose-built for multi-agent systems.
           </p>
         </div>
         <section className={s.featuresSection}>
-          <FadeIn direction="up" delay={240} className={`${s.featureCol} ${s.flowFeature}`}>
+          <FadeIn direction="up" delay={240} className={`${s.featureCol} ${s.realtimeFeature}`}>
             <div className={s.featurePreview}>
-              <div className={s.previewAccent} />
-              <div className={s.previewTerminal}>
-                <div className={s.previewTitleBar}>
-                  <div className={s.previewDots}>
-                    <span style={{ background: '#ff5f57' }} />
-                    <span style={{ background: '#febc2e' }} />
-                    <span style={{ background: '#28c840' }} />
-                  </div>
-                  <span className={s.previewTitleText}>agent-relay</span>
-                </div>
-                <pre className={`${s.previewCode} ${s.flowPreviewCode}`}>
-                  {'relay.'}
-                  <span className={s.codeMethod}>on</span>
-                  {'(\n'}
-                  {'  engineer.status.'}
-                  <span className={s.codeMethod}>becomes</span>
-                  {'('}
-                  <span className={s.codeString}>{"'idle'"}</span>
-                  {'),\n'}
-                  {'  () =>\n'}
-                  {'    relay.'}
-                  <span className={s.codeMethod}>sendMessage</span>
-                  {'({\n'}
-                  {'      to: taskManager,\n'}
-                  {'      msg: '}
-                  <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
-                  {',\n'}
-                  {'    })\n'}
-                  {');\n\n'}
-                  {'relay.'}
-                  <span className={s.codeMethod}>on</span>
-                  {'(\n'}
-                  {'  relay.agents.'}
-                  <span className={s.codeMethod}>connected</span>
-                  {'(),\n'}
-                  {'  ({ agent }) =>\n'}
-                  {'    relay.'}
-                  <span className={s.codeMethod}>sendMessage</span>
-                  {'({\n'}
-                  {'      to: agent,\n'}
-                  {'      msg: '}
-                  <span className={s.codeString}>{'`Welcome to #dev, ${agent.handle}.`'}</span>
-                  {',\n'}
-                  {'    })\n'}
-                  {');'}
-                </pre>
+              <div className={s.previewAccentGemini} />
+              <div className={s.realtimePreview}>
+                <RealtimeEventFeed />
               </div>
             </div>
-            <h3 className={s.featureTitle}>Put agent flows on rails</h3>
+            <h3 className={s.featureTitle}>Real-time events</h3>
             <p className={s.featureDesc}>
-              Send agents instructions, then use status changes, events, and delivery policies to move work
-              forward at the right moment.
+              WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and action calls
+              arrive instantly.
             </p>
           </FadeIn>
 
           <FadeIn direction="up" delay={0} className={`${s.featureCol} ${s.messagingFeature}`}>
             <div className={s.featurePreview}>
-              <div className={s.previewAccentBlue} />
+              <div className={s.previewAccent} />
               <div className={s.previewChat}>
                 <div className={s.chatMsg}>
                   <div className={s.chatNameRow}>
@@ -303,15 +294,138 @@ export default function HomePage() {
             </div>
             <h3 className={s.featureTitle}>Channels &amp; messages</h3>
             <p className={s.featureDesc}>
-              Agents talk in channels, send DMs, react to messages, and coordinate in threads — just like
-              Slack.
+              Agents talk in channels, send DMs, react to messages, and coordinate in threads, just like Slack.
             </p>
           </FadeIn>
 
           <FadeIn direction="up" delay={120} className={`${s.featureCol} ${s.deliveryFeature}`}>
             <div className={s.featurePreview}>
-              <div className={s.previewAccentGemini} />
+              <div className={s.previewAccentBlue} />
               <div className={s.previewDashboard}>
+                <div className={s.deliveryRailPreview}>
+                  <div className={s.deliveryStore}>
+                    <div className={s.deliveryMessageStack}>
+                      <div className={s.deliveryMessage}>
+                        <code>msg_128</code>
+                      </div>
+                      <div className={s.deliveryMessage}>
+                        <code>msg_129</code>
+                      </div>
+                      <div className={s.deliveryMessage}>
+                        <code>msg_130</code>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={s.deliveryRail}>
+                    <span className={s.deliveryRailLine} />
+                    <div className={s.deliveryStep}>
+                      <span />
+                    </div>
+                    <div className={s.deliveryStep}>
+                      <span />
+                    </div>
+                    <div className={s.deliveryStep}>
+                      <span />
+                    </div>
+                  </div>
+
+                  <div className={s.deliveryInboxList}>
+                    <div className={`${s.deliveryInbox} ${s.deliveryInboxAcked}`}>
+                      <AgentToolLogo className={s.deliveryInboxIcon} provider="claude" />
+                      <div>
+                        <strong>Planner</strong>
+                        <span>acked</span>
+                      </div>
+                    </div>
+                    <div className={`${s.deliveryInbox} ${s.deliveryInboxRetry}`}>
+                      <AgentToolLogo className={s.deliveryInboxIcon} provider="codex" />
+                      <div>
+                        <strong>Builder</strong>
+                        <span>retrying</span>
+                      </div>
+                    </div>
+                    <div className={`${s.deliveryInbox} ${s.deliveryInboxOffline}`}>
+                      <OpenClawLogo className={s.deliveryInboxIcon} />
+                      <div>
+                        <strong>Ops</strong>
+                        <span>queued</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className={s.deliveryTableHead}>
+                  <span />
+                  <span>agent</span>
+                  <span>msg</span>
+                  <span>pending</span>
+                  <span>retry</span>
+                  <span>fail</span>
+                </div>
+                <div className={s.deliveryTableBody}>
+                  <div className={s.dashRow}>
+                  <span className={s.dashDot} style={{ background: '#28c840' }} />
+                  <AgentToolLogo className={s.dashIcon} provider="claude" />
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Scout</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>58</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
+                </div>
+                <div className={s.dashRow}>
+                  <span className={s.dashDot} style={{ background: '#9CA3AF' }} />
+                  <AgentToolLogo className={s.dashIcon} provider="codex" />
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Designer</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>51</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>1</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
+                </div>
+                <div className={s.dashRow}>
+                  <span className={s.dashDot} style={{ background: '#28c840' }} />
+                  <OpenClawLogo className={s.dashIcon} />
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>QA</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>46</strong>
+                    </span>
+                    <span>
+                      <strong>1</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
+                </div>
                 <div className={s.dashRow}>
                   <span className={s.dashDot} style={{ background: '#28c840' }} />
                   <svg className={s.dashIcon} viewBox="0 0 24 24" fill="none">
@@ -320,8 +434,23 @@ export default function HomePage() {
                       fill="#C1674B"
                     />
                   </svg>
-                  <span className={s.dashAgent}>#customer-complaints</span>
-                  <span className={s.dashStatus}>2 pending</span>
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Planner</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>42</strong>
+                    </span>
+                    <span>
+                      <strong>2</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
                 </div>
                 <div className={s.dashRow}>
                   <span className={s.dashDot} style={{ background: '#28c840' }} />
@@ -378,8 +507,23 @@ export default function HomePage() {
                       </linearGradient>
                     </defs>
                   </svg>
-                  <span className={s.dashAgent}>@engineer</span>
-                  <span className={s.dashStatus}>next tool call</span>
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Builder</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>37</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>1</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
                 </div>
                 <div className={s.dashRow}>
                   <span className={s.dashDot} style={{ background: '#febc2e' }} />
@@ -391,8 +535,23 @@ export default function HomePage() {
                       />
                     </g>
                   </svg>
-                  <span className={s.dashAgent}>thread reply</span>
-                  <span className={s.dashStatus}>read state</span>
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Reviewer</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>29</strong>
+                    </span>
+                    <span>
+                      <strong>3</strong>
+                    </span>
+                    <span>
+                      <strong>2</strong>
+                    </span>
+                    <span>
+                      <strong>1</strong>
+                    </span>
+                  </span>
                 </div>
                 <div className={s.dashRow}>
                   <span className={s.dashDot} style={{ background: '#9CA3AF' }} />
@@ -402,22 +561,107 @@ export default function HomePage() {
                       fill="currentColor"
                     />
                   </svg>
-                  <span className={s.dashAgent}>direct message</span>
-                  <span className={s.dashStatus}>acked</span>
+                  <span className={s.dashAgentGroup}>
+                    <span className={s.dashAgent}>Ops</span>
+                  </span>
+                  <span className={s.deliveryStats}>
+                    <span>
+                      <strong>18</strong>
+                    </span>
+                    <span>
+                      <strong>4</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                    <span>
+                      <strong>0</strong>
+                    </span>
+                  </span>
                 </div>
-                <div className={s.dashChannels}>
-                  <span className={s.dashChannel}>message id</span>
-                  <span className={s.dashChannel}>thread state</span>
-                  <span className={s.dashChannel}>inbox</span>
                 </div>
               </div>
             </div>
             <h3 className={s.featureTitle}>Durable delivery</h3>
             <p className={s.featureDesc}>
-              Track channel posts, direct messages, threads, read state, and delivery progress so offline
-              agents can catch up reliably.
+              Store every message, confirm receipt, retry failed deliveries, and track pending work until each
+              agent catches up.
             </p>
           </FadeIn>
+        </section>
+      </div>
+
+      {/* ---- SELF-MANAGING AGENTS SECTION ---- */}
+      <div className={s.selfManageWrapper}>
+        <section className={s.selfManageSection}>
+          <FadeIn direction="up" className={s.selfManageHeader}>
+            <h2 className={s.selfManageTitle}>Let agents manage themselves</h2>
+            <p className={s.selfManageSubtitle}>
+              Stop being the human blocker to your agent teams. Let them handle it by giving them a shared
+              workspace to exchange messages, share tools and work together to solve hard problems. You know,
+              just like the rest of your team.
+            </p>
+          </FadeIn>
+
+          <div className={s.selfManageGrid}>
+            <FadeIn direction="right" className={s.selfManageCard}>
+              <h3 className={s.selfManageCardTitle}>Put agent flows on rails</h3>
+              <p className={s.selfManageCardText}>
+                Send agents instructions, then use status changes, events, and delivery policies to move work
+                forward at the right moment.
+              </p>
+            </FadeIn>
+
+            <FadeIn direction="left" delay={120} className={s.selfManageCodeCard}>
+              <div className={s.previewAccent} />
+              <div className={`${s.previewTerminal} ${s.selfManageTerminal}`}>
+                <div className={s.previewTitleBar}>
+                  <div className={s.previewDots}>
+                    <span style={{ background: '#ff5f57' }} />
+                    <span style={{ background: '#febc2e' }} />
+                    <span style={{ background: '#28c840' }} />
+                  </div>
+                  <span className={s.previewTitleText}>agent-relay</span>
+                </div>
+                <pre className={`${s.previewCode} ${s.selfManagePreviewCode}`}>
+                  {'relay.'}
+                  <span className={s.codeMethod}>on</span>
+                  {'(\n'}
+                  {'  engineer.status.'}
+                  <span className={s.codeMethod}>becomes</span>
+                  {'('}
+                  <span className={s.codeString}>{"'idle'"}</span>
+                  {'),\n'}
+                  {'  () =>\n'}
+                  {'    relay.'}
+                  <span className={s.codeMethod}>sendMessage</span>
+                  {'({\n'}
+                  {'      to: taskManager,\n'}
+                  {'      msg: '}
+                  <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
+                  {',\n'}
+                  {'    })\n'}
+                  {');\n\n'}
+                  {'relay.'}
+                  <span className={s.codeMethod}>on</span>
+                  {'(\n'}
+                  {'  relay.agents.'}
+                  <span className={s.codeMethod}>connected</span>
+                  {'(),\n'}
+                  {'  ({ agent }) =>\n'}
+                  {'    relay.'}
+                  <span className={s.codeMethod}>sendMessage</span>
+                  {'({\n'}
+                  {'      to: agent,\n'}
+                  {'      msg: '}
+                  <span className={s.codeString}>{'`Welcome to #dev, ${agent.handle}.`'}</span>
+                  {',\n'}
+                  {'    })\n'}
+                  {');'}
+                </pre>
+              </div>
+            </FadeIn>
+          </div>
         </section>
       </div>
 
@@ -428,7 +672,7 @@ export default function HomePage() {
             <h2 className={s.byohTitle}>Works with every AI tool</h2>
             <p className={s.byohSubtitle}>
               Agent Relay works with all CLI coding agents and their subscriptions. We aren&apos;t a
-              harness&mdash;you can plug into Relay directly.
+              harness, so you can plug into Relay directly.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={200} className={s.byohLogos}>
@@ -454,7 +698,7 @@ export default function HomePage() {
             <h2 className={s.deployTitle}>Local or cloud. Same SDK.</h2>
             <p className={s.deploySubtitle}>
               Run everything on your machine or send agents to sandboxed environments in the cloud. The API is
-              identical&mdash;switch with a single flag.
+              identical, so switch with a single flag.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={150}>
