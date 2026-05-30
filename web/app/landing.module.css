@@ -652,6 +652,18 @@
   order: 2;
 }
 
+.webhooksFeature {
+  order: 4;
+}
+
+.searchFeature {
+  order: 5;
+}
+
+.commandsFeature {
+  order: 6;
+}
+
 .featurePreview {
   position: relative;
   border-radius: 14px;
@@ -991,6 +1003,251 @@
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%);
   content: '';
   pointer-events: none;
+}
+
+.previewAccentWebhook,
+.previewAccentSearch,
+.previewAccentCommand {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.previewAccentWebhook {
+  background: linear-gradient(135deg, #182235 0%, #24364f 48%, #4a90c2 100%);
+}
+
+.previewAccentSearch {
+  background: linear-gradient(315deg, #4285f4 0%, #34a853 35%, #fbbc05 65%, #ea4335 100%);
+}
+
+.previewAccentCommand {
+  background: linear-gradient(135deg, #7eb8da 0%, #4a90c2 48%, #2d6a9c 100%);
+}
+
+.previewAccentWebhook::before,
+.previewAccentSearch::before,
+.previewAccentCommand::before {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 40% 50% at 80% 70%, rgba(255, 255, 255, 0.15) 0%, transparent 70%),
+    radial-gradient(ellipse 35% 40% at 25% 35%, rgba(255, 255, 255, 0.1) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 50% 90%, rgba(255, 255, 255, 0.12) 0%, transparent 60%);
+  content: '';
+}
+
+.previewAccentWebhook::after,
+.previewAccentSearch::after,
+.previewAccentCommand::after {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 320'%3E%3Cpath d='M-20,80 Q100,20 250,120 T500,90' fill='none' stroke='rgba(255,255,255,0.22)' stroke-width='2'/%3E%3Cpath d='M-20,140 Q120,70 280,170 T520,140' fill='none' stroke='rgba(255,255,255,0.15)' stroke-width='1.5'/%3E%3Cpath d='M-20,210 Q80,150 220,235 T500,210' fill='none' stroke='rgba(255,255,255,0.1)' stroke-width='1.25'/%3E%3C/svg%3E");
+  background-size: cover;
+  content: '';
+}
+
+.searchPreview,
+.commandsPreview {
+  position: absolute;
+  inset: 22px;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  gap: 12px;
+  color: #f7fafc;
+}
+
+.searchBar,
+.searchResults > div,
+.commandPrompt,
+.commandMenu > div {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(7, 17, 31, 0.72);
+  box-shadow: 0 14px 32px rgba(2, 7, 18, 0.24);
+  backdrop-filter: blur(12px);
+}
+
+.webhookPreview {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 20px 0 20px 20px;
+  color: #f7fafc;
+}
+
+.webhookCodeTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-right: 0;
+  border-radius: 10px 0 0 0;
+  background: #07111f;
+  color: rgba(226, 232, 240, 0.72);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.webhookCodeDots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.webhookCodeDots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.webhookCodeDots span:nth-child(1) {
+  background: #ff5f57;
+}
+
+.webhookCodeDots span:nth-child(2) {
+  background: #febc2e;
+}
+
+.webhookCodeDots span:nth-child(3) {
+  background: #28c840;
+}
+
+.webhookCodeSnippet {
+  width: 100%;
+  min-height: 174px;
+  margin: 0;
+  padding: 18px 16px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-top: 0;
+  border-right: 0;
+  border-radius: 0 0 0 10px;
+  background: rgba(7, 17, 31, 0.82);
+  box-shadow: -10px 12px 30px rgba(2, 7, 18, 0.28);
+  color: rgba(248, 250, 252, 0.9);
+  overflow: hidden;
+}
+
+.webhookCodeSnippet code {
+  overflow: hidden;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.7;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+}
+
+.commandPrompt code {
+  overflow: hidden;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchPreview {
+  align-content: start;
+  padding-top: 14px;
+}
+
+.searchBar {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: 999px;
+}
+
+.searchBar svg {
+  width: 18px;
+  height: 18px;
+  color: #f7c873;
+}
+
+.searchBar span {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.94);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchResults {
+  display: grid;
+  gap: 9px;
+}
+
+.searchResults > div,
+.commandMenu > div {
+  display: grid;
+  gap: 4px;
+  min-height: 50px;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.searchResults strong,
+.commandMenu strong {
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 0.76rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchResults span,
+.commandMenu span {
+  overflow: hidden;
+  color: rgba(240, 246, 252, 0.68);
+  font-size: 0.68rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commandsPreview {
+  align-content: center;
+}
+
+.commandPrompt {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  min-height: 52px;
+  padding: 0 14px;
+  border-radius: 12px;
+}
+
+.commandPrompt span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(193, 103, 75, 0.28);
+  color: #ffd4c8;
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 900;
+}
+
+.commandMenu {
+  display: grid;
+  gap: 9px;
 }
 
 .durableTimelinePreview {
@@ -1560,6 +1817,49 @@
 
   .previewDashboard {
     inset: 0 24px 12px 0;
+  }
+
+  .searchPreview,
+  .commandsPreview {
+    inset: 16px;
+    gap: 9px;
+  }
+
+  .webhookPreview {
+    padding: 16px 0 16px 16px;
+  }
+
+  .webhookCodeTitle {
+    padding: 10px 14px;
+  }
+
+  .webhookCodeSnippet {
+    min-height: 168px;
+    padding: 15px 14px 16px;
+  }
+
+  .webhookCodeSnippet code {
+    font-size: 0.66rem;
+    line-height: 1.65;
+  }
+
+  .searchPreview {
+    padding-top: 0;
+  }
+
+  .searchResults,
+  .commandMenu {
+    gap: 7px;
+  }
+
+  .searchResults > div,
+  .commandMenu > div {
+    min-height: 43px;
+    padding: 8px 10px;
+  }
+
+  .commandPrompt {
+    min-height: 46px;
   }
 
   .selfManageSection {

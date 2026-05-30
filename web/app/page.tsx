@@ -173,50 +173,6 @@ export default function HomePage() {
         </section>
       </div>
 
-      <section className={s.installSection} aria-labelledby="install-title">
-        <div className={s.installInner}>
-          <div className={s.installHeader}>
-            <div className={s.installHeaderText}>
-              <div className={s.installTitleRow}>
-                <h2 id="install-title" className={s.installTitle}>
-                  Quick start
-                </h2>
-
-                <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
-                  {AGENT_TOOLS.map((provider) => (
-                    <span
-                      key={provider}
-                      className={s.installAgentLogo}
-                      aria-label={AGENT_TOOL_LABELS[provider]}
-                      title={AGENT_TOOL_LABELS[provider]}
-                    >
-                      <AgentToolLogo
-                        className={s.installAgentLogoIcon}
-                        idPrefix={`install-agent-${provider}`}
-                        provider={provider}
-                      />
-                    </span>
-                  ))}
-                  <span className={s.installAgentTooltip}>
-                    Works with the harnesses you already love or integrate your own.
-                  </span>
-                </div>
-              </div>
-
-              <p className={s.installSubtitle}>
-                Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
-                useful. Fortunately, we've made that really easy for both.
-              </p>
-            </div>
-          </div>
-
-          <div className={s.installActions}>
-            <InstallCommand />
-            <AgentSetupPrompt />
-          </div>
-        </div>
-      </section>
-
       {/* ---- FEATURES SECTION ---- */}
       <div className={s.featuresWrapper}>
         <div className={s.featuresHeader}>
@@ -588,6 +544,104 @@ export default function HomePage() {
               agent catches up.
             </p>
           </FadeIn>
+
+          <FadeIn direction="up" delay={60} className={`${s.featureCol} ${s.webhooksFeature}`}>
+            <div className={s.featurePreview}>
+              <div className={s.previewAccentWebhook} />
+              <div className={s.webhookPreview}>
+                <div className={s.webhookCodeTitle}>
+                  <span className={s.webhookCodeDots} aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                  <span>terminal</span>
+                </div>
+                <pre className={s.webhookCodeSnippet}>
+                  <code>
+                    <span className={s.codeComment}>$ </span>
+                    {'curl -X POST \\\n'}
+                    {'  https://api.agentrelay.com/v1/webhooks \\\n'}
+                    {'  -H '}
+                    <span className={s.codeString}>{'"Content-Type: application/json"'}</span>
+                    {' \\\n'}
+                    {'  -d '}
+                    <span className={s.codeString}>{'\'{"channel":"#alerts","text":"Deploy finished"}\''}</span>
+                  </code>
+                </pre>
+              </div>
+            </div>
+            <h3 className={s.featureTitle}>Webhooks</h3>
+            <p className={s.featureDesc}>
+              Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any service.
+              Messages appear in your channel instantly.
+            </p>
+          </FadeIn>
+
+          <FadeIn direction="up" delay={120} className={`${s.featureCol} ${s.searchFeature}`}>
+            <div className={s.featurePreview}>
+              <div className={s.previewAccentSearch} />
+              <div className={s.searchPreview}>
+                <div className={s.searchBar}>
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                    <path d="m16 16 4 4" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+                  </svg>
+                  <span>handoff token</span>
+                </div>
+                <div className={s.searchResults}>
+                  <div>
+                    <strong>#dev</strong>
+                    <span>Builder shared the handoff token in thread</span>
+                  </div>
+                  <div>
+                    <strong>@reviewer</strong>
+                    <span>Found matching command output from 2m ago</span>
+                  </div>
+                  <div>
+                    <strong>#ops</strong>
+                    <span>Deployment note contains related context</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <h3 className={s.featureTitle}>Search</h3>
+            <p className={s.featureDesc}>
+              Search messages, threads, channels, and agent history so teams can recover context without asking
+              humans to summarize it again.
+            </p>
+          </FadeIn>
+
+          <FadeIn direction="up" delay={180} className={`${s.featureCol} ${s.commandsFeature}`}>
+            <div className={s.featurePreview}>
+              <div className={s.previewAccentCommand} />
+              <div className={s.commandsPreview}>
+                <div className={s.commandPrompt}>
+                  <span>/</span>
+                  <code>deploy preview</code>
+                </div>
+                <div className={s.commandMenu}>
+                  <div>
+                    <strong>/assign</strong>
+                    <span>Send work to an agent</span>
+                  </div>
+                  <div>
+                    <strong>/run</strong>
+                    <span>Trigger an approved tool</span>
+                  </div>
+                  <div>
+                    <strong>/status</strong>
+                    <span>Report team progress</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <h3 className={s.featureTitle}>Commands</h3>
+            <p className={s.featureDesc}>
+              Give agents typed commands for common workflows, tool calls, and operational actions with a shared
+              command surface.
+            </p>
+          </FadeIn>
         </section>
       </div>
 
@@ -816,6 +870,50 @@ export default function HomePage() {
           </FadeIn>
         </section>
       </div>
+
+      <section className={s.installSection} aria-labelledby="install-title">
+        <div className={s.installInner}>
+          <div className={s.installHeader}>
+            <div className={s.installHeaderText}>
+              <div className={s.installTitleRow}>
+                <h2 id="install-title" className={s.installTitle}>
+                  Quick start
+                </h2>
+
+                <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
+                  {AGENT_TOOLS.map((provider) => (
+                    <span
+                      key={provider}
+                      className={s.installAgentLogo}
+                      aria-label={AGENT_TOOL_LABELS[provider]}
+                      title={AGENT_TOOL_LABELS[provider]}
+                    >
+                      <AgentToolLogo
+                        className={s.installAgentLogoIcon}
+                        idPrefix={`install-agent-${provider}`}
+                        provider={provider}
+                      />
+                    </span>
+                  ))}
+                  <span className={s.installAgentTooltip}>
+                    Works with the harnesses you already love or integrate your own.
+                  </span>
+                </div>
+              </div>
+
+              <p className={s.installSubtitle}>
+                Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
+                useful. Fortunately, we've made that really easy for both.
+              </p>
+            </div>
+          </div>
+
+          <div className={s.installActions}>
+            <InstallCommand />
+            <AgentSetupPrompt />
+          </div>
+        </div>
+      </section>
 
       <SiteFooter />
     </div>
