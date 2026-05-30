@@ -616,22 +616,24 @@ export default function HomePage() {
             <div className={s.featurePreview}>
               <div className={s.previewAccentCommand} />
               <div className={s.commandsPreview}>
-                <div className={s.commandPrompt}>
-                  <span>/</span>
-                  <code>deploy preview</code>
-                </div>
-                <div className={s.commandMenu}>
-                  <div>
-                    <strong>/assign</strong>
-                    <span>Send work to an agent</span>
+                <div className={s.commandsCard}>
+                  <div className={s.commandPrompt}>
+                    <span>/</span>
+                    <code>deploy preview</code>
                   </div>
-                  <div>
-                    <strong>/run</strong>
-                    <span>Trigger an approved tool</span>
-                  </div>
-                  <div>
-                    <strong>/status</strong>
-                    <span>Report team progress</span>
+                  <div className={s.commandMenu}>
+                    <div>
+                      <strong>/assign</strong>
+                      <span>Send work to an agent</span>
+                    </div>
+                    <div>
+                      <strong>/run</strong>
+                      <span>Trigger an approved tool</span>
+                    </div>
+                    <div>
+                      <strong>/status</strong>
+                      <span>Report team progress</span>
+                    </div>
                   </div>
                 </div>
               </div>

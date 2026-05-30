@@ -596,7 +596,7 @@
 /* ---- FEATURES SECTION ---- */
 
 .featuresWrapper {
-  background: var(--bg);
+  background: #0b1c2a;
   transition: background 0.3s ease;
   position: relative;
   z-index: 3;
@@ -1014,19 +1014,18 @@
 }
 
 .previewAccentWebhook {
-  background: linear-gradient(135deg, #182235 0%, #24364f 48%, #4a90c2 100%);
+  background: linear-gradient(45deg, #182235 0%, #24364f 48%, #4a90c2 100%);
 }
 
 .previewAccentSearch {
-  background: linear-gradient(315deg, #4285f4 0%, #34a853 35%, #fbbc05 65%, #ea4335 100%);
+  background: #232d3a;
 }
 
 .previewAccentCommand {
-  background: linear-gradient(135deg, #7eb8da 0%, #4a90c2 48%, #2d6a9c 100%);
+  background: linear-gradient(135deg, #c1674b 0%, #b45542 50%, #cd866a 100%);
 }
 
 .previewAccentWebhook::before,
-.previewAccentSearch::before,
 .previewAccentCommand::before {
   position: absolute;
   inset: 0;
@@ -1037,12 +1036,18 @@
   content: '';
 }
 
-.previewAccentWebhook::after,
-.previewAccentSearch::after,
 .previewAccentCommand::after {
   position: absolute;
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 320'%3E%3Cpath d='M-20,80 Q100,20 250,120 T500,90' fill='none' stroke='rgba(255,255,255,0.22)' stroke-width='2'/%3E%3Cpath d='M-20,140 Q120,70 280,170 T520,140' fill='none' stroke='rgba(255,255,255,0.15)' stroke-width='1.5'/%3E%3Cpath d='M-20,210 Q80,150 220,235 T500,210' fill='none' stroke='rgba(255,255,255,0.1)' stroke-width='1.25'/%3E%3C/svg%3E");
+  background-size: cover;
+  content: '';
+}
+
+.previewAccentWebhook::after {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 320'%3E%3Cpath d='M-40,245 C50,205 78,122 160,126 C256,131 262,64 440,84' fill='none' stroke='rgba(255,255,255,0.22)' stroke-width='2'/%3E%3Cpath d='M-35,196 C68,180 94,90 186,98 C272,106 304,178 438,145' fill='none' stroke='rgba(255,255,255,0.15)' stroke-width='1.5'/%3E%3Cpath d='M-30,92 C64,130 116,38 198,52 C282,66 310,250 438,216' fill='none' stroke='rgba(255,255,255,0.11)' stroke-width='1.25'/%3E%3Cpath d='M62,340 C112,260 92,174 172,164 C254,154 286,304 370,260' fill='none' stroke='rgba(255,255,255,0.08)' stroke-width='1'/%3E%3C/svg%3E");
   background-size: cover;
   content: '';
 }
@@ -1059,9 +1064,7 @@
 }
 
 .searchBar,
-.searchResults > div,
-.commandPrompt,
-.commandMenu > div {
+.searchResults > div {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(7, 17, 31, 0.72);
   box-shadow: 0 14px 32px rgba(2, 7, 18, 0.24);
@@ -1088,7 +1091,7 @@
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-right: 0;
   border-radius: 10px 0 0 0;
-  background: #07111f;
+  background: #111a24;
   color: rgba(226, 232, 240, 0.72);
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.68rem;
@@ -1129,7 +1132,7 @@
   border-top: 0;
   border-right: 0;
   border-radius: 0 0 0 10px;
-  background: rgba(7, 17, 31, 0.82);
+  background: #07111e;
   box-shadow: -10px 12px 30px rgba(2, 7, 18, 0.28);
   color: rgba(248, 250, 252, 0.9);
   overflow: hidden;
@@ -1172,7 +1175,7 @@
 .searchBar svg {
   width: 18px;
   height: 18px;
-  color: #f7c873;
+  color: rgba(248, 250, 252, 0.78);
 }
 
 .searchBar span {
@@ -1221,6 +1224,22 @@
 
 .commandsPreview {
   align-content: center;
+  display: flex;
+  inset: 0;
+}
+
+.commandsCard {
+  display: grid;
+  align-content: center;
+  flex: 1;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  border: 0;
+  border-radius: 0;
+  background: #07111f;
+  box-shadow: none;
 }
 
 .commandPrompt {
@@ -1229,7 +1248,9 @@
   align-items: center;
   min-height: 52px;
   padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .commandPrompt span {
@@ -1239,8 +1260,8 @@
   width: 24px;
   height: 24px;
   border-radius: 8px;
-  background: rgba(193, 103, 75, 0.28);
-  color: #ffd4c8;
+  background: rgba(248, 250, 252, 0.1);
+  color: rgba(248, 250, 252, 0.8);
   font-family: var(--font-geist-mono), monospace;
   font-weight: 900;
 }
@@ -1248,6 +1269,11 @@
 .commandMenu {
   display: grid;
   gap: 9px;
+}
+
+.commandMenu > div {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .durableTimelinePreview {
@@ -1827,6 +1853,14 @@
 
   .webhookPreview {
     padding: 16px 0 16px 16px;
+  }
+
+  .commandsPreview {
+    inset: 0;
+  }
+
+  .commandsCard {
+    padding: 20px;
   }
 
   .webhookCodeTitle {
