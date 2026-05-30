@@ -86,7 +86,6 @@ const LANDING_BY_KIND: Record<MessageKind, string[]> = {
   reaction: ['👍 reacted', '✅ reacted', '🚀 reacted', '👀 reacted', '❤️ reacted', '🎉 reacted'],
 };
 
-const REACTION_EMOJIS = ['👍', '✅', '🚀', '👀', '❤️', '🎉'];
 const MSG_KINDS: MessageKind[] = ['channel', 'dm', 'thread', 'reaction'];
 
 const NODE_POOL: { name: string; provider: ModelProvider; model: string }[] = [
@@ -373,137 +372,28 @@ function drawMessageTrail(ctx: CanvasRenderingContext2D, message: Message) {
   }
 }
 
-function drawSpeechBubble(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-  const bubbleW = 28;
-  const bubbleH = 20;
-  const radius = 5;
-  const bubbleX = x - bubbleW / 2;
-  const bubbleY = y - bubbleH / 2 - 2;
+function drawMessagePulse(ctx: CanvasRenderingContext2D, x: number, y: number, kind: MessageKind) {
+  const color = TRAIL_COLORS[kind];
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, 17);
+  grad.addColorStop(0, `${color} 0.58)`);
+  grad.addColorStop(0.45, `${color} 0.2)`);
+  grad.addColorStop(1, `${color} 0)`);
 
   ctx.beginPath();
-  ctx.moveTo(bubbleX + radius, bubbleY);
-  ctx.lineTo(bubbleX + bubbleW - radius, bubbleY);
-  ctx.arcTo(bubbleX + bubbleW, bubbleY, bubbleX + bubbleW, bubbleY + radius, radius);
-  ctx.lineTo(bubbleX + bubbleW, bubbleY + bubbleH - radius);
-  ctx.arcTo(bubbleX + bubbleW, bubbleY + bubbleH, bubbleX + bubbleW - radius, bubbleY + bubbleH, radius);
-  ctx.lineTo(bubbleX + 12, bubbleY + bubbleH);
-  ctx.lineTo(bubbleX + 6, bubbleY + bubbleH + 8);
-  ctx.lineTo(bubbleX + 9, bubbleY + bubbleH);
-  ctx.lineTo(bubbleX + radius, bubbleY + bubbleH);
-  ctx.arcTo(bubbleX, bubbleY + bubbleH, bubbleX, bubbleY + bubbleH - radius, radius);
-  ctx.lineTo(bubbleX, bubbleY + radius);
-  ctx.arcTo(bubbleX, bubbleY, bubbleX + radius, bubbleY, radius);
-  ctx.closePath();
-  ctx.fillStyle = `${color} 0.85)`;
+  ctx.arc(x, y, 17, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(234, 230, 221, 0.9)';
-  ctx.fillRect(bubbleX + 5, bubbleY + 5, bubbleW - 10, 2.5);
-  ctx.fillRect(bubbleX + 5, bubbleY + 10, bubbleW - 14, 2.5);
-  ctx.fillRect(bubbleX + 5, bubbleY + 15, bubbleW - 18, 2);
-}
-
-function drawEnvelope(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-  const envW = 28;
-  const envH = 20;
-  const envX = x - envW / 2;
-  const envY = y - envH / 2;
-
   ctx.beginPath();
-  ctx.roundRect(envX, envY, envW, envH, 3);
-  ctx.fillStyle = `${color} 0.85)`;
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = `${color} 0.88)`;
   ctx.fill();
 
-  ctx.strokeStyle = 'rgba(234, 230, 221, 0.95)';
-  ctx.lineWidth = 2;
-  ctx.lineJoin = 'round';
   ctx.beginPath();
-  ctx.moveTo(envX + 2, envY + 2);
-  ctx.lineTo(x, envY + envH * 0.55);
-  ctx.lineTo(envX + envW - 2, envY + 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = 'rgba(234, 230, 221, 0.6)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(x - 5, envY + envH - 5);
-  ctx.lineTo(x + 5, envY + envH - 5);
-  ctx.moveTo(x + 3, envY + envH - 7);
-  ctx.lineTo(x + 5, envY + envH - 5);
-  ctx.lineTo(x + 3, envY + envH - 3);
-  ctx.stroke();
-}
-
-function drawThreadBranch(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-  ctx.strokeStyle = `${color} 0.9)`;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
-  ctx.beginPath();
-  ctx.moveTo(x - 6, y - 10);
-  ctx.lineTo(x - 6, y + 4);
-  ctx.quadraticCurveTo(x - 6, y + 10, x + 2, y + 10);
-  ctx.lineTo(x + 10, y + 10);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(x + 7, y + 7);
-  ctx.lineTo(x + 11, y + 10);
-  ctx.lineTo(x + 7, y + 13);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.arc(x - 6, y - 10, 3.5, 0, Math.PI * 2);
-  ctx.fillStyle = `${color} 0.95)`;
-  ctx.fill();
-
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(x - 6, y - 2);
-  ctx.quadraticCurveTo(x - 6, y + 2, x, y + 2);
-  ctx.lineTo(x + 4, y + 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawReactionEmoji(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
-  ctx.beginPath();
-  ctx.arc(x, y, 14, 0, Math.PI * 2);
-  ctx.fillStyle = `${color} 0.85)`;
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(234, 230, 221, 0.3)';
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.strokeStyle = `${color} 0.35)`;
   ctx.lineWidth = 1;
   ctx.stroke();
-
-  ctx.font = '16px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(pick(REACTION_EMOJIS), x, y + 1);
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-}
-
-function drawMessageIcon(ctx: CanvasRenderingContext2D, x: number, y: number, kind: MessageKind) {
-  const color = TRAIL_COLORS[kind];
-
-  if (kind === 'channel') {
-    drawSpeechBubble(ctx, x, y, color);
-    return;
-  }
-
-  if (kind === 'dm') {
-    drawEnvelope(ctx, x, y, color);
-    return;
-  }
-
-  if (kind === 'thread') {
-    drawThreadBranch(ctx, x, y, color);
-    return;
-  }
-
-  drawReactionEmoji(ctx, x, y, color);
 }
 
 function isDarkMode() {
@@ -673,7 +563,7 @@ function drawMessages(
     drawMessageTrail(ctx, message);
 
     if (message.t <= 1) {
-      drawMessageIcon(ctx, px, py, message.kind);
+      drawMessagePulse(ctx, px, py, message.kind);
       continue;
     }
 
