@@ -302,56 +302,56 @@ export default function HomePage() {
             <div className={s.featurePreview}>
               <div className={s.previewAccentBlue} />
               <div className={s.previewDashboard}>
-                <div className={s.deliveryRailPreview}>
-                  <div className={s.deliveryStore}>
-                    <div className={s.deliveryMessageStack}>
-                      <div className={s.deliveryMessage}>
-                        <code>msg_128</code>
-                      </div>
-                      <div className={s.deliveryMessage}>
-                        <code>msg_129</code>
-                      </div>
-                      <div className={s.deliveryMessage}>
-                        <code>msg_130</code>
-                      </div>
-                    </div>
+                <div className={s.durableTimelinePreview}>
+                  <span className={s.durableTimelineLine} />
+                  <div className={`${s.durableAgentCard} ${s.durableAgentOffline}`}>
+                    <AgentToolLogo className={s.durableAgentIcon} provider="claude" />
+                    <strong>Builder</strong>
+                    <span className={s.durableStatus}>
+                      <span />
+                      offline
+                    </span>
                   </div>
 
-                  <div className={s.deliveryRail}>
-                    <span className={s.deliveryRailLine} />
-                    <div className={s.deliveryStep}>
-                      <span />
-                    </div>
-                    <div className={s.deliveryStep}>
-                      <span />
-                    </div>
-                    <div className={s.deliveryStep}>
-                      <span />
-                    </div>
+                  <div className={s.durableEvent}>
+                    <span className={s.durableEventDot} />
+                    <code>message.sent</code>
+                    <time>12ms</time>
+                  </div>
+                  <div className={s.durableEvent}>
+                    <span className={s.durableEventDot} />
+                    <code>message.sent</code>
+                    <time>18ms</time>
+                  </div>
+                  <div className={s.durableEvent}>
+                    <span className={s.durableEventDot} />
+                    <code>message.sent</code>
+                    <time>24ms</time>
                   </div>
 
-                  <div className={s.deliveryInboxList}>
-                    <div className={`${s.deliveryInbox} ${s.deliveryInboxAcked}`}>
-                      <AgentToolLogo className={s.deliveryInboxIcon} provider="claude" />
-                      <div>
-                        <strong>Planner</strong>
-                        <span>acked</span>
-                      </div>
-                    </div>
-                    <div className={`${s.deliveryInbox} ${s.deliveryInboxRetry}`}>
-                      <AgentToolLogo className={s.deliveryInboxIcon} provider="codex" />
-                      <div>
-                        <strong>Builder</strong>
-                        <span>retrying</span>
-                      </div>
-                    </div>
-                    <div className={`${s.deliveryInbox} ${s.deliveryInboxOffline}`}>
-                      <OpenClawLogo className={s.deliveryInboxIcon} />
-                      <div>
-                        <strong>Ops</strong>
-                        <span>queued</span>
-                      </div>
-                    </div>
+                  <div className={`${s.durableAgentCard} ${s.durableAgentOnline}`}>
+                    <AgentToolLogo className={s.durableAgentIcon} provider="claude" />
+                    <strong>Builder</strong>
+                    <span className={s.durableStatus}>
+                      <span />
+                      online
+                    </span>
+                  </div>
+
+                  <div className={`${s.durableDelivered} ${s.durableDeliveredOne}`}>
+                    <span>✓</span>
+                    <strong>message.received</strong>
+                    <time>31ms</time>
+                  </div>
+                  <div className={`${s.durableDelivered} ${s.durableDeliveredTwo}`}>
+                    <span>✓</span>
+                    <strong>message.received</strong>
+                    <time>36ms</time>
+                  </div>
+                  <div className={`${s.durableDelivered} ${s.durableDeliveredThree}`}>
+                    <span>✓</span>
+                    <strong>message.received</strong>
+                    <time>42ms</time>
                   </div>
                 </div>
                 <div className={s.deliveryTableHead}>
