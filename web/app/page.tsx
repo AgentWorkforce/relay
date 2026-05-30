@@ -72,73 +72,74 @@ export default function HomePage() {
           xmlns="http://www.w3.org/2000/svg"
           preserveAspectRatio="xMidYMid slice"
         >
-          {/* Grid of interconnected nodes */}
-          {/* Paths — connection lines */}
-          <g stroke="var(--primary)" strokeWidth="0.9" opacity="0.13">
-            {/* Horizontal flows */}
-            <path d="M80,120 L220,140 L380,110 L520,145 L680,120" />
-            <path d="M150,280 L310,260 L460,290 L620,270 L780,295" />
-            <path d="M60,440 L200,420 L360,450 L510,430 L670,455" />
-            {/* Cross connections */}
-            <path d="M220,140 L310,260" />
-            <path d="M380,110 L460,290" />
-            <path d="M520,145 L620,270" />
-            <path d="M310,260 L360,450" />
-            <path d="M460,290 L510,430" />
-            <path d="M620,270 L670,455" />
-            {/* Right side sparse */}
-            <path d="M780,295 L900,240 L1020,280" />
-            <path d="M680,120 L830,160 L960,130" />
-            <path d="M900,240 L960,130" />
-            <path d="M830,160 L780,295" />
-            {/* Diagonal sweeps */}
-            <path d="M120,60 L220,140" />
-            <path d="M680,120 L740,40" />
-            <path d="M60,440 L30,520" />
-            <path d="M670,455 L720,540" />
+          <defs>
+            <linearGradient id="heroSwoopGradient" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#FFFFFF" stopOpacity="0.11" />
+              <stop offset="0.42" stopColor="#74B8E2" stopOpacity="0.075" />
+              <stop offset="1" stopColor="#4A90C2" stopOpacity="0.03" />
+            </linearGradient>
+            <linearGradient id="heroSwoopGlow" x1="1200" y1="60" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+              <stop stopColor="#74B8E2" stopOpacity="0.065" />
+              <stop offset="0.55" stopColor="#FFFFFF" stopOpacity="0.035" />
+              <stop offset="1" stopColor="#4A90C2" stopOpacity="0" />
+            </linearGradient>
+            <radialGradient
+              id="heroSwoopWash"
+              cx="0"
+              cy="0"
+              r="1"
+              gradientUnits="userSpaceOnUse"
+              gradientTransform="translate(860 130) rotate(128) scale(560 360)"
+            >
+              <stop stopColor="#74B8E2" stopOpacity="0.1" />
+              <stop offset="1" stopColor="#74B8E2" stopOpacity="0" />
+            </radialGradient>
+            <filter id="heroSwoopBlur" x="-20%" y="-40%" width="140%" height="180%">
+              <feGaussianBlur stdDeviation="18" />
+            </filter>
+          </defs>
+          <rect width="1200" height="600" fill="url(#heroSwoopWash)" />
+          <g stroke="url(#heroSwoopGlow)" strokeLinecap="round" opacity="0.22" filter="url(#heroSwoopBlur)">
+            <path d="M-210 142 Q230 -38 650 126 T1410 82" strokeWidth="220" />
+            <path d="M-220 412 Q208 252 630 418 T1400 392" strokeWidth="170" opacity="0.55" />
           </g>
-          {/* Nodes — small circles at intersections */}
-          <g fill="var(--primary)" opacity="0.17">
-            <circle cx="80" cy="120" r="3" />
-            <circle cx="220" cy="140" r="4" />
-            <circle cx="380" cy="110" r="3" />
-            <circle cx="520" cy="145" r="4" />
-            <circle cx="680" cy="120" r="3" />
-            <circle cx="150" cy="280" r="3" />
-            <circle cx="310" cy="260" r="4" />
-            <circle cx="460" cy="290" r="3" />
-            <circle cx="620" cy="270" r="4" />
-            <circle cx="780" cy="295" r="3" />
-            <circle cx="60" cy="440" r="3" />
-            <circle cx="200" cy="420" r="4" />
-            <circle cx="360" cy="450" r="3" />
-            <circle cx="510" cy="430" r="4" />
-            <circle cx="670" cy="455" r="3" />
-            <circle cx="830" cy="160" r="3" />
-            <circle cx="900" cy="240" r="3" />
-            <circle cx="960" cy="130" r="3" />
-            <circle cx="1020" cy="280" r="3" />
+          <g stroke="url(#heroSwoopGradient)" strokeLinecap="round" opacity="0.15" filter="url(#heroSwoopBlur)">
+            <path d="M-190 252 Q270 68 690 244 T1380 220" strokeWidth="130" />
           </g>
-          {/* Ghost card outlines — faint rectangles suggesting agent cards */}
-          <g stroke="var(--primary)" strokeWidth="0.75" fill="none" opacity="0.08">
-            <rect x="190" y="120" width="60" height="38" rx="6" />
-            <rect x="350" y="90" width="60" height="38" rx="6" />
-            <rect x="490" y="125" width="60" height="38" rx="6" />
-            <rect x="280" y="240" width="60" height="38" rx="6" />
-            <rect x="430" y="270" width="60" height="38" rx="6" />
-            <rect x="590" y="250" width="60" height="38" rx="6" />
-            <rect x="170" y="400" width="60" height="38" rx="6" />
-            <rect x="330" y="430" width="60" height="38" rx="6" />
-            <rect x="480" y="410" width="60" height="38" rx="6" />
-            <rect x="870" y="220" width="60" height="38" rx="6" />
-            <rect x="800" y="140" width="60" height="38" rx="6" />
+          <g stroke="#74B8E2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9" opacity="0.08">
+            <path d="M70 118 L220 142 L390 102 L540 148 L695 118" />
+            <path d="M142 280 L315 258 L465 294 L625 270 L790 296" />
+            <path d="M60 438 L205 418 L365 452 L520 430 L680 456" />
+            <path d="M220 142 L315 258 L365 452" />
+            <path d="M390 102 L465 294 L520 430" />
+            <path d="M540 148 L625 270 L680 456" />
+            <path d="M695 118 L845 160 L985 130 L1035 282" />
+            <path d="M790 296 L915 238 L1035 282" />
           </g>
-          {/* Pulse dots — brighter accent nodes */}
-          <g fill="var(--primary)" opacity="0.24">
-            <circle cx="220" cy="140" r="2" />
-            <circle cx="460" cy="290" r="2" />
-            <circle cx="670" cy="455" r="2" />
-            <circle cx="900" cy="240" r="2" />
+          <g fill="#FFFFFF" opacity="0.1">
+            <circle cx="70" cy="118" r="2.5" />
+            <circle cx="220" cy="142" r="3.5" />
+            <circle cx="390" cy="102" r="2.5" />
+            <circle cx="540" cy="148" r="3" />
+            <circle cx="695" cy="118" r="2.5" />
+            <circle cx="315" cy="258" r="3.5" />
+            <circle cx="465" cy="294" r="2.5" />
+            <circle cx="625" cy="270" r="3" />
+            <circle cx="790" cy="296" r="2.5" />
+            <circle cx="205" cy="418" r="3" />
+            <circle cx="365" cy="452" r="2.5" />
+            <circle cx="520" cy="430" r="3" />
+            <circle cx="680" cy="456" r="2.5" />
+            <circle cx="845" cy="160" r="2.5" />
+            <circle cx="915" cy="238" r="2.5" />
+            <circle cx="985" cy="130" r="2.5" />
+            <circle cx="1035" cy="282" r="2.5" />
+          </g>
+          <g fill="#74B8E2" opacity="0.12">
+            <circle cx="220" cy="142" r="2" />
+            <circle cx="465" cy="294" r="2" />
+            <circle cx="680" cy="456" r="2" />
+            <circle cx="915" cy="238" r="2" />
           </g>
         </svg>
         <section className={s.hero}>
@@ -146,7 +147,7 @@ export default function HomePage() {
             <h1 className={s.headline}>Headless Slack for Agents</h1>
 
             <p className={s.subtitle}>
-            Channels, threads, DMs, reactions, and real-time events for multi-agent systems. Everything you’d expect from Slack, exposed as an SDK.
+            Channels, threads, DMs, reactions, and real-time events built for multi-agent systems. Everything you’d expect from Slack, exposed as an SDK.
             </p>
 
             <div className={s.ctas}>
@@ -200,7 +201,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>The messaging layer behind multi-agent workflows</h3>
+              <h3 className={s.featureTitle}>The real-time messaging SDK</h3>
               <ul className={s.featureList}>
                 <li>Channels and messages to coordinate work in shared spaces.</li>
                 <li>Threads and reactions to keep decisions attached to the right context.</li>
@@ -209,6 +210,30 @@ export default function HomePage() {
               </ul>
             </div>
           </FadeIn>
+
+          <div className={`${s.byohWrapper} ${s.featureByoh}`}>
+            <section className={s.byohSection}>
+              <FadeIn direction="up" className={s.byohText}>
+                <h2 className={s.byohTitle}>Works with every agent</h2>
+                <p className={s.byohSubtitle}>
+                  It's not a harness, and it's not a framework. You can plug in directly with our first class adapters or you can define your own.
+                </p>
+              </FadeIn>
+              <FadeIn direction="up" delay={200} className={s.byohLogos}>
+                {AGENT_TOOLS.map((provider) => (
+                  <div key={provider} className={s.logoCard}>
+                    <AgentToolLogo
+                      className={s.byohLogo}
+                      idPrefix={`byoh-agent-${provider}`}
+                      provider={provider}
+                    />
+                    <span className={s.logoLabel}>{AGENT_TOOL_LABELS[provider]}</span>
+                  </div>
+                ))}
+              </FadeIn>
+              <p className={s.byohFootnote}>or any other agent that you hook up </p>
+            </section>
+          </div>
 
           <FadeIn direction="up" delay={120} className={`${s.featureCol} ${s.deliveryFeature}`}>
             <div className={s.featurePreview}>
@@ -495,11 +520,13 @@ export default function HomePage() {
               </div>
             </div>
             <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>Durable delivery</h3>
-              <p className={s.featureDesc}>
-                Store every message, confirm receipt, retry failed deliveries, and track pending work until each
-                agent catches up.
-              </p>
+              <h3 className={s.featureTitle}>The hard parts of delivery, handled</h3>
+              <ul className={s.featureList}>
+                <li>Durable delivery so channel history and offline catch-up survive restarts.</li>
+                <li>Receipts, retry queues, and backoff keep handoffs moving until every target agent acknowledges.</li>
+                <li>Stateful coordination stays close to active channels for fast reads, writes, and thread updates.</li>
+                <li>A global edge network places channels near agents while keeping ordering and membership consistent.</li>
+              </ul>
             </div>
           </FadeIn>
 
@@ -682,32 +709,6 @@ export default function HomePage() {
               </div>
             </FadeIn>
           </div>
-        </section>
-      </div>
-
-      {/* ---- BYOH SECTION ---- */}
-      <div className={s.byohWrapper}>
-        <section className={s.byohSection}>
-          <FadeIn direction="up" className={s.byohText}>
-            <h2 className={s.byohTitle}>Works with every AI tool</h2>
-            <p className={s.byohSubtitle}>
-              Agent Relay works with all CLI coding agents and their subscriptions. We aren&apos;t a
-              harness, so you can plug into Relay directly.
-            </p>
-          </FadeIn>
-          <FadeIn direction="up" delay={200} className={s.byohLogos}>
-            {AGENT_TOOLS.map((provider) => (
-              <div key={provider} className={s.logoCard}>
-                <AgentToolLogo
-                  className={s.byohLogo}
-                  idPrefix={`byoh-agent-${provider}`}
-                  provider={provider}
-                />
-                <span className={s.logoLabel}>{AGENT_TOOL_LABELS[provider]}</span>
-              </div>
-            ))}
-          </FadeIn>
-          <p className={s.byohFootnote}>or any other agent that works in a terminal</p>
         </section>
       </div>
 
