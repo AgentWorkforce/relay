@@ -113,7 +113,13 @@ jobs:
           restore-keys: turbo-
 
       - name: Build packages
-        run: npm run build
+        run: |
+          npm run build
+          # cloud, acp-bridge, and openclaw sit outside the core build chain;
+          # build them so package validation can verify their dist output.
+          npm --prefix packages/cloud run build
+          npm --prefix packages/acp-bridge run build
+          npm --prefix packages/openclaw run build
 
       - name: Validate all
         run: |

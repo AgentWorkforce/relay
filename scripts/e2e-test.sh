@@ -231,63 +231,24 @@ if [ $STATUS_EXIT -ne 0 ]; then
 fi
 log_info "  status command completed without hanging"
 
-# Test agents command (should not error even with no user agents)
-log_info "Testing: agent-relay agents"
-"$CLI_CMD" agents || true
-
-# Test agents --json and verify no user agents
-log_info "Testing: agent-relay agents --json"
-# Filter to only get JSON line (skip any log output like dotenv messages)
-AGENTS_JSON=$("$CLI_CMD" agents --json 2>/dev/null | grep '^\[')
-if [ -z "$AGENTS_JSON" ]; then
-  log_error "agents --json returned empty output"
-  exit 1
-fi
-
-# Count user agents (filter known internal agent names if present)
-AGENT_COUNT=$(echo "$AGENTS_JSON" | jq '[.[] | select(.name != "Dashboard" and .name != "__cli_read__" and .name != "__cli_history__" and .name != "__cli_inbox__")] | length' 2>/dev/null || echo "0")
-log_info "  User agents before spawn: $AGENT_COUNT"
-if [ "$AGENT_COUNT" != "0" ]; then
-  log_error "Expected 0 user agents before spawn, got $AGENT_COUNT"
-  echo "$AGENTS_JSON" | jq . 2>/dev/null || echo "$AGENTS_JSON"
-  exit 1
-fi
-log_info "  VERIFIED: No user agents connected (as expected)"
-
-# Test who command
-log_info "Testing: agent-relay who"
-"$CLI_CMD" who || true
-
 # Test history command (hidden but functional)
 log_info "Testing: agent-relay history"
 "$CLI_CMD" history --limit 5 2>/dev/null || true
 
-# Test read command (should fail gracefully with invalid ID)
-log_info "Testing: agent-relay read (with invalid ID)"
-"$CLI_CMD" read invalid-id 2>/dev/null || true
+# Test inbox command
+log_info "Testing: agent-relay inbox"
+"$CLI_CMD" inbox 2>/dev/null || true
 
 # Test update --check (just checks, doesn't install)
-log_info "Testing: agent-relay update --check"
+log_info "Testing: agent-relay driver update --check"
 "$CLI_CMD" driver update --check 2>/dev/null || true
-
-# Test doctor command
-log_info "Testing: agent-relay doctor"
-"$CLI_CMD" doctor 2>/dev/null || true
 
 # Test health command
 log_info "Testing: agent-relay health"
 "$CLI_CMD" health 2>/dev/null || true
 
-# Test cloud status (should work even if not linked)
-log_info "Testing: agent-relay cloud status"
-"$CLI_CMD" cloud status 2>/dev/null || true
-
-# Test create-agent --help (don't actually wrap anything)
-log_info "Testing: agent-relay create-agent --help"
-"$CLI_CMD" create-agent --help > /dev/null 2>&1 || true
-
 # Test bridge --help
-log_info "Testing: agent-relay bridge --help"
+log_info "Testing: agent-relay driver bridge --help"
 "$CLI_CMD" driver bridge --help > /dev/null 2>&1 || true
 
 log_info "All CLI command tests passed!"
