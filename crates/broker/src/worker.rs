@@ -40,6 +40,12 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
     "AGENT_RELAY_APP_SERVER_AUTH_USERNAME",
     "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
 ];
+const RELAY_AGENT_CHILD_ENV_KEYS: [&str; 4] = [
+    "RELAY_AGENT_NAME",
+    "RELAY_AGENT_TOKEN",
+    "RELAY_AGENT_TYPE",
+    "RELAY_STRICT_AGENT_NAME",
+];
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
 const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
 
@@ -699,13 +705,13 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
-            if let Some(relay_key) = worker_relay_api_key {
-                command.env("RELAY_AGENT_TOKEN", relay_key);
-            }
-            command.env("RELAY_AGENT_NAME", &spec.name);
-            command.env("RELAY_AGENT_TYPE", "agent");
-            command.env("RELAY_STRICT_AGENT_NAME", "1");
+        if matches!(spec.runtime, AgentRuntime::Pty) {
+            apply_pty_relay_agent_env(
+                &mut command,
+                &spec.name,
+                worker_relay_api_key.as_deref(),
+                skip_relay_prompt,
+            );
         }
         // Remove CLAUDECODE from child env to prevent nested Claude Code instances
         // from interfering with the parent's session management
@@ -1018,6 +1024,49 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
             APP_SERVER_RELEASE_GRACE
         }
         _ => DEFAULT_RELEASE_GRACE,
+    }
+}
+
+fn pty_relay_agent_env_overrides(
+    agent_name: &str,
+    worker_relay_api_key: Option<&str>,
+    skip_relay_prompt: bool,
+) -> Vec<(&'static str, Option<String>)> {
+    let token = if skip_relay_prompt {
+        None
+    } else {
+        worker_relay_api_key.map(str::to_string)
+    };
+    let agent_type = (!skip_relay_prompt).then(|| "agent".to_string());
+    let strict_name = (!skip_relay_prompt).then(|| "1".to_string());
+
+    vec![
+        ("RELAY_AGENT_NAME", Some(agent_name.to_string())),
+        ("RELAY_AGENT_TOKEN", token),
+        ("RELAY_AGENT_TYPE", agent_type),
+        ("RELAY_STRICT_AGENT_NAME", strict_name),
+    ]
+}
+
+fn apply_pty_relay_agent_env(
+    command: &mut Command,
+    agent_name: &str,
+    worker_relay_api_key: Option<&str>,
+    skip_relay_prompt: bool,
+) {
+    // Command inherits the broker process env by default, so unset every
+    // relay-agent key before applying the PTY child contract. Skipped prompt
+    // injection still exposes the assigned name for wrapper launchers, but not
+    // the broker-injected MCP registration env.
+    for key in RELAY_AGENT_CHILD_ENV_KEYS {
+        command.env_remove(key);
+    }
+    let overrides =
+        pty_relay_agent_env_overrides(agent_name, worker_relay_api_key, skip_relay_prompt);
+    for (key, value) in overrides {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
     }
 }
 
@@ -1605,6 +1654,75 @@ mod tests {
         let reg = make_registry(env);
         assert_eq!(reg.env_value("KEY"), Some("val"));
         assert_eq!(reg.env_value("MISSING"), None);
+    }
+
+    #[test]
+    fn pty_relay_env_exposes_name_when_prompt_injection_is_skipped() {
+        let overrides: HashMap<_, _> =
+            pty_relay_agent_env_overrides("LauncherWorker", Some("tok_worker"), true)
+                .into_iter()
+                .collect();
+
+        assert_eq!(
+            overrides.get("RELAY_AGENT_NAME").and_then(|v| v.as_deref()),
+            Some("LauncherWorker")
+        );
+        assert_eq!(overrides.get("RELAY_AGENT_TOKEN"), Some(&None));
+        assert_eq!(overrides.get("RELAY_AGENT_TYPE"), Some(&None));
+        assert_eq!(overrides.get("RELAY_STRICT_AGENT_NAME"), Some(&None));
+    }
+
+    #[test]
+    fn pty_relay_env_includes_registration_vars_when_injecting_prompt() {
+        let overrides: HashMap<_, _> =
+            pty_relay_agent_env_overrides("RelayWorker", Some("tok_worker"), false)
+                .into_iter()
+                .collect();
+
+        assert_eq!(
+            overrides.get("RELAY_AGENT_NAME").and_then(|v| v.as_deref()),
+            Some("RelayWorker")
+        );
+        assert_eq!(
+            overrides
+                .get("RELAY_AGENT_TOKEN")
+                .and_then(|v| v.as_deref()),
+            Some("tok_worker")
+        );
+        assert_eq!(
+            overrides.get("RELAY_AGENT_TYPE").and_then(|v| v.as_deref()),
+            Some("agent")
+        );
+        assert_eq!(
+            overrides
+                .get("RELAY_STRICT_AGENT_NAME")
+                .and_then(|v| v.as_deref()),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn pty_relay_env_removes_existing_registration_vars_when_prompt_injection_is_skipped() {
+        let mut command = Command::new("env");
+        command.env("RELAY_AGENT_NAME", "InheritedName");
+        command.env("RELAY_AGENT_TOKEN", "inherited-token");
+        command.env("RELAY_AGENT_TYPE", "human");
+        command.env("RELAY_STRICT_AGENT_NAME", "1");
+
+        apply_pty_relay_agent_env(&mut command, "LauncherWorker", Some("tok_worker"), true);
+
+        let output = command.output().await.expect("env command should run");
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("env output should be utf-8");
+        let env: HashMap<_, _> = stdout
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .collect();
+
+        assert_eq!(env.get("RELAY_AGENT_NAME"), Some(&"LauncherWorker"));
+        assert!(!env.contains_key("RELAY_AGENT_TOKEN"));
+        assert!(!env.contains_key("RELAY_AGENT_TYPE"));
+        assert!(!env.contains_key("RELAY_STRICT_AGENT_NAME"));
     }
 
     fn make_app_server_config() -> HeadlessHarnessConfig {
