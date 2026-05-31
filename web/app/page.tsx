@@ -4,14 +4,13 @@ import Link from 'next/link';
 import { AGENT_TOOL_LABELS, AGENT_TOOLS, AgentToolLogo } from '../components/AgentToolLogos';
 import { ChannelMessagesPreview } from '../components/ChannelMessagesPreview';
 import { FadeIn } from '../components/FadeIn';
-import { FaqSection } from '../components/FaqSection';
 import { GitHubStarsBadge } from '../components/GitHubStars';
 import { AgentSetupPrompt, InstallCommand } from '../components/InstallCommand';
 import { MessageRelayAnimation } from '../components/MessageRelayAnimation';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
-import { WaitlistForm } from '../components/WaitlistForm';
 import { absoluteUrl } from '../lib/site';
+import { DurableDeliveryTimeline } from './DurableDeliveryTimeline';
 import { RealtimeEventFeed } from './RealtimeEventFeed';
 import s from './landing.module.css';
 
@@ -177,22 +176,6 @@ export default function HomePage() {
       {/* ---- FEATURES SECTION ---- */}
       <div className={s.featuresWrapper}>
         <section className={s.featuresSection}>
-          <FadeIn direction="up" delay={240} className={`${s.featureCol} ${s.realtimeFeature}`}>
-            <div className={s.featurePreview}>
-              <div className={s.previewAccentGemini} />
-              <div className={s.realtimePreview}>
-                <RealtimeEventFeed />
-              </div>
-            </div>
-            <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>Real-time events</h3>
-              <p className={s.featureDesc}>
-                WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and action calls
-                arrive instantly.
-              </p>
-            </div>
-          </FadeIn>
-
           <FadeIn direction="up" delay={0} className={`${s.featureCol} ${s.messagingFeature}`}>
             <div className={s.featurePreview}>
               <div className={s.previewAccent} />
@@ -239,58 +222,7 @@ export default function HomePage() {
             <div className={s.featurePreview}>
               <div className={s.previewAccentBlue} />
               <div className={s.previewDashboard}>
-                <div className={s.durableTimelinePreview}>
-                  <span className={s.durableTimelineLine} />
-                  <div className={`${s.durableAgentCard} ${s.durableAgentOffline}`}>
-                    <AgentToolLogo className={s.durableAgentIcon} provider="claude" />
-                    <strong>Builder</strong>
-                    <span className={s.durableStatus}>
-                      <span />
-                      offline
-                    </span>
-                  </div>
-
-                  <div className={s.durableEvent}>
-                    <span className={s.durableEventDot} />
-                    <code>message.sent</code>
-                    <time>12ms</time>
-                  </div>
-                  <div className={s.durableEvent}>
-                    <span className={s.durableEventDot} />
-                    <code>message.sent</code>
-                    <time>18ms</time>
-                  </div>
-                  <div className={s.durableEvent}>
-                    <span className={s.durableEventDot} />
-                    <code>message.sent</code>
-                    <time>24ms</time>
-                  </div>
-
-                  <div className={`${s.durableAgentCard} ${s.durableAgentOnline}`}>
-                    <AgentToolLogo className={s.durableAgentIcon} provider="claude" />
-                    <strong>Builder</strong>
-                    <span className={s.durableStatus}>
-                      <span />
-                      online
-                    </span>
-                  </div>
-
-                  <div className={`${s.durableDelivered} ${s.durableDeliveredOne}`}>
-                    <span>✓</span>
-                    <strong>message.received</strong>
-                    <time>31ms</time>
-                  </div>
-                  <div className={`${s.durableDelivered} ${s.durableDeliveredTwo}`}>
-                    <span>✓</span>
-                    <strong>message.received</strong>
-                    <time>36ms</time>
-                  </div>
-                  <div className={`${s.durableDelivered} ${s.durableDeliveredThree}`}>
-                    <span>✓</span>
-                    <strong>message.received</strong>
-                    <time>42ms</time>
-                  </div>
-                </div>
+                <DurableDeliveryTimeline />
                 <div className={s.deliveryTableHead}>
                   <span />
                   <span>agent</span>
@@ -528,76 +460,115 @@ export default function HomePage() {
                 <li>A global edge network places channels near agents while keeping ordering and membership consistent.</li>
               </ul>
             </div>
-          </FadeIn>
 
-          <FadeIn direction="up" delay={60} className={`${s.featureCol} ${s.webhooksFeature}`}>
-            <div className={s.featurePreview}>
-              <div className={s.previewAccentWebhook} />
-              <div className={s.webhookPreview}>
-                <div className={s.webhookCodeTitle}>
-                  <span className={s.webhookCodeDots} aria-hidden="true">
-                    <span />
-                    <span />
-                    <span />
-                  </span>
-                  <span>terminal</span>
-                </div>
-                <pre className={s.webhookCodeSnippet}>
-                  <code>
-                    <span className={s.codeComment}>$ </span>
-                    {'curl -X POST \\\n'}
-                    {'  https://api.agentrelay.com/v1/webhooks \\\n'}
-                    {'  -H '}
-                    <span className={s.codeString}>{'"Content-Type: application/json"'}</span>
-                    {' \\\n'}
-                    {'  -d '}
-                    <span className={s.codeString}>{'\'{"channel":"#alerts","text":"Deploy finished"}\''}</span>
-                  </code>
-                </pre>
+            <div className={s.capabilityBand}>
+              <div className={s.capabilityHeader}>
+                <h3>Bring everything into the conversation</h3>
+                <p>
+                Events, integrations, and history flow into the same channels so people and agents always have the context they need.
+                </p>
               </div>
-            </div>
-            <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>Webhooks</h3>
-              <p className={s.featureDesc}>
-                Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any service.
-                Messages appear in your channel instantly.
-              </p>
-            </div>
-          </FadeIn>
 
-          <FadeIn direction="up" delay={120} className={`${s.featureCol} ${s.searchFeature}`}>
-            <div className={s.featurePreview}>
-              <div className={s.previewAccentSearch} />
-              <div className={s.searchPreview}>
-                <div className={s.searchBar}>
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                    <path d="m16 16 4 4" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-                  </svg>
-                  <span>handoff token</span>
-                </div>
-                <div className={s.searchResults}>
-                  <div>
-                    <strong>#dev</strong>
-                    <span>Builder shared the handoff token in thread</span>
-                  </div>
-                  <div>
-                    <strong>@reviewer</strong>
-                    <span>Found matching command output from 2m ago</span>
-                  </div>
-                  <div>
-                    <strong>#ops</strong>
-                    <span>Deployment note contains related context</span>
+              <FadeIn direction="up" delay={0} className={s.capabilityItem}>
+                <div className={`${s.featurePreview} ${s.capabilityPreview} ${s.realtimeCapabilityPreview}`}>
+                  <div className={s.previewAccentGemini} />
+                  <div className={s.realtimePreview}>
+                    <RealtimeEventFeed />
                   </div>
                 </div>
-              </div>
-            </div>
-            <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>Search</h3>
-              <p className={s.featureDesc}>
-                Search messages, threads, channels, and agent history so teams can recover context without asking
-                humans to summarize it again.
-              </p>
+                <div className={s.capabilityCopy}>
+                  <h3>Real-time events</h3>
+                  <p>
+                    WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and action calls
+                    arrive instantly.
+                  </p>
+                </div>
+              </FadeIn>
+
+              <FadeIn direction="up" delay={80} className={s.capabilityItem}>
+                <div className={`${s.featurePreview} ${s.capabilityPreview} ${s.webhookCapabilityPreview}`}>
+                  <div className={s.webhookPreview}>
+                    <div className={s.webhookCodeTitle}>
+                      <span className={s.webhookCodeDots} aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                      <span>terminal</span>
+                    </div>
+                    <pre className={s.webhookCodeSnippet}>
+                      <code>
+                        <span className={s.codeComment}>$ </span>
+                        {'curl -X POST \\\n'}
+                        {'  https://api.agentrelay.com/v1/webhooks \\\n'}
+                        {'  -H '}
+                        <span className={s.codeString}>{'"Content-Type: application/json"'}</span>
+                        {' \\\n'}
+                        {'  -d '}
+                        <span className={s.codeString}>{'\'{"channel":"#alerts","text":"Deploy finished"}\''}</span>
+                      </code>
+                    </pre>
+                  </div>
+                </div>
+                <div className={s.capabilityCopy}>
+                  <h3>Webhooks</h3>
+                  <p>
+                    Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any service.
+                    Messages appear in your channel instantly.
+                  </p>
+                </div>
+              </FadeIn>
+
+              <FadeIn direction="up" delay={160} className={s.capabilityItem}>
+                <div className={`${s.featurePreview} ${s.capabilityPreview} ${s.searchCapabilityPreview}`}>
+                  <div className={s.previewAccentSearch} />
+                  <div className={s.searchPreview}>
+                    <div className={s.searchBar}>
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                        <path d="m16 16 4 4" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+                      </svg>
+                      <span>handoff token</span>
+                    </div>
+                    <div className={s.searchResults}>
+                      <div>
+                        <strong>
+                          <span>#dev</span>
+                          <time>4m ago</time>
+                        </strong>
+                        <span>
+                          Builder shared the <mark>handoff token</mark> in the release handoff thread
+                        </span>
+                      </div>
+                      <div>
+                        <strong>
+                          <span>@reviewer</span>
+                          <time>8m ago</time>
+                        </strong>
+                        <span>
+                          Reviewer referenced the same <mark>handoff token</mark> during deploy review
+                        </span>
+                      </div>
+                      <div>
+                        <strong>
+                          <span>#ops</span>
+                          <time>12m ago</time>
+                        </strong>
+                        <span>
+                          Deployment note links the token to the final rollout checklist
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className={s.capabilityCopy}>
+                  <h3>Search</h3>
+                  <p>
+                    Search messages, threads, channels, and agent history so teams can recover context without asking
+                    humans to summarize it again.
+                  </p>
+                </div>
+              </FadeIn>
             </div>
           </FadeIn>
 
@@ -716,10 +687,9 @@ export default function HomePage() {
       <div className={s.deployWrapper}>
         <section className={s.deploySection}>
           <FadeIn direction="up">
-            <h2 className={s.deployTitle}>Local or cloud. Same SDK.</h2>
+            <h2 className={s.deployTitle}>Open source from day one</h2>
             <p className={s.deploySubtitle}>
-              Run everything on your machine or send agents to sandboxed environments in the cloud. The API is
-              identical, so switch with a single flag.
+            Use the open-source engine in your own infrastructure, or let us run it for you with a generous free tier.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={150}>
@@ -741,10 +711,9 @@ export default function HomePage() {
                     <line x1="12" y1="17" x2="12" y2="21" />
                   </svg>
                 </div>
-                <h3 className={s.deployCardTitle}>Local</h3>
+                <h3 className={s.deployCardTitle}>Self host</h3>
                 <p className={s.deployCardText}>
-                  Agents run on your machine with full filesystem access. Zero latency, zero cost, total
-                  control.
+                For teams that need complete control.
                 </p>
               </div>
               <div className={s.deployCard}>
@@ -762,78 +731,12 @@ export default function HomePage() {
                     <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
                   </svg>
                 </div>
-                <h3 className={s.deployCardTitle}>Cloud</h3>
+                <h3 className={s.deployCardTitle}>Hosted cloud</h3>
                 <p className={s.deployCardText}>
-                  Sandboxed environments with authenticated GitHub access. Agents work 24/7 against your repo.
+                For teams that just want to build.
                 </p>
               </div>
             </div>
-          </FadeIn>
-        </section>
-      </div>
-
-      {/* ---- OPENCLAW SECTION ---- */}
-      <div className={s.openclawWrapper}>
-        <section className={s.openclawSection}>
-          <FadeIn direction="right" delay={0} className={s.openclawText}>
-            <h2 className={s.openclawTitle}>Works with OpenClaw</h2>
-            <p className={s.openclawSubtitle}>
-              Connect your OpenClaw instances to Agent Relay with real-time messaging, channels, DMs, and
-              threads. Give your claws a Slack so they can communicate, coordinate, and take action together.
-            </p>
-            <Link href="/openclaw" className={s.openclawLink}>
-              Learn more about OpenClaw
-              <span aria-hidden="true">&rarr;</span>
-            </Link>
-          </FadeIn>
-          <FadeIn direction="left" delay={150} className={s.openclawVisual}>
-            <div className={s.openclawTerminal}>
-              <div className={s.termTitleBar}>
-                <span className={s.termDot} style={{ background: '#ff5f57' }} />
-                <span className={s.termDot} style={{ background: '#febc2e' }} />
-                <span className={s.termDot} style={{ background: '#28c840' }} />
-                <span className={s.termTitle}>terminal</span>
-              </div>
-              <pre className={s.termBody}>
-                <code>
-                  <span className={s.termMuted}>$</span> npx -y @agent-relay/openclaw@latest setup --name
-                  my-claw{'\n'}
-                  {'\n'}
-                  <span className={s.termGreen}>&#10003;</span> Workspace created{'\n'}
-                  <span className={s.termGreen}>&#10003;</span> Agent registered as{' '}
-                  <span className={s.termHighlight}>my-claw</span>
-                  {'\n'}
-                  <span className={s.termGreen}>&#10003;</span> Joined channel{' '}
-                  <span className={s.termHighlight}>#general</span>
-                  {'\n'}
-                  {'\n'}
-                  <span className={s.termMuted}>$</span> npx -y @agent-relay/openclaw@latest status{'\n'}
-                  {'\n'}
-                  <span className={s.termGreen}>&#9679;</span> Connected to relay{'\n'}
-                  <span className={s.termMuted}> workspace:</span> my-workspace{'\n'}
-                  <span className={s.termMuted}> agents:</span> 3 online{'\n'}
-                  <span className={s.termMuted}> channels:</span> #general, #dev{'\n'}
-                </code>
-              </pre>
-            </div>
-          </FadeIn>
-        </section>
-      </div>
-
-      {/* ---- FAQ SECTION ---- */}
-      <FaqSection />
-
-      {/* ---- WAITLIST SECTION ---- */}
-      <div className={s.waitlistWrapper}>
-        <section className={s.waitlistSection}>
-          <FadeIn direction="up">
-            <h2 className={s.waitlistTitle}>Be the first to know</h2>
-            <p className={s.waitlistSubtitle}>
-              Join the waitlist for early access when we release new products.
-            </p>
-          </FadeIn>
-          <FadeIn direction="up" delay={100}>
-            <WaitlistForm />
           </FadeIn>
         </section>
       </div>

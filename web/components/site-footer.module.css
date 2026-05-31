@@ -80,6 +80,23 @@
   color: var(--footer-fg);
 }
 
+.waitlist {
+  --fg: var(--footer-fg);
+  --fg-muted: var(--footer-muted);
+  --fg-faint: var(--footer-faint);
+  --card-bg: color-mix(in srgb, var(--footer-fg) 6%, transparent);
+  --line: var(--footer-line);
+  --primary: #4a90c2;
+}
+
+.waitlistText {
+  max-width: 28ch;
+  margin: 0;
+  color: var(--footer-muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
 .bottom {
   display: flex;
   align-items: center;

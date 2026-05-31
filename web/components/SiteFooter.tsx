@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { SITE_EMAIL } from '../lib/site';
 import { LogoIcon, LogoWordmark } from './SiteNav';
 import { ThemeToggle } from './ThemeToggle';
+import { WaitlistForm } from './WaitlistForm';
 import s from './site-footer.module.css';
 
 export function SiteFooter() {
@@ -62,6 +63,11 @@ export function SiteFooter() {
             <a href={`mailto:${SITE_EMAIL}`} className={s.link}>
               Contact
             </a>
+          </div>
+          <div className={`${s.col} ${s.waitlist}`}>
+            <h4 className={s.colTitle}>New Products</h4>
+            <p className={s.waitlistText}>Join the waitlist for early access when we release new products.</p>
+            <WaitlistForm />
           </div>
         </div>
       </div>

@@ -37,27 +37,29 @@
 .button {
   flex-shrink: 0;
   padding: 10px 24px;
-  background: var(--btn-bg);
+  background: #2d6a9c;
   color: var(--primary-fg);
-  border: none;
+  border: 1.5px solid #234969;
   border-radius: 100px;
   font-family: var(--font-geist-sans), sans-serif;
   font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
+  box-shadow: none;
   transition:
     background 0.2s,
+    border-color 0.2s,
     transform 0.15s,
     box-shadow 0.2s;
   white-space: nowrap;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--btn-hover);
+  background: #4a90c2;
+  border-color: #234969;
   transform: translateY(-1px);
-  box-shadow: 0 4px 20px color-mix(in srgb, var(--btn-bg) 35%, transparent);
+  box-shadow: none;
 }
 
 .button:disabled {
