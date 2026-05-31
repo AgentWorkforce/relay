@@ -16,7 +16,8 @@ import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerMessagingCommands } from './commands/messaging.js';
 import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerSetupCommands } from './commands/setup.js';
-import { registerCoreCommands } from './commands/core.js';
+import { registerCoreCommands, registerCoreTopLevelAliases } from './commands/core.js';
+import { registerCloudCommands } from './commands/cloud.js';
 
 dotenvConfig({ quiet: true });
 
@@ -250,11 +251,16 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  const driver = program.command('driver').description('Manage the optional Agent Relay driver harness');
+  const driver = program
+    .command('driver')
+    .alias('runtime')
+    .description('Manage the optional Agent Relay driver/runtime harness');
   registerCoreCommands(driver);
+  registerCoreTopLevelAliases(program);
   registerMessagingCommands(program);
   registerMonitoringCommands(program);
   registerSetupCommands(program);
+  registerCloudCommands(program);
 
   program
     .command('mcp')

@@ -12,6 +12,10 @@ const expectedLeafCommands = [
   'driver version',
   'driver update',
   'driver bridge',
+  'status',
+  'version',
+  'update',
+  'uninstall',
   'mcp',
   'send',
   'read',
@@ -24,6 +28,17 @@ const expectedLeafCommands = [
   'init',
   'setup',
   'telemetry',
+  'cloud login',
+  'cloud logout',
+  'cloud whoami',
+  'cloud connect',
+  'cloud run',
+  'cloud schedule',
+  'cloud schedules',
+  'cloud status',
+  'cloud logs',
+  'cloud sync',
+  'cloud cancel',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -57,6 +72,11 @@ describe('bootstrap CLI', () => {
     expect(topLevelCommands).toEqual(
       expect.arrayContaining([
         'driver',
+        'cloud',
+        'status',
+        'version',
+        'update',
+        'uninstall',
         'mcp',
         'send',
         'read',
@@ -72,7 +92,7 @@ describe('bootstrap CLI', () => {
       ])
     );
     expect(topLevelCommands).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'cloud', 'swarm', 'on', 'drive', 'new', 'rm'])
+      expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'drive', 'new', 'rm'])
     );
   });
 
@@ -83,7 +103,10 @@ describe('bootstrap CLI', () => {
     expect(leafCommandPaths).toHaveLength(expectedLeafCommands.length);
     expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
     expect(leafCommandPaths).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'cloud login', 'swarm', 'drive', 'new'])
+      expect.arrayContaining(['spawn', 'agents', 'swarm', 'drive', 'new'])
     );
+
+    // `runtime` is an alias of `driver`, so its leaves are not double-counted.
+    expect(program.commands.find((c) => c.name() === 'driver')?.aliases()).toContain('runtime');
   });
 });

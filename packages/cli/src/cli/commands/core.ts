@@ -13,14 +13,14 @@ import {
   validateBrokers,
   getAgentOutboxTemplate,
 } from '@agent-relay/config';
-import type { AgentRelayBrokerInitArgs } from '@agent-relay/runtime';
+import type { BrokerInitArgs } from '@agent-relay/runtime';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 import { track } from '@agent-relay/telemetry';
 
 import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
-import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
@@ -225,7 +225,7 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
-  const binaryArgs: AgentRelayBrokerInitArgs = {};
+  const binaryArgs: BrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
     binaryArgs.apiPort = apiPort;
@@ -234,7 +234,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
   if (stateDir) {
     binaryArgs.stateDir = stateDir;
   }
-  const client = await createAgentRelayClient({
+  const client = await createRuntimeClient({
     cwd,
     binaryArgs,
     brokerName,
@@ -498,4 +498,63 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
       });
       await runBridgeCommand(projectPaths, options, deps);
     });
+}
+
+/**
+ * Register the lifecycle verbs that the README surfaces at the top level
+ * (`relay status`, `relay version`, `relay update`, `relay uninstall`) in
+ * addition to their `runtime`/`driver` group forms. Shares the same handlers
+ * and dependencies so behavior stays identical to the grouped commands.
+ */
+export function registerCoreTopLevelAliases(
+  program: Command,
+  overrides: Partial<CoreDependencies> = {}
+): void {
+  const deps = withDefaults(overrides);
+
+  program
+    .command('status')
+    .description('Check broker status')
+    .option('--state-dir <path>', 'Directory for broker state and connection files')
+    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
+    .action(async (options: { stateDir?: string; waitFor?: string }) => {
+      await runStatusCommand(deps, options);
+    });
+
+  program
+    .command('version')
+    .description('Show version information')
+    .action(() => {
+      deps.log(`agent-relay v${deps.getVersion()}`);
+    });
+
+  program
+    .command('update')
+    .description('Check for updates and install if available')
+    .option('--check', 'Only check for updates, do not install')
+    .action(async (options: { check?: boolean }) => {
+      await runUpdateCommand(options, deps);
+    });
+
+  program
+    .command('uninstall')
+    .description('Remove agent-relay data, configuration, and global binaries')
+    .option('--keep-data', 'Keep message history and database (only remove runtime files)')
+    .option('--zed', 'Also remove Zed editor configuration')
+    .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
+    .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
+    .option('--force', 'Skip confirmation prompt')
+    .option('--dry-run', 'Show what would be removed without actually removing')
+    .action(
+      async (options: {
+        keepData?: boolean;
+        zed?: boolean;
+        zedName?: string;
+        snippets?: boolean;
+        force?: boolean;
+        dryRun?: boolean;
+      }) => {
+        await runUninstallCommand(options, deps);
+      }
+    );
 }
