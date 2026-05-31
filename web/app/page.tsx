@@ -188,7 +188,22 @@ export default function HomePage() {
               </div>
             </div>
             <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>The real-time messaging SDK</h3>
+              <h3 className={s.featureTitle}>
+                <span className={s.titleUnderlineWord}>
+                  The
+                  <svg
+                    className={s.titleUnderline}
+                    viewBox="0 0 120 14"
+                    fill="none"
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M2 6 C28 3 58 6 90 3 S118 5 118 3" />
+                    <path d="M2 9 C34 9 60 6 92 9 S118 6 118 8" />
+                  </svg>
+                </span>{' '}
+                real-time messaging SDK
+              </h3>
               <ul className={s.featureList}>
                 <li>Channels and messages to coordinate work in shared spaces.</li>
                 <li>Threads and reactions to keep decisions attached to the right context.</li>
@@ -479,7 +494,8 @@ export default function HomePage() {
                 </svg>
               </div>
               <div className={s.capabilityHeader}>
-                <h3>Bring everything into the conversation</h3>
+                <h3>Easy to build the <i>right</i> context</h3>
+                <p>Agents are only as good as the context you give them. Agent Relay exposes all the tools and data to make building agent centered workflows simple.</p>
               </div>
 
               <FadeIn direction="up" delay={0} className={s.capabilityItem}>

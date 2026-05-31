@@ -1154,6 +1154,37 @@
   margin: 0;
 }
 
+.titleUnderlineWord {
+  position: relative;
+  display: inline-block;
+}
+
+.titleUnderline {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  width: 100%;
+  height: 0.34em;
+  margin-top: -0.12em;
+  color: #74b8e2;
+  opacity: 0.6;
+  overflow: visible;
+  transform: rotate(-3deg);
+  transform-origin: left center;
+}
+
+.titleUnderline path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.titleUnderline path:nth-child(2) {
+  opacity: 0.55;
+}
+
 .actionToolBadges {
   display: flex;
   align-items: center;
