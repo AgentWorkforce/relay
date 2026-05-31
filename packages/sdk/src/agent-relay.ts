@@ -1,12 +1,28 @@
 import { RelayCast } from '@relaycast/sdk';
 
-import { ActionRegistry, type AgentRelayActions } from './actions/index.js';
+import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './actions/index.js';
 import {
   RelaycastMessagingClient,
   type RelayAgentRegistration,
+  type RelayMessage,
   type RelayMessaging,
   type RelaycastMessagingOptions,
 } from './messaging/index.js';
+import {
+  createEnrichedMessages,
+  createNotifyHandler,
+  createWorkspaceFacade,
+  registerFacadeAction,
+  resolveAgentToken,
+  type AgentLike,
+  type EnrichedMessages,
+  type MessagingResolver,
+  type NotifyHandler,
+  type NotifyOptions,
+  type RegisterActionInput,
+  type RelaySendMessageInput,
+  type RelayWorkspace,
+} from './facade.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
   messaging?: RelayMessaging;
@@ -25,11 +41,15 @@ export interface AgentRelayAgent {
   readonly actions: AgentRelayActions;
   readonly agents: RelayMessaging['agents'];
   readonly channels: RelayMessaging['channels'];
-  readonly messages: RelayMessaging['messages'];
+  readonly messages: EnrichedMessages;
   readonly threads: RelayMessaging['threads'];
   readonly inbox: RelayMessaging['inbox'];
   readonly events: RelayMessaging['events'];
   readonly deliveries: RelayMessaging['deliveries'];
+  readonly workspace: RelayWorkspace;
+  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
+  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
+  notify(target: AgentLike, options: NotifyOptions): NotifyHandler;
 }
 
 export class AgentRelay implements AgentRelayAgent {
@@ -38,6 +58,9 @@ export class AgentRelay implements AgentRelayAgent {
   readonly workspaceKey?: string;
 
   private readonly messagingOptions: RelaycastMessagingOptions;
+  private readonly clientsByToken = new Map<string, RelayMessaging>();
+  private enrichedMessages?: EnrichedMessages;
+  private workspaceFacade?: RelayWorkspace;
 
   constructor(options: AgentRelayOptions = {}) {
     const { messaging, actions, workspaceKey, ...messagingOptions } = options;
@@ -75,8 +98,14 @@ export class AgentRelay implements AgentRelayAgent {
     return this.messaging.channels;
   }
 
-  get messages(): RelayMessaging['messages'] {
-    return this.messaging.messages;
+  get messages(): EnrichedMessages {
+    if (!this.enrichedMessages) {
+      this.enrichedMessages = createEnrichedMessages(
+        this.messaging.messages,
+        this.createMessagingResolver()
+      );
+    }
+    return this.enrichedMessages;
   }
 
   get threads(): RelayMessaging['threads'] {
@@ -95,6 +124,26 @@ export class AgentRelay implements AgentRelayAgent {
     return this.messaging.deliveries;
   }
 
+  get workspace(): RelayWorkspace {
+    if (!this.workspaceFacade) {
+      this.workspaceFacade = createWorkspaceFacade(this.messaging);
+    }
+    return this.workspaceFacade;
+  }
+
+  /** High-level send. `to` may be a `#channel` or an agent name/handle. */
+  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage> {
+    return this.messages.send(input);
+  }
+
+  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
+    return registerFacadeAction(this.actions, def);
+  }
+
+  notify(target: AgentLike, options: NotifyOptions): NotifyHandler {
+    return createNotifyHandler(this.messages, target, options);
+  }
+
   as(agent: RelayAgentRegistration | { token: string } | string): AgentRelayAgent {
     const token = typeof agent === 'string' ? agent : agent.token;
     return agentRelayAgent(
@@ -105,6 +154,22 @@ export class AgentRelay implements AgentRelayAgent {
 
   asAgent(agentToken: string): AgentRelayAgent {
     return this.as(agentToken);
+  }
+
+  private messagingForToken(token: string): RelayMessaging {
+    let client = this.clientsByToken.get(token);
+    if (!client) {
+      client = new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token });
+      this.clientsByToken.set(token, client);
+    }
+    return client;
+  }
+
+  private createMessagingResolver(): MessagingResolver {
+    return (from) => {
+      const token = resolveAgentToken(from);
+      return token ? this.messagingForToken(token).messages : this.messaging.messages;
+    };
   }
 }
 
@@ -125,15 +190,22 @@ function extractWorkspaceKey(payload: Record<string, unknown>): string | undefin
 }
 
 export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayActions): AgentRelayAgent {
+  // An acting-as agent client sends through its own token; `from` overrides are
+  // best-effort and fall back to this client.
+  const messages = createEnrichedMessages(messaging.messages, () => messaging.messages);
   return {
     messaging,
     actions,
     agents: messaging.agents,
     channels: messaging.channels,
-    messages: messaging.messages,
+    messages,
     threads: messaging.threads,
     inbox: messaging.inbox,
     events: messaging.events,
     deliveries: messaging.deliveries,
+    workspace: createWorkspaceFacade(messaging),
+    sendMessage: (input) => messages.send(input),
+    registerAction: (def) => registerFacadeAction(actions, def),
+    notify: (target, options) => createNotifyHandler(messages, target, options),
   };
 }

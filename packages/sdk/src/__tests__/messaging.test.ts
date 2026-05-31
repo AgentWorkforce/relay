@@ -224,7 +224,8 @@ describe('RelaycastMessagingClient', () => {
 
     expect(relay.messaging).toBe(messaging);
     expect(relay.actions).toBe(actions);
-    expect(relay.messages).toBe(messaging.messages);
+    // relay.messages is the enriched facade layered over the underlying client.
+    expect(Object.getPrototypeOf(relay.messages)).toBe(messaging.messages);
     await expect(relay.agents.list()).resolves.toHaveLength(1);
   });
 
