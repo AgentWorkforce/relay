@@ -6,7 +6,7 @@
  * Run: npx tsx tests/parity/multi-worker.ts
  */
 
-import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
+import { RuntimeClient, type BrokerEvent } from '@agent-relay/sdk';
 import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
 
 const WORKER_COUNT = 3;
@@ -14,7 +14,7 @@ const WORKER_COUNT = 3;
 async function main(): Promise<void> {
   console.log('=== Parity Test: Multiple Workers Communication ===\n');
 
-  const client = await AgentRelayClient.spawn({
+  const client = await RuntimeClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
     env: process.env,

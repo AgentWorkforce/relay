@@ -41,7 +41,7 @@ import type { SpawnOptions } from './spawn/types.js';
 
 /**
  * A minimal interface for sending messages via Agent Relay.
- * Accepts either AgentRelayClient or AgentRelay — any object with a
+ * Accepts either RuntimeClient or AgentRelay — any object with a
  * compatible sendMessage() method.
  */
 export interface RelaySender {

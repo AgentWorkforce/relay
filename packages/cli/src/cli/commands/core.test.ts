@@ -8,7 +8,7 @@ const sdkStatusClient = {
 };
 
 vi.mock('@agent-relay/runtime', () => ({
-  AgentRelayClient: vi.fn().mockImplementation(() => sdkStatusClient),
+  RuntimeClient: vi.fn().mockImplementation(() => sdkStatusClient),
 }));
 
 beforeEach(() => {

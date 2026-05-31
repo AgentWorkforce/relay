@@ -25,7 +25,7 @@ import {
   assertEventOrder,
   assertNoAclDenied,
 } from './utils/assert-helpers.js';
-import { AgentRelayProtocolError } from '@agent-relay/sdk';
+import { RuntimeProtocolError } from '@agent-relay/sdk';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -188,7 +188,7 @@ test('broker: releasing a nonexistent agent returns error', async (t) => {
     await assert.rejects(
       harness.releaseAgent(`nonexistent-${uniqueSuffix()}`),
       (err: Error) => {
-        return err instanceof AgentRelayProtocolError && err.code === 'agent_not_found';
+        return err instanceof RuntimeProtocolError && err.code === 'agent_not_found';
       },
       'releasing a nonexistent agent should throw'
     );

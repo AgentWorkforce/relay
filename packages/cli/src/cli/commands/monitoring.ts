@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { AgentRelayClient } from '@agent-relay/runtime';
+import { RuntimeClient } from '@agent-relay/runtime';
 import { getProjectPaths } from '@agent-relay/config';
 import { generateAgentName } from '@agent-relay/utils';
 
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
-import { createAgentRelayClient, formatTableRow, spawnAgentWithClient } from '../lib/index.js';
+import { createRuntimeClient, formatTableRow, spawnAgentWithClient } from '../lib/index.js';
 import type { HealthPayload } from '../lib/monitoring-health.js';
 
 type ExitFn = (code: number) => never;
@@ -70,16 +70,16 @@ const DEFAULT_DASHBOARD_PORT = process.env.AGENT_RELAY_DASHBOARD_PORT || '3888';
 async function createDefaultMetricsClient(cwd: string): Promise<MonitoringMetricsClient> {
   // Connect to existing broker for read-only metrics queries
   try {
-    const client = AgentRelayClient.connect({ cwd });
+    const client = RuntimeClient.connect({ cwd });
     return client as unknown as MonitoringMetricsClient;
   } catch {
-    const client = await createAgentRelayClient({ cwd });
+    const client = await createRuntimeClient({ cwd });
     return client as unknown as MonitoringMetricsClient;
   }
 }
 
 async function createDefaultProfilerRelay(options: ProfileRelayOptions): Promise<MonitoringProfilerRelay> {
-  const client = await createAgentRelayClient({
+  const client = await createRuntimeClient({
     cwd: options.cwd,
     env: options.env,
   });

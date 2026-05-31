@@ -45,11 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` removes spawn-first, cloud, attach/view/drive/passthrough, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
 - `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
 - `@agent-relay/sdk` removes persona support from the SDK surface: the `./personas` subpath, persona helper/type exports, `AgentRelay.spawnPersona()`, `AgentRelay.getPersonaSpawnPlan()`, and `AgentRelayOptions.personaDirs` are gone. The SDK no longer depends on `@agentworkforce/persona-kit`.
-- `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `AgentRelayClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
+- `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `RuntimeClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
 - `@agent-relay/sdk` removes the high-level `AgentRelay.spawnPty()`, `AgentRelay.spawnHeadless()`, positional `AgentRelay.spawn()`, `AgentRelay.spawnAndWait()`, and shorthand CLI spawners such as `relay.claude.spawn()`. Use `AgentRelay.spawnAgent({ cli, ... })`; `runtime` defaults to `"pty"` and `name` defaults from `cli`.
 - `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
 - `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
 - `sdk-swift`: renamed the broker client class `RelayCast` → `AgentRelayClient`.
+- `@agent-relay/runtime` renames the managed broker client and its companion exports: `AgentRelayClient` → `RuntimeClient`, `AgentRelayClientOptions` → `RuntimeClientOptions`, `AgentRelaySpawnOptions` → `RuntimeSpawnOptions`, `AgentRelayBrokerInitArgs` → `BrokerInitArgs`, `AgentRelayEvents` → `RuntimeEvents`, and `AgentRelayProtocolError` → `RuntimeProtocolError`.
 
 ### Migration Guidance
 
@@ -64,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, …}` instead of `String`. Each newtype impls `From<String>` / `From<&str>` and `Deref<Target = str>`, so most string-handling code keeps compiling; only construction sites (`HashMap` keys, struct literals, channel sends) need updates.
 - Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
 - `sdk-swift`: replace `RelayCast(apiKey:baseURL:)` with `AgentRelayClient(apiKey:baseURL:)`. The public API surface is otherwise unchanged.
+- Import `RuntimeClient` (was `AgentRelayClient`) from `@agent-relay/runtime`; the `connect()`/`spawn()` API is unchanged. Update companion type names (`RuntimeClientOptions`, `RuntimeSpawnOptions`, `BrokerInitArgs`, `RuntimeEvents`, `RuntimeProtocolError`) at import sites.
 
 ### Fixed
 

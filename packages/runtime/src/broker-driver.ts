@@ -1,4 +1,4 @@
-import { AgentRelayClient, type AgentRelaySpawnOptions } from './client.js';
+import { RuntimeClient, type RuntimeSpawnOptions } from './client.js';
 import type { ListAgent, SpawnAgentResult } from './types.js';
 import type {
   AgentDriver,
@@ -23,14 +23,14 @@ function statusFromManagedAgent(agent: ListAgent | SpawnAgentResult | undefined)
   return 'unknown';
 }
 
-export interface BrokerDriverOptions extends AgentRelaySpawnOptions {
-  client?: AgentRelayClient;
+export interface BrokerDriverOptions extends RuntimeSpawnOptions {
+  client?: RuntimeClient;
 }
 
 export class BrokerDriver implements AgentDriver {
   readonly kind = 'broker';
 
-  private client?: AgentRelayClient;
+  private client?: RuntimeClient;
 
   constructor(private readonly options: BrokerDriverOptions = {}) {
     this.client = options.client;
@@ -46,14 +46,14 @@ export class BrokerDriver implements AgentDriver {
     return this.runtimeHandle(client, result);
   }
 
-  private async ensureClient(): Promise<AgentRelayClient> {
+  private async ensureClient(): Promise<RuntimeClient> {
     if (!this.client) {
-      this.client = await AgentRelayClient.spawn(this.options);
+      this.client = await RuntimeClient.spawn(this.options);
     }
     return this.client;
   }
 
-  private runtimeHandle(client: AgentRelayClient, result: SpawnAgentResult): SpawnedAgentRuntime {
+  private runtimeHandle(client: RuntimeClient, result: SpawnAgentResult): SpawnedAgentRuntime {
     return {
       agent: { name: result.name, id: result.sessionId },
       delivery: { mode: 'managed' },

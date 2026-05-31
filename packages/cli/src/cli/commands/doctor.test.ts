@@ -32,7 +32,7 @@ vi.mock('@agent-relay/config', () => ({
 }));
 
 vi.mock('@agent-relay/runtime', () => ({
-  AgentRelayClient: {
+  RuntimeClient: {
     connect: sdkMock.connect,
   },
 }));

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { AgentRelayClient, type BrokerStatus } from '@agent-relay/runtime';
+import { RuntimeClient, type BrokerStatus } from '@agent-relay/runtime';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -140,7 +140,7 @@ function unresolvedTemplate(value: string | undefined): string | null {
 }
 
 async function checkBrokerReliability(): Promise<CheckResult[]> {
-  let client: AgentRelayClient | undefined;
+  let client: RuntimeClient | undefined;
   const paths = getProjectPaths();
   const connection = readBrokerConnectionFile(paths.dataDir);
   const relayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY);
@@ -227,7 +227,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   }
 
   try {
-    client = AgentRelayClient.connect({ cwd: process.cwd() });
+    client = RuntimeClient.connect({ cwd: process.cwd() });
     const status = await client.getStatus();
     const typedStatus = status as BrokerStatus;
     const auth = typedStatus.auth;

@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { AgentRelayClient } from '@agent-relay/runtime';
+import { RuntimeClient } from '@agent-relay/runtime';
 import { RelayCast } from '@relaycast/sdk';
 import { getProjectPaths } from '@agent-relay/config';
 
@@ -804,7 +804,7 @@ async function createDefaultClient(cwd: string): Promise<MessagingBrokerClient> 
     const client = connectProjectBrokerClient(cwd);
     return client as unknown as MessagingBrokerClient;
   } catch {
-    const client = await AgentRelayClient.spawn({ cwd });
+    const client = await RuntimeClient.spawn({ cwd });
     return client as unknown as MessagingBrokerClient;
   }
 }
@@ -815,7 +815,7 @@ async function resolveRelaycastApiKey(cwd: string): Promise<string> {
     return envApiKey;
   }
 
-  let client: AgentRelayClient;
+  let client: RuntimeClient;
   try {
     client = connectProjectBrokerClient(cwd);
   } catch {

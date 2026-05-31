@@ -6,7 +6,7 @@
  * Run: npx tsx tests/parity/stability-soak.ts [--quick]
  */
 
-import { AgentRelayClient, type BrokerEvent } from '@agent-relay/sdk';
+import { RuntimeClient, type BrokerEvent } from '@agent-relay/sdk';
 import { performance } from 'node:perf_hooks';
 import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
 
@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   console.log(`    Duration: ${DURATION_MS / 1000}s, Rate: ${1000 / INTERVAL_MS} msgs/sec`);
   console.log(`    Expected messages: ~${expectedMsgs}\n`);
 
-  const client = await AgentRelayClient.spawn({
+  const client = await RuntimeClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
     env: process.env,

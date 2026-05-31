@@ -9,9 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  AgentRelayClient,
-  type AgentRelayBrokerInitArgs,
-  type AgentRelaySpawnOptions,
+  RuntimeClient,
+  type BrokerInitArgs,
+  type RuntimeSpawnOptions,
   type ListAgent,
   type SendMessageInput,
   type BrokerEvent,
@@ -50,7 +50,7 @@ export interface BrokerHarnessOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if not set. */
   binaryPath?: string;
   /** Structured broker init options mapped to the Rust CLI flags. */
-  binaryArgs?: AgentRelayBrokerInitArgs;
+  binaryArgs?: BrokerInitArgs;
   /** Unique broker name registered in Relaycast. Auto-generated if not set. */
   brokerName?: string;
   /** Channels for the broker to subscribe to. Default: ["general"] */
@@ -78,7 +78,7 @@ export class BrokerHarness {
   /** High-level facade — use for spawning agents, sending messages. */
   relay!: AgentRelay;
   /** Low-level client — use for protocol-level tests. */
-  client!: AgentRelayClient;
+  client!: RuntimeClient;
 
   private readonly opts: Required<BrokerHarnessOptions>;
   private events: BrokerEvent[] = [];
@@ -114,7 +114,7 @@ export class BrokerHarness {
     const apiKey = await ensureApiKey();
     this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
-    const clientOpts: AgentRelaySpawnOptions = {
+    const clientOpts: RuntimeSpawnOptions = {
       binaryPath: this.opts.binaryPath,
       binaryArgs: this.opts.binaryArgs,
       brokerName: this.opts.brokerName,
@@ -124,7 +124,7 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await AgentRelayClient.spawn(clientOpts);
+    this.client = await RuntimeClient.spawn(clientOpts);
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {

@@ -18,7 +18,7 @@ import { createConnection, type Socket } from "node:net";
 import { existsSync, unlinkSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
-  AgentRelayClient,
+  RuntimeClient,
   type BrokerEvent,
 } from "@agent-relay/sdk";
 import {
@@ -170,10 +170,10 @@ async function stopRelayPty(instance: RelayPtyInstance): Promise<void> {
 
 async function startBrokerWithAgent(
   name: string,
-): Promise<{ client: AgentRelayClient; name: string }> {
+): Promise<{ client: RuntimeClient; name: string }> {
   const binaryPath = resolveBinaryPath();
   console.log(`  [broker] binary: ${binaryPath}`);
-  const client = await AgentRelayClient.spawn({
+  const client = await RuntimeClient.spawn({
     binaryPath,
     channels: ["general"],
     env: process.env as Record<string, string>,
@@ -419,7 +419,7 @@ async function testMultiAgent(): Promise<void> {
   console.log(`\n--- Test 4: Multi-Agent Scaling (${MULTI_AGENT_COUNT} agents x ${MULTI_AGENT_MSGS} msgs) ---`);
 
   // Broker side — single broker, multiple agents
-  const brokerClient = await AgentRelayClient.spawn({
+  const brokerClient = await RuntimeClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ["general"],
     env: process.env,

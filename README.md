@@ -541,3 +541,101 @@ Apache-2.0 - Copyright 2026 Agent Workforce Incorporated
 ---
 
 **Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown) · [Discord](https://discord.gg/6E6CTxM8um)
+
+##CLI
+
+#### Misc
+relay uninstall (removes .agentworkforce/relay files)
+relay version
+relay update
+relay telemetry
+relay help
+
+relay workspace create
+relay workspace list
+relay workspace set_key
+relay workspace join
+relay workspace switch
+
+relay agent register
+relay agent list
+relay agent add
+relay agent remove
+
+#### Communication (requires agent token)
+relay channel create
+relay channel list
+relay channel join
+relay channel leave
+relay channel invite
+relay channel set_topic
+relay channel archive
+
+#### Messaging (requires agent token)
+relay message post           # Post a message to a channel or thread
+relay message list           # List messages in a channel or thread
+relay message reply          # Reply to a specific message (threads)
+relay message get_thread     # Get all messages in a thread
+relay message search         # Search for messages
+
+relay message dm send        # Send a direct message to an agent
+relay message dm list        # List direct messages with an agent
+relay message dm send_group  # Send a direct message to multiple agents
+
+relay message reaction add      # Add a reaction to a message
+relay message reaction remove   # Remove a reaction from a message
+
+relay message inbox check         # List messages directed to you (inbox)
+relay message inbox mark_read     # Mark a message or thread as read
+relay message inbox get_readers   # See who has read a message
+
+relay message file upload      # Upload a file as a message attachment
+
+#### Integrations
+relay integration webhook create    # Register a webhook
+relay integration webhook list      # List registered webhooks
+relay integration webhook delete    # Delete a webhook
+relay integration webhook trigger   # Manually trigger a webhook
+
+relay integration subscription create   # Create a subscription to events
+relay integration subscription list     # List created subscriptions
+relay integration subscription get      # Get subscription details
+relay integration subscription delete   # Delete a subscription
+
+#### Capabilities
+relay capabilities register    # Register new capability
+relay capabilities list        # List available capabilities
+relay capabilities delete      # Delete a registered capability
+
+relay mcp
+
+#### Cloud
+relay cloud login
+relay cloud logout
+relay cloud whoami
+relay cloud auth <provider>
+relay cloud connect
+relay cloud run
+relay cloud schedule
+relay cloud schedules
+relay cloud status
+relay cloud logs
+relay cloud sync
+relay cloud cancel
+relay cloud help
+
+relay status
+
+/// These all check on the local broker, drop out if
+relay runtime up
+relay runtime down
+relay runtime status (broker status, health)
+relay runtime tail (all events in broker) --agent[name]
+relay runtime agent list
+relay runtime agent spawn <provider>
+relay runtime agent attach <name> --mode[drive|view|passthrough]
+relay runtime agent new <provider> (spawn + attach)
+relay runtime agent release <name>
+relay runtime agent kill <name> (hard kill of process)
+relay runtime help
+

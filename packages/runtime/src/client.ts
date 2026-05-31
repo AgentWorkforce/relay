@@ -1,13 +1,13 @@
 /**
- * AgentRelayClient — single client for communicating with an agent-relay broker
+ * RuntimeClient — single client for communicating with an agent-relay broker
  * over HTTP/WS. Works identically for local and remote brokers.
  *
  * Usage:
  *   // Remote broker (Daytona sandbox, cloud, etc.)
- *   const client = new AgentRelayClient({ baseUrl, apiKey });
+ *   const client = new RuntimeClient({ baseUrl, apiKey });
  *
  *   // Local broker (spawn and connect)
- *   const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
+ *   const client = await RuntimeClient.spawn({ cwd: '/my/project' });
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -17,7 +17,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   BrokerTransport,
-  AgentRelayProtocolError,
+  RuntimeProtocolError,
   type PtyInputStream,
   type PtyInputStreamOptions,
 } from './transport.js';
@@ -46,7 +46,7 @@ import { EventBus } from './event-bus.js';
 import type {
   AfterAgentReleaseContext,
   AfterAgentSpawnContext,
-  AgentRelayEvents,
+  RuntimeEvents,
   BeforeAgentReleaseContext,
   BeforeAgentSpawnContext,
   BeforeAgentSpawnHandler,
@@ -55,7 +55,7 @@ import type {
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface AgentRelayClientOptions {
+export interface RuntimeClientOptions {
   baseUrl: string;
   apiKey?: string;
   /** Fetch implementation. Defaults to globalThis.fetch. */
@@ -69,7 +69,7 @@ export interface AgentRelayClientOptions {
    * the supplied bus so facade-registered listeners observe call-site
    * hooks fired here.
    */
-  eventBus?: EventBus<AgentRelayEvents>;
+  eventBus?: EventBus<RuntimeEvents>;
 }
 
 export interface BrokerExitInfo {
@@ -83,7 +83,7 @@ export interface BrokerExitInfo {
   recentStderr: string[];
 }
 
-export interface AgentRelayBrokerInitArgs {
+export interface BrokerInitArgs {
   /** Optional HTTP API port for dashboard proxy (0 = disabled). */
   apiPort?: number;
   /** Bind address for the HTTP API. Defaults to 127.0.0.1 in the broker. */
@@ -94,11 +94,11 @@ export interface AgentRelayBrokerInitArgs {
   stateDir?: string;
 }
 
-export interface AgentRelaySpawnOptions {
+export interface RuntimeSpawnOptions {
   /** Path to the agent-relay-broker binary. Auto-resolved if omitted. */
   binaryPath?: string;
   /** Structured options mapped to the broker's Rust `init` CLI flags. */
-  binaryArgs?: AgentRelayBrokerInitArgs;
+  binaryArgs?: BrokerInitArgs;
   /** Broker name. Defaults to cwd basename. */
   brokerName?: string;
   /** Default channels for spawned agents. */
@@ -113,8 +113,8 @@ export interface AgentRelaySpawnOptions {
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
   requestTimeoutMs?: number;
-  /** Optional shared event bus — see {@link AgentRelayClientOptions.eventBus}. */
-  eventBus?: EventBus<AgentRelayEvents>;
+  /** Optional shared event bus — see {@link RuntimeClientOptions.eventBus}. */
+  eventBus?: EventBus<RuntimeEvents>;
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
@@ -176,7 +176,7 @@ function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
 
 /**
  * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
- * Factored out of {@link AgentRelayClient.spawnPty} so the same shape can
+ * Factored out of {@link RuntimeClient.spawnPty} so the same shape can
  * be applied to the post-`beforeAgentSpawn` resolved input.
  */
 function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
@@ -251,7 +251,7 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
-function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
+function buildBrokerInitArgs(args?: BrokerInitArgs): string[] {
   if (!args) {
     return [];
   }
@@ -276,7 +276,7 @@ function buildBrokerInitArgs(args?: AgentRelayBrokerInitArgs): string[] {
 
 // ── Client ─────────────────────────────────────────────────────────────
 
-export class AgentRelayClient {
+export class RuntimeClient {
   private readonly transport: BrokerTransport;
 
   /** Set after spawn() — the managed child process. */
@@ -290,11 +290,11 @@ export class AgentRelayClient {
   /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
   readonly baseUrl: string;
   /** Shared multi-listener registry. Created bare when no `eventBus` is passed in. */
-  readonly eventBus: EventBus<AgentRelayEvents>;
+  readonly eventBus: EventBus<RuntimeEvents>;
 
-  constructor(options: AgentRelayClientOptions) {
+  constructor(options: RuntimeClientOptions) {
     this.baseUrl = options.baseUrl;
-    this.eventBus = options.eventBus ?? new EventBus<AgentRelayEvents>();
+    this.eventBus = options.eventBus ?? new EventBus<RuntimeEvents>();
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
@@ -315,31 +315,28 @@ export class AgentRelayClient {
    * non-void returns.
    */
   addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
-  addListener<K extends keyof AgentRelayEvents>(
+  addListener<K extends keyof RuntimeEvents>(
     event: K,
-    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+    handler: (...args: RuntimeEvents[K]) => void | Promise<void>
   ): () => void;
-  addListener<K extends keyof AgentRelayEvents>(
+  addListener<K extends keyof RuntimeEvents>(
     event: K,
-    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+    handler: ((...args: RuntimeEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.eventBus.addListener(
-      event,
-      handler as (...args: AgentRelayEvents[K]) => void | Promise<void>
-    );
+    return this.eventBus.addListener(event, handler as (...args: RuntimeEvents[K]) => void | Promise<void>);
   }
 
   /** Remove a previously-registered listener. */
   removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
-  removeListener<K extends keyof AgentRelayEvents>(
+  removeListener<K extends keyof RuntimeEvents>(
     event: K,
-    handler: (...args: AgentRelayEvents[K]) => void | Promise<void>
+    handler: (...args: RuntimeEvents[K]) => void | Promise<void>
   ): void;
-  removeListener<K extends keyof AgentRelayEvents>(
+  removeListener<K extends keyof RuntimeEvents>(
     event: K,
-    handler: ((...args: AgentRelayEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+    handler: ((...args: RuntimeEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): void {
-    this.eventBus.removeListener(event, handler as (...args: AgentRelayEvents[K]) => void | Promise<void>);
+    this.eventBus.removeListener(event, handler as (...args: RuntimeEvents[K]) => void | Promise<void>);
   }
 
   /**
@@ -379,8 +376,8 @@ export class AgentRelayClient {
   static connect(options?: {
     cwd?: string;
     connectionPath?: string;
-    eventBus?: EventBus<AgentRelayEvents>;
-  }): AgentRelayClient {
+    eventBus?: EventBus<RuntimeEvents>;
+  }): RuntimeClient {
     const cwd = options?.cwd ?? process.cwd();
     const stateDir = process.env.AGENT_RELAY_STATE_DIR;
     const connPath =
@@ -388,7 +385,7 @@ export class AgentRelayClient {
 
     if (!existsSync(connPath)) {
       throw new Error(
-        `No running broker found (${connPath} does not exist). Start one with 'agent-relay up' or use AgentRelayClient.spawn().`
+        `No running broker found (${connPath} does not exist). Start one with 'agent-relay up' or use RuntimeClient.spawn().`
       );
     }
 
@@ -408,11 +405,11 @@ export class AgentRelayClient {
 
     if (!isProcessRunning(conn.pid)) {
       throw new Error(
-        `Stale broker connection file (${connPath}) points to dead pid ${conn.pid}. Start the broker with 'agent-relay up' or use AgentRelayClient.spawn().`
+        `Stale broker connection file (${connPath}) points to dead pid ${conn.pid}. Start the broker with 'agent-relay up' or use RuntimeClient.spawn().`
       );
     }
 
-    return new AgentRelayClient({
+    return new RuntimeClient({
       baseUrl: conn.url,
       apiKey: conn.api_key,
       ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
@@ -429,7 +426,7 @@ export class AgentRelayClient {
    * 5. Fetches session metadata
    * 6. Starts event stream + lease renewal
    */
-  static async spawn(options?: AgentRelaySpawnOptions): Promise<AgentRelayClient> {
+  static async spawn(options?: RuntimeSpawnOptions): Promise<RuntimeClient> {
     let binaryPath = options?.binaryPath;
     if (!binaryPath) {
       const resolved = getBrokerBinaryPath();
@@ -483,7 +480,7 @@ export class AgentRelayClient {
     });
     drainBrokerStdioAfterStartup(child);
 
-    const client = new AgentRelayClient({
+    const client = new RuntimeClient({
       baseUrl,
       apiKey,
       requestTimeoutMs: options?.requestTimeoutMs,
@@ -582,7 +579,7 @@ export class AgentRelayClient {
   /**
    * Subscribe to managed broker child-process exit.
    *
-   * Clients created with `new AgentRelayClient(...)` or `connect()` do not own a
+   * Clients created with `new RuntimeClient(...)` or `connect()` do not own a
    * broker child process, so this is a no-op for them.
    */
   onBrokerExit(listener: BrokerExitListener): () => void {
@@ -786,7 +783,7 @@ export class AgentRelayClient {
       `/api/spawned/${encodeURIComponent(name)}/delivery-mode`
     );
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
-      throw new AgentRelayProtocolError({
+      throw new RuntimeProtocolError({
         code: 'invalid_response',
         message: "inbound delivery mode response missing valid 'mode'",
       });
@@ -806,7 +803,7 @@ export class AgentRelayClient {
       }
     );
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
-      throw new AgentRelayProtocolError({
+      throw new RuntimeProtocolError({
         code: 'invalid_response',
         message: "set inbound delivery mode response missing valid 'mode'",
       });
@@ -932,7 +929,7 @@ export class AgentRelayClient {
         }),
       });
     } catch (error) {
-      if (error instanceof AgentRelayProtocolError && error.code === 'unsupported_operation') {
+      if (error instanceof RuntimeProtocolError && error.code === 'unsupported_operation') {
         return { event_id: 'unsupported_operation', targets: [] };
       }
       throw error;

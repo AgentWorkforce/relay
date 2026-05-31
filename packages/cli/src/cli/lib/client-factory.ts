@@ -1,10 +1,10 @@
-import { AgentRelayClient, type AgentRelayBrokerInitArgs } from '@agent-relay/runtime';
+import { RuntimeClient, type BrokerInitArgs } from '@agent-relay/runtime';
 
-export interface CreateAgentRelayClientOptions {
+export interface CreateRuntimeClientOptions {
   cwd: string;
   channels?: string[];
   binaryPath?: string;
-  binaryArgs?: AgentRelayBrokerInitArgs;
+  binaryArgs?: BrokerInitArgs;
   brokerName?: string;
   env?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
@@ -23,9 +23,7 @@ export interface ClientSpawnOptions {
   shadowMode?: 'subagent' | 'process';
 }
 
-export async function createAgentRelayClient(
-  options: CreateAgentRelayClientOptions
-): Promise<AgentRelayClient> {
+export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<RuntimeClient> {
   const {
     cwd,
     channels = ['general'],
@@ -38,13 +36,13 @@ export async function createAgentRelayClient(
 
   if (preferConnect) {
     try {
-      return AgentRelayClient.connect({ cwd });
+      return RuntimeClient.connect({ cwd });
     } catch {
       // Fall through to spawning a fresh broker.
     }
   }
 
-  return AgentRelayClient.spawn({
+  return RuntimeClient.spawn({
     binaryPath: binaryPath || undefined,
     binaryArgs,
     brokerName,
@@ -55,7 +53,7 @@ export async function createAgentRelayClient(
 }
 
 export async function spawnAgentWithClient(
-  client: AgentRelayClient,
+  client: RuntimeClient,
   options: ClientSpawnOptions
 ): Promise<void> {
   await client.spawnPty(options);
