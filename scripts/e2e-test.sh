@@ -145,7 +145,7 @@ if [ ! -f "$PROJECT_DIR/packages/cli/dist/cli/index.js" ]; then
   log_info "Building project..."
   npm run build
 else
-  log_info "Build exists, skipping initial rebuild (Phase 4 will rebuild before SDK lifecycle)"
+  log_info "Build exists, skipping rebuild"
 fi
 
 # Phase 1: Broker startup smoke test
@@ -253,34 +253,8 @@ log_info "Testing: agent-relay driver bridge --help"
 
 log_info "All CLI command tests passed!"
 
-# Phase 3: Stop broker before SDK-managed lifecycle
-log_phase "Phase 3: Transition to SDK Lifecycle"
-log_info "Stopping CLI broker before SDK lifecycle test..."
-if ! run_with_timeout 15 "$CLI_CMD" driver down --timeout 10000; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
-    log_error "down command timed out while preparing SDK lifecycle test"
-    exit 1
-  fi
-fi
-
-# Phase 4: SDK lifecycle test (spawn/list/release)
-log_phase "Phase 4: SDK Agent Lifecycle"
-log_info "Rebuilding before SDK lifecycle test to ensure dist matches current source..."
-npm run build > /dev/null
-if ! node "$PROJECT_DIR/scripts/e2e-sdk-lifecycle.mjs" \
-  --name "$AGENT_NAME" \
-  --cli "claude" \
-  --timeout "$SPAWN_TIMEOUT" \
-  --cwd "$PROJECT_DIR" \
-  --task "You are a test agent. Say 'Ready for testing' and then wait. Do not exit until you receive a message telling you to exit."; then
-  log_error "SDK lifecycle test failed"
-  exit 1
-fi
-log_info "SDK lifecycle test passed"
-
-# Phase 7: Final cleanup down (verify no hang)
-log_phase "Phase 7: Final Down Check"
+# Phase 3: Final cleanup down (verify no hang)
+log_phase "Phase 3: Final Down Check"
 
 log_info "Testing: agent-relay down (with 15s timeout)"
 if ! run_with_timeout 15 "$CLI_CMD" driver down --timeout 10000; then

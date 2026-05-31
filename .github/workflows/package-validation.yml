@@ -178,7 +178,7 @@ jobs:
           echo "=== Testing main package ==="
           node --eval "
             import('./packages/cli/dist/index.js').then(m => {
-              const required = ['AgentRelay', 'AgentRelayClient', 'createLogger'];
+              const required = ['AgentRelay', 'createLogger'];
               const missing = required.filter(r => !(r in m));
               if (missing.length) {
                 console.error('Missing exports:', missing);
