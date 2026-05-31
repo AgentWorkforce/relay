@@ -21,6 +21,7 @@ beforeEach(() => {
 
 import {
   registerCoreCommands,
+  registerCoreTopLevelAliases,
   type BridgeProject,
   type CoreDependencies,
   type CoreFileSystem,
@@ -200,8 +201,9 @@ describe('registerCoreCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(
-      expect.arrayContaining(['up', 'start', 'down', 'status', 'uninstall', 'version', 'update', 'bridge'])
+    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status']));
+    expect(commandNames).not.toEqual(
+      expect.arrayContaining(['start', 'bridge', 'uninstall', 'version', 'update'])
     );
   });
 
@@ -237,27 +239,6 @@ describe('registerCoreCommands', () => {
     expect(dashboardArgs).not.toContain('--no-spawn');
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
-  });
-
-  it('start dashboard.js logs a focused cli-tools dashboard URL', async () => {
-    const relay = createRelayMock({
-      getStatus: vi.fn(async () => ({ agent_count: 1, pending_delivery_count: 0 })),
-    });
-    const { program, deps } = createHarness({ relay });
-
-    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 5000, undefined);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/local/bin/relay-dashboard-server',
-      expect.arrayContaining(['--port', '4999', '--relay-url', 'http://127.0.0.1:5000']),
-      expect.any(Object)
-    );
-    const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(logCalls).toEqual(
-      expect.arrayContaining([['Dashboard: http://localhost:4999/dev/cli-tools?tool=claude']])
-    );
   });
 
   it('up exits early when connection metadata points to a running process', async () => {
@@ -1169,7 +1150,9 @@ describe('registerCoreCommands', () => {
   });
 
   it('version prints current version', async () => {
-    const { program, deps } = createHarness();
+    const { deps } = createHarness();
+    const program = new Command();
+    registerCoreTopLevelAliases(program, deps);
 
     const exitCode = await runCommand(program, ['version']);
 
@@ -1178,47 +1161,17 @@ describe('registerCoreCommands', () => {
   });
 
   it('update in --check mode reports available version without installing', async () => {
-    const { program, deps } = createHarness({
+    const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
     });
+    const program = new Command();
+    registerCoreTopLevelAliases(program, deps);
 
     const exitCode = await runCommand(program, ['update', '--check']);
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('New version available: 2.0.0');
     expect(deps.execCommand).not.toHaveBeenCalled();
-  });
-
-  it('bridge connects projects and spawns architect with model override', async () => {
-    const projectA: BridgeProject = { id: 'alpha', path: '/tmp/alpha', leadName: 'LeadA' };
-    const projectB: BridgeProject = { id: 'beta', path: '/tmp/beta', leadName: 'LeadB' };
-
-    const relayA = createRelayMock();
-    const relayB = createRelayMock();
-
-    const createRelay = vi.fn((cwd: string) => (cwd === '/tmp/alpha' ? relayA : relayB));
-
-    const { program } = createHarness({
-      bridgeProjects: [projectA, projectB],
-      validBridgeProjects: [projectA, projectB],
-      createRelay: createRelay as unknown as CoreDependencies['createRelay'],
-    });
-
-    const exitCode = await runCommand(program, [
-      'bridge',
-      '--architect=claude:sonnet',
-      '/tmp/alpha',
-      '/tmp/beta',
-    ]);
-
-    expect(exitCode).toBeUndefined();
-    expect(relayA.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'Architect',
-        cli: 'claude',
-        args: ['--model', 'sonnet'],
-      })
-    );
   });
 
   it('up always logs the workspace key after broker starts', async () => {
@@ -1307,29 +1260,6 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: unknown');
   });
 
-  it('start dashboard.js logs workspace key when reusing existing broker', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
-    const fs = createFsMock({ [connectionPath]: connectionFile(3030) });
-    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
-      if (pid === 3030 && (signal === 0 || signal === undefined)) {
-        return; // process is running
-      }
-      if (signal === 'SIGTERM') {
-        return;
-      }
-    });
-    const relay = createRelayMock({ workspaceKey: 'rk_live_reused' });
-    const { program, deps } = createHarness({ fs, killImpl, relay });
-
-    const exitCode = await runCommand(program, ['start', 'dashboard.js', 'claude', '--port', '4999']);
-
-    expect(exitCode).toBeUndefined();
-    expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_reused');
-    expect(deps.log).toHaveBeenCalledWith(
-      'Broker already running for this project; reusing existing broker.'
-    );
-  });
-
   it('up --workspace-key overrides existing workspace key env vars', async () => {
     const env: NodeJS.ProcessEnv = { RELAY_API_KEY: 'rk_live_old' };
     const relay = createRelayMock({ workspaceKey: 'rk_live_new' });
@@ -1349,18 +1279,4 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
   });
 
-  it('bridge exits when no projects have running brokers', async () => {
-    const projectA: BridgeProject = { id: 'alpha', path: '/tmp/alpha', leadName: 'LeadA' };
-
-    const { program, deps } = createHarness({
-      bridgeProjects: [projectA],
-      validBridgeProjects: [],
-      missingBridgeProjects: [projectA],
-    });
-
-    const exitCode = await runCommand(program, ['bridge', '/tmp/alpha']);
-
-    expect(exitCode).toBe(1);
-    expect(deps.error).toHaveBeenCalledWith('No projects have running brokers. Start them first.');
-  });
 });

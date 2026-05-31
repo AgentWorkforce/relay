@@ -15,9 +15,7 @@ import {
 } from '@agent-relay/config';
 import type { BrokerInitArgs } from '@agent-relay/runtime';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
-import { track } from '@agent-relay/telemetry';
 
-import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
@@ -356,17 +354,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
   };
 }
 
-function buildDashboardHarnessPath(cliTool?: string): string | undefined {
-  const trimmed = cliTool?.trim();
-  if (!trimmed) return '/dev/cli-tools';
-
-  return `/dev/cli-tools?tool=${encodeURIComponent(trimmed)}`;
-}
-
-function isSupportedDashboardTarget(target: string): boolean {
-  return target === 'dashboard.js' || target === 'dashboard';
-}
-
 export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
@@ -400,34 +387,6 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     );
 
   program
-    .command('start')
-    .description('Start focused test harnesses (for example: start dashboard.js claude)')
-    .argument('<target>', 'Harness target name')
-    .argument('[cli]', 'Optional CLI tool to focus')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-    .option('--verbose', 'Enable verbose logging')
-    .action(
-      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
-        if (!isSupportedDashboardTarget(target.toLowerCase())) {
-          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
-          deps.exit(1);
-        }
-
-        await runUpCommand(
-          {
-            dashboard: true,
-            port: options.port,
-            verbose: options.verbose,
-            background: false,
-            dashboardPath: buildDashboardHarnessPath(cli),
-            reuseExistingBroker: true,
-          },
-          deps
-        );
-      }
-    );
-
-  program
     .command('down')
     .description('Stop broker')
     .option('--force', 'Force cleanup even if process is stuck')
@@ -445,58 +404,6 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
     .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
-    });
-
-  program
-    .command('uninstall')
-    .description('Remove agent-relay data, configuration, and global binaries')
-    .option('--keep-data', 'Keep message history and database (only remove runtime files)')
-    .option('--zed', 'Also remove Zed editor configuration')
-    .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
-    .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
-    .option('--force', 'Skip confirmation prompt')
-    .option('--dry-run', 'Show what would be removed without actually removing')
-    .action(
-      async (options: {
-        keepData?: boolean;
-        zed?: boolean;
-        zedName?: string;
-        snippets?: boolean;
-        force?: boolean;
-        dryRun?: boolean;
-      }) => {
-        await runUninstallCommand(options, deps);
-      }
-    );
-
-  program
-    .command('version', { hidden: true })
-    .description('Show version information')
-    .action(() => {
-      deps.log(`agent-relay v${deps.getVersion()}`);
-    });
-
-  program
-    .command('update')
-    .description('Check for updates and install if available')
-    .option('--check', 'Only check for updates, do not install')
-    .action(async (options: { check?: boolean }) => {
-      await runUpdateCommand(options, deps);
-    });
-
-  program
-    .command('bridge')
-    .description('Bridge multiple projects as orchestrator')
-    .argument('[projects...]', 'Project paths to bridge')
-    .option('--cli <tool>', 'CLI tool override for all projects')
-    .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
-    .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
-      track('bridge_spawn', {
-        project_count: projectPaths.length,
-        cli: options.cli ?? 'default',
-        has_architect: options.architect !== undefined && options.architect !== false,
-      });
-      await runBridgeCommand(projectPaths, options, deps);
     });
 }
 

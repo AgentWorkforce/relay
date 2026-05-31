@@ -6,13 +6,8 @@ import { createProgram } from './bootstrap.js';
 const expectedLeafCommands = [
   // runtime/driver group (driver is aliased to runtime)
   'driver up',
-  'driver start',
   'driver down',
   'driver status',
-  'driver uninstall',
-  'driver version',
-  'driver update',
-  'driver bridge',
   'driver agent list',
   'driver agent spawn',
   'driver agent new',
