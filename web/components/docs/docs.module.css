@@ -11,6 +11,12 @@
     color 0.3s ease;
 }
 
+/* Code-block surface for the docs scope (dark only). Flows into <pre>,
+   .shiki, code groups, and the tab header via the --code-bg token. */
+:global(html[data-theme='dark']) .docsPage {
+  --code-bg: #0b1c2a;
+}
+
 .docsBody {
   --docs-rail-top-padding: 1.5rem;
   --docs-content-top-padding: 2.75rem;
@@ -504,14 +510,36 @@
   font-weight: 700;
   color: var(--fg);
   margin: 2.5rem 0 0.75rem;
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.45rem;
+  border-bottom: none;
+  /* Fading gradient hairline, matching the landing-page section rules. */
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--primary) 42%, transparent),
+    color-mix(in srgb, var(--primary) 12%, transparent) 55%,
+    transparent
+  );
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 1px;
 }
 
 .article h3 {
   font-size: 1.1rem;
   font-weight: 600;
   margin: 1.8rem 0 0.5rem;
+}
+
+.article hr {
+  height: 1px;
+  margin: 2.75rem 0;
+  border: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary) 32%, transparent) 50%,
+    transparent
+  );
 }
 .article p {
   margin: 0.75rem 0;
@@ -783,15 +811,16 @@
   gap: 0.9rem;
   margin: 1.35rem 0 1.55rem;
   padding: 0rem 0.95rem;
-  border: none;
+  border: 1.5px solid #234969;
   border-radius: 999px;
-  background: var(--btn-bg);
+  background: #2d6a9c;
   color: var(--primary-fg);
   text-decoration: none;
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
+  box-shadow: none;
   transition:
-    box-shadow 0.15s ease,
-    background 0.15s ease,
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease,
     color 0.15s ease;
 }
 
@@ -802,8 +831,10 @@
 }
 
 .bannerLink:hover {
-  background: var(--btn-hover);
-  box-shadow: 0 2px 12px color-mix(in srgb, var(--btn-bg) 25%, transparent);
+  background: #4a90c2;
+  border-color: #234969;
+  transform: translateY(-1px);
+  box-shadow: none;
 }
 
 .bannerLinkIconWrap {
@@ -848,31 +879,33 @@
   margin: 1.25rem 0;
 }
 
+/* Flat, refined dark panels — a faint top sheen and a hairline cool-blue
+   border, matching the event-feed surfaces. Colour is reserved for tiny
+   semantic accents, not the card body. */
 .card {
   position: relative;
   display: block;
   min-height: 100%;
-  padding: 1.05rem 1.15rem 1rem;
-  border: 1px solid color-mix(in srgb, var(--card-border) 88%, var(--primary) 12%);
-  border-radius: 1rem;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 88%, white 12%), var(--card-bg));
+  padding: 1rem 1.15rem 0.95rem;
+  border: 1px solid var(--card-border);
+  border-radius: 0.7rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 94%, white 6%), var(--card-bg));
   text-decoration: none;
   color: inherit;
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
-    0 2px 10px color-mix(in srgb, black 10%, transparent);
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 1px 3px color-mix(in srgb, black 16%, transparent);
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease,
-    transform 0.15s ease,
-    background 0.15s ease;
+    transform 0.15s ease;
 }
 
 .card:hover {
   border-color: var(--card-hover-border);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
-    0 10px 28px color-mix(in srgb, var(--primary) 10%, transparent);
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 4px 14px color-mix(in srgb, black 22%, transparent);
   transform: translateY(-1px);
 }
 
@@ -883,6 +916,8 @@
 }
 
 .cardHeader {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -914,6 +949,8 @@
 }
 
 .cardBody {
+  position: relative;
+  z-index: 1;
   font-size: 0.92rem;
   color: var(--fg-muted);
   margin: 0;

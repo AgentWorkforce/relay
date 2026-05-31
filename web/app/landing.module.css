@@ -3766,26 +3766,15 @@
     height: 1.7rem;
   }
 
-  .agentPromptCopy {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
+  /* Keep the prompt box as a single row so Copy stays inline, matching the
+     install command above it. The hover-reveal "Show prompt" toggle isn't
+     reachable on touch, so it stays out of the flow on small screens. */
   .agentPromptActions {
-    width: 100%;
-    justify-content: space-between;
+    flex-shrink: 0;
   }
 
-  .agentPromptShow {
-    position: static;
-    transform: translateX(4px);
-  }
-
-  .agentPromptCopy:hover .agentPromptShow,
-  .agentPromptCopy:focus .agentPromptShow,
-  .agentPromptCopy:focus-within .agentPromptShow,
-  .agentPromptCopy[data-prompt-open='true'] .agentPromptShow {
-    transform: translateX(0);
+  .agentPromptText {
+    padding-right: 8px;
   }
 
   .selfManageCard {

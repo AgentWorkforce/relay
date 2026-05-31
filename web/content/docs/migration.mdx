@@ -77,7 +77,7 @@ The runtime package registers `agent.create`. Core owns the action protocol, not
 Before:
 
 ```ts
-const client = await AgentRelayClient.spawn({ cwd: process.cwd() });
+const client = await RuntimeClient.spawn({ cwd: process.cwd() });
 await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
 ```
 
