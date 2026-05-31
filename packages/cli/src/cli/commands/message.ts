@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+import { InvalidArgumentError, type Command } from 'commander';
 
 import {
   addSdkOptions,
@@ -10,6 +10,17 @@ import {
 } from '../lib/sdk-command.js';
 
 export type MessageCommandDependencies = SdkCommandDeps;
+
+function parseLimit(value: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new InvalidArgumentError('limit must be a positive integer');
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (parsed < 1) {
+    throw new InvalidArgumentError('limit must be a positive integer');
+  }
+  return parsed;
+}
 
 export function registerMessageCommands(
   program: Command,
@@ -38,7 +49,7 @@ export function registerMessageCommands(
       .command('list')
       .description('List messages in a channel')
       .argument('<channel>', 'Channel name')
-      .option('--limit <n>', 'Max messages', (v) => Number.parseInt(v, 10))
+      .option('--limit <n>', 'Max messages', parseLimit)
   ).action(async (channel: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       printJson(
@@ -78,7 +89,7 @@ export function registerMessageCommands(
       .argument('<query>', 'Search query')
       .option('--channel <channel>', 'Restrict to a channel')
       .option('--from <agent>', 'Restrict to a sender')
-      .option('--limit <n>', 'Max results', (v) => Number.parseInt(v, 10))
+      .option('--limit <n>', 'Max results', parseLimit)
   ).action(async (query: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       printJson(
@@ -112,7 +123,7 @@ export function registerMessageCommands(
       .command('list')
       .description('List direct messages in a conversation')
       .argument('<conversationId>', 'Conversation id')
-      .option('--limit <n>', 'Max messages', (v) => Number.parseInt(v, 10))
+      .option('--limit <n>', 'Max messages', parseLimit)
   ).action(async (conversationId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       printJson(
@@ -174,7 +185,7 @@ export function registerMessageCommands(
     inbox
       .command('check')
       .description('List messages directed to you')
-      .option('--limit <n>', 'Max items', (v) => Number.parseInt(v, 10))
+      .option('--limit <n>', 'Max items', parseLimit)
   ).action(async (o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       printJson(

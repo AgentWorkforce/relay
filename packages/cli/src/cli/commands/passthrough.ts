@@ -70,7 +70,7 @@ export type PassthroughWebSocketFactory = (
 ) => PassthroughWebSocket;
 
 export interface PassthroughSignalRegistrar {
-  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void;
+  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void | (() => void);
 }
 
 export interface PassthroughStdin {
@@ -121,7 +121,9 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
       process.stdout.write(chunk);
     },
     onSignal: (signal, handler) => {
-      process.on(signal, () => runSignalHandler(handler));
+      const listener = () => runSignalHandler(handler);
+      process.on(signal, listener);
+      return () => process.off(signal, listener);
     },
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -335,6 +337,7 @@ export async function runPassthroughSession(
     let unsubscribeResize: (() => void) | null = null;
     const parser = new PassthroughKeybindParser();
     let inputStream: CliPtyInputStream | null = null;
+    const cleanupSignals: Array<() => void> = [];
 
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
@@ -422,6 +425,13 @@ export async function runPassthroughSession(
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      for (const cleanup of cleanupSignals.splice(0)) {
+        try {
+          cleanup();
+        } catch {
+          // best effort
+        }
+      }
       teardownStdin();
       closeInputStream();
       try {
@@ -461,8 +471,10 @@ export async function runPassthroughSession(
       }
     };
 
-    deps.onSignal('SIGINT', () => finish(0));
-    deps.onSignal('SIGTERM', () => finish(0));
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      const cleanup = deps.onSignal(signal, () => finish(0));
+      if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
+    }
 
     socket.on('open', () => {
       deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
@@ -485,6 +497,7 @@ export async function runPassthroughSession(
 
     socket.on('error', (err: Error) => {
       deps.error(`[passthrough] WebSocket error: ${err.message}`);
+      finish(1);
     });
 
     socket.on('close', (code: number, reason: Buffer) => {

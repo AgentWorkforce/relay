@@ -676,6 +676,20 @@ describe('runDriveSession', () => {
     expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
   });
 
+  it('treats WebSocket errors as fatal and restores delivery mode', async () => {
+    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'auto_inject' });
+    const sessionPromise = runDriveSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    socket.emit('error', new Error('boom'));
+    const code = await sessionPromise;
+    expect(code).toBe(1);
+    expect(errors.some((args) => String(args[0]).includes('WebSocket error: boom'))).toBe(true);
+
+    const modeCalls = fetchLog.filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));
+    expect(modeCalls.map((c) => c.body)).toEqual([{ mode: 'manual_flush' }, { mode: 'auto_inject' }]);
+  });
+
   it('proceeds when the worker is already in manual_flush mode (re-attach scenario)', async () => {
     const { deps, sockets, stdin, fetchLog } = createHarness({ initialMode: 'manual_flush' });
     const sessionPromise = runDriveSession('Alice', {}, deps);

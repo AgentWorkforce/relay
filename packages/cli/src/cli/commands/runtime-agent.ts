@@ -113,7 +113,7 @@ export function registerRuntimeAgentCommands(
 
   agent
     .command('new')
-    .description('Spawn an agent and attach to it')
+    .description('Spawn an agent and print attach instructions')
     .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .action(async (provider: string, opts: Record<string, unknown>) => {

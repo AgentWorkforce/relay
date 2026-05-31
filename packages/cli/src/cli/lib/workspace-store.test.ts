@@ -9,6 +9,7 @@ import {
   readWorkspaceStore,
   setWorkspaceKey,
   switchWorkspace,
+  workspaceStorePath,
 } from './workspace-store.js';
 
 let dir: string;
@@ -39,5 +40,22 @@ describe('workspace store', () => {
 
   it('throws when switching to an unknown workspace', () => {
     expect(() => switchWorkspace('nope')).toThrow(/Unknown workspace/);
+  });
+
+  it('writes the store with owner-only permissions', () => {
+    setWorkspaceKey('ops', 'rk_ops');
+    const mode = fs.statSync(workspaceStorePath()).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it('rejects reserved object-property workspace names', () => {
+    expect(() => setWorkspaceKey('__proto__', 'rk_bad')).toThrow(/Invalid workspace name/);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('does not hide malformed store JSON', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(workspaceStorePath(), '{not-json');
+    expect(() => readWorkspaceStore()).toThrow();
   });
 });

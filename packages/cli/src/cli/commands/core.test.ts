@@ -191,9 +191,9 @@ describe('registerCoreCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status']));
+    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'start']));
     expect(commandNames).not.toEqual(
-      expect.arrayContaining(['start', 'bridge', 'uninstall', 'version', 'update'])
+      expect.arrayContaining(['bridge', 'uninstall', 'version', 'update'])
     );
   });
 

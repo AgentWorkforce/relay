@@ -25,6 +25,9 @@ import { registerChannelCommands } from './commands/channel.js';
 import { registerMessageCommands } from './commands/message.js';
 import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
+import { registerViewCommands } from './commands/view.js';
+import { registerDriveCommands } from './commands/drive.js';
+import { registerPassthroughCommands } from './commands/passthrough.js';
 
 dotenvConfig({ quiet: true });
 
@@ -275,6 +278,9 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerMessageCommands(program);
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
+  registerViewCommands(program);
+  registerDriveCommands(program);
+  registerPassthroughCommands(program);
 
   program
     .command('mcp')

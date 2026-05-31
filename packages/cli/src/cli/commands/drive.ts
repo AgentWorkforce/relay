@@ -70,7 +70,7 @@ export interface DriveWebSocket {
 export type DriveWebSocketFactory = (url: string, headers: Record<string, string>) => DriveWebSocket;
 
 export interface DriveSignalRegistrar {
-  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void;
+  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void | (() => void);
 }
 
 /** Stdin surface — tests provide a fake that never touches the real TTY. */
@@ -152,7 +152,9 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
       process.stdout.write(chunk);
     },
     onSignal: (signal, handler) => {
-      process.on(signal, () => runSignalHandler(handler));
+      const listener = () => runSignalHandler(handler);
+      process.on(signal, listener);
+      return () => process.off(signal, listener);
     },
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -497,6 +499,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let terminalRows = state.initialTerminalRows;
     const parser = new KeybindParser();
     let inputStream: CliPtyInputStream | null = null;
+    const cleanupSignals: Array<() => void> = [];
 
     const paintStatus = (): void => {
       deps.writeChunk(
@@ -620,6 +623,13 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      for (const cleanup of cleanupSignals.splice(0)) {
+        try {
+          cleanup();
+        } catch {
+          // best effort
+        }
+      }
       teardownStdin();
       closeInputStream();
       try {
@@ -662,8 +672,10 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       }
     };
 
-    deps.onSignal('SIGINT', () => finish(0));
-    deps.onSignal('SIGTERM', () => finish(0));
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      const cleanup = deps.onSignal(signal, () => finish(0));
+      if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
+    }
 
     socket.on('open', () => {
       deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
@@ -699,6 +711,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
 
     socket.on('error', (err: Error) => {
       deps.error(`[drive] WebSocket error: ${err.message}`);
+      finish(1);
     });
 
     socket.on('close', (code: number, reason: Buffer) => {

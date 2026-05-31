@@ -15,9 +15,14 @@ type PageProps = {
 
 function formatDate(value: string): string | undefined {
   if (!value) return undefined;
-  const parsed = new Date(value);
+  const parsed = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  return parsed.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 export default async function BlogPostOpenGraphImage({ params }: PageProps) {

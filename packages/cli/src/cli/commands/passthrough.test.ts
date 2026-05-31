@@ -544,6 +544,22 @@ describe('runPassthroughSession', () => {
     expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush' }]);
   });
 
+  it('treats WebSocket errors as fatal and restores delivery mode', async () => {
+    const { deps, sockets, fetchLog, errors } = createHarness({ initialMode: 'manual_flush' });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    socket.emit('error', new Error('boom'));
+    const code = await sessionPromise;
+    expect(code).toBe(1);
+    expect(errors.some((args) => String(args[0]).includes('WebSocket error: boom'))).toBe(true);
+
+    const flips = fetchLog
+      .filter((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'))
+      .map((c) => c.body);
+    expect(flips).toEqual([{ mode: 'auto_inject' }, { mode: 'manual_flush' }]);
+  });
+
   it('exits cleanly on SIGINT', async () => {
     const { deps, sockets, signals, stdin } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);

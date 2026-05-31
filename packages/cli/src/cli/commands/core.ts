@@ -327,6 +327,47 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
   };
 }
 
+function buildDashboardHarnessPath(cliTool?: string): string | undefined {
+  const trimmed = cliTool?.trim();
+  if (!trimmed) return '/dev/cli-tools';
+
+  return `/dev/cli-tools?tool=${encodeURIComponent(trimmed)}`;
+}
+
+function isSupportedDashboardTarget(target: string): boolean {
+  return target === 'dashboard.js' || target === 'dashboard';
+}
+
+function registerStartHarnessCommand(program: Command, deps: CoreDependencies): void {
+  program
+    .command('start')
+    .description('Start focused test harnesses (for example: start dashboard.js claude)')
+    .argument('<target>', 'Harness target name')
+    .argument('[cli]', 'Optional CLI tool to focus')
+    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+    .option('--verbose', 'Enable verbose logging')
+    .action(
+      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
+        if (!isSupportedDashboardTarget(target.toLowerCase())) {
+          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
+          deps.exit(1);
+        }
+
+        await runUpCommand(
+          {
+            dashboard: true,
+            port: options.port,
+            verbose: options.verbose,
+            background: false,
+            dashboardPath: buildDashboardHarnessPath(cli),
+            reuseExistingBroker: true,
+          },
+          deps
+        );
+      }
+    );
+}
+
 export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
@@ -378,6 +419,8 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
     });
+
+  registerStartHarnessCommand(program, deps);
 }
 
 /**
@@ -437,4 +480,6 @@ export function registerCoreTopLevelAliases(
         await runUninstallCommand(options, deps);
       }
     );
+
+  registerStartHarnessCommand(program, deps);
 }

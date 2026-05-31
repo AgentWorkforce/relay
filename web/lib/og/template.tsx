@@ -51,7 +51,7 @@ export type LoadedFonts = {
 const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?\'’"#·—–-→@()/&%';
 
 /**
- * Fetch a Google Font TTF for embedding into the OG image.
+ * Fetch a Google Font for embedding into the OG image.
  *
  * next/og (satori) cannot resolve `next/font` output, and the brand fonts (Sora
  * for headings, Inter for body) ship only as Google Fonts. The documented
@@ -66,14 +66,17 @@ async function loadGoogleFont(family: string, weight: number, text: string): Pro
     )}:wght@${weight}&text=${encodeURIComponent(text)}`;
     const cssResponse = await fetch(url, {
       headers: {
-        // Ask Google for a static TTF (satori cannot parse woff2).
+        // Avoid modern Chrome UA strings here: Google Fonts returns woff2,
+        // which satori cannot parse. This older WebKit UA returns woff.
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)',
       },
     });
     if (!cssResponse.ok) return null;
     const css = await cssResponse.text();
-    const match = css.match(/src:\s*url\(([^)]+)\)\s*format\(['"]?(?:truetype|opentype)['"]?\)/);
+    const match = css.match(/src:\s*url\(([^)]+)\)(?:\s*format\(['"]?([^'")]+)['"]?\))?/);
+    const format = match?.[2];
+    if (format && !['truetype', 'opentype', 'woff'].includes(format)) return null;
     const fontUrl = match?.[1];
     if (!fontUrl) return null;
     const fontResponse = await fetch(fontUrl);
@@ -107,7 +110,7 @@ export async function loadBrandFonts(): Promise<LoadedFonts> {
 
   return {
     fonts,
-    headingFamily: soraBold ? 'Sora' : HEADING_FAMILY_FALLBACK,
+    headingFamily: soraBold || soraExtraBold ? 'Sora' : HEADING_FAMILY_FALLBACK,
     bodyFamily: interRegular || interMedium ? 'Inter' : BODY_FAMILY_FALLBACK,
   };
 }

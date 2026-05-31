@@ -8,6 +8,7 @@ const expectedLeafCommands = [
   'driver up',
   'driver down',
   'driver status',
+  'driver start',
   'driver agent list',
   'driver agent spawn',
   'driver agent new',
@@ -20,6 +21,10 @@ const expectedLeafCommands = [
   'version',
   'update',
   'uninstall',
+  'start',
+  'view',
+  'drive',
+  'passthrough',
   'mcp',
   // messaging (legacy flat) + monitoring + setup
   'send',
@@ -136,6 +141,10 @@ describe('bootstrap CLI', () => {
         'version',
         'update',
         'uninstall',
+        'start',
+        'view',
+        'drive',
+        'passthrough',
         'mcp',
         'send',
         'read',
@@ -151,7 +160,7 @@ describe('bootstrap CLI', () => {
       ])
     );
     expect(topLevelCommands).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'drive', 'rm'])
+      expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'rm'])
     );
   });
 
@@ -161,7 +170,7 @@ describe('bootstrap CLI', () => {
 
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
     expect(leafCommandPaths).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'swarm', 'drive', 'new'])
+      expect.arrayContaining(['spawn', 'agents', 'swarm', 'new'])
     );
 
     // `runtime` is an alias of `driver`, so its leaves are not double-counted.

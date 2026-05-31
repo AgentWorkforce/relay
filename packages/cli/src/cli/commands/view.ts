@@ -51,7 +51,7 @@ export interface ViewWebSocket {
 export type ViewWebSocketFactory = (url: string, headers: Record<string, string>) => ViewWebSocket;
 
 export interface ViewSignalRegistrar {
-  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void;
+  (signal: NodeJS.Signals, handler: () => void | Promise<void>): void | (() => void);
 }
 
 export interface ViewDependencies {
@@ -107,7 +107,9 @@ function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependenci
       process.stdout.write(chunk);
     },
     onSignal: (signal, handler) => {
-      process.on(signal, () => runSignalHandler(handler));
+      const listener = () => runSignalHandler(handler);
+      process.on(signal, listener);
+      return () => process.off(signal, listener);
     },
     log: (...args: unknown[]) => console.error(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -144,16 +146,16 @@ export function resolveViewBrokerConnection(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
   deps: ViewDependencies
 ): ViewBrokerConnection | null {
-  const explicitUrl = options.brokerUrl?.trim();
-  const envUrl = deps.env.RELAY_BROKER_URL?.trim();
+  const explicitUrl = trimOrUndefined(options.brokerUrl);
+  const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
   const stateDir = options.stateDir ? path.resolve(options.stateDir) : deps.getDefaultStateDir();
   const connectionFile = deps.readConnectionFile(stateDir);
   const fileUrl = readString(connectionFile, 'url');
 
   const resolveApiKey = (): string | undefined => {
-    const explicit = options.apiKey?.trim();
+    const explicit = trimOrUndefined(options.apiKey);
     if (explicit) return explicit;
-    const fromEnv = deps.env.RELAY_BROKER_API_KEY?.trim();
+    const fromEnv = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
     if (fromEnv) return fromEnv;
     return readString(connectionFile, 'api_key');
   };
@@ -165,6 +167,11 @@ export function resolveViewBrokerConnection(
     url: url.replace(/\/+$/, ''),
     apiKey: resolveApiKey(),
   };
+}
+
+function trimOrUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /** Convert an `http(s)://host:port` base URL to the matching `ws(s)://…/ws`. */
@@ -260,9 +267,17 @@ export async function runViewSession(
 
   return new Promise<number>((resolve) => {
     let settled = false;
+    const cleanupSignals: Array<() => void> = [];
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
+      for (const cleanup of cleanupSignals.splice(0)) {
+        try {
+          cleanup();
+        } catch {
+          // best effort
+        }
+      }
       try {
         socket.close(1000, 'view client exiting');
       } catch {
@@ -273,8 +288,10 @@ export async function runViewSession(
 
     const socket = deps.createWebSocket(wsUrl, headers);
 
-    deps.onSignal('SIGINT', () => finish(0));
-    deps.onSignal('SIGTERM', () => finish(0));
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      const cleanup = deps.onSignal(signal, () => finish(0));
+      if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
+    }
 
     socket.on('open', () => {
       deps.log(`[view] streaming ${name} from ${connection.url} (Ctrl+C to exit)`);
@@ -291,6 +308,7 @@ export async function runViewSession(
 
     socket.on('error', (err: Error) => {
       deps.error(`[view] WebSocket error: ${err.message}`);
+      finish(1);
     });
 
     socket.on('close', (code: number, reason: Buffer) => {

@@ -203,6 +203,16 @@ describe('resolveViewBrokerConnection', () => {
     expect(conn).toEqual({ url: 'http://env-host:1234', apiKey: 'env-key' });
   });
 
+  it('falls through blank URL and API-key candidates', () => {
+    const { deps } = createHarness({
+      env: { RELAY_BROKER_URL: '   ', RELAY_BROKER_API_KEY: '   ' },
+      connectionFile: { url: 'http://file-host:5678', api_key: 'file-key' },
+    });
+
+    const conn = resolveViewBrokerConnection({ brokerUrl: ' ', apiKey: ' ' }, deps);
+    expect(conn).toEqual({ url: 'http://file-host:5678', apiKey: 'file-key' });
+  });
+
   it('falls back to connection.json for both url and api_key', () => {
     const { deps } = createHarness({
       env: {},
@@ -325,6 +335,22 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(1);
     expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('treats WebSocket errors as fatal', async () => {
+    const { deps, errors, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    socket.emit('error', new Error('boom'));
+
+    const code = await sessionPromise;
+    expect(code).toBe(1);
+    expect(errors.some((args) => String(args[0]).includes('WebSocket error: boom'))).toBe(true);
   });
 
   it('returns 1 when no broker connection can be resolved', async () => {
