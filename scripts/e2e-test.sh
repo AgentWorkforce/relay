@@ -57,7 +57,7 @@ log_phase() { echo -e "\n${CYAN}========================================${NC}"; 
 
 broker_is_running() {
   local status_output
-  status_output=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+  status_output=$(run_with_timeout 5 "$CLI_CMD" driver status 2>/dev/null || true)
   echo "$status_output" | grep -q "Status: RUNNING"
 }
 
@@ -129,7 +129,7 @@ cleanup() {
 
   # Stop daemon (with timeout to prevent hanging)
   log_info "Ensuring daemon is stopped..."
-  run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
+  run_with_timeout 10 "$CLI_CMD" driver down --force --timeout 5000 2>/dev/null || true
 
   # Force kill any remaining processes if timeout occurred
   pkill -9 -f "relay-dashboard-server.*--port.*$DASHBOARD_PORT" 2>/dev/null || true
@@ -152,7 +152,7 @@ fi
 log_phase "Phase 1: Broker Startup"
 
 # Kill any existing daemon (with timeout to prevent hanging)
-run_with_timeout 10 "$CLI_CMD" down --force --timeout 5000 2>/dev/null || true
+run_with_timeout 10 "$CLI_CMD" driver down --force --timeout 5000 2>/dev/null || true
 
 # Kill any process using our target port (ensures dashboard can bind)
 if command -v lsof &> /dev/null; then
@@ -163,7 +163,7 @@ sleep 1
 # Start broker+dashboard in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-"$CLI_CMD" up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
+"$CLI_CMD" driver up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
@@ -191,7 +191,7 @@ done
 # If daemon-only mode, stop here
 if [ "$DAEMON_ONLY" = true ]; then
   log_phase "Daemon-Only Test Complete"
-  run_with_timeout 5 "$CLI_CMD" status || true
+  run_with_timeout 5 "$CLI_CMD" driver status || true
   echo ""
   log_info "=== DAEMON TEST PASSED ==="
   exit 0
@@ -212,7 +212,7 @@ log_info "  Output: $VERSION_OUTPUT"
 
 # Test version command
 log_info "Testing: agent-relay version"
-if ! "$CLI_CMD" version > /dev/null 2>&1; then
+if ! "$CLI_CMD" driver version > /dev/null 2>&1; then
   log_error "version command failed"
   exit 1
 fi
@@ -220,7 +220,7 @@ fi
 # Test status command (with timeout to ensure it doesn't hang)
 log_info "Testing: agent-relay status (with 10s timeout)"
 STATUS_EXIT=0
-run_with_timeout 10 "$CLI_CMD" status || STATUS_EXIT=$?
+run_with_timeout 10 "$CLI_CMD" driver status || STATUS_EXIT=$?
 if [ $STATUS_EXIT -ne 0 ]; then
   if [ $STATUS_EXIT -eq 124 ]; then
     log_error "status command timed out (hung for >10s)"
@@ -268,7 +268,7 @@ log_info "Testing: agent-relay read (with invalid ID)"
 
 # Test update --check (just checks, doesn't install)
 log_info "Testing: agent-relay update --check"
-"$CLI_CMD" update --check 2>/dev/null || true
+"$CLI_CMD" driver update --check 2>/dev/null || true
 
 # Test doctor command
 log_info "Testing: agent-relay doctor"
@@ -288,14 +288,14 @@ log_info "Testing: agent-relay create-agent --help"
 
 # Test bridge --help
 log_info "Testing: agent-relay bridge --help"
-"$CLI_CMD" bridge --help > /dev/null 2>&1 || true
+"$CLI_CMD" driver bridge --help > /dev/null 2>&1 || true
 
 log_info "All CLI command tests passed!"
 
 # Phase 3: Stop broker before SDK-managed lifecycle
 log_phase "Phase 3: Transition to SDK Lifecycle"
 log_info "Stopping CLI broker before SDK lifecycle test..."
-if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
+if ! run_with_timeout 15 "$CLI_CMD" driver down --timeout 10000; then
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
     log_error "down command timed out while preparing SDK lifecycle test"
@@ -322,7 +322,7 @@ log_info "SDK lifecycle test passed"
 log_phase "Phase 7: Final Down Check"
 
 log_info "Testing: agent-relay down (with 15s timeout)"
-if ! run_with_timeout 15 "$CLI_CMD" down --timeout 10000; then
+if ! run_with_timeout 15 "$CLI_CMD" driver down --timeout 10000; then
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
     log_error "down command timed out (hung for >15s)"
@@ -336,7 +336,7 @@ else
 fi
 
 # Verify broker is actually stopped
-STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" status 2>/dev/null || true)
+STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" driver status 2>/dev/null || true)
 if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
   log_error "Broker still reported as running after down command"
   echo "$STATUS_OUTPUT"

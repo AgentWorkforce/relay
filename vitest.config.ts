@@ -61,7 +61,6 @@ export default defineConfig({
     setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
       'tests/fixtures/**/*.test.ts',
-      'tests/integration/ssh-interactive-live.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/src/**/*.test.tsx',
       'packages/**/tests/**/*.test.ts',

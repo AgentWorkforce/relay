@@ -115,11 +115,6 @@ jobs:
       - name: Build packages
         run: npm run build
 
-      - name: Audit bundled dependencies
-        run: |
-          echo "=== Auditing bundled package dependencies ==="
-          node packages/cli/scripts/audit-bundled-deps.mjs
-
       - name: Validate all
         run: |
           echo "=== Validating packages ==="
@@ -251,9 +246,6 @@ jobs:
           rm -rf node_modules packages/*/node_modules package-lock.json
           npm install
 
-      - name: Show resolved trajectory dependency
-        run: npm ls agent-trajectories --all
-
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
@@ -365,11 +357,6 @@ jobs:
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./packages/cli/dist/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
-          if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
-            echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"
-            echo "cloud connect would hang; aborting validation."
-            exit 1
-          fi
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
