@@ -136,6 +136,22 @@ export type ActionAuditEvent =
   | { type: 'action.failed'; action: string; caller: string; at: string; error: string }
   | { type: 'action.denied'; action: string; caller: string; at: string; reason?: string };
 
+/**
+ * Registry-level action event delivered to listeners subscribed via
+ * {@link AgentRelayActions.onEvent}. Unlike {@link ActionAuditEvent} it carries
+ * the full caller and the action input/output so predicates can filter on them.
+ */
+export interface ActionListenerEvent {
+  type: 'action.invoked' | 'action.completed' | 'action.failed' | 'action.denied';
+  action: string;
+  caller: ActionContext['caller'];
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  reason?: string;
+  at: string;
+}
+
 export interface ActionHandle {
   unregister(): void;
 }
@@ -144,4 +160,6 @@ export interface AgentRelayActions {
   register<TInput, TOutput>(definition: ActionDefinition<TInput, TOutput>): ActionHandle;
   invoke<TOutput = unknown>(input: InvokeActionInput): Promise<ActionResult<TOutput>>;
   list(input?: { visibility?: 'agent' | 'human' | 'internal' }): Promise<AgentRelayActionDescriptor[]>;
+  /** Subscribe to registry-level action events. Returns an unsubscribe function. */
+  onEvent?(handler: (event: ActionListenerEvent) => void): () => void;
 }

@@ -1,6 +1,7 @@
 import type {
   ActionDefinition,
   ActionHandle,
+  ActionListenerEvent,
   ActionResult,
   AgentRelayActionDescriptor,
   AgentRelayActions,
@@ -16,6 +17,24 @@ import { validateJsonSchemaLite } from './json-schema-lite.js';
 
 export class InMemoryAgentRelayActions implements AgentRelayActions {
   private readonly actions = new Map<string, ActionDefinition>();
+  private readonly eventHandlers = new Set<(event: ActionListenerEvent) => void>();
+
+  onEvent(handler: (event: ActionListenerEvent) => void): () => void {
+    this.eventHandlers.add(handler);
+    return () => {
+      this.eventHandlers.delete(handler);
+    };
+  }
+
+  private emitListenerEvent(event: ActionListenerEvent): void {
+    for (const handler of this.eventHandlers) {
+      try {
+        handler(event);
+      } catch {
+        // Listener errors must not break action invocation.
+      }
+    }
+  }
 
   register<TInput, TOutput>(definition: ActionDefinition<TInput, TOutput>): ActionHandle {
     const name = normalizeActionName(definition.name);
@@ -54,11 +73,19 @@ export class InMemoryAgentRelayActions implements AgentRelayActions {
       };
     }
 
+    const at = new Date().toISOString();
     await context.emit?.({
       type: 'action.invoked',
       action: name,
       caller: context.caller.name,
-      at: new Date().toISOString(),
+      at,
+    });
+    this.emitListenerEvent({
+      type: 'action.invoked',
+      action: name,
+      caller: context.caller,
+      input: input.input,
+      at,
     });
 
     const inputValidation = validateActionSchema(input.input, definition.inputSchema);
@@ -83,6 +110,14 @@ export class InMemoryAgentRelayActions implements AgentRelayActions {
         caller: context.caller.name,
         at: new Date().toISOString(),
         reason: decision.reason,
+      });
+      this.emitListenerEvent({
+        type: 'action.denied',
+        action: name,
+        caller: context.caller,
+        input: actionInput,
+        reason: decision.reason,
+        at: new Date().toISOString(),
       });
       return {
         action: name,
@@ -111,6 +146,14 @@ export class InMemoryAgentRelayActions implements AgentRelayActions {
         caller: context.caller.name,
         at: new Date().toISOString(),
       });
+      this.emitListenerEvent({
+        type: 'action.completed',
+        action: name,
+        caller: context.caller,
+        input: actionInput,
+        output: outputValidation.value,
+        at: new Date().toISOString(),
+      });
       return { action: name, ok: true, output: outputValidation.value as TOutput };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -120,6 +163,14 @@ export class InMemoryAgentRelayActions implements AgentRelayActions {
         caller: context.caller.name,
         at: new Date().toISOString(),
         error: message,
+      });
+      this.emitListenerEvent({
+        type: 'action.failed',
+        action: name,
+        caller: context.caller,
+        input: actionInput,
+        error: message,
+        at: new Date().toISOString(),
       });
       return { action: name, ok: false, error: { code: 'action_failed', message } };
     }

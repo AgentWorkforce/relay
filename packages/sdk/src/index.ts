@@ -1,5 +1,6 @@
 export * from './agent-relay.js';
 export * from './facade.js';
+export * from './listeners.js';
 export * from './capabilities.js';
 export * from './messaging/index.js';
 export * from './delivery/index.js';

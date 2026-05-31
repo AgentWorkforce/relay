@@ -23,6 +23,17 @@ import {
   type RelaySendMessageInput,
   type RelayWorkspace,
 } from './facade.js';
+import {
+  createListenerHub,
+  type AgentHandleInput,
+  type ActionPredicate,
+  type EnrichedEvents,
+  type ListenerHandler,
+  type ListenerHub,
+  type ListenerPredicate,
+  type RelayAgentHandle,
+} from './listeners.js';
+import type { AgentSessionEvent } from './session/index.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
   messaging?: RelayMessaging;
@@ -50,6 +61,10 @@ export interface AgentRelayAgent {
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
   notify(target: AgentLike, options: NotifyOptions): NotifyHandler;
+  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  action(name: string): ActionPredicate;
+  agent(input: AgentHandleInput): RelayAgentHandle;
+  emitSessionEvent(agentId: string, event: AgentSessionEvent): void;
 }
 
 export class AgentRelay implements AgentRelayAgent {
@@ -61,6 +76,7 @@ export class AgentRelay implements AgentRelayAgent {
   private readonly clientsByToken = new Map<string, RelayMessaging>();
   private enrichedMessages?: EnrichedMessages;
   private workspaceFacade?: RelayWorkspace;
+  private hub?: ListenerHub;
 
   constructor(options: AgentRelayOptions = {}) {
     const { messaging, actions, workspaceKey, ...messagingOptions } = options;
@@ -116,8 +132,15 @@ export class AgentRelay implements AgentRelayAgent {
     return this.messaging.inbox;
   }
 
-  get events(): RelayMessaging['events'] {
-    return this.messaging.events;
+  get events(): EnrichedEvents {
+    return this.listenerHub.events;
+  }
+
+  private get listenerHub(): ListenerHub {
+    if (!this.hub) {
+      this.hub = createListenerHub(this.messaging.events, this.actions);
+    }
+    return this.hub;
   }
 
   get deliveries(): RelayMessaging['deliveries'] {
@@ -142,6 +165,22 @@ export class AgentRelay implements AgentRelayAgent {
 
   notify(target: AgentLike, options: NotifyOptions): NotifyHandler {
     return createNotifyHandler(this.messages, target, options);
+  }
+
+  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void {
+    return this.listenerHub.on(predicate, handler);
+  }
+
+  action(name: string): ActionPredicate {
+    return this.listenerHub.action(name);
+  }
+
+  agent(input: AgentHandleInput): RelayAgentHandle {
+    return this.listenerHub.agent(input);
+  }
+
+  emitSessionEvent(agentId: string, event: AgentSessionEvent): void {
+    this.listenerHub.emitSessionEvent(agentId, event);
   }
 
   as(agent: RelayAgentRegistration | { token: string } | string): AgentRelayAgent {
@@ -193,6 +232,7 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
   // An acting-as agent client sends through its own token; `from` overrides are
   // best-effort and fall back to this client.
   const messages = createEnrichedMessages(messaging.messages, () => messaging.messages);
+  const hub = createListenerHub(messaging.events, actions);
   return {
     messaging,
     actions,
@@ -201,11 +241,15 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     messages,
     threads: messaging.threads,
     inbox: messaging.inbox,
-    events: messaging.events,
+    events: hub.events,
     deliveries: messaging.deliveries,
     workspace: createWorkspaceFacade(messaging),
     sendMessage: (input) => messages.send(input),
     registerAction: (def) => registerFacadeAction(actions, def),
     notify: (target, options) => createNotifyHandler(messages, target, options),
+    on: (predicate, handler) => hub.on(predicate, handler),
+    action: (name) => hub.action(name),
+    agent: (input) => hub.agent(input),
+    emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),
   };
 }
