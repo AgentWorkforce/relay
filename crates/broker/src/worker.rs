@@ -699,13 +699,24 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
-        if !skip_relay_prompt && matches!(spec.runtime, AgentRuntime::Pty) {
-            if let Some(relay_key) = worker_relay_api_key {
-                command.env("RELAY_AGENT_TOKEN", relay_key);
-            }
+        if matches!(spec.runtime, AgentRuntime::Pty) {
+            // Expose the broker-assigned worker name to every PTY child, even
+            // when `skip_relay_prompt` suppresses the broker's own relaycast MCP
+            // injection. A wrapper launcher (e.g. the `agentworkforce` CLI, which
+            // spawns the real harness itself rather than being the harness) needs
+            // the name to wire the relaycast MCP for that harness under the SAME
+            // identity the broker routes messages to. The token/type/strict-name
+            // vars stay gated: they configure the broker-injected MCP, which is
+            // exactly what `skip_relay_prompt` opts out of — a launcher that wires
+            // its own relaycast server supplies them itself.
             command.env("RELAY_AGENT_NAME", &spec.name);
-            command.env("RELAY_AGENT_TYPE", "agent");
-            command.env("RELAY_STRICT_AGENT_NAME", "1");
+            if !skip_relay_prompt {
+                if let Some(relay_key) = worker_relay_api_key {
+                    command.env("RELAY_AGENT_TOKEN", relay_key);
+                }
+                command.env("RELAY_AGENT_TYPE", "agent");
+                command.env("RELAY_STRICT_AGENT_NAME", "1");
+            }
         }
         // Remove CLAUDECODE from child env to prevent nested Claude Code instances
         // from interfering with the parent's session management
