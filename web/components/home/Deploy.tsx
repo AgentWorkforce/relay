@@ -1,3 +1,5 @@
+import type { ComponentType } from 'react';
+
 import { FadeIn } from '../FadeIn';
 import s from '../../app/landing.module.css';
 import { CloudIcon, MonitorIcon } from './icons';
@@ -5,7 +7,7 @@ import { CloudIcon, MonitorIcon } from './icons';
 interface DeployOption {
   href: string;
   label: string;
-  Icon: React.ComponentType;
+  Icon: ComponentType;
   title: string;
   text: string;
 }
