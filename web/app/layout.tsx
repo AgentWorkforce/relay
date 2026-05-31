@@ -59,22 +59,6 @@ export const metadata: Metadata = {
   },
 };
 
-const themeScript = `
-  (function () {
-    try {
-      var key = 'agentrelay-theme';
-      var stored = localStorage.getItem(key);
-      if (stored === 'dark' || stored === 'light') {
-        document.documentElement.dataset.theme = stored;
-        document.documentElement.style.colorScheme = stored;
-      } else {
-        document.documentElement.dataset.theme = 'dark';
-        document.documentElement.style.colorScheme = 'dark';
-      }
-    } catch (error) {}
-  })();
-`;
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
   const content = postHogKey ? (
@@ -95,10 +79,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   );
 
   return (
-    <html lang="en" data-theme="dark" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-      </head>
+    <html lang="en" data-theme="dark">
       <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`} suppressHydrationWarning>
         {content}
       </body>

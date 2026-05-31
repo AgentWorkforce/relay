@@ -9,9 +9,11 @@ import { AgentSetupPrompt, InstallCommand } from '../components/InstallCommand';
 import { MessageRelayAnimation } from '../components/MessageRelayAnimation';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
+import { WaitlistForm } from '../components/WaitlistForm';
 import { absoluteUrl } from '../lib/site';
 import { DurableDeliveryTimeline } from './DurableDeliveryTimeline';
 import { RealtimeEventFeed } from './RealtimeEventFeed';
+import { SearchPreviewAnimation } from './SearchPreviewAnimation';
 import s from './landing.module.css';
 
 export const metadata: Metadata = {
@@ -502,10 +504,10 @@ export default function HomePage() {
                         {'curl -X POST \\\n'}
                         {'  https://api.agentrelay.com/v1/webhooks \\\n'}
                         {'  -H '}
-                        <span className={s.codeString}>{'"Content-Type: application/json"'}</span>
+                        {'"Content-Type: application/json"'}
                         {' \\\n'}
                         {'  -d '}
-                        <span className={s.codeString}>{'\'{"channel":"#alerts","text":"Deploy finished"}\''}</span>
+                        {'\'{"channel":"#alerts","text":"Deploy finished"}\''}
                       </code>
                     </pre>
                   </div>
@@ -522,44 +524,7 @@ export default function HomePage() {
               <FadeIn direction="up" delay={160} className={s.capabilityItem}>
                 <div className={`${s.featurePreview} ${s.capabilityPreview} ${s.searchCapabilityPreview}`}>
                   <div className={s.previewAccentSearch} />
-                  <div className={s.searchPreview}>
-                    <div className={s.searchBar}>
-                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                        <path d="m16 16 4 4" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-                      </svg>
-                      <span>handoff token</span>
-                    </div>
-                    <div className={s.searchResults}>
-                      <div>
-                        <strong>
-                          <span>#dev</span>
-                          <time>4m ago</time>
-                        </strong>
-                        <span>
-                          Builder shared the <mark>handoff token</mark> in the release handoff thread
-                        </span>
-                      </div>
-                      <div>
-                        <strong>
-                          <span>@reviewer</span>
-                          <time>8m ago</time>
-                        </strong>
-                        <span>
-                          Reviewer referenced the same <mark>handoff token</mark> during deploy review
-                        </span>
-                      </div>
-                      <div>
-                        <strong>
-                          <span>#ops</span>
-                          <time>12m ago</time>
-                        </strong>
-                        <span>
-                          Deployment note links the token to the final rollout checklist
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                  <SearchPreviewAnimation />
                 </div>
                 <div className={s.capabilityCopy}>
                   <h3>Search</h3>
@@ -572,114 +537,86 @@ export default function HomePage() {
             </div>
           </FadeIn>
 
+          <div className={s.featureSeparator} aria-hidden="true">
+            <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 120" fill="none" preserveAspectRatio="none">
+              <path d="M-120 84 C120 42 318 46 560 70 S928 106 1320 24" />
+              <path d="M-120 104 C136 60 336 66 580 88 S948 122 1320 46" />
+              <path d="M-120 64 C112 24 310 28 540 52 S902 86 1320 8" />
+            </svg>
+          </div>
+
           <FadeIn direction="up" delay={180} className={`${s.featureCol} ${s.commandsFeature}`}>
-            <div className={s.featurePreview}>
-              <div className={s.previewAccentCommand} />
-              <div className={s.commandsPreview}>
-                <div className={s.commandsCard}>
-                  <div className={s.commandPrompt}>
-                    <span>/</span>
-                    <code>deploy preview</code>
-                  </div>
-                  <div className={s.commandMenu}>
-                    <div>
-                      <strong>/assign</strong>
-                      <span>Send work to an agent</span>
-                    </div>
-                    <div>
-                      <strong>/run</strong>
-                      <span>Trigger an approved tool</span>
-                    </div>
-                    <div>
-                      <strong>/status</strong>
-                      <span>Report team progress</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
             <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>Commands</h3>
-              <p className={s.featureDesc}>
-                Give agents typed commands for common workflows, tool calls, and operational actions with a shared
-                command surface.
-              </p>
+              <h3 className={s.featureTitle}>SDK-defined actions</h3>
+              <ul className={s.featureList}>
+                <li>Define the exact actions agents can request with SDK handlers like relay.on.</li>
+                <li>Expose CLI and MCP tools so agents can communicate progress back to the SDK.</li>
+                <li>Require approvals, validate inputs, and return structured results instead of free-form guesses.</li>
+                <li>Keep action updates attached to the right channel, thread, and workflow state.</li>
+              </ul>
             </div>
-          </FadeIn>
-        </section>
-      </div>
-
-      {/* ---- SELF-MANAGING AGENTS SECTION ---- */}
-      <div className={s.selfManageWrapper}>
-        <section className={s.selfManageSection}>
-          <FadeIn direction="up" className={s.selfManageHeader}>
-            <h2 className={s.selfManageTitle}>Let agents manage themselves</h2>
-            <p className={s.selfManageSubtitle}>
-              Stop being the human blocker to your agent teams. Let them handle it by giving them a shared
-              workspace to exchange messages, share tools and work together to solve hard problems. You know,
-              just like the rest of your team.
-            </p>
-          </FadeIn>
-
-          <div className={s.selfManageGrid}>
-            <FadeIn direction="right" className={s.selfManageCard}>
-              <h3 className={s.selfManageCardTitle}>Put agent flows on rails</h3>
-              <p className={s.selfManageCardText}>
-                Send agents instructions, then use status changes, events, and delivery policies to move work
-                forward at the right moment.
-              </p>
-            </FadeIn>
-
-            <FadeIn direction="left" delay={120} className={s.selfManageCodeCard}>
-              <div className={s.previewAccent} />
-              <div className={`${s.previewTerminal} ${s.selfManageTerminal}`}>
-                <div className={s.previewTitleBar}>
-                  <div className={s.previewDots}>
-                    <span style={{ background: '#ff5f57' }} />
-                    <span style={{ background: '#febc2e' }} />
-                    <span style={{ background: '#28c840' }} />
-                  </div>
-                  <span className={s.previewTitleText}>agent-relay</span>
+            <div className={`${s.featurePreview} ${s.commandsEditorPreview}`}>
+              <div className={s.editorWindow}>
+                <div className={s.editorTitlebar}>
+                  <span />
+                  <span />
+                  <span />
+                  <strong>actions.ts</strong>
                 </div>
-                <pre className={`${s.previewCode} ${s.selfManagePreviewCode}`}>
-                  {'relay.'}
-                  <span className={s.codeMethod}>on</span>
-                  {'(\n'}
-                  {'  engineer.status.'}
-                  <span className={s.codeMethod}>becomes</span>
-                  {'('}
-                  <span className={s.codeString}>{"'idle'"}</span>
-                  {'),\n'}
-                  {'  () =>\n'}
-                  {'    relay.'}
-                  <span className={s.codeMethod}>sendMessage</span>
-                  {'({\n'}
-                  {'      to: taskManager,\n'}
-                  {'      msg: '}
-                  <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
-                  {',\n'}
-                  {'    })\n'}
-                  {');\n\n'}
-                  {'relay.'}
-                  <span className={s.codeMethod}>on</span>
-                  {'(\n'}
-                  {'  relay.agents.'}
-                  <span className={s.codeMethod}>connected</span>
-                  {'(),\n'}
-                  {'  ({ agent }) =>\n'}
-                  {'    relay.'}
-                  <span className={s.codeMethod}>sendMessage</span>
-                  {'({\n'}
-                  {'      to: agent,\n'}
-                  {'      msg: '}
-                  <span className={s.codeString}>{'`Welcome to #dev, ${agent.handle}.`'}</span>
-                  {',\n'}
-                  {'    })\n'}
-                  {');'}
+                <pre className={s.editorCode}>
+                  <code>
+                    <span className={s.codeMuted}>relay</span>
+                    <span>.</span>
+                    <span className={s.codeFunction}>on</span>
+                    <span>(</span>
+                    <span>{'\n'}</span>
+                    <span>  </span>
+                    <span className={s.codeVariable}>engineer</span>
+                    <span>.</span>
+                    <span>status</span>
+                    <span>.</span>
+                    <span className={s.codeFunction}>becomes</span>
+                    <span>(</span>
+                    <span className={s.codeString}>&quot;idle&quot;</span>
+                    <span>),{'\n'}</span>
+                    <span>  () =&gt;{'\n'}</span>
+                    <span>    </span>
+                    <span className={s.codeMuted}>relay</span>
+                    <span>.</span>
+                    <span className={s.codeFunction}>sendMessage</span>
+                    <span>({'{'}{'\n'}</span>
+                    <span>      to: </span>
+                    <span className={s.codeVariable}>taskManager</span>
+                    <span>,{'\n'}</span>
+                    <span>      msg: </span>
+                    <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
+                    <span>,{'\n'}</span>
+                    <span>    {'}'}),{'\n'}</span>
+                    <span>);{'\n\n'}</span>
+                    <span className={s.codeMuted}>relay</span>
+                    <span>.</span>
+                    <span className={s.codeFunction}>onSpawn</span>
+                    <span>(({'{'} </span>
+                    <span className={s.codeVariable}>agent</span>
+                    <span> {'}'}) =&gt;{'\n'}</span>
+                    <span>  </span>
+                    <span className={s.codeMuted}>relay</span>
+                    <span>.</span>
+                    <span className={s.codeFunction}>sendMessage</span>
+                    <span>({'{'}{'\n'}</span>
+                    <span>    to: </span>
+                    <span className={s.codeString}>&quot;#dev&quot;</span>
+                    <span>,{'\n'}</span>
+                    <span>    msg: </span>
+                    <span className={s.codeString}>{'`Welcome to #dev, ${agent.handle}.`'}</span>
+                    <span>,{'\n'}</span>
+                    <span>  {'}'}),{'\n'}</span>
+                    <span>);</span>
+                  </code>
                 </pre>
               </div>
-            </FadeIn>
-          </div>
+            </div>
+          </FadeIn>
         </section>
       </div>
 
@@ -694,7 +631,13 @@ export default function HomePage() {
           </FadeIn>
           <FadeIn direction="up" delay={150}>
             <div className={s.deployCards}>
-              <div className={s.deployCard}>
+              <a
+                href="https://github.com/agentworkforce/relay/blob/main/docs/self-hosting/README.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={s.deployCard}
+                aria-label="Read the Agent Relay self-hosting README on GitHub"
+              >
                 <div className={s.deployIcon}>
                   <svg
                     width="24"
@@ -715,8 +658,14 @@ export default function HomePage() {
                 <p className={s.deployCardText}>
                 For teams that need complete control.
                 </p>
-              </div>
-              <div className={s.deployCard}>
+              </a>
+              <a
+                href="https://agentrelay.com/cloud"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={s.deployCard}
+                aria-label="Open Agent Relay hosted cloud"
+              >
                 <div className={s.deployIcon}>
                   <svg
                     width="24"
@@ -735,52 +684,68 @@ export default function HomePage() {
                 <p className={s.deployCardText}>
                 For teams that just want to build.
                 </p>
-              </div>
+              </a>
             </div>
           </FadeIn>
         </section>
-      </div>
 
-      <section className={s.installSection} aria-labelledby="install-title">
-        <div className={s.installInner}>
-          <div className={s.installHeader}>
-            <div className={s.installHeaderText}>
-              <div className={s.installTitleRow}>
-                <h2 id="install-title" className={s.installTitle}>
-                  Quick start
-                </h2>
+        <section className={s.installSection} aria-labelledby="install-title">
+          <div className={s.installInner}>
+            <div className={s.installHeader}>
+              <div className={s.installHeaderText}>
+                <div className={s.installTitleRow}>
+                  <h2 id="install-title" className={s.installTitle}>
+                    Quick start
+                  </h2>
 
-                <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
-                  {AGENT_TOOLS.map((provider) => (
-                    <span
-                      key={provider}
-                      className={s.installAgentLogo}
-                      aria-label={AGENT_TOOL_LABELS[provider]}
-                      title={AGENT_TOOL_LABELS[provider]}
-                    >
-                      <AgentToolLogo
-                        className={s.installAgentLogoIcon}
-                        idPrefix={`install-agent-${provider}`}
-                        provider={provider}
-                      />
+                  <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
+                    {AGENT_TOOLS.map((provider) => (
+                      <span
+                        key={provider}
+                        className={s.installAgentLogo}
+                        aria-label={AGENT_TOOL_LABELS[provider]}
+                        title={AGENT_TOOL_LABELS[provider]}
+                      >
+                        <AgentToolLogo
+                          className={s.installAgentLogoIcon}
+                          idPrefix={`install-agent-${provider}`}
+                          provider={provider}
+                        />
+                      </span>
+                    ))}
+                    <span className={s.installAgentTooltip}>
+                      Works with the harnesses you already love or integrate your own.
                     </span>
-                  ))}
-                  <span className={s.installAgentTooltip}>
-                    Works with the harnesses you already love or integrate your own.
-                  </span>
+                  </div>
                 </div>
-              </div>
 
-              <p className={s.installSubtitle}>
-                Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
-                useful. Fortunately, we've made that really easy for both.
-              </p>
+                <p className={s.installSubtitle}>
+                  Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
+                  useful. Fortunately, we've made that really easy for both.
+                </p>
+              </div>
+            </div>
+
+            <div className={s.installActions}>
+              <InstallCommand />
+              <AgentSetupPrompt />
             </div>
           </div>
+        </section>
+      </div>
 
-          <div className={s.installActions}>
-            <InstallCommand />
-            <AgentSetupPrompt />
+      <section className={s.waitlistSection} aria-labelledby="waitlist-title">
+        <div className={s.waitlistInner}>
+          <div className={s.waitlistCopy}>
+            <h2 id="waitlist-title" className={s.waitlistTitle}>
+              Be the first to know
+            </h2>
+            <p className={s.waitlistSubtitle}>
+              Join the waitlist for early access when we release new products.
+            </p>
+          </div>
+          <div className={s.waitlistFormPanel}>
+            <WaitlistForm />
           </div>
         </div>
       </section>

@@ -149,20 +149,37 @@
   align-items: center;
   gap: 14px;
   padding: 0.72rem 0.9rem;
-  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--line));
+  border: 1px solid rgba(156, 207, 255, 0.26);
   border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--bg-elevated) 86%, var(--primary) 14%);
+  background:
+    linear-gradient(180deg, rgba(156, 207, 255, 0.16), rgba(156, 207, 255, 0.055)),
+    rgba(7, 17, 31, 0.46);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(156, 207, 255, 0.08),
+    0 18px 34px rgba(3, 10, 20, 0.16);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
   color: var(--fg);
   font: inherit;
   text-align: left;
   cursor: pointer;
   transition:
+    background 0.2s,
     border-color 0.2s,
+    box-shadow 0.2s,
     transform 0.15s;
 }
 
 .installCommand:hover {
-  border-color: color-mix(in srgb, var(--primary) 42%, var(--line));
+  border-color: rgba(156, 207, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(156, 207, 255, 0.21), rgba(156, 207, 255, 0.075)),
+    rgba(8, 24, 42, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(156, 207, 255, 0.1),
+    0 20px 40px rgba(3, 10, 20, 0.2);
   transform: translateY(-1px);
 }
 
@@ -264,19 +281,110 @@
 .installSection {
   display: flex;
   justify-content: center;
-  padding: 44px 0 72px;
-  background: var(--surface);
-  border-block: 1px solid var(--line);
+  padding: 0 0 82px;
+  background: transparent;
+  border: 0;
   position: relative;
   z-index: 3;
 }
 
 .installInner {
+  position: relative;
   width: 100%;
-  max-width: 760px;
+  max-width: 800px;
   display: grid;
   gap: 30px;
-  padding: 0 40px;
+  padding: 40px 40px 0;
+}
+
+.installInner::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 40px;
+  right: 40px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--primary) 38%, transparent),
+    transparent
+  );
+}
+
+.installInner::after {
+  content: '';
+  position: absolute;
+  top: -48px;
+  left: 50%;
+  width: min(560px, calc(100% - 80px));
+  height: 96px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, color-mix(in srgb, var(--primary) 13%, transparent), transparent 68%);
+  opacity: 0.72;
+}
+
+.installInner > * {
+  position: relative;
+  z-index: 1;
+}
+
+.waitlistSection {
+  --card-bg: #0d1724;
+  --line: rgba(116, 184, 226, 0.22);
+  position: relative;
+  z-index: 3;
+  overflow: hidden;
+  padding: 106px 40px 112px;
+  background: #08111a;
+  border-top: 1px solid rgba(116, 184, 226, 0.08);
+  border-bottom: 1px solid rgba(116, 184, 226, 0.08);
+}
+
+.waitlistSection::before {
+  content: none;
+}
+
+.waitlistInner {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 38px;
+  max-width: 760px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.waitlistCopy {
+  display: grid;
+  gap: 18px;
+}
+
+.waitlistTitle {
+  margin: 0;
+  color: rgba(237, 244, 251, 0.9);
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(2rem, 3vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.waitlistSubtitle {
+  max-width: 64ch;
+  margin: 0 auto;
+  color: rgba(168, 184, 200, 0.92);
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+
+.waitlistFormPanel {
+  min-width: 0;
+}
+
+.waitlistFormPanel form {
+  max-width: 620px;
 }
 
 .installHeader {
@@ -285,7 +393,7 @@
 
 .installHeaderText {
   width: 100%;
-  max-width: 600px;
+  max-width: 720px;
   margin: 0 auto;
   display: grid;
   gap: 8px;
@@ -397,7 +505,7 @@
   gap: 12px;
   align-items: stretch;
   width: 100%;
-  max-width: 600px;
+  max-width: 720px;
   margin: 0 auto;
 }
 
@@ -409,21 +517,38 @@
   justify-content: space-between;
   gap: 14px;
   padding: 0.72rem 0.9rem;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(156, 207, 255, 0.14);
   border-radius: 0.75rem;
-  background: var(--bg-elevated);
-  color: var(--fg);
+  background:
+    linear-gradient(180deg, rgba(156, 207, 255, 0.055), rgba(156, 207, 255, 0.012)),
+    rgba(5, 12, 22, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    inset 0 -1px 0 rgba(156, 207, 255, 0.035),
+    0 10px 24px rgba(3, 10, 20, 0.1);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
   font: inherit;
   text-align: left;
   cursor: pointer;
   transition:
+    background 0.2s,
     border-color 0.2s,
+    box-shadow 0.2s,
     color 0.2s,
     transform 0.15s;
 }
 
 .agentPromptCopy:hover {
-  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  border-color: rgba(156, 207, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(156, 207, 255, 0.08), rgba(156, 207, 255, 0.024)),
+    rgba(7, 17, 31, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(156, 207, 255, 0.05),
+    0 12px 28px rgba(3, 10, 20, 0.12);
   transform: translateY(-1px);
 }
 
@@ -449,7 +574,7 @@
   left: 0;
   width: 3px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--primary) 52%, var(--line));
+  background: rgba(116, 184, 226, 0.48);
   content: '';
 }
 
@@ -457,7 +582,7 @@
   display: block;
   max-width: none;
   overflow: hidden;
-  color: var(--fg-muted);
+  color: rgba(196, 211, 226, 0.72);
   font-family: var(--font-geist-mono), monospace;
   font-size: 0.8rem;
   line-height: 1.45;
@@ -564,7 +689,7 @@
 }
 
 .agentPromptCta {
-  color: var(--primary);
+  color: rgba(156, 207, 255, 0.62);
   pointer-events: none;
   transition: color 0.18s ease;
 }
@@ -572,7 +697,7 @@
 .agentPromptCopy:hover .agentPromptCta,
 .agentPromptCopy:focus .agentPromptCta,
 .agentPromptCopy:focus-within .agentPromptCta {
-  color: var(--primary-hover);
+  color: rgba(180, 220, 255, 0.82);
 }
 
 .agentPromptShow svg,
@@ -644,7 +769,81 @@
 
 .commandsFeature {
   order: 5;
-  --feature-band-bg: linear-gradient(180deg, #0f1d2a 0%, #132436 54%, #0c1a28 100%);
+  --feature-band-bg: #0b1c2a;
+  padding-top: 36px;
+}
+
+.commandsFeature::before {
+  border-top: 0;
+}
+
+.commandsFeature .featurePreview {
+  order: 2;
+}
+
+.commandsFeature .featureCopy {
+  order: 1;
+  max-width: 620px;
+}
+
+.featureSeparator {
+  position: relative;
+  order: 4;
+  grid-column: 1 / -1;
+  width: 100vw;
+  height: 70px;
+  margin: -56px calc(50% - 50vw) -72px;
+  isolation: isolate;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.featureSeparator::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 128vw;
+  height: 1px;
+  transform: translate(-50%, -50%) rotate(-2deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(116, 184, 226, 0.05) 18%,
+    rgba(116, 184, 226, 0.2) 50%,
+    rgba(116, 184, 226, 0.05) 82%,
+    transparent 100%
+  );
+  z-index: 0;
+}
+
+.featureSeparatorWaves {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: 128vw;
+  height: 92px;
+  color: #74b8e2;
+  opacity: 0.42;
+  overflow: visible;
+  transform: translate(-50%, -50%) rotate(-2deg);
+  transform-origin: center;
+}
+
+.featureSeparatorWaves path {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.featureSeparatorWaves path:nth-child(2) {
+  opacity: 0.42;
+}
+
+.featureSeparatorWaves path:nth-child(3) {
+  opacity: 0.28;
 }
 
 .messagingFeature .featurePreview {
@@ -684,7 +883,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   margin-top: 28px;
-  padding: 64px 0 78px;
+  padding: 64px 0 76px;
   isolation: isolate;
 }
 
@@ -1137,8 +1336,8 @@
   flex-direction: column;
   gap: 7px;
   overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow-y: hidden;
+  overscroll-behavior: auto;
   scrollbar-width: none;
 }
 
@@ -1588,6 +1787,22 @@
   white-space: nowrap;
 }
 
+.searchQuery {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.searchCursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: rgba(156, 207, 255, 0.9);
+  animation: searchCursorBlink 920ms steps(2, start) infinite;
+}
+
 .searchResults {
   display: grid;
   gap: 9px;
@@ -1647,6 +1862,316 @@
   border-radius: 4px;
   background: rgba(116, 184, 226, 0.18);
   color: rgba(225, 242, 255, 0.96);
+}
+
+.searchResultVisible {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 260ms ease,
+    transform 260ms ease;
+}
+
+.searchResultHidden {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+@keyframes searchCursorBlink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .searchCursor {
+    animation: none;
+  }
+
+  .searchResultVisible,
+  .searchResultHidden {
+    transform: none;
+    transition: none;
+  }
+}
+
+.actionsHeader {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+}
+
+.actionsHeader .featureTitle {
+  margin-bottom: 0;
+}
+
+.actionsHeader .featureDesc {
+  max-width: 68ch;
+}
+
+.actionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.actionCard {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+}
+
+.actionCardVisual {
+  display: grid;
+  min-height: 330px;
+  overflow: hidden;
+  border: 1px solid rgba(156, 207, 255, 0.16);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(116, 184, 226, 0.14), transparent 32%),
+    #07111f;
+  box-shadow: 0 18px 38px rgba(2, 7, 18, 0.3);
+}
+
+.toolSurface {
+  display: grid;
+  align-content: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 24px;
+}
+
+.toolSurfaceTitle {
+  display: flex;
+  gap: 8px;
+}
+
+.toolSurfaceTitle span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid rgba(156, 207, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(156, 207, 255, 0.08);
+  color: rgba(225, 242, 255, 0.82);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.toolCommand,
+.toolList > div {
+  min-width: 0;
+  border: 1px solid rgba(156, 207, 255, 0.12);
+  border-radius: 10px;
+  background: #0e1729;
+}
+
+.toolCommand {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  min-height: 44px;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.toolCommand span {
+  color: rgba(116, 184, 226, 0.84);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.toolCommand code {
+  overflow: hidden;
+  color: rgba(248, 250, 252, 0.9);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolList {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.toolList > div {
+  display: grid;
+  gap: 4px;
+  min-height: 52px;
+  padding: 10px 12px;
+}
+
+.toolList strong {
+  overflow: hidden;
+  color: #ffffff;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.72rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolList span {
+  overflow: hidden;
+  color: rgba(240, 246, 252, 0.62);
+  font-size: 0.68rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editorWindow {
+  align-self: center;
+  justify-self: stretch;
+  min-width: 0;
+  margin: 22px;
+  overflow: hidden;
+  border: 1px solid rgba(156, 207, 255, 0.16);
+  border-radius: 12px;
+  background: #07111e;
+}
+
+.editorTitlebar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(156, 207, 255, 0.14);
+  background: #111a24;
+}
+
+.editorTitlebar span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.editorTitlebar span:nth-child(1) {
+  background: #ff5f57;
+}
+
+.editorTitlebar span:nth-child(2) {
+  background: #febc2e;
+}
+
+.editorTitlebar span:nth-child(3) {
+  background: #28c840;
+}
+
+.editorTitlebar strong {
+  margin-left: 6px;
+  color: rgba(226, 232, 240, 0.64);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+
+.editorCode {
+  margin: 0;
+  padding: 18px 16px 20px;
+  color: rgba(248, 250, 252, 0.9);
+  overflow: hidden;
+}
+
+.editorCode code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.72rem;
+  font-weight: 720;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.codeFunction {
+  color: #9ccfff;
+}
+
+.codeVariable {
+  color: #f2c28d;
+}
+
+.codeMuted {
+  color: rgba(226, 232, 240, 0.74);
+}
+
+.commandsEditorPreview {
+  border: 0;
+  border-radius: 14px;
+  background: #07111f;
+  box-shadow: none;
+}
+
+.commandsEditorPreview .editorWindow {
+  position: absolute;
+  top: 0;
+  right: auto;
+  bottom: auto;
+  left: 0;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 1px solid rgba(156, 207, 255, 0.16);
+  border-radius: 14px;
+  box-sizing: border-box;
+  align-self: stretch;
+  justify-self: stretch;
+}
+
+.commandsEditorPreview .editorTitlebar {
+  min-height: 46px;
+}
+
+.commandsEditorPreview .editorCode {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  padding: clamp(22px, 4vw, 36px);
+}
+
+.commandsEditorPreview .editorCode code {
+  font-size: clamp(0.68rem, 1.1vw, 0.88rem);
+  line-height: 1.9;
+}
+
+.actionCardCopy {
+  display: grid;
+  gap: 8px;
+}
+
+.actionCardCopy h4 {
+  margin: 0;
+  color: var(--fg);
+  font-family: var(--font-heading), sans-serif;
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.actionCardCopy p {
+  margin: 0;
+  color: color-mix(in srgb, var(--fg-muted) 92%, white 8%);
+  font-size: 0.98rem;
+  line-height: 1.65;
 }
 
 .commandsPreview {
@@ -2295,6 +2820,24 @@
     order: 2;
   }
 
+  .commandsFeature .featureCopy {
+    order: 1;
+  }
+
+  .commandsFeature .featurePreview {
+    order: 2;
+  }
+
+  .featureSeparator {
+    height: 56px;
+    margin: -34px calc(50% - 50vw) -50px;
+  }
+
+  .featureSeparatorWaves {
+    width: 130vw;
+    height: 78px;
+  }
+
   .featureCopy {
     max-width: none;
   }
@@ -2318,6 +2861,40 @@
   }
 
   .capabilityCopy p {
+    font-size: 0.95rem;
+  }
+
+  .actionsGrid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+
+  .actionCardVisual {
+    min-height: 300px;
+  }
+
+  .toolSurface {
+    padding: 20px;
+  }
+
+  .editorWindow {
+    margin: 18px;
+  }
+
+  .editorCode {
+    padding: 16px 14px 18px;
+  }
+
+  .editorCode code {
+    font-size: 0.66rem;
+    line-height: 1.7;
+  }
+
+  .actionCardCopy h4 {
+    font-size: 1.35rem;
+  }
+
+  .actionCardCopy p {
     font-size: 0.95rem;
   }
 
@@ -2760,7 +3337,7 @@
 .deploySection {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 80px 40px;
+  padding: 80px 40px 34px;
   text-align: center;
 }
 
@@ -2792,11 +3369,14 @@
 }
 
 .deployCard {
+  display: block;
   padding: 32px 28px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: var(--card-bg);
+  color: inherit;
   text-align: left;
+  text-decoration: none;
   transition:
     border-color 0.2s,
     box-shadow 0.2s,
@@ -2807,6 +3387,11 @@
   border-color: var(--card-hover-border);
   box-shadow: 0 4px 20px color-mix(in srgb, var(--primary) 8%, transparent);
   transform: translateY(-2px);
+}
+
+.deployCard:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, white 20%);
+  outline-offset: 4px;
 }
 
 .deployIcon {
@@ -2882,7 +3467,7 @@
   }
 
   .deploySection {
-    padding: 60px 24px;
+    padding: 60px 24px 36px;
   }
 
   .deployCards {
@@ -2900,11 +3485,29 @@
   }
 
   .installSection {
-    padding: 36px 0 56px;
+    padding: 0 0 68px;
   }
 
   .installInner {
-    padding: 0 32px;
+    padding: 36px 32px 0;
+  }
+
+  .installInner::before {
+    left: 32px;
+    right: 32px;
+  }
+
+  .installInner::after {
+    width: min(460px, calc(100% - 64px));
+  }
+
+  .waitlistSection {
+    padding: 78px 24px 86px;
+  }
+
+  .waitlistInner {
+    gap: 30px;
+    max-width: 620px;
   }
 
   .installHeader {
@@ -2975,11 +3578,24 @@
   }
 
   .installSection {
-    padding: 32px 0 52px;
+    padding: 0 0 64px;
   }
 
   .installInner {
-    padding: 0 28px;
+    padding: 34px 28px 0;
+  }
+
+  .installInner::before {
+    left: 28px;
+    right: 28px;
+  }
+
+  .installInner::after {
+    width: min(360px, calc(100% - 56px));
+  }
+
+  .waitlistSection {
+    padding: 68px 28px 76px;
   }
 
   .installTitleRow {

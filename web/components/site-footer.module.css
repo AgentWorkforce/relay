@@ -50,7 +50,7 @@
 
 .columns {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 32px;
 }
 
@@ -80,23 +80,6 @@
   color: var(--footer-fg);
 }
 
-.waitlist {
-  --fg: var(--footer-fg);
-  --fg-muted: var(--footer-muted);
-  --fg-faint: var(--footer-faint);
-  --card-bg: color-mix(in srgb, var(--footer-fg) 6%, transparent);
-  --line: var(--footer-line);
-  --primary: #4a90c2;
-}
-
-.waitlistText {
-  max-width: 28ch;
-  margin: 0;
-  color: var(--footer-muted);
-  font-size: 0.88rem;
-  line-height: 1.55;
-}
-
 .bottom {
   display: flex;
   align-items: center;
@@ -111,16 +94,6 @@
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
-}
-
-.footerToggle {
-  display: flex;
-  align-items: center;
-  --nav-fg: var(--footer-fg);
-  --nav-surface: color-mix(in srgb, var(--footer-fg) 10%, transparent);
-  --nav-surface-hover: color-mix(in srgb, var(--footer-fg) 16%, transparent);
-  --nav-border: color-mix(in srgb, var(--footer-fg) 18%, transparent);
-  --nav-border-strong: color-mix(in srgb, var(--footer-fg) 28%, transparent);
 }
 
 .copy {

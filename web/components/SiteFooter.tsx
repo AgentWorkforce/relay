@@ -2,8 +2,6 @@ import Link from 'next/link';
 
 import { SITE_EMAIL } from '../lib/site';
 import { LogoIcon, LogoWordmark } from './SiteNav';
-import { ThemeToggle } from './ThemeToggle';
-import { WaitlistForm } from './WaitlistForm';
 import s from './site-footer.module.css';
 
 export function SiteFooter() {
@@ -15,7 +13,7 @@ export function SiteFooter() {
             <LogoIcon />
             <LogoWordmark />
           </Link>
-          <p className={s.tagline}>Headless Slack for agents.</p>
+          <p className={s.tagline}>The future is multi-agent.</p>
         </div>
 
         <div className={s.columns}>
@@ -64,19 +62,11 @@ export function SiteFooter() {
               Contact
             </a>
           </div>
-          <div className={`${s.col} ${s.waitlist}`}>
-            <h4 className={s.colTitle}>New Products</h4>
-            <p className={s.waitlistText}>Join the waitlist for early access when we release new products.</p>
-            <WaitlistForm />
-          </div>
         </div>
       </div>
 
       <div className={s.bottom}>
         <div className={s.bottomMeta}>
-          <div className={s.footerToggle}>
-            <ThemeToggle />
-          </div>
           <p className={s.copy}>&copy; {new Date().getFullYear()} Agent Relay. All rights reserved.</p>
         </div>
         <div className={s.socials}>
