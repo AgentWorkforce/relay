@@ -184,8 +184,8 @@ export default function HomePage() {
                     preserveAspectRatio="none"
                     aria-hidden="true"
                   >
-                    <path d="M2 6 C28 3 58 6 90 3 S118 5 118 3" />
-                    <path d="M2 9 C34 9 60 6 92 9 S118 6 118 8" />
+                    <path d="M2 5.5 C40 2.5 80 8.5 118 5.5" />
+                    <path d="M2 8.5 C40 5.5 80 11.5 118 8.5" />
                   </svg>
                 </span>{' '}
                 real-time messaging SDK
