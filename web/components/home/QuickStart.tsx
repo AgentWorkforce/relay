@@ -13,10 +13,7 @@ export function QuickStart() {
                 Quick start
               </h2>
 
-              <div
-                className={s.installAgentLogos}
-                aria-label="Get started with the agents you already use"
-              >
+              <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
                 {AGENT_TOOLS.map((provider) => (
                   <span
                     key={provider}
@@ -38,8 +35,8 @@ export function QuickStart() {
             </div>
 
             <p className={s.installSubtitle}>
-              Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out
-              if it's useful. Fortunately, we've made that really easy for both.
+              Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if
+              it's useful. Fortunately, we've made that really easy for both.
             </p>
           </div>
         </div>

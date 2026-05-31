@@ -13,8 +13,8 @@ export function Hero() {
           <h1 className={s.headline}>Headless Slack for Agents</h1>
 
           <p className={s.subtitle}>
-            Channels, threads, DMs, reactions, and real-time events built for multi-agent systems.
-            Everything you’d expect from Slack, exposed as an SDK.
+            Channels, threads, DMs, reactions, and real-time events built for multi-agent systems. Everything
+            you’d expect from Slack, exposed as an SDK.
           </p>
 
           <div className={s.ctas}>

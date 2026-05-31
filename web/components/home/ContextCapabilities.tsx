@@ -23,8 +23,8 @@ export function ContextCapabilities() {
           Easy to build the <i>right</i> context
         </h3>
         <p>
-          Agents are only as good as the context you give them. Agent Relay exposes all the tools and
-          data to make building agent centered workflows simple.
+          Agents are only as good as the context you give them. Agent Relay exposes all the tools and data to
+          make building agent centered workflows simple.
         </p>
       </div>
 
@@ -38,8 +38,8 @@ export function ContextCapabilities() {
         <div className={s.capabilityCopy}>
           <h3>Real-time events</h3>
           <p>
-            WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and
-            action calls arrive instantly.
+            WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and action calls
+            arrive instantly.
           </p>
         </div>
       </FadeIn>
@@ -66,8 +66,8 @@ export function ContextCapabilities() {
         <div className={s.capabilityCopy}>
           <h3>Webhooks</h3>
           <p>
-            Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any
-            service. Messages appear in your channel instantly.
+            Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any service.
+            Messages appear in your channel instantly.
           </p>
         </div>
       </FadeIn>
@@ -80,8 +80,8 @@ export function ContextCapabilities() {
         <div className={s.capabilityCopy}>
           <h3>Search</h3>
           <p>
-            Search messages, threads, channels, and agent history so teams can recover context without
-            asking humans to summarize it again.
+            Search messages, threads, channels, and agent history so teams can recover context without asking
+            humans to summarize it again.
           </p>
         </div>
       </FadeIn>

@@ -125,12 +125,7 @@ export function WaveDivider({ variant }: { variant: 'feature' | 'capability' }) 
 
   return (
     <div className={s.featureSeparator} aria-hidden="true">
-      <svg
-        className={s.featureSeparatorWaves}
-        viewBox="0 0 1200 60"
-        fill="none"
-        preserveAspectRatio="none"
-      >
+      <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
         <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
         <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />
       </svg>
@@ -166,14 +161,7 @@ export function HeroBackdrop() {
           <stop offset="0.42" stopColor="#74B8E2" stopOpacity="0.075" />
           <stop offset="1" stopColor="#4A90C2" stopOpacity="0.03" />
         </linearGradient>
-        <linearGradient
-          id="heroSwoopGlow"
-          x1="1200"
-          y1="60"
-          x2="0"
-          y2="520"
-          gradientUnits="userSpaceOnUse"
-        >
+        <linearGradient id="heroSwoopGlow" x1="1200" y1="60" x2="0" y2="520" gradientUnits="userSpaceOnUse">
           <stop stopColor="#74B8E2" stopOpacity="0.065" />
           <stop offset="0.55" stopColor="#FFFFFF" stopOpacity="0.035" />
           <stop offset="1" stopColor="#4A90C2" stopOpacity="0" />
@@ -198,12 +186,7 @@ export function HeroBackdrop() {
         <path d="M-210 142 Q230 -38 650 126 T1410 82" strokeWidth="220" />
         <path d="M-220 412 Q208 252 630 418 T1400 392" strokeWidth="170" opacity="0.55" />
       </g>
-      <g
-        stroke="url(#heroSwoopGradient)"
-        strokeLinecap="round"
-        opacity="0.15"
-        filter="url(#heroSwoopBlur)"
-      >
+      <g stroke="url(#heroSwoopGradient)" strokeLinecap="round" opacity="0.15" filter="url(#heroSwoopBlur)">
         <path d="M-190 252 Q270 68 690 244 T1380 220" strokeWidth="130" />
       </g>
       <g stroke="#74B8E2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9" opacity="0.08">

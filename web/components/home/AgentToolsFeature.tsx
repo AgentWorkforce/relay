@@ -49,8 +49,7 @@ export function AgentToolsFeature() {
           <li>Register actions for agents and callbacks for results via the SDK</li>
           <li>Expose CLI and MCP tools so agents can communicate progress back to the SDK.</li>
           <li>
-            Require approvals, validate inputs, and return structured results instead of free-form
-            guesses.
+            Require approvals, validate inputs, and return structured results instead of free-form guesses.
           </li>
           <li>Keep action updates attached to the right channel, thread, and workflow state.</li>
         </ul>
@@ -59,16 +58,15 @@ export function AgentToolsFeature() {
             <MCP size={20} aria-hidden="true" />
             <span className={s.actionToolTooltip} role="tooltip">
               <strong>MCP</strong>
-              The Agent Relay MCP exposes tool calls you define via the SDK that you can define
-              callbacks for.
+              The Agent Relay MCP exposes tool calls you define via the SDK that you can define callbacks for.
             </span>
           </span>
           <span className={s.actionToolBadge} tabIndex={0} aria-label="Agent Relay CLI">
             <SquareTerminal size={20} strokeWidth={1.8} aria-hidden="true" />
             <span className={s.actionToolTooltip} role="tooltip">
               <strong>CLI</strong>
-              The Agent Relay CLI exposes actions you define via the SDK as terminal commands the agent
-              can use and you can define callbacks for.
+              The Agent Relay CLI exposes actions you define via the SDK as terminal commands the agent can
+              use and you can define callbacks for.
             </span>
           </span>
         </div>

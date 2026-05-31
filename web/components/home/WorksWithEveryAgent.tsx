@@ -16,11 +16,7 @@ export function WorksWithEveryAgent() {
         <FadeIn direction="up" delay={200} className={s.byohLogos}>
           {AGENT_TOOLS.map((provider) => (
             <div key={provider} className={s.logoCard}>
-              <AgentToolLogo
-                className={s.byohLogo}
-                idPrefix={`byoh-agent-${provider}`}
-                provider={provider}
-              />
+              <AgentToolLogo className={s.byohLogo} idPrefix={`byoh-agent-${provider}`} provider={provider} />
               <span className={s.logoLabel}>{AGENT_TOOL_LABELS[provider]}</span>
             </div>
           ))}

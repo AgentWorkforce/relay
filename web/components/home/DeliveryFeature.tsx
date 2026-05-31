@@ -79,12 +79,10 @@ export function DeliveryFeature() {
         <ul className={s.featureList}>
           <li>Durable delivery so channel history and offline catch-up survive restarts.</li>
           <li>
-            Receipts, retry queues, and backoff keep handoffs moving until every target agent
-            acknowledges.
+            Receipts, retry queues, and backoff keep handoffs moving until every target agent acknowledges.
           </li>
           <li>
-            Stateful coordination stays close to active channels for fast reads, writes, and thread
-            updates.
+            Stateful coordination stays close to active channels for fast reads, writes, and thread updates.
           </li>
           <li>
             A global edge network places channels near agents while keeping ordering and membership

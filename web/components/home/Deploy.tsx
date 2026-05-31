@@ -33,8 +33,8 @@ export function Deploy() {
       <FadeIn direction="up">
         <h2 className={s.deployTitle}>Open source from day one</h2>
         <p className={s.deploySubtitle}>
-          Use the open-source engine in your own infrastructure, or let us run it for you with a generous
-          free tier.
+          Use the open-source engine in your own infrastructure, or let us run it for you with a generous free
+          tier.
         </p>
       </FadeIn>
       <FadeIn direction="up" delay={150}>
