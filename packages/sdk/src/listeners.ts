@@ -55,10 +55,7 @@ export class MessageCreatedPredicate implements ListenerPredicate<RelayMessageCr
     return this;
   }
 
-  subscribe(
-    context: ListenerContext,
-    handler: ListenerHandler<RelayMessageCreatedEvent>
-  ): () => void {
+  subscribe(context: ListenerContext, handler: ListenerHandler<RelayMessageCreatedEvent>): () => void {
     return context.events.on('messageCreated', (event) => {
       if (this.channel && stripSigil(event.channel) !== this.channel) return;
       if (this.mentioned && !messageMentions(event, this.mentioned)) return;

@@ -4,7 +4,14 @@ import { RelaycastMessagingClient } from '../messaging/index.js';
 
 function createRelaycastMock() {
   return {
-    agents: { list: vi.fn(), get: vi.fn(), register: vi.fn(), update: vi.fn(), delete: vi.fn(), presence: vi.fn() },
+    agents: {
+      list: vi.fn(),
+      get: vi.fn(),
+      register: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      presence: vi.fn(),
+    },
     channels: { list: vi.fn(), get: vi.fn() },
     messages: { list: vi.fn(), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
     webhooks: {

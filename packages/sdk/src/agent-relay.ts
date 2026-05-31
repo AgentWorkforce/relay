@@ -118,10 +118,7 @@ export class AgentRelay implements AgentRelayAgent {
 
   get messages(): EnrichedMessages {
     if (!this.enrichedMessages) {
-      this.enrichedMessages = createEnrichedMessages(
-        this.messaging.messages,
-        this.createMessagingResolver()
-      );
+      this.enrichedMessages = createEnrichedMessages(this.messaging.messages, this.createMessagingResolver());
     }
     return this.enrichedMessages;
   }

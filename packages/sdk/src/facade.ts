@@ -219,10 +219,7 @@ export function createEnrichedMessages(
     });
   };
 
-  enriched.react = ((
-    arg1: string | RelayReactInput,
-    arg2?: string
-  ): Promise<RelayMessageReaction> => {
+  enriched.react = ((arg1: string | RelayReactInput, arg2?: string): Promise<RelayMessageReaction> => {
     if (typeof arg1 === 'string') {
       return base.react(arg1, arg2 as string);
     }

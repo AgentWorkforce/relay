@@ -27,10 +27,7 @@ describe('AgentRelay facade (Phase A)', () => {
     const { messaging, agents } = createMessagingMock();
     const relay = new AgentRelay({ messaging });
 
-    const registrations = await relay.workspace.register([
-      { name: 'triager' },
-      'engineer',
-    ]);
+    const registrations = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
 
     expect(agents.register).toHaveBeenCalledTimes(2);
     expect(registrations.map((r) => r.name)).toEqual(['triager', 'engineer']);
@@ -104,7 +101,10 @@ describe('AgentRelay facade (Phase A)', () => {
     });
     expect(allowed.ok).toBe(true);
     expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ input: { model: 'opus' }, agent: expect.objectContaining({ name: 'planner' }) })
+      expect.objectContaining({
+        input: { model: 'opus' },
+        agent: expect.objectContaining({ name: 'planner' }),
+      })
     );
   });
 

@@ -60,7 +60,11 @@ describe('Listener DSL (Phase B)', () => {
     await relay.actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'other', type: 'agent' } });
     expect(handler).not.toHaveBeenCalled();
 
-    await relay.actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'planner', type: 'agent' } });
+    await relay.actions.invoke({
+      name: 'spawn-claude',
+      input: {},
+      caller: { name: 'planner', type: 'agent' },
+    });
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
@@ -108,7 +112,7 @@ describe('Listener DSL (Phase B)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect((relay.messaging.messages.direct as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+    expect(relay.messaging.messages.direct as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'taskManager' })
     );
   });

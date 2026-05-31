@@ -540,8 +540,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     webhooks: {
       create: async (input: RelayCreateWebhookInput): Promise<RelayWebhook> =>
         (await this.requireWebhooks().create(input)) as RelayWebhook,
-      list: async (): Promise<RelayWebhook[]> =>
-        (await this.requireWebhooks().list()) as RelayWebhook[],
+      list: async (): Promise<RelayWebhook[]> => (await this.requireWebhooks().list()) as RelayWebhook[],
       delete: async (id: string): Promise<void> => {
         await this.requireWebhooks().delete(id);
       },

@@ -103,7 +103,9 @@ async function listenerExample(): Promise<void> {
   });
 
   relay.on(
-    engineer.tools.called('bash').where((call) => String((call.input as { command?: string })?.command).includes('npm test')),
+    engineer.tools
+      .called('bash')
+      .where((call) => String((call.input as { command?: string })?.command).includes('npm test')),
     async (event) => {
       void event.run;
     }
