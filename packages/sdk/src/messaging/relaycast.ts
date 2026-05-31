@@ -25,10 +25,17 @@ import type {
   RelayChannel,
   RelayChannelMember,
   RelayChannelReadStatus,
+  RelayCapability,
   RelayCreateChannelInput,
   RelayCreateGroupDirectMessageInput,
+  RelayCreateSubscriptionInput,
+  RelayCreateWebhookInput,
   RelayDeliveryUnsupportedResult,
+  RelayEventSubscription,
   RelayGroupDirectConversation,
+  RelayRegisterCapabilityInput,
+  RelayWebhook,
+  RelayWorkspaceInfo,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -83,6 +90,26 @@ type RelaycastWorkspaceLike = {
   };
   allDmConversations?: () => Promise<unknown[]>;
   dmMessages?: (conversationId: string, options?: RelayMessageListOptions) => Promise<unknown[]>;
+  webhooks?: {
+    create(data: unknown): Promise<unknown>;
+    list(): Promise<unknown[]>;
+    delete(id: string): Promise<void>;
+    trigger(id: string, data: unknown): Promise<unknown>;
+  };
+  subscriptions?: {
+    create(data: unknown): Promise<unknown>;
+    list(): Promise<unknown[]>;
+    get(id: string): Promise<unknown>;
+    delete(id: string): Promise<void>;
+  };
+  commands?: {
+    register(data: unknown): Promise<unknown>;
+    list(): Promise<unknown[]>;
+    delete(command: string): Promise<void>;
+  };
+  workspace?: {
+    info(): Promise<unknown>;
+  };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
 };
 
@@ -508,6 +535,72 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       reason: 'Durable deferral is not supported by the Relaycast messaging backend yet.',
     }),
   };
+
+  readonly integrations = {
+    webhooks: {
+      create: async (input: RelayCreateWebhookInput): Promise<RelayWebhook> =>
+        (await this.requireWebhooks().create(input)) as RelayWebhook,
+      list: async (): Promise<RelayWebhook[]> =>
+        (await this.requireWebhooks().list()) as RelayWebhook[],
+      delete: async (id: string): Promise<void> => {
+        await this.requireWebhooks().delete(id);
+      },
+      trigger: async (id: string, payload?: Record<string, unknown>): Promise<unknown> =>
+        this.requireWebhooks().trigger(id, payload ?? {}),
+    },
+    subscriptions: {
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> =>
+        (await this.requireSubscriptions().create(input)) as RelayEventSubscription,
+      list: async (): Promise<RelayEventSubscription[]> =>
+        (await this.requireSubscriptions().list()) as RelayEventSubscription[],
+      get: async (id: string): Promise<RelayEventSubscription> =>
+        (await this.requireSubscriptions().get(id)) as RelayEventSubscription,
+      delete: async (id: string): Promise<void> => {
+        await this.requireSubscriptions().delete(id);
+      },
+    },
+  };
+
+  readonly commands = {
+    register: async (input: RelayRegisterCapabilityInput): Promise<RelayCapability> =>
+      (await this.requireCommands().register(input)) as RelayCapability,
+    list: async (): Promise<RelayCapability[]> => (await this.requireCommands().list()) as RelayCapability[],
+    delete: async (command: string): Promise<void> => {
+      await this.requireCommands().delete(command);
+    },
+  };
+
+  readonly workspace = {
+    info: async (): Promise<RelayWorkspaceInfo> => {
+      if (!this.relaycast.workspace) {
+        throw new Error('RelaycastMessagingClient.workspace.info requires the relaycast workspace API.');
+      }
+      return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
+    },
+  };
+
+  private requireWebhooks(): NonNullable<RelaycastWorkspaceLike['webhooks']> {
+    if (!this.relaycast.webhooks) {
+      throw new Error('RelaycastMessagingClient.integrations.webhooks requires the relaycast webhooks API.');
+    }
+    return this.relaycast.webhooks;
+  }
+
+  private requireSubscriptions(): NonNullable<RelaycastWorkspaceLike['subscriptions']> {
+    if (!this.relaycast.subscriptions) {
+      throw new Error(
+        'RelaycastMessagingClient.integrations.subscriptions requires the relaycast subscriptions API.'
+      );
+    }
+    return this.relaycast.subscriptions;
+  }
+
+  private requireCommands(): NonNullable<RelaycastWorkspaceLike['commands']> {
+    if (!this.relaycast.commands) {
+      throw new Error('RelaycastMessagingClient.commands requires the relaycast commands API.');
+    }
+    return this.relaycast.commands;
+  }
 
   private requireAgentClient(operation: string): RelaycastAgentLike {
     if (!this.agentClient) {

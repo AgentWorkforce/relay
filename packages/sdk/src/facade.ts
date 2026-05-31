@@ -8,6 +8,7 @@ import type {
   RelayMessageBlock,
   RelayMessageMode,
   RelaySendChannelMessageInput,
+  RelayWorkspaceInfo,
 } from './messaging/index.js';
 import type {
   AgentRelayActions,
@@ -138,6 +139,7 @@ export type EnrichedMessages = RelayMessaging['messages'] & {
 
 export interface RelayWorkspace {
   register(agents: AgentLike | AgentLike[]): Promise<RelayAgentRegistration[]>;
+  info(): Promise<RelayWorkspaceInfo>;
 }
 
 export interface NotifyOptions {
@@ -245,6 +247,7 @@ export function createEnrichedMessages(
 
 export function createWorkspaceFacade(messaging: RelayMessaging): RelayWorkspace {
   return {
+    info: () => messaging.workspace.info(),
     async register(agents) {
       const list = Array.isArray(agents) ? agents : [agents];
       const registrations: RelayAgentRegistration[] = [];

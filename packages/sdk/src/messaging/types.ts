@@ -338,6 +338,59 @@ export interface RelayMessagingCapabilities {
   durableDefer: false;
 }
 
+// ── Integrations (webhooks + event subscriptions) ───────────────────────────
+
+export interface RelayWebhook {
+  id: string;
+  url?: string;
+  event?: string;
+  createdAt?: string;
+  [key: string]: unknown;
+}
+
+export interface RelayCreateWebhookInput {
+  url: string;
+  event?: string;
+  [key: string]: unknown;
+}
+
+export interface RelayEventSubscription {
+  id: string;
+  event?: string;
+  createdAt?: string;
+  [key: string]: unknown;
+}
+
+export interface RelayCreateSubscriptionInput {
+  event: string;
+  [key: string]: unknown;
+}
+
+// ── Capabilities (agent commands) ───────────────────────────────────────────
+
+export interface RelayCapability {
+  command: string;
+  description?: string;
+  handlerAgent?: string;
+  parameters?: unknown;
+  [key: string]: unknown;
+}
+
+export interface RelayRegisterCapabilityInput {
+  command: string;
+  description: string;
+  handlerAgent: string;
+  parameters?: unknown;
+}
+
+// ── Workspace ───────────────────────────────────────────────────────────────
+
+export interface RelayWorkspaceInfo {
+  id?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 export type InboxItemState = 'queued' | 'delivered' | 'failed' | 'deferred' | 'read';
 
 export interface InboxItem {
@@ -584,6 +637,28 @@ export interface RelayMessagingClient {
     ack(messageId: string): Promise<RelayDeliveryUnsupportedResult>;
     fail(messageId: string, reason?: string): Promise<RelayDeliveryUnsupportedResult>;
     defer(messageId: string, deferUntil?: string): Promise<RelayDeliveryUnsupportedResult>;
+  };
+  readonly integrations: {
+    webhooks: {
+      create(input: RelayCreateWebhookInput): Promise<RelayWebhook>;
+      list(): Promise<RelayWebhook[]>;
+      delete(id: string): Promise<void>;
+      trigger(id: string, payload?: Record<string, unknown>): Promise<unknown>;
+    };
+    subscriptions: {
+      create(input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription>;
+      list(): Promise<RelayEventSubscription[]>;
+      get(id: string): Promise<RelayEventSubscription>;
+      delete(id: string): Promise<void>;
+    };
+  };
+  readonly commands: {
+    register(input: RelayRegisterCapabilityInput): Promise<RelayCapability>;
+    list(): Promise<RelayCapability[]>;
+    delete(command: string): Promise<void>;
+  };
+  readonly workspace: {
+    info(): Promise<RelayWorkspaceInfo>;
   };
 }
 
