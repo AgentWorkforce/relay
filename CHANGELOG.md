@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
 - `@agent-relay/sdk` exposes `AgentRelay.spawnAgent({ runtime, cli, ... })` as the single high-level spawn facade for both PTY and headless agents.
 - `@agent-relay/sdk` adds `AgentRelay.getPersonaSpawnPlan(id)` and a `getPersonaSpawnPlan` export for dry-run inspection of a persona's resolved harness argv, skill installs, mount policy, sidecars, and inputs.
+- `agent-relay view`, `agent-relay drive`, and `agent-relay passthrough` remain available as top-level attach commands alongside `agent-relay runtime agent attach --mode`.
 
 ### Changed
 
@@ -42,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/runtime`.
 - `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, and GitHub/Slack primitive adapters.
-- `agent-relay` removes spawn-first, cloud, attach/view/drive/passthrough, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
+- `agent-relay` removes spawn-first, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
 - `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
 - `@agent-relay/sdk` removes persona support from the SDK surface: the `./personas` subpath, persona helper/type exports, `AgentRelay.spawnPersona()`, `AgentRelay.getPersonaSpawnPlan()`, and `AgentRelayOptions.personaDirs` are gone. The SDK no longer depends on `@agentworkforce/persona-kit`.
 - `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `RuntimeClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
@@ -74,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` normalizes broker `pid: null` spawn responses to `undefined` while PTY harness PIDs are reported asynchronously.
 - `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
 - `sdk-swift`: broker client now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
+- `agent-relay start dashboard.js [cli]` remains available for local dashboard harness workflows.
+- `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
 
 ### Security
 

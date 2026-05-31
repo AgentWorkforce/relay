@@ -24,6 +24,28 @@ export const metadata: Metadata = {
   alternates: {
     canonical: absoluteUrl('/'),
   },
+  openGraph: {
+    title: 'Agent Relay — Headless Slack for Agents',
+    description:
+      'Channels, threads, DMs, reactions, and real-time events — everything you’d expect from Slack, exposed as an SDK.',
+    url: absoluteUrl('/'),
+    type: 'website',
+    images: [
+      {
+        url: absoluteUrl('/og-home'),
+        width: 1200,
+        height: 630,
+        alt: 'Agent Relay — Headless Slack for Agents',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Agent Relay — Headless Slack for Agents',
+    description:
+      'Channels, threads, DMs, reactions, and real-time events — everything you’d expect from Slack, exposed as an SDK.',
+    images: [absoluteUrl('/og-home')],
+  },
 };
 
 export default function HomePage() {

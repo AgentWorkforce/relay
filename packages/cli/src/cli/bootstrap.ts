@@ -17,7 +17,17 @@ import { registerMessagingCommands } from './commands/messaging.js';
 import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreTopLevelAliases } from './commands/core.js';
+import { registerRuntimeAgentCommands } from './commands/runtime-agent.js';
 import { registerCloudCommands } from './commands/cloud.js';
+import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerAgentCommands } from './commands/agent.js';
+import { registerChannelCommands } from './commands/channel.js';
+import { registerMessageCommands } from './commands/message.js';
+import { registerIntegrationCommands } from './commands/integration.js';
+import { registerCapabilitiesCommands } from './commands/capabilities.js';
+import { registerViewCommands } from './commands/view.js';
+import { registerDriveCommands } from './commands/drive.js';
+import { registerPassthroughCommands } from './commands/passthrough.js';
 
 dotenvConfig({ quiet: true });
 
@@ -256,11 +266,21 @@ export function createProgram(options: { name?: string } = {}): Command {
     .alias('runtime')
     .description('Manage the optional Agent Relay driver/runtime harness');
   registerCoreCommands(driver);
+  registerRuntimeAgentCommands(driver);
   registerCoreTopLevelAliases(program);
   registerMessagingCommands(program);
   registerMonitoringCommands(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
+  registerWorkspaceCommands(program);
+  registerAgentCommands(program);
+  registerChannelCommands(program);
+  registerMessageCommands(program);
+  registerIntegrationCommands(program);
+  registerCapabilitiesCommands(program);
+  registerViewCommands(program);
+  registerDriveCommands(program);
+  registerPassthroughCommands(program);
 
   program
     .command('mcp')

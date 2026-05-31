@@ -6,18 +6,10 @@ import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command } from 'commander';
 
-import {
-  getProjectPaths,
-  loadTeamsConfig,
-  resolveProjects,
-  validateBrokers,
-  getAgentOutboxTemplate,
-} from '@agent-relay/config';
+import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import type { BrokerInitArgs } from '@agent-relay/runtime';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
-import { track } from '@agent-relay/telemetry';
 
-import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
@@ -44,13 +36,6 @@ export interface CoreTeamsConfig {
     cli: string;
     task?: string;
   }>;
-}
-
-export interface BridgeProject {
-  id: string;
-  path: string;
-  leadName: string;
-  cli?: string;
 }
 
 export interface SpawnedProcess {
@@ -99,12 +84,6 @@ type UpdateInfo = {
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  resolveBridgeProjects: (projectPaths: string[], cli?: string) => BridgeProject[];
-  validateBridgeBrokers: (projects: BridgeProject[]) => {
-    valid: BridgeProject[];
-    missing: BridgeProject[];
-  };
-  getAgentOutboxTemplate: () => string;
   createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
@@ -279,14 +258,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     getProjectPaths: () => getProjectPaths() as unknown as CoreProjectPaths,
     loadTeamsConfig: (projectRoot: string) =>
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
-    resolveBridgeProjects: (projectPaths: string[], cli?: string) =>
-      resolveProjects(projectPaths, cli) as unknown as BridgeProject[],
-    validateBridgeBrokers: (projects: BridgeProject[]) =>
-      validateBrokers(projects as unknown as Parameters<typeof validateBrokers>[0]) as unknown as {
-        valid: BridgeProject[];
-        missing: BridgeProject[];
-      },
-    getAgentOutboxTemplate,
     createRelay: createDefaultRelay,
     findDashboardBinary: () => findDashboardBinaryDefault(fileSystem),
     spawnProcess: (command, args, options) =>
@@ -367,6 +338,36 @@ function isSupportedDashboardTarget(target: string): boolean {
   return target === 'dashboard.js' || target === 'dashboard';
 }
 
+function registerStartHarnessCommand(program: Command, deps: CoreDependencies): void {
+  program
+    .command('start')
+    .description('Start focused test harnesses (for example: start dashboard.js claude)')
+    .argument('<target>', 'Harness target name')
+    .argument('[cli]', 'Optional CLI tool to focus')
+    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
+    .option('--verbose', 'Enable verbose logging')
+    .action(
+      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
+        if (!isSupportedDashboardTarget(target.toLowerCase())) {
+          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
+          deps.exit(1);
+        }
+
+        await runUpCommand(
+          {
+            dashboard: true,
+            port: options.port,
+            verbose: options.verbose,
+            background: false,
+            dashboardPath: buildDashboardHarnessPath(cli),
+            reuseExistingBroker: true,
+          },
+          deps
+        );
+      }
+    );
+}
+
 export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
@@ -400,34 +401,6 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     );
 
   program
-    .command('start')
-    .description('Start focused test harnesses (for example: start dashboard.js claude)')
-    .argument('<target>', 'Harness target name')
-    .argument('[cli]', 'Optional CLI tool to focus')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-    .option('--verbose', 'Enable verbose logging')
-    .action(
-      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
-        if (!isSupportedDashboardTarget(target.toLowerCase())) {
-          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
-          deps.exit(1);
-        }
-
-        await runUpCommand(
-          {
-            dashboard: true,
-            port: options.port,
-            verbose: options.verbose,
-            background: false,
-            dashboardPath: buildDashboardHarnessPath(cli),
-            reuseExistingBroker: true,
-          },
-          deps
-        );
-      }
-    );
-
-  program
     .command('down')
     .description('Stop broker')
     .option('--force', 'Force cleanup even if process is stuck')
@@ -447,57 +420,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
       await runStatusCommand(deps, options);
     });
 
-  program
-    .command('uninstall')
-    .description('Remove agent-relay data, configuration, and global binaries')
-    .option('--keep-data', 'Keep message history and database (only remove runtime files)')
-    .option('--zed', 'Also remove Zed editor configuration')
-    .option('--zed-name <name>', 'Name of the Zed agent server entry to remove (default: Agent Relay)')
-    .option('--snippets', 'Also remove agent-relay snippets from CLAUDE.md, GEMINI.md, AGENTS.md')
-    .option('--force', 'Skip confirmation prompt')
-    .option('--dry-run', 'Show what would be removed without actually removing')
-    .action(
-      async (options: {
-        keepData?: boolean;
-        zed?: boolean;
-        zedName?: string;
-        snippets?: boolean;
-        force?: boolean;
-        dryRun?: boolean;
-      }) => {
-        await runUninstallCommand(options, deps);
-      }
-    );
-
-  program
-    .command('version', { hidden: true })
-    .description('Show version information')
-    .action(() => {
-      deps.log(`agent-relay v${deps.getVersion()}`);
-    });
-
-  program
-    .command('update')
-    .description('Check for updates and install if available')
-    .option('--check', 'Only check for updates, do not install')
-    .action(async (options: { check?: boolean }) => {
-      await runUpdateCommand(options, deps);
-    });
-
-  program
-    .command('bridge')
-    .description('Bridge multiple projects as orchestrator')
-    .argument('[projects...]', 'Project paths to bridge')
-    .option('--cli <tool>', 'CLI tool override for all projects')
-    .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
-    .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
-      track('bridge_spawn', {
-        project_count: projectPaths.length,
-        cli: options.cli ?? 'default',
-        has_architect: options.architect !== undefined && options.architect !== false,
-      });
-      await runBridgeCommand(projectPaths, options, deps);
-    });
+  registerStartHarnessCommand(program, deps);
 }
 
 /**
@@ -557,4 +480,6 @@ export function registerCoreTopLevelAliases(
         await runUninstallCommand(options, deps);
       }
     );
+
+  registerStartHarnessCommand(program, deps);
 }

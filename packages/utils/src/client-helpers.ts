@@ -187,7 +187,7 @@ export function createRequestHandler<T>(
     socket.on('data', (data) => {
       if (timedOut) return;
 
-      const frames = parser.push(data);
+      const frames = parser.push(typeof data === 'string' ? Buffer.from(data) : data);
       for (const response of frames) {
         if (isMatchingResponse(response, envelope.id, correlationId)) {
           clearTimeout(timeoutId);
