@@ -218,7 +218,7 @@ if ! "$CLI_CMD" driver version > /dev/null 2>&1; then
 fi
 
 # Test status command (with timeout to ensure it doesn't hang)
-log_info "Testing: agent-relay status (with 10s timeout)"
+log_info "Testing: agent-relay driver status (with 10s timeout)"
 STATUS_EXIT=0
 run_with_timeout 10 "$CLI_CMD" driver status || STATUS_EXIT=$?
 if [ $STATUS_EXIT -ne 0 ]; then
@@ -256,7 +256,7 @@ log_info "All CLI command tests passed!"
 # Phase 3: Final cleanup down (verify no hang)
 log_phase "Phase 3: Final Down Check"
 
-log_info "Testing: agent-relay down (with 15s timeout)"
+log_info "Testing: agent-relay driver down (with 15s timeout)"
 if ! run_with_timeout 15 "$CLI_CMD" driver down --timeout 10000; then
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
