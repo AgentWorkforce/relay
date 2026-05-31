@@ -36,8 +36,6 @@ describe('sdk client option resolution', () => {
   it('trims optional base URL and agent token values', () => {
     expect(resolveBaseUrl({ baseUrl: '  https://relay.example  ' })).toBe('https://relay.example');
     expect(resolveAgentToken({ token: '  at_123  ' })).toBe('at_123');
-    expect(resolveAgentToken({ token: '   ', env: { RELAY_AGENT_TOKEN: '  at_env  ' } })).toBe(
-      'at_env'
-    );
+    expect(resolveAgentToken({ token: '   ', env: { RELAY_AGENT_TOKEN: '  at_env  ' } })).toBe('at_env');
   });
 });

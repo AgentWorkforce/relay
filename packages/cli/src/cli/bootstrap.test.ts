@@ -159,9 +159,7 @@ describe('bootstrap CLI', () => {
         'telemetry',
       ])
     );
-    expect(topLevelCommands).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'rm'])
-    );
+    expect(topLevelCommands).not.toEqual(expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'rm']));
   });
 
   it('registers the expected number of executable commands', () => {
@@ -169,9 +167,7 @@ describe('bootstrap CLI', () => {
     const leafCommandPaths = collectLeafCommandPaths(program);
 
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
-    expect(leafCommandPaths).not.toEqual(
-      expect.arrayContaining(['spawn', 'agents', 'swarm', 'new'])
-    );
+    expect(leafCommandPaths).not.toEqual(expect.arrayContaining(['spawn', 'agents', 'swarm', 'new']));
 
     // `runtime` is an alias of `driver`, so its leaves are not double-counted.
     expect(program.commands.find((c) => c.name() === 'driver')?.aliases()).toContain('runtime');

@@ -192,9 +192,7 @@ describe('registerCoreCommands', () => {
     const commandNames = program.commands.map((cmd) => cmd.name());
 
     expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'start']));
-    expect(commandNames).not.toEqual(
-      expect.arrayContaining(['bridge', 'uninstall', 'version', 'update'])
-    );
+    expect(commandNames).not.toEqual(expect.arrayContaining(['bridge', 'uninstall', 'version', 'update']));
   });
 
   it('up forwards --broker-name to createRelay', async () => {

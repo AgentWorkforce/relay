@@ -18,6 +18,7 @@ Reviewed PR #1019, addressed bot review findings, restored attach/start command 
 ## Key Decisions
 
 ### Normalize socket data chunks before FrameParser.push
+
 - **Chose:** Normalize socket data chunks before FrameParser.push
 - **Reasoning:** The root package build stops before PR code because newer Node typings expose Socket data as string | Buffer; converting string chunks to Buffer preserves parser byte semantics and unblocks CI without changing PR behavior.
 
@@ -26,7 +27,8 @@ Reviewed PR #1019, addressed bot review findings, restored attach/start command 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Normalize socket data chunks before FrameParser.push: Normalize socket data chunks before FrameParser.push
 - Targeted CLI tests and package builds pass after a small utils type-normalization fix; validating full typecheck and Next build for the OG routes now.
