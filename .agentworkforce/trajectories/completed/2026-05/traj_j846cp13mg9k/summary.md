@@ -18,6 +18,7 @@ Reviewed PR #1018, added process-level PTY env regression coverage for skip_rela
 ## Key Decisions
 
 ### Added process-level PTY env regression test
+
 - **Chose:** Added process-level PTY env regression test
 - **Reasoning:** The implementation bug depends on Command env removal, so coverage should verify stale relay-agent variables are absent from an actual child process when skip_relay_prompt is true.
 
@@ -26,6 +27,7 @@ Reviewed PR #1018, added process-level PTY env regression coverage for skip_rela
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Added process-level PTY env regression test: Added process-level PTY env regression test

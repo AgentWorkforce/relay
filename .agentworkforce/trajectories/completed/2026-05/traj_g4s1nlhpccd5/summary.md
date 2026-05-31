@@ -18,6 +18,7 @@ Reviewed PR #1018, fixed PTY relay-agent env inheritance for skip_relay_prompt l
 ## Key Decisions
 
 ### Explicitly remove inherited PTY relay-agent env before applying child contract
+
 - **Chose:** Explicitly remove inherited PTY relay-agent env before applying child contract
 - **Reasoning:** Tokio Command inherits the broker process environment by default, so skip_relay_prompt could still leak RELAY_AGENT_TOKEN, RELAY_AGENT_TYPE, or RELAY_STRICT_AGENT_NAME unless the keys are removed.
 
@@ -26,6 +27,7 @@ Reviewed PR #1018, fixed PTY relay-agent env inheritance for skip_relay_prompt l
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Explicitly remove inherited PTY relay-agent env before applying child contract: Explicitly remove inherited PTY relay-agent env before applying child contract
