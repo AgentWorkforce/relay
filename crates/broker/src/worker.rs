@@ -1701,6 +1701,30 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pty_relay_env_removes_existing_registration_vars_when_prompt_injection_is_skipped() {
+        let mut command = Command::new("env");
+        command.env("RELAY_AGENT_NAME", "InheritedName");
+        command.env("RELAY_AGENT_TOKEN", "inherited-token");
+        command.env("RELAY_AGENT_TYPE", "human");
+        command.env("RELAY_STRICT_AGENT_NAME", "1");
+
+        apply_pty_relay_agent_env(&mut command, "LauncherWorker", Some("tok_worker"), true);
+
+        let output = command.output().await.expect("env command should run");
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("env output should be utf-8");
+        let env: HashMap<_, _> = stdout
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .collect();
+
+        assert_eq!(env.get("RELAY_AGENT_NAME"), Some(&"LauncherWorker"));
+        assert!(!env.contains_key("RELAY_AGENT_TOKEN"));
+        assert!(!env.contains_key("RELAY_AGENT_TYPE"));
+        assert!(!env.contains_key("RELAY_STRICT_AGENT_NAME"));
+    }
+
     fn make_app_server_config() -> HeadlessHarnessConfig {
         HeadlessHarnessConfig {
             driver: HeadlessHarnessDriver::AppServer,
