@@ -22,7 +22,6 @@ beforeEach(() => {
 import {
   registerCoreCommands,
   registerCoreTopLevelAliases,
-  type BridgeProject,
   type CoreDependencies,
   type CoreFileSystem,
   type CoreRelay,
@@ -94,9 +93,6 @@ function createHarness(options?: {
   teamsConfig?: CoreTeamsConfig | null;
   dashboardBinary?: string | null;
   env?: NodeJS.ProcessEnv;
-  bridgeProjects?: BridgeProject[];
-  validBridgeProjects?: BridgeProject[];
-  missingBridgeProjects?: BridgeProject[];
   spawnedProcess?: SpawnedProcess;
   spawnImpl?: CoreDependencies['spawnProcess'];
   execCommand?: CoreDependencies['execCommand'];
@@ -117,9 +113,6 @@ function createHarness(options?: {
   const fs = options?.fs ?? createFsMock();
   const relay = options?.relay ?? createRelayMock();
   const spawnedProcess = options?.spawnedProcess ?? createSpawnedProcessMock();
-  const bridgeProjects = options?.bridgeProjects ?? [];
-  const validBridgeProjects = options?.validBridgeProjects ?? bridgeProjects;
-  const missingBridgeProjects = options?.missingBridgeProjects ?? [];
 
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
@@ -134,9 +127,6 @@ function createHarness(options?: {
       projectId: 'project',
     })),
     loadTeamsConfig: vi.fn(() => options?.teamsConfig ?? null),
-    resolveBridgeProjects: vi.fn(() => bridgeProjects),
-    validateBridgeBrokers: vi.fn(() => ({ valid: validBridgeProjects, missing: missingBridgeProjects })),
-    getAgentOutboxTemplate: vi.fn(() => '/tmp/project/.agent-relay/outbox'),
     createRelay: options?.createRelay ?? vi.fn(() => relay),
     findDashboardBinary: vi.fn(() => options?.dashboardBinary ?? '/usr/local/bin/relay-dashboard-server'),
     spawnProcess:

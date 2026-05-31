@@ -6,13 +6,7 @@ import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command } from 'commander';
 
-import {
-  getProjectPaths,
-  loadTeamsConfig,
-  resolveProjects,
-  validateBrokers,
-  getAgentOutboxTemplate,
-} from '@agent-relay/config';
+import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
 import type { BrokerInitArgs } from '@agent-relay/runtime';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 
@@ -42,13 +36,6 @@ export interface CoreTeamsConfig {
     cli: string;
     task?: string;
   }>;
-}
-
-export interface BridgeProject {
-  id: string;
-  path: string;
-  leadName: string;
-  cli?: string;
 }
 
 export interface SpawnedProcess {
@@ -97,12 +84,6 @@ type UpdateInfo = {
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  resolveBridgeProjects: (projectPaths: string[], cli?: string) => BridgeProject[];
-  validateBridgeBrokers: (projects: BridgeProject[]) => {
-    valid: BridgeProject[];
-    missing: BridgeProject[];
-  };
-  getAgentOutboxTemplate: () => string;
   createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
@@ -277,14 +258,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     getProjectPaths: () => getProjectPaths() as unknown as CoreProjectPaths,
     loadTeamsConfig: (projectRoot: string) =>
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
-    resolveBridgeProjects: (projectPaths: string[], cli?: string) =>
-      resolveProjects(projectPaths, cli) as unknown as BridgeProject[],
-    validateBridgeBrokers: (projects: BridgeProject[]) =>
-      validateBrokers(projects as unknown as Parameters<typeof validateBrokers>[0]) as unknown as {
-        valid: BridgeProject[];
-        missing: BridgeProject[];
-      },
-    getAgentOutboxTemplate,
     createRelay: createDefaultRelay,
     findDashboardBinary: () => findDashboardBinaryDefault(fileSystem),
     spawnProcess: (command, args, options) =>
