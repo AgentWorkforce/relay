@@ -1268,5 +1268,4 @@ describe('registerCoreCommands', () => {
     expect(env.RELAY_API_KEY).toBe('rk_live_new');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
   });
-
 });

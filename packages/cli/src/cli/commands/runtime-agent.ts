@@ -54,7 +54,10 @@ function withDefaults(overrides: Partial<RuntimeAgentDependencies> = {}): Runtim
   };
 }
 
-async function run(deps: RuntimeAgentDependencies, fn: (client: RuntimeClient) => Promise<void>): Promise<void> {
+async function run(
+  deps: RuntimeAgentDependencies,
+  fn: (client: RuntimeClient) => Promise<void>
+): Promise<void> {
   let client: RuntimeClient | undefined;
   try {
     client = await deps.connect(deps.cwd());

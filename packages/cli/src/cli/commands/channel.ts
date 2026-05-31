@@ -33,14 +33,14 @@ export function registerChannelCommands(
     });
   });
 
-  addSdkOptions(group.command('list').description('List channels').option('--archived', 'Include archived')).action(
-    async (o: Record<string, unknown>) => {
-      await runSdk(deps, async () => {
-        const relay = deps.createAgentRelay(opts(o));
-        printJson(deps, await relay.channels.list({ includeArchived: Boolean(o.archived) }));
-      });
-    }
-  );
+  addSdkOptions(
+    group.command('list').description('List channels').option('--archived', 'Include archived')
+  ).action(async (o: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      const relay = deps.createAgentRelay(opts(o));
+      printJson(deps, await relay.channels.list({ includeArchived: Boolean(o.archived) }));
+    });
+  });
 
   addSdkOptions(
     group.command('join').description('Join a channel').argument('<name>', 'Channel name')

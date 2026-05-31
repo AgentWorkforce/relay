@@ -16,8 +16,7 @@ function env(options: SdkClientOptions): NodeJS.ProcessEnv {
 
 export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
   const e = env(options);
-  const key =
-    options.workspaceKey ?? e.RELAY_WORKSPACE_KEY ?? e.RELAY_API_KEY ?? activeWorkspaceKey(e);
+  const key = options.workspaceKey ?? e.RELAY_WORKSPACE_KEY ?? e.RELAY_API_KEY ?? activeWorkspaceKey(e);
   if (!key || !key.trim()) {
     throw new Error(
       'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'

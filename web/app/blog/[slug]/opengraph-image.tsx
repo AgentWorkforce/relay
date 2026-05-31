@@ -32,17 +32,15 @@ export default async function BlogPostOpenGraphImage({ params }: PageProps) {
   const { frontmatter } = post;
 
   return new ImageResponse(
-    (
-      <BlogVariant
-        headingFamily={headingFamily}
-        bodyFamily={bodyFamily}
-        title={frontmatter.title}
-        author={frontmatter.author}
-        date={formatDate(frontmatter.date)}
-        meta={post.readTime}
-        category={frontmatter.category}
-      />
-    ),
+    <BlogVariant
+      headingFamily={headingFamily}
+      bodyFamily={bodyFamily}
+      title={frontmatter.title}
+      author={frontmatter.author}
+      date={formatDate(frontmatter.date)}
+      meta={post.readTime}
+      category={frontmatter.category}
+    />,
     {
       ...OG_SIZE,
       ...(fonts.length > 0 ? { fonts } : {}),

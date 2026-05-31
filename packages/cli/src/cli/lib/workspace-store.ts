@@ -33,7 +33,11 @@ export function writeWorkspaceStore(store: WorkspaceStore, env: NodeJS.ProcessEn
   fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`);
 }
 
-export function setWorkspaceKey(name: string, key: string, env: NodeJS.ProcessEnv = process.env): WorkspaceStore {
+export function setWorkspaceKey(
+  name: string,
+  key: string,
+  env: NodeJS.ProcessEnv = process.env
+): WorkspaceStore {
   const store = readWorkspaceStore(env);
   store.workspaces[name] = { key };
   store.active ??= name;

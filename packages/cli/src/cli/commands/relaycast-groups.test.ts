@@ -11,7 +11,12 @@ import type { SdkCommandDeps } from '../lib/sdk-command.js';
 function createRelayMock() {
   return {
     agents: {
-      register: vi.fn(async (i: { name: string }) => ({ id: 'a1', token: 't1', name: i.name, status: 'online' })),
+      register: vi.fn(async (i: { name: string }) => ({
+        id: 'a1',
+        token: 't1',
+        name: i.name,
+        status: 'online',
+      })),
       list: vi.fn(async () => [{ id: 'a1', name: 'lead' }]),
       delete: vi.fn(async () => undefined),
     },

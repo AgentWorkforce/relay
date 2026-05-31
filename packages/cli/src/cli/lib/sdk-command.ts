@@ -32,7 +32,10 @@ export function withSdkDefaults(overrides: Partial<SdkCommandDeps> = {}): SdkCom
 /** Add the common workspace/token/base-url options to a command. */
 export function addSdkOptions(command: Command): Command {
   return command
-    .option('--workspace-key <key>', 'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)')
+    .option(
+      '--workspace-key <key>',
+      'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
+    )
     .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
     .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)');
 }
@@ -50,10 +53,7 @@ export function printJson(deps: SdkCommandDeps, value: unknown): void {
 }
 
 /** Run an SDK command body, formatting errors consistently and exiting non-zero. */
-export async function runSdk(
-  deps: SdkCommandDeps,
-  fn: () => Promise<void>
-): Promise<void> {
+export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
   } catch (err) {

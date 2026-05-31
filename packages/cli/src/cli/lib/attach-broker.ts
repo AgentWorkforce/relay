@@ -34,7 +34,10 @@ export interface BrokerSdkFailure {
 
 export function mapBrokerSdkFailure(error: unknown): BrokerSdkFailure {
   const status =
-    error && typeof error === 'object' && 'status' in error && typeof (error as { status: unknown }).status === 'number'
+    error &&
+    typeof error === 'object' &&
+    'status' in error &&
+    typeof (error as { status: unknown }).status === 'number'
       ? (error as { status: number }).status
       : 0;
   return { status, message: error instanceof Error ? error.message : String(error) };

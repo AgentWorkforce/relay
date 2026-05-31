@@ -17,7 +17,9 @@ export function registerCapabilitiesCommands(
 ): void {
   const deps = withSdkDefaults(overrides);
   const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
-  const group = program.command('capabilities').description('Register and invoke agent capabilities (commands)');
+  const group = program
+    .command('capabilities')
+    .description('Register and invoke agent capabilities (commands)');
 
   addSdkOptions(
     group
@@ -48,7 +50,10 @@ export function registerCapabilitiesCommands(
   );
 
   addSdkOptions(
-    group.command('delete').description('Delete a registered capability').argument('<command>', 'Command name')
+    group
+      .command('delete')
+      .description('Delete a registered capability')
+      .argument('<command>', 'Command name')
   ).action(async (command: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       await deps.createAgentRelay(opts(o)).capabilities.delete(command);

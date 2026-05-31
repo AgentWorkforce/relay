@@ -48,8 +48,7 @@ export type LoadedFonts = {
  * A missing glyph silently falls back to satori's default font, which would
  * break the typography, so the subset must be exhaustive for what we render.
  */
-const GLYPHS =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?\'’"#·—–-→@()/&%';
+const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?\'’"#·—–-→@()/&%';
 
 /**
  * Fetch a Google Font TTF for embedding into the OG image.
@@ -522,13 +521,7 @@ const LANDING_MESSAGES: ChatMessage[] = [
   },
 ];
 
-function ChatMessageCard({
-  message,
-  scale = 1,
-}: {
-  message: ChatMessage;
-  scale?: number;
-}): ReactElement {
+function ChatMessageCard({ message, scale = 1 }: { message: ChatMessage; scale?: number }): ReactElement {
   return (
     // .chatMsg — each message is its own bordered rounded card.
     <div
@@ -599,13 +592,7 @@ function ChatMessageCard({
   );
 }
 
-function ChatPanel({
-  headingFamily,
-  scale = 1,
-}: {
-  headingFamily: string;
-  scale?: number;
-}): ReactElement {
+function ChatPanel({ headingFamily, scale = 1 }: { headingFamily: string; scale?: number }): ReactElement {
   return (
     // .previewAccent — terracotta gradient frame filling the cropping wrapper,
     // peeking out on the card's top + left, carrying the white diagonal texture.
@@ -697,9 +684,7 @@ function ChatPanel({
           >
             proj-pipeline-fix
           </span>
-          <span
-            style={{ display: 'flex', marginLeft: 'auto', fontSize: 13 * scale, color: PALETTE.faint }}
-          >
+          <span style={{ display: 'flex', marginLeft: 'auto', fontSize: 13 * scale, color: PALETTE.faint }}>
             3 agents
           </span>
         </div>

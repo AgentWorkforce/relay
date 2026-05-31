@@ -18,6 +18,7 @@ Reviewed current relay package graph and produced repo-boundary recommendations 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Classified repo split candidates: move third-party adapters/plugins first, keep core SDK/runtime/CLI/broker and contract code together, defer Python/Swift SDK splits until protocol fixtures/codegen are factored: Classified repo split candidates: move third-party adapters/plugins first, keep core SDK/runtime/CLI/broker and contract code together, defer Python/Swift SDK splits until protocol fixtures/codegen are factored

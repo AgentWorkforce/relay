@@ -17,7 +17,9 @@ export function registerMessageCommands(
 ): void {
   const deps = withSdkDefaults(overrides);
   const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
-  const group = program.command('message').description('Post, read, and react to messages (requires agent token)');
+  const group = program
+    .command('message')
+    .description('Post, read, and react to messages (requires agent token)');
 
   addSdkOptions(
     group
@@ -175,7 +177,10 @@ export function registerMessageCommands(
       .option('--limit <n>', 'Max items', (v) => Number.parseInt(v, 10))
   ).action(async (o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      printJson(deps, await deps.createAgentRelay(opts(o)).inbox.get({ limit: o.limit as number | undefined }));
+      printJson(
+        deps,
+        await deps.createAgentRelay(opts(o)).inbox.get({ limit: o.limit as number | undefined })
+      );
     });
   });
 

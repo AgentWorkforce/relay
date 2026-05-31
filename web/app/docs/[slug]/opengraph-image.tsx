@@ -24,15 +24,13 @@ export default async function DocsOpenGraphImage({ params }: PageProps) {
   const { fonts, headingFamily, bodyFamily } = await loadBrandFonts();
 
   return new ImageResponse(
-    (
-      <DefaultVariant
-        headingFamily={headingFamily}
-        bodyFamily={bodyFamily}
-        eyebrow="Documentation"
-        title={doc.frontmatter.title}
-        subtitle={doc.frontmatter.description}
-      />
-    ),
+    <DefaultVariant
+      headingFamily={headingFamily}
+      bodyFamily={bodyFamily}
+      eyebrow="Documentation"
+      title={doc.frontmatter.title}
+      subtitle={doc.frontmatter.description}
+    />,
     {
       ...OG_SIZE,
       ...(fonts.length > 0 ? { fonts } : {}),
