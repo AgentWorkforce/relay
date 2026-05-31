@@ -4,11 +4,38 @@ import type { RuntimeClient } from '@agent-relay/runtime';
 
 import { defaultExit } from '../lib/exit.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { attachDrive } from './drive.js';
+import { attachView } from './view.js';
+import { attachPassthrough } from './passthrough.js';
+
+export type AttachMode = 'drive' | 'view' | 'passthrough';
+
+/** Dispatch `runtime agent attach --mode` to the drive/view/passthrough session runners. */
+export function runAttach(
+  name: string,
+  mode: AttachMode,
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string }
+): Promise<number> {
+  switch (mode) {
+    case 'view':
+      return attachView(name, options);
+    case 'passthrough':
+      return attachPassthrough(name, options);
+    case 'drive':
+    default:
+      return attachDrive(name, options);
+  }
+}
 
 type ExitFn = (code: number) => never;
 
 export interface RuntimeAgentDependencies {
   connect: (cwd: string) => Promise<RuntimeClient>;
+  attach: (
+    name: string,
+    mode: AttachMode,
+    options: { brokerUrl?: string; apiKey?: string; stateDir?: string }
+  ) => Promise<number>;
   cwd: () => string;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -18,6 +45,7 @@ export interface RuntimeAgentDependencies {
 function withDefaults(overrides: Partial<RuntimeAgentDependencies> = {}): RuntimeAgentDependencies {
   return {
     connect: (cwd: string) => createRuntimeClient({ cwd, preferConnect: true }),
+    attach: runAttach,
     cwd: () => process.cwd(),
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -119,14 +147,27 @@ export function registerRuntimeAgentCommands(
 
   agent
     .command('attach')
-    .description('Attach to a running agent (interactive)')
+    .description('Attach to a running agent interactively (drive | view | passthrough)')
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'drive')
-    .action((name: string) => {
-      deps.error(
-        `Interactive attach is provided by the dashboard. Start it with \`relay driver up\` and open the agent "${name}", or use a PTY harness.`
-      );
-      deps.exit(1);
+    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
+    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
+    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
+    .action(async (name: string, options: Record<string, unknown>) => {
+      const mode = (options.mode as string) ?? 'drive';
+      if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
+        deps.error(`Unknown attach mode "${mode}". Expected one of: drive, view, passthrough.`);
+        deps.exit(1);
+        return;
+      }
+      const code = await deps.attach(name, mode, {
+        brokerUrl: options.brokerUrl as string | undefined,
+        apiKey: options.apiKey as string | undefined,
+        stateDir: options.stateDir as string | undefined,
+      });
+      if (code !== 0) {
+        deps.exit(code);
+      }
     });
 
   group
