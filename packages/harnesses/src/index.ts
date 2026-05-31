@@ -1,41 +1,19 @@
-import type { StaticPtyHarnessDefinition } from '@agent-relay/runtime';
+import { definePtyHarness, type PtyHarness } from './define.js';
 
-export const claude: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'claude',
-};
+export * from './define.js';
 
-export const codex: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'codex',
-};
+export const claude: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'claude' });
 
-export const gemini: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'gemini',
-};
+export const codex: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'codex' });
 
-export const cursor: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'cursor',
-};
+export const gemini: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'gemini' });
 
-export const droid: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'droid',
-};
+export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'cursor' });
 
-export const opencode: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'opencode',
-};
+export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'droid' });
 
-export const aider: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'aider',
-};
+export const opencode: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'opencode' });
 
-export const goose: StaticPtyHarnessDefinition = {
-  runtime: 'pty',
-  command: 'goose',
-};
+export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
+
+export const goose: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'goose' });
