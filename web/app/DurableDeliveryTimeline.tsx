@@ -113,7 +113,7 @@ function getTimelineDelay(index: number) {
 export function DurableDeliveryTimeline() {
   const [cursor, setCursor] = useState(INITIAL_TIMELINE_CURSOR);
   const items = Array.from({ length: VISIBLE_TIMELINE_ITEMS }, (_, offset) =>
-    getTimelineItem(cursor - VISIBLE_TIMELINE_ITEMS + 1 + offset),
+    getTimelineItem(cursor - VISIBLE_TIMELINE_ITEMS + 1 + offset)
   );
 
   useEffect(() => {

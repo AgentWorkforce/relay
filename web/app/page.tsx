@@ -30,10 +30,25 @@ export const metadata: Metadata = {
 function OpenClawLogo({ className }: { className: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <path d="M7.5 4.5c-1.4 3.2-1.9 6.4-1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path
+        d="M7.5 4.5c-1.4 3.2-1.9 6.4-1.4 9.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
       <path d="M12 3.5c-.7 3.7-.7 7.3 0 10.8" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-      <path d="M16.5 4.5c1.4 3.2 1.9 6.4 1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-      <path d="M5.8 16.8c3.1 2.5 9.3 2.5 12.4 0" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path
+        d="M16.5 4.5c1.4 3.2 1.9 6.4 1.4 9.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M5.8 16.8c3.1 2.5 9.3 2.5 12.4 0"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
     </svg>
   );
 }
@@ -62,12 +77,26 @@ export default function HomePage() {
           preserveAspectRatio="xMidYMid slice"
         >
           <defs>
-            <linearGradient id="heroSwoopGradient" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
+            <linearGradient
+              id="heroSwoopGradient"
+              x1="0"
+              y1="0"
+              x2="1200"
+              y2="560"
+              gradientUnits="userSpaceOnUse"
+            >
               <stop stopColor="#FFFFFF" stopOpacity="0.11" />
               <stop offset="0.42" stopColor="#74B8E2" stopOpacity="0.075" />
               <stop offset="1" stopColor="#4A90C2" stopOpacity="0.03" />
             </linearGradient>
-            <linearGradient id="heroSwoopGlow" x1="1200" y1="60" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+            <linearGradient
+              id="heroSwoopGlow"
+              x1="1200"
+              y1="60"
+              x2="0"
+              y2="520"
+              gradientUnits="userSpaceOnUse"
+            >
               <stop stopColor="#74B8E2" stopOpacity="0.065" />
               <stop offset="0.55" stopColor="#FFFFFF" stopOpacity="0.035" />
               <stop offset="1" stopColor="#4A90C2" stopOpacity="0" />
@@ -92,7 +121,12 @@ export default function HomePage() {
             <path d="M-210 142 Q230 -38 650 126 T1410 82" strokeWidth="220" />
             <path d="M-220 412 Q208 252 630 418 T1400 392" strokeWidth="170" opacity="0.55" />
           </g>
-          <g stroke="url(#heroSwoopGradient)" strokeLinecap="round" opacity="0.15" filter="url(#heroSwoopBlur)">
+          <g
+            stroke="url(#heroSwoopGradient)"
+            strokeLinecap="round"
+            opacity="0.15"
+            filter="url(#heroSwoopBlur)"
+          >
             <path d="M-190 252 Q270 68 690 244 T1380 220" strokeWidth="130" />
           </g>
           <g stroke="#74B8E2" strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.9" opacity="0.08">
@@ -136,7 +170,8 @@ export default function HomePage() {
             <h1 className={s.headline}>Headless Slack for Agents</h1>
 
             <p className={s.subtitle}>
-            Channels, threads, DMs, reactions, and real-time events built for multi-agent systems. Everything you’d expect from Slack, exposed as an SDK.
+              Channels, threads, DMs, reactions, and real-time events built for multi-agent systems.
+              Everything you’d expect from Slack, exposed as an SDK.
             </p>
 
             <div className={s.ctas}>
@@ -204,7 +239,8 @@ export default function HomePage() {
               <FadeIn direction="up" className={s.byohText}>
                 <h2 className={s.byohTitle}>Works with every agent</h2>
                 <p className={s.byohSubtitle}>
-                  It's not a harness, and it's not a framework. You can plug in directly with our first class adapters or you can define your own.
+                  It's not a harness, and it's not a framework. You can plug in directly with our first class
+                  adapters or you can define your own.
                 </p>
               </FadeIn>
               <FadeIn direction="up" delay={200} className={s.byohLogos}>
@@ -268,9 +304,18 @@ export default function HomePage() {
               <h3 className={s.featureTitle}>The hard parts of delivery, handled</h3>
               <ul className={s.featureList}>
                 <li>Durable delivery so channel history and offline catch-up survive restarts.</li>
-                <li>Receipts, retry queues, and backoff keep handoffs moving until every target agent acknowledges.</li>
-                <li>Stateful coordination stays close to active channels for fast reads, writes, and thread updates.</li>
-                <li>A global edge network places channels near agents while keeping ordering and membership consistent.</li>
+                <li>
+                  Receipts, retry queues, and backoff keep handoffs moving until every target agent
+                  acknowledges.
+                </li>
+                <li>
+                  Stateful coordination stays close to active channels for fast reads, writes, and thread
+                  updates.
+                </li>
+                <li>
+                  A global edge network places channels near agents while keeping ordering and membership
+                  consistent.
+                </li>
               </ul>
             </div>
 
@@ -288,8 +333,13 @@ export default function HomePage() {
                 </svg>
               </div>
               <div className={s.capabilityHeader}>
-                <h3>Easy to build the <i>right</i> context</h3>
-                <p>Agents are only as good as the context you give them. Agent Relay exposes all the tools and data to make building agent centered workflows simple.</p>
+                <h3>
+                  Easy to build the <i>right</i> context
+                </h3>
+                <p>
+                  Agents are only as good as the context you give them. Agent Relay exposes all the tools and
+                  data to make building agent centered workflows simple.
+                </p>
               </div>
 
               <FadeIn direction="up" delay={0} className={s.capabilityItem}>
@@ -302,8 +352,8 @@ export default function HomePage() {
                 <div className={s.capabilityCopy}>
                   <h3>Real-time events</h3>
                   <p>
-                    WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and action calls
-                    arrive instantly.
+                    WebSocket stream for live events. Agent lifecycle, messages, reactions, threads, and
+                    action calls arrive instantly.
                   </p>
                 </div>
               </FadeIn>
@@ -336,8 +386,8 @@ export default function HomePage() {
                 <div className={s.capabilityCopy}>
                   <h3>Webhooks</h3>
                   <p>
-                    Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any service.
-                    Messages appear in your channel instantly.
+                    Create a webhook, get a URL, POST to it from GitHub Actions, Sentry, PagerDuty, or any
+                    service. Messages appear in your channel instantly.
                   </p>
                 </div>
               </FadeIn>
@@ -350,8 +400,8 @@ export default function HomePage() {
                 <div className={s.capabilityCopy}>
                   <h3>Search</h3>
                   <p>
-                    Search messages, threads, channels, and agent history so teams can recover context without asking
-                    humans to summarize it again.
+                    Search messages, threads, channels, and agent history so teams can recover context without
+                    asking humans to summarize it again.
                   </p>
                 </div>
               </FadeIn>
@@ -359,7 +409,12 @@ export default function HomePage() {
           </FadeIn>
 
           <div className={s.featureSeparator} aria-hidden="true">
-            <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
+            <svg
+              className={s.featureSeparatorWaves}
+              viewBox="0 0 1200 60"
+              fill="none"
+              preserveAspectRatio="none"
+            >
               <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
               <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />
             </svg>
@@ -371,7 +426,10 @@ export default function HomePage() {
               <ul className={s.featureList}>
                 <li>Define the exact actions agents can request with SDK handlers like relay.on.</li>
                 <li>Expose CLI and MCP tools so agents can communicate progress back to the SDK.</li>
-                <li>Require approvals, validate inputs, and return structured results instead of free-form guesses.</li>
+                <li>
+                  Require approvals, validate inputs, and return structured results instead of free-form
+                  guesses.
+                </li>
                 <li>Keep action updates attached to the right channel, thread, and workflow state.</li>
               </ul>
               <div className={s.actionToolBadges} aria-label="Agent Relay tool surfaces">
@@ -379,15 +437,16 @@ export default function HomePage() {
                   <MCP size={20} aria-hidden="true" />
                   <span className={s.actionToolTooltip} role="tooltip">
                     <strong>MCP</strong>
-                    The Agent Relay MCP exposes tool calls you define via the SDK that you can define callbacks for. 
+                    The Agent Relay MCP exposes tool calls you define via the SDK that you can define
+                    callbacks for.
                   </span>
                 </span>
                 <span className={s.actionToolBadge} tabIndex={0} aria-label="Agent Relay CLI">
                   <SquareTerminal size={20} strokeWidth={1.8} aria-hidden="true" />
                   <span className={s.actionToolTooltip} role="tooltip">
                     <strong>CLI</strong>
-                    The Agent Relay CLI exposes actions you define via the SDK as terminal commands the agent can use and 
-                    you can define callbacks for. 
+                    The Agent Relay CLI exposes actions you define via the SDK as terminal commands the agent
+                    can use and you can define callbacks for.
                   </span>
                 </span>
               </div>
@@ -402,14 +461,14 @@ export default function HomePage() {
                 </div>
                 <pre className={s.editorCode}>
                   <code>
-                  <span className={s.codeMuted}>// Define callbacks from agent actions </span>
-                  <span>{'\n'}</span>
+                    <span className={s.codeMuted}>// Define callbacks from agent actions </span>
+                    <span>{'\n'}</span>
                     <span>relay</span>
                     <span>.</span>
                     <span className={s.codeFunction}>on</span>
                     <span>(</span>
                     <span>{'\n'}</span>
-                    <span>  </span>
+                    <span> </span>
                     <span>engineer</span>
                     <span>.</span>
                     <span className={s.codeVariable}>status</span>
@@ -418,21 +477,29 @@ export default function HomePage() {
                     <span>(</span>
                     <span className={s.codeString}>&quot;idle&quot;</span>
                     <span>),{'\n'}</span>
-                    <span>  </span>
+                    <span> </span>
                     <span className={s.codeKeyword}>async</span>
                     <span> () =&gt;{'\n'}</span>
-                    <span>    </span>
+                    <span> </span>
                     <span>relay</span>
                     <span>.</span>
                     <span className={s.codeFunction}>sendMessage</span>
-                    <span>({'{'}{'\n'}</span>
-                    <span>      to: </span>
+                    <span>
+                      ({'{'}
+                      {'\n'}
+                    </span>
+                    <span> to: </span>
                     <span>taskManager</span>
                     <span>,{'\n'}</span>
-                    <span>      msg: </span>
-                    <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
+                    <span> msg: </span>
+                    <span className={s.codeString}>
+                      {'`${engineer.handle} is idle. Send the next task.`'}
+                    </span>
                     <span>,{'\n'}</span>
-                    <span>    {'}'}),{'\n'}</span>
+                    <span>
+                      {' '}
+                      {'}'}),{'\n'}
+                    </span>
                     <span>);</span>
                   </code>
                 </pre>
@@ -448,7 +515,8 @@ export default function HomePage() {
           <FadeIn direction="up">
             <h2 className={s.deployTitle}>Open source from day one</h2>
             <p className={s.deploySubtitle}>
-            Use the open-source engine in your own infrastructure, or let us run it for you with a generous free tier.
+              Use the open-source engine in your own infrastructure, or let us run it for you with a generous
+              free tier.
             </p>
           </FadeIn>
           <FadeIn direction="up" delay={150}>
@@ -477,9 +545,7 @@ export default function HomePage() {
                   </svg>
                 </div>
                 <h3 className={s.deployCardTitle}>Self host</h3>
-                <p className={s.deployCardText}>
-                For teams that need complete control.
-                </p>
+                <p className={s.deployCardText}>For teams that need complete control.</p>
               </a>
               <a
                 href="https://agentrelay.com/cloud"
@@ -503,9 +569,7 @@ export default function HomePage() {
                   </svg>
                 </div>
                 <h3 className={s.deployCardTitle}>Hosted cloud</h3>
-                <p className={s.deployCardText}>
-                For teams that just want to build.
-                </p>
+                <p className={s.deployCardText}>For teams that just want to build.</p>
               </a>
             </div>
           </FadeIn>
@@ -520,7 +584,10 @@ export default function HomePage() {
                     Quick start
                   </h2>
 
-                  <div className={s.installAgentLogos} aria-label="Get started with the agents you already use">
+                  <div
+                    className={s.installAgentLogos}
+                    aria-label="Get started with the agents you already use"
+                  >
                     {AGENT_TOOLS.map((provider) => (
                       <span
                         key={provider}
@@ -542,8 +609,8 @@ export default function HomePage() {
                 </div>
 
                 <p className={s.installSubtitle}>
-                  Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out if it's
-                  useful. Fortunately, we've made that really easy for both.
+                  Human or agent, sometimes it's just <i>easier</i> to start building with stuff to figure out
+                  if it's useful. Fortunately, we've made that really easy for both.
                 </p>
               </div>
             </div>

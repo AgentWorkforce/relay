@@ -4,14 +4,14 @@
 /* deno-fmt-ignore-file */
 /* biome-ignore-all lint: auto-generated */
 
-declare module "sst" {
+declare module 'sst' {
   export interface Resource {
-    "Web": {
-      "type": "sst.aws.Nextjs"
-      "url": string
-    }
+    Web: {
+      type: 'sst.aws.Nextjs';
+      url: string;
+    };
   }
 }
 
-import "sst"
-export {}
+import 'sst';
+export {};

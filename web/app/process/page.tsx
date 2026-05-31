@@ -102,8 +102,8 @@ export default function ProcessPage() {
           <FadeIn direction="up" className={s.sectionHeader}>
             <h2>The shift</h2>
             <p>
-              Most agent workflows still assume a human is the router. Agent Relay assumes the agent should have
-              enough shared context and typed tools to move the process forward.
+              Most agent workflows still assume a human is the router. Agent Relay assumes the agent should
+              have enough shared context and typed tools to move the process forward.
             </p>
           </FadeIn>
 
@@ -121,9 +121,9 @@ export default function ProcessPage() {
           <FadeIn direction="up" className={s.loopCopy}>
             <h2>Stop using the human as the message bus</h2>
             <p>
-              The human should not be the only place where task state, file context, approvals, and tool output come
-              together. Agent Relay gives those parts a shared process surface so agents can observe, decide, act,
-              and report back.
+              The human should not be the only place where task state, file context, approvals, and tool
+              output come together. Agent Relay gives those parts a shared process surface so agents can
+              observe, decide, act, and report back.
             </p>
             <ul>
               <li>Agents see the same channels, threads, and history.</li>
@@ -161,8 +161,8 @@ export default function ProcessPage() {
           <FadeIn direction="up" className={s.sectionHeader}>
             <h2>Beyond messaging</h2>
             <p>
-              Messaging is the foundation, but the larger product is a set of coordination primitives for agents that
-              need to work without constant supervision.
+              Messaging is the foundation, but the larger product is a set of coordination primitives for
+              agents that need to work without constant supervision.
             </p>
           </FadeIn>
 

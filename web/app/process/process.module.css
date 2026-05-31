@@ -290,8 +290,7 @@
   gap: clamp(40px, 6vw, 84px);
   padding-top: 96px;
   padding-bottom: 96px;
-  background:
-    linear-gradient(180deg, rgba(21, 46, 68, 0.9), rgba(14, 31, 47, 0.9));
+  background: linear-gradient(180deg, rgba(21, 46, 68, 0.9), rgba(14, 31, 47, 0.9));
   max-width: none;
 }
 

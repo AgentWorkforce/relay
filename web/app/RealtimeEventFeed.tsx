@@ -7,18 +7,60 @@ import s from './landing.module.css';
 
 const REALTIME_EVENT_ACTIVITY = [
   { name: 'session.started', agent: 'Planner', action: 'joined #dev', provider: 'claude', signal: 'live' },
-  { name: 'message.sent', agent: 'Builder', action: 'sent a channel update', provider: 'codex', signal: 'live' },
-  { name: 'reaction.added', agent: 'Reviewer', action: 'reacted with :+1:', provider: 'claude', signal: 'live' },
-  { name: 'thread.started', agent: 'Planner', action: 'started a review thread', provider: 'claude', signal: 'live' },
+  {
+    name: 'message.sent',
+    agent: 'Builder',
+    action: 'sent a channel update',
+    provider: 'codex',
+    signal: 'live',
+  },
+  {
+    name: 'reaction.added',
+    agent: 'Reviewer',
+    action: 'reacted with :+1:',
+    provider: 'claude',
+    signal: 'live',
+  },
+  {
+    name: 'thread.started',
+    agent: 'Planner',
+    action: 'started a review thread',
+    provider: 'claude',
+    signal: 'live',
+  },
   { name: 'status.idle', agent: 'Builder', action: 'went idle', provider: 'codex', signal: 'idle' },
   { name: 'action.invoked', agent: 'Ops', action: 'called spawn', provider: 'openclaw', signal: 'live' },
   { name: 'message.sent', agent: 'Designer', action: 'sent a DM', provider: 'codex', signal: 'live' },
-  { name: 'status.offline', agent: 'Reviewer', action: 'disconnected', provider: 'claude', signal: 'disconnected' },
-  { name: 'channel.left', agent: 'Ops', action: 'left #deploy', provider: 'openclaw', signal: 'disconnected' },
-  { name: 'action.invoked', agent: 'Planner', action: 'called ui.update', provider: 'claude', signal: 'live' },
+  {
+    name: 'status.offline',
+    agent: 'Reviewer',
+    action: 'disconnected',
+    provider: 'claude',
+    signal: 'disconnected',
+  },
+  {
+    name: 'channel.left',
+    agent: 'Ops',
+    action: 'left #deploy',
+    provider: 'openclaw',
+    signal: 'disconnected',
+  },
+  {
+    name: 'action.invoked',
+    agent: 'Planner',
+    action: 'called ui.update',
+    provider: 'claude',
+    signal: 'live',
+  },
   { name: 'session.started', agent: 'QA', action: 'joined #release', provider: 'codex', signal: 'live' },
   { name: 'status.idle', agent: 'Ops', action: 'went idle', provider: 'openclaw', signal: 'idle' },
-  { name: 'message.sent', agent: 'Reviewer', action: 'sent thread reply', provider: 'claude', signal: 'live' },
+  {
+    name: 'message.sent',
+    agent: 'Reviewer',
+    action: 'sent thread reply',
+    provider: 'claude',
+    signal: 'live',
+  },
   { name: 'reaction.added', agent: 'QA', action: 'reacted with :eyes:', provider: 'codex', signal: 'live' },
 ] satisfies Array<{
   action: string;
@@ -47,10 +89,25 @@ type FeedEvent = {
 function OpenClawLogo({ className }: { className: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <path d="M7.5 4.5c-1.4 3.2-1.9 6.4-1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path
+        d="M7.5 4.5c-1.4 3.2-1.9 6.4-1.4 9.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
       <path d="M12 3.5c-.7 3.7-.7 7.3 0 10.8" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-      <path d="M16.5 4.5c1.4 3.2 1.9 6.4 1.4 9.6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
-      <path d="M5.8 16.8c3.1 2.5 9.3 2.5 12.4 0" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path
+        d="M16.5 4.5c1.4 3.2 1.9 6.4 1.4 9.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M5.8 16.8c3.1 2.5 9.3 2.5 12.4 0"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2"
+      />
     </svg>
   );
 }
