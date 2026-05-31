@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import MCP from '@lobehub/icons/es/MCP';
+import { SquareTerminal } from 'lucide-react';
 
 import { AGENT_TOOL_LABELS, AGENT_TOOLS, AgentToolLogo } from '../components/AgentToolLogos';
 import { ChannelMessagesPreview } from '../components/ChannelMessagesPreview';
@@ -464,11 +466,20 @@ export default function HomePage() {
             </div>
 
             <div className={s.capabilityBand}>
+              <div className={s.capabilityDivider} aria-hidden="true">
+                <svg
+                  className={s.capabilityDividerWaves}
+                  viewBox="0 0 1200 120"
+                  fill="none"
+                  preserveAspectRatio="none"
+                >
+                  <path d="M-120 84 C120 42 318 46 560 70 S928 106 1320 24" />
+                  <path d="M-120 104 C136 60 336 66 580 88 S948 122 1320 46" />
+                  <path d="M-120 64 C112 24 310 28 540 52 S902 86 1320 8" />
+                </svg>
+              </div>
               <div className={s.capabilityHeader}>
                 <h3>Bring everything into the conversation</h3>
-                <p>
-                Events, integrations, and history flow into the same channels so people and agents always have the context they need.
-                </p>
               </div>
 
               <FadeIn direction="up" delay={0} className={s.capabilityItem}>
@@ -538,10 +549,9 @@ export default function HomePage() {
           </FadeIn>
 
           <div className={s.featureSeparator} aria-hidden="true">
-            <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 120" fill="none" preserveAspectRatio="none">
-              <path d="M-120 84 C120 42 318 46 560 70 S928 106 1320 24" />
-              <path d="M-120 104 C136 60 336 66 580 88 S948 122 1320 46" />
-              <path d="M-120 64 C112 24 310 28 540 52 S902 86 1320 8" />
+            <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
+              <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
+              <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />
             </svg>
           </div>
 
@@ -554,6 +564,23 @@ export default function HomePage() {
                 <li>Require approvals, validate inputs, and return structured results instead of free-form guesses.</li>
                 <li>Keep action updates attached to the right channel, thread, and workflow state.</li>
               </ul>
+              <div className={s.actionToolBadges} aria-label="Agent Relay tool surfaces">
+                <span className={s.actionToolBadge} tabIndex={0} aria-label="Agent Relay MCP">
+                  <MCP size={20} aria-hidden="true" />
+                  <span className={s.actionToolTooltip} role="tooltip">
+                    <strong>MCP</strong>
+                    The Agent Relay MCP exposes tool calls you define via the SDK that you can define callbacks for. 
+                  </span>
+                </span>
+                <span className={s.actionToolBadge} tabIndex={0} aria-label="Agent Relay CLI">
+                  <SquareTerminal size={20} strokeWidth={1.8} aria-hidden="true" />
+                  <span className={s.actionToolTooltip} role="tooltip">
+                    <strong>CLI</strong>
+                    The Agent Relay CLI exposes actions you define via the SDK as terminal commands the agent can use and 
+                    you can define callbacks for. 
+                  </span>
+                </span>
+              </div>
             </div>
             <div className={`${s.featurePreview} ${s.commandsEditorPreview}`}>
               <div className={s.editorWindow}>
@@ -561,56 +588,41 @@ export default function HomePage() {
                   <span />
                   <span />
                   <span />
-                  <strong>actions.ts</strong>
+                  <strong>orchestrator.ts</strong>
                 </div>
                 <pre className={s.editorCode}>
                   <code>
-                    <span className={s.codeMuted}>relay</span>
+                  <span className={s.codeMuted}>// Define callbacks from agent actions </span>
+                  <span>{'\n'}</span>
+                    <span>relay</span>
                     <span>.</span>
                     <span className={s.codeFunction}>on</span>
                     <span>(</span>
                     <span>{'\n'}</span>
                     <span>  </span>
-                    <span className={s.codeVariable}>engineer</span>
+                    <span>engineer</span>
                     <span>.</span>
-                    <span>status</span>
+                    <span className={s.codeVariable}>status</span>
                     <span>.</span>
                     <span className={s.codeFunction}>becomes</span>
                     <span>(</span>
                     <span className={s.codeString}>&quot;idle&quot;</span>
                     <span>),{'\n'}</span>
-                    <span>  () =&gt;{'\n'}</span>
+                    <span>  </span>
+                    <span className={s.codeKeyword}>async</span>
+                    <span> () =&gt;{'\n'}</span>
                     <span>    </span>
-                    <span className={s.codeMuted}>relay</span>
+                    <span>relay</span>
                     <span>.</span>
                     <span className={s.codeFunction}>sendMessage</span>
                     <span>({'{'}{'\n'}</span>
                     <span>      to: </span>
-                    <span className={s.codeVariable}>taskManager</span>
+                    <span>taskManager</span>
                     <span>,{'\n'}</span>
                     <span>      msg: </span>
                     <span className={s.codeString}>{'`${engineer.handle} is idle. Send the next task.`'}</span>
                     <span>,{'\n'}</span>
                     <span>    {'}'}),{'\n'}</span>
-                    <span>);{'\n\n'}</span>
-                    <span className={s.codeMuted}>relay</span>
-                    <span>.</span>
-                    <span className={s.codeFunction}>onSpawn</span>
-                    <span>(({'{'} </span>
-                    <span className={s.codeVariable}>agent</span>
-                    <span> {'}'}) =&gt;{'\n'}</span>
-                    <span>  </span>
-                    <span className={s.codeMuted}>relay</span>
-                    <span>.</span>
-                    <span className={s.codeFunction}>sendMessage</span>
-                    <span>({'{'}{'\n'}</span>
-                    <span>    to: </span>
-                    <span className={s.codeString}>&quot;#dev&quot;</span>
-                    <span>,{'\n'}</span>
-                    <span>    msg: </span>
-                    <span className={s.codeString}>{'`Welcome to #dev, ${agent.handle}.`'}</span>
-                    <span>,{'\n'}</span>
-                    <span>  {'}'}),{'\n'}</span>
                     <span>);</span>
                   </code>
                 </pre>

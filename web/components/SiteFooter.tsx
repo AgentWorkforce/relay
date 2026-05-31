@@ -18,7 +18,28 @@ export function SiteFooter() {
 
         <div className={s.columns}>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Resources</h4>
+            <h4 className={s.colTitle}>Product</h4>
+            <Link href="/primitives" className={s.link}>
+              Primitives
+            </Link>
+            <Link href="/primitives#message" className={s.link}>
+              Relaycast
+            </Link>
+            <Link href="/primitives#file" className={s.link}>
+              Relayfile
+            </Link>
+            <Link href="/primitives#auth" className={s.link}>
+              Relayauth
+            </Link>
+            <Link href="/primitives#schedule" className={s.link}>
+              Relaycron
+            </Link>
+            <Link href="/process" className={s.link}>
+              Process
+            </Link>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>Documentation</h4>
             <Link href="/docs/introduction" className={s.link}>
               Introduction
             </Link>
@@ -40,17 +61,37 @@ export function SiteFooter() {
             <Link href="/docs/typescript-sdk" className={s.link}>
               TypeScript SDK
             </Link>
-            <Link href="/docs/migration" className={s.link}>
-              Migration
-            </Link>
           </div>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Company</h4>
+            <h4 className={s.colTitle}>Resources</h4>
+            <Link href="/docs/agent-relay-mcp" className={s.link}>
+              Agent Relay MCP
+            </Link>
+            <Link href="/openclaw" className={s.link}>
+              OpenClaw adapter
+            </Link>
+            <Link href="/docs/migration" className={s.link}>
+              Migration guide
+            </Link>
             <Link href="/blog" className={s.link}>
               Blog
             </Link>
             <Link href="/brand" className={s.link}>
               Brand
+            </Link>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>Company</h4>
+            <a
+              href="https://github.com/agentworkforce/relay"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              GitHub
+            </a>
+            <Link href="/telemetry" className={s.link}>
+              Telemetry
             </Link>
             <Link href="/privacy" className={s.link}>
               Privacy

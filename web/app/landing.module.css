@@ -763,6 +763,14 @@
   --feature-band-bg: #0b1c2a;
 }
 
+.deliveryFeature .featurePreview {
+  order: 1;
+}
+
+.deliveryFeature .featureCopy {
+  order: 2;
+}
+
 .deliveryFeature::after {
   content: none;
 }
@@ -805,7 +813,7 @@
   left: 50%;
   width: 128vw;
   height: 1px;
-  transform: translate(-50%, -50%) rotate(-2deg);
+  transform: translate(-50%, -50%) rotate(2deg);
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -823,27 +831,23 @@
   left: 50%;
   z-index: 1;
   width: 128vw;
-  height: 92px;
+  height: 78px;
   color: #74b8e2;
-  opacity: 0.42;
+  opacity: 0.4;
   overflow: visible;
-  transform: translate(-50%, -50%) rotate(-2deg);
+  transform: translate(-50%, -50%) rotate(2deg);
   transform-origin: center;
 }
 
 .featureSeparatorWaves path {
   stroke: currentColor;
-  stroke-width: 1.4;
+  stroke-width: 1.2;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 
 .featureSeparatorWaves path:nth-child(2) {
-  opacity: 0.42;
-}
-
-.featureSeparatorWaves path:nth-child(3) {
-  opacity: 0.28;
+  opacity: 0.5;
 }
 
 .messagingFeature .featurePreview {
@@ -896,12 +900,71 @@
   z-index: 1;
 }
 
+.capabilityDivider {
+  position: relative;
+  grid-column: 1 / -1;
+  width: 100vw;
+  height: 70px;
+  margin: -104px calc(50% - 50vw) 44px;
+  isolation: isolate;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.capabilityDivider::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 128vw;
+  height: 1px;
+  transform: translate(-50%, -50%) rotate(-2deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(116, 184, 226, 0.05) 18%,
+    rgba(116, 184, 226, 0.2) 50%,
+    rgba(116, 184, 226, 0.05) 82%,
+    transparent 100%
+  );
+  z-index: 0;
+}
+
+.capabilityDividerWaves {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: 128vw;
+  height: 92px;
+  color: #74b8e2;
+  opacity: 0.42;
+  overflow: visible;
+  transform: translate(-50%, -50%) rotate(-2deg);
+  transform-origin: center;
+}
+
+.capabilityDividerWaves path {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.capabilityDividerWaves path:nth-child(2) {
+  opacity: 0.42;
+}
+
+.capabilityDividerWaves path:nth-child(3) {
+  opacity: 0.28;
+}
+
 .capabilityHeader {
   display: grid;
   grid-column: 1 / -1;
   gap: 12px;
   max-width: 720px;
-  margin: 0 auto 12px;
+  margin: 0 auto 40px;
   text-align: center;
 }
 
@@ -1089,6 +1152,81 @@
   letter-spacing: 0;
   color: var(--fg);
   margin: 0;
+}
+
+.actionToolBadges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.actionToolBadge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: rgba(196, 211, 226, 0.74);
+  cursor: default;
+  transition:
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.actionToolBadge:hover,
+.actionToolBadge:focus-visible {
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.actionToolBadge:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--primary) 48%, white 14%);
+  outline-offset: 4px;
+}
+
+.actionToolBadge svg {
+  flex: none;
+}
+
+.actionToolTooltip {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  z-index: 8;
+  width: min(330px, calc(100vw - 48px));
+  padding: 12px 13px;
+  border: 1px solid rgba(156, 207, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(7, 17, 31, 0.94);
+  box-shadow: 0 18px 42px rgba(3, 10, 20, 0.36);
+  color: rgba(214, 228, 241, 0.9);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(5px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.actionToolTooltip strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.actionToolBadge:hover .actionToolTooltip,
+.actionToolBadge:focus-visible .actionToolTooltip {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .featureDesc {
@@ -2110,6 +2248,14 @@
   color: rgba(226, 232, 240, 0.74);
 }
 
+.editorCode .codeKeyword {
+  color: #ff7b72;
+}
+
+.editorCode .codeString {
+  color: #f8d4af;
+}
+
 .commandsEditorPreview {
   border: 0;
   border-radius: 14px;
@@ -2820,6 +2966,14 @@
     order: 2;
   }
 
+  .deliveryFeature .featureCopy {
+    order: 2;
+  }
+
+  .deliveryFeature .featurePreview {
+    order: 1;
+  }
+
   .commandsFeature .featureCopy {
     order: 1;
   }
@@ -3156,7 +3310,7 @@
 
 .byohTitle {
   font-family: var(--font-heading), sans-serif;
-  font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+  font-size: 3rem;
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.15;
