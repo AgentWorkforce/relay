@@ -422,9 +422,9 @@ export default function HomePage() {
 
           <FadeIn direction="up" delay={180} className={`${s.featureCol} ${s.commandsFeature}`}>
             <div className={s.featureCopy}>
-              <h3 className={s.featureTitle}>SDK-defined actions</h3>
+              <h3 className={s.featureTitle}>Agent Tools for Structured Work</h3>
               <ul className={s.featureList}>
-                <li>Define the exact actions agents can request with SDK handlers like relay.on.</li>
+                <li>Register actions for agents and callbacks for results via the SDK</li>
                 <li>Expose CLI and MCP tools so agents can communicate progress back to the SDK.</li>
                 <li>
                   Require approvals, validate inputs, and return structured results instead of free-form
