@@ -18,6 +18,7 @@ Reviewed PR #1017 homepage component extraction, made Deploy icon type explicit,
 ## Key Decisions
 
 ### Made Deploy icon type explicit
+
 - **Chose:** Made Deploy icon type explicit
 - **Reasoning:** The extracted Deploy component used React.ComponentType without importing React; using a type-only ComponentType import preserves behavior and avoids namespace/no-undef lint risk.
 
@@ -26,6 +27,7 @@ Reviewed PR #1017 homepage component extraction, made Deploy icon type explicit,
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Made Deploy icon type explicit: Made Deploy icon type explicit
