@@ -1684,7 +1684,9 @@ mod tests {
             Some("RelayWorker")
         );
         assert_eq!(
-            overrides.get("RELAY_AGENT_TOKEN").and_then(|v| v.as_deref()),
+            overrides
+                .get("RELAY_AGENT_TOKEN")
+                .and_then(|v| v.as_deref()),
             Some("tok_worker")
         );
         assert_eq!(
