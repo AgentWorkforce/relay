@@ -55,7 +55,17 @@ export interface ZodLikeSchema<TOutput = unknown> {
   description?: string;
 }
 
-export type ActionSchema<TOutput = unknown> = JsonSchema | ZodLikeSchema<TOutput>;
+/**
+ * Structural match for any standard-schema-style validator (e.g. a real `zod`
+ * schema) without depending on its full type. Validators are recognized at
+ * runtime by their `safeParse` method; this keeps the README's `z.object(...)`
+ * usage assignable regardless of how the output type is inferred.
+ */
+export interface SafeParseSchema {
+  safeParse(input: unknown): { success: boolean };
+}
+
+export type ActionSchema<TOutput = unknown> = JsonSchema | ZodLikeSchema<TOutput> | SafeParseSchema;
 
 export interface ActionValidationIssue {
   path: string;

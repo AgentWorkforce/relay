@@ -7,6 +7,7 @@ import type {
   AgentRelayActions,
   ActionContext,
   ActionSchema,
+  JsonSchema,
   ActionValidationIssue,
   ActionValidationResult,
   InvokeActionInput,
@@ -268,8 +269,10 @@ function validateActionSchema(input: unknown, schema: ActionSchema | undefined):
     };
   }
 
+  // Anything with a `safeParse` method was handled above, so the remainder is
+  // a JSON-schema-lite definition.
   return {
-    ...validateJsonSchemaLite(input, schema),
+    ...validateJsonSchemaLite(input, schema as JsonSchema | undefined),
     value: input,
   };
 }
