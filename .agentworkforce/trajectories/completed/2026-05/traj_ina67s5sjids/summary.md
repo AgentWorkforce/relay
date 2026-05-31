@@ -18,15 +18,17 @@ Implemented the full README public API across 4 packages: SDK facade (workspace/
 ## Key Decisions
 
 ### Renamed AgentRelayClient -> RuntimeClient and purged AgentRelay-prefixed names from @agent-relay/runtime (RuntimeClientOptions, RuntimeSpawnOptions, BrokerInitArgs, RuntimeEvents, RuntimeProtocolError, createRuntimeClient)
+
 - **Chose:** Renamed AgentRelayClient -> RuntimeClient and purged AgentRelay-prefixed names from @agent-relay/runtime (RuntimeClientOptions, RuntimeSpawnOptions, BrokerInitArgs, RuntimeEvents, RuntimeProtocolError, createRuntimeClient)
-- **Reasoning:** User: AgentRelay branding belongs to the SDK messaging facade; the managed broker client lives in @agent-relay/runtime so it should carry Runtime naming. Left SDK-owned AgentRelay* symbols and the unrelated Swift AgentRelayClient class untouched; could not edit self-modification-protected .claude/rules files
+- **Reasoning:** User: AgentRelay branding belongs to the SDK messaging facade; the managed broker client lives in @agent-relay/runtime so it should carry Runtime naming. Left SDK-owned AgentRelay\* symbols and the unrelated Swift AgentRelayClient class untouched; could not edit self-modification-protected .claude/rules files
 
 ---
 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Renamed AgentRelayClient -> RuntimeClient and purged AgentRelay-prefixed names from @agent-relay/runtime (RuntimeClientOptions, RuntimeSpawnOptions, BrokerInitArgs, RuntimeEvents, RuntimeProtocolError, createRuntimeClient): Renamed AgentRelayClient -> RuntimeClient and purged AgentRelay-prefixed names from @agent-relay/runtime (RuntimeClientOptions, RuntimeSpawnOptions, BrokerInitArgs, RuntimeEvents, RuntimeProtocolError, createRuntimeClient)
 

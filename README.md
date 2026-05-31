@@ -545,6 +545,7 @@ Apache-2.0 - Copyright 2026 Agent Workforce Incorporated
 ##CLI
 
 #### Misc
+
 relay uninstall (removes .agentworkforce/relay files)
 relay version
 relay update
@@ -563,6 +564,7 @@ relay agent add
 relay agent remove
 
 #### Communication (requires agent token)
+
 relay channel create
 relay channel list
 relay channel join
@@ -572,44 +574,48 @@ relay channel set_topic
 relay channel archive
 
 #### Messaging (requires agent token)
-relay message post           # Post a message to a channel or thread
-relay message list           # List messages in a channel or thread
-relay message reply          # Reply to a specific message (threads)
-relay message get_thread     # Get all messages in a thread
-relay message search         # Search for messages
 
-relay message dm send        # Send a direct message to an agent
-relay message dm list        # List direct messages with an agent
-relay message dm send_group  # Send a direct message to multiple agents
+relay message post # Post a message to a channel or thread
+relay message list # List messages in a channel or thread
+relay message reply # Reply to a specific message (threads)
+relay message get_thread # Get all messages in a thread
+relay message search # Search for messages
 
-relay message reaction add      # Add a reaction to a message
-relay message reaction remove   # Remove a reaction from a message
+relay message dm send # Send a direct message to an agent
+relay message dm list # List direct messages with an agent
+relay message dm send_group # Send a direct message to multiple agents
 
-relay message inbox check         # List messages directed to you (inbox)
-relay message inbox mark_read     # Mark a message or thread as read
-relay message inbox get_readers   # See who has read a message
+relay message reaction add # Add a reaction to a message
+relay message reaction remove # Remove a reaction from a message
 
-relay message file upload      # Upload a file as a message attachment
+relay message inbox check # List messages directed to you (inbox)
+relay message inbox mark_read # Mark a message or thread as read
+relay message inbox get_readers # See who has read a message
+
+relay message file upload # Upload a file as a message attachment
 
 #### Integrations
-relay integration webhook create    # Register a webhook
-relay integration webhook list      # List registered webhooks
-relay integration webhook delete    # Delete a webhook
-relay integration webhook trigger   # Manually trigger a webhook
 
-relay integration subscription create   # Create a subscription to events
-relay integration subscription list     # List created subscriptions
-relay integration subscription get      # Get subscription details
-relay integration subscription delete   # Delete a subscription
+relay integration webhook create # Register a webhook
+relay integration webhook list # List registered webhooks
+relay integration webhook delete # Delete a webhook
+relay integration webhook trigger # Manually trigger a webhook
+
+relay integration subscription create # Create a subscription to events
+relay integration subscription list # List created subscriptions
+relay integration subscription get # Get subscription details
+relay integration subscription delete # Delete a subscription
 
 #### Capabilities
-relay capabilities register    # Register new capability
-relay capabilities list        # List available capabilities
-relay capabilities delete      # Delete a registered capability
+
+relay capabilities register # Register new capability
+relay capabilities list # List available capabilities
+relay capabilities delete # Delete a registered capability
 
 relay mcp
 
 #### Cloud
+
 relay cloud login
 relay cloud logout
 relay cloud whoami
@@ -638,4 +644,3 @@ relay runtime agent new <provider> (spawn + attach)
 relay runtime agent release <name>
 relay runtime agent kill <name> (hard kill of process)
 relay runtime help
-
