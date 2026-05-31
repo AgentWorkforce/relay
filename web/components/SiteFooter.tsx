@@ -18,25 +18,55 @@ export function SiteFooter() {
 
         <div className={s.columns}>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Product</h4>
-            <Link href="/primitives" className={s.link}>
-              Primitives
-            </Link>
-            <Link href="/primitives#message" className={s.link}>
-              Relaycast
-            </Link>
-            <Link href="/primitives#file" className={s.link}>
+            <h4 className={s.colTitle}>Projects</h4>
+            <a
+              href="https://github.com/AgentWorkforce/relayfile"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
               Relayfile
-            </Link>
-            <Link href="/primitives#auth" className={s.link}>
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/relayauth"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
               Relayauth
-            </Link>
-            <Link href="/primitives#schedule" className={s.link}>
-              Relaycron
-            </Link>
-            <Link href="/process" className={s.link}>
-              Process
-            </Link>
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/trajectories"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Trajectories
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/burn"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Burn
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/relayflows"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Relayflows
+            </a>
+            <a
+              href="https://proactiveagents.dev"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Proactive Agents
+            </a>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Documentation</h4>
@@ -66,12 +96,6 @@ export function SiteFooter() {
             <h4 className={s.colTitle}>Resources</h4>
             <Link href="/docs/agent-relay-mcp" className={s.link}>
               Agent Relay MCP
-            </Link>
-            <Link href="/openclaw" className={s.link}>
-              OpenClaw adapter
-            </Link>
-            <Link href="/docs/migration" className={s.link}>
-              Migration guide
             </Link>
             <Link href="/blog" className={s.link}>
               Blog

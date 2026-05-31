@@ -1561,41 +1561,6 @@
   color: color-mix(in srgb, var(--fg) 82%, white 18%);
 }
 
-.agentBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 15px;
-  min-width: 0;
-  padding: 0 5px 0 4px;
-  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 86%, currentColor 14%);
-  color: var(--fg-muted);
-  flex-shrink: 0;
-  font-size: 0.52rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.agentBadgeIcon {
-  width: 9px;
-  height: 9px;
-  flex-shrink: 0;
-}
-
-.agentBadgeClaude {
-  color: #c1674b;
-}
-
-.agentBadgeCodex {
-  color: #a8b0bd;
-}
-
-.agentBadgeOpenclaw {
-  color: #7eb8da;
-}
-
 .chatText {
   font-size: 0.7rem;
   line-height: 1.42;
