@@ -615,7 +615,11 @@ mod tests {
 
     #[test]
     fn action_payload_ignores_unknown_actions() {
-        assert!(broker_payload_from_action("unknown", Some(json!({ "name": "x" }).as_object().cloned().unwrap())).is_none());
+        assert!(broker_payload_from_action(
+            "unknown",
+            Some(json!({ "name": "x" }).as_object().cloned().unwrap())
+        )
+        .is_none());
     }
 
     #[test]

@@ -6,8 +6,8 @@ use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, MessageListQuery, RegisterActionRequest, RelayCast, RelayCastOptions,
-    ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
+    CompleteInvocationRequest, MessageListQuery, RegisterActionRequest, RelayCast,
+    RelayCastOptions, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -420,7 +420,10 @@ impl RelaycastHttpClient {
     /// Register an action whose handler is this broker's agent. Spawn/release
     /// are exposed as relaycast actions so other agents can invoke them as
     /// structured agent-to-agent RPC.
-    pub async fn register_action(&self, request: RegisterActionRequest) -> Result<ActionDefinition> {
+    pub async fn register_action(
+        &self,
+        request: RegisterActionRequest,
+    ) -> Result<ActionDefinition> {
         let relay = self
             .relay_client()
             .context("SDK relay client not initialized")?;
