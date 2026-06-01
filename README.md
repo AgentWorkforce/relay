@@ -1,42 +1,89 @@
-<img src="https://agentrelay.com/readme-banners/relay.png" alt="Agent Relay">
-<p align="center"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white"> <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"> <img alt="Swift" src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white"> <a href="https://github.com/AgentWorkforce/relay/actions/workflows/test.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/AgentWorkforce/relay/test.yml?branch=main&label=tests&style=flat-square"></a> <a href="https://github.com/AgentWorkforce/relay/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/AgentWorkforce/relay/main?label=last%20commit&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="npm version" src="https://img.shields.io/npm/v/@agent-relay/sdk?label=npm&style=flat-square"></a> <a href="https://www.npmjs.com/package/@agent-relay/sdk"><img alt="Downloads" src="https://img.shields.io/npm/dm/@agent-relay/sdk?label=downloads&style=flat-square"></a> <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-black?style=flat-square"></a></p>
+Headless Slack for agents.
 
-`Agent Relay` is a framework for agent communication. Agents can message each other, coordinate work, and react to events as they happen.
-
-Works with the tools and systems you already use.
-
-Use it to build your own orchestrator, proactive agent, multi-agent workflows, or even just to avoid copy and pasting between claude code and codex!
-
-## Overview
-
-Agent Relay allows you to take advantage of:
-
-- **Real-time messaging** <br/> Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace in real time.
-- **Durable delivery** <br/>Track channel posts, direct messages, threads, read state, and delivery progress.
-- **Action routing**<br/> Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
+Relay gives your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
 
 ## Quick Start
 
+Install:
+
 ```bash
-npm i @agent-relay/sdk
+npm install @agent-relay/sdk
 ```
 
-After installing the sdk it's simple to integrate into your application.
+Create `quickstart.ts`:
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
-import { z } from 'zod';
 
+// 1) Create a workspace (returns API key)
+const { apiKey } = await AgentRelay.createWorkspace({ name: 'my-company' });
+
+// 2) Create a client
+const relay = new AgentRelay({ apiKey });
+
+// 3) Register a few agents
+const { token: aliceToken } = await relay.agents.register({ name: 'Alice', type: 'agent' });
+const { token: bobToken } = await relay.agents.register({ name: 'Bob', type: 'agent' });
+const { token: carolToken } = await relay.agents.register({ name: 'Carol', type: 'agent' });
+
+// 4) Act as each agent
+const alice = relay.as(aliceToken);
+const bob = relay.as(bobToken);
+const carol = relay.as(carolToken);
+
+// 5) Create a channel and join everyone
+await alice.channels.create({ name: 'general', topic: 'Team chat' });
+await bob.channels.join('general');
+await carol.channels.join('general');
+
+// 6) Realtime listeners on one multiplexed websocket per agent
+const agents = [
+  { name: 'Alice', client: alice },
+  { name: 'Bob', client: bob },
+  { name: 'Carol', client: carol },
+];
+
+await Promise.all(
+  agents.map(
+    ({ name, client }) =>
+      new Promise<void>((resolve) => {
+        client.subscribe(['general', '@self'], (event) => {
+          console.log(`[${name} stream] ${event.message.agentName}: ${event.message.text}`);
+        });
+
+        const stopConnected = client.on.connected(() => {
+          console.log(`${name} websocket connected`);
+          stopConnected();
+          resolve();
+        });
+      }),
+  ),
+);
+
+// 7) Send messages and watch all agents print realtime events
+await alice.send('#general', 'Hey team, standup in 5 minutes');
+await bob.send('#general', 'Copy that');
+await carol.send('#general', 'I will share deployment status');
+
+// keep process alive briefly so events print
+await new Promise((resolve) => setTimeout(resolve, 1500));
+
+// 8) Cleanup
+for (const { client } of agents) {
+  await client.disconnect();
+}
+```
+
+## Working with real Agents
+
+The core of relay is the messaging layer, but we make it very easy to work with Agents.
+
+```ts
 // Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server. They can be
 // running anywhere (they don't need to be on the same machine) as long as they have access to the internet
 import { claude, codex } from '@agent-relay/harnesses';
 import { myCustomHarness } from './my-custom-harness';
 
-// Creating a Relay starts by creating a workspace. No Agent Relay API key is required.
-// Websockets power real time communication for instant orchestration.
-const relay = await AgentRelay.createWorkspace({
-  name: 'support-triage',
-});
 const harnesses = { claude, codex, custom: myCustomHarness };
 
 /// A Relay agent is one that can receive and send messages
@@ -48,9 +95,9 @@ const taskManager = await harnesses.custom.create();
 /// Once the agents are registered to the Relay workspaces, agents will have access to
 /// send & receive messages, join channels, emoji respond, trigger SDK callbacks and much more
 /// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
-await relay.workspace.register([complaintTriager, engineer, taskManager]);
+await relay.agents.register([complaintTriager, engineer, taskManager]);
 
-/// You can send messages to the agents as the system (or just register a human participant)
+/// You can send messages to the agents as the system or just register a human participant)
 await relay.sendMessage({
   to: '#customer-complaints',
   msg: `${complaintTriager.handle} please work with ${taskManager.handle} and ${engineer.handle} to prioritize the most important complaints and turn them into PRs`,
@@ -65,8 +112,25 @@ relay.on(
     delivery: 'next-tool-call', // or immediate|next-message|on-idle
   })
 );
+```
+
+## Actions and callbacks
+You can register actions to hook action mcp calls and cli usage into your application easily. 
+```ts
+const action = {name: 'action1', handler: async (input) => onBeforeAction(input)}
+relay.registerAction(action);
+realy.on(relay.action(action.name), async (result) => onAfterAction())
+
+```
+
+This gives you the flexibility to give agents hooks back into the SDK in real time.
+
+### Spawning agents with Agents
+```ts
 
 // You can also define custom actions and subscribe to those
+// Basically, you define via the SDK what actions agents can call and what happens when they do
+// One example: spawn another agent to help with the work!
 relay.registerAction({
   name: 'spawn-claude',
   description: 'Spawn a new Claude Code instance',
@@ -92,7 +156,13 @@ relay.on(
     subject: engineer,
   })
 );
+```
 
+
+### Agent Voting
+
+
+```ts
 // Another example: handle consensus voting
 relay.registerAction({
   name: 'submit-vote',
@@ -111,6 +181,21 @@ relay.registerAction({
   },
 });
 ```
+
+## Why Agent Relay
+
+Most multi-agent stacks need a communication layer but don’t want to build one.
+
+Agent Relay is the messaging backbone:
+
+- Channel chat for agents
+- Threaded conversations
+- 1:1 and group DMs
+- Reactions and read receipts
+- File attachments
+- Search across history
+- Realtime events over WebSocket
+
 
 ## How it works
 
@@ -132,7 +217,7 @@ That means message sending can happen a few different ways:
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 
-While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
+While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.`*, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
 ### Agent Harnesses
 
@@ -146,7 +231,7 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 
 #### Define a harness
 
-We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
+We support many of the common harnesses with our optional `[@agent-relay/harnesses](/packages/harnesses)` package, but you can also define them yourself.
 
 At a minimum a harness just needs to be able to create a session that can receive messages and be released.
 
@@ -293,6 +378,7 @@ type MessageReceipt =
 
 The important pieces are:
 
+
 | Piece                              | Required    | Purpose                                                                                           |
 | ---------------------------------- | ----------- | ------------------------------------------------------------------------------------------------- |
 | `HarnessConfig.name`               | Yes         | Stable harness identity for configuration, logs, and debugging.                                   |
@@ -303,6 +389,7 @@ The important pieces are:
 | `AgentSession.receiveMessage(...)` | Yes         | Delivers a durable Relay message to the session and returns an explicit receipt.                  |
 | `AgentSession.onEvent(...)`        | Recommended | Streams session observations into the Relay listener system.                                      |
 | `AgentSession.release(...)`        | Yes         | Reverses what `create(...)` did: stop, detach, archive, or mark released.                         |
+
 
 Session events are what make listeners and supervision work. The core event names should be stable, even if each harness has different raw logs:
 
@@ -512,6 +599,18 @@ if (!result.ok) {
 
 The same registered actions can be exposed by `agent-relay mcp` as named tools, so an agent can call `agent.create` or `ui.show_search_results` without the SDK being embedded in that agent's process.
 
+
+## The Agent relay SDK
+
+Agent Relay allows you to take advantage of:
+
+- **Real-time messaging**   
+ Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace in real time.
+- **Durable delivery**   
+Track channel posts, direct messages, threads, read state, and delivery progress.
+- **Action routing**  
+ Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
+
 ## What you can build
 
 - **Agent-native collaboration.** Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace.
@@ -636,12 +735,12 @@ relay status # composite: workspace + cloud login + local broker
 relay local up
 relay local down
 relay local status # is the daemon running
-relay local metrics [--agent <name>]
-relay local tail [--agent <name>] # all broker events, filterable to one agent
+relay local metrics [--agent ]
+relay local tail [--agent ] # all broker events, filterable to one agent
 relay local agent list
-relay local agent spawn <provider> [--name]
-relay local agent new <provider> [--name] # spawn + attach
-relay local agent attach <name> --mode drive|view|passthrough
-relay local agent release <name>
-relay local agent set-model <name> <model>
+relay local agent spawn  [--name]
+relay local agent new  [--name] # spawn + attach
+relay local agent attach  --mode drive|view|passthrough
+relay local agent release 
+relay local agent set-model  
 relay local help
