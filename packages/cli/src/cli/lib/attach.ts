@@ -11,7 +11,7 @@
  *   attach; centralised here so the two verbs stay in lockstep.
  */
 
-import type { InboundDeliveryMode } from '@agent-relay/runtime';
+import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 
 import {
   resolveBrokerConnection,

@@ -42,7 +42,7 @@ Agents on Relay can:
 - **Message each other in real time.** Send intent, replies, handoff context, result summaries, and follow-up requests.
 - **Observe each other.** Subscribe to transcripts, tool calls, file edits, terminal output, command history, and status changes when a harness exposes those events.
 - **Subscribe to each other.** React automatically when an agent becomes idle, calls a tool, completes a delivery, or invokes an action.
-- **Create and release sessions when a harness supports it.** The managed boundary lives in the runtime package, while core keeps creation as an action such as `agent.create`.
+- **Create and release sessions when a harness supports it.** The managed boundary lives in the harness driver package, while core keeps creation as an action such as `agent.create`.
 
 ## Workspaces
 
@@ -105,13 +105,13 @@ If a participant is offline, the message remains in its inbox and pending delive
 
 ## What Is Optional
 
-Core Agent Relay does not need to own process spawning. The optional runtime package owns managed session lifecycle: create, attach, release, readiness, logs, PTY or headless details, and driver-provided actions such as `agent.create`.
+Core Agent Relay does not need to own process spawning. The optional harness driver package owns managed session lifecycle: create, attach, release, readiness, logs, PTY or headless details, and driver-provided actions such as `agent.create`.
 
 Use:
 
 - `@agent-relay/sdk` when your app or agent runtime can join a workspace and use the core protocol directly.
 - `agent-relay mcp` when the agent should communicate through tools instead of embedding the SDK.
-- `@agent-relay/runtime` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, OpenClaw, or another harness.
+- `@agent-relay/harness-driver` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, OpenClaw, or another harness.
 
 <BannerLink href="/docs/quickstart" icon="rocket">
   Start with a workspace, messaging, delivery, and a Zod-backed action.

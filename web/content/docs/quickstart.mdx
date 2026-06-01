@@ -14,7 +14,7 @@ npm install @agent-relay/sdk zod
 Add harness packages only when Relay needs to create or manage sessions for you.
 
 ```bash
-npm install @agent-relay/runtime @agent-relay/harnesses
+npm install @agent-relay/harness-driver @agent-relay/harnesses
 ```
 
 ## Create A Workspace
@@ -149,7 +149,7 @@ The same action can be exposed by `agent-relay mcp` as a named tool. An agent th
 Managed session creation is just another action from Relay's point of view. Runtime or driver code registers the implementation.
 
 ```ts file="runtime-actions.ts"
-import { registerRuntimeActions } from '@agent-relay/runtime';
+import { registerRuntimeActions } from '@agent-relay/harness-driver';
 import { relay } from './relay';
 
 registerRuntimeActions(relay.actions, runtime);
@@ -170,7 +170,7 @@ if (!reviewer.ok) {
 }
 ```
 
-Core SDK users can define their own actions the same way. The optional runtime package supplies actions for managed session lifecycle.
+Core SDK users can define their own actions the same way. The optional harness driver package supplies actions for managed session lifecycle.
 
 ## Next Steps
 

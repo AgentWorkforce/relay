@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import type { RuntimeClient } from '@agent-relay/runtime';
+import type { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import { defaultExit } from '../lib/exit.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
@@ -30,7 +30,7 @@ export function runAttach(
 type ExitFn = (code: number) => never;
 
 export interface LocalAgentDependencies {
-  connect: (cwd: string) => Promise<RuntimeClient>;
+  connect: (cwd: string) => Promise<HarnessDriverClient>;
   attach: (
     name: string,
     mode: AttachMode,
@@ -56,9 +56,9 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
 
 async function run(
   deps: LocalAgentDependencies,
-  fn: (client: RuntimeClient) => Promise<void>
+  fn: (client: HarnessDriverClient) => Promise<void>
 ): Promise<void> {
-  let client: RuntimeClient | undefined;
+  let client: HarnessDriverClient | undefined;
   try {
     client = await deps.connect(deps.cwd());
     await fn(client);

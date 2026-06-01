@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  RuntimeClient,
+  HarnessDriverClient,
   type BrokerInitArgs,
   type RuntimeSpawnOptions,
   type ListAgent,
@@ -78,7 +78,7 @@ export class BrokerHarness {
   /** High-level facade — use for spawning agents, sending messages. */
   relay!: AgentRelay;
   /** Low-level client — use for protocol-level tests. */
-  client!: RuntimeClient;
+  client!: HarnessDriverClient;
 
   private readonly opts: Required<BrokerHarnessOptions>;
   private events: BrokerEvent[] = [];
@@ -124,7 +124,7 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await RuntimeClient.spawn(clientOpts);
+    this.client = await HarnessDriverClient.spawn(clientOpts);
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {

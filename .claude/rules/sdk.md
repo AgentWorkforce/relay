@@ -14,14 +14,14 @@ paths:
 
 ## What lives elsewhere
 
-- Broker client: `RuntimeClient` in `@agent-relay/runtime`
-  (`packages/runtime/src/client.ts`) — owns broker startup, spawn/release,
+- Broker client: `HarnessDriverClient` in `@agent-relay/harness-driver`
+  (`packages/harness-driver/src/client.ts`) — owns broker startup, spawn/release,
   PTY/headless transports, and `connection.json` discovery.
 - Workflows: the `relayflows` package (`../relayflows`), which consumes the
   broker through `@agent-relay/sdk`.
 
 Keep application-level messaging on `@agent-relay/sdk`; reach for
-`@agent-relay/runtime` only at the boundary that owns local agent processes.
+`@agent-relay/harness-driver` only at the boundary that owns local agent processes.
 
 ## Facade API
 

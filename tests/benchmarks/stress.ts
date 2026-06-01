@@ -6,7 +6,7 @@
  * Run: npx tsx tests/benchmarks/stress.ts [--quick]
  */
 
-import { RuntimeClient, type BrokerEvent } from '@agent-relay/sdk';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
 import { performance } from 'node:perf_hooks';
 import { resolveBinaryPath, randomName } from './harness.js';
 
@@ -33,7 +33,7 @@ function printResult(r: StressResult): void {
 }
 
 async function collectDeliveryEvents(
-  client: RuntimeClient,
+  client: HarnessDriverClient,
   durationMs: number
 ): Promise<{ verified: number; failed: number }> {
   let verified = 0;
@@ -54,7 +54,7 @@ async function collectDeliveryEvents(
  * Test A: Burst Overload
  * Send many messages as fast as possible to a single agent.
  */
-async function testBurstOverload(client: RuntimeClient): Promise<StressResult> {
+async function testBurstOverload(client: HarnessDriverClient): Promise<StressResult> {
   const count = QUICK ? 50 : 100;
   const worker = randomName('burst');
   await client.spawnPty({ name: worker, cli: 'cat', channels: ['general'] });
@@ -111,7 +111,7 @@ async function testBurstOverload(client: RuntimeClient): Promise<StressResult> {
  * Test B: Multi-Agent Contention
  * Spawn multiple agents and send messages to all simultaneously.
  */
-async function testMultiAgentContention(client: RuntimeClient): Promise<StressResult> {
+async function testMultiAgentContention(client: HarnessDriverClient): Promise<StressResult> {
   const agentCount = QUICK ? 5 : 10;
   const msgsPerAgent = QUICK ? 5 : 10;
   const workers: string[] = [];
@@ -179,7 +179,7 @@ async function testMultiAgentContention(client: RuntimeClient): Promise<StressRe
  * Test C: Long-Running Steady State
  * Send messages at a constant rate and check for degradation.
  */
-async function testSteadyState(client: RuntimeClient): Promise<StressResult> {
+async function testSteadyState(client: HarnessDriverClient): Promise<StressResult> {
   const durationMs = QUICK ? 10_000 : 30_000;
   const intervalMs = 200; // 5 msgs/sec
   const worker = randomName('steady');
@@ -233,7 +233,7 @@ async function testSteadyState(client: RuntimeClient): Promise<StressResult> {
  * Test D: Rapid Spawn/Release Cycles
  * Spawn and release agents rapidly while sending messages.
  */
-async function testSpawnReleaseCycles(client: RuntimeClient): Promise<StressResult> {
+async function testSpawnReleaseCycles(client: HarnessDriverClient): Promise<StressResult> {
   const cycles = QUICK ? 3 : 5;
   let sent = 0;
   let sendErrors = 0;
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
   // Each test gets its own broker instance to avoid interference
   console.log('--- Test A: Burst Overload ---');
   {
-    const client = await RuntimeClient.spawn({
+    const client = await HarnessDriverClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ['general'],
       env: process.env,
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
 
   console.log('--- Test B: Multi-Agent Contention ---');
   {
-    const client = await RuntimeClient.spawn({
+    const client = await HarnessDriverClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ['general'],
       env: process.env,
@@ -323,7 +323,7 @@ async function main(): Promise<void> {
 
   console.log('--- Test C: Steady State ---');
   {
-    const client = await RuntimeClient.spawn({
+    const client = await HarnessDriverClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ['general'],
       env: process.env,
@@ -337,7 +337,7 @@ async function main(): Promise<void> {
 
   console.log('--- Test D: Spawn/Release Cycles ---');
   {
-    const client = await RuntimeClient.spawn({
+    const client = await HarnessDriverClient.spawn({
       binaryPath: resolveBinaryPath(),
       channels: ['general'],
       env: process.env,

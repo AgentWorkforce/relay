@@ -1,4 +1,4 @@
-import { RuntimeClient } from '@agent-relay/runtime';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import type { BrokerConnection } from './broker-connection.js';
 
@@ -11,20 +11,20 @@ export type {
   PtySnapshot,
   SetInboundDeliveryModeResult,
   SnapshotFormat,
-} from '@agent-relay/runtime';
+} from '@agent-relay/harness-driver';
 
 /**
  * Build the broker client for the interactive attach clients. This is the
  * single place the CLI turns a {@link BrokerConnection} into a
- * {@link RuntimeClient}, so every `runtime`/attach command reaches the broker
- * through `@agent-relay/runtime` — including the real WebSocket PTY input
- * stream exposed by `RuntimeClient.openInputStream`.
+ * {@link HarnessDriverClient}, so every `runtime`/attach command reaches the broker
+ * through `@agent-relay/harness-driver` — including the real WebSocket PTY input
+ * stream exposed by `HarnessDriverClient.openInputStream`.
  */
 export function createBrokerClient(
   connection: BrokerConnection,
   fetchFn?: typeof globalThis.fetch
-): RuntimeClient {
-  return new RuntimeClient({ baseUrl: connection.url, apiKey: connection.apiKey, fetch: fetchFn });
+): HarnessDriverClient {
+  return new HarnessDriverClient({ baseUrl: connection.url, apiKey: connection.apiKey, fetch: fetchFn });
 }
 
 export interface BrokerSdkFailure {

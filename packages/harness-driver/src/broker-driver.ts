@@ -1,4 +1,4 @@
-import { RuntimeClient, type RuntimeSpawnOptions } from './client.js';
+import { HarnessDriverClient, type RuntimeSpawnOptions } from './client.js';
 import type { ListAgent, SpawnAgentResult } from './types.js';
 import type {
   AgentDriver,
@@ -24,13 +24,13 @@ function statusFromManagedAgent(agent: ListAgent | SpawnAgentResult | undefined)
 }
 
 export interface BrokerDriverOptions extends RuntimeSpawnOptions {
-  client?: RuntimeClient;
+  client?: HarnessDriverClient;
 }
 
 export class BrokerDriver implements AgentDriver {
   readonly kind = 'broker';
 
-  private client?: RuntimeClient;
+  private client?: HarnessDriverClient;
 
   constructor(private readonly options: BrokerDriverOptions = {}) {
     this.client = options.client;
@@ -46,14 +46,14 @@ export class BrokerDriver implements AgentDriver {
     return this.runtimeHandle(client, result);
   }
 
-  private async ensureClient(): Promise<RuntimeClient> {
+  private async ensureClient(): Promise<HarnessDriverClient> {
     if (!this.client) {
-      this.client = await RuntimeClient.spawn(this.options);
+      this.client = await HarnessDriverClient.spawn(this.options);
     }
     return this.client;
   }
 
-  private runtimeHandle(client: RuntimeClient, result: SpawnAgentResult): SpawnedAgentRuntime {
+  private runtimeHandle(client: HarnessDriverClient, result: SpawnAgentResult): SpawnedAgentRuntime {
     return {
       agent: { name: result.name, id: result.sessionId },
       delivery: { mode: 'managed' },

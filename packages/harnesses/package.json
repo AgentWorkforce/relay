@@ -23,7 +23,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agent-relay/runtime": "7.1.1",
+    "@agent-relay/harness-driver": "7.1.1",
     "@agent-relay/sdk": "7.1.1"
   },
   "publishConfig": {

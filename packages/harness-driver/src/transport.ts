@@ -1,6 +1,6 @@
 /**
  * BrokerTransport — HTTP/WS transport layer for communicating with the
- * agent-relay broker. Used internally by RuntimeClient.
+ * agent-relay broker. Used internally by HarnessDriverClient.
  *
  * Handles:
  * - HTTP requests with API key auth and structured error parsing
@@ -11,7 +11,7 @@
 import WebSocket, { type RawData } from 'ws';
 import type { BrokerEvent } from './protocol.js';
 
-export class RuntimeProtocolError extends Error {
+export class HarnessDriverProtocolError extends Error {
   code: string;
   retryable: boolean;
   status?: number;
@@ -25,7 +25,7 @@ export class RuntimeProtocolError extends Error {
     data?: unknown;
   }) {
     super(payload.message);
-    this.name = 'RuntimeProtocolError';
+    this.name = 'HarnessDriverProtocolError';
     this.code = payload.code;
     this.retryable = payload.retryable ?? false;
     this.status = payload.status;
@@ -105,7 +105,7 @@ export class PtyInputStream {
 
     this.ws = new WebSocket(options.url, { headers });
     this.openTimer = setTimeout(() => {
-      const error = new RuntimeProtocolError({
+      const error = new HarnessDriverProtocolError({
         code: 'input_stream_open_timeout',
         message: 'timed out opening PTY input stream',
         retryable: true,
@@ -128,7 +128,7 @@ export class PtyInputStream {
       this._closed = true;
       this.clearOpenTimer();
       const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
-      const error = new RuntimeProtocolError({
+      const error = new HarnessDriverProtocolError({
         code: 'input_stream_closed',
         message: `PTY input stream closed (${code})${detail}`,
         retryable: false,
@@ -138,7 +138,7 @@ export class PtyInputStream {
     });
 
     this.ws.on('error', (cause) => {
-      const error = new RuntimeProtocolError({
+      const error = new HarnessDriverProtocolError({
         code: 'input_stream_error',
         message: cause instanceof Error ? cause.message : 'PTY input stream failed',
         retryable: true,
@@ -164,7 +164,7 @@ export class PtyInputStream {
   send(data: string): Promise<PtyInputWriteResult> {
     if (this._closed) {
       return Promise.reject(
-        new RuntimeProtocolError({
+        new HarnessDriverProtocolError({
           code: 'input_stream_closed',
           message: 'PTY input stream is closed',
           retryable: false,
@@ -175,7 +175,7 @@ export class PtyInputStream {
     const bytes = Buffer.byteLength(data, 'utf8');
     if (this.bufferedBytes + bytes > this.highWaterMarkBytes) {
       return Promise.reject(
-        new RuntimeProtocolError({
+        new HarnessDriverProtocolError({
           code: 'input_backpressure',
           message: `PTY input stream buffered ${this.bufferedBytes} bytes; refusing ${bytes} more over high water mark ${this.highWaterMarkBytes}`,
           retryable: true,
@@ -204,7 +204,7 @@ export class PtyInputStream {
     if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
       this.ws.close(code, reason);
     }
-    const error = new RuntimeProtocolError({
+    const error = new HarnessDriverProtocolError({
       code: 'input_stream_closed',
       message: 'PTY input stream closed',
       retryable: false,
@@ -239,7 +239,7 @@ export class PtyInputStream {
       if (this.inFlight === next) {
         this.inFlight = null;
       }
-      const protocolError = new RuntimeProtocolError({
+      const protocolError = new HarnessDriverProtocolError({
         code: 'input_stream_send_failed',
         message: error.message,
         retryable: true,
@@ -284,7 +284,7 @@ export class PtyInputStream {
     }
 
     if (type === 'pty_input_error' || type === 'error') {
-      const error = new RuntimeProtocolError({
+      const error = new HarnessDriverProtocolError({
         code: typeof message.code === 'string' ? message.code : 'input_stream_error',
         message: typeof message.message === 'string' ? message.message : 'PTY input stream failed',
         retryable: Boolean(message.retryable),
@@ -340,7 +340,7 @@ function asError(error: unknown): Error {
 function normalizePositiveIntegerOption(value: number | undefined, fallback: number, name: string): number {
   const resolved = value ?? fallback;
   if (!Number.isFinite(resolved) || resolved <= 0) {
-    throw new RuntimeProtocolError({
+    throw new HarnessDriverProtocolError({
       code: 'invalid_input_stream_options',
       message: `${name} must be a finite number greater than 0`,
       retryable: false,
@@ -415,7 +415,7 @@ export class BrokerTransport {
       } catch {
         // non-JSON error
       }
-      throw new RuntimeProtocolError({
+      throw new HarnessDriverProtocolError({
         code: body?.code ?? `http_${res.status}`,
         message: (body?.message ?? body?.error ?? res.statusText) || `HTTP ${res.status}`,
         retryable: res.status >= 500,
@@ -435,7 +435,7 @@ export class BrokerTransport {
     try {
       return JSON.parse(bodyText) as T;
     } catch {
-      throw new RuntimeProtocolError({
+      throw new HarnessDriverProtocolError({
         code: 'invalid_response',
         message: 'response was not JSON',
         retryable: false,

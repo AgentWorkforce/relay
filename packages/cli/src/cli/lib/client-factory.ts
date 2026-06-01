@@ -1,4 +1,4 @@
-import { RuntimeClient, type BrokerInitArgs } from '@agent-relay/runtime';
+import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
 
 export interface CreateRuntimeClientOptions {
   cwd: string;
@@ -23,7 +23,7 @@ export interface ClientSpawnOptions {
   shadowMode?: 'subagent' | 'process';
 }
 
-export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<RuntimeClient> {
+export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {
   const {
     cwd,
     channels = ['general'],
@@ -38,13 +38,13 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     try {
       // Await so an async connect rejection is caught here, not leaked to the
       // caller — otherwise the fallback spawn below never runs.
-      return await RuntimeClient.connect({ cwd });
+      return await HarnessDriverClient.connect({ cwd });
     } catch {
       // Fall through to spawning a fresh broker.
     }
   }
 
-  return RuntimeClient.spawn({
+  return HarnessDriverClient.spawn({
     binaryPath: binaryPath || undefined,
     binaryArgs,
     brokerName,
@@ -55,7 +55,7 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
 }
 
 export async function spawnAgentWithClient(
-  client: RuntimeClient,
+  client: HarnessDriverClient,
   options: ClientSpawnOptions
 ): Promise<void> {
   await client.spawnPty(options);

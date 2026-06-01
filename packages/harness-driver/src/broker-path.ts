@@ -2,7 +2,7 @@
  * Resolves the agent-relay-broker binary path at runtime.
  *
  * Usage:
- *   import { getBrokerBinaryPath } from '@agent-relay/runtime/broker-path';
+ *   import { getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
  *   const binPath = getBrokerBinaryPath();
  */
 
@@ -243,9 +243,9 @@ export function getBrokerBinaryPath(): string | null {
 export function formatBrokerNotFoundError(): string {
   const pkgName = getOptionalDepPackageName();
   return (
-    `@agent-relay/runtime couldn't find an agent-relay-broker binary for ` +
+    `@agent-relay/harness-driver couldn't find an agent-relay-broker binary for ` +
     `${process.platform}-${process.arch}. The optional dependency ` +
-    `${pkgName} is expected to be installed alongside @agent-relay/runtime. ` +
+    `${pkgName} is expected to be installed alongside @agent-relay/harness-driver. ` +
     `Try reinstalling with --include=optional, or set BROKER_BINARY_PATH ` +
     `to point at a broker binary you've downloaded manually.`
   );

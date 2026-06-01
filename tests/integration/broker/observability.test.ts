@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
-import { RuntimeProtocolError } from '@agent-relay/sdk';
+import { HarnessDriverProtocolError } from '@agent-relay/sdk';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
@@ -116,9 +116,9 @@ test('broker: getMetrics for nonexistent agent returns error', async (t) => {
     await assert.rejects(
       harness.client.getMetrics(`nonexistent-${uniqueSuffix()}`),
       (err: Error) => {
-        return err instanceof RuntimeProtocolError && err.code === 'agent_not_found';
+        return err instanceof HarnessDriverProtocolError && err.code === 'agent_not_found';
       },
-      'getMetrics for nonexistent agent should throw RuntimeProtocolError'
+      'getMetrics for nonexistent agent should throw HarnessDriverProtocolError'
     );
   } finally {
     await harness.stop();
@@ -184,9 +184,9 @@ test('broker: sendInput to nonexistent agent returns error', async (t) => {
     await assert.rejects(
       harness.client.sendInput(`nonexistent-${uniqueSuffix()}`, 'data'),
       (err: Error) => {
-        return err instanceof RuntimeProtocolError && err.code === 'agent_not_found';
+        return err instanceof HarnessDriverProtocolError && err.code === 'agent_not_found';
       },
-      'sendInput to nonexistent agent should throw RuntimeProtocolError'
+      'sendInput to nonexistent agent should throw HarnessDriverProtocolError'
     );
   } finally {
     await harness.stop();

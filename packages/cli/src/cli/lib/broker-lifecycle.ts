@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { RuntimeClient } from '@agent-relay/runtime';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
@@ -46,8 +46,8 @@ export interface BrokerConnection {
 }
 
 type BrokerStatusDetails = {
-  status: Awaited<ReturnType<RuntimeClient['getStatus']>>;
-  session: Awaited<ReturnType<RuntimeClient['getSession']>> | null;
+  status: Awaited<ReturnType<HarnessDriverClient['getStatus']>>;
+  session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
 };
 
 type BrokerReadiness =
@@ -1778,7 +1778,7 @@ function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): n
 }
 
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
-  const client = new RuntimeClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
   try {
     const status = await client.getStatus();
     const session = await client.getSession().catch(() => null);

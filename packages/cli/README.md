@@ -1,6 +1,6 @@
 # agent-relay
 
-A thin operator console for a local agent workforce: stand up the broker, staff it with off-the-shelf agent CLIs, and watch/steer them from the terminal. Each command is a shallow wrapper over a backing package (`@agent-relay/sdk`, `@agent-relay/runtime`, `@agent-relay/cloud`).
+A thin operator console for a local agent workforce: stand up the broker, staff it with off-the-shelf agent CLIs, and watch/steer them from the terminal. Each command is a shallow wrapper over a backing package (`@agent-relay/sdk`, `@agent-relay/harness-driver`, `@agent-relay/cloud`).
 
 ## Install
 
@@ -38,5 +38,5 @@ Hosted equivalents live under `agent-relay cloud …`.
 ## Packages
 
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
-- `@agent-relay/runtime`: optional managed harness runtime.
+- `@agent-relay/harness-driver`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.

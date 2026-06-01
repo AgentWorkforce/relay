@@ -6,7 +6,7 @@
  * Run: npx tsx tests/parity/broadcast.ts
  */
 
-import { RuntimeClient, type BrokerEvent } from '@agent-relay/sdk';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
 import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
 
 const AGENT_COUNT = 3;
@@ -15,7 +15,7 @@ const TIMEOUT_MS = 15_000;
 async function main(): Promise<void> {
   console.log('=== Parity Test: Broadcast Messages ===\n');
 
-  const client = await RuntimeClient.spawn({
+  const client = await HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
     env: process.env,

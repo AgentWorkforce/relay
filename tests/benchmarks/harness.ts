@@ -8,7 +8,7 @@
 import { performance } from 'node:perf_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
-import { RuntimeClient, type BrokerEvent } from '@agent-relay/sdk';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
 
 export const QUICK = process.argv.includes('--quick');
 
@@ -31,15 +31,15 @@ export function randomName(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function startBroker(): Promise<RuntimeClient> {
-  return RuntimeClient.spawn({
+export async function startBroker(): Promise<HarnessDriverClient> {
+  return HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
     env: process.env,
   });
 }
 
-export function waitForEvent(client: RuntimeClient, kind: string, timeoutMs = 15_000): Promise<BrokerEvent> {
+export function waitForEvent(client: HarnessDriverClient, kind: string, timeoutMs = 15_000): Promise<BrokerEvent> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       unsub();

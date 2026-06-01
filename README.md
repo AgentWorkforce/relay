@@ -538,7 +538,7 @@ Actions are typed capabilities that agents can discover and invoke through the S
 
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
-import { registerDriverActions } from '@agent-relay/runtime';
+import { registerDriverActions } from '@agent-relay/harness-driver';
 import { z } from 'zod';
 
 const ShowSearchResultsInput = z.object({
@@ -611,7 +611,7 @@ Agent Relay allows you to take advantage of:
 - **Agent-native collaboration.** Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace.
 - **Durable delivery.** Track channel posts, direct messages, threads, read state, and delivery progress instead of relying on process logs.
 - **Action routing.** Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
-- **Managed execution when needed.** Use `@agent-relay/runtime` for spawned harnesses and supervised multi-agent runs, while keeping the SDK focused on communication.
+- **Managed execution when needed.** Use `@agent-relay/harness-driver` for spawned harnesses and supervised multi-agent runs, while keeping the SDK focused on communication.
 
 ## Development
 

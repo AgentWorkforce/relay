@@ -25,7 +25,7 @@
 
 import { Buffer } from 'node:buffer';
 
-import type { InboundDeliveryMode } from '@agent-relay/runtime';
+import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 import WebSocket from 'ws';
 
 import {

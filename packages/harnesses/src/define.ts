@@ -1,5 +1,5 @@
 import { createAgentHandle, type RelayAgentHandle } from '@agent-relay/sdk';
-import type { StaticPtyHarnessDefinition } from '@agent-relay/runtime';
+import type { StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 
 /** Options accepted when creating an agent from a harness. */
 export interface HarnessCreateInput {

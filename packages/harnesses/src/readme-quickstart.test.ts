@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { AgentRelay } from '@agent-relay/sdk';
-import { registerDriverActions, type AgentDriver } from '@agent-relay/runtime';
+import { registerDriverActions, type AgentDriver } from '@agent-relay/harness-driver';
 
 import { claude, codex } from './index.js';
 

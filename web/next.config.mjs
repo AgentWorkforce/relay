@@ -5,7 +5,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const legacyDocRedirects = [
-  { source: '/docs/spawning-an-agent', destination: '/docs/runtime' },
+  { source: '/docs/runtime', destination: '/docs/harness-driver' },
+  { source: '/docs/spawning-an-agent', destination: '/docs/harness-driver' },
   { source: '/docs/harness-runtime-config', destination: '/docs/harnesses' },
   { source: '/docs/sending-messages', destination: '/docs/messaging' },
   { source: '/docs/channels', destination: '/docs/messaging' },
@@ -13,12 +14,12 @@ const legacyDocRedirects = [
   { source: '/docs/threads', destination: '/docs/messaging' },
   { source: '/docs/emoji-reactions', destination: '/docs/messaging' },
   { source: '/docs/cli-messaging', destination: '/docs/cli-overview' },
-  { source: '/docs/cli-agent-management', destination: '/docs/runtime' },
-  { source: '/docs/cli-broker-lifecycle', destination: '/docs/runtime' },
+  { source: '/docs/cli-agent-management', destination: '/docs/harness-driver' },
+  { source: '/docs/cli-broker-lifecycle', destination: '/docs/harness-driver' },
   { source: '/docs/cli-cloud-commands', destination: '/docs/migration' },
   { source: '/docs/cli-on-the-relay', destination: '/docs/agent-relay-mcp' },
   { source: '/docs/reference-cli', destination: '/docs/cli-overview' },
-  { source: '/docs/reference-broker-api', destination: '/docs/runtime' },
+  { source: '/docs/reference-broker-api', destination: '/docs/harness-driver' },
   { source: '/docs/python-sdk', destination: '/docs/typescript-sdk' },
   { source: '/docs/react-sdk', destination: '/docs/typescript-sdk' },
   { source: '/docs/swift-sdk', destination: '/docs/typescript-sdk' },

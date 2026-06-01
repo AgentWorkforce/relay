@@ -910,6 +910,7 @@ jobs:
           - sdk
           - telemetry
           - brand
+          - harness-driver
 
     steps:
       - name: Checkout code
@@ -992,6 +993,7 @@ jobs:
           - sdk
           - telemetry
           - utils
+          - harness-driver
 
     steps:
       - name: Checkout code

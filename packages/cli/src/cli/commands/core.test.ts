@@ -7,8 +7,8 @@ const sdkStatusClient = {
   disconnect: vi.fn(() => undefined),
 };
 
-vi.mock('@agent-relay/runtime', () => ({
-  RuntimeClient: vi.fn().mockImplementation(() => sdkStatusClient),
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: vi.fn().mockImplementation(() => sdkStatusClient),
 }));
 
 beforeEach(() => {

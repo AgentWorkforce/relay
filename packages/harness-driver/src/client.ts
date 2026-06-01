@@ -1,13 +1,13 @@
 /**
- * RuntimeClient — single client for communicating with an agent-relay broker
+ * HarnessDriverClient — single client for communicating with an agent-relay broker
  * over HTTP/WS. Works identically for local and remote brokers.
  *
  * Usage:
  *   // Remote broker (Daytona sandbox, cloud, etc.)
- *   const client = new RuntimeClient({ baseUrl, apiKey });
+ *   const client = new HarnessDriverClient({ baseUrl, apiKey });
  *
  *   // Local broker (spawn and connect)
- *   const client = await RuntimeClient.spawn({ cwd: '/my/project' });
+ *   const client = await HarnessDriverClient.spawn({ cwd: '/my/project' });
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -17,7 +17,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   BrokerTransport,
-  RuntimeProtocolError,
+  HarnessDriverProtocolError,
   type PtyInputStream,
   type PtyInputStreamOptions,
 } from './transport.js';
@@ -46,7 +46,7 @@ import { EventBus } from './event-bus.js';
 import type {
   AfterAgentReleaseContext,
   AfterAgentSpawnContext,
-  RuntimeEvents,
+  HarnessDriverEvents,
   BeforeAgentReleaseContext,
   BeforeAgentSpawnContext,
   BeforeAgentSpawnHandler,
@@ -55,7 +55,7 @@ import type {
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export interface RuntimeClientOptions {
+export interface HarnessDriverClientOptions {
   baseUrl: string;
   apiKey?: string;
   /** Fetch implementation. Defaults to globalThis.fetch. */
@@ -69,7 +69,7 @@ export interface RuntimeClientOptions {
    * the supplied bus so facade-registered listeners observe call-site
    * hooks fired here.
    */
-  eventBus?: EventBus<RuntimeEvents>;
+  eventBus?: EventBus<HarnessDriverEvents>;
 }
 
 export interface BrokerExitInfo {
@@ -113,8 +113,8 @@ export interface RuntimeSpawnOptions {
   startupTimeoutMs?: number;
   /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
   requestTimeoutMs?: number;
-  /** Optional shared event bus — see {@link RuntimeClientOptions.eventBus}. */
-  eventBus?: EventBus<RuntimeEvents>;
+  /** Optional shared event bus — see {@link HarnessDriverClientOptions.eventBus}. */
+  eventBus?: EventBus<HarnessDriverEvents>;
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
@@ -176,7 +176,7 @@ function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
 
 /**
  * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
- * Factored out of {@link RuntimeClient.spawnPty} so the same shape can
+ * Factored out of {@link HarnessDriverClient.spawnPty} so the same shape can
  * be applied to the post-`beforeAgentSpawn` resolved input.
  */
 function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
@@ -276,7 +276,7 @@ function buildBrokerInitArgs(args?: BrokerInitArgs): string[] {
 
 // ── Client ─────────────────────────────────────────────────────────────
 
-export class RuntimeClient {
+export class HarnessDriverClient {
   private readonly transport: BrokerTransport;
 
   /** Set after spawn() — the managed child process. */
@@ -290,11 +290,11 @@ export class RuntimeClient {
   /** Resolved broker URL — captured so call-site lifecycle contexts can surface it. */
   readonly baseUrl: string;
   /** Shared multi-listener registry. Created bare when no `eventBus` is passed in. */
-  readonly eventBus: EventBus<RuntimeEvents>;
+  readonly eventBus: EventBus<HarnessDriverEvents>;
 
-  constructor(options: RuntimeClientOptions) {
+  constructor(options: HarnessDriverClientOptions) {
     this.baseUrl = options.baseUrl;
-    this.eventBus = options.eventBus ?? new EventBus<RuntimeEvents>();
+    this.eventBus = options.eventBus ?? new EventBus<HarnessDriverEvents>();
     this.transport = new BrokerTransport({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
@@ -315,28 +315,28 @@ export class RuntimeClient {
    * non-void returns.
    */
   addListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): () => void;
-  addListener<K extends keyof RuntimeEvents>(
+  addListener<K extends keyof HarnessDriverEvents>(
     event: K,
-    handler: (...args: RuntimeEvents[K]) => void | Promise<void>
+    handler: (...args: HarnessDriverEvents[K]) => void | Promise<void>
   ): () => void;
-  addListener<K extends keyof RuntimeEvents>(
+  addListener<K extends keyof HarnessDriverEvents>(
     event: K,
-    handler: ((...args: RuntimeEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+    handler: ((...args: HarnessDriverEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.eventBus.addListener(event, handler as (...args: RuntimeEvents[K]) => void | Promise<void>);
+    return this.eventBus.addListener(event, handler as (...args: HarnessDriverEvents[K]) => void | Promise<void>);
   }
 
   /** Remove a previously-registered listener. */
   removeListener(event: 'beforeAgentSpawn', handler: BeforeAgentSpawnHandler): void;
-  removeListener<K extends keyof RuntimeEvents>(
+  removeListener<K extends keyof HarnessDriverEvents>(
     event: K,
-    handler: (...args: RuntimeEvents[K]) => void | Promise<void>
+    handler: (...args: HarnessDriverEvents[K]) => void | Promise<void>
   ): void;
-  removeListener<K extends keyof RuntimeEvents>(
+  removeListener<K extends keyof HarnessDriverEvents>(
     event: K,
-    handler: ((...args: RuntimeEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
+    handler: ((...args: HarnessDriverEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): void {
-    this.eventBus.removeListener(event, handler as (...args: RuntimeEvents[K]) => void | Promise<void>);
+    this.eventBus.removeListener(event, handler as (...args: HarnessDriverEvents[K]) => void | Promise<void>);
   }
 
   /**
@@ -376,8 +376,8 @@ export class RuntimeClient {
   static connect(options?: {
     cwd?: string;
     connectionPath?: string;
-    eventBus?: EventBus<RuntimeEvents>;
-  }): RuntimeClient {
+    eventBus?: EventBus<HarnessDriverEvents>;
+  }): HarnessDriverClient {
     const cwd = options?.cwd ?? process.cwd();
     const stateDir = process.env.AGENT_RELAY_STATE_DIR;
     const connPath =
@@ -385,7 +385,7 @@ export class RuntimeClient {
 
     if (!existsSync(connPath)) {
       throw new Error(
-        `No running broker found (${connPath} does not exist). Start one with 'agent-relay up' or use RuntimeClient.spawn().`
+        `No running broker found (${connPath} does not exist). Start one with 'agent-relay up' or use HarnessDriverClient.spawn().`
       );
     }
 
@@ -405,11 +405,11 @@ export class RuntimeClient {
 
     if (!isProcessRunning(conn.pid)) {
       throw new Error(
-        `Stale broker connection file (${connPath}) points to dead pid ${conn.pid}. Start the broker with 'agent-relay up' or use RuntimeClient.spawn().`
+        `Stale broker connection file (${connPath}) points to dead pid ${conn.pid}. Start the broker with 'agent-relay up' or use HarnessDriverClient.spawn().`
       );
     }
 
-    return new RuntimeClient({
+    return new HarnessDriverClient({
       baseUrl: conn.url,
       apiKey: conn.api_key,
       ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
@@ -426,7 +426,7 @@ export class RuntimeClient {
    * 5. Fetches session metadata
    * 6. Starts event stream + lease renewal
    */
-  static async spawn(options?: RuntimeSpawnOptions): Promise<RuntimeClient> {
+  static async spawn(options?: RuntimeSpawnOptions): Promise<HarnessDriverClient> {
     let binaryPath = options?.binaryPath;
     if (!binaryPath) {
       const resolved = getBrokerBinaryPath();
@@ -480,7 +480,7 @@ export class RuntimeClient {
     });
     drainBrokerStdioAfterStartup(child);
 
-    const client = new RuntimeClient({
+    const client = new HarnessDriverClient({
       baseUrl,
       apiKey,
       requestTimeoutMs: options?.requestTimeoutMs,
@@ -579,7 +579,7 @@ export class RuntimeClient {
   /**
    * Subscribe to managed broker child-process exit.
    *
-   * Clients created with `new RuntimeClient(...)` or `connect()` do not own a
+   * Clients created with `new HarnessDriverClient(...)` or `connect()` do not own a
    * broker child process, so this is a no-op for them.
    */
   onBrokerExit(listener: BrokerExitListener): () => void {
@@ -783,7 +783,7 @@ export class RuntimeClient {
       `/api/spawned/${encodeURIComponent(name)}/delivery-mode`
     );
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
-      throw new RuntimeProtocolError({
+      throw new HarnessDriverProtocolError({
         code: 'invalid_response',
         message: "inbound delivery mode response missing valid 'mode'",
       });
@@ -803,7 +803,7 @@ export class RuntimeClient {
       }
     );
     if (result.mode !== 'auto_inject' && result.mode !== 'manual_flush') {
-      throw new RuntimeProtocolError({
+      throw new HarnessDriverProtocolError({
         code: 'invalid_response',
         message: "set inbound delivery mode response missing valid 'mode'",
       });
@@ -929,7 +929,7 @@ export class RuntimeClient {
         }),
       });
     } catch (error) {
-      if (error instanceof RuntimeProtocolError && error.code === 'unsupported_operation') {
+      if (error instanceof HarnessDriverProtocolError && error.code === 'unsupported_operation') {
         return { event_id: 'unsupported_operation', targets: [] };
       }
       throw error;

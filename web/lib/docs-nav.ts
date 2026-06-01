@@ -31,7 +31,7 @@ export const docsNav: NavGroup[] = [
     items: [
       { title: 'Harnesses', slug: 'harnesses' },
       { title: 'Session capabilities', slug: 'session-capabilities' },
-      { title: 'Runtime package', slug: 'runtime' },
+      { title: 'Harness driver package', slug: 'harness-driver' },
     ],
   },
   {

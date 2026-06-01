@@ -41,7 +41,7 @@ Those features can still exist in Agent Relay. They should be documented as opti
 | Package                | Responsibility                                                                                                                      |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `@agent-relay/sdk`     | Core Agent Relay communication: messaging, delivery, and actions.                                                                   |
-| `@agent-relay/runtime` | Optional managed harness package for broker startup, PTY/headless transports, spawn/release, harness defaults, and supervised runs. |
+| `@agent-relay/harness-driver` | Optional managed harness package for broker startup, PTY/headless transports, spawn/release, harness defaults, and supervised runs. |
 | `agent-relay`          | CLI product entry point that can compose the SDK and driver for terminal users.                                                     |
 | Primitive packages     | Domain-specific integrations that communicate through SDK messages/actions instead of living in the core SDK.                       |
 
@@ -51,7 +51,7 @@ The dependency direction should stay simple: runtime depends on the SDK, not the
 
 - Describe Agent Relay as the public product. Keep the backing transport out of public examples.
 - Present `@agent-relay/sdk` as messaging, delivery/read state, presence, and action APIs.
-- Present `@agent-relay/runtime` as optional managed harness infrastructure.
+- Present `@agent-relay/harness-driver` as optional managed harness infrastructure.
 - Avoid putting spawn-first examples in the root README or SDK README.
 - Keep managed Claude/Codex/Gemini/OpenCode examples in driver or CLI documentation.
 - Keep changelog entries concise and impact-first under Keep a Changelog sections.
@@ -59,7 +59,7 @@ The dependency direction should stay simple: runtime depends on the SDK, not the
 ## Migration guidance
 
 - Keep code that only registers identities, sends messages, reads inbox state, handles commands, or subscribes to events on `@agent-relay/sdk`.
-- Move code that starts brokers, spawns harnesses, injects into PTYs/headless sessions, waits for idle, or shuts down managed runs to `@agent-relay/runtime`.
+- Move code that starts brokers, spawns harnesses, injects into PTYs/headless sessions, waits for idle, or shuts down managed runs to `@agent-relay/harness-driver`.
 - Treat old all-in-one SDK examples as driver examples unless they only use communication primitives.
 - Preserve transport compatibility terms only where credentials, environment variables, or wire-level behavior require them.
 
@@ -71,7 +71,7 @@ The dependency direction should stay simple: runtime depends on the SDK, not the
 
 ## Kept as adapters
 
-- `@agent-relay/openclaw` remains as an OpenClaw adapter package and uses SDK messaging plus `@agent-relay/runtime` for managed spawn internals instead of spawn-first SDK APIs.
+- `@agent-relay/openclaw` remains as an OpenClaw adapter package and uses SDK messaging plus `@agent-relay/harness-driver` for managed spawn internals instead of spawn-first SDK APIs.
 
 ## Moved out
 

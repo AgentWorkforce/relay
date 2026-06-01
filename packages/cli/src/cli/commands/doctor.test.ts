@@ -31,8 +31,8 @@ vi.mock('@agent-relay/config', () => ({
   }),
 }));
 
-vi.mock('@agent-relay/runtime', () => ({
-  RuntimeClient: {
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: {
     connect: sdkMock.connect,
   },
 }));

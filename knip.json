@@ -13,7 +13,7 @@
     "packages/sdk": {
       "project": ["src/**/*.ts"]
     },
-    "packages/runtime": {
+    "packages/harness-driver": {
       "project": ["src/**/*.ts"]
     },
     "packages/harnesses": {

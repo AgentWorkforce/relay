@@ -1,4 +1,4 @@
-# @agent-relay/runtime
+# @agent-relay/harness-driver
 
 Managed harness runtime for Agent Relay.
 

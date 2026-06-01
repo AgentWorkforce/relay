@@ -9,9 +9,9 @@ const mockConnectedClient = {
   spawnPty: vi.fn(async () => undefined),
 };
 
-vi.mock('@agent-relay/runtime', () => {
+vi.mock('@agent-relay/harness-driver', () => {
   return {
-    RuntimeClient: {
+    HarnessDriverClient: {
       spawn: (...args: unknown[]) => {
         spawnSpy(...args);
         return Promise.resolve(mockSpawnedClient);
@@ -35,7 +35,7 @@ describe('client-factory', () => {
     delete process.env.AGENT_RELAY_BIN;
   });
 
-  it('builds RuntimeClient with defaults', async () => {
+  it('builds HarnessDriverClient with defaults', async () => {
     process.env.AGENT_RELAY_BIN = '/tmp/agent-relay-broker';
 
     await createRuntimeClient({ cwd: '/tmp/project' });
@@ -50,7 +50,7 @@ describe('client-factory', () => {
     expect(connectSpy).not.toHaveBeenCalled();
   });
 
-  it('builds RuntimeClient with explicit options', async () => {
+  it('builds HarnessDriverClient with explicit options', async () => {
     await createRuntimeClient({
       cwd: '/tmp/project',
       channels: ['ops'],

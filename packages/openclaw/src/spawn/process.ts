@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { RuntimeClient } from '@agent-relay/runtime';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import type { SpawnProvider, SpawnOptions, SpawnHandle } from './types.js';
 import { normalizeModelRef } from '../identity/model.js';
@@ -21,7 +21,7 @@ interface ProcessHandle extends SpawnHandle {
   /** The gateway child process. */
   gatewayProcess: ChildProcess;
   /** The managed driver client that owns the broker + agent boundary. */
-  relay: RuntimeClient | null;
+  relay: HarnessDriverClient | null;
 }
 
 /**
@@ -153,10 +153,10 @@ export class ProcessSpawnProvider implements SpawnProvider {
 
     // Use the managed driver boundary to spawn the broker + bridge agent.
     const bridgePath = resolvePackageBridgePath();
-    let relay: RuntimeClient | null = null;
+    let relay: HarnessDriverClient | null = null;
 
     try {
-      relay = await RuntimeClient.spawn({
+      relay = await HarnessDriverClient.spawn({
         brokerName: agentName,
         channels,
         cwd: workspacePath,

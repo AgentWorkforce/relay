@@ -70,14 +70,14 @@ const result = await relay.actions.invoke({
 });
 ```
 
-The runtime package registers `agent.create`. Core owns the action protocol, not the managed process implementation.
+The harness driver package registers `agent.create`. Core owns the action protocol, not the managed process implementation.
 
 ## Broker Migration
 
 Before:
 
 ```ts
-const client = await RuntimeClient.spawn({ cwd: process.cwd() });
+const client = await HarnessDriverClient.spawn({ cwd: process.cwd() });
 await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
 ```
 

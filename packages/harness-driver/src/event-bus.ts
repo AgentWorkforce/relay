@@ -1,5 +1,5 @@
 /**
- * Typed multi-listener registry shared by `AgentRelay` and `RuntimeClient`.
+ * Typed multi-listener registry shared by `AgentRelay` and `HarnessDriverClient`.
  *
  * Replaces the previous single-callback `on*: EventHook<T> = null` fields on
  * `AgentRelay` so multiple integrations (burn stamping, Pear UI, third-party
@@ -13,7 +13,7 @@
  * never blocks the originating operation or subsequent listeners.
  *
  * The bus is intentionally generic — callers parameterize it with a typed
- * event map (see `RuntimeEvents` in `./lifecycle-hooks.ts`) so each
+ * event map (see `HarnessDriverEvents` in `./lifecycle-hooks.ts`) so each
  * event's payload is fully checked at the addListener / emit boundary.
  */
 export type EventMap = Record<string, readonly unknown[]>;

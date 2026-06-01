@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
-import type { BrokerInitArgs } from '@agent-relay/runtime';
+import type { BrokerInitArgs } from '@agent-relay/harness-driver';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';

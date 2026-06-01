@@ -1,11 +1,11 @@
 ---
-title: 'Runtime Package'
-description: 'Use the optional runtime package when Agent Relay needs to manage session lifecycle, logs, readiness, and driver-provided actions.'
+title: 'Harness Driver Package'
+description: 'Use the optional harness driver package when Agent Relay needs to manage session lifecycle, logs, readiness, and driver-provided actions.'
 ---
 
 Core Agent Relay does not need to own spawning. It owns messaging, delivery contracts, actions, and events.
 
-The optional runtime package owns managed session lifecycle:
+The optional harness driver package owns managed session lifecycle:
 
 - create sessions
 - release sessions
@@ -14,17 +14,17 @@ The optional runtime package owns managed session lifecycle:
 - track readiness and idle state
 - collect logs and terminal output
 - bridge PTY, headless, app-server, or provider SDK details
-- register runtime-provided actions such as `agent.create`
+- register driver-provided actions such as `agent.create`
 
-## When To Use Runtime
+## When To Use The Harness Driver
 
 Use only the core SDK when your app already owns the agent process or can embed Relay directly.
 
-Use the runtime package when Agent Relay should manage the harness boundary for you.
+Use the harness driver package when Agent Relay should manage the harness boundary for you.
 
 ```ts file="runtime.ts"
 import { AgentRelay } from '@agent-relay/sdk';
-import { createRuntime, registerRuntimeActions } from '@agent-relay/runtime';
+import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
 import { claude, codex, openclaw } from '@agent-relay/harnesses';
 
 const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
@@ -41,9 +41,9 @@ const runtime = await createRuntime({
 registerRuntimeActions(relay.actions, runtime);
 ```
 
-The runtime package should be optional. An SDK user should not pull in PTY, process management, browser, cloud, workflow, or proactive runtime dependencies just to send messages or register actions.
+The harness driver package should be optional. An SDK user should not pull in PTY, process management, browser, cloud, workflow, or proactive runtime dependencies just to send messages or register actions.
 
-## Runtime Actions
+## Harness driver actions
 
 Managed lifecycle should be exposed as actions.
 
@@ -71,11 +71,11 @@ relay.actions.register({
 });
 ```
 
-This keeps agent creation in line with every other capability. Agents call a tool or SDK action; the runtime owns the implementation.
+This keeps agent creation in line with every other capability. Agents call a tool or SDK action; the harness driver owns the implementation.
 
-## Runtime Is Not Core Messaging
+## The Harness Driver Is Not Core Messaging
 
-The runtime may use the same Relay workspace, but it should not define the core communication API.
+The harness driver may use the same Relay workspace, but it should not define the core communication API.
 
 Core:
 
@@ -87,7 +87,7 @@ Core:
 - event subscriptions
 - MCP tool generation
 
-Runtime:
+Harness driver:
 
 - process or session lifecycle
 - PTY and headless details
@@ -95,24 +95,24 @@ Runtime:
 - readiness and idle detection
 - logs, terminal snapshots, transcript adapters
 - managed delivery adapters
-- runtime-specific action implementations
+- driver-specific action implementations
 
 ## Driver Vocabulary
 
-The lower-level managed harness implementation may still use driver language internally. Public docs should describe the optional package as runtime and the created object as a session.
+The package name is the harness driver. Public docs describe the optional package as the harness driver and the created object as a session.
 
 Use:
 
 - harness for the adapter definition
 - session for the created agent boundary
-- runtime for optional managed lifecycle
+- harness driver for the optional managed lifecycle package
 - action for agent-callable managed operations
 
 Avoid making users learn whether a provider is running in a PTY, headless mode, app-server mode, or attached mode unless they are configuring that harness directly.
 
 ## CLI Shape
 
-The CLI should expose runtime lifecycle as an optional group instead of making it the core product.
+The CLI should expose harness driver lifecycle as an optional group instead of making it the core product.
 
 ```bash
 agent-relay workspace create release-review
@@ -124,9 +124,9 @@ agent-relay driver release reviewer
 
 If the implementation still uses `driver` as the command group, the docs should explain it as a managed session harness command, not as the central broker.
 
-## Runtime Events
+## Harness driver events
 
-Runtime-managed sessions should emit the same normalized session events as any other harness:
+Harness-driver-managed sessions should emit the same normalized session events as any other harness:
 
 - `session.started`
 - `status.changed`
@@ -138,7 +138,7 @@ Runtime-managed sessions should emit the same normalized session events as any o
 - `delivery.delivered`
 - `session.released`
 
-This keeps runtime-managed agents and externally owned agents visible through one listener system.
+This keeps harness-driver-managed agents and externally owned agents visible through one listener system.
 
 ## OpenClaw And External Adapters
 

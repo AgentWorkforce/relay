@@ -20,7 +20,7 @@ Core Agent Relay owns:
 - audit events
 - MCP tool generation
 
-The action implementation can live in your SDK process, a runtime package, a server, or an adapter.
+The action implementation can live in your SDK process, a harness driver package, a server, or an adapter.
 
 ## Register An Action
 
@@ -204,10 +204,10 @@ Generic `actions.list` and `actions.invoke` tools can exist for dynamic hosts, b
 
 ## Runtime Actions
 
-Managed session lifecycle belongs to the runtime package, but creation is still an action.
+Managed session lifecycle belongs to the harness driver package, but creation is still an action.
 
 ```ts file="agent-create.ts"
-import { registerRuntimeActions } from '@agent-relay/runtime';
+import { registerRuntimeActions } from '@agent-relay/harness-driver';
 import { z } from 'zod';
 
 const SpawnAgentInput = z.object({

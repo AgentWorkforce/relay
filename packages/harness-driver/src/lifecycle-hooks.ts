@@ -188,7 +188,7 @@ export interface DriverAgentActivityChange {
  * the `EventBus<E extends EventMap>` constraint without requiring callers
  * to spell out an index signature.
  */
-export type RuntimeEvents = {
+export type HarnessDriverEvents = {
   // Broker events (multi-listener replacements for the old `on*` fields)
   messageReceived: [DriverMessage];
   messageSent: [DriverMessage];

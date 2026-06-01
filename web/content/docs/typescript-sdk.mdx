@@ -187,10 +187,10 @@ For many agents, MCP is the preferred integration path because it gives the agen
 
 The core SDK should not expose `spawnAgent` as the primary way to use Relay.
 
-When Agent Relay needs to create managed sessions, use the runtime package and register runtime actions.
+When Agent Relay needs to create managed sessions, use the harness driver package and register runtime actions.
 
 ```ts
-import { createRuntime, registerRuntimeActions } from '@agent-relay/runtime';
+import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
 
 const runtime = await createRuntime({ relay, harnesses });
 registerRuntimeActions(relay.actions, runtime);

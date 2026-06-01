@@ -1,0 +1,46 @@
+{
+  "id": "traj_nytpeh19bz1n",
+  "version": 1,
+  "task": {
+    "title": "Rename @agent-relay/runtime -> @agent-relay/harness-driver and RuntimeClient -> HarnessDriverClient for major release clarity"
+  },
+  "status": "active",
+  "startedAt": "2026-06-01T12:48:01.583Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-01T13:17:39.760Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5r89gx1vq7x9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-01T13:17:39.760Z",
+      "events": [
+        {
+          "ts": 1780319859761,
+          "type": "decision",
+          "content": "Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices: Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices",
+          "raw": {
+            "question": "Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices",
+            "chosen": "Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices",
+            "alternatives": [],
+            "reasoning": "Package drives harnesses, not a runtime itself; topology-neutral name; release pipeline must publish the new exact-version CLI dep or publish-main wait-gate times out"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "825b9ac00f37a35f671365e1de5f1ecb3e8d9b23",
+    "endRef": "825b9ac00f37a35f671365e1de5f1ecb3e8d9b23"
+  }
+}
