@@ -3,11 +3,9 @@ title: 'Actions'
 description: 'Actions are typed capabilities agents can discover and invoke through the SDK or MCP, validated with Zod and audited by Relay.'
 ---
 
-Actions are how agents trigger work outside plain messaging.
+Actions are typed callbacks agents can discover and invoke through the SDK, MCP, or CLI capability surface.
 
 An action can create another managed session, update an operator UI, submit a vote, write a ticket, run a deployment, query an internal system, or publish a result. The implementation lives with the system that can actually perform the work. Relay owns the protocol around it.
-
-For README-style app callbacks, use the facade API on [Actions and callbacks](/docs/8.0.0/actions-callbacks). This page describes the lower-level action model that both the facade and MCP tool generation use.
 
 ## Core Contract
 
@@ -22,39 +20,75 @@ Core Agent Relay owns:
 - audit events
 - MCP tool generation
 
-The action implementation can live in your SDK process, a harness driver package, a server, or an adapter.
+The action implementation can live in your SDK process, a harness driver package, a server, an adapter, or an HTTP handler.
 
 ## Register An Action
 
-```ts file="actions.ts"
+Most application code should use the facade API, `relay.registerAction(...)`. It gives the handler the callback shape shown in the README: `{ input, agent, ctx }`.
+
+```ts file="application-action.ts"
 import { z } from 'zod';
 
-const ShowSearchResultsInput = z.object({
-  query: z.string(),
-  results: z.array(
-    z.object({
-      title: z.string(),
-      url: z.string().url(),
-      snippet: z.string().optional(),
-    })
-  ),
+const OpenPullRequestInput = z.object({
+  branch: z.string(),
+  title: z.string(),
+  body: z.string(),
 });
 
-const ShowSearchResultsOutput = z.object({
-  displayed: z.boolean(),
+const OpenPullRequestOutput = z.object({
+  url: z.string().url(),
 });
 
+const handle = relay.registerAction({
+  name: 'github.open_pr',
+  description: 'Open a GitHub pull request for a completed agent change.',
+  input: OpenPullRequestInput,
+  output: OpenPullRequestOutput,
+  availableTo: [{ name: 'engineer' }, { name: 'release-manager' }],
+  handler: async ({ input, agent }) => {
+    const pr = await github.openPullRequest(input);
+
+    await relay.sendMessage({
+      to: '#reviews',
+      text: `${agent.name} opened ${pr.url}`,
+    });
+
+    return { url: pr.url };
+  },
+});
+
+// Later, if this process should stop exposing the callback:
+handle.unregister();
+```
+
+Use Zod schemas when an agent or MCP host will discover the action. The same schema validates SDK calls and can be converted into JSON Schema for tool descriptions.
+
+## Registry API
+
+Reusable SDK packages and harness drivers can use the lower-level registry directly.
+
+```ts file="registry-action.ts"
 relay.actions.register({
   name: 'ui.show_search_results',
   description: 'Show a result set in the operator UI.',
-  inputSchema: ShowSearchResultsInput,
-  outputSchema: ShowSearchResultsOutput,
-  availableTo: ['planner', 'engineer'],
+  inputSchema: z.object({
+    query: z.string(),
+    results: z.array(
+      z.object({
+        title: z.string(),
+        url: z.string().url(),
+        snippet: z.string().optional(),
+      })
+    ),
+  }),
+  outputSchema: z.object({
+    displayed: z.boolean(),
+  }),
   handler: async (input, ctx) => {
     await operatorUi.showResults(input);
 
-    await ctx.messaging.messages.send({
-      to: '#ops',
+    await ctx.messaging?.messages.send({
+      channel: 'ops',
       text: `Displayed ${input.results.length} results for "${input.query}".`,
     });
 
@@ -63,7 +97,7 @@ relay.actions.register({
 });
 ```
 
-Actions should use Zod schemas in user-facing examples because the SDK can infer TypeScript types and generate JSON Schema for MCP tools from the same source.
+Both APIs register the same action descriptor. The facade adapts handler arguments, supports `availableTo` agent handles, and is usually the friendlier surface for app callbacks.
 
 ## Descriptor Shape
 
@@ -71,11 +105,13 @@ Actions should use Zod schemas in user-facing examples because the SDK can infer
 type AgentRelayAction<Input, Output> = {
   name: string;
   description: string;
-  inputSchema: ZodSchema<Input>;
+  input?: ZodSchema<Input>;
+  inputSchema?: ZodSchema<Input>;
+  output?: ZodSchema<Output>;
   outputSchema?: ZodSchema<Output>;
   availableTo?: AgentSelector[];
   policy?: ActionPolicyHook<Input>;
-  handler: (input: Input, ctx: ActionContext) => Promise<Output> | Output;
+  handler: ActionHandler<Input, Output>;
 };
 ```
 
@@ -155,14 +191,14 @@ relay.actions.register({
   }),
   policy: async (input, ctx) => {
     if (!ctx.caller || ctx.caller.type !== 'agent') {
-      return { allow: false, reason: 'Only agents may deploy previews.' };
+      return { allowed: false, reason: 'Only agents may deploy previews.' };
     }
 
-    if (!ctx.caller.capabilities?.actions?.invoke) {
-      return { allow: false, reason: 'Caller cannot invoke SDK actions.' };
+    if (!['release-manager', 'engineer'].includes(ctx.caller.name)) {
+      return { allowed: false, reason: `${ctx.caller.name} cannot deploy previews.` };
     }
 
-    return { allow: true };
+    return { allowed: true };
   },
   handler: async ({ branch }) => deployPreview(branch),
 });
@@ -183,17 +219,32 @@ type ActionEvent =
   | { type: 'action.denied'; action: string; invocationId: string; reason: string };
 ```
 
-Those events let agents subscribe to capability use:
+Those events let apps subscribe to capability use. The bare predicate fires when invocation starts. Use `.completed()`, `.failed()`, or `.denied()` when a callback should run after the handler outcome is known.
 
 ```ts file="action-listener.ts"
 relay.on(
   relay.action('agent.create').calledBy(planner),
-  relay.notify('#ops', {
-    type: 'action.called',
-    action: 'agent.create',
-    subject: planner,
-  })
+  async () => {
+    await relay.sendMessage({
+      to: '#ops',
+      text: `${planner.name} requested a managed session.`,
+    });
+  }
 );
+
+relay.on(relay.action('deploy.preview').completed(), async (event) => {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `Preview deploy completed for ${event.caller.name}.`,
+  });
+});
+
+relay.on(relay.action('deploy.preview').failed(), async (event) => {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `Preview deploy failed for ${event.caller.name}: ${event.error}`,
+  });
+});
 ```
 
 ## MCP Tool Generation
@@ -230,6 +281,21 @@ registerRuntimeActions(relay.actions, runtime);
 ```
 
 Core does not need a `spawnAgent` method to support this. The SDK action registry and MCP tool generation are enough for agents to ask the runtime to create sessions.
+
+## CLI Capabilities
+
+The CLI uses the word "capabilities" for workspace action descriptors handled by agents.
+
+```bash
+agent-relay capabilities register github.open_pr \
+  --description "Open a GitHub pull request" \
+  --handler release-bot
+
+agent-relay capabilities list
+agent-relay capabilities delete github.open_pr
+```
+
+Use CLI capabilities when the handler is another registered agent. Use SDK `relay.registerAction(...)` or `relay.actions.register(...)` when the current process owns the callback implementation.
 
 ## Actions And Events
 

@@ -47,7 +47,6 @@ const navIcons: Record<string, NavIcon> = {
   messaging: Mail,
   delivery: Network,
   actions: Zap,
-  'actions-callbacks': Zap,
   webhooks: Plug,
   'spawning-an-agent': Bot,
   'sending-messages': Send,

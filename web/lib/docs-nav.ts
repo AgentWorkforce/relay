@@ -29,39 +29,43 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
-    title: 'Core SDK',
+    title: 'Automation',
     items: [
-      { title: 'Delivery', slug: 'delivery' },
       { title: 'Actions', slug: 'actions' },
-      { title: 'Actions and callbacks', slug: 'actions-callbacks' },
       { title: 'Event handlers', slug: 'event-handlers' },
       { title: 'Webhooks', slug: 'webhooks' },
     ],
   },
   {
-    title: 'Sessions',
+    title: 'Delivery and sessions',
     items: [
+      { title: 'Delivery', slug: 'delivery' },
       { title: 'Harnesses', slug: 'harnesses' },
       { title: 'Session capabilities', slug: 'session-capabilities' },
       { title: 'Harness driver package', slug: 'harness-driver' },
     ],
   },
   {
-    title: 'CLI',
+    title: 'Interfaces',
     items: [
-      { title: 'CLI', slug: 'cli-overview' },
-      { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
-      { title: 'Agent management', slug: 'cli-agent-management' },
-      { title: 'CLI messaging', slug: 'cli-messaging' },
-      { title: 'CLI reference', slug: 'reference-cli' },
+      { title: 'TypeScript SDK', slug: 'typescript-sdk' },
       { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
       { title: 'OpenClaw adapter', slug: 'reference-openclaw' },
     ],
   },
   {
+    title: 'CLI',
+    items: [
+      { title: 'CLI', slug: 'cli-overview' },
+      { title: 'CLI messaging', slug: 'cli-messaging' },
+      { title: 'Agent management', slug: 'cli-agent-management' },
+      { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
+      { title: 'CLI reference', slug: 'reference-cli' },
+    ],
+  },
+  {
     title: 'Reference',
     items: [
-      { title: 'TypeScript SDK', slug: 'typescript-sdk' },
       { title: 'Migration to version 8', slug: 'migration' },
     ],
   },
