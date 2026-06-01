@@ -22,54 +22,48 @@ Use only the core SDK when your app already owns the agent process or can embed 
 
 Use the harness driver package when Agent Relay should manage the harness boundary for you.
 
-```ts file="runtime.ts"
+```ts file="harness-driver.ts"
 import { AgentRelay } from '@agent-relay/sdk';
-import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
-import { claude, codex, openclaw } from '@agent-relay/harnesses';
+import { BrokerDriver, registerDriverActions } from '@agent-relay/harness-driver';
 
 const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
 
-const runtime = await createRuntime({
-  relay,
-  harnesses: {
-    claude,
-    codex,
-    openclaw,
-  },
-});
+// The driver owns the managed harness boundary: broker startup, PTY/headless
+// spawn, release, and status.
+const driver = new BrokerDriver();
 
-registerRuntimeActions(relay.actions, runtime);
+// Expose that lifecycle as actions (agent.create, agent.release, agent.status).
+registerDriverActions(relay.actions, driver);
 ```
 
 The harness driver package should be optional. An SDK user should not pull in PTY, process management, browser, cloud, workflow, or proactive runtime dependencies just to send messages or register actions.
 
 ## Harness driver actions
 
-Managed lifecycle should be exposed as actions.
+Managed lifecycle is exposed as actions. `registerDriverActions` registers
+`agent.create`, `agent.release`, and `agent.status` against any `AgentDriver`,
+so callers create and release managed agents the same way they invoke any other
+action.
 
 ```ts
-relay.actions.register({
+import { registerDriverActions } from '@agent-relay/harness-driver';
+
+registerDriverActions(relay.actions, driver);
+
+const result = await relay.actions.invoke({
   name: 'agent.create',
-  description: 'Create a managed agent session.',
-  inputSchema: AgentCreateInput,
-  outputSchema: AgentCreateOutput,
-  handler: async (input, ctx) => runtime.create(input, ctx),
+  input: { name: 'reviewer', cli: 'codex', task: 'Review the migration guide.', channels: ['reviews'] },
+  caller: { name: 'planner', type: 'agent' },
 });
 
-relay.actions.register({
-  name: 'agent.release',
-  description: 'Release a managed agent session.',
-  inputSchema: AgentReleaseInput,
-  handler: async (input) => runtime.release(input.sessionId, input.reason),
-});
-
-relay.actions.register({
-  name: 'agent.status',
-  description: 'Read managed session status.',
-  inputSchema: AgentStatusInput,
-  handler: async (input) => runtime.status(input.sessionId),
-});
+if (!result.ok) {
+  throw new Error(result.error?.message);
+}
 ```
+
+Pass `{ actionPrefix }` to `registerDriverActions` to namespace the actions, and
+provide any `AgentDriver` implementation; `BrokerDriver` is the built-in one that
+manages a local broker.
 
 This keeps agent creation in line with every other capability. Agents call a tool or SDK action; the harness driver owns the implementation.
 

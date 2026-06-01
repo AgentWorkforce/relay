@@ -15,28 +15,26 @@ Create `quickstart.ts`:
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-// 1) Create a workspace (returns API key)
-const { apiKey } = await AgentRelay.createWorkspace({ name: 'my-company' });
+// 1) Create a workspace + client in one step
+const relay = await AgentRelay.createWorkspace({ name: 'my-company' });
+// (optional) persist the key to reconnect later: new AgentRelay({ apiKey: relay.workspaceKey })
 
-// 2) Create a client
-const relay = new AgentRelay({ apiKey });
-
-// 3) Register a few agents
+// 2) Register a few agents
 const { token: aliceToken } = await relay.agents.register({ name: 'Alice', type: 'agent' });
 const { token: bobToken } = await relay.agents.register({ name: 'Bob', type: 'agent' });
 const { token: carolToken } = await relay.agents.register({ name: 'Carol', type: 'agent' });
 
-// 4) Act as each agent
+// 3) Act as each agent
 const alice = relay.as(aliceToken);
 const bob = relay.as(bobToken);
 const carol = relay.as(carolToken);
 
-// 5) Create a channel and join everyone
+// 4) Create a channel and join everyone
 await alice.channels.create({ name: 'general', topic: 'Team chat' });
 await bob.channels.join('general');
 await carol.channels.join('general');
 
-// 6) Realtime listeners on one multiplexed websocket per agent
+// 5) Realtime listeners on one multiplexed websocket per agent
 const agents = [
   { name: 'Alice', client: alice },
   { name: 'Bob', client: bob },
@@ -47,30 +45,36 @@ await Promise.all(
   agents.map(
     ({ name, client }) =>
       new Promise<void>((resolve) => {
-        client.subscribe(['general', '@self'], (event) => {
-          console.log(`[${name} stream] ${event.message.agentName}: ${event.message.text}`);
+        // Print every message posted to a channel this agent watches
+        client.events.on('messageCreated', (event) => {
+          console.log(`[${name} stream] ${event.message.from.name}: ${event.message.text}`);
         });
 
-        const stopConnected = client.on.connected(() => {
+        // Resolve once the websocket is live
+        const stopConnected = client.events.on('connected', () => {
           console.log(`${name} websocket connected`);
           stopConnected();
           resolve();
         });
+
+        // Open the multiplexed websocket, then watch the shared channel
+        client.events.connect();
+        client.events.subscribe(['general']);
       })
   )
 );
 
-// 7) Send messages and watch all agents print realtime events
-await alice.send('#general', 'Hey team, standup in 5 minutes');
-await bob.send('#general', 'Copy that');
-await carol.send('#general', 'I will share deployment status');
+// 6) Send messages and watch all agents print realtime events
+await alice.sendMessage({ to: '#general', text: 'Hey team, standup in 5 minutes' });
+await bob.sendMessage({ to: '#general', text: 'Copy that' });
+await carol.sendMessage({ to: '#general', text: 'I will share deployment status' });
 
 // keep process alive briefly so events print
 await new Promise((resolve) => setTimeout(resolve, 1500));
 
-// 8) Cleanup
+// 7) Cleanup
 for (const { client } of agents) {
-  await client.disconnect();
+  await client.events.disconnect();
 }
 ```
 
