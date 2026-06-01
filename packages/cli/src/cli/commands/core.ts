@@ -327,47 +327,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
   };
 }
 
-function buildDashboardHarnessPath(cliTool?: string): string | undefined {
-  const trimmed = cliTool?.trim();
-  if (!trimmed) return '/dev/cli-tools';
-
-  return `/dev/cli-tools?tool=${encodeURIComponent(trimmed)}`;
-}
-
-function isSupportedDashboardTarget(target: string): boolean {
-  return target === 'dashboard.js' || target === 'dashboard';
-}
-
-function registerStartHarnessCommand(program: Command, deps: CoreDependencies): void {
-  program
-    .command('start')
-    .description('Start focused test harnesses (for example: start dashboard.js claude)')
-    .argument('<target>', 'Harness target name')
-    .argument('[cli]', 'Optional CLI tool to focus')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-    .option('--verbose', 'Enable verbose logging')
-    .action(
-      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
-        if (!isSupportedDashboardTarget(target.toLowerCase())) {
-          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
-          deps.exit(1);
-        }
-
-        await runUpCommand(
-          {
-            dashboard: true,
-            port: options.port,
-            verbose: options.verbose,
-            background: false,
-            dashboardPath: buildDashboardHarnessPath(cli),
-            reuseExistingBroker: true,
-          },
-          deps
-        );
-      }
-    );
-}
-
 export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
@@ -413,36 +372,36 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
 
   program
     .command('status')
-    .description('Check broker status')
+    .description('Check whether the local broker daemon is running')
     .option('--state-dir <path>', 'Directory for broker state and connection files')
     .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
     .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
     });
 
-  registerStartHarnessCommand(program, deps);
+  program
+    .command('metrics')
+    .description('Show resource usage for the local broker and its agents')
+    .option('--agent <name>', 'Filter to a single agent')
+    .action(async (options: { agent?: string }) => {
+      try {
+        const client = await createRuntimeClient({ cwd: process.cwd(), preferConnect: true });
+        const metrics = await client.getMetrics(options.agent);
+        deps.log(JSON.stringify(metrics, null, 2));
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      }
+    });
 }
 
 /**
- * Register the lifecycle verbs that the README surfaces at the top level
- * (`relay status`, `relay version`, `relay update`, `relay uninstall`) in
- * addition to their `runtime`/`driver` group forms. Shares the same handlers
- * and dependencies so behavior stays identical to the grouped commands.
+ * Top-level maintenance verbs that live outside the `local` namespace because
+ * they manage the installed CLI itself, not the broker: `version`, `update`,
+ * `uninstall`.
  */
-export function registerCoreTopLevelAliases(
-  program: Command,
-  overrides: Partial<CoreDependencies> = {}
-): void {
+export function registerCoreMaintenance(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
-
-  program
-    .command('status')
-    .description('Check broker status')
-    .option('--state-dir <path>', 'Directory for broker state and connection files')
-    .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
-    .action(async (options: { stateDir?: string; waitFor?: string }) => {
-      await runStatusCommand(deps, options);
-    });
 
   program
     .command('version')
@@ -480,6 +439,4 @@ export function registerCoreTopLevelAliases(
         await runUninstallCommand(options, deps);
       }
     );
-
-  registerStartHarnessCommand(program, deps);
 }

@@ -21,7 +21,7 @@ beforeEach(() => {
 
 import {
   registerCoreCommands,
-  registerCoreTopLevelAliases,
+  registerCoreMaintenance,
   type CoreDependencies,
   type CoreFileSystem,
   type CoreRelay,
@@ -191,7 +191,7 @@ describe('registerCoreCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'start']));
+    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'metrics']));
     expect(commandNames).not.toEqual(expect.arrayContaining(['bridge', 'uninstall', 'version', 'update']));
   });
 
@@ -1140,7 +1140,7 @@ describe('registerCoreCommands', () => {
   it('version prints current version', async () => {
     const { deps } = createHarness();
     const program = new Command();
-    registerCoreTopLevelAliases(program, deps);
+    registerCoreMaintenance(program, deps);
 
     const exitCode = await runCommand(program, ['version']);
 
@@ -1153,7 +1153,7 @@ describe('registerCoreCommands', () => {
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
     });
     const program = new Command();
-    registerCoreTopLevelAliases(program, deps);
+    registerCoreMaintenance(program, deps);
 
     const exitCode = await runCommand(program, ['update', '--check']);
 

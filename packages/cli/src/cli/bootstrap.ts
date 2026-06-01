@@ -13,11 +13,10 @@ import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-rela
 
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
-import { registerMessagingCommands } from './commands/messaging.js';
-import { registerMonitoringCommands } from './commands/monitoring.js';
 import { registerSetupCommands } from './commands/setup.js';
-import { registerCoreCommands, registerCoreTopLevelAliases } from './commands/core.js';
-import { registerRuntimeAgentCommands } from './commands/runtime-agent.js';
+import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
+import { registerStatusCommand } from './commands/status.js';
+import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
 import { registerAgentCommands } from './commands/agent.js';
@@ -25,9 +24,6 @@ import { registerChannelCommands } from './commands/channel.js';
 import { registerMessageCommands } from './commands/message.js';
 import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
-import { registerViewCommands } from './commands/view.js';
-import { registerDriveCommands } from './commands/drive.js';
-import { registerPassthroughCommands } from './commands/passthrough.js';
 
 dotenvConfig({ quiet: true });
 
@@ -121,7 +117,7 @@ const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
 // invocations (spawn, send, etc.) to hit the npm registry on every call.
-const UPDATE_CHECK_COMMANDS = new Set(['driver', 'version', '--version', '-V', '--help', '-h']);
+const UPDATE_CHECK_COMMANDS = new Set(['local', 'version', '--version', '-V', '--help', '-h']);
 
 function detectCi(): boolean {
   const env = process.env;
@@ -195,7 +191,7 @@ function installTelemetryHooks(program: Command): void {
       command_name: commandPath,
       flags_used: flags,
       // stdin, not stdout — this property exists to distinguish interactive
-      // runs from scripted ones. `agent-relay driver status > file.txt` still has
+      // runs from scripted ones. `agent-relay local status > file.txt` still has
       // a TTY on stdin (human at the keyboard); `echo x | agent-relay send`
       // doesn't (piped input). stdout.isTTY would get both wrong.
       is_tty: Boolean(process.stdin.isTTY),
@@ -261,15 +257,12 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  const driver = program
-    .command('driver')
-    .alias('runtime')
-    .description('Manage the optional Agent Relay driver/runtime harness');
-  registerCoreCommands(driver);
-  registerRuntimeAgentCommands(driver);
-  registerCoreTopLevelAliases(program);
-  registerMessagingCommands(program);
-  registerMonitoringCommands(program);
+  const local = program.command('local').description('Manage the local Agent Relay broker and its agents');
+  registerCoreCommands(local);
+  registerLocalAgentCommands(local);
+
+  registerCoreMaintenance(program);
+  registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
   registerWorkspaceCommands(program);
@@ -278,9 +271,6 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerMessageCommands(program);
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
-  registerViewCommands(program);
-  registerDriveCommands(program);
-  registerPassthroughCommands(program);
 
   program
     .command('mcp')

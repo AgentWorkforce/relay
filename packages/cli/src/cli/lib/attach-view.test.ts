@@ -1,15 +1,13 @@
-import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractMatchingChunk,
-  registerViewCommands,
   resolveViewBrokerConnection,
   runViewSession,
   toWsUrl,
   type ViewDependencies,
   type ViewWebSocket,
-} from './view.js';
+} from './attach-view.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -454,29 +452,5 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(writes).toEqual(['live']);
-  });
-});
-
-describe('registerViewCommands', () => {
-  it('registers a `view` command on the program', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerViewCommands(program, deps);
-
-    const cmd = program.commands.find((c) => c.name() === 'view');
-    expect(cmd).toBeDefined();
-    expect(cmd?.description()).toMatch(/read-only/i);
-  });
-
-  it('wires --broker-url, --api-key, and --state-dir options', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerViewCommands(program, deps);
-
-    const cmd = program.commands.find((c) => c.name() === 'view');
-    const flags = cmd?.options.map((opt) => opt.long).filter(Boolean);
-    expect(flags).toEqual(expect.arrayContaining(['--broker-url', '--api-key', '--state-dir']));
   });
 });

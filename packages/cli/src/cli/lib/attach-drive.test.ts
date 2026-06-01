@@ -1,12 +1,10 @@
 import { Buffer } from 'node:buffer';
 
-import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   KeybindParser,
   classifyWsEvent,
-  registerDriveCommands,
   renderStatusLine,
   runDriveSession,
   type CliPtyInputStream,
@@ -14,7 +12,7 @@ import {
   type DriveStdin,
   type DriveTerminal,
   type DriveWebSocket,
-} from './drive.js';
+} from './attach-drive.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -844,27 +842,5 @@ describe('runDriveSession', () => {
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
-  });
-});
-
-describe('registerDriveCommands', () => {
-  it('registers a `drive` command on the program', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerDriveCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'drive');
-    expect(cmd).toBeDefined();
-    expect(cmd?.description()).toMatch(/interactive control/i);
-  });
-
-  it('wires --broker-url, --api-key, and --state-dir options', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerDriveCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'drive');
-    const flags = cmd?.options.map((opt) => opt.long).filter(Boolean);
-    expect(flags).toEqual(expect.arrayContaining(['--broker-url', '--api-key', '--state-dir']));
   });
 });

@@ -36,7 +36,9 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
 
   if (preferConnect) {
     try {
-      return RuntimeClient.connect({ cwd });
+      // Await so an async connect rejection is caught here, not leaked to the
+      // caller — otherwise the fallback spawn below never runs.
+      return await RuntimeClient.connect({ cwd });
     } catch {
       // Fall through to spawning a fresh broker.
     }
