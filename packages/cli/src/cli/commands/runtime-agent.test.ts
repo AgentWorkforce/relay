@@ -7,6 +7,7 @@ function harness(overrides: Partial<RuntimeAgentDependencies> = {}) {
   const client = {
     listAgents: vi.fn(async () => [{ name: 'lead' }]),
     release: vi.fn(async () => undefined),
+    setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
   };
   const attach = vi.fn(async () => 0);
   const log = vi.fn();
@@ -35,10 +36,10 @@ describe('runtime agent subtree', () => {
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.objectContaining({}));
   });
 
-  it('attach defaults to drive mode', async () => {
+  it('attach defaults to view mode', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['driver', 'agent', 'attach', 'lead'], { from: 'user' });
-    expect(attach).toHaveBeenCalledWith('lead', 'drive', expect.anything());
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
   it('attach rejects an unknown mode', async () => {
@@ -59,5 +60,17 @@ describe('runtime agent subtree', () => {
     const { program, client } = harness();
     await program.parseAsync(['driver', 'agent', 'release', 'lead'], { from: 'user' });
     expect(client.release).toHaveBeenCalledWith('lead');
+  });
+
+  it('release --kill hard-kills via client.release', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(['driver', 'agent', 'release', 'lead', '--kill'], { from: 'user' });
+    expect(client.release).toHaveBeenCalledWith('lead', 'kill');
+  });
+
+  it('set-model forwards name and model to client.setModel', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(['driver', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
+    expect(client.setModel).toHaveBeenCalledWith('lead', 'opus');
   });
 });

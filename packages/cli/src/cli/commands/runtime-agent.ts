@@ -113,38 +113,70 @@ export function registerRuntimeAgentCommands(
 
   agent
     .command('new')
-    .description('Spawn an agent and print attach instructions')
+    .description('Spawn an agent and attach to it')
     .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
     .option('--name <name>', 'Agent name (defaults to the provider)')
-    .action(async (provider: string, opts: Record<string, unknown>) => {
+    .option('--mode <mode>', 'Attach mode: drive | view | passthrough', 'drive')
+    .option('--channels <channels...>', 'Channels to join', ['general'])
+    .option('--task <task>', 'Initial task prompt')
+    .option('--model <model>', 'Model override')
+    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
+    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
+    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
+    .action(async (provider: string, options: Record<string, unknown>) => {
+      const mode = (options.mode as string) ?? 'drive';
+      if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
+        deps.error(`Unknown attach mode "${mode}". Expected one of: drive, view, passthrough.`);
+        deps.exit(1);
+        return;
+      }
+      const name = (options.name as string | undefined) ?? provider;
       await run(deps, async (client) => {
-        const name = (opts.name as string | undefined) ?? provider;
-        await spawnAgentWithClient(client, { name, cli: provider, channels: ['general'] });
-        deps.log(
-          `Spawned ${name} (${provider}). Attach interactively with the dashboard (\`relay driver up\`) or \`relay runtime agent attach ${name}\`.`
-        );
+        await spawnAgentWithClient(client, {
+          name,
+          cli: provider,
+          channels: (options.channels as string[] | undefined) ?? ['general'],
+          task: options.task as string | undefined,
+          model: options.model as string | undefined,
+        });
+        deps.log(`Spawned ${name} (${provider}). Attaching (${mode})…`);
       });
+      const code = await deps.attach(name, mode as AttachMode, {
+        brokerUrl: options.brokerUrl as string | undefined,
+        apiKey: options.apiKey as string | undefined,
+        stateDir: options.stateDir as string | undefined,
+      });
+      if (code !== 0) {
+        deps.exit(code);
+      }
     });
 
   agent
     .command('release')
-    .description('Release an agent (graceful)')
+    .description('Release an agent (graceful, or hard-kill with --kill)')
     .argument('<name>', 'Agent name')
-    .action(async (name: string) => {
+    .option('--kill', 'Hard-kill the agent process instead of a graceful release')
+    .action(async (name: string, options: { kill?: boolean }) => {
       await run(deps, async (client) => {
-        await client.release(name);
-        deps.log(`Released ${name}.`);
+        if (options.kill) {
+          await client.release(name, 'kill');
+          deps.log(`Killed ${name}.`);
+        } else {
+          await client.release(name);
+          deps.log(`Released ${name}.`);
+        }
       });
     });
 
   agent
-    .command('kill')
-    .description('Hard-kill an agent process')
+    .command('set-model')
+    .description("Switch a running agent's model (sends `/model` to its TUI; best-effort)")
     .argument('<name>', 'Agent name')
-    .action(async (name: string) => {
+    .argument('<model>', 'Model identifier to switch to')
+    .action(async (name: string, model: string) => {
       await run(deps, async (client) => {
-        await client.release(name, 'kill');
-        deps.log(`Killed ${name}.`);
+        await client.setModel(name, model);
+        deps.log(`Sent \`/model ${model}\` to ${name} (best-effort — the agent's TUI applies it).`);
       });
     });
 
@@ -152,12 +184,12 @@ export function registerRuntimeAgentCommands(
     .command('attach')
     .description('Attach to a running agent interactively (drive | view | passthrough)')
     .argument('<name>', 'Agent name')
-    .option('--mode <mode>', 'drive | view | passthrough', 'drive')
+    .option('--mode <mode>', 'drive | view | passthrough', 'view')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
     .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
     .action(async (name: string, options: Record<string, unknown>) => {
-      const mode = (options.mode as string) ?? 'drive';
+      const mode = (options.mode as string) ?? 'view';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
         deps.error(`Unknown attach mode "${mode}". Expected one of: drive, view, passthrough.`);
         deps.exit(1);
@@ -175,12 +207,23 @@ export function registerRuntimeAgentCommands(
 
   group
     .command('tail')
-    .description('Stream broker events')
-    .option('--agent <name>', 'Filter to a single agent')
-    .action(() => {
-      deps.error(
-        'Live event tailing is provided by the dashboard. Start it with `relay driver up` to watch broker and agent events.'
-      );
-      deps.exit(1);
+    .description('Stream broker events (optionally filtered to one agent)')
+    .option('--agent <name>', "Filter to a single agent's output stream")
+    .action(async (options: { agent?: string }) => {
+      await run(deps, async (client) => {
+        if (options.agent) {
+          for await (const chunk of client.subscribeWorkerStream(options.agent)) {
+            process.stdout.write(chunk);
+          }
+          return;
+        }
+        client.connectEvents();
+        await new Promise<void>((_resolve, reject) => {
+          client.onEvent((event) => {
+            deps.log(JSON.stringify(event));
+          });
+          process.once('SIGINT', () => reject(new Error('interrupted')));
+        });
+      });
     });
 }

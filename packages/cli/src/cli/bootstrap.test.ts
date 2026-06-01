@@ -4,40 +4,26 @@ import { describe, expect, it } from 'vitest';
 import { createProgram } from './bootstrap.js';
 
 const expectedLeafCommands = [
-  // runtime/driver group (driver is aliased to runtime)
-  'driver up',
-  'driver down',
-  'driver status',
-  'driver start',
-  'driver agent list',
-  'driver agent spawn',
-  'driver agent new',
-  'driver agent release',
-  'driver agent kill',
-  'driver agent attach',
-  'driver tail',
-  // top-level lifecycle aliases
-  'status',
+  // local broker + agent group
+  'local up',
+  'local down',
+  'local status',
+  'local metrics',
+  'local tail',
+  'local agent list',
+  'local agent spawn',
+  'local agent new',
+  'local agent release',
+  'local agent set-model',
+  'local agent attach',
+  // top-level maintenance + setup + mcp
   'version',
   'update',
   'uninstall',
-  'start',
-  'view',
-  'drive',
-  'passthrough',
-  'mcp',
-  // messaging (legacy flat) + monitoring + setup
-  'send',
-  'read',
-  'history',
-  'inbox',
-  'replies',
-  'metrics',
-  'health',
-  'profile',
   'init',
   'setup',
   'telemetry',
+  'mcp',
   // cloud
   'cloud login',
   'cloud logout',
@@ -56,7 +42,7 @@ const expectedLeafCommands = [
   'workspace set_key',
   'workspace join',
   'workspace switch',
-  // agent
+  // agent (messaging directory)
   'agent register',
   'agent list',
   'agent add',
@@ -123,13 +109,13 @@ describe('bootstrap CLI', () => {
     expect(program.name()).toBe('agent-relay');
   });
 
-  it('registers the expected simplified command groups', () => {
+  it('registers the expected command groups', () => {
     const program = createProgram();
     const topLevelCommands = program.commands.map((command) => command.name());
 
     expect(topLevelCommands).toEqual(
       expect.arrayContaining([
-        'driver',
+        'local',
         'cloud',
         'workspace',
         'agent',
@@ -137,39 +123,43 @@ describe('bootstrap CLI', () => {
         'message',
         'integration',
         'capabilities',
-        'status',
         'version',
         'update',
         'uninstall',
+        'init',
+        'setup',
+        'telemetry',
+        'mcp',
+      ])
+    );
+    // The dashboard-era surface is gone.
+    expect(topLevelCommands).not.toEqual(
+      expect.arrayContaining([
+        'driver',
         'start',
         'view',
         'drive',
         'passthrough',
-        'mcp',
-        'send',
-        'read',
-        'history',
-        'inbox',
-        'replies',
         'metrics',
         'health',
         'profile',
-        'init',
-        'setup',
-        'telemetry',
+        'send',
+        'read',
+        'history',
+        'replies',
+        'spawn',
+        'agents',
+        'swarm',
+        'on',
+        'rm',
       ])
     );
-    expect(topLevelCommands).not.toEqual(expect.arrayContaining(['spawn', 'agents', 'swarm', 'on', 'rm']));
   });
 
-  it('registers the expected number of executable commands', () => {
+  it('registers the expected executable commands', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
-    expect(leafCommandPaths).not.toEqual(expect.arrayContaining(['spawn', 'agents', 'swarm', 'new']));
-
-    // `runtime` is an alias of `driver`, so its leaves are not double-counted.
-    expect(program.commands.find((c) => c.name() === 'driver')?.aliases()).toContain('runtime');
   });
 });
