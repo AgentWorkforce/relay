@@ -52,7 +52,16 @@ const nextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.resolve(__dirname, '..'),
   outputFileTracingIncludes: {
-    '/*': ['content/docs/**/*', 'content/blog/**/*', '../packages/openclaw/skill/SKILL.md'],
+    '/*': ['content/docs/**/*', 'content/blog/**/*'],
+  },
+  webpack(config) {
+    config.module.rules.push({
+      test: /\.md$/,
+      resourceQuery: /raw/,
+      type: 'asset/source',
+    });
+
+    return config;
   },
   async redirects() {
     return [

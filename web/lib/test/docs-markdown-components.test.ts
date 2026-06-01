@@ -10,11 +10,11 @@ describe('docs markdown export for MDX components', () => {
     expect(doc?.markdown).not.toContain('<Card');
     expect(doc?.markdown).not.toContain('<CardGroup');
     expect(doc?.markdown).not.toContain('<BannerLink');
-    expect(doc?.markdown).toContain('[Messaging](https://agentrelay.com/docs/messaging)');
-    expect(doc?.markdown).toContain('[Delivery](https://agentrelay.com/docs/delivery)');
-    expect(doc?.markdown).toContain('[Actions](https://agentrelay.com/docs/actions)');
+    expect(doc?.markdown).toContain('[Messaging](https://agentrelay.com/docs/8.0.0/messaging)');
+    expect(doc?.markdown).toContain('[Delivery](https://agentrelay.com/docs/8.0.0/delivery)');
+    expect(doc?.markdown).toContain('[Actions](https://agentrelay.com/docs/8.0.0/actions)');
     expect(doc?.markdown).toContain(
-      '[Start with a workspace, messaging, delivery, and a Zod-backed action.](https://agentrelay.com/docs/quickstart)'
+      '[Start with a workspace, messaging, delivery, and a Zod-backed action.](https://agentrelay.com/docs/8.0.0/quickstart)'
     );
   });
 });
