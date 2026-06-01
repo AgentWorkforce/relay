@@ -71,8 +71,11 @@ The dependency direction should stay simple: runtime depends on the SDK, not the
 
 ## Kept as adapters
 
-- `@agent-relay/acp-bridge` remains as an editor adapter package and uses SDK messaging/actions instead of spawn-first SDK APIs.
 - `@agent-relay/openclaw` remains as an OpenClaw adapter package and uses SDK messaging plus `@agent-relay/runtime` for managed spawn internals instead of spawn-first SDK APIs.
+
+## Moved out
+
+- `@agent-relay/acp-bridge` lives in `AgentWorkforce/agent-relay-acp-bridge` and is no longer a workspace package in this repository.
 
 ## Non-goals
 

@@ -140,8 +140,8 @@ Runtime-managed sessions should emit the same normalized session events as any o
 
 This keeps runtime-managed agents and externally owned agents visible through one listener system.
 
-## OpenClaw And ACP Adapters
+## OpenClaw And External Adapters
 
-OpenClaw and ACP bridge support are adapters. They can stay in the repo when they implement the harness/session contract or help a provider join Relay.
+OpenClaw can stay in the repo as an adapter when it implements the harness/session contract or helps a provider join Relay. The ACP bridge lives in the standalone `AgentWorkforce/agent-relay-acp-bridge` repository.
 
-They should not force the core SDK to depend on managed spawning or non-core workflow surfaces.
+Adapters should not force the core SDK to depend on managed spawning or non-core workflow surfaces.
