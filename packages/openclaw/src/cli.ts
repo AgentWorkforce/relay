@@ -165,15 +165,7 @@ async function runStatus(): Promise<void> {
   console.log(`Base URL: ${config.baseUrl}`);
   console.log('Workspace key: configured');
 
-  // Try to check connectivity
-  try {
-    const res = await fetch(`${config.baseUrl}/health`);
-    console.log(`Workspace service connectivity: ${res.ok ? 'OK' : `Error (${res.status})`}`);
-  } catch (err) {
-    console.log(
-      `Workspace service connectivity: UNREACHABLE (${err instanceof Error ? err.message : String(err)})`
-    );
-  }
+  console.log('Workspace service connectivity: not checked');
 }
 
 async function runSpawn(flags: Record<string, string>): Promise<void> {
@@ -254,19 +246,17 @@ async function runAddWorkspace(positional: string[], flags: Record<string, strin
     process.exit(1);
   }
 
-  const config = await addWorkspace({
+  await addWorkspace({
     api_key: workspaceKey,
     ...(flags['alias'] ? { workspace_alias: flags['alias'] } : {}),
     ...(flags['workspace-id'] ? { workspace_id: flags['workspace-id'] } : {}),
     ...(flags['default'] !== undefined ? { is_default: flags['default'] === 'true' } : {}),
   });
 
-  const entry = config.workspaces.find((w) => w.api_key === workspaceKey);
-  const label = entry?.workspace_alias ?? entry?.workspace_id ?? '(unnamed workspace)';
+  const label = flags['alias'] ?? flags['workspace-id'] ?? '(unnamed workspace)';
   console.log(`Workspace "${label}" added.`);
-  console.log(`Total workspaces: ${config.workspaces.length}`);
-  if (config.default_workspace) {
-    console.log(`Default workspace: ${config.default_workspace}`);
+  if (flags['default'] === 'true') {
+    console.log('Default workspace updated.');
   }
 }
 

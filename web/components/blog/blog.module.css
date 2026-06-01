@@ -244,8 +244,7 @@
   height: 42px;
   border-radius: 50%;
   background:
-    linear-gradient(135deg, rgba(116, 184, 226, 0.22), rgba(193, 103, 75, 0.18)),
-    rgba(12, 28, 42, 0.95);
+    linear-gradient(135deg, rgba(116, 184, 226, 0.22), rgba(193, 103, 75, 0.18)), rgba(12, 28, 42, 0.95);
   border: 1px solid rgba(116, 184, 226, 0.24);
   color: var(--fg);
   font-size: 0.78rem;

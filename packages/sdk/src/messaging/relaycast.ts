@@ -597,8 +597,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   readonly commands = {
     register: async (input: RelayRegisterCapabilityInput): Promise<RelayCapability> =>
       toRelayCapability(await this.requireActions().register(toRegisterActionRequest(input))),
-    list: async (): Promise<RelayCapability[]> =>
-      (await this.requireActions().list()).map(toRelayCapability),
+    list: async (): Promise<RelayCapability[]> => (await this.requireActions().list()).map(toRelayCapability),
     delete: async (command: string): Promise<void> => {
       await this.requireActions().delete(command);
     },

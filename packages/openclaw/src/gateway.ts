@@ -958,8 +958,7 @@ export class OpenClawGatewayClient {
     if (msg.type === 'res' && msg.id === 'connect-1') {
       if (msg.ok) {
         this.clearConnectTimeout();
-        const versionUsed =
-          this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
+        const versionUsed = this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
         console.log(
           `[openclaw-ws] Authenticated successfully (payload=${versionUsed}${this.fallbackAttempted ? ', via fallback' : ''})`
         );
@@ -969,7 +968,6 @@ export class OpenClawGatewayClient {
         this.connectResolve = null;
         this.connectReject = null;
       } else {
-        const errStr = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
         const errorCode = getErrorCode(msg.error);
         const errorMessage = getErrorMessage(msg.error).toLowerCase();
         const isPairing = errorCode === 'pairing.required' || errorCode === 'not.paired';
@@ -982,14 +980,11 @@ export class OpenClawGatewayClient {
 
         if (isPairing) {
           this.clearConnectTimeout();
-          const errObj = msg.error as Record<string, unknown> | undefined;
-          const requestId = safeCommandToken(errObj?.requestId ?? errObj?.request_id);
           console.error('[openclaw-ws] Pairing rejected — device is not paired with the OpenClaw gateway.');
-          if (requestId) {
-            console.error(`[openclaw-ws] Approve this device:  openclaw devices approve ${requestId}`);
-          }
+          console.error('[openclaw-ws] Approve this device:  openclaw devices approve <requestId>');
           console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
-          const configHint = authCompat === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
+          const configHint =
+            authCompat === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
           console.error(
             `[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ${configHint} gateway.auth.token`
           );
@@ -1023,10 +1018,10 @@ export class OpenClawGatewayClient {
         } else {
           this.clearConnectTimeout();
           this.authRejectCount++;
-          console.warn(`[openclaw-ws] Auth rejected (rejects=${this.authRejectCount}): ${errStr}`);
+          console.warn(`[openclaw-ws] Auth rejected (rejects=${this.authRejectCount})`);
         }
 
-        this.connectReject?.(new Error(`OpenClaw gateway auth failed: ${errStr}`));
+        this.connectReject?.(new Error('OpenClaw gateway auth failed'));
         this.connectReject = null;
         this.connectResolve = null;
       }
