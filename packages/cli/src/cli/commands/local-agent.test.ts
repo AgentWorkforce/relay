@@ -1,9 +1,9 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerRuntimeAgentCommands, type RuntimeAgentDependencies } from './runtime-agent.js';
+import { registerLocalAgentCommands, type LocalAgentDependencies } from './local-agent.js';
 
-function harness(overrides: Partial<RuntimeAgentDependencies> = {}) {
+function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
     listAgents: vi.fn(async () => [{ name: 'lead' }]),
     release: vi.fn(async () => undefined),
@@ -13,7 +13,7 @@ function harness(overrides: Partial<RuntimeAgentDependencies> = {}) {
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
-  const deps: Partial<RuntimeAgentDependencies> = {
+  const deps: Partial<LocalAgentDependencies> = {
     connect: vi.fn(async () => client as never),
     attach,
     cwd: () => '/tmp/project',
@@ -25,7 +25,7 @@ function harness(overrides: Partial<RuntimeAgentDependencies> = {}) {
   const program = new Command();
   program.exitOverride();
   const group = program.command('driver');
-  registerRuntimeAgentCommands(group, deps);
+  registerLocalAgentCommands(group, deps);
   return { program, client, attach, log, error, exit };
 }
 

@@ -10,7 +10,7 @@ import { attachPassthrough } from '../lib/attach-passthrough.js';
 
 export type AttachMode = 'drive' | 'view' | 'passthrough';
 
-/** Dispatch `runtime agent attach --mode` to the drive/view/passthrough session runners. */
+/** Dispatch `local agent attach --mode` to the drive/view/passthrough session runners. */
 export function runAttach(
   name: string,
   mode: AttachMode,
@@ -29,7 +29,7 @@ export function runAttach(
 
 type ExitFn = (code: number) => never;
 
-export interface RuntimeAgentDependencies {
+export interface LocalAgentDependencies {
   connect: (cwd: string) => Promise<RuntimeClient>;
   attach: (
     name: string,
@@ -42,7 +42,7 @@ export interface RuntimeAgentDependencies {
   exit: ExitFn;
 }
 
-function withDefaults(overrides: Partial<RuntimeAgentDependencies> = {}): RuntimeAgentDependencies {
+function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
   return {
     connect: (cwd: string) => createRuntimeClient({ cwd, preferConnect: true }),
     attach: runAttach,
@@ -55,7 +55,7 @@ function withDefaults(overrides: Partial<RuntimeAgentDependencies> = {}): Runtim
 }
 
 async function run(
-  deps: RuntimeAgentDependencies,
+  deps: LocalAgentDependencies,
   fn: (client: RuntimeClient) => Promise<void>
 ): Promise<void> {
   let client: RuntimeClient | undefined;
@@ -69,13 +69,13 @@ async function run(
 }
 
 /**
- * Register the `runtime agent …` subtree (and `runtime tail`) onto the driver
+ * Register the `local agent …` subtree (and `runtime tail`) onto the driver
  * group. List/spawn/release/kill talk to a running local broker; attach/new/tail
  * are interactive PTY operations and point the user at the dashboard.
  */
-export function registerRuntimeAgentCommands(
+export function registerLocalAgentCommands(
   group: Command,
-  overrides: Partial<RuntimeAgentDependencies> = {}
+  overrides: Partial<LocalAgentDependencies> = {}
 ): void {
   const deps = withDefaults(overrides);
   const agent = group.command('agent').description('Inspect and manage broker-spawned agents');
