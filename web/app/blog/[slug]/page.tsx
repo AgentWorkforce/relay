@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { evaluate } from '@mdx-js/mdx';
 import { CalendarDays, Clock3, Rss } from 'lucide-react';
 import { Fragment, isValidElement, type HTMLAttributes, type ReactNode } from 'react';
-import { FaLinkedinIn, FaXTwitter } from 'react-icons/fa6';
+import { FaGithub, FaLinkedinIn, FaXTwitter } from 'react-icons/fa6';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import remarkGfm from 'remark-gfm';
 
@@ -14,7 +14,7 @@ import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { GitHubStarsBadge } from '../../../components/GitHubStars';
 import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
-import { getAllPosts, getPost, getRelatedPosts, slugifyHeading } from '../../../lib/blog';
+import { getAllPosts, getPost, slugifyHeading } from '../../../lib/blog';
 import { getAuthorInitials, getBlogAuthor } from '../../../lib/blog-authors';
 import { absoluteUrl, SITE_NAME, SITE_URL } from '../../../lib/site';
 
@@ -112,13 +112,19 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function formatFooterReadTime(readTime: string): string {
+  return readTime.replace('min read', 'minute read');
+}
+
 export default async function BlogPostPage({ params }: PageProps) {
   const { slug } = await params;
   const post = getPost(slug);
   if (!post) notFound();
 
   const author = getBlogAuthor(post.frontmatter.author);
-  const otherPosts = getRelatedPosts(post, 4);
+  const otherPosts = getAllPosts()
+    .filter((candidate) => candidate.slug !== post.slug)
+    .slice(0, 4);
   const postUrl = absoluteUrl(`/blog/${slug}`);
   const imageUrl = post.frontmatter.coverImage || absoluteUrl(`/blog/${slug}/opengraph-image`);
   const structuredData = {
@@ -175,6 +181,69 @@ export default async function BlogPostPage({ params }: PageProps) {
     remarkPlugins: [remarkGfm],
   } as Parameters<typeof evaluate>[1]);
   const authorInitials = getAuthorInitials(author.name);
+  const renderAuthorPanel = (headingId: string) => (
+    <section className={styles.authorPanel} aria-labelledby={headingId}>
+      <h2 id={headingId} className={styles.sidebarTitle}>
+        Written by
+      </h2>
+      <div className={styles.authorCard}>
+        <span
+          className={`${styles.authorAvatar} ${author.image ? styles.authorAvatarPhoto : ''}`}
+          aria-hidden="true"
+        >
+          {author.image ? <img src={author.image} alt="" loading="lazy" /> : authorInitials}
+        </span>
+        <span className={styles.authorInfo}>
+          <span className={styles.authorName}>{author.name}</span>
+          <span className={styles.authorRole}>{author.title}</span>
+          {(author.social?.linkedin || author.social?.x || author.social?.github) && (
+            <span className={styles.authorSocialLinks}>
+              {author.social.linkedin && (
+                <a
+                  href={author.social.linkedin}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`${author.name} on LinkedIn`}
+                >
+                  <FaLinkedinIn aria-hidden="true" />
+                </a>
+              )}
+              {author.social.x && (
+                <a
+                  href={author.social.x}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`${author.name} on X`}
+                >
+                  <FaXTwitter aria-hidden="true" />
+                </a>
+              )}
+              {author.social.github && (
+                <a
+                  href={author.social.github}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`${author.name} on GitHub`}
+                >
+                  <FaGithub aria-hidden="true" />
+                </a>
+              )}
+            </span>
+          )}
+        </span>
+      </div>
+      <div className={styles.postSidebarMeta}>
+        <span>
+          <CalendarDays aria-hidden="true" />
+          <time dateTime={post.frontmatter.date}>{formatDate(post.frontmatter.date)}</time>
+        </span>
+        <span>
+          <Clock3 aria-hidden="true" />
+          {post.readTime}
+        </span>
+      </div>
+    </section>
+  );
 
   return (
     <div className={styles.blogPage}>
@@ -208,61 +277,7 @@ export default async function BlogPostPage({ params }: PageProps) {
         <div className={styles.postLayout}>
           <aside className={styles.postSidebar}>
             <div className={styles.sidebarSticky}>
-              <section className={styles.authorPanel} aria-labelledby="written-by-heading">
-                <h2 id="written-by-heading" className={styles.sidebarTitle}>
-                  Written by
-                </h2>
-                <div className={styles.authorCard}>
-                  <span
-                    className={`${styles.authorAvatar} ${author.image ? styles.authorAvatarPhoto : ''}`}
-                    aria-hidden="true"
-                  >
-                    {author.image ? (
-                      <img src={author.image} alt="" loading="lazy" />
-                    ) : (
-                      authorInitials
-                    )}
-                  </span>
-                  <span className={styles.authorInfo}>
-                    <span className={styles.authorName}>{author.name}</span>
-                    <span className={styles.authorRole}>{author.title}</span>
-                    {(author.social?.linkedin || author.social?.x) && (
-                      <span className={styles.authorSocialLinks}>
-                        {author.social.linkedin && (
-                          <a
-                            href={author.social.linkedin}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            aria-label={`${author.name} on LinkedIn`}
-                          >
-                            <FaLinkedinIn aria-hidden="true" />
-                          </a>
-                        )}
-                        {author.social.x && (
-                          <a
-                            href={author.social.x}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            aria-label={`${author.name} on X`}
-                          >
-                            <FaXTwitter aria-hidden="true" />
-                          </a>
-                        )}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <div className={styles.postSidebarMeta}>
-                  <span>
-                    <CalendarDays aria-hidden="true" />
-                    <time dateTime={post.frontmatter.date}>{formatDate(post.frontmatter.date)}</time>
-                  </span>
-                  <span>
-                    <Clock3 aria-hidden="true" />
-                    {post.readTime}
-                  </span>
-                </div>
-              </section>
+              {renderAuthorPanel('written-by-heading')}
 
               {post.toc.length > 0 && (
                 <section className={styles.tocPanel} aria-labelledby="on-this-page-heading">
@@ -276,6 +291,8 @@ export default async function BlogPostPage({ params }: PageProps) {
           </aside>
 
           <div className={styles.postMain}>
+            <div className={styles.mobileAuthor}>{renderAuthorPanel('mobile-written-by-heading')}</div>
+
             {post.toc.length > 0 && (
               <div className={styles.mobileToc}>
                 <div className={styles.tocPanel}>
@@ -288,12 +305,6 @@ export default async function BlogPostPage({ params }: PageProps) {
             <article className={styles.article}>
               <MDXContent components={mdxComponents} />
             </article>
-
-            <div className={styles.blogBottom}>
-              <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
-                <Rss aria-hidden="true" />
-              </a>
-            </div>
           </div>
         </div>
       </main>
@@ -308,20 +319,27 @@ export default async function BlogPostPage({ params }: PageProps) {
             </svg>
           </div>
           <div className={styles.articleFooterInner}>
-            <h2 id="continue-reading-heading" className={styles.listTitle}>
-              More posts
-            </h2>
+            <div className={styles.articleFooterHeader}>
+              <h2 id="continue-reading-heading" className={styles.listTitle}>
+                More posts
+              </h2>
+              <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
+                <Rss aria-hidden="true" />
+              </a>
+            </div>
             <div className={styles.postGrid}>
               {otherPosts.map((relatedPost) => (
                 <article key={relatedPost.slug}>
                   <Link href={`/blog/${relatedPost.slug}`} className={styles.postCard}>
-                    <h3 className={styles.postCardTitle}>{relatedPost.frontmatter.title}</h3>
-                    <div className={styles.postCardFooter}>
-                      <time dateTime={relatedPost.frontmatter.date}>
-                        {formatDate(relatedPost.frontmatter.date)}
-                      </time>
-                      <span className={styles.postCardAuthor}>{relatedPost.frontmatter.author}</span>
-                    </div>
+                    <span className={styles.postCardText}>
+                      <h3 className={styles.postCardTitle}>{relatedPost.frontmatter.title}</h3>
+                      <span className={styles.postCardByline}>
+                        By {relatedPost.frontmatter.author} - {formatFooterReadTime(relatedPost.readTime)}
+                      </span>
+                    </span>
+                    <time className={styles.postCardDate} dateTime={relatedPost.frontmatter.date}>
+                      {formatDate(relatedPost.frontmatter.date)}
+                    </time>
                   </Link>
                 </article>
               ))}

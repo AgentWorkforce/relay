@@ -6,6 +6,7 @@ export interface BlogAuthorProfile {
   social?: {
     linkedin?: string;
     x?: string;
+    github?: string;
   };
 }
 
@@ -18,6 +19,7 @@ const BLOG_AUTHORS: Record<string, BlogAuthorProfile> = {
     social: {
       linkedin: 'https://www.linkedin.com/in/willwashburn',
       x: 'https://x.com/willwashburn',
+      github: 'https://github.com/willwashburn',
     },
   },
   'Khaliq Gant': {
@@ -25,6 +27,11 @@ const BLOG_AUTHORS: Record<string, BlogAuthorProfile> = {
     title: 'Co-founder, CTO',
     image: '/authors/khaliq.jpeg',
     imageAlt: 'Khaliq Gant',
+    social: {
+      linkedin: 'https://www.linkedin.com/in/khaliqgant',
+      x: 'https://x.com/khaliqgant',
+      github: 'https://github.com/khaliqgant',
+    },
   },
 };
 

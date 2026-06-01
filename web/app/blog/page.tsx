@@ -76,7 +76,6 @@ export default function BlogIndexPage() {
         <section className={styles.blogHero}>
           <div className={styles.blogHeroInner}>
             <div className={styles.blogHeader}>
-              <p className={styles.eyebrow}>Agent Relay blog</p>
               <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
                 <Rss aria-hidden="true" />
               </a>
