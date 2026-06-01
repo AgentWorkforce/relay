@@ -400,10 +400,7 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
  * they manage the installed CLI itself, not the broker: `version`, `update`,
  * `uninstall`.
  */
-export function registerCoreMaintenance(
-  program: Command,
-  overrides: Partial<CoreDependencies> = {}
-): void {
+export function registerCoreMaintenance(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
   program

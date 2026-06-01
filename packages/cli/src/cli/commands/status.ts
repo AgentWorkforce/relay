@@ -20,8 +20,7 @@ export interface StatusDependencies {
 
 function withDefaults(overrides: Partial<StatusDependencies> = {}): StatusDependencies {
   return {
-    getProjectRoot: () =>
-      (getProjectPaths() as { projectRoot?: string }).projectRoot ?? process.cwd(),
+    getProjectRoot: () => (getProjectPaths() as { projectRoot?: string }).projectRoot ?? process.cwd(),
     getBrokerConnection: () => {
       const paths = getProjectPaths() as { dataDir?: string };
       return paths.dataDir ? readBrokerConnection(paths.dataDir) : null;
@@ -50,10 +49,7 @@ function withDefaults(overrides: Partial<StatusDependencies> = {}): StatusDepend
  * workspace, the local broker, and cloud login. Distinct from `relay local
  * status`, which only reports whether the broker daemon is running.
  */
-export function registerStatusCommand(
-  program: Command,
-  overrides: Partial<StatusDependencies> = {}
-): void {
+export function registerStatusCommand(program: Command, overrides: Partial<StatusDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
   program

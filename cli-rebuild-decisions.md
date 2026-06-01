@@ -8,12 +8,12 @@ from the terminal. Serves the cold-start moment. Building behavior is the packag
 
 ## Architecture: namespace → package
 
-| CLI surface | Backing package |
-|---|---|
-| `workspace`, `agent`, `channel`, `message`, `integration`, `capabilities` | `@agent-relay/sdk` (messaging) |
-| `local` | `@agent-relay/runtime` (`RuntimeClient`, `BrokerDriver`, `PtyInputStream`) |
-| `cloud` | `@agent-relay/cloud` |
-| `status`, `version`, `update`, `telemetry`, `uninstall`, `help`, `mcp` | local / composite |
+| CLI surface                                                               | Backing package                                                            |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `workspace`, `agent`, `channel`, `message`, `integration`, `capabilities` | `@agent-relay/sdk` (messaging)                                             |
+| `local`                                                                   | `@agent-relay/runtime` (`RuntimeClient`, `BrokerDriver`, `PtyInputStream`) |
+| `cloud`                                                                   | `@agent-relay/cloud`                                                       |
+| `status`, `version`, `update`, `telemetry`, `uninstall`, `help`, `mcp`    | local / composite                                                          |
 
 The CLI's primary axis is **`local` vs `cloud`** — run agents on my machine vs hosted.
 (The `local` namespace consumes `@agent-relay/runtime`; namespace name ≠ package name on
@@ -28,6 +28,7 @@ Locked principles: thin convenience · no dashboard (terminal is the only window
 ## Command tree
 
 ### Top-level
+
 ```
 relay status            # workspace/key + cloud login + local broker status (if running)
 relay version
@@ -37,10 +38,12 @@ relay uninstall         # removes .agentworkforce/relay files
 relay help
 relay mcp               # MCP stdio server
 ```
+
 `relay status` is the one composite read: current workspace/key (sdk/config) + cloud
 `whoami` (cloud) + is-the-daemon-running (local). Distinct from `relay local status`.
 
-### Messaging → `@agent-relay/sdk`  *(require agent token)*
+### Messaging → `@agent-relay/sdk` _(require agent token)_
+
 ```
 relay workspace      create | list | set_key | join | switch
 relay agent          register | list | add | remove          # Relaycast directory
@@ -54,10 +57,12 @@ relay integration webhook        create | list | delete | trigger
 relay integration subscription   create | list | get | delete
 relay capabilities   register | list | delete
 ```
-*Note: two `agent` words coexist by design — `relay agent` (directory) vs
-`relay local agent` (local worker processes). Left as-is.*
+
+_Note: two `agent` words coexist by design — `relay agent` (directory) vs
+`relay local agent` (local worker processes). Left as-is._
 
 ### Cloud → `@agent-relay/cloud`
+
 ```
 relay cloud   login | logout | whoami
 relay cloud   auth <provider>      # provider CLI auth over SSH (moved from top-level `auth`)
@@ -66,7 +71,8 @@ relay cloud   run | schedule | schedules | status | logs | sync | cancel
 relay cloud   help
 ```
 
-### Local → `@agent-relay/runtime`  *(local broker; commands no-op/exit if not running)*
+### Local → `@agent-relay/runtime` _(local broker; commands no-op/exit if not running)_
+
 ```
 relay local up
 relay local down
@@ -82,6 +88,7 @@ relay local agent attach <name> --mode drive|view|passthrough   # PtyInputStream
 relay local agent release <name> [--kill]                # graceful, or hard kill   RuntimeClient.release
 relay local agent set-model <name> <model>               # injects `/model X` keystroke   RuntimeClient.setModel
 ```
+
 `spawn`/`new` take a `<provider>` (claude/codex/…); name is auto-generated unless `--name`.
 `attach` default mode = `view`. `release --kill` does a hard process kill (no standalone `kill`).
 `set-model` injects `/model <model>` into the agent's TUI — best-effort; report "sent" not
@@ -97,7 +104,7 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
 3. **Restructure** agent ops under `local agent`: `list`, `spawn <provider> [--name]`,
    `new <provider> [--name]`, `attach <name> --mode`, `release <name> [--kill]`, `set-model`.
 4. **Consolidate attach:** delete `view.ts` / `drive.ts` / `passthrough.ts`; `local agent
-   attach --mode drive|view|passthrough` (default view).
+attach --mode drive|view|passthrough` (default view).
 5. **`release --kill`** for hard kill; remove standalone `kill`.
 6. **Promote `tail` to `local tail [--agent]`** (broker-wide via `onEvent`, per-agent filter);
    remove standalone `activity`.
@@ -113,6 +120,7 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
 ## Implementation status (branch `cli/local-namespace`)
 
 **Done**
+
 - `driver`→`local` rename; top-level lifecycle aliases dropped.
 - `local agent`: `new`=spawn+attach, `attach` default view, `release --kill`, `set-model`,
   real `local tail [--agent]`. `local metrics`. `start` harness removed.
@@ -124,8 +132,9 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
 - `on`/`off` migrated to `../relayfile` (PR #229 there).
 
 **Remaining**
+
 - **Dashboard internals**: `local up` still carries `--dashboard`/`--port` flags and the
   `runUpCommand`/`findDashboardBinary` plumbing. Surface command (`start`) is gone, but the
   no-dashboard cleanup of `up` itself is a deeper follow-up (touches many `up` tests).
 - **`cloud auth`**: not added (see delta 8) — confirm `cloud connect` is the intended path.
-</content>
+  </content>

@@ -257,9 +257,7 @@ export function createProgram(options: { name?: string } = {}): Command {
     .description('Agent-to-agent messaging')
     .version(VERSION, '-V, --version', 'Output the version number');
 
-  const local = program
-    .command('local')
-    .description('Manage the local Agent Relay broker and its agents');
+  const local = program.command('local').description('Manage the local Agent Relay broker and its agents');
   registerCoreCommands(local);
   registerRuntimeAgentCommands(local);
 
