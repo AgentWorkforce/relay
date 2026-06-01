@@ -57,8 +57,7 @@ export interface SessionHarnessAgent<TInput = void> extends RelayHarnessAgent {
  * `@agent-relay/sdk`. The adapter, including its `create(input, ctx)` session
  * factory, stays available on `config`.
  */
-export interface SessionHarness<TInput = void>
-  extends HarnessFactory<TInput, SessionHarnessAgent<TInput>> {
+export interface SessionHarness<TInput = void> extends HarnessFactory<TInput, SessionHarnessAgent<TInput>> {
   readonly config: HarnessConfig<TInput>;
 }
 

@@ -57,8 +57,7 @@ export interface HarnessAgent extends RelayHarnessAgent {
  * `create`/`new` methods that produce {@link HarnessAgent}s.
  */
 export interface PtyHarness
-  extends StaticPtyHarnessDefinition,
-    HarnessFactory<HarnessCreateInput, HarnessAgent> {
+  extends StaticPtyHarnessDefinition, HarnessFactory<HarnessCreateInput, HarnessAgent> {
   /**
    * With `{ relay }`, spawn a live PTY agent into that workspace and return a
    * handle to the running, already-registered agent. Without it, build a
