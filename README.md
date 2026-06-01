@@ -619,7 +619,6 @@ relay mcp
 relay cloud login
 relay cloud logout
 relay cloud whoami
-relay cloud auth <provider>
 relay cloud connect
 relay cloud run
 relay cloud schedule
@@ -630,17 +629,18 @@ relay cloud sync
 relay cloud cancel
 relay cloud help
 
-relay status
+relay status   # composite: workspace + cloud login + local broker
 
-/// These all check on the local broker, drop out if
-relay runtime up
-relay runtime down
-relay runtime status (broker status, health)
-relay runtime tail (all events in broker) --agent[name]
-relay runtime agent list
-relay runtime agent spawn <provider>
-relay runtime agent attach <name> --mode[drive|view|passthrough]
-relay runtime agent new <provider> (spawn + attach)
-relay runtime agent release <name>
-relay runtime agent kill <name> (hard kill of process)
-relay runtime help
+# These all act on the local broker (no-op/exit if it isn't running)
+relay local up
+relay local down
+relay local status                       # is the daemon running
+relay local metrics [--agent <name>]
+relay local tail [--agent <name>]        # all broker events, filterable to one agent
+relay local agent list
+relay local agent spawn <provider> [--name]
+relay local agent new <provider> [--name]          # spawn + attach
+relay local agent attach <name> --mode drive|view|passthrough
+relay local agent release <name>
+relay local agent set-model <name> <model>
+relay local help

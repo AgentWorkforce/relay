@@ -1,6 +1,6 @@
 # agent-relay
 
-CLI entry point for Agent Relay communication, MCP tools, diagnostics, and the optional managed driver harness.
+A thin operator console for a local agent workforce: stand up the broker, staff it with off-the-shelf agent CLIs, and watch/steer them from the terminal. Each command is a shallow wrapper over a backing package (`@agent-relay/sdk`, `@agent-relay/runtime`, `@agent-relay/cloud`).
 
 ## Install
 
@@ -8,30 +8,32 @@ CLI entry point for Agent Relay communication, MCP tools, diagnostics, and the o
 npm install -g agent-relay
 ```
 
-## Core commands
+## Common commands
 
 ```bash
-agent-relay mcp
-agent-relay send <to> <text>
-agent-relay inbox
-agent-relay history <channel>
-agent-relay replies <message-id>
-agent-relay health
+agent-relay status                 # workspace + cloud login + local broker
+agent-relay mcp                    # MCP stdio server
+
+agent-relay message post --channel general --text "hello"
+agent-relay workspace list
 ```
 
-The default CLI surface is focused on messaging and MCP. It does not advertise workflow, cloud, primitive, or spawn-first commands.
+## Local broker
 
-## Managed driver
-
-Use the driver command group only when Agent Relay should own a local harness boundary:
+The `local` command group manages the broker on your machine and the agents it runs:
 
 ```bash
-agent-relay driver up
-agent-relay driver status
-agent-relay driver down
+agent-relay local up
+agent-relay local status
+agent-relay local down
+
+agent-relay local agent new claude          # spawn + attach
+agent-relay local agent list
+agent-relay local agent attach <name> --mode view
+agent-relay local agent release <name>
 ```
 
-The driver owns broker startup, PTY/headless lifecycle, readiness, logs, and managed harness actions. The core SDK remains the communication API.
+Hosted equivalents live under `agent-relay cloud …`.
 
 ## Packages
 

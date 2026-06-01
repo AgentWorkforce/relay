@@ -117,7 +117,7 @@ const STDIO_SERVER_COMMANDS = new Set(['mcp']);
 // Commands for which we run the background update-check. Keep this narrow to
 // the interactive / long-lived commands — we don't want short-lived programmatic
 // invocations (spawn, send, etc.) to hit the npm registry on every call.
-const UPDATE_CHECK_COMMANDS = new Set(['driver', 'version', '--version', '-V', '--help', '-h']);
+const UPDATE_CHECK_COMMANDS = new Set(['local', 'version', '--version', '-V', '--help', '-h']);
 
 function detectCi(): boolean {
   const env = process.env;
@@ -191,7 +191,7 @@ function installTelemetryHooks(program: Command): void {
       command_name: commandPath,
       flags_used: flags,
       // stdin, not stdout — this property exists to distinguish interactive
-      // runs from scripted ones. `agent-relay driver status > file.txt` still has
+      // runs from scripted ones. `agent-relay local status > file.txt` still has
       // a TTY on stdin (human at the keyboard); `echo x | agent-relay send`
       // doesn't (piped input). stdout.isTTY would get both wrong.
       is_tty: Boolean(process.stdin.isTTY),

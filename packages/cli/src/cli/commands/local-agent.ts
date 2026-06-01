@@ -120,9 +120,6 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
-    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
     .action(async (provider: string, options: Record<string, unknown>) => {
       const mode = (options.mode as string) ?? 'drive';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
@@ -141,11 +138,9 @@ export function registerLocalAgentCommands(
         });
         deps.log(`Spawned ${name} (${provider}). Attaching (${mode})…`);
       });
-      const code = await deps.attach(name, mode as AttachMode, {
-        brokerUrl: options.brokerUrl as string | undefined,
-        apiKey: options.apiKey as string | undefined,
-        stateDir: options.stateDir as string | undefined,
-      });
+      // `new` spawns and attaches on the same default local broker — broker
+      // override flags belong on the standalone `attach` command.
+      const code = await deps.attach(name, mode as AttachMode, {});
       if (code !== 0) {
         deps.exit(code);
       }
@@ -153,18 +148,12 @@ export function registerLocalAgentCommands(
 
   agent
     .command('release')
-    .description('Release an agent (graceful, or hard-kill with --kill)')
+    .description('Release an agent (graceful stop)')
     .argument('<name>', 'Agent name')
-    .option('--kill', 'Hard-kill the agent process instead of a graceful release')
-    .action(async (name: string, options: { kill?: boolean }) => {
+    .action(async (name: string) => {
       await run(deps, async (client) => {
-        if (options.kill) {
-          await client.release(name, 'kill');
-          deps.log(`Killed ${name}.`);
-        } else {
-          await client.release(name);
-          deps.log(`Released ${name}.`);
-        }
+        await client.release(name);
+        deps.log(`Released ${name}.`);
       });
     });
 
@@ -218,11 +207,12 @@ export function registerLocalAgentCommands(
           return;
         }
         client.connectEvents();
-        await new Promise<void>((_resolve, reject) => {
+        await new Promise<void>((resolve) => {
           client.onEvent((event) => {
             deps.log(JSON.stringify(event));
           });
-          process.once('SIGINT', () => reject(new Error('interrupted')));
+          // Ctrl+C ends a streaming tail cleanly (exit 0, no error output).
+          process.once('SIGINT', () => resolve());
         });
       });
     });
