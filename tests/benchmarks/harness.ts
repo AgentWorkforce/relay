@@ -39,7 +39,11 @@ export async function startBroker(): Promise<HarnessDriverClient> {
   });
 }
 
-export function waitForEvent(client: HarnessDriverClient, kind: string, timeoutMs = 15_000): Promise<BrokerEvent> {
+export function waitForEvent(
+  client: HarnessDriverClient,
+  kind: string,
+  timeoutMs = 15_000
+): Promise<BrokerEvent> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       unsub();

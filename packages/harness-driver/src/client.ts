@@ -323,7 +323,10 @@ export class HarnessDriverClient {
     event: K,
     handler: ((...args: HarnessDriverEvents[K]) => void | Promise<void>) | BeforeAgentSpawnHandler
   ): () => void {
-    return this.eventBus.addListener(event, handler as (...args: HarnessDriverEvents[K]) => void | Promise<void>);
+    return this.eventBus.addListener(
+      event,
+      handler as (...args: HarnessDriverEvents[K]) => void | Promise<void>
+    );
   }
 
   /** Remove a previously-registered listener. */

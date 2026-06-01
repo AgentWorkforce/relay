@@ -38,12 +38,12 @@ Those features can still exist in Agent Relay. They should be documented as opti
 
 ## Package split
 
-| Package                | Responsibility                                                                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `@agent-relay/sdk`     | Core Agent Relay communication: messaging, delivery, and actions.                                                                   |
+| Package                       | Responsibility                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `@agent-relay/sdk`            | Core Agent Relay communication: messaging, delivery, and actions.                                                                   |
 | `@agent-relay/harness-driver` | Optional managed harness package for broker startup, PTY/headless transports, spawn/release, harness defaults, and supervised runs. |
-| `agent-relay`          | CLI product entry point that can compose the SDK and driver for terminal users.                                                     |
-| Primitive packages     | Domain-specific integrations that communicate through SDK messages/actions instead of living in the core SDK.                       |
+| `agent-relay`                 | CLI product entry point that can compose the SDK and driver for terminal users.                                                     |
+| Primitive packages            | Domain-specific integrations that communicate through SDK messages/actions instead of living in the core SDK.                       |
 
 The dependency direction should stay simple: runtime depends on the SDK, not the other way around.
 
