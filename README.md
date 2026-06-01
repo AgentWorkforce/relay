@@ -629,17 +629,18 @@ relay cloud sync
 relay cloud cancel
 relay cloud help
 
-relay status   # composite: workspace + cloud login + local broker
+relay status # composite: workspace + cloud login + local broker
 
 # These all act on the local broker (no-op/exit if it isn't running)
+
 relay local up
 relay local down
-relay local status                       # is the daemon running
+relay local status # is the daemon running
 relay local metrics [--agent <name>]
-relay local tail [--agent <name>]        # all broker events, filterable to one agent
+relay local tail [--agent <name>] # all broker events, filterable to one agent
 relay local agent list
 relay local agent spawn <provider> [--name]
-relay local agent new <provider> [--name]          # spawn + attach
+relay local agent new <provider> [--name] # spawn + attach
 relay local agent attach <name> --mode drive|view|passthrough
 relay local agent release <name>
 relay local agent set-model <name> <model>
