@@ -56,8 +56,8 @@ await Promise.all(
           stopConnected();
           resolve();
         });
-      }),
-  ),
+      })
+  )
 );
 
 // 7) Send messages and watch all agents print realtime events
@@ -115,19 +115,20 @@ relay.on(
 ```
 
 ## Actions and callbacks
-You can register actions to hook action mcp calls and cli usage into your application easily. 
-```ts
-const action = {name: 'action1', handler: async (input) => onBeforeAction(input)}
-relay.registerAction(action);
-realy.on(relay.action(action.name), async (result) => onAfterAction())
 
+You can register actions to hook action mcp calls and cli usage into your application easily.
+
+```ts
+const action = { name: 'action1', handler: async (input) => onBeforeAction(input) };
+relay.registerAction(action);
+realy.on(relay.action(action.name), async (result) => onAfterAction());
 ```
 
 This gives you the flexibility to give agents hooks back into the SDK in real time.
 
 ### Spawning agents with Agents
-```ts
 
+```ts
 // You can also define custom actions and subscribe to those
 // Basically, you define via the SDK what actions agents can call and what happens when they do
 // One example: spawn another agent to help with the work!
@@ -158,9 +159,7 @@ relay.on(
 );
 ```
 
-
 ### Agent Voting
-
 
 ```ts
 // Another example: handle consensus voting
@@ -196,7 +195,6 @@ Agent Relay is the messaging backbone:
 - Search across history
 - Realtime events over WebSocket
 
-
 ## How it works
 
 Once registered, agents are put "on the relay" and get an identity
@@ -217,7 +215,7 @@ That means message sending can happen a few different ways:
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 
-While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.`*, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
+While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.`_, `action._`, and `harness.\*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
 ### Agent Harnesses
 
@@ -378,7 +376,6 @@ type MessageReceipt =
 
 The important pieces are:
 
-
 | Piece                              | Required    | Purpose                                                                                           |
 | ---------------------------------- | ----------- | ------------------------------------------------------------------------------------------------- |
 | `HarnessConfig.name`               | Yes         | Stable harness identity for configuration, logs, and debugging.                                   |
@@ -389,7 +386,6 @@ The important pieces are:
 | `AgentSession.receiveMessage(...)` | Yes         | Delivers a durable Relay message to the session and returns an explicit receipt.                  |
 | `AgentSession.onEvent(...)`        | Recommended | Streams session observations into the Relay listener system.                                      |
 | `AgentSession.release(...)`        | Yes         | Reverses what `create(...)` did: stop, detach, archive, or mark released.                         |
-
 
 Session events are what make listeners and supervision work. The core event names should be stable, even if each harness has different raw logs:
 
@@ -599,17 +595,16 @@ if (!result.ok) {
 
 The same registered actions can be exposed by `agent-relay mcp` as named tools, so an agent can call `agent.create` or `ui.show_search_results` without the SDK being embedded in that agent's process.
 
-
 ## The Agent relay SDK
 
 Agent Relay allows you to take advantage of:
 
-- **Real-time messaging**   
- Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace in real time.
-- **Durable delivery**   
-Track channel posts, direct messages, threads, read state, and delivery progress.
+- **Real-time messaging**  
+  Let Claude, Codex, Gemini, OpenCode, application agents, and human operators talk in the same workspace in real time.
+- **Durable delivery**  
+  Track channel posts, direct messages, threads, read state, and delivery progress.
 - **Action routing**  
- Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
+  Register and invoke typed commands so agents can ask other services or agents to perform work with structured inputs.
 
 ## What you can build
 
@@ -738,9 +733,9 @@ relay local status # is the daemon running
 relay local metrics [--agent ]
 relay local tail [--agent ] # all broker events, filterable to one agent
 relay local agent list
-relay local agent spawn  [--name]
-relay local agent new  [--name] # spawn + attach
-relay local agent attach  --mode drive|view|passthrough
-relay local agent release 
+relay local agent spawn [--name]
+relay local agent new [--name] # spawn + attach
+relay local agent attach --mode drive|view|passthrough
+relay local agent release
 relay local agent set-model  
 relay local help
