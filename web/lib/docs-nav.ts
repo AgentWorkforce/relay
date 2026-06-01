@@ -18,12 +18,24 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
+    title: 'Messaging',
+    items: [
+      { title: 'Overview', slug: 'messaging' },
+      { title: 'Sending messages', slug: 'sending-messages' },
+      { title: 'Channels', slug: 'channels' },
+      { title: 'DMs and group DMs', slug: 'dms' },
+      { title: 'Threads', slug: 'threads' },
+      { title: 'Emoji reactions', slug: 'emoji-reactions' },
+    ],
+  },
+  {
     title: 'Core SDK',
     items: [
-      { title: 'Messaging', slug: 'messaging' },
       { title: 'Delivery', slug: 'delivery' },
       { title: 'Actions', slug: 'actions' },
+      { title: 'Actions and callbacks', slug: 'actions-callbacks' },
       { title: 'Event handlers', slug: 'event-handlers' },
+      { title: 'Webhooks', slug: 'webhooks' },
     ],
   },
   {
@@ -35,10 +47,14 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
-    title: 'MCP and CLI',
+    title: 'CLI',
     items: [
-      { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
       { title: 'CLI', slug: 'cli-overview' },
+      { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
+      { title: 'Agent management', slug: 'cli-agent-management' },
+      { title: 'CLI messaging', slug: 'cli-messaging' },
+      { title: 'CLI reference', slug: 'reference-cli' },
+      { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
       { title: 'OpenClaw adapter', slug: 'reference-openclaw' },
     ],
   },

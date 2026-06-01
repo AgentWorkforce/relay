@@ -1,0 +1,274 @@
+---
+title: 'Actions and callbacks'
+description: 'Register SDK callbacks as typed actions, expose them to agents, and listen for invocation lifecycle events.'
+---
+
+Actions are the callback bridge between agents and your application.
+
+An agent can ask for plain conversation with a message. It should ask for structured work through an action. The action handler is your callback: open a UI panel, spawn a helper, create a ticket, run a deploy, record a vote, call a provider API, or notify another agent.
+
+## Callback Shape
+
+The README-style facade API is `relay.registerAction(...)`.
+
+```ts file="simple-callback.ts"
+const action = relay.registerAction({
+  name: 'review.open',
+  description: 'Open a review in the operator UI.',
+  handler: async ({ input, agent }) => {
+    await operatorUi.openReview(input);
+    return { openedBy: agent.name };
+  },
+});
+
+const unsubscribe = relay.on(
+  relay.action('review.open').completed(),
+  async (event) => {
+    await auditLog.write({
+      action: event.action,
+      caller: event.caller.name,
+      output: event.output,
+    });
+  }
+);
+
+// Later:
+action.unregister();
+unsubscribe();
+```
+
+The bare predicate `relay.action('review.open')` fires when invocation starts. Use `.completed()`, `.failed()`, or `.denied()` when the callback should run after the handler outcome is known.
+
+## Typed Inputs And Outputs
+
+Use Zod schemas when an agent or MCP host will discover the action. The same schema validates SDK calls and can be converted into JSON Schema for tool descriptions.
+
+```ts file="typed-action.ts"
+import { z } from 'zod';
+
+const OpenPullRequestInput = z.object({
+  branch: z.string(),
+  title: z.string(),
+  body: z.string(),
+});
+
+const OpenPullRequestOutput = z.object({
+  url: z.string().url(),
+});
+
+relay.registerAction({
+  name: 'github.open_pr',
+  description: 'Open a GitHub pull request for a completed agent change.',
+  input: OpenPullRequestInput,
+  output: OpenPullRequestOutput,
+  availableTo: [{ name: 'engineer' }, { name: 'release-manager' }],
+  handler: async ({ input, agent }) => {
+    const pr = await github.openPullRequest(input);
+
+    await relay.sendMessage({
+      to: '#reviews',
+      text: `${agent.name} opened ${pr.url}`,
+    });
+
+    return { url: pr.url };
+  },
+});
+```
+
+`availableTo` limits which agent names may invoke the action. Omit it when every agent in the workspace should be able to call the callback.
+
+## Invoke A Callback
+
+Applications can invoke actions directly through the SDK.
+
+```ts file="invoke-callback.ts"
+const result = await relay.actions.invoke({
+  name: 'github.open_pr',
+  input: {
+    branch: 'docs/v8-webhooks',
+    title: 'Document v8 webhooks',
+    body: 'Adds incoming and outgoing webhook guidance.',
+  },
+  caller: { name: 'engineer', type: 'agent' },
+  messaging: relay.messaging,
+});
+
+if (result.ok) {
+  console.log(result.output?.url);
+} else {
+  console.error(result.error?.code, result.error?.message);
+}
+```
+
+Agents that connect through MCP can call registered actions as tools when the MCP host exposes the action registry. The action result stays structured so the agent does not need to scrape text.
+
+## Before And After Hooks
+
+Use the action handler for the "before or during" side effect. Use action listeners for lifecycle callbacks around the handler.
+
+```ts file="before-after.ts"
+relay.registerAction({
+  name: 'deploy.preview',
+  description: 'Deploy a preview environment.',
+  input: z.object({
+    branch: z.string(),
+  }),
+  handler: async ({ input, agent }) => {
+    await auditLog.write({ phase: 'before', action: 'deploy.preview', caller: agent.name });
+    return deployPreview(input.branch);
+  },
+});
+
+relay.on(relay.action('deploy.preview'), async (event) => {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `${event.caller.name} requested a preview deploy.`,
+  });
+});
+
+relay.on(relay.action('deploy.preview').completed(), async (event) => {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `Preview deploy completed for ${event.caller.name}.`,
+  });
+});
+
+relay.on(relay.action('deploy.preview').failed(), async (event) => {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `Preview deploy failed for ${event.caller.name}: ${event.error}`,
+  });
+});
+```
+
+Listeners are intentionally separate from handlers. The handler owns the callback work. Listeners supervise, notify, audit, or chain follow-up work.
+
+## Spawn Or Create An Agent
+
+Managed session creation is a good fit for actions because the caller needs a structured result.
+
+```ts file="spawn-agent-action.ts"
+relay.registerAction({
+  name: 'spawn-claude',
+  description: 'Spawn a Claude Code helper.',
+  input: z.object({
+    model: z.enum(['opus', 'sonnet']),
+    task: z.string(),
+  }),
+  availableTo: [{ name: 'task-manager' }, { name: 'engineer' }],
+  handler: async ({ input }) => {
+    const agent = await claude.create({
+      relay,
+      model: input.model,
+      task: input.task,
+    });
+
+    return {
+      agentId: agent.id,
+      handle: agent.handle,
+    };
+  },
+});
+
+relay.on(
+  relay.action('spawn-claude').calledBy({ name: 'engineer' }),
+  relay.notify(
+    { name: 'task-manager' },
+    {
+      action: 'spawn-claude',
+      subject: { name: 'engineer' },
+      delivery: 'next-tool-call',
+    }
+  )
+);
+```
+
+The runtime or harness package should own the actual process management. Relay only needs the action contract and the returned session identity.
+
+## Voting And Consensus
+
+Actions are also useful for collecting structured callbacks from multiple agents.
+
+```ts file="vote-action.ts"
+relay.registerAction({
+  name: 'review.submit_vote',
+  description: 'Submit a yes or no review vote.',
+  input: z.object({
+    vote: z.enum(['yes', 'no']),
+    reason: z.string().optional(),
+  }),
+  handler: async ({ input, agent }) => {
+    await votes.write(agent.name, input);
+
+    if (await votes.complete()) {
+      await relay.sendMessage({
+        to: '#reviews',
+        text: 'All review votes are in.',
+      });
+    }
+
+    return { recorded: true };
+  },
+});
+```
+
+This keeps the conversational thread clean while preserving structured state for dashboards, CI gates, or release automation.
+
+## Facade API Versus Registry API
+
+Use `relay.registerAction(...)` when your app wants the README-style callback handler with `{ input, agent, ctx }`.
+
+Use `relay.actions.register(...)` when you are writing lower-level SDK code, a harness driver, or a reusable package that wants the registry contract directly.
+
+```ts file="registry-action.ts"
+relay.actions.register({
+  name: 'ticket.create',
+  description: 'Create a ticket in the internal tracker.',
+  inputSchema: z.object({
+    title: z.string(),
+    body: z.string(),
+  }),
+  handler: async (input, ctx) => {
+    const ticket = await tracker.create(input);
+    await ctx.messaging?.messages.send({
+      channel: 'ops',
+      text: `${ctx.caller.name} created ${ticket.url}`,
+    });
+    return { url: ticket.url };
+  },
+});
+```
+
+Both APIs register the same kind of action descriptor. The facade adapts handler arguments and `availableTo` checks for application code.
+
+## CLI Capabilities
+
+The CLI uses the word "capabilities" for workspace action descriptors handled by agents.
+
+```bash
+agent-relay capabilities register github.open_pr \
+  --description "Open a GitHub pull request" \
+  --handler release-bot
+
+agent-relay capabilities list
+agent-relay capabilities delete github.open_pr
+```
+
+Use CLI capabilities when the handler is another registered agent. Use SDK `registerAction` when the current process owns the callback implementation.
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Actions" href="/docs/8.0.0/actions">
+    Full action model: descriptors, schemas, policies, result envelopes, and audit events.
+  </Card>
+  <Card title="Webhooks" href="/docs/8.0.0/webhooks">
+    Convert external webhooks into messages or action invocations.
+  </Card>
+  <Card title="Event handlers" href="/docs/8.0.0/event-handlers">
+    Predicate listeners for action lifecycle events and session observations.
+  </Card>
+  <Card title="Agent Relay MCP" href="/docs/8.0.0/agent-relay-mcp">
+    Expose messaging and registered actions to agents through tools.
+  </Card>
+</CardGroup>

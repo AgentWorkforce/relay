@@ -43,6 +43,18 @@
             "reasoning": "User chose README-as-source-of-truth with create({relay}) spawning real PTY sessions; broker joins relay's workspace via RELAY_API_KEY env; status predicates match name-keyed events"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780336079836,
+          "type": "decision",
+          "content": "Document v8 from the current SDK-backed command groups: Document v8 from the current SDK-backed command groups",
+          "raw": {
+            "question": "Document v8 from the current SDK-backed command groups",
+            "chosen": "Document v8 from the current SDK-backed command groups",
+            "alternatives": [],
+            "reasoning": "The existing v8 docs describe the intended product shape but omit concrete pages for the implemented CLI and messaging surfaces. The new docs will use the current command/API names and add versioned links for slugs that overlap v7."
+          },
+          "significance": "high"
         }
       ]
     }

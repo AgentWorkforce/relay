@@ -7,6 +7,8 @@ Actions are how agents trigger work outside plain messaging.
 
 An action can create another managed session, update an operator UI, submit a vote, write a ticket, run a deployment, query an internal system, or publish a result. The implementation lives with the system that can actually perform the work. Relay owns the protocol around it.
 
+For README-style app callbacks, use the facade API on [Actions and callbacks](/docs/8.0.0/actions-callbacks). This page describes the lower-level action model that both the facade and MCP tool generation use.
+
 ## Core Contract
 
 Core Agent Relay owns:
@@ -240,6 +242,6 @@ The relationship is:
 - The handler returns an action result.
 - Relay emits action events for audit, subscriptions, and supervision.
 
-<BannerLink href="/docs/agent-relay-mcp" icon="docs">
+<BannerLink href="/docs/8.0.0/agent-relay-mcp" icon="docs">
   Continue to MCP tools for messaging and generated actions.
 </BannerLink>

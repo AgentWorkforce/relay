@@ -74,11 +74,6 @@ export default function BlogIndexPage() {
 
         <section className={styles.blogHero}>
           <div className={styles.blogHeroInner}>
-            <div className={styles.blogHeader}>
-              <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
-                <Rss aria-hidden="true" />
-              </a>
-            </div>
             <h1 className={styles.blogTitle}>Human thoughts on agentic software</h1>
             <p className={styles.blogSubtitle}>
               Essays, playbooks, and product thinking on multi-agent systems, context rails, and autonomous
@@ -100,10 +95,13 @@ export default function BlogIndexPage() {
             aria-labelledby="all-posts-heading"
           >
             <div className={styles.sectionHeader}>
-              <div>
+              <div className={styles.sectionTitleRow}>
                 <h2 id="all-posts-heading" className={styles.sectionTitle}>
                   All posts
                 </h2>
+                <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
+                  <Rss aria-hidden="true" />
+                </a>
               </div>
             </div>
 

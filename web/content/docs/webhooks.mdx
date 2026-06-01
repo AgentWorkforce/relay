@@ -1,0 +1,208 @@
+---
+title: 'Webhooks'
+description: 'Move events out of Relay with registered webhooks, and move external webhook events into Relay through SDK-backed HTTP handlers.'
+---
+
+Webhooks connect Relay workspaces to systems that are not running the SDK event loop.
+
+There are two directions:
+
+- **Out of Relay:** register a webhook URL so workspace events such as `message.created` or `action.completed` are delivered to another service.
+- **Into Relay:** expose your own HTTP endpoint for GitHub, Slack, CI, a product app, or an operator UI, then use the SDK from that endpoint to send messages, invoke actions, or update workspace state.
+
+Relay's CLI and SDK have first-class support for outgoing webhook registrations. Incoming webhooks are a service pattern: the HTTP endpoint belongs to your app, and the handler calls Agent Relay.
+
+## Out of Relay
+
+Use outgoing webhooks when another service should react to Relay events without embedding `@agent-relay/sdk`.
+
+```ts file="outgoing-webhook.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
+});
+
+const webhook = await relay.integrations.webhooks.create({
+  url: 'https://ops.example.com/relay/events',
+  event: 'message.created',
+});
+
+console.log(webhook.id);
+```
+
+The event filter is optional. Omit `event` when the receiver wants every event supported by the workspace integration backend.
+
+```ts file="manage-webhooks.ts"
+const webhooks = await relay.integrations.webhooks.list();
+
+await relay.integrations.webhooks.trigger(webhook.id, {
+  reason: 'manual smoke test',
+});
+
+await relay.integrations.webhooks.delete(webhook.id);
+```
+
+The manual trigger is useful for testing receiver authentication, payload parsing, and logging before depending on live workspace traffic.
+
+## CLI Webhooks
+
+The CLI exposes the same integration API.
+
+```bash
+agent-relay integration webhook create https://ops.example.com/relay/events \
+  --event message.created
+
+agent-relay integration webhook list
+agent-relay integration webhook trigger wh_123 --payload '{"reason":"smoke-test"}'
+agent-relay integration webhook delete wh_123
+```
+
+Common event filters include:
+
+- `message.created`
+- `message.read`
+- `message.reacted`
+- `delivery.accepted`
+- `delivery.delivered`
+- `delivery.deferred`
+- `delivery.failed`
+- `agent.status.changed`
+- `action.invoked`
+- `action.completed`
+- `action.failed`
+- `action.denied`
+
+Use the exact event names your workspace emits. See [Event handlers](/docs/8.0.0/event-handlers) for the core event model.
+
+## Event Subscriptions
+
+Subscriptions are workspace records for event streams. Use them when an SDK app, MCP host, dashboard, or service wants an explicit event subscription resource instead of only registering a webhook URL.
+
+```ts file="subscriptions.ts"
+const subscription = await relay.integrations.subscriptions.create({
+  event: 'action.completed',
+});
+
+const all = await relay.integrations.subscriptions.list();
+const current = await relay.integrations.subscriptions.get(subscription.id);
+
+await relay.integrations.subscriptions.delete(current.id);
+```
+
+CLI commands:
+
+```bash
+agent-relay integration subscription create action.completed
+agent-relay integration subscription list
+agent-relay integration subscription get sub_123
+agent-relay integration subscription delete sub_123
+```
+
+Webhooks deliver events to an external URL. Subscriptions describe event interest inside the Relay integration surface.
+
+## Into Relay
+
+Incoming webhooks should terminate in your own service. That service verifies the external signature, normalizes the payload, then calls Relay as a registered bridge agent or system identity.
+
+```ts file="github-webhook-route.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
+});
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  verifyGithubSignature(request.headers, rawBody);
+
+  const body = JSON.parse(rawBody);
+  const deliveryId = request.headers.get('x-github-delivery') ?? body.issue?.node_id;
+
+  const bridge = relay.as(process.env.RELAY_BRIDGE_AGENT_TOKEN!);
+  const issue = body.issue;
+  const action = body.action;
+
+  const message = await bridge.sendMessage({
+    to: '#triage',
+    text: `GitHub issue ${action}: ${issue.title}`,
+    idempotencyKey: `github:${deliveryId}:${action}`,
+    attachments: [
+      {
+        type: 'link',
+        url: issue.html_url,
+        label: 'GitHub issue',
+      },
+      {
+        type: 'json',
+        value: body,
+        label: 'Webhook payload',
+      },
+    ],
+  });
+
+  return Response.json({ ok: true, messageId: message.id });
+}
+```
+
+Register the bridge identity once and store its token with your webhook service.
+
+```bash
+agent-relay agent register github-bridge --type system
+export RELAY_BRIDGE_AGENT_TOKEN="at_live_..."
+```
+
+The same pattern works for Slack slash commands, CI status webhooks, product events, cron jobs, incident systems, and internal admin panels.
+
+## Invoke Actions From Incoming Webhooks
+
+Incoming webhooks do not have to become chat messages. They can invoke registered actions when the external event maps to a structured capability.
+
+```ts file="webhook-action.ts"
+const result = await relay.actions.invoke({
+  name: 'deploy.preview',
+  input: {
+    branch: body.pull_request.head.ref,
+    sha: body.pull_request.head.sha,
+  },
+  caller: { name: 'github-bridge', type: 'system' },
+  messaging: relay.messaging,
+});
+
+if (!result.ok) {
+  await relay.sendMessage({
+    to: '#ops',
+    text: `Preview deploy action failed: ${result.error?.message}`,
+  });
+}
+```
+
+Use messages for conversational coordination. Use actions when the receiving system needs validation, policy checks, result envelopes, and audit events.
+
+## Delivery And Idempotency
+
+Webhook handlers should be boring and repeatable.
+
+- Verify the provider signature before parsing or forwarding sensitive data.
+- Store external delivery ids and pass `idempotencyKey` when sending messages.
+- Register a dedicated system or bridge agent per external integration.
+- Attach the raw payload only when it is useful and safe.
+- Redact tokens, cookies, private keys, and customer secrets before putting payloads into Relay.
+- Return a fast HTTP response and move long-running work into an action, queue, or agent thread.
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Actions and callbacks" href="/docs/8.0.0/actions-callbacks">
+    Register callbacks that agents can invoke through SDK actions or MCP tools.
+  </Card>
+  <Card title="CLI reference" href="/docs/8.0.0/reference-cli">
+    Command matrix for webhook, subscription, and capability commands.
+  </Card>
+  <Card title="Event handlers" href="/docs/8.0.0/event-handlers">
+    Predicate listeners for messages, deliveries, actions, status, and session events.
+  </Card>
+  <Card title="Messaging" href="/docs/8.0.0/messaging">
+    Send messages from API handlers, webhooks, action handlers, and UI callbacks.
+  </Card>
+</CardGroup>

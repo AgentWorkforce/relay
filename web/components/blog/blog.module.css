@@ -71,14 +71,6 @@
   padding: 112px 40px 86px;
 }
 
-.blogHeader {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 20px;
-  margin-bottom: 20px;
-}
-
 .eyebrow,
 .sectionKicker,
 .postHeroCategory {
@@ -140,6 +132,12 @@
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.15;
+}
+
+.sectionTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
 .sectionDescription {

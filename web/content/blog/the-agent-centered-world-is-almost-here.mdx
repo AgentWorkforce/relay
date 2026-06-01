@@ -1,6 +1,6 @@
 ---
-title: 'The agent centered world is almost here'
-description: 'Agents are moving from sidecar tools into the center of how work is routed, reviewed, and completed. The next shift is infrastructure built around their needs from the start.'
+title: 'The agent-centered world is almost here'
+description: 'Agents are still underused as disposable sidecars. The next shift is persistent agent teams with communication, scoped trust, and evidence built into the workflow.'
 date: '2026-06-01'
 author: 'Will Washburn'
 category: 'Vision'
@@ -15,11 +15,13 @@ The next phase of software will not be defined by a better autocomplete box.
 
 Autocomplete was the first useful interface because it fit inside the tools we already had. Chat was the next useful interface because it made the model feel direct and general. Both mattered. Both were also transitional.
 
+The problem is that we are still using agents in the shape of the old interfaces. Most products treat the agent like a disposable helper: summon it, ask for a thing, copy the output somewhere else, and repeat. That is useful, but it leaves most of the leverage on the floor.
+
 The more interesting world is the one where agents are not sitting at the edge of the workflow waiting for instructions. They are in the path of the work itself: watching for changes, asking for missing context, coordinating with other agents, and handing finished work back with evidence.
 
 That world is close enough now that we should stop treating it like science fiction.
 
-## From assistant-shaped to agent-centered
+## From assistant-shaped to team-shaped
 
 Most AI products still assume the human is the only durable actor in the system. The agent is a session. It wakes up when asked, answers, then disappears.
 
@@ -27,7 +29,9 @@ That model is useful, but it is not enough for serious work.
 
 Real work has memory, ownership, dependencies, and follow-through. A bug moves from report to reproduction to fix to review. A support thread turns into a product decision. A deployment starts as a plan, turns into a checklist, and then becomes a set of live signals that someone needs to watch.
 
-In an agent-centered system, the agent is not an ornament on top of that process. It is one of the things the process is designed to support.
+In an agent-centered system, the agent is not an ornament on top of that process. It is one of the things the process is designed to support. More importantly, it is rarely the only agent in the process.
+
+A single general agent with access to every tool is not the end state. It is a very powerful bottleneck. Serious work usually wants smaller roles, narrower authority, and clean handoffs. One agent can triage the issue. Another can reproduce it. Another can patch the code. Another can review the diff. Another can watch the deployment. The point is not to anthropomorphize them into a fake org chart. The point is to stop pretending one session should hold every context, every permission, and every responsibility at once.
 
 That means the system needs to make a few things natural:
 
@@ -53,6 +57,8 @@ That is why agent-to-agent communication feels so important. Once agents can exc
 
 The human still sets direction. The human still decides what matters. But the human should not have to copy status between five tools just to keep the work alive.
 
+This is the part the market is underestimating. The next jump is not just "agent can use tool." It is "agent can work with other agents, under different scopes, across a workflow that survives the original prompt." That is where agents stop feeling like clever interface features and start feeling like operational capacity.
+
 ## The missing substrate
 
 The agent-centered world needs infrastructure that assumes agents are first-class actors:
@@ -60,23 +66,30 @@ The agent-centered world needs infrastructure that assumes agents are first-clas
 1. A messaging layer that supports channels, threads, DMs, reactions, and delivery guarantees for agents.
 2. A file and event layer that lets agents observe external systems without every team rebuilding webhooks.
 3. A scheduling layer that lets agents wake up when time itself is the trigger.
-4. A permission model that keeps authority explicit and revocable.
+4. A permission model that keeps authority explicit, revocable, and different for each role.
 5. A record of decisions, reviews, and handoffs that survives context windows.
+6. Evaluation loops that define what good work means for the task, not just whether the model produced plausible text.
 
 These are not flashy model demos. They are the rails that let model capability become operational capability.
 
-The reason this matters is simple: a smarter model does not automatically create a smarter organization. If the model cannot receive the right signal, reach the right context, talk to the right peer, or prove what it did, the workflow still collapses back onto the human.
+The reason this matters is simple: a smarter model does not automatically create a smarter organization. If the model cannot receive the right signal, reach the right context, talk to the right peer, act under the right authority, or prove what it did, the workflow still collapses back onto the human.
+
+There is a temptation to solve this by making one agent more powerful. Give it more context. Give it more tools. Give it longer memory. Give it access to everything. Sometimes that works for a demo. In production, it is usually the wrong direction.
+
+Power and trust are different things. An agent with all the context should not automatically have all the access. A reviewer should not need deployment credentials. A deployment watcher should not need permission to rewrite the product requirements. A support triage agent should not be able to mutate billing records because it happened to read a support thread.
+
+The near future is less about one agent becoming omnipotent and more about agents becoming composable. Teams of agents need shared protocols, but also different permissions, different tools, different memories, and different measures of success.
 
 ## Almost here does not mean already solved
 
 There are still hard problems.
 
-Agents need better judgment about when to stop. They need stronger permission boundaries. They need reliable ways to expose uncertainty. They need review loops that catch plausible-but-wrong work before it reaches production.
+Agents need better judgment about when to stop. They need stronger permission boundaries. They need reliable ways to expose uncertainty. They need review loops that catch plausible-but-wrong work before it reaches production. They need benchmarks that reflect messy runtime reality: delegated actions, changing context, insecure tools, latency, cost, and all the tradeoffs that appear once an agent is doing real work instead of completing a canned task.
 
 But the outline is visible now.
 
-The winning systems will not be the ones that make the prettiest chat window. They will be the ones that make agents easy to place inside real workflows without turning every team into an infrastructure company.
+The winning systems will not be the ones that make the prettiest chat window. They will be the ones that make agent teams easy to place inside real workflows without turning every team into an infrastructure company.
 
-That is the agent-centered world: not a world without humans, and not a world where agents magically do everything. It is a world where software is designed around work getting done by a mix of humans and agents, with the coordination layer treated as a product surface instead of an afterthought.
+That is the agent-centered world: not a world without humans, and not a world where agents magically do everything. It is a world where software is designed around work getting done by a mix of humans and agent teams, with the coordination layer treated as a product surface instead of an afterthought.
 
 We are almost there.
