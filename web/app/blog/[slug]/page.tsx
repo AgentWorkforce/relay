@@ -12,6 +12,7 @@ import { BlogTableOfContents } from '../../../components/blog/BlogTableOfContent
 import styles from '../../../components/blog/blog.module.css';
 import { HighlightedPre } from '../../../components/docs/HighlightedCode';
 import { GitHubStarsBadge } from '../../../components/GitHubStars';
+import { Waitlist } from '../../../components/home';
 import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
 import { getAllPosts, getPost, slugifyHeading } from '../../../lib/blog';
@@ -347,6 +348,8 @@ export default async function BlogPostPage({ params }: PageProps) {
           </div>
         </section>
       )}
+
+      <Waitlist />
 
       <SiteFooter />
     </div>

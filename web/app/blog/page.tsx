@@ -43,8 +43,7 @@ function formatDate(dateStr: string): string {
 
 export default function BlogIndexPage() {
   const posts = getAllPosts();
-  const [featuredPost, ...recentPosts] = posts;
-  const featuredAuthor = featuredPost ? getBlogAuthor(featuredPost.frontmatter.author) : null;
+  const allPosts = posts;
   const structuredData = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -80,94 +79,73 @@ export default function BlogIndexPage() {
                 <Rss aria-hidden="true" />
               </a>
             </div>
-            <h1 className={styles.blogTitle}>Field notes for agent-native software</h1>
+            <h1 className={styles.blogTitle}>Human thoughts on agentic software</h1>
             <p className={styles.blogSubtitle}>
               Essays, playbooks, and product thinking on multi-agent systems, context rails, and autonomous
               development.
             </p>
           </div>
         </section>
+        <div className={styles.blogWaveDivider} aria-hidden="true">
+          <svg viewBox="0 0 1200 80" fill="none" preserveAspectRatio="none">
+            <path d="M0 0H1200V18C986 58 826 24 624 46C404 70 228 34 0 60V0Z" />
+            <path d="M-80 34C170 58 372 54 612 40C858 26 1018 20 1280 42" />
+            <path d="M-80 48C184 70 384 66 632 52C878 38 1036 34 1280 56" />
+          </svg>
+        </div>
 
-        {featuredPost && (
-          <section className={styles.blogSection} aria-labelledby="featured-post-heading">
+        {allPosts.length > 0 && (
+          <section
+            className={`${styles.blogSection} ${styles.archiveSection}`}
+            aria-labelledby="all-posts-heading"
+          >
             <div className={styles.sectionHeader}>
               <div>
-                <p className={styles.sectionKicker}>Latest</p>
-                <h2 id="featured-post-heading" className={styles.sectionTitle}>
-                  Start here
-                </h2>
-              </div>
-              <p className={styles.sectionDescription}>
-                The newest thinking from the team building communication infrastructure for agents.
-              </p>
-            </div>
-
-            <Link href={`/blog/${encodeURIComponent(featuredPost.slug)}`} className={styles.featuredCard}>
-              <div className={styles.featuredContent}>
-                <div className={styles.postMeta}>
-                  <span className={styles.postCategory}>{featuredPost.frontmatter.category}</span>
-                  <span className={styles.postDot}>·</span>
-                  <time dateTime={featuredPost.frontmatter.date}>{formatDate(featuredPost.frontmatter.date)}</time>
-                  <span className={styles.postDot}>·</span>
-                  <span>{featuredPost.readTime}</span>
-                </div>
-                <h3 className={styles.featuredTitle}>{featuredPost.frontmatter.title}</h3>
-                <p className={styles.featuredDesc}>{featuredPost.frontmatter.description}</p>
-                <div className={styles.featuredAuthor}>
-                  <span
-                    className={`${styles.authorAvatar} ${featuredAuthor?.image ? styles.authorAvatarPhoto : ''}`}
-                    aria-hidden="true"
-                  >
-                    {featuredAuthor?.image ? (
-                      <img src={featuredAuthor.image} alt="" loading="lazy" />
-                    ) : (
-                      getAuthorInitials(featuredAuthor?.name ?? featuredPost.frontmatter.author)
-                    )}
-                  </span>
-                  <span className={styles.authorInfo}>
-                    <span className={styles.authorLabel}>Written by</span>
-                    <span className={styles.authorName}>{featuredAuthor?.name ?? featuredPost.frontmatter.author}</span>
-                    {featuredAuthor && <span className={styles.authorRole}>{featuredAuthor.title}</span>}
-                  </span>
-                </div>
-              </div>
-            </Link>
-          </section>
-        )}
-
-        {recentPosts.length > 0 && (
-          <section className={styles.blogSection} aria-labelledby="recent-posts-heading">
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.sectionKicker}>Archive</p>
-                <h2 id="recent-posts-heading" className={styles.sectionTitle}>
-                  Recent writing
+                <h2 id="all-posts-heading" className={styles.sectionTitle}>
+                  All posts
                 </h2>
               </div>
             </div>
 
             <div className={styles.postList} role="list">
-              {recentPosts.map((post) => (
-                <article key={post.slug} className={styles.postListRow} role="listitem">
-                  <Link href={`/blog/${encodeURIComponent(post.slug)}`} className={styles.postListLink}>
-                    {post.frontmatter.title}
-                  </Link>
-                  <p className={styles.postListDescription}>{post.frontmatter.description}</p>
-                  <div className={styles.postListMeta}>
-                    <span className={styles.postListAuthor}>{post.frontmatter.author}</span>
-                    <span className={styles.postListDot} aria-hidden="true">
-                      &middot;
-                    </span>
-                    <time className={styles.postListDate} dateTime={post.frontmatter.date}>
-                      {formatDate(post.frontmatter.date)}
-                    </time>
-                    <span className={styles.postListDot} aria-hidden="true">
-                      &middot;
-                    </span>
-                    <span className={styles.postListRead}>{post.readTime}</span>
-                  </div>
-                </article>
-              ))}
+              {allPosts.map((post) => {
+                const postAuthor = getBlogAuthor(post.frontmatter.author);
+
+                return (
+                  <article key={post.slug} className={styles.postListRow} role="listitem">
+                    <Link href={`/blog/${encodeURIComponent(post.slug)}`} className={styles.postListRowLink}>
+                      <div className={styles.postListTopline}>
+                        <h3 className={styles.postListTitle}>{post.frontmatter.title}</h3>
+                        <span className={styles.postListMeta}>
+                          <span
+                            className={`${styles.postListAvatar} ${postAuthor.image ? styles.authorAvatarPhoto : ''}`}
+                            aria-hidden="true"
+                          >
+                            {postAuthor.image ? (
+                              <img src={postAuthor.image} alt="" loading="lazy" />
+                            ) : (
+                              getAuthorInitials(postAuthor.name)
+                            )}
+                          </span>
+                          <span className={styles.postListMetaText}>
+                            <span className={styles.postListAuthor}>{postAuthor.name}</span>
+                            <span className={styles.postListTime}>
+                              <time className={styles.postListDate} dateTime={post.frontmatter.date}>
+                                {formatDate(post.frontmatter.date)}
+                              </time>
+                              <span className={styles.postListDot} aria-hidden="true">
+                                &middot;
+                              </span>
+                              <span className={styles.postListRead}>{post.readTime}</span>
+                            </span>
+                          </span>
+                        </span>
+                      </div>
+                      <p className={styles.postListDescription}>{post.frontmatter.description}</p>
+                    </Link>
+                  </article>
+                );
+              })}
             </div>
           </section>
         )}
