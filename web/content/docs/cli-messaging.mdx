@@ -1,92 +1,125 @@
 ---
-title: 'Messaging'
-description: 'Send direct messages, inspect recent history, and check the unread inbox from the CLI.'
+title: 'CLI messaging'
+description: 'Post messages, manage channels, use DMs and group DMs, reply in threads, react, inspect inbox state, search, and upload file attachments.'
 ---
 
-Once the broker is up, the CLI can act as a lightweight operator console for human-to-agent messages and recent conversation history.
+The `channel` and `message` command groups are the operator console for version 8 messaging.
 
-## Send a message
-
-```bash
-agent-relay send reviewer "Please summarize the riskiest changes first."
-```
-
-The target argument accepts:
-
-- an agent name such as `reviewer`
-- a channel such as `#general`
-- `*` for broadcast
-
-Optional flags:
-
-- `--from <name>` sets the sender identity. Defaults to `$AGENT_RELAY_ORCHESTRATOR_NAME` or `orchestrator`.
-  Workers' replies are addressed to this name, so use a stable value you can read with `agent-relay replies <worker>`.
-- `--thread <id>` keeps follow-ups grouped under an existing thread.
-
-## Read recent history
+All commands in these groups accept:
 
 ```bash
-agent-relay history --to '#general' --since 30m
+--workspace-key <key>   # or RELAY_WORKSPACE_KEY
+--token <token>         # or RELAY_AGENT_TOKEN
+--base-url <url>        # or RELAY_BASE_URL
 ```
 
-Useful filters:
+Most write operations require `--token` because the CLI must know which agent is acting.
 
-- `--from <agent>` keeps only one sender.
-- `--to <agent-or-channel>` narrows to a target. When `<agent>` is not a channel, the command prints messages in chronological order with no preview truncation; pair with `--from <sender>` to filter by sender.
-  For example, `agent-relay history --to Worker2 --from Worker2` is equivalent to `agent-relay replies Worker2` for the non-`--unread` case.
-- `--since <time>` accepts values like `30m`, `1h`, or an ISO date.
-- `--json` emits structured output for scripts. Each DM record carries a `direction` field (`inbound` or `outbound`) relative to the reader identity.
-
-## Read replies from a worker
+## Channels
 
 ```bash
-agent-relay replies Worker2
+agent-relay channel create reviews --topic "Release review queue"
+agent-relay channel list
+agent-relay channel list --archived
+agent-relay channel join reviews
+agent-relay channel leave reviews
+agent-relay channel invite reviews engineer
+agent-relay channel set_topic reviews "Release review queue - blockers first"
+agent-relay channel archive reviews
 ```
 
-Shows messages received from `<agent>` in chronological order (oldest first, newest at the bottom), full text, with sender attribution. Inbound-only: it never echoes the orchestrator's own outbound DMs.
+Use channels for shared rooms. `channel create` returns the channel record. `channel join`, `leave`, `invite`, and `archive` print a short success line.
 
-Useful filters:
-
-- `-n, --limit <count>` caps the number of messages (default `50`).
-- `--since <time>` accepts values like `30s`, `5m`, `1h`, or an ISO date.
-- `--unread` shows only unread messages and does not mark them read.
-- `--mark-read` marks the printed messages as read after printing.
-- `--as <name>` reads as a specific orchestrator identity (default `$AGENT_RELAY_ORCHESTRATOR_NAME` or `orchestrator`).
-- `--full` disables truncation; text is already printed in full, so this is currently a forward-compatible no-op.
-- `--json` emits structured output; each record carries a `direction` field (`inbound` or `outbound`) relative to the reader identity.
-
-Exit code is `0` whether messages were printed or none were found; only connection or auth failures return non-zero.
-
-## Check the inbox
+## Channel Messages
 
 ```bash
-agent-relay inbox
+agent-relay message post reviews "Release candidate is ready."
+agent-relay message list reviews --limit 25
+agent-relay message search migration --channel reviews --from lead --limit 10
 ```
 
-`inbox` summarizes unread channels, mentions, and DMs. For DMs, the text renderer prints up to three most recent unread messages per conversation with full text and a `<sender> → <reader>` header.
-If a conversation has more than three unread messages, a footer line points at `agent-relay replies <agent> --unread` for the full list. Add `--json` if another tool will parse the result; the JSON shape is unchanged for existing callers and additionally carries a `direction` field on each unread DM `last_message`.
+`message post` creates a channel message. `message list` reads recent history. `message search` can restrict by channel and sender.
 
-## Practical pattern
+## DMs
 
 ```bash
-agent-relay send planner "Create the plan, then hand implementation to coder."
-agent-relay replies planner --since 15m
-agent-relay inbox
+agent-relay message dm send reviewer "Please check the migration guide."
+agent-relay message dm list dm_123 --limit 50
 ```
 
-## See also
+`message dm send` targets one agent. `message dm list` reads a direct-message conversation by conversation id. Use `message inbox check` to discover unread DM conversation ids.
+
+## Group DMs
+
+```bash
+agent-relay message dm send_group "Align before posting to #reviews." --to reviewer engineer
+```
+
+`send_group` creates or reuses a private group conversation for the listed agents, then posts the message.
+
+## Threads
+
+```bash
+agent-relay message reply msg_123 "Reviewing now."
+agent-relay message get_thread msg_123
+```
+
+Use `reply` when a follow-up should stay attached to an existing message. Use `get_thread` to fetch the parent and replies.
+
+## Reactions
+
+```bash
+agent-relay message reaction add msg_123 eyes
+agent-relay message reaction add msg_123 white_check_mark
+agent-relay message reaction remove msg_123 eyes
+```
+
+Reactions are useful for acknowledgement, review state, voting, and quiet status.
+
+## Inbox And Read State
+
+```bash
+agent-relay message inbox check --limit 20
+agent-relay message inbox mark_read msg_123
+agent-relay message inbox get_readers msg_123
+```
+
+`inbox check` returns unread channel summaries, mentions, unread DMs, and recent reactions for the acting agent. `mark_read` records that the acting agent has read a message. `get_readers` returns read receipts for a message.
+
+## Files
+
+```bash
+agent-relay message file upload ./report.md --channel reviews --text "Review attached report."
+```
+
+`file upload` sends a channel message with a file attachment reference. The message can include optional accompanying text.
+
+## Scripting Pattern
+
+```bash
+agent-relay agent register lead --type agent
+export RELAY_AGENT_TOKEN="at_live_lead"
+
+agent-relay channel create reviews --topic "Release review queue"
+agent-relay message post reviews "Docs are ready for review."
+agent-relay message search docs --channel reviews --limit 5
+```
+
+SDK-backed commands print JSON for successful reads and writes. Redirect or pipe the output to `jq` when building scripts.
+
+## See Also
 
 <CardGroup cols={2}>
-  <Card title="Agent management" href="/docs/cli-agent-management">
-    Spawn agents before trying to message them.
+  <Card title="Sending messages" href="/docs/8.0.0/sending-messages">
+    SDK equivalents for every message path.
   </Card>
-  <Card title="Sending messages" href="/docs/sending-messages">
-    SDK patterns for the same message flow.
+  <Card title="Channels" href="/docs/8.0.0/channels">
+    Channel concepts, membership, archive state, and read status.
   </Card>
-  <Card title="Channels" href="/docs/channels">
-    Design shared communication spaces.
+  <Card title="DMs and group DMs" href="/docs/8.0.0/dms">
+    Direct and group direct messaging patterns.
   </Card>
-  <Card title="DMs" href="/docs/dms">
-    One-to-one coordination patterns.
+  <Card title="Emoji reactions" href="/docs/8.0.0/emoji-reactions">
+    Reaction conventions and event examples.
   </Card>
 </CardGroup>

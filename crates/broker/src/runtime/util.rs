@@ -199,14 +199,19 @@ pub(crate) fn default_spawn_channels() -> Vec<ChannelName> {
     vec![ChannelName::new("general"), ChannelName::new("engineering")]
 }
 
-pub(crate) fn command_targets_self(cmd_event: &BrokerCommandEvent, self_agent_id: &str) -> bool {
-    match cmd_event.handler_agent_id.as_deref() {
+pub(crate) fn action_targets_self(
+    action: &str,
+    invoked_by: &str,
+    handler_agent_id: Option<&str>,
+    self_agent_id: &str,
+) -> bool {
+    match handler_agent_id {
         Some(handler_id) => handler_id == self_agent_id,
         None => {
             tracing::warn!(
-                command = %cmd_event.command,
-                invoked_by = %cmd_event.invoked_by,
-                "command has no handler_agent_id; accepting by default (multi-broker setups should scope commands)"
+                action = %action,
+                invoked_by = %invoked_by,
+                "action has no handler_agent_id; accepting by default (multi-broker setups should scope actions)"
             );
             true
         }

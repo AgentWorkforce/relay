@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use relaycast::{
     agent::DmOptions, format_registration_error,
-    retry_agent_registration as sdk_retry_agent_registration, AgentClient, AgentRegistrationClient,
-    AgentRegistrationError, AgentRegistrationRetryOutcome, MessageListQuery, RelayCast,
+    retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
+    AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
+    CompleteInvocationRequest, MessageListQuery, RegisterActionRequest, RelayCast,
     RelayCastOptions, ReleaseAgentRequest, WsClient, WsClientOptions, WsLifecycleEvent,
 };
 use serde_json::{json, Value};
@@ -412,6 +413,51 @@ impl RelaycastHttpClient {
             .context("SDK relay client not initialized")?;
         registration
             .registered_agent_client(&self.agent_name, Some(&self.default_cli))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Register an action whose handler is this broker's agent. Spawn/release
+    /// are exposed as relaycast actions so other agents can invoke them as
+    /// structured agent-to-agent RPC.
+    pub async fn register_action(
+        &self,
+        request: RegisterActionRequest,
+    ) -> Result<ActionDefinition> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        relay
+            .register_action(request)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Fetch a single action invocation, including its `input`. The
+    /// `action.invoked` WebSocket event omits the input payload, so the handler
+    /// must read it back here before executing.
+    pub async fn get_action_invocation(
+        &self,
+        name: &str,
+        invocation_id: &str,
+    ) -> Result<ActionInvocation> {
+        self.registered_agent_client()
+            .await?
+            .get_action_invocation(name, invocation_id)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Report the result (or error) of an action invocation as the handler.
+    pub async fn complete_action_invocation(
+        &self,
+        name: &str,
+        invocation_id: &str,
+        request: CompleteInvocationRequest,
+    ) -> Result<ActionInvocation> {
+        self.registered_agent_client()
+            .await?
+            .complete_action_invocation(name, invocation_id, request)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
     }

@@ -113,12 +113,12 @@ jobs:
           restore-keys: turbo-
 
       - name: Build packages
-        run: npm run build
-
-      - name: Audit bundled dependencies
         run: |
-          echo "=== Auditing bundled package dependencies ==="
-          node packages/cli/scripts/audit-bundled-deps.mjs
+          npm run build
+          # cloud and openclaw sit outside the core build chain;
+          # build them so package validation can verify their dist output.
+          npm --prefix packages/cloud run build
+          npm --prefix packages/openclaw run build
 
       - name: Validate all
         run: |
@@ -177,7 +177,7 @@ jobs:
           echo "=== Testing main package ==="
           node --eval "
             import('./packages/cli/dist/index.js').then(m => {
-              const required = ['AgentRelay', 'AgentRelayClient', 'createLogger'];
+              const required = ['AgentRelay', 'createLogger'];
               const missing = required.filter(r => !(r in m));
               if (missing.length) {
                 console.error('Missing exports:', missing);
@@ -196,7 +196,7 @@ jobs:
           TEST_PORT=3899
           API_PORT=$((TEST_PORT + 1))
           # Start broker+dashboard in background
-          node packages/cli/dist/cli/index.js up --port "$TEST_PORT" &
+          node packages/cli/dist/cli/index.js local up --port "$TEST_PORT" &
           DAEMON_PID=$!
 
           # Wait for health endpoint (broker API is dashboard port + 1)
@@ -210,14 +210,14 @@ jobs:
           # Verify broker is reachable
           if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
             echo "✓ Broker health endpoint responding"
-            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js status || true
+            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js local status || true
           else
             echo "✗ Broker health endpoint did not become ready"
             exit 1
           fi
 
           # Cleanup through CLI down first, then hard-kill fallback
-          node packages/cli/dist/cli/index.js down --force --timeout 5000 || true
+          node packages/cli/dist/cli/index.js local down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
 
       # Keep tarball validation after runtime smoke tests. The tarball
@@ -250,9 +250,6 @@ jobs:
         run: |
           rm -rf node_modules packages/*/node_modules package-lock.json
           npm install
-
-      - name: Show resolved trajectory dependency
-        run: npm ls agent-trajectories --all
 
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
@@ -365,11 +362,6 @@ jobs:
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
             ./packages/cli/dist/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
-          if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
-            echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"
-            echo "cloud connect would hang; aborting validation."
-            exit 1
-          fi
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"

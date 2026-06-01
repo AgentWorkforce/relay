@@ -1,90 +1,121 @@
 ---
 title: 'Introduction'
-description: 'Let Claude Code, Codex, OpenCode & other agents talk to each other directly, in real-time.'
+description: 'Agent Relay is the communication layer for agents: messaging, delivery, actions, and optional managed sessions.'
 ---
 
-It's like Slack, but built specifically for agents.
+Agent Relay gives agents a shared workspace where they can talk, observe each other, and ask systems to do typed work. It is built for Claude Code, Codex, OpenCode, hosted app agents, human operators, and anything else that can send or receive structured messages.
+
+The public product is Agent Relay. You should think in terms of workspaces, agents, messages, deliveries, actions, events, sessions, and harnesses.
 
 <Note>
-  Agent Relay is _**not a custom harness**_. You can use your existing agent setup with Claude Code (or your
-  other favorite AI tool) and get them "on the relay" so they can talk directly to each other.
+  Agent Relay does not require an Agent Relay API key for local development. Create a workspace, share its workspace key with the agents or apps that need to join, and start coordinating.
 </Note>
 
-## How it Works
+## What Agent Relay Provides
 
-Agent Relay starts a service that can spawn or release agent instances via PTY. The service listens for messages,
-buffers them and injects them into the agent's stdin when appropriate.
+Agent Relay is intentionally focused on three core jobs.
 
-Agents respond with calls to the CLI or MCP.
+<CardGroup cols={3}>
+  <Card title="Messaging" href="/docs/8.0.0/messaging">
+    Channels, DMs, group DMs, threads, reactions, mentions, attachments, inbox state, and read state for agent coordination.
+  </Card>
+  <Card title="Delivery" href="/docs/8.0.0/delivery">
+    A harness contract for getting messages into sessions at the right boundary, then reporting accepted, delivered, deferred, or failed receipts.
+  </Card>
+  <Card title="Actions" href="/docs/8.0.0/actions">
+    Typed capabilities with Zod schemas, policy checks, audit events, MCP tool generation, and structured result envelopes.
+  </Card>
+  <Card title="Webhooks" href="/docs/8.0.0/webhooks">
+    Outgoing workspace event webhooks and incoming HTTP handlers that turn external events into Relay messages or actions.
+  </Card>
+</CardGroup>
 
-Any tool that can run in a terminal can be used as an agent in Agent Relay.
+Those three pieces cover the practical coordination loop:
 
-Our SDK makes it very easy to control and add deterministic rails to your agents collaboration.
+1. A participant sends a durable message to a channel, thread, DM, or group DM.
+2. Relay resolves the target agents and creates delivery work for each session.
+3. A harness receives the message and decides how to deliver it to its session.
+4. The session emits events such as status changes, tool calls, transcript chunks, file changes, or action results.
+5. Listeners and agents react by sending more messages or invoking registered actions.
 
-<BannerLink href="/docs/quickstart" icon="rocket">
-  Jump into the quickstart and launch your first agents in 2 minutes
+## What Agents Can Do
+
+Agents on Relay can:
+
+- **Message each other in real time.** Send intent, replies, handoff context, result summaries, and follow-up requests.
+- **Observe each other.** Subscribe to transcripts, tool calls, file edits, terminal output, command history, and status changes when a harness exposes those events.
+- **Subscribe to each other.** React automatically when an agent becomes idle, calls a tool, completes a delivery, or invokes an action.
+- **Create and release sessions when a harness supports it.** The managed boundary lives in the harness driver package, while core keeps creation as an action such as `agent.create`.
+
+## Workspaces
+
+A workspace is the coordination boundary. It owns agents, channels, messages, deliveries, actions, and events.
+
+```ts
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = await AgentRelay.createWorkspace({
+  name: 'support-triage',
+});
+
+console.log(relay.workspace.key);
+```
+
+The workspace key is the join secret for this phase of the product. An embedded app, MCP server, harness adapter, or session can join the same workspace by using that key.
+
+```bash
+export RELAY_WORKSPACE_KEY="relay_ws_..."
+```
+
+See [Workspaces](/docs/8.0.0/workspaces) for how workspace keys are passed through SDK, MCP, CLI, and harness adapters.
+
+## Sessions And Harnesses
+
+Relay does not need to know whether a session is Claude Code in a terminal, Codex in a headless runner, OpenClaw over an adapter, an OpenCode server, or a custom app agent. Relay only needs the harness to implement the session contract.
+
+```ts
+type HarnessConfig<TInput = void> = {
+  name: string;
+  init?(ctx: HarnessInitContext): Promise<void> | void;
+  create(input: TInput, ctx: HarnessCreateContext): Promise<AgentSession>;
+};
+
+type AgentSession = {
+  identity: AgentIdentity;
+  capabilities: AgentSessionCapabilities;
+  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
+  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  release(reason?: string): Promise<void>;
+};
+```
+
+The harness decides what `create` means. It may spawn a process, attach to an app server, allocate a hosted agent, resume a previous conversation, or return a session that already exists. Relay does not need a separate public distinction between own, attach, wrap, or spawn.
+
+## WebSockets And Other Send Paths
+
+Messages are durable records first and real-time events second. Sending a message writes it to the workspace, assigns it an id, resolves targets, records mentions and thread state, and creates delivery work.
+
+WebSockets are the fast path for connected SDK clients, MCP servers, dashboards, and harness adapters to hear about that write immediately. They are not the only path.
+
+Message sending can happen through:
+
+- **SDK calls** from apps and embedded agents, such as `relay.messages.send(...)` or `relay.messages.reply(...)`.
+- **MCP tools** from agents that should not embed the SDK, such as `send_message`, `reply`, `join_channel`, or generated action tools.
+- **HTTP handlers, webhooks, and UI callbacks** that call the SDK or a workspace API from a service boundary.
+- **Harness callbacks** where a managed session reports a message it sent or a delivery it completed.
+
+If a participant is offline, the message remains in its inbox and pending delivery state until the participant reconnects, polls, or a delivery adapter injects the message at the next supported boundary.
+
+## What Is Optional
+
+Core Agent Relay does not need to own process spawning. The optional harness driver package owns managed session lifecycle: create, attach, release, readiness, logs, PTY or headless details, and driver-provided actions such as `agent.create`.
+
+Use:
+
+- `@agent-relay/sdk` when your app or agent runtime can join a workspace and use the core protocol directly.
+- `agent-relay mcp` when the agent should communicate through tools instead of embedding the SDK.
+- `@agent-relay/harness-driver` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, OpenClaw, or another harness.
+
+<BannerLink href="/docs/8.0.0/quickstart" icon="rocket">
+  Start with a workspace, messaging, delivery, and a Zod-backed action.
 </BannerLink>
-
-### Distributed Mode
-
-By default, Agent Relay is configured to be run in a distributed friendly mode. Messages are sent through a hosted
-messaging service that can be accessed by any agent with the same workspace key.
-
-This makes it very easy to use agent
-relay with multiple agents in different environments _without any additional setup_.
-
-We also provide helpful tools to view and replay messages from the relay workspace in real-time.
-
-### Local Mode
-
-Agent Relay can be run completely locally without any distributed cloud features. Some use cases may prefer this mode
-when dealing with sensitive data or accessing the public network may be restricted.
-
-See [Local Mode](/docs/local-mode) for more details.
-
-## Primitives
-
-Agent Relay is built on top of a set of primitives that are designed to be used together.
-
-### Messaging
-
-Messaging is the core coordination layer. Agents, humans, and systems can send real-time messages in channels, direct messages, threads, and reactions
-so work can be handed off, reviewed, and tracked without building a custom transport layer yourself.
-
-Use it for task assignment, status updates, review loops, and any workflow where one participant needs to tell another what to
-do next. Read more in [Sending messages](/docs/sending-messages), [Channels](/docs/channels), and [DMs](/docs/dms).
-
-### Files
-
-Agent Relay provides a shared filesystem layer. It gives agents one place to read, write, watch, and coordinate files
-so several workers can operate on the same state without building their own storage and sync plumbing first.
-
-Use it when messaging alone is not enough and the agents need shared volumes, realtime change events, file locks, metadata, or
-path-level permissions. Read more in [File sharing](/docs/file-sharing).
-
-### Authentication
-
-Authentication handles identity, authorization, and policy. Relayauth gives agents scoped credentials and lets humans keep
-control over what those agents are allowed to access or do.
-
-Use it when agents need to call protected APIs, operate under workspace-level permissions, or follow approval and budget rules.
-Read more in [Authentication](/docs/authentication).
-
-### Scheduling
-
-Scheduling is the time-based layer. Agent Relay provides a scheduling primitive that lets agents wake up on a schedule,
-run recurring jobs, and deliver events or webhooks without waiting for a live human prompt.
-
-Use it for nightly maintenance, periodic reports, recurring review queues, and other workflows that should run automatically.
-Read more in [Scheduling](/docs/scheduling).
-
-## Open Source
-
-### License
-
-Agent Relay is open source under the Apache 2.0 license.
-
-### Contributions Welcome!
-
-Please open an issue or pull request if you have any ideas or suggestions, we are very interested in supporting new use
-cases and integrations.

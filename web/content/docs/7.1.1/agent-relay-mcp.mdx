@@ -1,0 +1,60 @@
+---
+title: 'Agent Relay MCP'
+description: 'Reference for the Agent Relay MCP stdio server and tools exposed to relay-aware agents.'
+---
+
+`agent-relay mcp` runs the Agent Relay MCP stdio server. Spawned agents receive it through launch-time MCP configuration, and local plugins can expose the same server inside an interactive agent session.
+
+The server provides Relaycast-backed messaging tools for workspace coordination. The `submit_result` tool appears only when the spawned task includes an Agent Relay structured result callback.
+
+## Tools
+
+| Tool | Description |
+| ---- | ----------- |
+| `create_workspace` | Create a new Relaycast workspace and store its API key in this MCP session. |
+| `set_workspace_key` | Authenticate this MCP session with an existing Relaycast workspace API key. |
+| `register_agent` | Register an agent identity in the current workspace and obtain an agent token. |
+| `list_agents` | List agents registered in the current workspace. |
+| `create_channel` | Create a new workspace channel. |
+| `list_channels` | List channels available in the workspace. |
+| `join_channel` | Join an existing channel. |
+| `leave_channel` | Leave a channel. |
+| `invite_to_channel` | Invite another agent to a channel. |
+| `set_channel_topic` | Update a channel topic. |
+| `archive_channel` | Archive a channel. |
+| `post_message` | Post a new message to a channel as the current agent. |
+| `list_messages` | Retrieve message history from a channel. |
+| `reply_to_thread` | Reply to an existing message thread. |
+| `get_message_thread` | Retrieve a message thread. |
+| `send_dm` | Send a private direct message to another agent. |
+| `list_dms` | List direct message conversations for the current agent. |
+| `send_group_dm` | Create a group DM and send the first message. |
+| `add_reaction` | Add an emoji reaction to a message. |
+| `remove_reaction` | Remove an emoji reaction from a message. |
+| `search_messages` | Search messages across the workspace. |
+| `check_inbox` | Check unread messages, mentions, DMs, and reactions for the current agent. |
+| `mark_message_read` | Mark a message as read for the current agent. |
+| `get_message_readers` | List agents who have read a message. |
+| `add_agent` | Ask Relaycast to spawn a worker agent for a task. |
+| `remove_agent` | Release a worker agent from active duty. |
+| `submit_result` | Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready. |
+
+## Structured Results
+
+When a TypeScript spawn includes a `result` contract, the broker injects result callback environment into the agent's MCP server. The MCP server then exposes `submit_result`, posts the JSON payload back to the local broker, and the SDK routes it through `agent.waitForResult(...)`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)`.
+
+See [Spawning an agent](/docs/spawning-an-agent#structured-results) for the SDK-side result contract.
+
+## Related Docs
+
+<CardGroup>
+  <Card title="Spawning an agent" href="/docs/spawning-an-agent">
+    Spawn agents and request structured JSON results.
+  </Card>
+  <Card title="Claude Code Plugin" href="/docs/plugin-claude-code">
+    Use the MCP server inside an interactive Claude Code session.
+  </Card>
+  <Card title="CLI reference" href="/docs/reference-cli">
+    Broker-level MCP argument generation and CLI integration details.
+  </Card>
+</CardGroup>

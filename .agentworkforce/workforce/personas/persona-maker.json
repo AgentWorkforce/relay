@@ -1,0 +1,6 @@
+{
+  "id": "persona-maker",
+  "mount": {
+    "ignoredPatterns": ["node_modules", "target", "web", ".next", "dist", ".turbo", ".npm-cache"]
+  }
+}

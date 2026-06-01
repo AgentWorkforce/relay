@@ -12,14 +12,15 @@ import { BannerLink } from '../../../components/docs/BannerLink';
 import { CodeGroup } from '../../../components/docs/CodeGroup';
 import { DocsPageActions } from '../../../components/docs/DocsPageActions';
 import { HighlightedPre } from '../../../components/docs/HighlightedCode';
+import { LegacySpawnOptionsTable } from '../../../components/docs/LegacySpawnOptionsTable';
 import { Note } from '../../../components/docs/Note';
 import { Warning } from '../../../components/docs/Warning';
-import { SpawnOptionsTable } from '../../../components/docs/SpawnOptionsTable';
 import { TableOfContents } from '../../../components/docs/TableOfContents';
 import styles from '../../../components/docs/docs.module.css';
 import { getDoc } from '../../../lib/docs';
 import { getDocMarkdownUrl } from '../../../lib/docs-markdown';
-import { getAllDocSlugs } from '../../../lib/docs-nav';
+import { getAllDocSlugs, getAllLegacyDocSlugs } from '../../../lib/docs-nav';
+import { getDefaultDocsVersionForSlug } from '../../../lib/docs-versions';
 import { absoluteUrl } from '../../../lib/site';
 
 function slugify(text: string): string {
@@ -50,7 +51,7 @@ const components = {
   BannerLink,
   Note,
   Warning,
-  SpawnOptionsTable,
+  SpawnOptionsTable: LegacySpawnOptionsTable,
   pre: HighlightedPre,
   h2: HeadingWithId(2),
   h3: HeadingWithId(3),
@@ -61,12 +62,13 @@ type PageProps = {
 };
 
 export async function generateStaticParams() {
-  return getAllDocSlugs().map((slug) => ({ slug }));
+  return [...new Set([...getAllLegacyDocSlugs(), ...getAllDocSlugs()])].map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const doc = getDoc(slug);
+  const version = getDefaultDocsVersionForSlug(slug);
+  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
 
   if (!doc) {
     return { title: 'Not Found' };
@@ -89,7 +91,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function DocsPage({ params }: PageProps) {
   const { slug } = await params;
-  const doc = getDoc(slug);
+  const version = getDefaultDocsVersionForSlug(slug);
+  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
 
   if (!doc) {
     notFound();
@@ -105,6 +108,7 @@ export default async function DocsPage({ params }: PageProps) {
   const pageUrl = absoluteUrl(`/docs/${slug}`);
   const markdownPath = `/docs/markdown/${slug}.md`;
   const markdownUrl = getDocMarkdownUrl(slug);
+  const showPageActions = version === 'v8';
 
   return (
     <div className={styles.articleWrapper}>
@@ -113,12 +117,14 @@ export default async function DocsPage({ params }: PageProps) {
           <div className={styles.articleHeading}>
             <h1>{doc.frontmatter.title}</h1>
           </div>
-          <DocsPageActions
-            title={doc.frontmatter.title}
-            pageUrl={pageUrl}
-            markdownPath={markdownPath}
-            markdownUrl={markdownUrl}
-          />
+          {showPageActions && (
+            <DocsPageActions
+              title={doc.frontmatter.title}
+              pageUrl={pageUrl}
+              markdownPath={markdownPath}
+              markdownUrl={markdownUrl}
+            />
+          )}
         </div>
         {doc.frontmatter.description && (
           <p className={styles.articleDescription}>{doc.frontmatter.description}</p>

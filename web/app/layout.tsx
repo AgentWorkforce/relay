@@ -30,7 +30,7 @@ export const metadata: Metadata = {
     template: '%s | Agent Relay',
   },
   description:
-    'Build AI systems where agents communicate, share context, and coordinate work through channels, messages, files, and workflows.',
+    'Add channels, DMs, durable delivery, event listeners, and Zod-typed actions to any agent runtime.',
   keywords: [
     'Agent Relay',
     'multi-agent',
@@ -38,7 +38,9 @@ export const metadata: Metadata = {
     'MCP',
     'AI SDK',
     'agent relay',
-    'slack for agents',
+    'headless slack for agents',
+    'agent actions',
+    'agent delivery',
   ],
   robots: {
     index: true,
@@ -56,22 +58,6 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
   },
 };
-
-const themeScript = `
-  (function () {
-    try {
-      var key = 'agentrelay-theme';
-      var stored = localStorage.getItem(key);
-      if (stored === 'dark' || stored === 'light') {
-        document.documentElement.dataset.theme = stored;
-        document.documentElement.style.colorScheme = stored;
-      } else {
-        document.documentElement.dataset.theme = 'dark';
-        document.documentElement.style.colorScheme = 'dark';
-      }
-    } catch (error) {}
-  })();
-`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -93,10 +79,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   );
 
   return (
-    <html lang="en" data-theme="dark" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-      </head>
+    <html lang="en" data-theme="dark">
       <body className={`${inter.variable} ${geistMono.variable} ${sora.variable}`} suppressHydrationWarning>
         {content}
       </body>

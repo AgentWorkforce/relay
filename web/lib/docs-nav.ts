@@ -10,6 +10,70 @@ export interface NavGroup {
 
 export const docsNav: NavGroup[] = [
   {
+    title: 'Start',
+    items: [
+      { title: 'Introduction', slug: 'introduction' },
+      { title: 'Quickstart', slug: 'quickstart' },
+      { title: 'Workspaces', slug: 'workspaces' },
+    ],
+  },
+  {
+    title: 'Messaging',
+    items: [
+      { title: 'Overview', slug: 'messaging' },
+      { title: 'Sending messages', slug: 'sending-messages' },
+      { title: 'Channels', slug: 'channels' },
+      { title: 'DMs and group DMs', slug: 'dms' },
+      { title: 'Threads', slug: 'threads' },
+      { title: 'Emoji reactions', slug: 'emoji-reactions' },
+    ],
+  },
+  {
+    title: 'Automation',
+    items: [
+      { title: 'Actions', slug: 'actions' },
+      { title: 'Event handlers', slug: 'event-handlers' },
+      { title: 'Webhooks', slug: 'webhooks' },
+    ],
+  },
+  {
+    title: 'Delivery and sessions',
+    items: [
+      { title: 'Delivery', slug: 'delivery' },
+      { title: 'Harnesses', slug: 'harnesses' },
+      { title: 'Session capabilities', slug: 'session-capabilities' },
+      { title: 'Harness driver package', slug: 'harness-driver' },
+    ],
+  },
+  {
+    title: 'Interfaces',
+    items: [
+      { title: 'TypeScript SDK', slug: 'typescript-sdk' },
+      { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
+      { title: 'OpenClaw adapter', slug: 'reference-openclaw' },
+    ],
+  },
+  {
+    title: 'CLI',
+    items: [
+      { title: 'CLI', slug: 'cli-overview' },
+      { title: 'CLI messaging', slug: 'cli-messaging' },
+      { title: 'Agent management', slug: 'cli-agent-management' },
+      { title: 'Broker lifecycle', slug: 'cli-broker-lifecycle' },
+      { title: 'CLI reference', slug: 'reference-cli' },
+    ],
+  },
+  {
+    title: 'Reference',
+    items: [{ title: 'Migration to version 8', slug: 'migration' }],
+  },
+];
+
+/** All doc slugs for static generation + search. */
+export const currentDocsSlugs = docsNav.flatMap((group) => group.items.map((item) => item.slug));
+
+export const legacyDocsNav: NavGroup[] = [
+  {
     title: 'Getting Started',
     items: [
       { title: 'Introduction', slug: 'introduction' },
@@ -81,10 +145,7 @@ export const docsNav: NavGroup[] = [
   },
 ];
 
-/** All doc slugs including hidden pages (for static generation + search) */
-const ALL_SLUGS = [
-  ...docsNav.flatMap((group) => group.items.map((item) => item.slug)),
-  // Hidden from nav but still routable
+const LEGACY_HIDDEN_SLUGS = [
   'communicate',
   'communicate-ai-sdk',
   'communicate-claude-sdk',
@@ -100,7 +161,17 @@ const ALL_SLUGS = [
   'reference-openclaw',
 ];
 
+export const legacyDocsSlugs = [
+  ...legacyDocsNav.flatMap((group) => group.items.map((item) => item.slug)),
+  ...LEGACY_HIDDEN_SLUGS,
+];
+
 /** Flat list of all doc slugs for static generation */
 export function getAllDocSlugs(): string[] {
-  return [...new Set(ALL_SLUGS)];
+  return [...new Set(currentDocsSlugs)];
+}
+
+/** Flat list of all version 7.1.1 doc slugs for static generation */
+export function getAllLegacyDocSlugs(): string[] {
+  return [...new Set(legacyDocsSlugs)];
 }

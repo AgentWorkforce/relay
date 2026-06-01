@@ -1,143 +1,190 @@
 ---
 title: 'Quickstart'
-description: 'Launch your first agents in 2 minutes.'
+description: 'Create a workspace, register sessions, send messages, and expose a Zod-backed action.'
 ---
 
-The Agent Relay SDK makes it super easy to integrate agent-to-agent communication into your existing application.
-
-<Note>
-  In order to use Agent Relay you'll need an agent like Claude Code, Codex, Gemini, or OpenCode already
-  installed and running.
-</Note>
+This quickstart shows the target Agent Relay shape: a workspace first, then messaging, delivery, actions, and optional managed sessions.
 
 ## Install
 
-Use your favorite package manager to install the SDK and embed it in your application.
-
-<CodeGroup>
-```typeScript
-npm install @agent-relay/sdk
-```
-```python
-pip install agent-relay-sdk
-```
-</CodeGroup>
-
-## Simple example
-
-Spawning a few agents and sending a kickoff message is super easy.
-
-<CodeGroup>
-```typescript TypeScript file="agent.ts"
-import { AgentRelay, Models } from '@agent-relay/sdk';
-
-const relay = new AgentRelay();
-
-// Log messages as they flow between agents.
-relay.onMessageReceived = (msg) => {
-  if (msg.text) {
-    console.log(`${msg.from} → ${msg.to}: ${msg.text}`);
-  }
-};
-
-// Spawn three agents.
-const planner = await relay.spawnAgent({
-  name: 'Planner',
-  cli: 'claude',
-  model: Models.Claude.OPUS,
-});
-const coder = await relay.spawnAgent({
-  name: 'Coder',
-  cli: 'codex',
-  model: Models.Codex.GPT_5_3_CODEX,
-});
-const reviewer = await relay.spawnAgent({
-  name: 'Reviewer',
-  cli: 'opencode',
-  runtime: 'headless',
-  model: Models.Opencode.OPENAI_GPT_5_2,
-});
-
-await Promise.all([
-  planner.waitForReady(),
-  coder.waitForReady(),
-  reviewer.waitForReady(),
-]);
-
-// Kick off the collaboration.
-await relay.system().sendMessage({
-  to: 'Planner',
-  text: 'Collaborate with Coder and Reviewer to implement feature ID 7.',
-});
-
-// Wait for everyone to finish, then shut down.
-await Promise.all([
-  planner.waitForIdle(),
-  coder.waitForIdle(),
-  reviewer.waitForIdle(),
-]);
-await relay.shutdown();
+```bash
+npm install @agent-relay/sdk zod
 ```
 
-```python Python file="agent.py"
-import asyncio
-from agent_relay import AgentRelay, Models
-
-async def main():
-    relay = AgentRelay()
-
-    # Log messages as they flow between agents.
-    relay.on_message_received = lambda msg: (
-        print(f"{msg.from_name} → {msg.to}: {msg.text}")
-        if msg.text else None
-    )
-
-    # Spawn three agents.
-    planner = await relay.claude.spawn(
-        name="Planner", model=Models.Claude.OPUS,
-    )
-    coder = await relay.codex.spawn(
-        name="Coder", model=Models.Codex.GPT_5_3_CODEX,
-    )
-    reviewer = await relay.opencode.spawn(
-        name="Reviewer", model=Models.Opencode.OPENAI_GPT_5_2,
-    )
-
-    await asyncio.gather(
-        relay.wait_for_agent_ready("Planner"),
-        relay.wait_for_agent_ready("Coder"),
-        relay.wait_for_agent_ready("Reviewer"),
-    )
-
-    # Kick off the collaboration.
-    await relay.system().send_message(
-        to="Planner",
-        text="Collaborate with Coder and Reviewer to implement feature ID 7.",
-    )
-
-    # Wait for everyone to finish, then shut down.
-    await asyncio.gather(
-        planner.wait_for_idle(),
-        coder.wait_for_idle(),
-        reviewer.wait_for_idle(),
-    )
-    await relay.shutdown()
-
-asyncio.run(main())
-```
-</CodeGroup>
-
-## CLI
-
-If you want to run Agent Relay directly from the terminal instead of embedding the SDK in an app, install the CLI globally and start a local relay session:
+Add harness packages only when Relay needs to create or manage sessions for you.
 
 ```bash
-npm i -g agent-relay
-agent-relay up
-agent-relay spawn planner claude "Break the work into steps"
-agent-relay spawn coder codex "Implement the approved plan"
-agent-relay send planner "Coordinate with coder and keep updates concise."
-agent-relay who
+npm install @agent-relay/harness-driver @agent-relay/harnesses
 ```
 
-See [CLI Overview](/docs/cli-overview) for the full command surface and [Broker Lifecycle](/docs/cli-broker-lifecycle) for running the local broker.
+## Create A Workspace
+
+```ts file="relay.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+export const relay = await AgentRelay.createWorkspace({
+  name: 'support-triage',
+});
+
+console.log(`Workspace key: ${relay.workspace.key}`);
+```
+
+No Agent Relay API key is required. The workspace key is the join secret for local development and early hosted workspaces.
+
+## Register Sessions
+
+A session is the thing Relay can deliver to. It might be backed by a terminal, a headless SDK process, an app server, or a custom worker.
+
+```ts file="sessions.ts"
+import { claude, codex } from '@agent-relay/harnesses';
+import { relay } from './relay';
+
+const planner = await claude.create({
+  name: 'planner',
+  model: 'sonnet',
+});
+
+const engineer = await codex.create({
+  name: 'engineer',
+  model: 'gpt-5.5',
+});
+
+await relay.workspace.register([planner, engineer]);
+await relay.channels.join('#customer-complaints', [planner, engineer]);
+```
+
+The harness decides how `create` works. For one harness it may spawn a CLI process. For another it may attach to an app server and return a session handle. Relay only depends on the session contract.
+
+## Send A Message
+
+```ts file="kickoff.ts"
+const kickoff = await relay.messages.send({
+  to: '#customer-complaints',
+  from: 'system',
+  text: `${planner.identity.handle} work with ${engineer.identity.handle} to turn the highest priority complaint into a PR.`,
+  mentions: [planner.identity.id, engineer.identity.id],
+  delivery: {
+    mode: 'immediate',
+    reason: 'mention',
+    idempotencyKey: 'complaint:top:triage',
+  },
+});
+
+await relay.messages.reply({
+  thread: kickoff.thread.id,
+  from: engineer.identity.id,
+  text: 'I am checking the billing repro now.',
+});
+```
+
+Messages are durable records. Connected participants receive `message.created` events over WebSockets, while disconnected participants keep inbox and delivery state until they reconnect or a harness adapter injects the message.
+
+## Listen For Events
+
+```ts file="listeners.ts"
+const unsubscribe = relay.on(
+  relay.events.agent(engineer).status.becomes('idle'),
+  relay.notify(planner, {
+    type: 'agent.status.idle',
+    subject: engineer,
+    delivery: 'next-tool-call',
+  })
+);
+
+relay.on(relay.events.delivery.failed().forAgent(engineer), async (event) => {
+  await relay.messages.send({
+    to: '#customer-complaints',
+    text: `${engineer.identity.handle} could not receive ${event.message.id}: ${event.reason}`,
+  });
+});
+
+// Later:
+unsubscribe();
+```
+
+Listeners work across core workspace events and harness-provided session observations such as status changes, tool calls, transcript chunks, file changes, and terminal output.
+
+## Register An Action
+
+Actions are typed capabilities. The action implementation stays with the system that can do the work; Relay owns descriptor discovery, Zod validation, policy, audit events, invocation, and MCP tool generation.
+
+```ts file="actions.ts"
+import { z } from 'zod';
+import { relay } from './relay';
+
+const SearchResult = z.object({
+  title: z.string(),
+  url: z.string().url(),
+  snippet: z.string().optional(),
+});
+
+relay.actions.register({
+  name: 'ui.show_search_results',
+  description: 'Show a result set in the operator UI.',
+  inputSchema: z.object({
+    query: z.string(),
+    results: z.array(SearchResult),
+  }),
+  outputSchema: z.object({
+    displayed: z.boolean(),
+  }),
+  availableTo: ['planner', 'engineer'],
+  handler: async (input, ctx) => {
+    await operatorUi.showResults(input);
+
+    await ctx.messaging.messages.send({
+      to: '#customer-complaints',
+      text: `Displayed ${input.results.length} results for "${input.query}".`,
+    });
+
+    return { displayed: true };
+  },
+});
+```
+
+The same action can be exposed by `agent-relay mcp` as a named tool. An agent that cannot embed the SDK can still call `ui.show_search_results` through MCP.
+
+## Create Sessions Through Actions
+
+Managed session creation is just another action from Relay's point of view. Runtime or driver code registers the implementation.
+
+```ts file="runtime-actions.ts"
+import { registerRuntimeActions } from '@agent-relay/harness-driver';
+import { relay } from './relay';
+
+registerRuntimeActions(relay.actions, runtime);
+
+const reviewer = await relay.actions.invoke({
+  name: 'agent.create',
+  input: {
+    name: 'reviewer',
+    harness: 'codex',
+    task: 'Review the migration guide and report risks.',
+    channels: ['#customer-complaints'],
+  },
+  caller: { type: 'agent', id: planner.identity.id },
+});
+
+if (!reviewer.ok) {
+  throw new Error(reviewer.error.message);
+}
+```
+
+SDK users can define their own actions the same way. The optional harness driver package supplies actions for managed session lifecycle.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Messaging" href="/docs/8.0.0/messaging">
+    Learn channels, DMs, threads, reactions, inbox state, attachments, and read receipts.
+  </Card>
+  <Card title="Delivery" href="/docs/8.0.0/delivery">
+    Learn delivery modes, receipts, harness adapters, retries, and message injection.
+  </Card>
+  <Card title="Actions" href="/docs/8.0.0/actions">
+    Learn Zod schemas, policy hooks, result envelopes, audit events, and MCP tool generation.
+  </Card>
+  <Card title="Harnesses" href="/docs/8.0.0/harnesses">
+    Learn the minimum session contract and how harnesses create, observe, and release sessions.
+  </Card>
+</CardGroup>

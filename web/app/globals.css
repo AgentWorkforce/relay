@@ -7,10 +7,6 @@ html {
   transition: background 0.3s ease;
 }
 
-html[data-theme='light'] {
-  color-scheme: light;
-}
-
 html[data-theme='dark'] {
   color-scheme: dark;
 }

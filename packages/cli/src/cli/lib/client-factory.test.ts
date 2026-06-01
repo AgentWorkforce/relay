@@ -9,9 +9,9 @@ const mockConnectedClient = {
   spawnPty: vi.fn(async () => undefined),
 };
 
-vi.mock('@agent-relay/sdk', () => {
+vi.mock('@agent-relay/harness-driver', () => {
   return {
-    AgentRelayClient: {
+    HarnessDriverClient: {
       spawn: (...args: unknown[]) => {
         spawnSpy(...args);
         return Promise.resolve(mockSpawnedClient);
@@ -24,7 +24,7 @@ vi.mock('@agent-relay/sdk', () => {
   };
 });
 
-import { createAgentRelayClient, spawnAgentWithClient } from './client-factory.js';
+import { createRuntimeClient, spawnAgentWithClient } from './client-factory.js';
 
 describe('client-factory', () => {
   beforeEach(() => {
@@ -35,10 +35,10 @@ describe('client-factory', () => {
     delete process.env.AGENT_RELAY_BIN;
   });
 
-  it('builds AgentRelayClient with defaults', async () => {
+  it('builds HarnessDriverClient with defaults', async () => {
     process.env.AGENT_RELAY_BIN = '/tmp/agent-relay-broker';
 
-    await createAgentRelayClient({ cwd: '/tmp/project' });
+    await createRuntimeClient({ cwd: '/tmp/project' });
 
     expect(spawnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -50,8 +50,8 @@ describe('client-factory', () => {
     expect(connectSpy).not.toHaveBeenCalled();
   });
 
-  it('builds AgentRelayClient with explicit options', async () => {
-    await createAgentRelayClient({
+  it('builds HarnessDriverClient with explicit options', async () => {
+    await createRuntimeClient({
       cwd: '/tmp/project',
       channels: ['ops'],
       binaryPath: '/custom/broker',
@@ -70,7 +70,7 @@ describe('client-factory', () => {
   });
 
   it('prefers connecting to an existing broker when requested', async () => {
-    const client = await createAgentRelayClient({
+    const client = await createRuntimeClient({
       cwd: '/tmp/project',
       preferConnect: true,
     });

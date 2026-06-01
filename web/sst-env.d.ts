@@ -6,17 +6,12 @@
 
 declare module 'sst' {
   export interface Resource {
-    Waitlist: {
-      name: string;
-      type: 'sst.aws.Dynamo';
-    };
     Web: {
       type: 'sst.aws.Nextjs';
       url: string;
     };
   }
 }
-/// <reference path="sst-env.d.ts" />
 
 import 'sst';
 export {};

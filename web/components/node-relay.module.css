@@ -4,6 +4,7 @@
   height: 100%;
   min-height: 420px;
   background: transparent;
+  overflow: hidden;
 }
 
 .canvas {
@@ -14,7 +15,7 @@
 }
 
 /* ══════════════════════════════════════
-   Terminal Card — Light mode (default)
+   Terminal Card
    ══════════════════════════════════════ */
 
 .card {

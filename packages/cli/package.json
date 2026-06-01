@@ -7,7 +7,6 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "scripts/postinstall.js",
     "scripts/build-cjs.mjs",
     "LICENSE",
     "README.md"
@@ -29,10 +28,7 @@
     "agent-relay": "dist/cli/index.js",
     "relay": "dist/cli/index.js"
   },
-  "bundledDependencies": [
-    "@relaycast/sdk",
-    "@relayfile/local-mount"
-  ],
+  "bundledDependencies": [],
   "publishConfig": {
     "access": "public"
   },
@@ -40,35 +36,24 @@
     "build": "tsc && npm run postbuild",
     "postbuild": "chmod +x dist/cli/bootstrap.js dist/cli/index.js && npm run build:cjs",
     "build:cjs": "node ./scripts/build-cjs.mjs",
-    "postinstall": "node scripts/postinstall.js",
-    "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build; else echo '⚠ node_modules not found, skipping prepack build'; fi && node scripts/prepack-materialize-workspaces.mjs && node scripts/verify-bundled-deps.mjs",
-    "prepublishOnly": "node scripts/verify-bundled-deps.mjs",
+    "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
     "start": "node dist/cli/index.js",
     "lint": "eslint src --ext .ts",
-    "audit:deps": "node scripts/audit-bundled-deps.mjs",
-    "pack:validate": "node scripts/validate-npm-tarball.mjs"
+    "audit:deps": "echo 'No bundled dependency audit is required for the simplified CLI package.'",
+    "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
     "@agent-relay/cloud": "7.1.1",
     "@agent-relay/config": "7.1.1",
+    "@agent-relay/harness-driver": "7.1.1",
     "@agent-relay/sdk": "7.1.1",
     "@agent-relay/telemetry": "7.1.1",
     "@agent-relay/utils": "7.1.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relayauth/core": "^0.1.2",
-    "@relaycast/sdk": "^1.1.0",
-    "@relayfile/local-mount": "^0.2.2",
-    "@relayfile/sdk": "^0.6.0",
-    "@slack/web-api": "^7.16.0",
-    "agent-trajectories": "^0.6.0",
+    "@relaycast/sdk": "^2.1.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "esbuild": "^0.27.2",
-    "ignore": "^7.0.5",
-    "ssh2": "^1.17.0",
-    "tar": "^7.5.10",
-    "ws": "^8.18.3",
-    "yaml": "^2.7.0",
     "zod": "^3.23.8"
   },
   "engines": {

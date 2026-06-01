@@ -2,7 +2,6 @@ import Link from 'next/link';
 
 import { SITE_EMAIL } from '../lib/site';
 import { LogoIcon, LogoWordmark } from './SiteNav';
-import { ThemeToggle } from './ThemeToggle';
 import s from './site-footer.module.css';
 
 export function SiteFooter() {
@@ -14,44 +13,109 @@ export function SiteFooter() {
             <LogoIcon />
             <LogoWordmark />
           </Link>
-          <p className={s.tagline}>The future is multi-agent. Build it with Relay.</p>
+          <p className={s.tagline}>The future is multi-agent.</p>
         </div>
 
         <div className={s.columns}>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Resources</h4>
+            <h4 className={s.colTitle}>Projects</h4>
+            <a
+              href="https://github.com/AgentWorkforce/relayfile"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Relayfile
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/relayauth"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Relayauth
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/trajectories"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Trajectories
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/burn"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Burn
+            </a>
+            <a
+              href="https://github.com/AgentWorkforce/relayflows"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Relayflows
+            </a>
+            <a
+              href="https://proactiveagents.dev"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Proactive Agents
+            </a>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>Documentation</h4>
             <Link href="/docs/introduction" className={s.link}>
-              Getting Started
+              Introduction
             </Link>
-            <Link href="/docs/spawning-an-agent" className={s.link}>
-              Basics
+            <Link href="/docs/quickstart" className={s.link}>
+              Quickstart
             </Link>
-            <Link href="/docs/cloud" className={s.link}>
-              Advanced
+            <Link href="/docs/messaging" className={s.link}>
+              Messaging
+            </Link>
+            <Link href="/docs/delivery" className={s.link}>
+              Delivery
+            </Link>
+            <Link href="/docs/actions" className={s.link}>
+              Actions
             </Link>
             <Link href="/docs/cli-overview" className={s.link}>
               CLI
             </Link>
             <Link href="/docs/typescript-sdk" className={s.link}>
-              SDKs
-            </Link>
-            <Link href="/docs/plugin-claude-code" className={s.link}>
-              Plugins
-            </Link>
-            <Link href="/docs/typescript-examples" className={s.link}>
-              Examples
+              TypeScript SDK
             </Link>
           </div>
           <div className={s.col}>
-            <h4 className={s.colTitle}>Company</h4>
-            <Link href="/cloud" className={s.link}>
-              Cloud
+            <h4 className={s.colTitle}>Resources</h4>
+            <Link href="/docs/agent-relay-mcp" className={s.link}>
+              Agent Relay MCP
             </Link>
             <Link href="/blog" className={s.link}>
               Blog
             </Link>
             <Link href="/brand" className={s.link}>
               Brand
+            </Link>
+          </div>
+          <div className={s.col}>
+            <h4 className={s.colTitle}>Company</h4>
+            <a
+              href="https://github.com/agentworkforce/relay"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              GitHub
+            </a>
+            <Link href="/telemetry" className={s.link}>
+              Telemetry
             </Link>
             <Link href="/privacy" className={s.link}>
               Privacy
@@ -68,9 +132,6 @@ export function SiteFooter() {
 
       <div className={s.bottom}>
         <div className={s.bottomMeta}>
-          <div className={s.footerToggle}>
-            <ThemeToggle />
-          </div>
           <p className={s.copy}>&copy; {new Date().getFullYear()} Agent Relay. All rights reserved.</p>
         </div>
         <div className={s.socials}>

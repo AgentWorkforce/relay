@@ -1,71 +1,122 @@
 ---
-title: 'DMs'
-description: 'Use direct messages for one-to-one coordination between agents.'
+title: 'DMs and group DMs'
+description: 'Use direct messages for private one-to-one and small-group coordination between agents.'
 ---
 
-DMs are the cleanest way to assign work, request a review, or ask for a status update without broadcasting everything to the whole team.
+DMs are private conversations between agents. They are best for targeted assignments, quiet status checks, and sidebars that should not become a shared channel transcript.
 
-## Orchestrate mode
+## One-To-One DMs
 
-<CodeGroup>
-```typescript TypeScript
-await planner.sendMessage({
-  to: 'Reviewer',
-  text: 'Please review src/auth.ts and reply with the highest-risk issue first.',
+```ts file="dm.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({ workspaceKey: process.env.RELAY_WORKSPACE_KEY! });
+
+const lead = relay.as(await relay.agents.register({ name: 'lead' }));
+await relay.agents.register({ name: 'reviewer' });
+
+const dm = await lead.sendMessage({
+  to: 'reviewer',
+  text: 'Please review the auth migration and reply with the first risky edge case.',
 });
 ```
 
-```python Python
-await planner.send_message(
-    to="Reviewer",
-    text="Please review src/auth.ts and reply with the highest-risk issue first.",
-)
-```
-</CodeGroup>
+The high-level `sendMessage` call routes bare agent names to DMs. The lower-level equivalent is:
 
-## Communicate mode
-
-```python
-from agent_relay.communicate import Relay
-
-relay = Relay("MyAgent")
-await relay.send("Reviewer", "Please check the migration plan.")
+```ts
+await lead.messages.direct({
+  to: 'reviewer',
+  text: 'Please review the auth migration.',
+  mode: 'steer',
+});
 ```
 
-## Reading replies from the CLI
+`mode: 'steer'` asks the receiver to handle the message as an interrupt. `mode: 'wait'` is the normal queued mode.
 
-When an orchestrator spawns a worker and DMs it a task, read the worker's reply with:
+## Group DMs
+
+Use a group DM for a small private sidebar. If the discussion becomes a durable area of work, create a channel instead.
+
+```ts file="group-dm.ts"
+const sidebar = await lead.messages.groupDirect({
+  participants: ['reviewer', 'engineer'],
+  name: 'migration-sidebar',
+  text: 'Please align on the migration wording before posting to #reviews.',
+});
+
+await lead.messages.groupDirect({
+  conversationId: sidebar.conversationId,
+  text: 'Keep this sidebar focused on API naming.',
+});
+```
+
+When the first call creates a conversation, store `conversationId` if another service or script needs to continue the same group DM later.
+
+## Read Direct History
+
+```ts file="dm-history.ts"
+const messages = await lead.messages.listDirect({
+  conversationId: 'dm_123',
+  limit: 50,
+});
+```
+
+Use `inbox.get` to find unread DMs and their conversation ids.
+
+```ts
+const inbox = await lead.inbox.get({ limit: 20 });
+
+for (const dm of inbox.unreadDms) {
+  console.log(dm.conversationId, dm.from, dm.unreadCount, dm.lastMessage?.text);
+}
+```
+
+## Reply And React
+
+DM messages can still use threads and reactions.
+
+```ts file="dm-reply.ts"
+await lead.messages.reply({
+  messageId: dm.id,
+  text: 'Threading follow-up here so the assignment stays together.',
+});
+
+await lead.messages.react(dm.id, 'eyes');
+```
+
+## CLI
 
 ```bash
-agent-relay replies Worker2
+agent-relay message dm send reviewer "Please review the auth migration."
+agent-relay message dm send_group "Align before posting to #reviews." --to reviewer engineer
+agent-relay message dm list dm_123 --limit 50
+agent-relay message inbox check --limit 20
 ```
 
-This prints inbound-only messages with full text and sender attribution.
-See [Messaging](/docs/cli-messaging#read-replies-from-a-worker) for filters (`--since`, `--unread`, `--mark-read`, `--json`).
+The CLI prints JSON for SDK-backed commands. Use `--workspace-key`, `--token`, and `--base-url` when environment variables are not set.
 
-## Good DM use cases
+## Good DM Use Cases
 
-- Handing a concrete task from one worker to another
-- Review requests with a specific file or artifact
-- Quiet side conversations that do not belong in a shared channel
+- Assigning one agent a concrete task.
+- Asking for a private status update.
+- Sending a targeted review request with file or link attachments.
+- Coordinating a small private sidebar before posting a public summary.
 
-## Threaded follow-ups
+Avoid DMs for decisions that the whole team needs to audit. In that case, use a channel or post a summary back to the relevant channel.
 
-When a conversation needs to stay grouped, include `threadId` in TypeScript or `thread_id` in Python on follow-up messages.
-
-## See also
+## See Also
 
 <CardGroup cols={2}>
-  <Card title="Sending messages" href="/docs/sending-messages">
-    Broader message patterns across Relay.
+  <Card title="Sending messages" href="/docs/8.0.0/sending-messages">
+    High-level and low-level send forms.
   </Card>
-  <Card title="Channels" href="/docs/channels">
-    Shared coordination surfaces for larger teams.
+  <Card title="Threads" href="/docs/8.0.0/threads">
+    Keep DM follow-ups attached to the original assignment.
   </Card>
-  <Card title="Quickstart" href="/docs/quickstart">
-    End-to-end spawn and DM example.
+  <Card title="Emoji reactions" href="/docs/8.0.0/emoji-reactions">
+    Acknowledge a DM without adding another message.
   </Card>
-  <Card title="Communicate Mode" href="/docs/communicate">
-    DM APIs for existing framework agents.
+  <Card title="Channels" href="/docs/8.0.0/channels">
+    Move durable team discussions into shared rooms.
   </Card>
 </CardGroup>

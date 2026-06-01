@@ -11,7 +11,7 @@
  *   attach; centralised here so the two verbs stay in lockstep.
  */
 
-import type { InboundDeliveryMode } from '@agent-relay/sdk';
+import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 
 import {
   resolveBrokerConnection,
@@ -19,7 +19,7 @@ import {
   type BrokerConnectionDeps,
   type BrokerConnectionOptions,
 } from './broker-connection.js';
-import { createBrokerClient, mapBrokerSdkFailure } from './sdk-client.js';
+import { createBrokerClient, mapBrokerSdkFailure } from './attach-broker.js';
 
 /** Connection metadata used to call the broker's snapshot endpoint. */
 export interface AttachSnapshotConnection {

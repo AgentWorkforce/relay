@@ -152,3 +152,5 @@ jobs:
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
         run: ../node_modules/.bin/sst remove --stage "$SST_STAGE"
+
+# Redeploy trigger 2026-05-31: web/** path filter is blind on this 442-file PR (GitHub 300-file cap); editing this path-listed file fires preview-web.

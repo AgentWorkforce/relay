@@ -1,0 +1,113 @@
+---
+title: 'Broker lifecycle'
+description: 'Start, inspect, and stop the local broker that powers agent-relay CLI sessions.'
+---
+
+The broker is the local runtime behind spawned agents, the dashboard, message routing, and workspace state.
+
+## Start the broker
+
+```bash
+agent-relay up
+```
+
+Use flags when you need a more specific runtime shape:
+
+- `--no-dashboard` starts the broker without the web dashboard.
+- `--no-spawn` starts the broker without auto-spawning agents from config.
+- `--spawn` forces auto-spawn even when a config would normally skip it.
+- `--background` detaches the broker and leaves it running.
+- `--workspace-key <key>` joins a pre-existing Relaycast workspace.
+- `--state-dir <path>` moves broker state out of the default `.agent-relay/` directory.
+- `--broker-name <name>` overrides the broker identity instead of using the project directory name.
+
+## Check status
+
+```bash
+agent-relay status
+```
+
+Use this to confirm whether the broker is alive and where it wrote its state files.
+
+## Stop the broker
+
+```bash
+agent-relay down
+```
+
+Useful flags:
+
+- `--timeout <ms>` changes how long the CLI waits for graceful shutdown.
+- `--force` cleans up stuck runtime state aggressively.
+- `--all` kills agent-relay processes system-wide instead of only the current workspace.
+
+## Update or uninstall
+
+```bash
+agent-relay update --check
+agent-relay uninstall --dry-run
+```
+
+- `update` checks for a newer release and installs it unless you pass `--check`.
+- `uninstall` removes runtime files, config, and global binaries. Use `--dry-run` before destructive cleanup.
+
+## Broker diagnostic logs
+
+The broker writes its own tracing logs (separate from per-agent PTY output) to a platform-standard directory with daily rotation:
+
+| Platform | Path |
+| -------- | ---- |
+| macOS | `~/Library/Logs/agent-relay/{brokerId}.log.YYYY-MM-DD` |
+| Linux | `$XDG_STATE_HOME/agent-relay/logs/{brokerId}.log.YYYY-MM-DD` (defaults to `~/.local/state/agent-relay/logs/`) |
+| Windows | `%LOCALAPPDATA%\agent-relay\Logs\{brokerId}.log.YYYY-MM-DD` |
+
+`brokerId` is the broker's `--name` (or the working-directory basename when unnamed). Each day the appender rolls to a new file; the active file has no date suffix.
+
+### Destination — `AGENT_RELAY_BROKER_LOG`
+
+| Value | Behavior |
+| ----- | -------- |
+| unset, `file`, `1`, `true`, `yes`, `on` | (default) write to the rolling log file above |
+| `stderr`, `print` | write to the parent process's stderr instead of a file |
+| `off`, `none`, `0`, `false`, `no` | disable the tracing subscriber entirely |
+
+`RUST_LOG` still controls the level filter when logging is enabled (e.g. `RUST_LOG=agent_relay::worker::pty=debug`). It defaults to `info`.
+
+### Manage the log directory
+
+```bash
+agent-relay log path                      # print the log directory
+agent-relay log list [brokerId]           # list files with size and mtime
+agent-relay log view <brokerId> -n 200    # tail the most recent file
+agent-relay log rotate --keep-days 7      # delete rotated files older than 7 days
+agent-relay log rotate --broker-id myproj --dry-run
+agent-relay log clear --broker-id myproj  # wipe one broker's logs (including the active file)
+agent-relay log clear --force             # wipe every broker's logs
+```
+
+`log rotate` only removes rotated (dated) files — the active log file is never deleted because the broker is writing to it. Use `log clear` for a full reset.
+
+## Focused test harnesses
+
+```bash
+agent-relay start dashboard.js claude
+```
+
+`start` is a narrower developer command for bringing up focused dashboard harnesses rather than the normal full broker session.
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="CLI Overview" href="/docs/cli-overview">
+    Full map of the CLI surface area.
+  </Card>
+  <Card title="Agent management" href="/docs/cli-agent-management">
+    Spawn and control agents once the broker is running.
+  </Card>
+  <Card title="Messaging" href="/docs/cli-messaging">
+    Use the broker to route messages and inspect history.
+  </Card>
+  <Card title="Quickstart" href="/docs/quickstart">
+    SDK-first onboarding if you want to write code instead of operate the CLI.
+  </Card>
+</CardGroup>

@@ -7,9 +7,10 @@ use crate::{
     ids::{DeliveryId, EventId, MessageTarget, WorkspaceAlias, WorkspaceId},
     pty::PtySession,
     relaycast::{
-        agent_name_eq, is_self_name, map_ws_broker_command, map_ws_event,
-        resolve_dm_participants_cached, retry_agent_registration, DmParticipantsCache,
-        RegRetryOutcome, WsControl,
+        agent_name_eq, broker_payload_from_action, is_self_name, map_ws_event,
+        parse_ws_action_invoked, resolve_dm_participants_cached, retry_agent_registration,
+        CompleteInvocationRequest, DmParticipantsCache, RegRetryOutcome, RegisterActionRequest,
+        WsControl,
     },
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{BrokerCommandPayload, InboundKind, SenderKind},
@@ -27,7 +28,7 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::runtime::{
-    channels_from_csv, command_targets_self, connect_relay, ensure_runtime_paths, env_flag_enabled,
+    action_targets_self, channels_from_csv, connect_relay, ensure_runtime_paths, env_flag_enabled,
     extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,
     RelaySessionOptions, RelayWorkspace,
 };
@@ -552,6 +553,65 @@ mod opencode_perm_tests {
     }
 }
 
+/// Register this broker's `spawn`/`release` actions for a workspace.
+///
+/// Best-effort: a registration failure is logged but never blocks startup, and
+/// re-registering an existing action is idempotent on the relaycast side.
+async fn register_broker_actions(workspace: &RelayWorkspace) {
+    let handler = workspace.self_name.clone();
+    let specs = [
+        (
+            "spawn",
+            "Spawn a child agent in this broker's runtime.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["name", "cli"],
+                "properties": {
+                    "name": { "type": "string", "description": "Worker agent name" },
+                    "cli": { "type": "string", "description": "CLI/harness to launch" },
+                    "args": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+        ),
+        (
+            "release",
+            "Release a child agent spawned by this broker.",
+            serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string", "description": "Worker agent name" }
+                }
+            }),
+        ),
+    ];
+
+    for (name, description, schema) in specs {
+        let request = RegisterActionRequest {
+            name: name.to_string(),
+            description: description.to_string(),
+            handler_agent: handler.clone(),
+            input_schema: schema.as_object().cloned(),
+            output_schema: None,
+            available_to: None,
+        };
+        match workspace.http_client.register_action(request).await {
+            Ok(definition) => tracing::info!(
+                action = %name,
+                handler = %handler,
+                id = %definition.id,
+                "registered broker action"
+            ),
+            Err(error) => tracing::warn!(
+                action = %name,
+                handler = %handler,
+                error = %error,
+                "failed to register broker action"
+            ),
+        }
+    }
+}
+
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
@@ -622,6 +682,11 @@ pub(crate) async fn run_wrap(
             ws
         })
         .collect();
+    // Register spawn/release as relaycast actions so other agents can invoke
+    // them as structured agent-to-agent RPC routed to this broker.
+    for workspace in &workspaces {
+        register_broker_actions(workspace).await;
+    }
     let workspace_lookup: std::collections::HashMap<WorkspaceId, RelayWorkspace> = workspaces
         .iter()
         .cloned()
@@ -927,121 +992,167 @@ pub(crate) async fn run_wrap(
                     let workspace_self_agent_ids = workspace_state.self_agent_ids.clone();
                     let workspace_child_api_key = workspace_state.relay_workspace_key.clone();
                     let workspace_child_http = workspace_state.http_client.clone();
-                    // Check for command.invoked event first (spawn/release)
-                    if let Some(cmd_event) = map_ws_broker_command(
-                        &ws_value,
-                        &workspace_id,
-                        workspace_alias.as_deref(),
-                    ) {
-                        if !command_targets_self(&cmd_event, &workspace_self_agent_id) {
+                    // Check for action.invoked event first (spawn/release).
+                    // Relaycast 2.x routes these as agent-to-agent actions: the
+                    // event identifies the invocation, the input is read back via
+                    // get_action_invocation, and the outcome is reported with
+                    // complete_action_invocation.
+                    if let Some(action_ref) = parse_ws_action_invoked(&ws_value) {
+                        if !action_targets_self(
+                            &action_ref.action,
+                            &action_ref.invoked_by,
+                            action_ref.handler_agent_id.as_deref(),
+                            &workspace_self_agent_id,
+                        ) {
                             tracing::debug!(
-                                command = %cmd_event.command,
-                                handler_agent_id = ?cmd_event.handler_agent_id,
+                                action = %action_ref.action,
+                                handler_agent_id = ?action_ref.handler_agent_id,
                                 self_agent_id = %workspace_self_agent_id,
-                                "ignoring command event for a different handler"
+                                "ignoring action event for a different handler"
                             );
                             continue;
                         }
-                        match cmd_event.payload {
+
+                        // The action.invoked event omits the input payload; read
+                        // it back before executing.
+                        let invocation = match workspace_child_http
+                            .get_action_invocation(&action_ref.action, &action_ref.invocation_id)
+                            .await
+                        {
+                            Ok(invocation) => invocation,
+                            Err(error) => {
+                                tracing::error!(
+                                    action = %action_ref.action,
+                                    invocation_id = %action_ref.invocation_id,
+                                    error = %error,
+                                    "failed to read action invocation input"
+                                );
+                                continue;
+                            }
+                        };
+
+                        let payload = match broker_payload_from_action(
+                            &action_ref.action,
+                            invocation.input,
+                        ) {
+                            Some(payload) => payload,
+                            None => {
+                                tracing::warn!(
+                                    action = %action_ref.action,
+                                    "ignoring action with unrecognized name or input"
+                                );
+                                continue;
+                            }
+                        };
+
+                        // None on success; Some(message) records why the action failed.
+                        let mut completion_error: Option<String> = None;
+                        match payload {
                             BrokerCommandPayload::Spawn(ref params) => {
                                 if params.name.is_empty() || params.cli.is_empty() {
-                                    tracing::error!("spawn command missing name or cli");
-                                    continue;
-                                }
-                                let env_vars = spawn_env_vars(
-                                    &params.name,
-                                    &workspace_child_api_key,
-                                    &child_base_url,
-                                    &channels,
-                                    Some(&child_workspaces_json),
-                                    default_workspace_id.as_deref(),
-                                );
-                                // Pre-register the child agent so its MCP server
-                                // starts with a valid token (avoiding "Not registered"
-                                // errors when non-claude CLIs like codex try to use
-                                // relay tools before calling register() themselves).
-                                let child_token = match retry_agent_registration(
-                                    &workspace_child_http,
-                                    &params.name,
-                                    Some(&params.cli),
-                                ).await {
-                                    Ok(token) => Some(token),
-                                    Err(RegRetryOutcome::RetryableExhausted(e)) => {
-                                        tracing::warn!(
-                                            child = %params.name,
-                                            error = %e,
-                                            "pre-registration failed after retries, spawning without token"
-                                        );
-                                        None
-                                    }
-                                    Err(RegRetryOutcome::Fatal(e)) => {
-                                        tracing::warn!(
-                                            child = %params.name,
-                                            error = %e,
-                                            "pre-registration fatal error, spawning without token"
-                                        );
-                                        None
-                                    }
-                                };
-                                match spawner
-                                    .spawn_wrap_with_token(
+                                    tracing::error!("spawn action missing name or cli");
+                                    completion_error =
+                                        Some("spawn action missing name or cli".to_string());
+                                } else {
+                                    let env_vars = spawn_env_vars(
                                         &params.name,
-                                        &params.cli,
-                                        &params.args,
-                                        &env_vars,
-                                        Some(&cmd_event.invoked_by),
-                                        child_token.as_deref(),
-                                    )
-                                    .await
-                                {
-                                    Ok(pid) => {
-                                        agent_spawn_count += 1;
-                                        telemetry.track(TelemetryEvent::AgentSpawn {
-                                            cli: params.cli.clone(),
-                                            runtime: "pty".to_string(),
-                                            // The wrap path handles child spawns requested by a
-                                            // running agent through the broker command channel —
-                                            // always agent-originated here.
-                                            spawn_source: ActionSource::Agent,
-                                            has_task: false,
-                                            is_shadow: false,
-                                        });
-                                        tracing::info!(
-                                            child = %params.name,
-                                            cli = %params.cli,
-                                            pid = pid,
-                                            invoked_by = %cmd_event.invoked_by,
-                                            "spawned child agent"
-                                        );
-                                        eprintln!(
-                                            "\r\n[agent-relay] spawned child '{}' (pid {})\r",
-                                            params.name, pid
-                                        );
-                                    }
-                                    Err(error) => {
-                                        tracing::error!(
-                                            child = %params.name,
-                                            error = %error,
-                                            "failed to spawn child agent"
-                                        );
-                                        eprintln!(
-                                            "\r\n[agent-relay] failed to spawn '{}': {}\r",
-                                            params.name, error
-                                        );
+                                        &workspace_child_api_key,
+                                        &child_base_url,
+                                        &channels,
+                                        Some(&child_workspaces_json),
+                                        default_workspace_id.as_deref(),
+                                    );
+                                    // Pre-register the child agent so its MCP server
+                                    // starts with a valid token (avoiding "Not registered"
+                                    // errors when non-claude CLIs like codex try to use
+                                    // relay tools before calling register() themselves).
+                                    let child_token = match retry_agent_registration(
+                                        &workspace_child_http,
+                                        &params.name,
+                                        Some(&params.cli),
+                                    ).await {
+                                        Ok(token) => Some(token),
+                                        Err(RegRetryOutcome::RetryableExhausted(e)) => {
+                                            tracing::warn!(
+                                                child = %params.name,
+                                                error = %e,
+                                                "pre-registration failed after retries, spawning without token"
+                                            );
+                                            None
+                                        }
+                                        Err(RegRetryOutcome::Fatal(e)) => {
+                                            tracing::warn!(
+                                                child = %params.name,
+                                                error = %e,
+                                                "pre-registration fatal error, spawning without token"
+                                            );
+                                            None
+                                        }
+                                    };
+                                    match spawner
+                                        .spawn_wrap_with_token(
+                                            &params.name,
+                                            &params.cli,
+                                            &params.args,
+                                            &env_vars,
+                                            Some(&action_ref.invoked_by),
+                                            child_token.as_deref(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(pid) => {
+                                            agent_spawn_count += 1;
+                                            telemetry.track(TelemetryEvent::AgentSpawn {
+                                                cli: params.cli.clone(),
+                                                runtime: "pty".to_string(),
+                                                // The wrap path handles child spawns requested by a
+                                                // running agent through the broker action channel —
+                                                // always agent-originated here.
+                                                spawn_source: ActionSource::Agent,
+                                                has_task: false,
+                                                is_shadow: false,
+                                            });
+                                            tracing::info!(
+                                                child = %params.name,
+                                                cli = %params.cli,
+                                                pid = pid,
+                                                invoked_by = %action_ref.invoked_by,
+                                                "spawned child agent"
+                                            );
+                                            eprintln!(
+                                                "\r\n[agent-relay] spawned child '{}' (pid {})\r",
+                                                params.name, pid
+                                            );
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(
+                                                child = %params.name,
+                                                error = %error,
+                                                "failed to spawn child agent"
+                                            );
+                                            eprintln!(
+                                                "\r\n[agent-relay] failed to spawn '{}': {}\r",
+                                                params.name, error
+                                            );
+                                            completion_error = Some(format!(
+                                                "failed to spawn '{}': {error}",
+                                                params.name
+                                            ));
+                                        }
                                     }
                                 }
                             }
                             BrokerCommandPayload::Release(ref params) => {
-                                // command.invoked doesn't carry sender_kind, so use Unknown
+                                // action.invoked doesn't carry sender_kind, so use Unknown
                                 let sender_is_human =
-                                    is_human_sender(&cmd_event.invoked_by, SenderKind::Unknown);
+                                    is_human_sender(&action_ref.invoked_by, SenderKind::Unknown);
                                 let owner = spawner.owner_of(&params.name);
-                                if can_release_child(owner, &cmd_event.invoked_by, sender_is_human) {
+                                if can_release_child(owner, &action_ref.invoked_by, sender_is_human) {
                                     match spawner.release(&params.name, Duration::from_secs(2)).await {
                                         Ok(()) => {
                                             telemetry.track(TelemetryEvent::AgentRelease {
                                                 cli: String::new(),
-                                                release_reason: "ws_command".to_string(),
+                                                release_reason: "ws_action".to_string(),
                                                 lifetime_seconds: 0,
                                                 release_source: if sender_is_human {
                                                     ActionSource::HumanCli
@@ -1051,7 +1162,7 @@ pub(crate) async fn run_wrap(
                                             });
                                             tracing::info!(
                                                 child = %params.name,
-                                                released_by = %cmd_event.invoked_by,
+                                                released_by = %action_ref.invoked_by,
                                                 "released child agent"
                                             );
                                             eprintln!("\r\n[agent-relay] released child '{}'\r", params.name);
@@ -1066,16 +1177,47 @@ pub(crate) async fn run_wrap(
                                                 "\r\n[agent-relay] failed to release '{}': {}\r",
                                                 params.name, error
                                             );
+                                            completion_error = Some(format!(
+                                                "failed to release '{}': {error}",
+                                                params.name
+                                            ));
                                         }
                                     }
                                 } else {
                                     tracing::warn!(
                                         child = %params.name,
-                                        sender = %cmd_event.invoked_by,
+                                        sender = %action_ref.invoked_by,
                                         "release denied: sender is not owner or human"
                                     );
+                                    completion_error = Some(format!(
+                                        "release denied: {} is not owner or human",
+                                        action_ref.invoked_by
+                                    ));
                                 }
                             }
+                        }
+
+                        // Report the outcome back to relaycast so the caller's
+                        // invocation resolves instead of hanging.
+                        let complete_request = CompleteInvocationRequest {
+                            output: None,
+                            error: completion_error,
+                            duration_ms: None,
+                        };
+                        if let Err(error) = workspace_child_http
+                            .complete_action_invocation(
+                                &action_ref.action,
+                                &action_ref.invocation_id,
+                                complete_request,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                action = %action_ref.action,
+                                invocation_id = %action_ref.invocation_id,
+                                error = %error,
+                                "failed to report action completion"
+                            );
                         }
                         continue;
                     }

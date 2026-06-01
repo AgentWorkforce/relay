@@ -1,0 +1,489 @@
+.page {
+  min-height: 100vh;
+  background: #0b1c2a;
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+}
+
+.hero,
+.principlesSection,
+.loopSection,
+.offeringsSection {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding-right: 40px;
+  padding-left: 40px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.05fr);
+  align-items: center;
+  gap: clamp(44px, 7vw, 92px);
+  min-height: calc(100vh - 76px);
+  padding-top: 92px;
+  padding-bottom: 88px;
+}
+
+.heroCopy {
+  display: grid;
+  gap: 22px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #7eb8da;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hero h1,
+.sectionHeader h2,
+.loopCopy h2 {
+  margin: 0;
+  color: var(--fg);
+  font-family: var(--font-heading), sans-serif;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.hero h1 {
+  max-width: 12ch;
+  font-size: clamp(3.5rem, 8vw, 7.4rem);
+  line-height: 0.92;
+}
+
+.heroCopy > p:not(.eyebrow),
+.sectionHeader p,
+.loopCopy p,
+.principleCard p,
+.offeringCard p {
+  margin: 0;
+  color: color-mix(in srgb, var(--fg-muted) 90%, white 10%);
+  line-height: 1.68;
+}
+
+.heroCopy > p:not(.eyebrow) {
+  max-width: 62ch;
+  font-size: 1.08rem;
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.primaryAction,
+.secondaryAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.primaryAction {
+  background: #58a6ff;
+  color: #07111f;
+}
+
+.secondaryAction {
+  border: 1px solid rgba(156, 207, 255, 0.18);
+  color: var(--fg);
+}
+
+.heroVisual {
+  min-width: 0;
+}
+
+.workflowMap {
+  position: relative;
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid rgba(156, 207, 255, 0.15);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(116, 184, 226, 0.08), transparent 42%),
+    linear-gradient(180deg, #10273a 0%, #0b1826 100%);
+}
+
+.workflowNodeMain,
+.workflowNode {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(156, 207, 255, 0.18);
+  background: #0e1729;
+  box-shadow: 0 18px 40px rgba(2, 7, 18, 0.28);
+}
+
+.workflowNodeMain {
+  top: 50%;
+  left: 50%;
+  width: 190px;
+  height: 190px;
+  border-radius: 12px;
+  transform: translate(-50%, -50%);
+}
+
+.workflowNodeMain span,
+.workflowNode {
+  color: rgba(226, 232, 240, 0.66);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workflowNodeMain strong {
+  max-width: 10ch;
+  color: var(--fg);
+  font-family: var(--font-heading), sans-serif;
+  font-size: 2rem;
+  font-weight: 650;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.workflowNode {
+  width: 124px;
+  height: 58px;
+  border-radius: 10px;
+}
+
+.workflowNodeTop {
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.workflowNodeRight {
+  top: 50%;
+  right: 54px;
+  transform: translateY(-50%);
+}
+
+.workflowNodeBottom {
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.workflowNodeLeft {
+  top: 50%;
+  left: 54px;
+  transform: translateY(-50%);
+}
+
+.workflowLineOne,
+.workflowLineTwo,
+.workflowLineThree,
+.workflowLineFour {
+  position: absolute;
+  z-index: 1;
+  background: rgba(126, 184, 218, 0.28);
+}
+
+.workflowLineOne,
+.workflowLineThree {
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.workflowLineOne {
+  top: 130px;
+  height: 104px;
+}
+
+.workflowLineThree {
+  bottom: 130px;
+  height: 104px;
+}
+
+.workflowLineTwo,
+.workflowLineFour {
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.workflowLineTwo {
+  right: 178px;
+  width: 118px;
+}
+
+.workflowLineFour {
+  left: 178px;
+  width: 118px;
+}
+
+.principlesSection,
+.offeringsSection {
+  padding-top: 96px;
+  padding-bottom: 96px;
+}
+
+.sectionHeader {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+  margin-bottom: 36px;
+}
+
+.sectionHeader h2,
+.loopCopy h2 {
+  font-size: clamp(2.4rem, 4.6vw, 4.6rem);
+  line-height: 1;
+}
+
+.sectionHeader p,
+.loopCopy p {
+  font-size: 1.04rem;
+}
+
+.principlesGrid,
+.offeringsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.principleCard,
+.offeringCard {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 230px;
+  padding: 24px;
+  border: 1px solid rgba(156, 207, 255, 0.14);
+  border-radius: 8px;
+  background: #0e1729;
+}
+
+.principleCard h3,
+.offeringCard h3 {
+  margin: 0;
+  color: var(--fg);
+  font-family: var(--font-heading), sans-serif;
+  font-size: 1.5rem;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.loopSection {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr);
+  align-items: center;
+  gap: clamp(40px, 6vw, 84px);
+  padding-top: 96px;
+  padding-bottom: 96px;
+  background: linear-gradient(180deg, rgba(21, 46, 68, 0.9), rgba(14, 31, 47, 0.9));
+  max-width: none;
+}
+
+.loopSection > * {
+  max-width: 1280px;
+}
+
+.loopCopy {
+  justify-self: end;
+  display: grid;
+  gap: 18px;
+  max-width: 540px;
+  margin-left: 40px;
+}
+
+.loopCopy ul {
+  display: grid;
+  gap: 10px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.loopCopy li {
+  position: relative;
+  padding-left: 20px;
+  color: color-mix(in srgb, var(--fg-muted) 92%, white 8%);
+  line-height: 1.55;
+}
+
+.loopCopy li::before {
+  position: absolute;
+  top: 0.64em;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #58a6ff;
+  content: '';
+}
+
+.loopCode {
+  max-width: 640px;
+  margin-right: 40px;
+  overflow: hidden;
+  border: 1px solid rgba(156, 207, 255, 0.16);
+  border-radius: 14px;
+  background: #07111e;
+  box-shadow: 0 18px 38px rgba(2, 7, 18, 0.3);
+}
+
+.editorTitlebar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(156, 207, 255, 0.14);
+  background: #111a24;
+}
+
+.editorTitlebar span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.editorTitlebar span:nth-child(1) {
+  background: #ff5f57;
+}
+
+.editorTitlebar span:nth-child(2) {
+  background: #febc2e;
+}
+
+.editorTitlebar span:nth-child(3) {
+  background: #28c840;
+}
+
+.editorTitlebar strong {
+  margin-left: 6px;
+  color: rgba(226, 232, 240, 0.64);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+
+.loopCode pre {
+  margin: 0;
+  padding: 26px 24px 28px;
+  overflow: hidden;
+  color: rgba(248, 250, 252, 0.92);
+}
+
+.loopCode code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: clamp(0.7rem, 1.05vw, 0.84rem);
+  font-weight: 720;
+  line-height: 1.85;
+  white-space: pre-wrap;
+}
+
+.offeringsGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.offeringCard span {
+  color: #7eb8da;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 960px) {
+  .hero,
+  .principlesSection,
+  .offeringsSection {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+
+  .hero {
+    grid-template-columns: 1fr;
+    min-height: auto;
+    padding-top: 72px;
+    padding-bottom: 72px;
+  }
+
+  .hero h1 {
+    max-width: 10ch;
+    font-size: clamp(3.2rem, 16vw, 5rem);
+  }
+
+  .workflowMap {
+    min-height: 380px;
+  }
+
+  .workflowNodeMain {
+    width: 150px;
+    height: 150px;
+  }
+
+  .workflowNodeMain strong {
+    font-size: 1.55rem;
+  }
+
+  .workflowNode {
+    width: 104px;
+    height: 50px;
+    font-size: 0.66rem;
+  }
+
+  .workflowNodeRight {
+    right: 20px;
+  }
+
+  .workflowNodeLeft {
+    left: 20px;
+  }
+
+  .workflowLineTwo {
+    right: 124px;
+    width: 70px;
+  }
+
+  .workflowLineFour {
+    left: 124px;
+    width: 70px;
+  }
+
+  .principlesGrid,
+  .offeringsGrid,
+  .loopSection {
+    grid-template-columns: 1fr;
+  }
+
+  .loopSection {
+    padding: 72px 24px;
+  }
+
+  .loopCopy,
+  .loopCode {
+    justify-self: stretch;
+    max-width: none;
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  .principlesSection,
+  .offeringsSection {
+    padding-top: 72px;
+    padding-bottom: 72px;
+  }
+}

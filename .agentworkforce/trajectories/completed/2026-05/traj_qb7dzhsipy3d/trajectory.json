@@ -1,0 +1,25 @@
+{
+  "id": "traj_qb7dzhsipy3d",
+  "version": 1,
+  "task": {
+    "title": "Flesh out README harness contract"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T14:47:21.357Z",
+  "completedAt": "2026-05-28T14:50:08.137Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Expanded README Full Harness Contract with target defineHarness shape, create context, session interface, delivery context/results, stable harness events, observability, idempotency, and safety requirements.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5deda1df664bbff73a873e2a3b0a090b95f3449e",
+    "endRef": "5deda1df664bbff73a873e2a3b0a090b95f3449e"
+  }
+}

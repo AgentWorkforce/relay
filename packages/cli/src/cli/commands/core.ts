@@ -6,21 +6,13 @@ import { exec, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command } from 'commander';
 
-import {
-  getProjectPaths,
-  loadTeamsConfig,
-  resolveProjects,
-  validateBrokers,
-  getAgentOutboxTemplate,
-} from '@agent-relay/config';
-import type { AgentRelayBrokerInitArgs } from '@agent-relay/sdk';
+import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
+import type { BrokerInitArgs } from '@agent-relay/harness-driver';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
-import { track } from '@agent-relay/telemetry';
 
-import { runBridgeCommand } from '../lib/bridge.js';
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
 import { runUninstallCommand, runUpdateCommand } from '../lib/core-maintenance.js';
-import { createAgentRelayClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
@@ -46,13 +38,6 @@ export interface CoreTeamsConfig {
   }>;
 }
 
-export interface BridgeProject {
-  id: string;
-  path: string;
-  leadName: string;
-  cli?: string;
-}
-
 export interface SpawnedProcess {
   pid?: number;
   killed?: boolean;
@@ -73,7 +58,7 @@ export interface CoreRelay {
   }) => Promise<unknown>;
   getStatus: () => Promise<unknown>;
   shutdown: () => Promise<unknown>;
-  /** Relaycast workspace API key, available after the hello handshake. */
+  /** Agent Relay workspace key, available after the hello handshake. */
   workspaceKey?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;
@@ -99,12 +84,6 @@ type UpdateInfo = {
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
-  resolveBridgeProjects: (projectPaths: string[], cli?: string) => BridgeProject[];
-  validateBridgeBrokers: (projects: BridgeProject[]) => {
-    valid: BridgeProject[];
-    missing: BridgeProject[];
-  };
-  getAgentOutboxTemplate: () => string;
   createRelay: (cwd: string, apiPort?: number, brokerName?: string) => CoreRelay | Promise<CoreRelay>;
   findDashboardBinary: () => string | null;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
@@ -186,26 +165,6 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
     }
   }
 
-  // In workspace / local dev mode, try resolving the dashboard-server package directly
-  if (process.env.RELAY_LOCAL_DEV === '1') {
-    try {
-      const pkgPath = require.resolve('@agent-relay/dashboard-server/package.json');
-      const pkgDir = path.dirname(pkgPath);
-      const pkgJson = JSON.parse(fileSystem.readFileSync(pkgPath, 'utf-8')) as {
-        bin?: Record<string, string>;
-      };
-      const binEntry = pkgJson.bin?.['relay-dashboard-server'];
-      if (binEntry) {
-        const binPath = path.resolve(pkgDir, binEntry);
-        if (fileSystem.existsSync(binPath)) {
-          return binPath;
-        }
-      }
-    } catch {
-      // Package not resolvable, fall through to other search methods.
-    }
-  }
-
   const binaryName = 'relay-dashboard-server';
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
 
@@ -245,7 +204,7 @@ function findDashboardBinaryDefault(fileSystem: CoreFileSystem): string | null {
 }
 
 async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string): Promise<CoreRelay> {
-  const binaryArgs: AgentRelayBrokerInitArgs = {};
+  const binaryArgs: BrokerInitArgs = {};
   if (apiPort > 0) {
     binaryArgs.persist = true;
     binaryArgs.apiPort = apiPort;
@@ -254,7 +213,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
   if (stateDir) {
     binaryArgs.stateDir = stateDir;
   }
-  const client = await createAgentRelayClient({
+  const client = await createRuntimeClient({
     cwd,
     binaryArgs,
     brokerName,
@@ -299,14 +258,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
     getProjectPaths: () => getProjectPaths() as unknown as CoreProjectPaths,
     loadTeamsConfig: (projectRoot: string) =>
       (loadTeamsConfig(projectRoot) as unknown as CoreTeamsConfig | null) ?? null,
-    resolveBridgeProjects: (projectPaths: string[], cli?: string) =>
-      resolveProjects(projectPaths, cli) as unknown as BridgeProject[],
-    validateBridgeBrokers: (projects: BridgeProject[]) =>
-      validateBrokers(projects as unknown as Parameters<typeof validateBrokers>[0]) as unknown as {
-        valid: BridgeProject[];
-        missing: BridgeProject[];
-      },
-    getAgentOutboxTemplate,
     createRelay: createDefaultRelay,
     findDashboardBinary: () => findDashboardBinaryDefault(fileSystem),
     spawnProcess: (command, args, options) =>
@@ -376,17 +327,6 @@ function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependenci
   };
 }
 
-function buildDashboardHarnessPath(cliTool?: string): string | undefined {
-  const trimmed = cliTool?.trim();
-  if (!trimmed) return '/dev/cli-tools';
-
-  return `/dev/cli-tools?tool=${encodeURIComponent(trimmed)}`;
-}
-
-function isSupportedDashboardTarget(target: string): boolean {
-  return target === 'dashboard.js' || target === 'dashboard';
-}
-
 export function registerCoreCommands(program: Command, overrides: Partial<CoreDependencies> = {}): void {
   const deps = withDefaults(overrides);
 
@@ -420,34 +360,6 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     );
 
   program
-    .command('start')
-    .description('Start focused test harnesses (for example: start dashboard.js claude)')
-    .argument('<target>', 'Harness target name')
-    .argument('[cli]', 'Optional CLI tool to focus')
-    .option('--port <port>', 'Dashboard port', DEFAULT_DASHBOARD_PORT)
-    .option('--verbose', 'Enable verbose logging')
-    .action(
-      async (target: string, cli: string | undefined, options: { port?: string; verbose?: boolean }) => {
-        if (!isSupportedDashboardTarget(target.toLowerCase())) {
-          deps.error(`Unknown start target "${target}". Supported targets: dashboard.js`);
-          deps.exit(1);
-        }
-
-        await runUpCommand(
-          {
-            dashboard: true,
-            port: options.port,
-            verbose: options.verbose,
-            background: false,
-            dashboardPath: buildDashboardHarnessPath(cli),
-            reuseExistingBroker: true,
-          },
-          deps
-        );
-      }
-    );
-
-  program
     .command('down')
     .description('Stop broker')
     .option('--force', 'Force cleanup even if process is stuck')
@@ -460,11 +372,50 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
 
   program
     .command('status')
-    .description('Check broker status')
+    .description('Check whether the local broker daemon is running')
     .option('--state-dir <path>', 'Directory for broker state and connection files')
     .option('--wait-for <seconds>', 'Poll for broker readiness for up to this many seconds')
     .action(async (options: { stateDir?: string; waitFor?: string }) => {
       await runStatusCommand(deps, options);
+    });
+
+  program
+    .command('metrics')
+    .description('Show resource usage for the local broker and its agents')
+    .option('--agent <name>', 'Filter to a single agent')
+    .action(async (options: { agent?: string }) => {
+      try {
+        const client = await createRuntimeClient({ cwd: process.cwd(), preferConnect: true });
+        const metrics = await client.getMetrics(options.agent);
+        deps.log(JSON.stringify(metrics, null, 2));
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      }
+    });
+}
+
+/**
+ * Top-level maintenance verbs that live outside the `local` namespace because
+ * they manage the installed CLI itself, not the broker: `version`, `update`,
+ * `uninstall`.
+ */
+export function registerCoreMaintenance(program: Command, overrides: Partial<CoreDependencies> = {}): void {
+  const deps = withDefaults(overrides);
+
+  program
+    .command('version')
+    .description('Show version information')
+    .action(() => {
+      deps.log(`agent-relay v${deps.getVersion()}`);
+    });
+
+  program
+    .command('update')
+    .description('Check for updates and install if available')
+    .option('--check', 'Only check for updates, do not install')
+    .action(async (options: { check?: boolean }) => {
+      await runUpdateCommand(options, deps);
     });
 
   program
@@ -488,34 +439,4 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         await runUninstallCommand(options, deps);
       }
     );
-
-  program
-    .command('version', { hidden: true })
-    .description('Show version information')
-    .action(() => {
-      deps.log(`agent-relay v${deps.getVersion()}`);
-    });
-
-  program
-    .command('update')
-    .description('Check for updates and install if available')
-    .option('--check', 'Only check for updates, do not install')
-    .action(async (options: { check?: boolean }) => {
-      await runUpdateCommand(options, deps);
-    });
-
-  program
-    .command('bridge')
-    .description('Bridge multiple projects as orchestrator')
-    .argument('[projects...]', 'Project paths to bridge')
-    .option('--cli <tool>', 'CLI tool override for all projects')
-    .option('--architect [cli]', 'Spawn an architect agent to coordinate all projects (default: claude)')
-    .action(async (projectPaths: string[], options: { cli?: string; architect?: string | boolean }) => {
-      track('bridge_spawn', {
-        project_count: projectPaths.length,
-        cli: options.cli ?? 'default',
-        has_architect: options.architect !== undefined && options.architect !== false,
-      });
-      await runBridgeCommand(projectPaths, options, deps);
-    });
 }

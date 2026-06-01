@@ -3,12 +3,6 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import {
-  getSpawnOptionDescription,
-  getSpawnOptionName,
-  getSpawnOptionRows,
-  type SpawnOptionsTableVariant,
-} from './spawn-options-table';
 import { resolveContentDir } from './content-paths';
 import { getAllDocSlugs } from './docs-nav';
 import { absoluteUrl } from './site';
@@ -92,27 +86,6 @@ function renderBannerLink(attrs: string, body: string): string {
   return href ? `[${label}](${href})` : label;
 }
 
-function renderSpawnOptionsTable(attrs: string): string {
-  const variantMatch = attrs.match(/variant="([^"]+)"/)?.[1];
-  const variant: SpawnOptionsTableVariant =
-    variantMatch === 'relay-startup' ? 'relay-startup' : variantMatch === 'advanced' ? 'advanced' : 'common';
-  const rows = getSpawnOptionRows(variant);
-  const lines = [
-    '| Option | What it does |',
-    '| --- | --- |',
-    ...rows.map((row) => {
-      const option = getSpawnOptionName(row, 'typescript')
-        .map((name) => `\`${name}\``)
-        .join(', ');
-      const description = getSpawnOptionDescription(row, 'typescript');
-
-      return `| ${option} | ${description} |`;
-    }),
-  ];
-
-  return `\n${lines.join('\n')}\n`;
-}
-
 function renderMarkdownBody(content: string): string {
   let output = content;
 
@@ -131,9 +104,6 @@ function renderMarkdownBody(content: string): string {
   output = output.replace(
     /<BannerLink\s+([^>]*)>([\s\S]*?)<\/BannerLink>/g,
     (_match, attrs: string, body: string) => `\n${renderBannerLink(attrs, body)}\n`
-  );
-  output = output.replace(/<SpawnOptionsTable([^>]*)\/>/g, (_match, attrs: string) =>
-    renderSpawnOptionsTable(attrs)
   );
 
   output = output.replace(/\n{3,}/g, '\n\n');

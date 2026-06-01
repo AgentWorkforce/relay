@@ -179,20 +179,24 @@ describe('registerAgentWithRebind', () => {
 describe('optionsFromEnv', () => {
   it('auto-selects an orchestrator identity when a workspace key is configured', () => {
     const previous = {
+      workspaceKey: process.env.RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
       agentName: process.env.RELAY_AGENT_NAME,
       clawName: process.env.RELAY_CLAW_NAME,
     };
-    process.env.RELAY_API_KEY = 'rk_live_test';
+    process.env.RELAY_WORKSPACE_KEY = 'rk_live_test';
+    delete process.env.RELAY_API_KEY;
     delete process.env.RELAY_AGENT_NAME;
     delete process.env.RELAY_CLAW_NAME;
 
     try {
       expect(optionsFromEnv()).toMatchObject({
-        apiKey: 'rk_live_test',
+        workspaceKey: 'rk_live_test',
         agentName: 'orchestrator',
       });
     } finally {
+      if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;
       if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
       else process.env.RELAY_API_KEY = previous.apiKey;
       if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;
@@ -204,23 +208,27 @@ describe('optionsFromEnv', () => {
 
   it('ignores unresolved template environment placeholders', () => {
     const previous = {
+      workspaceKey: process.env.RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
       agentName: process.env.RELAY_AGENT_NAME,
       clawName: process.env.RELAY_CLAW_NAME,
       agentToken: process.env.RELAY_AGENT_TOKEN,
     };
-    process.env.RELAY_API_KEY = '${RELAY_API_KEY}';
+    process.env.RELAY_WORKSPACE_KEY = '${RELAY_WORKSPACE_KEY}';
+    delete process.env.RELAY_API_KEY;
     process.env.RELAY_AGENT_NAME = '${RELAY_AGENT_NAME}';
     process.env.RELAY_CLAW_NAME = 'ClawFallback';
     process.env.RELAY_AGENT_TOKEN = '${RELAY_AGENT_TOKEN}';
 
     try {
       expect(optionsFromEnv()).toMatchObject({
-        apiKey: undefined,
+        workspaceKey: undefined,
         agentName: 'ClawFallback',
         agentToken: undefined,
       });
     } finally {
+      if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;
       if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
       else process.env.RELAY_API_KEY = previous.apiKey;
       if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;

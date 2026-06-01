@@ -133,7 +133,6 @@ export function SiteNav({
               }
             }}
           >
-            {mobileMenuContent}
             {!hideMobileDocsLink && (
               <Link href="/docs" className={s.mobileLink} onClick={() => setMenuOpen(false)}>
                 Docs
@@ -151,6 +150,7 @@ export function SiteNav({
             >
               GitHub
             </a>
+            {mobileMenuContent}
           </div>
         )}
       </header>

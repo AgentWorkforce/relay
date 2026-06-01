@@ -8,56 +8,52 @@ paths:
 ## Package Identity
 
 - Package: `@agent-relay/sdk` (NOT `@agent-relay/broker-sdk`)
-- Main client: `AgentRelayClient` in `packages/sdk/src/client.ts`
-- Workflows: `packages/sdk/src/workflows/`
+- Scope: communication primitives only — messaging, delivery, actions,
+  session/capabilities. No broker startup, spawning, or harness lifecycle.
+- Main facade: `AgentRelay` in `packages/sdk/src/agent-relay.ts`
 
-## Client API
+## What lives elsewhere
+
+- Broker client: `HarnessDriverClient` in `@agent-relay/harness-driver`
+  (`packages/harness-driver/src/client.ts`) — owns broker startup, spawn/release,
+  PTY/headless transports, and `connection.json` discovery.
+- Workflows: the `relayflows` package (`../relayflows`), which consumes the
+  broker through `@agent-relay/sdk`.
+
+Keep application-level messaging on `@agent-relay/sdk`; reach for
+`@agent-relay/harness-driver` only at the boundary that owns local agent processes.
+
+## Facade API
 
 ```typescript
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { AgentRelay } from '@agent-relay/sdk';
 
-// Remote broker
-const client = new AgentRelayClient({ baseUrl, apiKey });
+const relay = new AgentRelay({ apiKey, workspaceKey });
 
-// Connect to an already-running local broker (reads connection.json)
-const client = AgentRelayClient.connect({ cwd: '/my/project' });
-
-// Spawn a local broker and connect
-const client = await AgentRelayClient.spawn({ cwd: '/my/project' });
-
-// client.spawnPty(), client.spawnProvider(), client.release(), client.sendMessage()
+await relay.sendMessage({ target: '#general', body: 'hello' });
+const handle = relay.agent({ name: 'Reviewer' });
+relay.action('agent.create');
 ```
-
-## Agent Class
-
-- `.status` getter for current agent status
-- `.onOutput()` for per-agent output streaming
-
-## Workflows
-
-Located in `packages/sdk/src/workflows/`:
-
-- `builder.ts` — WorkflowBuilder API
-- `runner.ts` / `coordinator.ts` — execution engine
-- `templates.ts` — built-in templates (fan_out, pipeline, dag)
-- `types.ts` — workflow type definitions
-- `schema.json` — workflow validation schema
-
-## Communication Protocol
-
-- **Primary**: MCP tools (mcp**relaycast**message_dm_send, mcp**relaycast**message_inbox_check, mcp**relaycast**agent_list, mcp**relaycast**agent_add, mcp**relaycast**agent_remove)
 
 ## Exports
 
 The SDK uses subpath exports:
 
-- `@agent-relay/sdk` — main entry
-- `@agent-relay/sdk/client` — client only
-- `@agent-relay/sdk/protocol` — protocol types
-- `@agent-relay/sdk/workflows` — workflow builder
+- `@agent-relay/sdk` — main entry (`AgentRelay` facade + re-exports below)
+- `@agent-relay/sdk/messaging` — channels, DMs, threads, reactions, inbox
+- `@agent-relay/sdk/delivery` — delivery modes, receipts, `DeliveryRunner`
+- `@agent-relay/sdk/actions` — action protocol, `ActionRegistry`
+- `@agent-relay/sdk/session` — session identity, harness contract, events
+- `@agent-relay/sdk/capabilities` — capability declarations
+
+## Communication Protocol
+
+- **Primary**: MCP tools (`mcp__relaycast__message_dm_send`,
+  `mcp__relaycast__message_inbox_check`, `mcp__relaycast__agent_list`,
+  `mcp__relaycast__agent_add`, `mcp__relaycast__agent_remove`)
 
 ## No Storage Layer
 
-- There is NO storage package (removed)
+- There is NO storage package
 - No SQLite, JSONL, or storage adapters
 - Relaycast handles all message persistence

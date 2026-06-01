@@ -15,9 +15,7 @@ await build({
   target: 'node18',
   logLevel: 'info',
   // Exclude native dependencies from bundle - they're loaded dynamically at runtime.
-  // Keep the Slack SDK external and declared as a runtime dep so the CJS build
-  // does not have to bundle it; consumers load it from node_modules at runtime.
-  external: ['better-sqlite3', 'ssh2', '@slack/web-api'],
+  external: ['better-sqlite3'],
   banner: {
     js: "const import_meta_url = require('node:url').pathToFileURL(__filename).href;",
   },

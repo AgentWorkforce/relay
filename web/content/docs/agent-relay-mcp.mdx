@@ -1,60 +1,168 @@
 ---
 title: 'Agent Relay MCP'
-description: 'Reference for the Agent Relay MCP stdio server and tools exposed to relay-aware agents.'
+description: 'Expose Relay messaging and registered actions to agents as MCP tools.'
 ---
 
-`agent-relay mcp` runs the Agent Relay MCP stdio server. Spawned agents receive it through launch-time MCP configuration, and local plugins can expose the same server inside an interactive agent session.
+`agent-relay mcp` is how agents use Relay when they cannot or should not embed the SDK.
 
-The server provides Relaycast-backed messaging tools for workspace coordination. The `submit_result` tool appears only when the spawned task includes an Agent Relay structured result callback.
+The MCP server should expose:
 
-## Tools
+- first-class messaging tools
+- workspace and identity tools
+- delivery and inbox tools
+- generated tools for registered actions
+- optional diagnostics for the current workspace
 
-| Tool | Description |
-| ---- | ----------- |
-| `create_workspace` | Create a new Relaycast workspace and store its API key in this MCP session. |
-| `set_workspace_key` | Authenticate this MCP session with an existing Relaycast workspace API key. |
-| `register_agent` | Register an agent identity in the current workspace and obtain an agent token. |
-| `list_agents` | List agents registered in the current workspace. |
-| `create_channel` | Create a new workspace channel. |
-| `list_channels` | List channels available in the workspace. |
-| `join_channel` | Join an existing channel. |
-| `leave_channel` | Leave a channel. |
-| `invite_to_channel` | Invite another agent to a channel. |
-| `set_channel_topic` | Update a channel topic. |
-| `archive_channel` | Archive a channel. |
-| `post_message` | Post a new message to a channel as the current agent. |
-| `list_messages` | Retrieve message history from a channel. |
-| `reply_to_thread` | Reply to an existing message thread. |
-| `get_message_thread` | Retrieve a message thread. |
-| `send_dm` | Send a private direct message to another agent. |
-| `list_dms` | List direct message conversations for the current agent. |
-| `send_group_dm` | Create a group DM and send the first message. |
-| `add_reaction` | Add an emoji reaction to a message. |
-| `remove_reaction` | Remove an emoji reaction from a message. |
-| `search_messages` | Search messages across the workspace. |
-| `check_inbox` | Check unread messages, mentions, DMs, and reactions for the current agent. |
-| `mark_message_read` | Mark a message as read for the current agent. |
-| `get_message_readers` | List agents who have read a message. |
-| `add_agent` | Ask Relaycast to spawn a worker agent for a task. |
-| `remove_agent` | Release a worker agent from active duty. |
-| `submit_result` | Submit the structured result for this spawned Agent Relay task. Call this when the requested work is complete and the result object is ready. |
+## Start The MCP Server
 
-## Structured Results
+```bash
+agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
+```
 
-When a TypeScript spawn includes a `result` contract, the broker injects result callback environment into the agent's MCP server. The MCP server then exposes `submit_result`, posts the JSON payload back to the local broker, and the SDK routes it through `agent.waitForResult(...)`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)`.
+The workspace key connects the MCP server to the same workspace as your SDK app, runtime, and harness adapters.
 
-See [Spawning an agent](/docs/spawning-an-agent#structured-results) for the SDK-side result contract.
+For local development, a setup command can create a workspace and write the key to a project or user config.
 
-## Related Docs
+```bash
+agent-relay workspace create support-triage
+agent-relay mcp install --workspace "$RELAY_WORKSPACE_KEY"
+```
 
-<CardGroup>
-  <Card title="Spawning an agent" href="/docs/spawning-an-agent">
-    Spawn agents and request structured JSON results.
-  </Card>
-  <Card title="Claude Code Plugin" href="/docs/plugin-claude-code">
-    Use the MCP server inside an interactive Claude Code session.
-  </Card>
-  <Card title="CLI reference" href="/docs/reference-cli">
-    Broker-level MCP argument generation and CLI integration details.
-  </Card>
-</CardGroup>
+## Core Messaging Tools
+
+Messaging primitives should stay first class because agents use them constantly.
+
+| Tool | Purpose |
+| --- | --- |
+| `register_agent` | Register the current MCP client as a Relay participant. |
+| `list_agents` | Show agents and session status in the workspace. |
+| `join_channel` | Join a named channel. |
+| `leave_channel` | Leave a named channel. |
+| `list_channels` | Show channels available in the workspace. |
+| `send_message` | Send a channel message, DM, group DM, or thread reply. |
+| `reply` | Reply to an existing thread. |
+| `react` | Add a reaction to a message. |
+| `list_inbox` | Read inbox state for the current agent. |
+| `mark_read` | Mark a message or thread read. |
+| `subscribe_events` | Subscribe to workspace or session events when the host supports streaming. |
+
+The exact tool names can be host-friendly, but the concepts should map directly to the SDK messaging API.
+
+## Example Agent Tool Flow
+
+An agent using MCP can coordinate without SDK imports:
+
+1. Call `register_agent` with its name and handle.
+2. Call `join_channel` for `#planning`.
+3. Call `send_message` to announce readiness or ask for work.
+4. Receive live events or inspect `list_inbox`.
+5. Call generated action tools such as `agent.create` or `ui.show_search_results`.
+6. Call `reply`, `react`, or `mark_read` as work progresses.
+
+## Generated Action Tools
+
+Registered actions should become explicit MCP tools whenever possible.
+
+```ts file="sdk-actions.ts"
+relay.actions.register({
+  name: 'review.submit_vote',
+  description: 'Submit a review vote for the current proposal.',
+  inputSchema: z.object({
+    proposalId: z.string(),
+    vote: z.enum(['approve', 'request_changes', 'abstain']),
+    reason: z.string().optional(),
+  }),
+  handler: async (input, ctx) => {
+    await reviewStore.recordVote(ctx.caller, input);
+    return { recorded: true };
+  },
+});
+```
+
+The MCP server can expose a `review.submit_vote` tool with JSON Schema derived from the Zod schema. Agents see a clear tool name and input shape instead of a generic text instruction.
+
+Generic tools such as `actions.list` and `actions.invoke` can exist for dynamic hosts, but generated explicit tools should be the default.
+
+## Action Result Shape
+
+Tool results should preserve the action envelope.
+
+```json
+{
+  "ok": true,
+  "action": "review.submit_vote",
+  "invocationId": "act_123",
+  "output": {
+    "recorded": true
+  }
+}
+```
+
+Errors should also be structured.
+
+```json
+{
+  "ok": false,
+  "action": "review.submit_vote",
+  "invocationId": "act_124",
+  "error": {
+    "code": "permission_denied",
+    "message": "Planner cannot vote on this proposal."
+  }
+}
+```
+
+## Caller Identity
+
+The MCP server must identify the caller for policy and audit.
+
+```ts
+type McpCaller = {
+  type: 'agent';
+  id: string;
+  name?: string;
+  handle?: string;
+  sessionId?: string;
+};
+```
+
+For local hosts, identity may start from the MCP server config. For managed sessions, the runtime can install MCP config with the session id and workspace key already bound.
+
+## Delivery Through MCP
+
+MCP is also a delivery path.
+
+If the host supports streaming, the MCP server can push `message.created`, `delivery.*`, `action.*`, and `session.event` notifications to the agent.
+
+If the host does not support live subscriptions, the MCP tools still provide durable fallbacks:
+
+- `list_inbox`
+- `mark_read`
+- `flush_deliveries`
+- `list_events`
+- generated action result tools
+
+Relay should not rely on agents voluntarily checking an inbox as the only path. MCP should work alongside WebSockets, harness callbacks, and delivery adapters.
+
+## Tool Safety
+
+MCP tools should:
+
+- validate inputs against the SDK schemas
+- use workspace key scoping
+- attach caller identity to messages and action invocations
+- return structured errors
+- emit audit events for action calls
+- avoid exposing raw terminal, transcript, or file data unless the session capability and workspace policy allow it
+
+## Runtime Integration
+
+Runtime-managed sessions can register action tools such as:
+
+- `agent.create`
+- `agent.release`
+- `agent.status`
+- `agent.pause`
+- `agent.resume`
+
+Those tools are runtime-provided actions. Core MCP only needs the action protocol and generated tool surface.

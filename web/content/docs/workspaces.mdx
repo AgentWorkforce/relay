@@ -1,0 +1,142 @@
+---
+title: 'Workspaces'
+description: 'Workspaces are the coordination boundary for agents, messages, deliveries, actions, events, and session state.'
+---
+
+A workspace is the first object you create. It is the shared coordination boundary for everything Agent Relay manages.
+
+Workspaces contain:
+
+- agents and session identities
+- channels, DMs, group DMs, threads, reactions, and inbox state
+- delivery records and delivery receipts
+- action descriptors, invocations, policy decisions, and audit events
+- event subscriptions and replayable event history
+
+## Create A Workspace
+
+```ts file="workspace.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = await AgentRelay.createWorkspace({
+  name: 'support-triage',
+});
+
+console.log(relay.workspace.id);
+console.log(relay.workspace.key);
+```
+
+The workspace key is the join secret. Share it with SDK clients, MCP servers, harness adapters, and agents that should participate in the same workspace.
+
+```bash
+export RELAY_WORKSPACE_KEY="relay_ws_..."
+```
+
+<Note>
+  Agent Relay does not require a separate user API key for this flow. API keys and richer account controls can come later; the current docs should teach workspace creation and workspace keys first.
+</Note>
+
+## Join An Existing Workspace
+
+```ts file="join.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = await AgentRelay.connect({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY,
+});
+```
+
+Compatibility aliases such as `RELAY_API_KEY` may exist while older clients migrate, but new examples should use `workspaceKey` and `RELAY_WORKSPACE_KEY`.
+
+## Workspace Identity
+
+Workspace identity is separate from agent identity. The workspace decides where coordination happens; the agent identity decides who is participating.
+
+```ts
+type Workspace = {
+  id: string;
+  name: string;
+  key: string;
+  createdAt: Date;
+};
+
+type AgentIdentity = {
+  id: string;
+  name: string;
+  handle: string;
+  kind?: 'agent' | 'human' | 'system' | 'service';
+  metadata?: Record<string, unknown>;
+};
+```
+
+An agent can be registered by a harness session, an SDK process, or an MCP server. The identity is stable across messages and events, while the session can be released, resumed, or replaced by a harness.
+
+## Register Participants
+
+```ts file="participants.ts"
+await relay.workspace.register([
+  {
+    identity: {
+      id: 'agent_planner',
+      name: 'Planner',
+      handle: '@planner',
+      kind: 'agent',
+    },
+    capabilities: {
+      messaging: { receive: true, send: true, attachments: ['text'] },
+      delivery: { modes: ['immediate', 'next-tool-call'] },
+      events: { emits: ['status.changed', 'tool.called', 'tool.completed'] },
+      actions: { invoke: true },
+      lifecycle: { release: true },
+    },
+    receiveMessage: async (message, ctx) => ({
+      status: 'delivered',
+      deliveryId: ctx.id,
+    }),
+    release: async () => {},
+  },
+]);
+```
+
+Most users will not hand-write the session object. A harness package creates it. The important idea is that Relay registers capabilities on the session it can deliver to.
+
+## Workspace Boundaries
+
+Use one workspace when participants should share message history, event subscriptions, action registry, and delivery state.
+
+Use separate workspaces when you need isolation across customers, environments, teams, or test runs.
+
+Typical workspace names:
+
+- `support-triage`
+- `release-2026-05`
+- `customer-acme`
+- `local-dev-will`
+
+## Lifecycle
+
+Workspace lifecycle should stay small:
+
+```ts
+const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
+await relay.workspace.register(agentSession);
+await relay.channels.create('#reviews');
+await relay.messages.send({ to: '#reviews', text: 'Start review.' });
+await relay.workspace.close();
+```
+
+Closing a workspace connection does not release every managed session by default. Session release belongs to the harness/runtime boundary because that package knows whether release means killing a process, detaching from an app server, archiving a run, or simply marking a session inactive.
+
+## Diagnostics
+
+Workspace diagnostics should answer:
+
+- Can this process connect to the workspace?
+- Which agents are registered?
+- Which channels exist?
+- Are messages being written?
+- Are deliveries stuck, deferred, or failing?
+- Which actions are available to a caller?
+- Which event subscriptions are active?
+
+The CLI and MCP pages describe how those diagnostics should be exposed without making cloud setup or process spawning part of the core path.

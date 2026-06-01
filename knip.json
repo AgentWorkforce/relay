@@ -1,6 +1,56 @@
 {
-  "entry": ["packages/cli/src/cli/bootstrap.ts", "packages/cli/src/index.ts"],
-  "project": ["packages/cli/src/**/*.ts", "packages/*/src/**/*.ts"],
-  "ignore": ["**/*.test.ts", "**/__tests__/**", "scripts/**"],
-  "ignoreDependencies": ["turbo", "concurrently"]
+  "rules": {
+    "binaries": "off",
+    "duplicates": "off",
+    "exports": "off",
+    "types": "off"
+  },
+  "workspaces": {
+    "packages/cli": {
+      "entry": ["src/cli/bootstrap.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "packages/sdk": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/harness-driver": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/harnesses": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/config": {
+      "project": ["src/**/*.ts"]
+    },
+    "packages/utils": {
+      "project": ["src/**/*.ts", "scripts/**/*.mjs"]
+    },
+    "packages/telemetry": {
+      "project": ["src/**/*.ts"]
+    }
+  },
+  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
+  "ignoreDependencies": ["turbo"],
+  "ignoreWorkspaces": [
+    "packages/agent",
+    "packages/brand",
+    "packages/broker-darwin-arm64",
+    "packages/broker-darwin-x64",
+    "packages/broker-linux-arm64",
+    "packages/broker-linux-x64",
+    "packages/broker-win32-x64",
+    "packages/browser-primitive",
+    "packages/cloud",
+    "packages/credential-proxy",
+    "packages/events",
+    "packages/gateway",
+    "packages/github-primitive",
+    "packages/hooks",
+    "packages/memory",
+    "packages/personas",
+    "packages/policy",
+    "packages/slack-primitive",
+    "packages/trajectory",
+    "web"
+  ]
 }

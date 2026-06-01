@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { AgentRelayClient, type BrokerStatus } from '@agent-relay/sdk';
+import { HarnessDriverClient, type BrokerStatus } from '@agent-relay/harness-driver';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -140,15 +140,18 @@ function unresolvedTemplate(value: string | undefined): string | null {
 }
 
 async function checkBrokerReliability(): Promise<CheckResult[]> {
-  let client: AgentRelayClient | undefined;
+  let client: HarnessDriverClient | undefined;
   const paths = getProjectPaths();
   const connection = readBrokerConnectionFile(paths.dataDir);
-  const relayApiKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY);
-  const relayApiKeyResult: CheckResult | null = relayApiKeyTemplate
+  const hasRelayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY) !== null;
+  const hasLegacyRelayKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY) !== null;
+  const hasUnresolvedRelayKeyTemplate = hasRelayWorkspaceKeyTemplate || hasLegacyRelayKeyTemplate;
+  const relayKeyEnvName = hasRelayWorkspaceKeyTemplate ? 'RELAY_WORKSPACE_KEY' : 'RELAY_API_KEY';
+  const relayKeyTemplateResult: CheckResult | null = hasUnresolvedRelayKeyTemplate
     ? {
-        name: 'Relaycast API key',
+        name: 'Agent Relay workspace key',
         ok: false,
-        message: `Unresolved RELAY_API_KEY template (${relayApiKeyTemplate})`,
+        message: `Unresolved ${relayKeyEnvName} template`,
         remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
       }
     : null;
@@ -157,7 +160,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     const liveBrokers = findLiveBrokerProcesses(paths.projectRoot, paths.dataDir);
     if (liveBrokers.length > 0) {
       return [
-        ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+        ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
         {
           name: 'Broker connection',
           ok: false,
@@ -174,7 +177,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     }
 
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: true,
@@ -190,7 +193,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
 
   if (!connection.conn) {
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,
@@ -207,7 +210,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
 
   if (!isProcessRunning(connection.conn.pid)) {
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,
@@ -224,7 +227,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   }
 
   try {
-    client = AgentRelayClient.connect({ cwd: process.cwd() });
+    client = HarnessDriverClient.connect({ cwd: process.cwd() });
     const status = await client.getStatus();
     const typedStatus = status as BrokerStatus;
     const auth = typedStatus.auth;
@@ -234,7 +237,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     const pending = typedStatus.pending_deliveries ?? [];
     const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: true,
@@ -261,7 +264,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,

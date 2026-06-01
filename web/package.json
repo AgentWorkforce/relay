@@ -9,6 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@lobehub/icons": "^5.10.0",
     "@mdx-js/mdx": "^3.1.1",
     "@posthog/next": "^0.4.61",
     "@radix-ui/react-slot": "^1.2.4",

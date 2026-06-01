@@ -6,101 +6,34 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "workerd": "./dist/workers.js",
-      "worker": "./dist/workers.js",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./client": {
-      "types": "./dist/client.d.ts",
-      "import": "./dist/client.js",
-      "default": "./dist/client.js"
+    "./messaging": {
+      "types": "./dist/messaging/index.d.ts",
+      "import": "./dist/messaging/index.js",
+      "default": "./dist/messaging/index.js"
     },
-    "./protocol": {
-      "types": "./dist/protocol.d.ts",
-      "import": "./dist/protocol.js",
-      "default": "./dist/protocol.js"
+    "./delivery": {
+      "types": "./dist/delivery/index.d.ts",
+      "import": "./dist/delivery/index.js",
+      "default": "./dist/delivery/index.js"
     },
-    "./relay": {
-      "types": "./dist/relay.d.ts",
-      "import": "./dist/relay.js",
-      "default": "./dist/relay.js"
+    "./actions": {
+      "types": "./dist/actions/index.d.ts",
+      "import": "./dist/actions/index.js",
+      "default": "./dist/actions/index.js"
     },
-    "./logs": {
-      "types": "./dist/logs.d.ts",
-      "import": "./dist/logs.js",
-      "default": "./dist/logs.js"
+    "./session": {
+      "types": "./dist/session/index.d.ts",
+      "import": "./dist/session/index.js",
+      "default": "./dist/session/index.js"
     },
-    "./consensus": {
-      "types": "./dist/consensus.d.ts",
-      "import": "./dist/consensus.js",
-      "default": "./dist/consensus.js"
-    },
-    "./shadow": {
-      "types": "./dist/shadow.d.ts",
-      "import": "./dist/shadow.js",
-      "default": "./dist/shadow.js"
-    },
-    "./browser": {
-      "types": "./dist/browser.d.ts",
-      "import": "./dist/browser.js",
-      "default": "./dist/browser.js"
-    },
-    "./communicate": {
-      "types": "./dist/communicate/index.d.ts",
-      "import": "./dist/communicate/index.js",
-      "default": "./dist/communicate/index.js"
-    },
-    "./communicate/a2a-types": {
-      "types": "./dist/communicate/a2a-types.d.ts",
-      "import": "./dist/communicate/a2a-types.js",
-      "default": "./dist/communicate/a2a-types.js"
-    },
-    "./communicate/a2a-server": {
-      "types": "./dist/communicate/a2a-server.d.ts",
-      "import": "./dist/communicate/a2a-server.js",
-      "default": "./dist/communicate/a2a-server.js"
-    },
-    "./communicate/a2a-transport": {
-      "types": "./dist/communicate/a2a-transport.d.ts",
-      "import": "./dist/communicate/a2a-transport.js",
-      "default": "./dist/communicate/a2a-transport.js"
-    },
-    "./communicate/a2a-bridge": {
-      "types": "./dist/communicate/a2a-bridge.d.ts",
-      "import": "./dist/communicate/a2a-bridge.js",
-      "default": "./dist/communicate/a2a-bridge.js"
-    },
-    "./communicate/adapters/pi": {
-      "types": "./dist/communicate/adapters/pi.d.ts",
-      "import": "./dist/communicate/adapters/pi.js",
-      "default": "./dist/communicate/adapters/pi.js"
-    },
-    "./communicate/adapters/claude-sdk": {
-      "types": "./dist/communicate/adapters/claude-sdk.d.ts",
-      "import": "./dist/communicate/adapters/claude-sdk.js",
-      "default": "./dist/communicate/adapters/claude-sdk.js"
-    },
-    "./communicate/adapters/codex": {
-      "types": "./dist/communicate/adapters/codex.d.ts",
-      "import": "./dist/communicate/adapters/codex.js",
-      "default": "./dist/communicate/adapters/codex.js"
-    },
-    "./communicate/adapters/ai-sdk": {
-      "types": "./dist/communicate/adapters/ai-sdk.d.ts",
-      "import": "./dist/communicate/adapters/ai-sdk.js",
-      "default": "./dist/communicate/adapters/ai-sdk.js"
-    },
-    "./http": {
-      "types": "./dist/http.d.ts",
-      "import": "./dist/http.js",
-      "default": "./dist/http.js"
-    },
-    "./broker-path": {
-      "types": "./dist/broker-path.d.ts",
-      "import": "./dist/broker-path.js",
-      "default": "./dist/broker-path.js"
+    "./capabilities": {
+      "types": "./dist/capabilities.d.ts",
+      "import": "./dist/capabilities.js",
+      "default": "./dist/capabilities.js"
     }
   },
   "files": [
@@ -115,77 +48,16 @@
     "directory": "packages/sdk"
   },
   "scripts": {
-    "prebuild": "npm --prefix ../config run build && npm --prefix ../cloud run build",
-    "build": "node -e \"const fs=require('fs');for(const f of ['dist/personas.js','dist/personas.js.map','dist/personas.d.ts','dist/personas.d.ts.map'])fs.rmSync(f,{force:true})\" && npx tsc -p tsconfig.build.json",
-    "build:full": "tsc -p tsconfig.json && npm run bundle:binary",
-    "bundle:binary": "node ./scripts/bundle-agent-relay.mjs",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npx tsc -p tsconfig.build.json",
+    "build:full": "npm run build",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/__tests__/integration.test.js",
-    "test:quickstart": "node --test dist/__tests__/quickstart.test.js",
-    "quickstart": "node dist/examples/quickstart.js",
-    "demo": "node dist/examples/demo.js",
-    "ralph": "node dist/examples/ralph-loop.js",
-    "example": "node dist/examples/example.js",
-    "prepack": "npm run build:full"
+    "test": "vitest run src/__tests__/agent-relay.test.ts src/__tests__/facade.test.ts src/__tests__/listeners.test.ts src/__tests__/integrations.test.ts src/__tests__/messaging.test.ts src/__tests__/delivery-actions.test.ts src/__tests__/relaycast-errors.test.ts",
+    "prepack": "npm run build"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
-    "@types/tar": "^6.1.13",
-    "@types/ws": "^8.5.10"
+    "@types/node": "^22.13.10"
   },
   "dependencies": {
-    "@agent-relay/cloud": "7.1.1",
-    "@agent-relay/config": "7.1.1",
-    "@relaycast/sdk": "^1.1.0",
-    "@relayfile/sdk": ">=0.1.2 <1",
-    "@sinclair/typebox": "^0.34.48",
-    "agent-trajectories": "^0.6.0",
-    "chalk": "^4.1.2",
-    "ignore": "^7.0.5",
-    "listr2": "^10.2.1",
-    "tar": "^7.5.10",
-    "ws": "^8.18.3",
-    "yaml": "^2.7.0",
-    "zod": "^3.23.8",
-    "zod-to-json-schema": "^3.23.1"
-  },
-  "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "7.1.1",
-    "@agent-relay/broker-darwin-x64": "7.1.1",
-    "@agent-relay/broker-linux-arm64": "7.1.1",
-    "@agent-relay/broker-linux-x64": "7.1.1",
-    "@agent-relay/broker-win32-x64": "7.1.1"
-  },
-  "peerDependencies": {
-    "@anthropic-ai/claude-agent-sdk": ">=0.1.0",
-    "@google/adk": ">=0.5.0",
-    "@langchain/langgraph": ">=1.2.0",
-    "@mariozechner/pi-coding-agent": ">=0.50.0",
-    "@openai/agents": ">=0.7.0",
-    "ai": ">=5.0.0",
-    "crewai": ">=1.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@anthropic-ai/claude-agent-sdk": {
-      "optional": true
-    },
-    "@google/adk": {
-      "optional": true
-    },
-    "@langchain/langgraph": {
-      "optional": true
-    },
-    "@mariozechner/pi-coding-agent": {
-      "optional": true
-    },
-    "@openai/agents": {
-      "optional": true
-    },
-    "ai": {
-      "optional": true
-    },
-    "crewai": {
-      "optional": true
-    }
+    "@relaycast/sdk": "^2.1.0"
   }
 }

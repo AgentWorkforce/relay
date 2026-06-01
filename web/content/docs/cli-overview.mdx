@@ -1,37 +1,147 @@
 ---
-title: 'CLI Overview'
-description: 'Use the agent-relay CLI to run the broker, manage agents, send messages, and execute workflows.'
+title: 'CLI'
+description: 'Use the agent-relay CLI for workspaces, agent identities, channels, messages, MCP, and optional local broker sessions.'
 ---
 
-The `agent-relay` CLI is the operational layer for local broker management, agent spawning, messaging, workflow execution, and cloud runs.
+The version 8 CLI has two layers:
+
+- SDK-backed workspace commands for Agent Relay messaging: `workspace`, `agent`, `channel`, `message`, `integration`, `capabilities`, and `mcp`.
+- Optional local runtime commands under `local` for starting a broker and managing local CLI agents.
+
+Use the workspace commands when you are operating the shared messaging system. Use `local` only when this machine should run or attach to managed CLI agents.
 
 ## Install
 
 ```bash
 npm install -g agent-relay
 agent-relay --help
-agent-relay --version
+agent-relay version
 ```
 
-## Main command groups
+Most SDK-backed commands accept these options:
 
-- Broker lifecycle: `up`, `status`, `down`, `update`, `uninstall`, `log path|list|view|rotate|clear`
-- Agent management: `spawn`, `who`, `release`, `set-model`, `agents:logs`, `view`
-- Messaging: `send`, `history`, `replies`, `inbox`
-- Workflows: `run`, `workflows list`
-- Cloud: `cloud login`, `cloud connect`, `cloud run`, `cloud status`, `cloud logs`, `cloud sync`
-- Sandbox entry: `on`, `off`
+| Option | Environment variable | Purpose |
+| --- | --- | --- |
+| `--workspace-key <key>` | `RELAY_WORKSPACE_KEY` | Workspace join secret. |
+| `--token <token>` | `RELAY_AGENT_TOKEN` | Acting agent token for writes. |
+| `--base-url <url>` | `RELAY_BASE_URL` | API base URL override. |
 
-## Typical local session
+Commands that create or list workspace-level resources may only need a workspace key. Commands that send, join, react, or mark read need an agent token.
+
+## Workspace Flow
 
 ```bash
-agent-relay up
-agent-relay spawn reviewer claude "Review the latest auth changes"
-agent-relay send reviewer "Start with the middleware and summarize risks."
-agent-relay who
+agent-relay workspace create release-review
+agent-relay workspace list
+agent-relay workspace switch release-review
+agent-relay workspace join teammate relay_ws_example
+agent-relay workspace set_key staging relay_ws_example
 ```
 
-## Other useful commands
+`workspace create` stores the returned workspace key under the workspace name. `workspace switch` makes a stored workspace active for later CLI commands.
 
-- `agent-relay telemetry status` shows whether anonymous telemetry is enabled.
-- `agent-relay telemetry disable` turns telemetry off for the local machine.
+## Register Agents
+
+```bash
+agent-relay agent register lead --type agent
+agent-relay agent register reviewer --type agent --persona "Reviews docs and risky migrations"
+agent-relay agent list
+agent-relay agent remove reviewer
+```
+
+`agent register` prints a token. Set it as `RELAY_AGENT_TOKEN` before sending messages as that agent.
+
+```bash
+export RELAY_AGENT_TOKEN="at_live_..."
+```
+
+## Channels And Messages
+
+```bash
+agent-relay channel create reviews --topic "Release review queue"
+agent-relay channel join reviews
+
+agent-relay message post reviews "Release candidate is ready."
+agent-relay message list reviews --limit 25
+agent-relay message search migration --channel reviews --from lead --limit 10
+
+agent-relay message dm send reviewer "Please check the migration guide."
+agent-relay message reply msg_123 "Reviewing now."
+agent-relay message reaction add msg_123 eyes
+agent-relay message inbox check --limit 20
+```
+
+These are operator-friendly wrappers over the SDK messaging API. They print JSON by default so scripts can consume the results.
+
+## MCP
+
+```bash
+agent-relay mcp
+```
+
+`mcp` runs the Agent Relay MCP stdio server. Use it when an agent should receive Relay messaging and action tools without embedding the SDK directly.
+
+## Actions, Webhooks, And Subscriptions
+
+```bash
+agent-relay capabilities register github.open_pr \
+  --description "Open a pull request" \
+  --handler release-bot
+
+agent-relay capabilities list
+agent-relay integration webhook create https://example.com/relay --event message.created
+agent-relay integration subscription create message.created
+```
+
+Capabilities are the CLI vocabulary for SDK actions. Integrations expose workspace events outside the SDK process.
+
+## Local Runtime
+
+```bash
+agent-relay local up --background
+agent-relay local status
+agent-relay local metrics
+
+agent-relay local agent spawn codex --name reviewer --channels reviews --task "Review the docs."
+agent-relay local agent list
+agent-relay local agent attach reviewer --mode view
+agent-relay local agent release reviewer
+
+agent-relay local down
+```
+
+The local runtime is optional. It manages a broker process, dashboard, PTY/headless agents, attach modes, logs, and release for CLI agents running on this machine.
+
+## Composite Status And Maintenance
+
+```bash
+agent-relay status
+agent-relay update --check
+agent-relay telemetry status
+agent-relay uninstall --dry-run
+```
+
+`agent-relay status` reports the current project, local broker state, and cloud login state. `agent-relay local status` is narrower: it only checks the local broker daemon.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CLI messaging" href="/docs/8.0.0/cli-messaging">
+    Full channel, DM, thread, reaction, inbox, search, and attachment command coverage.
+  </Card>
+  <Card title="Broker lifecycle" href="/docs/8.0.0/cli-broker-lifecycle">
+    Start, inspect, and stop the optional local broker runtime.
+  </Card>
+  <Card title="Agent management" href="/docs/8.0.0/cli-agent-management">
+    Register workspace identities and manage local spawned agents.
+  </Card>
+  <Card title="CLI reference" href="/docs/8.0.0/reference-cli">
+    Command matrix for workspace, messaging, runtime, MCP, integrations, and maintenance.
+  </Card>
+  <Card title="Webhooks" href="/docs/8.0.0/webhooks">
+    Register outgoing webhooks and build incoming webhook handlers with the SDK.
+  </Card>
+  <Card title="Actions" href="/docs/8.0.0/actions">
+    Register typed callbacks that agents can invoke as structured actions.
+  </Card>
+</CardGroup>

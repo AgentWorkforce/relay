@@ -910,6 +910,7 @@ jobs:
           - sdk
           - telemetry
           - brand
+          - harness-driver
 
     steps:
       - name: Checkout code
@@ -992,6 +993,7 @@ jobs:
           - sdk
           - telemetry
           - utils
+          - harness-driver
 
     steps:
       - name: Checkout code
@@ -1512,9 +1514,6 @@ jobs:
           echo "NPM_TARBALL=${TARBALLS[0]}" >> "$GITHUB_ENV"
           echo "Packed tarball: ${TARBALLS[0]}"
           ls -lh "${TARBALLS[0]}"
-
-      - name: Validate npm tarball
-        run: node packages/cli/scripts/validate-npm-tarball.mjs "$NPM_TARBALL"
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'

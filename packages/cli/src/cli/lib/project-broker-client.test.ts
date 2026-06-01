@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const connectMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@agent-relay/sdk', () => ({
-  AgentRelayClient: {
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: {
     connect: connectMock,
   },
 }));

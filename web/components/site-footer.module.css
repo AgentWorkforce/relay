@@ -7,7 +7,7 @@
 
 .inner {
   display: grid;
-  grid-template-columns: 1.2fr 2fr;
+  grid-template-columns: 1fr 3fr;
   gap: 48px;
   max-width: 1280px;
   margin: 0 auto;
@@ -50,7 +50,7 @@
 
 .columns {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 32px;
 }
 
@@ -96,16 +96,6 @@
   flex-wrap: wrap;
 }
 
-.footerToggle {
-  display: flex;
-  align-items: center;
-  --nav-fg: var(--footer-fg);
-  --nav-surface: color-mix(in srgb, var(--footer-fg) 10%, transparent);
-  --nav-surface-hover: color-mix(in srgb, var(--footer-fg) 16%, transparent);
-  --nav-border: color-mix(in srgb, var(--footer-fg) 18%, transparent);
-  --nav-border-strong: color-mix(in srgb, var(--footer-fg) 28%, transparent);
-}
-
 .copy {
   font-size: 0.78rem;
   color: var(--footer-faint);
@@ -144,5 +134,12 @@
 
   .bottomMeta {
     width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px 24px;
   }
 }

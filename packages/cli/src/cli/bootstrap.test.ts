@@ -2,55 +2,28 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { createProgram } from './bootstrap.js';
-import { parseVerblessAlias } from './lib/spawn-and-attach.js';
 
 const expectedLeafCommands = [
-  'up',
-  'start',
-  'down',
+  // local broker + agent group
+  'local up',
+  'local down',
+  'local status',
+  'local metrics',
+  'local tail',
+  'local agent list',
+  'local agent spawn',
+  'local agent new',
+  'local agent release',
+  'local agent set-model',
+  'local agent attach',
+  // top-level composite status + maintenance + telemetry + mcp
   'status',
-  'uninstall',
   'version',
   'update',
-  'mcp',
-  'bridge',
-  'spawn',
-  'agents',
-  'who',
-  'agents:logs',
-  'activity',
-  'broker-spawn',
-  'release',
-  'set-model',
-  'agents:kill',
-  'send',
-  'read',
-  'history',
-  'inbox',
-  'replies',
-  'login',
-  'metrics',
-  'health',
-  'profile',
-  'auth',
-  'init',
-  'setup',
-  'swarm',
+  'uninstall',
   'telemetry',
-  'on',
-  'off',
-  'connect',
-  'view',
-  'drive',
-  'passthrough',
-  'new',
-  'rm',
-  'dlq list',
-  'dlq inspect',
-  'dlq replay',
-  'dlq purge',
-  'workspaces create',
-  'tokens issue',
+  'mcp',
+  // cloud
   'cloud login',
   'cloud logout',
   'cloud whoami',
@@ -62,11 +35,53 @@ const expectedLeafCommands = [
   'cloud logs',
   'cloud sync',
   'cloud cancel',
-  'log path',
-  'log list',
-  'log view',
-  'log rotate',
-  'log clear',
+  // workspace
+  'workspace create',
+  'workspace list',
+  'workspace set_key',
+  'workspace join',
+  'workspace switch',
+  // agent (messaging directory)
+  'agent register',
+  'agent list',
+  'agent add',
+  'agent remove',
+  // channel
+  'channel create',
+  'channel list',
+  'channel join',
+  'channel leave',
+  'channel invite',
+  'channel set_topic',
+  'channel archive',
+  // message
+  'message post',
+  'message list',
+  'message reply',
+  'message get_thread',
+  'message search',
+  'message dm send',
+  'message dm list',
+  'message dm send_group',
+  'message reaction add',
+  'message reaction remove',
+  'message inbox check',
+  'message inbox mark_read',
+  'message inbox get_readers',
+  'message file upload',
+  // integration
+  'integration webhook create',
+  'integration webhook list',
+  'integration webhook delete',
+  'integration webhook trigger',
+  'integration subscription create',
+  'integration subscription list',
+  'integration subscription get',
+  'integration subscription delete',
+  // capabilities
+  'capabilities register',
+  'capabilities list',
+  'capabilities delete',
 ];
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -93,167 +108,56 @@ describe('bootstrap CLI', () => {
     expect(program.name()).toBe('agent-relay');
   });
 
-  it('registers all expected command groups and leaves out create-agent', () => {
+  it('registers the expected command groups', () => {
     const program = createProgram();
     const topLevelCommands = program.commands.map((command) => command.name());
 
     expect(topLevelCommands).toEqual(
       expect.arrayContaining([
-        'up',
-        'start',
-        'down',
+        'local',
+        'cloud',
+        'workspace',
+        'agent',
+        'channel',
+        'message',
+        'integration',
+        'capabilities',
         'status',
-        'uninstall',
         'version',
         'update',
+        'uninstall',
+        'telemetry',
         'mcp',
-        'bridge',
-        'spawn',
-        'agents',
-        'who',
-        'agents:logs',
-        'activity',
-        'broker-spawn',
-        'release',
-        'set-model',
-        'agents:kill',
-        'send',
-        'read',
-        'history',
-        'inbox',
-        'replies',
-        'login',
-        'cloud',
+      ])
+    );
+    // The dashboard-era surface is gone.
+    expect(topLevelCommands).not.toEqual(
+      expect.arrayContaining([
+        'driver',
+        'start',
+        'view',
+        'drive',
+        'passthrough',
         'metrics',
         'health',
         'profile',
-        'auth',
-        'init',
-        'setup',
+        'send',
+        'read',
+        'history',
+        'replies',
+        'spawn',
+        'agents',
         'swarm',
-        'telemetry',
         'on',
-        'off',
-        'dlq',
-        'workspaces',
-        'tokens',
+        'rm',
       ])
     );
-    expect(topLevelCommands).not.toContain('create-agent');
   });
 
-  it('registers the expected number of executable commands', () => {
+  it('registers the expected executable commands', () => {
     const program = createProgram();
     const leafCommandPaths = collectLeafCommandPaths(program);
 
-    expect(leafCommandPaths).toHaveLength(expectedLeafCommands.length);
-    expect(leafCommandPaths).toEqual(expect.arrayContaining(expectedLeafCommands));
-    expect(leafCommandPaths).not.toContain('create-agent');
-  });
-});
-
-describe('verbless `-n NAME CLI` silent alias', () => {
-  // Build the verb set the same way `runCli` does so the test exercises
-  // the real exclusion list. If a new verb is registered without
-  // updating `expectedLeafCommands`, the leaf-count test above catches
-  // that — here we just need the live snapshot.
-  function knownVerbs(): Set<string> {
-    const program = createProgram();
-    const verbs = new Set<string>();
-    for (const command of program.commands) {
-      verbs.add(command.name());
-      for (const alias of command.aliases()) {
-        verbs.add(alias);
-      }
-    }
-    return verbs;
-  }
-
-  it('recognises `-n NAME CLI`', () => {
-    const result = parseVerblessAlias(['-n', 'Alice', 'claude'], knownVerbs());
-    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
-  });
-
-  it('recognises `--name NAME CLI [args...]`', () => {
-    const result = parseVerblessAlias(['--name', 'Alice', 'claude', '--say', 'hi'], knownVerbs());
-    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
-  });
-
-  it('recognises the joined `-nNAME` short-flag form', () => {
-    const result = parseVerblessAlias(['-nAlice', 'claude'], knownVerbs());
-    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
-  });
-
-  it('recognises the `--name=NAME` equals form', () => {
-    const result = parseVerblessAlias(['--name=Alice', 'claude'], knownVerbs());
-    expect(result).toEqual({ name: 'Alice', cli: 'claude', args: [] });
-  });
-
-  it('returns null when no -n flag is present (lets commander handle it)', () => {
-    expect(parseVerblessAlias(['spawn', 'Alice', 'claude'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['view', 'Alice'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias([], knownVerbs())).toBeNull();
-  });
-
-  it('returns null when -n has no value', () => {
-    expect(parseVerblessAlias(['-n'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['--name'], knownVerbs())).toBeNull();
-  });
-
-  it('returns null when -n has a value but no CLI positional follows', () => {
-    expect(parseVerblessAlias(['-n', 'Alice'], knownVerbs())).toBeNull();
-  });
-
-  it('returns null when the first positional after -n is a known verb', () => {
-    // `-n NAME drive` is too ambiguous — let commander error.
-    expect(parseVerblessAlias(['-n', 'Alice', 'drive'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'view'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'passthrough'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'new'], knownVerbs())).toBeNull();
-  });
-
-  it('returns null when help / version flags are present', () => {
-    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '--help'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-h'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '--version'], knownVerbs())).toBeNull();
-    expect(parseVerblessAlias(['-n', 'Alice', 'claude', '-V'], knownVerbs())).toBeNull();
-  });
-
-  it('byte-equivalence: alias parse matches what `new NAME CLI --attach --mode passthrough --ephemeral` would dispatch', () => {
-    // The alias dispatcher hardcodes `mode: 'passthrough'` and `ephemeral: true`
-    // and feeds the parsed `name`, `cli`, `args` to `runSpawnAndAttach`.
-    // The `new --attach` command path receives the same three positions
-    // from commander and feeds them to the same function. The two paths
-    // are byte-equivalent iff the parser extracts the same triplet here.
-    const argvForAlias = ['-n', 'Alice', 'claude', '--say', 'hi'];
-    // What `new Alice claude --attach --mode passthrough --ephemeral --say hi`
-    // decomposes into at the commander action layer: positional
-    // `<name>` ('Alice'), positional `<cli>` ('claude'), variadic
-    // `[args...]` (['--say', 'hi']). `--attach` / `--mode` / `--ephemeral`
-    // are flags that tell the action to take the spawn-and-attach path
-    // with the alias's hardcoded preset.
-    const newAttachArgv = [
-      'new',
-      'Alice',
-      'claude',
-      '--attach',
-      '--mode',
-      'passthrough',
-      '--ephemeral',
-      '--say',
-      'hi',
-    ];
-
-    const aliasParsed = parseVerblessAlias(argvForAlias, knownVerbs());
-    expect(aliasParsed).toEqual({ name: 'Alice', cli: 'claude', args: ['--say', 'hi'] });
-
-    // Pull the same triplet out of the `new --attach` argv:
-    const newName = newAttachArgv[1]; // 'Alice'
-    const newCli = newAttachArgv[2]; // 'claude'
-    // Commander strips known flags from the variadic; the user-passed
-    // `--say hi` survives as part of `[args...]`. Simulated here by
-    // taking everything after the trailing flag block.
-    const newVariadic = newAttachArgv.slice(7); // ['--say', 'hi']
-    expect({ name: newName, cli: newCli, args: newVariadic }).toEqual(aliasParsed);
+    expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
   });
 });

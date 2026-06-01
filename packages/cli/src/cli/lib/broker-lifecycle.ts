@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AgentRelayClient } from '@agent-relay/sdk';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
@@ -46,8 +46,8 @@ export interface BrokerConnection {
 }
 
 type BrokerStatusDetails = {
-  status: Awaited<ReturnType<AgentRelayClient['getStatus']>>;
-  session: Awaited<ReturnType<AgentRelayClient['getSession']>> | null;
+  status: Awaited<ReturnType<HarnessDriverClient['getStatus']>>;
+  session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
 };
 
 type BrokerReadiness =
@@ -770,10 +770,15 @@ function getDashboardSpawnEnv(
     RELAY_URL: relayUrl,
     VERBOSE: enableVerboseLogging || deps.env.VERBOSE === 'true' ? 'true' : deps.env.VERBOSE,
   };
-  // Pass the workspace API key so the dashboard can make Relaycast API calls
+  // Pass the workspace key so the dashboard can make Agent Relay calls
   // (e.g. posting thread replies) without requiring a relaycast.json file.
-  if (relayApiKey && !env.RELAY_API_KEY) {
-    env.RELAY_API_KEY = relayApiKey;
+  if (relayApiKey) {
+    if (!env.RELAY_WORKSPACE_KEY) {
+      env.RELAY_WORKSPACE_KEY = relayApiKey;
+    }
+    if (!env.RELAY_API_KEY) {
+      env.RELAY_API_KEY = relayApiKey;
+    }
   }
   // Pass the broker API key so the dashboard can authenticate with the
   // broker's HTTP API (e.g. /api/spawn, /api/spawned).
@@ -1459,8 +1464,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     // If a workspace key was explicitly provided, inject it into the environment
-    // so the Rust broker picks it up via RELAY_API_KEY.
+    // for both current tools and older compatibility paths.
     if (options.workspaceKey) {
+      deps.env.RELAY_WORKSPACE_KEY = options.workspaceKey;
       deps.env.RELAY_API_KEY = options.workspaceKey;
     }
 
@@ -1772,7 +1778,7 @@ function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): n
 }
 
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
-  const client = new AgentRelayClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
   try {
     const status = await client.getStatus();
     const session = await client.getSession().catch(() => null);

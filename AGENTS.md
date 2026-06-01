@@ -49,9 +49,9 @@ corrected published release.
 
 ## .trajectories Must Be Tracked
 
-**CRITICAL: Never add `.trajectories/` to `.gitignore`.**
+**CRITICAL: Never add `.agentworkforce/trajectories/` to `.gitignore`.**
 
-The `.trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
+The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
 

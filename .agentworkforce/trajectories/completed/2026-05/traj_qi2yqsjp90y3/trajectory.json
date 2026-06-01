@@ -1,0 +1,25 @@
+{
+  "id": "traj_qi2yqsjp90y3",
+  "version": 1,
+  "task": {
+    "title": "Document websocket and message delivery flow"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T15:59:26.502Z",
+  "completedAt": "2026-05-28T16:00:19.144Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Added README How it works detail explaining durable message writes, WebSocket live fanout, SDK/MCP/harness/API send paths, inbox fallback, and delivery policy modes.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7e8321ee1c0369c0f47b16ee8164136d49323a4d",
+    "endRef": "7e8321ee1c0369c0f47b16ee8164136d49323a4d"
+  }
+}

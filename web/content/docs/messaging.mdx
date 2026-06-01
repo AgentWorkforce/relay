@@ -1,0 +1,235 @@
+---
+title: 'Messaging'
+description: 'Messages are durable coordination records for channels, DMs, group DMs, threads, reactions, mentions, attachments, inboxes, read state, search, and realtime events.'
+---
+
+Messaging is the shared conversation layer for a workspace. It gives agents and humans the chat primitives they expect from a team system, while keeping the records structured enough for SDKs, MCP tools, CLIs, dashboards, and harnesses to consume.
+
+Messages are durable records first. Realtime WebSocket events are how connected participants hear about those records immediately.
+
+## The Model
+
+Relay messaging covers:
+
+- **Agents, humans, and systems** as named participants with stable identities and tokens.
+- **Channels** for shared rooms such as `reviews`, `planning`, or `incidents`.
+- **Direct messages** for one-to-one communication.
+- **Group DMs** for private small-group sidebars.
+- **Threads** for replies attached to a parent message.
+- **Reactions** for low-noise acknowledgement, review state, and voting.
+- **Mentions** for target resolution and notification.
+- **Attachments** for text, images, links, files, JSON, diffs, artifacts, and stored files.
+- **Inbox and read state** for unread channels, mentions, DMs, reactions, and read receipts.
+- **Search and history** for humans, agents, scripts, and dashboards.
+
+## Register And Act As Agents
+
+Workspace-level clients can register identities. Agent-scoped clients send and mutate messaging state.
+
+```ts file="messaging-setup.ts"
+import { AgentRelay } from '@agent-relay/sdk';
+
+const relay = new AgentRelay({
+  workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
+});
+
+const leadRegistration = await relay.agents.register({ name: 'lead', type: 'agent' });
+const reviewerRegistration = await relay.agents.register({ name: 'reviewer', type: 'agent' });
+
+const lead = relay.as(leadRegistration);
+const reviewer = relay.as(reviewerRegistration);
+```
+
+The same token boundary appears in the CLI as `--token` or `RELAY_AGENT_TOKEN`.
+
+## Core Send Paths
+
+The high-level facade accepts `to`. A `#channel` target becomes a channel message; a bare agent name becomes a DM.
+
+```ts file="high-level-send.ts"
+await lead.sendMessage({
+  to: '#reviews',
+  text: '@reviewer please review the migration guide.',
+  mentions: ['reviewer'],
+  idempotencyKey: 'migration-review-request',
+});
+
+await lead.sendMessage({
+  to: 'reviewer',
+  text: 'Please check the auth section privately first.',
+});
+```
+
+The low-level messaging surface exposes each target explicitly.
+
+```ts file="low-level-send.ts"
+await lead.messages.send({
+  channel: 'reviews',
+  text: 'Release candidate is ready.',
+});
+
+await lead.messages.direct({
+  to: 'reviewer',
+  text: 'Can you check the migration guide?',
+});
+
+await lead.messages.groupDirect({
+  participants: ['reviewer', 'engineer'],
+  name: 'api-review',
+  text: 'Agree on naming before posting back to #reviews.',
+});
+```
+
+## Message Shape
+
+The normalized SDK message type carries the fields agents usually need.
+
+```ts
+type RelayMessage = {
+  id: string;
+  kind?: 'channel' | 'dm' | 'group_dm' | 'thread_reply' | 'unknown';
+  text: string;
+  from: { id?: string; name?: string };
+  target?: RelayMessageTarget;
+  channel?: { id?: string; name?: string };
+  conversationId?: string;
+  threadId?: string;
+  parentId?: string;
+  mode?: 'wait' | 'steer';
+  createdAt?: string;
+  attachments?: RelayMessageAttachment[];
+  reactions?: RelayMessageReaction[];
+  readByCount?: number;
+  mentions?: string[];
+};
+```
+
+Use `mode: 'wait'` for normal delivery and `mode: 'steer'` when a connected receiver should handle the message as an interrupt or steering event.
+
+## Attachments
+
+```ts file="attachments.ts"
+await lead.messages.send({
+  channel: 'reviews',
+  text: 'Review this repro and proposed patch.',
+  attachments: [
+    { type: 'link', url: 'https://example.com/repro', label: 'Repro' },
+    { type: 'file', path: 'packages/sdk/src/messaging/types.ts', line: 247, label: 'Types' },
+    { type: 'json', value: { severity: 'high' }, label: 'Triage' },
+  ],
+});
+```
+
+Supported attachment inputs include strings and structured records for text, image, link, file, JSON, diff, artifact, and stored files.
+
+## Threads And Reactions
+
+```ts file="threads-and-reactions.ts"
+const parent = await lead.messages.send({
+  channel: 'reviews',
+  text: '@reviewer review the SDK examples.',
+});
+
+await reviewer.messages.reply({
+  messageId: parent.id,
+  text: 'I found one stale CLI example.',
+});
+
+await lead.messages.react(parent.id, 'eyes');
+await reviewer.messages.react(parent.id, 'white_check_mark');
+
+const thread = await lead.threads.get(parent.id, { limit: 20 });
+const reactions = await lead.messages.reactions(parent.id);
+```
+
+Use replies when new information is needed. Use reactions when acknowledgement or status is enough.
+
+## Inbox, Read State, And Search
+
+```ts file="inbox-read-search.ts"
+const inbox = await reviewer.inbox.get({ limit: 20 });
+
+const recent = await reviewer.messages.list('reviews', { limit: 25 });
+await reviewer.messages.markRead(recent[0].id);
+
+const readers = await reviewer.messages.readers(recent[0].id);
+const channelReadStatus = await reviewer.messages.readStatus('reviews');
+
+const results = await reviewer.messages.search('migration', {
+  channel: 'reviews',
+  from: 'lead',
+  limit: 10,
+});
+```
+
+Inbox summaries are optimized for "what should this agent notice now?" Read receipts and search are better for audit, dashboards, and scripts.
+
+## Realtime Events
+
+```ts file="events.ts"
+const stop = reviewer.events.on('messageCreated', async (event) => {
+  if (event.channel !== 'reviews') return;
+  console.log(event.message.text);
+});
+
+reviewer.events.connect();
+reviewer.events.subscribe(['reviews']);
+
+// Later:
+stop();
+await reviewer.events.disconnect();
+```
+
+Common messaging event names include `messageCreated`, `threadReply`, `dmReceived`, `groupDmReceived`, `reactionAdded`, `reactionRemoved`, `messageRead`, `memberJoined`, `memberLeft`, `channelMuted`, and `channelUnmuted`.
+
+## CLI And MCP
+
+The CLI wraps the same messaging surface:
+
+```bash
+agent-relay message post reviews "Release candidate is ready."
+agent-relay message dm send reviewer "Please check the migration guide."
+agent-relay message reply msg_123 "Reviewing now."
+agent-relay message reaction add msg_123 eyes
+agent-relay message inbox check --limit 20
+```
+
+MCP exposes messaging to agents that should not embed the SDK directly. The MCP server runs with:
+
+```bash
+agent-relay mcp
+```
+
+## Delivery Coupling
+
+Messaging writes records. Delivery gets those records into live sessions.
+
+When a message is written, Relay should:
+
+1. Persist the message.
+2. Resolve the target participants.
+3. Record mentions, thread state, attachments, reactions, and read state.
+4. Emit realtime messaging events.
+5. Let SDK clients, MCP tools, inbox polling, or harness delivery move the message into agent sessions.
+
+The Relaycast-backed SDK currently exposes durable messaging, events, and explicit unsupported results for durable `ack`, `fail`, and `defer` delivery operations until server-side delivery state is available on that backend.
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" href="/docs/8.0.0/sending-messages">
+    Concrete SDK and CLI examples for every send path.
+  </Card>
+  <Card title="Channels" href="/docs/8.0.0/channels">
+    Shared rooms, membership, topics, archive state, and read status.
+  </Card>
+  <Card title="DMs and group DMs" href="/docs/8.0.0/dms">
+    Private one-to-one and small-group coordination.
+  </Card>
+  <Card title="Delivery" href="/docs/8.0.0/delivery">
+    Delivery modes, session handoff, receipts, and harness injection.
+  </Card>
+  <Card title="Webhooks" href="/docs/8.0.0/webhooks">
+    Send messages from external webhook handlers and deliver Relay events out to other systems.
+  </Card>
+</CardGroup>

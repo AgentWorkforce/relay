@@ -1,6 +1,6 @@
 /**
  * Agent Relay
- * Real-time agent-to-agent communication system.
+ * Public agent communication surface.
  */
 
 export * from '@agent-relay/sdk';

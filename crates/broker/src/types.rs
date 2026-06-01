@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{
-    AgentId, ChannelName, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+    AgentId, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
 };
 use crate::protocol::MessageInjectionMode;
 
@@ -154,25 +154,6 @@ pub struct InboundRelayEvent {
     pub text: String,
     pub thread_id: Option<ThreadId>,
     pub priority: RelayPriority,
-}
-
-/// A command invocation event received over WebSocket.
-/// Relaycast emits these as `type: "command.invoked"` when an agent invokes
-/// a registered command (e.g. `/spawn`, `/release`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrokerCommandEvent {
-    /// The slash command name (e.g. "/spawn", "/release").
-    pub command: String,
-    pub workspace_id: WorkspaceId,
-    pub workspace_alias: Option<WorkspaceAlias>,
-    /// Channel the command was invoked in.
-    pub channel: ChannelName,
-    /// Agent ID or name of the invoker.
-    pub invoked_by: String,
-    /// Target command handler agent ID, when provided by Relaycast.
-    pub handler_agent_id: Option<AgentId>,
-    /// Structured parameters for the command.
-    pub payload: BrokerCommandPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
