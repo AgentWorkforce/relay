@@ -18,14 +18,17 @@ Expanded v8 docs for CLI, messaging, webhooks, and action callbacks; added focus
 ## Key Decisions
 
 ### Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices
+
 - **Chose:** Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices
 - **Reasoning:** Package drives harnesses, not a runtime itself; topology-neutral name; release pipeline must publish the new exact-version CLI dep or publish-main wait-gate times out
 
 ### Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents
+
 - **Chose:** Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents
 - **Reasoning:** User chose README-as-source-of-truth with create({relay}) spawning real PTY sessions; broker joins relay's workspace via RELAY_API_KEY env; status predicates match name-keyed events
 
 ### Document v8 from the current SDK-backed command groups
+
 - **Chose:** Document v8 from the current SDK-backed command groups
 - **Reasoning:** The existing v8 docs describe the intended product shape but omit concrete pages for the implemented CLI and messaging surfaces. The new docs will use the current command/API names and add versioned links for slugs that overlap v7.
 
@@ -34,7 +37,8 @@ Expanded v8 docs for CLI, messaging, webhooks, and action callbacks; added focus
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices: Renamed @agent-relay/runtime -> @agent-relay/harness-driver; client RuntimeClient -> HarnessDriverClient (+ Options/Events/ProtocolError); kept domain terms AgentRuntime/HarnessRuntime/Spawn*Runtime*; added harness-driver to publish.yml publish-packages and publish-main-runtime-deps matrices
 - Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents: Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents
