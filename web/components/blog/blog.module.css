@@ -144,8 +144,7 @@
   border: 1px solid rgba(116, 184, 226, 0.18);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(156, 207, 255, 0.12), rgba(156, 207, 255, 0.035)),
-    rgba(15, 27, 41, 0.72);
+    linear-gradient(180deg, rgba(156, 207, 255, 0.12), rgba(156, 207, 255, 0.035)), rgba(15, 27, 41, 0.72);
   color: inherit;
   text-decoration: none;
   box-shadow:
@@ -227,8 +226,7 @@
   height: 42px;
   border-radius: 50%;
   background:
-    linear-gradient(135deg, rgba(116, 184, 226, 0.22), rgba(193, 103, 75, 0.18)),
-    rgba(12, 28, 42, 0.95);
+    linear-gradient(135deg, rgba(116, 184, 226, 0.22), rgba(193, 103, 75, 0.18)), rgba(12, 28, 42, 0.95);
   border: 1px solid rgba(116, 184, 226, 0.24);
   color: var(--fg);
   font-size: 0.78rem;

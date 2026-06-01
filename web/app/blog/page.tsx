@@ -107,7 +107,9 @@ export default function BlogIndexPage() {
                 <div className={styles.postMeta}>
                   <span className={styles.postCategory}>{featuredPost.frontmatter.category}</span>
                   <span className={styles.postDot}>·</span>
-                  <time dateTime={featuredPost.frontmatter.date}>{formatDate(featuredPost.frontmatter.date)}</time>
+                  <time dateTime={featuredPost.frontmatter.date}>
+                    {formatDate(featuredPost.frontmatter.date)}
+                  </time>
                   <span className={styles.postDot}>·</span>
                   <span>{featuredPost.readTime}</span>
                 </div>
@@ -126,7 +128,9 @@ export default function BlogIndexPage() {
                   </span>
                   <span className={styles.authorInfo}>
                     <span className={styles.authorLabel}>Written by</span>
-                    <span className={styles.authorName}>{featuredAuthor?.name ?? featuredPost.frontmatter.author}</span>
+                    <span className={styles.authorName}>
+                      {featuredAuthor?.name ?? featuredPost.frontmatter.author}
+                    </span>
                     {featuredAuthor && <span className={styles.authorRole}>{featuredAuthor.title}</span>}
                   </span>
                 </div>

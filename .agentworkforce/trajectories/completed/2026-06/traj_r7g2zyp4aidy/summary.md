@@ -18,6 +18,7 @@ Restyled web blog pages around a full-width hero and left metadata/TOC rail, upd
 ## Key Decisions
 
 ### Use home-page band styling and a left rail for blog posts
+
 - **Chose:** Use home-page band styling and a left rail for blog posts
 - **Reasoning:** The reference design is structural: full-width hero first, then author metadata and table of contents in a left sidebar with the article column beside it. Reusing the home page's blue band tokens keeps the blog consistent without copying the screenshot colors.
 
@@ -26,6 +27,7 @@ Restyled web blog pages around a full-width hero and left metadata/TOC rail, upd
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use home-page band styling and a left rail for blog posts: Use home-page band styling and a left rail for blog posts

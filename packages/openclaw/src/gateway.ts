@@ -958,8 +958,7 @@ export class OpenClawGatewayClient {
     if (msg.type === 'res' && msg.id === 'connect-1') {
       if (msg.ok) {
         this.clearConnectTimeout();
-        const versionUsed =
-          this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
+        const versionUsed = this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
         console.log(
           `[openclaw-ws] Authenticated successfully (payload=${versionUsed}${this.fallbackAttempted ? ', via fallback' : ''})`
         );
@@ -989,7 +988,8 @@ export class OpenClawGatewayClient {
             console.error(`[openclaw-ws] Approve this device:  openclaw devices approve ${requestId}`);
           }
           console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
-          const configHint = authCompat === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
+          const configHint =
+            authCompat === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
           console.error(
             `[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ${configHint} gateway.auth.token`
           );
