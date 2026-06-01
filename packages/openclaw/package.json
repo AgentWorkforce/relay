@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@agent-relay/harness-driver": "7.1.1",
-    "@relaycast/sdk": "^2.0.0",
+    "@relaycast/sdk": "^2.1.0",
     "ws": "^8.0.0"
   },
   "optionalDependencies": {
