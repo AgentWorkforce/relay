@@ -46,7 +46,7 @@ export const docsNav: NavGroup[] = [
     title: 'Reference',
     items: [
       { title: 'TypeScript SDK', slug: 'typescript-sdk' },
-      { title: 'Migration guide', slug: 'migration' },
+      { title: 'Migration to version 8', slug: 'migration' },
     ],
   },
 ];

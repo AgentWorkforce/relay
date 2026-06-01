@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { AgentRelay } from '@agent-relay/sdk';
+import {
+  AgentRelay,
+  defineHarness,
+  normalizeAgentIdentity,
+  MINIMAL_AGENT_SESSION_CAPABILITIES,
+} from '@agent-relay/sdk';
 import { registerDriverActions, type AgentDriver } from '@agent-relay/harness-driver';
 
 import { claude, codex } from './index.js';
@@ -13,13 +18,27 @@ import { claude, codex } from './index.js';
  */
 async function quickStart(): Promise<void> {
   const relay = await AgentRelay.createWorkspace({ name: 'support-triage' });
-  const harnesses = { claude, codex };
 
-  const complaintTriager = await harnesses.claude.create({ model: 'sonnet' });
-  const engineer = await harnesses.codex.create({ model: 'gpt-5.5' });
-  const taskManager = await harnesses.claude.create({ model: 'sonnet' });
+  // Custom harnesses defined via defineHarness register like the managed ones.
+  const myCustomHarness = defineHarness({
+    name: 'task-bot',
+    create: async (_input, ctx) => {
+      const identity = normalizeAgentIdentity(ctx.agent);
+      return {
+        identity,
+        capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
+        receiveMessage: async () => ({ status: 'delivered', deliveryId: identity.id }),
+        release: async () => {},
+      };
+    },
+  });
+  const harnesses = { claude, codex, custom: myCustomHarness };
 
-  await relay.workspace.register([complaintTriager, engineer, taskManager]);
+  const complaintTriager = await harnesses.claude.create({ relay, model: 'sonnet' });
+  const engineer = await harnesses.codex.create({ relay, model: 'gpt-5.5' });
+
+  const taskManager = await harnesses.custom.create();
+  await relay.workspace.register(taskManager);
 
   await relay.sendMessage({
     to: '#customer-complaints',
@@ -41,8 +60,7 @@ async function quickStart(): Promise<void> {
     input: z.object({ model: z.enum(['opus', 'sonnet']) }),
     availableTo: [taskManager, engineer],
     handler: async ({ input }) => {
-      const agent = claude.new({ model: input.model });
-      await relay.workspace.register(agent);
+      const agent = await claude.create({ relay, model: input.model });
       return { agentId: agent.id, handle: agent.handle };
     },
   });

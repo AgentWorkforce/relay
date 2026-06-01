@@ -23,22 +23,43 @@ import {
 } from '../index.js';
 
 describe('session contract helpers', () => {
-  it('defines harnesses that create sessions with identity, capabilities, receive, and release', async () => {
-    const harness = defineHarness<{ name: string }>({
-      name: 'test-harness',
-      create: async (input, context) => ({
-        identity: normalizeAgentIdentity({
+  const reviewBot = () =>
+    defineHarness<{ name: string }>({
+      name: 'review-bot',
+      create: async (input, context) => {
+        const identity = normalizeAgentIdentity({
           id: context.agent.id,
           name: input.name,
           handle: context.agent.handle,
-        }),
-        capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
-        receiveMessage: async () => ({ status: 'delivered', deliveryId: 'del_session' }),
-        release: async () => {},
-      }),
+        });
+        return {
+          identity,
+          capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
+          receiveMessage: async () => ({ status: 'delivered', deliveryId: 'del_session' }),
+          release: async () => {},
+        };
+      },
     });
 
-    const session = await harness.create(
+  it('produces registerable agents from a harness factory — no driver needed', async () => {
+    const harness = reviewBot();
+
+    const agent = harness.new({ name: 'reviewer' });
+    expect(agent.name).toBe('reviewer');
+    expect(agent.kind).toBe('session');
+    expect(agent.config).toBe(harness.config);
+    expect(agent.input).toEqual({ name: 'reviewer' });
+    // The handle carries listener predicate builders like the managed harnesses.
+    expect(typeof agent.status.becomes).toBe('function');
+    expect(typeof agent.tools.called).toBe('function');
+
+    const created = await harness.create({ name: 'second' });
+    expect(created.name).toBe('second');
+    expect(created.kind).toBe('session');
+  });
+
+  it('keeps the adapter on config so a runtime can bring the live session online', async () => {
+    const session = await reviewBot().config.create(
       { name: 'reviewer' },
       { agent: { id: 'agent_reviewer', name: 'reviewer', handle: '@reviewer' } }
     );

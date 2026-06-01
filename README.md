@@ -86,20 +86,41 @@ The core of relay is the messaging layer, but we make it very easy to work with 
 // Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server. They can be
 // running anywhere (they don't need to be on the same machine) as long as they have access to the internet
 import { claude, codex } from '@agent-relay/harnesses';
-import { myCustomHarness } from './my-custom-harness';
+import { defineHarness, normalizeAgentIdentity, MINIMAL_AGENT_SESSION_CAPABILITIES } from '@agent-relay/sdk';
+
+// claude/codex are managed PTY harnesses. Bring your own by wrapping a
+// HarnessConfig with defineHarness — see "Define a harness" below. Its
+// create()/new() return registerable agents, just like the managed ones.
+const myCustomHarness = defineHarness({
+  name: 'task-bot',
+  create: async (_input, ctx) => {
+    const identity = normalizeAgentIdentity(ctx.agent);
+    return {
+      identity,
+      capabilities: MINIMAL_AGENT_SESSION_CAPABILITIES,
+      receiveMessage: async () => ({ status: 'delivered', deliveryId: identity.id }),
+      release: async () => {},
+    };
+  },
+});
 
 const harnesses = { claude, codex, custom: myCustomHarness };
 
-/// A Relay agent is one that can receive and send messages
-// CLI Agents can be saddled with our pty-based driver or you can make your own
-const complaintTriager = await harnesses.claude.create({ model: 'sonnet' });
-const engineer = await harnesses.codex.create({ model: 'gpt-5.5' });
-const taskManager = await harnesses.custom.create();
+/// A Relay agent is one that can receive and send messages.
+// PTY harnesses spawn for real: create({ relay }) attaches or starts the broker,
+// launches the CLI as a pty session in your workspace, and returns a handle to
+// the live, already-registered agent.
+const complaintTriager = await harnesses.claude.create({ relay, model: 'sonnet' });
+const engineer = await harnesses.codex.create({ relay, model: 'gpt-5.5' });
 
-/// Once the agents are registered to the Relay workspaces, agents will have access to
-/// send & receive messages, join channels, emoji respond, trigger SDK callbacks and much more
+// A custom in-process harness owns its own delivery; build the agent and
+// register its identity yourself.
+const taskManager = await harnesses.custom.create();
+await relay.workspace.register(taskManager);
+
+/// Registered agents can send & receive messages, join channels, emoji respond,
+/// trigger SDK callbacks and much more.
 /// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
-await relay.agents.register([complaintTriager, engineer, taskManager]);
 
 /// You can send messages to the agents as the system or just register a human participant)
 await relay.sendMessage({
@@ -123,9 +144,9 @@ relay.on(
 You can register actions to hook action mcp calls and cli usage into your application easily.
 
 ```ts
-const action = { name: 'action1', handler: async (input) => onBeforeAction(input) };
+const action = { name: 'action1', handler: async ({ input }) => onBeforeAction(input) };
 relay.registerAction(action);
-realy.on(relay.action(action.name), async (result) => onAfterAction());
+relay.on(relay.action(action.name), async (result) => onAfterAction());
 ```
 
 This gives you the flexibility to give agents hooks back into the SDK in real time.
@@ -144,8 +165,8 @@ relay.registerAction({
   }),
   availableTo: [taskManager, engineer], // leave this out if you want to make it available to all agents!
   handler: async ({ input }) => {
-    const agent = claude.new({ model: input.model });
-    await relay.workspace.register(agent);
+    // create({ relay }) spawns and registers the new agent in one step.
+    const agent = await claude.create({ relay, model: input.model });
     return {
       agentId: agent.id,
       handle: agent.handle,
@@ -219,7 +240,7 @@ That means message sending can happen a few different ways:
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 
-While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.`_, `action._`, and `harness.\*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
+While webSockets are the fast path for live coordination, they are not the only path. If an agent is connected, it can receive `message.created`, `delivery.*`, `action.*`, and `harness.*` events in real time. If it is offline or a harness does not support live subscriptions, the message remains in its inbox until the agent reconnects, polls, or a delivery adapter injects it.
 
 ### Agent Harnesses
 
@@ -233,7 +254,7 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 
 #### Define a harness
 
-We support many of the common harnesses with our optional `[@agent-relay/harnesses](/packages/harnesses)` package, but you can also define them yourself.
+We support many of the common harnesses with our optional [`@agent-relay/harnesses`](/packages/harnesses) package, but you can also define them yourself.
 
 At a minimum a harness just needs to be able to create a session that can receive messages and be released.
 
@@ -273,7 +294,7 @@ type AgentSessionCapabilities = {
   messaging: {
     receive: true;
     send?: boolean;
-    attachments: Array<'text' | 'image'>;
+    attachments?: Array<'text' | 'image'>;
   };
 
   delivery: {
@@ -593,7 +614,7 @@ const result = await relay.actions.invoke({
 });
 
 if (!result.ok) {
-  throw new Error(result.error.message);
+  throw new Error(result.error?.message);
 }
 ```
 

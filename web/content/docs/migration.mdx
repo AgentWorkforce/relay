@@ -1,24 +1,41 @@
 ---
-title: 'Migration Guide'
-description: 'Move from spawn-first and broker-oriented Agent Relay docs to the workspace-first messaging, delivery, actions, and sessions model.'
+title: 'Migration to Version 8'
+description: 'Move a 7.1.1 app to the version 8 workspace, messaging, delivery, actions, sessions, and MCP model.'
 ---
 
-This migration guide describes the target public shape. It is intentionally SemVer-major: core docs should stop teaching APIs that do not belong in Agent Relay core.
+Version 8 is a SemVer-major cleanup of the Agent Relay public surface. Older docs started with brokers, cloud setup, and spawn-oriented helpers. Version 8 starts with a workspace, then treats messaging, delivery, actions, sessions, and MCP as the core product model.
 
-## Product Framing
+Use this guide when moving code or docs from the 7.1.1 model to the version 8 model.
 
-Use this language:
+<Note>
+  The version 8 docs describe the new public shape. Keep compatibility aliases only at your application boundary while you migrate; new examples should use the version 8 names.
+</Note>
 
-- Agent Relay is the public product.
-- Workspaces are the coordination boundary.
-- Messaging, delivery, and actions are core.
-- Harnesses create sessions.
-- Runtime manages optional session lifecycle.
-- MCP exposes messaging and registered actions to agents.
+## What Changes
 
-Avoid front-facing docs that make users learn internal transport, broker, or process-management details before they can send messages.
+| Pre-v8 concept | Version 8 concept |
+| --- | --- |
+| Agent Relay API key for local setup | Workspace key shared by SDK, MCP, CLI, and harnesses |
+| `apiKey` and `RELAY_API_KEY` in examples | `workspaceKey` and `RELAY_WORKSPACE_KEY` |
+| Spawn-first SDK helpers | Sessions created by harnesses or runtime-provided actions |
+| Broker and PTY lifecycle in the core path | Optional harness driver or runtime lifecycle |
+| `relay.system().sendMessage(...)` | `relay.messages.send(...)`, `direct(...)`, `group(...)`, `reply(...)`, and `react(...)` |
+| Ad hoc tool registration | Zod-backed `relay.actions.register(...)` |
+| Single callback properties such as `onMessageReceived` | Predicate listeners through `relay.on(...)` |
+| Agents polling an inbox as the main delivery path | Durable messages plus delivery work, receipts, and live events |
+| Low-level broker HTTP or WebSocket docs | SDK, MCP, CLI, and harness contracts |
 
-## Setup Migration
+## 1. Upgrade Packages Together
+
+Move Agent Relay packages as a set so the SDK, harnesses, and runtime actions agree on the same contracts.
+
+```bash
+npm install @agent-relay/sdk@8 @agent-relay/harnesses@8 @agent-relay/harness-driver@8 zod
+```
+
+If your project only uses the SDK and MCP, you may not need the harness packages. Add `@agent-relay/harnesses` or `@agent-relay/harness-driver` only when Relay creates or manages sessions for you.
+
+## 2. Replace API-Key Setup With Workspaces
 
 Before:
 
@@ -32,21 +49,32 @@ const relay = new AgentRelay({
 After:
 
 ```ts
+import { AgentRelay } from '@agent-relay/sdk';
+
 const relay = await AgentRelay.createWorkspace({
   name: 'support-triage',
 });
 
-// Or:
+console.log(relay.workspace.key);
+```
+
+Use the workspace key when another process joins the same workspace.
+
+```bash
+export RELAY_WORKSPACE_KEY="relay_ws_..."
+```
+
+```ts
 const relay = await AgentRelay.connect({
   workspaceKey: process.env.RELAY_WORKSPACE_KEY,
 });
 ```
 
-Use `workspaceKey` and `RELAY_WORKSPACE_KEY` in new examples. Compatibility aliases can exist, but they should not be the teaching path.
+`workspaceName` is now a human-readable workspace label. The workspace key is the join secret.
 
-## Spawn Migration
+## 3. Move Spawn Code To Harnesses Or Actions
 
-Before:
+Pre-v8 examples often treated spawning as the first SDK operation.
 
 ```ts
 const reviewer = await relay.spawnAgent({
@@ -55,7 +83,21 @@ const reviewer = await relay.spawnAgent({
 });
 ```
 
-After:
+In version 8, the core concept is a session. A harness can create a session directly:
+
+```ts
+import { codex } from '@agent-relay/harnesses';
+
+const reviewer = await codex.create({
+  name: 'reviewer',
+  model: 'gpt-5.5',
+});
+
+await relay.workspace.register([reviewer]);
+await relay.channels.join('#reviews', [reviewer]);
+```
+
+When agents need to ask a managed runtime to create sessions, expose creation as an action:
 
 ```ts
 const result = await relay.actions.invoke({
@@ -68,29 +110,15 @@ const result = await relay.actions.invoke({
   },
   caller: { type: 'agent', id: planner.identity.id },
 });
+
+if (!result.ok) {
+  throw new Error(result.error.message);
+}
 ```
 
-The harness driver package registers `agent.create`. Core owns the action protocol, not the managed process implementation.
+Core Agent Relay owns the action protocol. The harness driver owns process, PTY, headless, attach, resume, and release details.
 
-## Broker Migration
-
-Before:
-
-```ts
-const client = await HarnessDriverClient.spawn({ cwd: process.cwd() });
-await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
-```
-
-After:
-
-```ts
-const runtime = await createRuntime({ relay, harnesses });
-registerRuntimeActions(relay.actions, runtime);
-```
-
-Broker and PTY details can remain inside runtime/driver packages. Core docs should describe sessions and harnesses.
-
-## Messaging Migration
+## 4. Migrate Messaging Calls
 
 Before:
 
@@ -104,40 +132,43 @@ await relay.system().sendMessage({
 After:
 
 ```ts
-await relay.messages.send({
+const kickoff = await relay.messages.send({
   to: '#planning',
   from: 'system',
   text: `${planner.identity.handle} coordinate with ${engineer.identity.handle}.`,
   mentions: [planner.identity.id, engineer.identity.id],
 });
+
+await relay.messages.reply({
+  thread: kickoff.thread.id,
+  from: engineer.identity.id,
+  text: 'I am checking the failing test now.',
+});
 ```
 
-Prefer normalized messaging concepts: channels, DMs, group DMs, threads, reactions, mentions, attachments, inbox, and delivery state.
+Use the high-level messaging API for channels, DMs, group DMs, threads, reactions, attachments, mentions, inbox state, and read state.
 
-## Events Migration
+## 5. Add Delivery Semantics
 
-Before:
+Version 8 separates "a message was written" from "a session received it." Sending a message creates delivery work for the target sessions.
 
 ```ts
-relay.onMessageReceived = (message) => {
-  console.log(message.text);
-};
+await relay.messages.send({
+  to: '#reviews',
+  from: planner.identity.id,
+  text: `${reviewer.identity.handle} review the migration PR before it merges.`,
+  mentions: [reviewer.identity.id],
+  delivery: {
+    mode: 'next-tool-call',
+    reason: 'mention',
+    idempotencyKey: 'migration-pr:reviewer',
+  },
+});
 ```
 
-After:
+Harnesses implement `receiveMessage(message, ctx)` and return receipts such as `accepted`, `delivered`, `deferred`, or `failed`. Replace interrupt flags, manual inbox polling, and one-off queue logic with explicit delivery modes and receipts.
 
-```ts
-relay.on(
-  relay.events.message.created().in('#planning'),
-  async (event) => {
-    console.log(event.message.text);
-  }
-);
-```
-
-Use listener predicates for message, delivery, action, status, tool, transcript, file, terminal, and lifecycle events.
-
-## Actions Migration
+## 6. Convert Tools To Actions
 
 Before:
 
@@ -150,6 +181,8 @@ relay.addTool('submit-vote', async (input) => {
 After:
 
 ```ts
+import { z } from 'zod';
+
 relay.actions.register({
   name: 'review.submit_vote',
   description: 'Submit a review vote.',
@@ -167,31 +200,106 @@ relay.actions.register({
 });
 ```
 
-Actions should be Zod-backed and produce structured result envelopes.
+Actions are discoverable capabilities with Zod validation, policy hooks, audit events, structured result envelopes, and MCP tool generation.
 
-## Docs And CLI Pruning
+## 7. Replace Callback Properties With Listeners
 
-Remove or move docs that teach these as core Agent Relay:
+Before:
 
-- cloud account setup as a prerequisite
-- broker lifecycle
-- low-level broker HTTP or WebSocket APIs
-- workflow, swarm, consensus, or proactive-agent APIs
-- file, auth, scheduling, or primitive products
-- provider-specific plugin docs that do not implement the harness/session contract
-- Python, Swift, and React SDK references until they match the new core model
+```ts
+relay.onMessageReceived = (message) => {
+  console.log(message.text);
+};
+```
 
-Keep adapter docs when the adapter fits the harness/session model. OpenClaw can remain as an in-repo adapter; the ACP bridge lives in the standalone `AgentWorkforce/agent-relay-acp-bridge` repository.
+After:
 
-## Acceptance Checklist
+```ts
+const unsubscribe = relay.on(
+  relay.events.message.created().in('#planning').mentions(engineer),
+  async (event) => {
+    await relay.messages.direct({
+      to: planner.identity.id,
+      from: 'system',
+      text: `${engineer.identity.handle} was mentioned in ${event.message.id}.`,
+    });
+  }
+);
 
-The docs are aligned when:
+// Later:
+unsubscribe();
+```
 
-- the first examples create or connect to a workspace
-- no basic setup requires an Agent Relay API key
-- messaging, delivery, and actions are the main categories
-- actions use Zod schemas
-- spawning is shown as a runtime-provided action, not a core SDK method
-- harnesses define `create`, sessions define `receiveMessage`, `onEvent`, capabilities, and `release`
-- MCP exposes messaging and generated action tools
-- runtime/driver details are optional managed lifecycle docs
+Use listeners for messages, delivery receipts, action events, status changes, tool calls, transcript chunks, file changes, terminal output, and lifecycle events.
+
+## 8. Move Broker Lifecycle Behind The Runtime
+
+Before:
+
+```ts
+const client = await HarnessDriverClient.spawn({ cwd: process.cwd() });
+await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
+```
+
+After:
+
+```ts
+import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
+
+const runtime = await createRuntime({ relay, harnesses });
+registerRuntimeActions(relay.actions, runtime);
+```
+
+The runtime can still manage processes, readiness, logs, and releases. Version 8 keeps those details outside the core docs path and exposes user-facing lifecycle operations as actions such as `agent.create`, `agent.release`, and `agent.status`.
+
+## 9. Update MCP And CLI Setup
+
+Pre-v8 setup often made broker lifecycle or cloud commands the first step. Version 8 setup should start with a workspace and MCP.
+
+```bash
+agent-relay workspace create support-triage
+agent-relay workspace env
+agent-relay mcp install --workspace "$RELAY_WORKSPACE_KEY"
+agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
+```
+
+Use CLI commands for diagnostics against the same workspace state:
+
+```bash
+agent-relay agents list
+agent-relay channels list
+agent-relay messages send '#reviews' 'Reviewer, please check the migration page.'
+agent-relay deliveries list --agent reviewer
+agent-relay actions list
+```
+
+Runtime-managed session commands should live under the runtime or driver group, not in the core setup path.
+
+## Suggested Migration Order
+
+1. Create or connect to a workspace and pass `RELAY_WORKSPACE_KEY` through every process.
+2. Replace old send helpers with `relay.messages.*` calls.
+3. Register existing agents as sessions with stable identities and capabilities.
+4. Add delivery modes and receipt handling for each harness.
+5. Convert tools to `relay.actions.register(...)` with Zod schemas.
+6. Replace callback properties with `relay.on(...)` listeners.
+7. Move broker, PTY, spawn, attach, resume, and release details into harness-driver or runtime code.
+8. Remove compatibility aliases such as `RELAY_API_KEY` after every caller uses workspace keys.
+
+## Validation Checklist
+
+Your migration is complete when:
+
+- basic setup creates or joins a workspace without an Agent Relay API key
+- all new examples use `workspaceKey` and `RELAY_WORKSPACE_KEY`
+- messages are sent through `relay.messages.*`
+- delivery outcomes are recorded as receipts
+- actions use Zod schemas and structured result envelopes
+- `agent.create` is an action provided by runtime code, not a core SDK method
+- harnesses expose session identity, capabilities, `receiveMessage`, `onEvent`, and `release`
+- MCP exposes messaging tools and generated action tools for the same workspace
+- broker and PTY concepts are limited to harness-driver or runtime reference material
+
+<BannerLink href="/docs/quickstart" icon="rocket">
+  Continue with the version 8 quickstart.
+</BannerLink>

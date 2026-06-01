@@ -31,6 +31,18 @@
             "reasoning": "Package drives harnesses, not a runtime itself; topology-neutral name; release pipeline must publish the new exact-version CLI dep or publish-main wait-gate times out"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780331419282,
+          "type": "decision",
+          "content": "Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents: Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents",
+          "raw": {
+            "question": "Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents",
+            "chosen": "Added create({ relay }) live-spawn to @agent-relay/harnesses PTY factories via a per-relay BrokerDriver (broker-binding.ts); handle keyed by registered agent name; README + compile-time proof updated to drop redundant register() for spawned agents",
+            "alternatives": [],
+            "reasoning": "User chose README-as-source-of-truth with create({relay}) spawning real PTY sessions; broker joins relay's workspace via RELAY_API_KEY env; status predicates match name-keyed events"
+          },
+          "significance": "high"
         }
       ]
     }
