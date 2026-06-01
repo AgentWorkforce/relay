@@ -103,7 +103,29 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
    remove standalone `activity`.
 7. **`local metrics`** kept; **`local status`** = daemon up/down (health folded in);
    delete the `monitoring` group (incl. `profile`).
-8. **Move `auth`** → `cloud auth <provider>`.
+8. **Move `auth`** → `cloud auth <provider>`. _(The old `auth` SSH lib was already
+   deleted; provider auth is covered by `cloud connect`. No separate `cloud auth` added.)_
 9. **Remove** `core start` (dashboard), `init`, `setup`, `doctor`, legacy `messaging` group.
 10. **Migrate `on`/`off` mount** → `../relayfile` (already absent from this CLI).
+
+---
+
+## Implementation status (branch `cli/local-namespace`)
+
+**Done**
+- `driver`→`local` rename; top-level lifecycle aliases dropped.
+- `local agent`: `new`=spawn+attach, `attach` default view, `release --kill`, `set-model`,
+  real `local tail [--agent]`. `local metrics`. `start` harness removed.
+- Standalone `view`/`drive`/`passthrough`, `monitoring`, legacy `messaging` removed
+  (attach session logic retained for `local agent attach`). Dead modules deleted.
+- Composite `relay status` added. `setup` trimmed to `telemetry` only (init/setup gone).
+- `on`/`off` migrated to `../relayfile` (PR #229 there).
+
+**Remaining**
+- **Dashboard internals**: `local up` still carries `--dashboard`/`--port` flags and the
+  `runUpCommand`/`findDashboardBinary` plumbing. Surface command (`start`) is gone, but the
+  no-dashboard cleanup of `up` itself is a deeper follow-up (touches many `up` tests).
+- **`cloud auth`**: not added (see delta 8) — confirm `cloud connect` is the intended path.
+- **Attach logic location**: `view.ts`/`drive.ts`/`passthrough.ts` files retained only for
+  their `attachX` exports; could move to `lib/` later.
 </content>

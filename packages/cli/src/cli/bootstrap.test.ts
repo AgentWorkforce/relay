@@ -16,12 +16,11 @@ const expectedLeafCommands = [
   'local agent release',
   'local agent set-model',
   'local agent attach',
-  // top-level maintenance + setup + mcp
+  // top-level composite status + maintenance + telemetry + mcp
+  'status',
   'version',
   'update',
   'uninstall',
-  'init',
-  'setup',
   'telemetry',
   'mcp',
   // cloud
@@ -123,11 +122,10 @@ describe('bootstrap CLI', () => {
         'message',
         'integration',
         'capabilities',
+        'status',
         'version',
         'update',
         'uninstall',
-        'init',
-        'setup',
         'telemetry',
         'mcp',
       ])

@@ -15,6 +15,7 @@ import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
+import { registerStatusCommand } from './commands/status.js';
 import { registerRuntimeAgentCommands } from './commands/runtime-agent.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
@@ -263,6 +264,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerRuntimeAgentCommands(local);
 
   registerCoreMaintenance(program);
+  registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
   registerWorkspaceCommands(program);
