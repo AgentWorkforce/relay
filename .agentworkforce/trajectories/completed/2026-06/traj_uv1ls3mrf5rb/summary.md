@@ -18,6 +18,7 @@ Fixed the OpenClaw skill web route by bundling SKILL.md as a raw markdown asset,
 ## Key Decisions
 
 ### Bundled OpenClaw SKILL.md as a raw webpack asset
+
 - **Chose:** Bundled OpenClaw SKILL.md as a raw webpack asset
 - **Reasoning:** OpenNext static generation should not depend on runtime fs path guessing outside the web bundle.
 
@@ -26,6 +27,7 @@ Fixed the OpenClaw skill web route by bundling SKILL.md as a raw markdown asset,
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Bundled OpenClaw SKILL.md as a raw webpack asset: Bundled OpenClaw SKILL.md as a raw webpack asset
