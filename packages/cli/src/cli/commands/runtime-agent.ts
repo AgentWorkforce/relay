@@ -4,9 +4,9 @@ import type { RuntimeClient } from '@agent-relay/runtime';
 
 import { defaultExit } from '../lib/exit.js';
 import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
-import { attachDrive } from './drive.js';
-import { attachView } from './view.js';
-import { attachPassthrough } from './passthrough.js';
+import { attachDrive } from '../lib/attach-drive.js';
+import { attachView } from '../lib/attach-view.js';
+import { attachPassthrough } from '../lib/attach-passthrough.js';
 
 export type AttachMode = 'drive' | 'view' | 'passthrough';
 

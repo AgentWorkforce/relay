@@ -119,6 +119,8 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
 - Standalone `view`/`drive`/`passthrough`, `monitoring`, legacy `messaging` removed
   (attach session logic retained for `local agent attach`). Dead modules deleted.
 - Composite `relay status` added. `setup` trimmed to `telemetry` only (init/setup gone).
+- Attach session logic moved to `lib/attach-{view,drive,passthrough}.ts` (dead
+  `registerXCommands` stripped); `local agent attach` consumes them.
 - `on`/`off` migrated to `../relayfile` (PR #229 there).
 
 **Remaining**
@@ -126,6 +128,4 @@ relay local agent set-model <name> <model>               # injects `/model X` ke
   `runUpCommand`/`findDashboardBinary` plumbing. Surface command (`start`) is gone, but the
   no-dashboard cleanup of `up` itself is a deeper follow-up (touches many `up` tests).
 - **`cloud auth`**: not added (see delta 8) — confirm `cloud connect` is the intended path.
-- **Attach logic location**: `view.ts`/`drive.ts`/`passthrough.ts` files retained only for
-  their `attachX` exports; could move to `lib/` later.
 </content>

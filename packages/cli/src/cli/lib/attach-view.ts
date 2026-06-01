@@ -12,7 +12,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { Command } from 'commander';
 import WebSocket from 'ws';
 
 import { getProjectPaths } from '@agent-relay/config';
@@ -332,23 +331,4 @@ export function attachView(
   overrides: Partial<ViewDependencies> = {}
 ): Promise<number> {
   return runViewSession(name, options, withDefaults(overrides));
-}
-
-/** Register `agent-relay view <name>` on the supplied commander program. */
-export function registerViewCommands(program: Command, overrides: Partial<ViewDependencies> = {}): void {
-  const deps = withDefaults(overrides);
-
-  program
-    .command('view')
-    .description("Stream a running agent's PTY output to your terminal (read-only)")
-    .argument('<name>', 'Agent name to view')
-    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
-    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
-    .action(async (name: string, options: { brokerUrl?: string; apiKey?: string; stateDir?: string }) => {
-      const code = await runViewSession(name, options, deps);
-      if (code !== 0) {
-        deps.exit(code);
-      }
-    });
 }

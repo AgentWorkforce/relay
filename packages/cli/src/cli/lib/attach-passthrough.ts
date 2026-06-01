@@ -25,7 +25,6 @@
 
 import { Buffer } from 'node:buffer';
 
-import { Command } from 'commander';
 import WebSocket from 'ws';
 
 import {
@@ -51,7 +50,7 @@ import {
   resizeWorker,
   setInboundDeliveryMode,
   type InboundDeliveryMode,
-} from './drive.js';
+} from './attach-drive.js';
 
 type ExitFn = (code: number) => never;
 
@@ -522,28 +521,4 @@ export function attachPassthrough(
   overrides: Partial<PassthroughDependencies> = {}
 ): Promise<number> {
   return runPassthroughSession(name, options, withDefaults(overrides));
-}
-
-/** Register `agent-relay passthrough <name>` on the supplied commander program. */
-export function registerPassthroughCommands(
-  program: Command,
-  overrides: Partial<PassthroughDependencies> = {}
-): void {
-  const deps = withDefaults(overrides);
-
-  program
-    .command('passthrough')
-    .description(
-      'Watch a running agent in passthrough session: broker auto-injects inbound relay messages while you type alongside (last-writer-wins)'
-    )
-    .argument('<name>', 'Agent name to attach to')
-    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
-    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
-    .action(async (name: string, options: { brokerUrl?: string; apiKey?: string; stateDir?: string }) => {
-      const code = await runPassthroughSession(name, options, deps);
-      if (code !== 0) {
-        deps.exit(code);
-      }
-    });
 }

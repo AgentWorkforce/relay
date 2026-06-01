@@ -1,20 +1,18 @@
 import { Buffer } from 'node:buffer';
 
-import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CliPtyInputStream } from './drive.js';
+import type { CliPtyInputStream } from './attach-drive.js';
 import {
   PassthroughKeybindParser,
   classifyWsEvent,
-  registerPassthroughCommands,
   renderStatusLine,
   runPassthroughSession,
   type PassthroughDependencies,
   type PassthroughStdin,
   type PassthroughTerminal,
   type PassthroughWebSocket,
-} from './passthrough.js';
+} from './attach-passthrough.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -639,29 +637,5 @@ describe('runPassthroughSession', () => {
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
-  });
-});
-
-describe('registerPassthroughCommands', () => {
-  it('registers a `passthrough` command on the program', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerPassthroughCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'passthrough');
-    expect(cmd).toBeDefined();
-    expect(cmd?.description()).toMatch(/passthrough/i);
-    expect(program.commands.find((c) => c.name() === 'relay')).toBeUndefined();
-    expect(cmd?.aliases()).not.toContain('relay');
-  });
-
-  it('wires --broker-url, --api-key, and --state-dir', () => {
-    const { deps } = createHarness();
-    const program = new Command();
-    program.exitOverride();
-    registerPassthroughCommands(program, deps);
-    const cmd = program.commands.find((c) => c.name() === 'passthrough');
-    const flags = cmd?.options.map((opt) => opt.long).filter(Boolean) ?? [];
-    expect(flags).toEqual(expect.arrayContaining(['--broker-url', '--api-key', '--state-dir']));
   });
 });

@@ -26,7 +26,6 @@
 import { Buffer } from 'node:buffer';
 
 import type { InboundDeliveryMode } from '@agent-relay/runtime';
-import { Command } from 'commander';
 import WebSocket from 'ws';
 
 import {
@@ -785,25 +784,4 @@ export function attachDrive(
   overrides: Partial<DriveDependencies> = {}
 ): Promise<number> {
   return runDriveSession(name, options, withDefaults(overrides));
-}
-
-/** Register `agent-relay drive <name>` on the supplied commander program. */
-export function registerDriveCommands(program: Command, overrides: Partial<DriveDependencies> = {}): void {
-  const deps = withDefaults(overrides);
-
-  program
-    .command('drive')
-    .description(
-      'Take interactive control of a running agent: queue inbound relay messages, type into the worker, flush on demand, detach when done'
-    )
-    .argument('<name>', 'Agent name to drive')
-    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
-    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
-    .action(async (name: string, options: { brokerUrl?: string; apiKey?: string; stateDir?: string }) => {
-      const code = await runDriveSession(name, options, deps);
-      if (code !== 0) {
-        deps.exit(code);
-      }
-    });
 }
