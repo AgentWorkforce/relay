@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
 - `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.

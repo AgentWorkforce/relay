@@ -23,7 +23,7 @@ import type {
   ThreadReplyEvent,
   DmReceivedEvent,
   GroupDmReceivedEvent,
-  CommandInvokedEvent,
+  ActionInvokedEvent,
   ReactionAddedEvent,
   ReactionRemovedEvent,
 } from '@relaycast/sdk';
@@ -1351,12 +1351,12 @@ export class InboundGateway {
       })
     );
     this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.commandInvoked((event: CommandInvokedEvent) => {
+      this.relayAgentClient.on.actionInvoked((event: ActionInvokedEvent) => {
         if (!this.shouldProcessWsInbound()) return;
         console.log(
-          `[gateway] Command /${event.command} invoked by @${event.invokedBy} in #${event.channel}`
+          `[gateway] Action ${event.actionName} invoked by @${event.callerName} (invocation ${event.invocationId})`
         );
-        void this.handleRealtimeCommand(event);
+        void this.handleRealtimeAction(event);
       })
     );
     this.unsubscribeHandlers.push(
@@ -1829,9 +1829,9 @@ export class InboundGateway {
         return (
           await this.handleRealtimeGroupDm(event.payload as unknown as GroupDmReceivedEvent, baseOptions)
         ).committed;
-      case 'command.invoked':
+      case 'action.invoked':
         return (
-          await this.handleRealtimeCommand(event.payload as unknown as CommandInvokedEvent, {
+          await this.handleRealtimeAction(event.payload as unknown as ActionInvokedEvent, {
             ...baseOptions,
             eventId: event.id,
           })
@@ -2056,30 +2056,28 @@ export class InboundGateway {
     return this.processInbound(inbound);
   }
 
-  private async handleRealtimeCommand(
-    event: CommandInvokedEvent,
+  private async handleRealtimeAction(
+    event: ActionInvokedEvent,
     options: RealtimeHandlingOptions = {}
   ): Promise<InboundProcessingResult> {
-    const channel = normalizeChannelName(event.channel);
-    if (!this.config.channels.includes(channel)) return { committed: true };
-
-    // Commands lack a server-assigned event ID, so we synthesize one.
-    // We include args + timestamp to avoid silently dropping legitimate
-    // repeat invocations (e.g. /deploy twice in 15 min). This means SDK
-    // reconnection replays may deliver a duplicate, but that's less
-    // harmful than silently swallowing a real command.
-    const argsSlug = event.args ? `_${event.args}` : '';
+    // Relaycast 2.x actions are not channel-scoped: the `action.invoked` event
+    // carries no channel, so there is no channel filter and the invocation is
+    // delivered to the handler agent regardless of subscribed channels.
+    //
+    // The invocation_id makes a natural dedup key. Unlike the legacy command
+    // path we do not append a timestamp — relaycast assigns a stable id per
+    // invocation, so reconnection replays of the same invocation are correctly
+    // treated as duplicates.
     const syntheticId =
-      options.eventId ?? `cmd_${event.command}_${channel}_${event.invokedBy}${argsSlug}_${Date.now()}`;
-    const argsText = event.args ? ` ${event.args}` : '';
+      options.eventId ?? `action_${event.actionName}_${event.callerName}_${event.invocationId}`;
 
     const inbound: InboundMessage = {
       id: syntheticId,
-      channel,
-      from: event.invokedBy,
-      text: `[relaycast:command:${channel}] @${event.invokedBy} /${event.command}${argsText}`,
+      channel: 'action',
+      from: event.callerName,
+      text: `[relaycast:action] @${event.callerName} invoked ${event.actionName} (invocation ${event.invocationId})`,
       timestamp: options.timestamp ?? new Date().toISOString(),
-      kind: 'command',
+      kind: 'action',
     };
 
     return this.processInbound(inbound);
@@ -2150,8 +2148,8 @@ export class InboundGateway {
     if (message.kind === 'reaction') {
       return message.text;
     }
-    if (message.kind === 'command') {
-      return `${message.text}\n(command invocation — respond with: post_message channel="${message.channel}")`;
+    if (message.kind === 'action') {
+      return `${message.text}\n(action invocation — complete it via the relaycast actions API)`;
     }
     if (message.kind === 'dm') {
       return `[relaycast:dm] @${message.from}: ${message.text}\n(reply with: send_dm to="${message.from}")`;

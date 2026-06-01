@@ -1,11 +1,13 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { Rss } from 'lucide-react';
 
 import styles from '../../components/blog/blog.module.css';
 import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { getAllPosts } from '../../lib/blog';
+import { getAuthorInitials, getBlogAuthor } from '../../lib/blog-authors';
 import { absoluteUrl, SITE_NAME, SITE_URL } from '../../lib/site';
 
 export const metadata: Metadata = {
@@ -30,7 +32,9 @@ export const metadata: Metadata = {
 };
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', {
+  const [year, month, day] = dateStr.split('-').map(Number);
+
+  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -39,6 +43,8 @@ function formatDate(dateStr: string): string {
 
 export default function BlogIndexPage() {
   const posts = getAllPosts();
+  const [featuredPost, ...recentPosts] = posts;
+  const featuredAuthor = featuredPost ? getBlogAuthor(featuredPost.frontmatter.author) : null;
   const structuredData = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -68,38 +74,86 @@ export default function BlogIndexPage() {
         />
 
         <section className={styles.blogHero}>
-          <div className={styles.blogHeader}>
-            <h1 className={styles.blogTitle}>Blog</h1>
-            <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M6 17.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM4.5 10.5a9 9 0 0 1 9 9"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M4.5 4.5c8.284 0 15 6.716 15 15"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </a>
+          <div className={styles.blogHeroInner}>
+            <div className={styles.blogHeader}>
+              <p className={styles.eyebrow}>Agent Relay blog</p>
+              <a href="/feed.xml" className={styles.rssIconLink} aria-label="RSS feed">
+                <Rss aria-hidden="true" />
+              </a>
+            </div>
+            <h1 className={styles.blogTitle}>Field notes for agent-native software</h1>
+            <p className={styles.blogSubtitle}>
+              Essays, playbooks, and product thinking on multi-agent systems, context rails, and autonomous
+              development.
+            </p>
           </div>
-          <p className={styles.blogSubtitle}>
-            Thoughts on multi-agent orchestration, building with AI, and the future of autonomous development.
-          </p>
         </section>
 
-        {posts.length > 0 && (
-          <section className={styles.blogSection}>
+        {featuredPost && (
+          <section className={styles.blogSection} aria-labelledby="featured-post-heading">
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.sectionKicker}>Latest</p>
+                <h2 id="featured-post-heading" className={styles.sectionTitle}>
+                  Start here
+                </h2>
+              </div>
+              <p className={styles.sectionDescription}>
+                The newest thinking from the team building communication infrastructure for agents.
+              </p>
+            </div>
+
+            <Link href={`/blog/${encodeURIComponent(featuredPost.slug)}`} className={styles.featuredCard}>
+              <div className={styles.featuredContent}>
+                <div className={styles.postMeta}>
+                  <span className={styles.postCategory}>{featuredPost.frontmatter.category}</span>
+                  <span className={styles.postDot}>·</span>
+                  <time dateTime={featuredPost.frontmatter.date}>{formatDate(featuredPost.frontmatter.date)}</time>
+                  <span className={styles.postDot}>·</span>
+                  <span>{featuredPost.readTime}</span>
+                </div>
+                <h3 className={styles.featuredTitle}>{featuredPost.frontmatter.title}</h3>
+                <p className={styles.featuredDesc}>{featuredPost.frontmatter.description}</p>
+                <div className={styles.featuredAuthor}>
+                  <span
+                    className={`${styles.authorAvatar} ${featuredAuthor?.image ? styles.authorAvatarPhoto : ''}`}
+                    aria-hidden="true"
+                  >
+                    {featuredAuthor?.image ? (
+                      <img src={featuredAuthor.image} alt="" loading="lazy" />
+                    ) : (
+                      getAuthorInitials(featuredAuthor?.name ?? featuredPost.frontmatter.author)
+                    )}
+                  </span>
+                  <span className={styles.authorInfo}>
+                    <span className={styles.authorLabel}>Written by</span>
+                    <span className={styles.authorName}>{featuredAuthor?.name ?? featuredPost.frontmatter.author}</span>
+                    {featuredAuthor && <span className={styles.authorRole}>{featuredAuthor.title}</span>}
+                  </span>
+                </div>
+              </div>
+            </Link>
+          </section>
+        )}
+
+        {recentPosts.length > 0 && (
+          <section className={styles.blogSection} aria-labelledby="recent-posts-heading">
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.sectionKicker}>Archive</p>
+                <h2 id="recent-posts-heading" className={styles.sectionTitle}>
+                  Recent writing
+                </h2>
+              </div>
+            </div>
+
             <div className={styles.postList} role="list">
-              {posts.map((post) => (
+              {recentPosts.map((post) => (
                 <article key={post.slug} className={styles.postListRow} role="listitem">
                   <Link href={`/blog/${encodeURIComponent(post.slug)}`} className={styles.postListLink}>
                     {post.frontmatter.title}
                   </Link>
+                  <p className={styles.postListDescription}>{post.frontmatter.description}</p>
                   <div className={styles.postListMeta}>
                     <span className={styles.postListAuthor}>{post.frontmatter.author}</span>
                     <span className={styles.postListDot} aria-hidden="true">

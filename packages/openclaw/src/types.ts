@@ -63,7 +63,7 @@ export interface InboundMessage {
   /** Conversation ID for DMs / group DMs. */
   conversationId?: string;
   /** Message kind hint for formatting. */
-  kind?: 'channel' | 'thread' | 'dm' | 'groupdm' | 'command' | 'reaction';
+  kind?: 'channel' | 'thread' | 'dm' | 'groupdm' | 'action' | 'reaction';
 }
 
 /**

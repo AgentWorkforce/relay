@@ -31,7 +31,7 @@ const mockAgentClient = {
     threadReply: registerHandler('threadReply'),
     dmReceived: registerHandler('dmReceived'),
     groupDmReceived: registerHandler('groupDmReceived'),
-    commandInvoked: registerHandler('commandInvoked'),
+    actionInvoked: registerHandler('actionInvoked'),
     reactionAdded: registerHandler('reactionAdded'),
     reactionRemoved: registerHandler('reactionRemoved'),
     reconnecting: registerHandler('reconnecting'),

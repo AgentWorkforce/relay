@@ -43,7 +43,7 @@ const mockAgentClient = {
     threadReply: registerHandler('threadReply'),
     dmReceived: registerHandler('dmReceived'),
     groupDmReceived: registerHandler('groupDmReceived'),
-    commandInvoked: registerHandler('commandInvoked'),
+    actionInvoked: registerHandler('actionInvoked'),
     reactionAdded: registerHandler('reactionAdded'),
     reactionRemoved: registerHandler('reactionRemoved'),
     reconnecting: registerHandler('reconnecting'),
@@ -472,19 +472,17 @@ describe('InboundGateway — thread reply injection', () => {
     });
   });
 
-  describe('Command invocation handling', () => {
-    it('should deliver command invocations with formatted text', async () => {
+  describe('Action invocation handling', () => {
+    it('should deliver action invocations with formatted text', async () => {
       const { gateway, sendMessage } = createGateway();
       await gateway.start();
 
-      fireEvent('commandInvoked', {
-        type: 'command.invoked',
-        command: 'deploy',
-        channel: 'general',
-        invokedBy: 'dave',
+      fireEvent('actionInvoked', {
+        type: 'action.invoked',
+        invocationId: 'inv_1',
+        actionName: 'deploy',
+        callerName: 'dave',
         handlerAgentId: 'agent_1',
-        args: 'production --force',
-        parameters: null,
       });
 
       await vi.waitFor(() => {
@@ -493,54 +491,34 @@ describe('InboundGateway — thread reply injection', () => {
 
       const call = sendMessage.mock.calls[0][0];
       expect(call.text).toBe(
-        '[relaycast:command:general] @dave /deploy production --force\n(command invocation \u2014 respond with: post_message channel="general")'
+        '[relaycast:action] @dave invoked deploy (invocation inv_1)\n(action invocation \u2014 complete it via the relaycast actions API)'
       );
 
       await gateway.stop();
     });
 
-    it('should deliver command invocations without args', async () => {
-      const { gateway, sendMessage } = createGateway();
-      await gateway.start();
-
-      fireEvent('commandInvoked', {
-        type: 'command.invoked',
-        command: 'status',
-        channel: 'general',
-        invokedBy: 'eve',
-        handlerAgentId: 'agent_2',
-        args: null,
-        parameters: null,
-      });
-
-      await vi.waitFor(() => {
-        expect(sendMessage).toHaveBeenCalled();
-      });
-
-      const call = sendMessage.mock.calls[0][0];
-      expect(call.text).toBe(
-        '[relaycast:command:general] @eve /status\n(command invocation \u2014 respond with: post_message channel="general")'
-      );
-
-      await gateway.stop();
-    });
-
-    it('should ignore commands from unsubscribed channels', async () => {
+    it('should deliver action invocations regardless of subscribed channels', async () => {
+      // Actions are not channel-scoped, so a restricted channel list does not
+      // suppress action delivery.
       const { gateway, sendMessage } = createGateway({ channels: ['general'] });
       await gateway.start();
 
-      fireEvent('commandInvoked', {
-        type: 'command.invoked',
-        command: 'deploy',
-        channel: 'random',
-        invokedBy: 'dave',
-        handlerAgentId: 'agent_1',
-        args: null,
-        parameters: null,
+      fireEvent('actionInvoked', {
+        type: 'action.invoked',
+        invocationId: 'inv_2',
+        actionName: 'status',
+        callerName: 'eve',
+        handlerAgentId: 'agent_2',
       });
 
-      await new Promise((r) => setTimeout(r, 50));
-      expect(sendMessage).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalled();
+      });
+
+      const call = sendMessage.mock.calls[0][0];
+      expect(call.text).toBe(
+        '[relaycast:action] @eve invoked status (invocation inv_2)\n(action invocation \u2014 complete it via the relaycast actions API)'
+      );
 
       await gateway.stop();
     });
@@ -831,18 +809,16 @@ describe('InboundGateway — thread reply injection', () => {
       await gateway.stop();
     });
 
-    it('should format command messages with pre-formatted text', async () => {
+    it('should format action messages with pre-formatted text', async () => {
       const { gateway, sendMessage } = createGateway();
       await gateway.start();
 
-      fireEvent('commandInvoked', {
-        type: 'command.invoked',
-        command: 'build',
-        channel: 'general',
-        invokedBy: 'carol',
+      fireEvent('actionInvoked', {
+        type: 'action.invoked',
+        invocationId: 'inv_fmt_1',
+        actionName: 'build',
+        callerName: 'carol',
         handlerAgentId: 'agent_fmt_1',
-        args: '--prod',
-        parameters: null,
       });
 
       await vi.waitFor(() => {
@@ -851,7 +827,7 @@ describe('InboundGateway — thread reply injection', () => {
 
       const call = sendMessage.mock.calls[0][0];
       expect(call.text).toBe(
-        '[relaycast:command:general] @carol /build --prod\n(command invocation \u2014 respond with: post_message channel="general")'
+        '[relaycast:action] @carol invoked build (invocation inv_fmt_1)\n(action invocation \u2014 complete it via the relaycast actions API)'
       );
 
       await gateway.stop();

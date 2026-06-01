@@ -26,9 +26,10 @@ function createRelaycastMock() {
       get: vi.fn(async (id: string) => ({ id })),
       delete: vi.fn(async () => undefined),
     },
-    commands: {
+    actions: {
       register: vi.fn(async (d: unknown) => ({ ...(d as object) })),
-      list: vi.fn(async () => [{ command: 'deploy', description: 'Ship it', handlerAgent: 'ops' }]),
+      list: vi.fn(async () => [{ name: 'deploy', description: 'Ship it', handlerAgent: 'ops' }]),
+      get: vi.fn(async (name: string) => ({ name })),
       delete: vi.fn(async () => undefined),
     },
     workspace: { info: vi.fn(async () => ({ id: 'ws1', name: 'Ops' })) },
@@ -59,7 +60,11 @@ describe('SDK integrations / capabilities / workspace passthrough', () => {
     expect(caps[0].command).toBe('deploy');
 
     await client.commands.register({ command: 'deploy', description: 'Ship it', handlerAgent: 'ops' });
-    expect(relaycast.commands.register).toHaveBeenCalled();
+    expect(relaycast.actions.register).toHaveBeenCalledWith({
+      name: 'deploy',
+      description: 'Ship it',
+      handlerAgent: 'ops',
+    });
   });
 
   it('exposes workspace.info()', async () => {

@@ -12,9 +12,11 @@ pub(crate) use auth::AuthClient;
 // `is_agent_token_invalid_code`, and `AGENT_TOKEN_INVALID_CODE` are declared
 // `pub` on `auth` so future callers (bridge, ws, listen_api) can reach them
 // via `crate::relaycast::auth::*` without an unused re-export here.
-pub(crate) use bridge::{map_ws_broker_command, map_ws_event};
+pub(crate) use bridge::{broker_payload_from_action, map_ws_event, parse_ws_action_invoked};
 pub(crate) use dm_participants::{resolve_dm_participants_cached, DmParticipantsCache};
-pub(crate) use relaycast::{agent_name_eq, is_self_name};
+pub(crate) use relaycast::{
+    agent_name_eq, is_self_name, CompleteInvocationRequest, RegisterActionRequest,
+};
 pub(crate) use workspace::{
     MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary,
 };

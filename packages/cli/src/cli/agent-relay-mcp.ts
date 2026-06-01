@@ -709,11 +709,15 @@ function eventToResourceUris(event: unknown): string[] {
     case 'member.joined':
     case 'member.left':
       return ['relay://channels'];
-    case 'webhook.received':
-    case 'command.invoked': {
+    case 'webhook.received': {
       const channel = getStringEventField(event, 'channel');
       return channel ? [`relay://channels/${channel}/messages`] : [];
     }
+    case 'action.invoked':
+    case 'action.completed':
+    case 'action.failed':
+      // Actions are not channel-scoped; surface invocations via the inbox.
+      return ['relay://inbox'];
     case 'reaction.added':
     case 'reaction.removed':
       return ['relay://inbox'];

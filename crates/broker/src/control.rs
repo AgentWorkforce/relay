@@ -8,7 +8,7 @@ pub fn is_human_sender(sender: &str, sender_kind: SenderKind) -> bool {
     if matches!(sender_kind, SenderKind::Agent) {
         return false;
     }
-    // Fallback heuristic for Unknown sender_kind (e.g. command.invoked events).
+    // Fallback heuristic for Unknown sender_kind (e.g. action.invoked events).
     let s = sender.trim().to_ascii_lowercase();
     s == "human" || s.starts_with("human:")
 }

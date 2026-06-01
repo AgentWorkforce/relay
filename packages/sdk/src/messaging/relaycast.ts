@@ -69,6 +69,36 @@ import type {
   RelayUpdateChannelInput,
 } from './types.js';
 
+/**
+ * Translate a relay capability registration into a relaycast `actions.register`
+ * request. Relaycast 2.x replaced the `commands` registry with `actions`:
+ * `command` → `name`, `parameters` → `inputSchema`.
+ */
+function toRegisterActionRequest(input: RelayRegisterCapabilityInput): Record<string, unknown> {
+  return {
+    name: input.command,
+    description: input.description,
+    handlerAgent: input.handlerAgent,
+    ...(input.parameters === undefined ? {} : { inputSchema: input.parameters }),
+  };
+}
+
+/**
+ * Translate a relaycast `ActionDefinition` back into a relay `RelayCapability`,
+ * preserving the relay-facing `command`/`parameters` vocabulary.
+ */
+function toRelayCapability(raw: unknown): RelayCapability {
+  const action = (raw ?? {}) as Record<string, unknown>;
+  const command = (action.name ?? action.command) as string;
+  return {
+    ...action,
+    command,
+    description: action.description as string | undefined,
+    handlerAgent: action.handlerAgent as string | undefined,
+    parameters: action.inputSchema ?? action.parameters,
+  };
+}
+
 type RelaycastWorkspaceLike = {
   agents: {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
@@ -102,10 +132,14 @@ type RelaycastWorkspaceLike = {
     get(id: string): Promise<unknown>;
     delete(id: string): Promise<void>;
   };
-  commands?: {
+  // Relaycast 2.x exposes the capability registry as `actions`
+  // (formerly `commands`). Relay keeps the `commands`/`RelayCapability`
+  // vocabulary on its own surface and binds it to this API.
+  actions?: {
     register(data: unknown): Promise<unknown>;
     list(): Promise<unknown[]>;
-    delete(command: string): Promise<void>;
+    get(name: string): Promise<unknown>;
+    delete(name: string): Promise<void>;
   };
   workspace?: {
     info(): Promise<unknown>;
@@ -562,10 +596,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   readonly commands = {
     register: async (input: RelayRegisterCapabilityInput): Promise<RelayCapability> =>
-      (await this.requireCommands().register(input)) as RelayCapability,
-    list: async (): Promise<RelayCapability[]> => (await this.requireCommands().list()) as RelayCapability[],
+      toRelayCapability(await this.requireActions().register(toRegisterActionRequest(input))),
+    list: async (): Promise<RelayCapability[]> =>
+      (await this.requireActions().list()).map(toRelayCapability),
     delete: async (command: string): Promise<void> => {
-      await this.requireCommands().delete(command);
+      await this.requireActions().delete(command);
     },
   };
 
@@ -594,11 +629,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     return this.relaycast.subscriptions;
   }
 
-  private requireCommands(): NonNullable<RelaycastWorkspaceLike['commands']> {
-    if (!this.relaycast.commands) {
-      throw new Error('RelaycastMessagingClient.commands requires the relaycast commands API.');
+  private requireActions(): NonNullable<RelaycastWorkspaceLike['actions']> {
+    if (!this.relaycast.actions) {
+      throw new Error('RelaycastMessagingClient.commands requires the relaycast actions API.');
     }
-    return this.relaycast.commands;
+    return this.relaycast.actions;
   }
 
   private requireAgentClient(operation: string): RelaycastAgentLike {
