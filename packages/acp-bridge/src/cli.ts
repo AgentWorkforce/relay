@@ -101,7 +101,21 @@ async function main(): Promise<void> {
   const config = parseArgs();
 
   if (config.debug) {
-    console.error('[relay-acp] Starting with config:', JSON.stringify(config, null, 2));
+    console.error(
+      '[relay-acp] Starting with config:',
+      JSON.stringify(
+        {
+          agentName: config.agentName,
+          channel: config.channel,
+          baseUrl: config.baseUrl,
+          socketPath: config.socketPath,
+          debug: config.debug,
+          credentials: '[redacted]',
+        },
+        null,
+        2
+      )
+    );
   }
 
   const agent = new RelayACPAgent(config);

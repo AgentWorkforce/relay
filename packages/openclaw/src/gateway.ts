@@ -59,6 +59,42 @@ export interface GatewayOptions {
   relaySender?: RelaySender;
 }
 
+function getErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return '';
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : '';
+}
+
+function getErrorMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return '';
+  }
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' ? message : '';
+}
+
+function safeCommandToken(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 120) {
+    return null;
+  }
+  for (const char of value) {
+    const allowed =
+      (char >= 'a' && char <= 'z') ||
+      (char >= 'A' && char <= 'Z') ||
+      (char >= '0' && char <= '9') ||
+      char === '_' ||
+      char === '-' ||
+      char === '.' ||
+      char === ':';
+    if (!allowed) {
+      return null;
+    }
+  }
+  return value;
+}
+
 type InboundTransportState = 'WS_ACTIVE' | 'WS_DEGRADED' | 'POLL_ACTIVE' | 'RECOVERING_WS';
 type InboundTransportMode = 'ws' | 'poll';
 
@@ -840,14 +876,13 @@ export class OpenClawGatewayClient {
       return;
     }
 
+    const authProfile = resolveAuthProfile();
+    const authCompat = getWsAuthCompat();
+
     // Handle connect.challenge — sign and respond
     if (msg.type === 'event' && msg.event === 'connect.challenge') {
       const payload = msg.payload as { nonce: string; ts: number };
       console.log('[openclaw-ws] Received connect.challenge, signing...');
-      // Log raw challenge payload for debugging canonicalization issues
-      if (process.env.RELAY_LOG_LEVEL === 'DEBUG' || process.env.OPENCLAW_WS_DEBUG === '1') {
-        console.log(`[ws-auth-debug] challenge payload: ${JSON.stringify(payload)}`);
-      }
 
       const signedAt = Date.now();
       const clientId = 'cli';
@@ -874,9 +909,8 @@ export class OpenClawGatewayClient {
       );
 
       // Select public key format based on resolved auth profile.
-      const profile = resolveAuthProfile();
       const publicKeyField =
-        profile.publicKeyFormat === 'spki-pem' && this.device.publicKeyPem
+        authProfile.publicKeyFormat === 'spki-pem' && this.device.publicKeyPem
           ? this.device.publicKeyPem
           : this.device.publicKeyB64;
 
@@ -925,7 +959,7 @@ export class OpenClawGatewayClient {
       if (msg.ok) {
         this.clearConnectTimeout();
         const versionUsed =
-          this.payloadVersionOverride ?? (resolveAuthProfile().name === 'clawdbot-v1' ? 'v2' : 'v3');
+          this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
         console.log(
           `[openclaw-ws] Authenticated successfully (payload=${versionUsed}${this.fallbackAttempted ? ', via fallback' : ''})`
         );
@@ -936,20 +970,26 @@ export class OpenClawGatewayClient {
         this.connectReject = null;
       } else {
         const errStr = msg.error ? JSON.stringify(msg.error) : 'Authentication rejected';
-        const isPairing = /pairing.required|not.paired/i.test(errStr);
-        const isSignatureInvalid = /signature.invalid|device.signature|invalid.signature/i.test(errStr);
+        const errorCode = getErrorCode(msg.error);
+        const errorMessage = getErrorMessage(msg.error).toLowerCase();
+        const isPairing = errorCode === 'pairing.required' || errorCode === 'not.paired';
+        const isSignatureInvalid =
+          errorCode === 'signature.invalid' ||
+          errorCode === 'device.signature' ||
+          errorCode === 'invalid.signature' ||
+          (errorCode === 'auth_failed' &&
+            (errorMessage === 'device signature invalid' || errorMessage === 'signature invalid'));
 
         if (isPairing) {
           this.clearConnectTimeout();
           const errObj = msg.error as Record<string, unknown> | undefined;
-          const requestId = errObj?.requestId ?? errObj?.request_id ?? '';
+          const requestId = safeCommandToken(errObj?.requestId ?? errObj?.request_id);
           console.error('[openclaw-ws] Pairing rejected — device is not paired with the OpenClaw gateway.');
           if (requestId) {
             console.error(`[openclaw-ws] Approve this device:  openclaw devices approve ${requestId}`);
           }
           console.error(`[openclaw-ws] Device ID: ${this.device.deviceId.slice(0, 16)}...`);
-          const configHint =
-            getWsAuthCompat() === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
+          const configHint = authCompat === 'clawdbot' ? '~/.clawdbot/clawdbot.json' : '~/.openclaw/openclaw.json';
           console.error(
             `[openclaw-ws] Ensure OPENCLAW_GATEWAY_TOKEN matches ${configHint} gateway.auth.token`
           );
@@ -959,9 +999,8 @@ export class OpenClawGatewayClient {
           // Do NOT clear connect timeout — it protects the fallback attempt too.
           this.authRejectCount++;
           this.authFallbackCount++;
-          const profile = resolveAuthProfile();
           const currentVersion =
-            this.payloadVersionOverride ?? (profile.name === 'clawdbot-v1' ? 'v2' : 'v3');
+            this.payloadVersionOverride ?? (authProfile.name === 'clawdbot-v1' ? 'v2' : 'v3');
           const fallbackVersion: PayloadVersionOverride = currentVersion === 'v2' ? 'v3' : 'v2';
 
           console.warn(
@@ -2260,7 +2299,7 @@ export class InboundGateway {
       const body = await readBody(req);
       try {
         const args = JSON.parse(body) as Record<string, unknown>;
-        const name = args.name as string;
+        const name = safeCommandToken(args.name);
         if (!name) {
           res.writeHead(400);
           res.end(JSON.stringify({ ok: false, error: '"name" is required' }));
@@ -2292,8 +2331,9 @@ export class InboundGateway {
           })
         );
       } catch (err) {
+        console.error('[gateway] Spawn request failed');
         res.writeHead(500);
-        res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+        res.end(JSON.stringify({ ok: false, error: 'spawn failed' }));
       }
       return;
     }
@@ -2320,8 +2360,8 @@ export class InboundGateway {
       const body = await readBody(req);
       try {
         const args = JSON.parse(body) as Record<string, unknown>;
-        const name = args.name as string | undefined;
-        const id = args.id as string | undefined;
+        const name = safeCommandToken(args.name);
+        const id = safeCommandToken(args.id);
 
         if (!name && !id) {
           res.writeHead(400);
@@ -2339,8 +2379,9 @@ export class InboundGateway {
         res.writeHead(200);
         res.end(JSON.stringify({ ok: released, active: this.spawnManager.size }));
       } catch (err) {
+        console.error('[gateway] Release request failed');
         res.writeHead(500);
-        res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+        res.end(JSON.stringify({ ok: false, error: 'release failed' }));
       }
       return;
     }

@@ -26,11 +26,31 @@ function expandHomeDir(input: string): string {
 }
 
 function sanitizeContainerSegment(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, '-');
-  return normalized.replace(/^-+|-+$/g, '') || 'claw';
+  let output = '';
+  let previousWasDash = false;
+
+  for (const char of value.trim().toLowerCase()) {
+    const allowed =
+      (char >= 'a' && char <= 'z') ||
+      (char >= '0' && char <= '9') ||
+      char === '_' ||
+      char === '.' ||
+      char === '-';
+
+    if (allowed) {
+      output += char;
+      previousWasDash = false;
+    } else if (!previousWasDash) {
+      output += '-';
+      previousWasDash = true;
+    }
+  }
+
+  let start = 0;
+  let end = output.length;
+  while (start < end && output[start] === '-') start++;
+  while (end > start && output[end - 1] === '-') end--;
+  return output.slice(start, end) || 'claw';
 }
 
 export interface DockerSpawnProviderOptions {

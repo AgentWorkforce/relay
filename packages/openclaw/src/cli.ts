@@ -112,10 +112,10 @@ async function runSetup(positional: string[], flags: Record<string, string>): Pr
   const result = await setup({ workspaceKey, clawName, channels, baseUrl });
 
   if (result.ok) {
-    console.log(result.message);
-    const maskedWorkspaceKey = (result.workspaceKey ?? result.apiKey).slice(0, 12) + '...';
-    console.log(`\nWorkspace key: ${maskedWorkspaceKey}`);
-    console.log('Share this key with other claws to join the same workspace.');
+    console.log('Agent Relay bridge installed.');
+    console.log(`Claw name: ${result.clawName}`);
+    console.log('Workspace key saved locally.');
+    console.log('Share the workspace key through your normal secret-sharing channel.');
   } else {
     console.error(`Setup failed: ${result.message}`);
     process.exit(1);
@@ -163,7 +163,7 @@ async function runStatus(): Promise<void> {
   console.log(`Claw name: ${config.clawName}`);
   console.log(`Channels: ${config.channels.join(', ')}`);
   console.log(`Base URL: ${config.baseUrl}`);
-  console.log(`Workspace key: ${config.apiKey.slice(0, 12)}...`);
+  console.log('Workspace key: configured');
 
   // Try to check connectivity
   try {
@@ -262,7 +262,7 @@ async function runAddWorkspace(positional: string[], flags: Record<string, strin
   });
 
   const entry = config.workspaces.find((w) => w.api_key === workspaceKey);
-  const label = entry?.workspace_alias ?? entry?.workspace_id ?? workspaceKey.slice(0, 12) + '...';
+  const label = entry?.workspace_alias ?? entry?.workspace_id ?? '(unnamed workspace)';
   console.log(`Workspace "${label}" added.`);
   console.log(`Total workspaces: ${config.workspaces.length}`);
   if (config.default_workspace) {
@@ -282,9 +282,8 @@ async function runListWorkspaces(): Promise<void> {
   for (const w of workspaces) {
     const defaultMarker = w.is_default ? ' (default)' : '';
     const alias = w.workspace_alias ?? '(no alias)';
-    const maskedKey = w.api_key.slice(0, 12) + '...';
     const wsId = w.workspace_id ? ` [${w.workspace_id}]` : '';
-    console.log(`  ${alias}${wsId} — ${maskedKey}${defaultMarker}`);
+    console.log(`  ${alias}${wsId}${defaultMarker}`);
   }
 }
 
@@ -361,7 +360,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch(() => {
+  console.error('Unexpected relay-openclaw failure');
   process.exit(1);
 });

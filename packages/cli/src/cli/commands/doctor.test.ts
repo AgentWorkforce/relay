@@ -368,7 +368,8 @@ describe('doctor diagnostics', () => {
     restore();
     const output = logs.join('\n');
     expect(output).toContain('Agent Relay workspace key');
-    expect(output).toContain('Unresolved RELAY_WORKSPACE_KEY template (${RELAY_WORKSPACE_KEY})');
+    expect(output).toContain('Unresolved RELAY_WORKSPACE_KEY template');
+    expect(output).not.toContain('(${RELAY_WORKSPACE_KEY})');
     expect(output).toContain('real rk_live_... workspace key');
     expect(output).toContain('Some checks failed');
     expect(process.exitCode).toBe(1);

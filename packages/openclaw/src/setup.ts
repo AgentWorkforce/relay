@@ -36,24 +36,28 @@ function extractNestedValue(obj: unknown, path: string): unknown {
  * Set a deeply nested value in an object by dot-separated path, creating
  * intermediate objects as needed.
  */
-const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split('.');
-  for (const key of keys) {
-    if (DANGEROUS_KEYS.has(key)) {
-      throw new Error(`Refusing to set dangerous key "${key}" in path "${path}"`);
-    }
-  }
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
-    if (current[key] == null || typeof current[key] !== 'object') {
-      current[key] = {};
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+      throw new Error(`Refusing to set dangerous key "${key}" in path "${path}"`);
+    }
+    if (!isRecord(current[key])) {
+      current[key] = Object.create(null) as Record<string, unknown>;
     }
     current = current[key] as Record<string, unknown>;
   }
-  current[keys[keys.length - 1]] = value;
+  const finalKey = keys[keys.length - 1];
+  if (finalKey === '__proto__' || finalKey === 'prototype' || finalKey === 'constructor') {
+    throw new Error(`Refusing to set dangerous key "${finalKey}" in path "${path}"`);
+  }
+  current[finalKey] = value;
 }
 
 /**
@@ -146,8 +150,15 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       await mkdir(join(detection.homeDir, 'workspace'), { recursive: true });
       // Write a minimal config file so MCP servers can be registered
       const configPath = join(detection.homeDir, detection.configFilename);
-      if (!existsSync(configPath)) {
-        await writeFile(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', 'utf-8');
+      try {
+        await writeFile(configPath, JSON.stringify({ mcpServers: {} }, null, 2) + '\n', {
+          encoding: 'utf-8',
+          flag: 'wx',
+        });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw err;
+        }
       }
       // Re-detect after creating
       const redetection = await detectOpenClaw();

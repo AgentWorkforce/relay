@@ -215,7 +215,7 @@ describe('Gateway control HTTP server', () => {
     expect(res.status).toBe(500);
     const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
-    expect(data.error).toContain('Docker unavailable');
+    expect(data.error).toBe('spawn failed');
   });
 
   it('GET /list returns 200 with empty list', async () => {
@@ -276,7 +276,7 @@ describe('Gateway control HTTP server', () => {
     expect(res.status).toBe(500);
     const data = (await res.json()) as Record<string, unknown>;
     expect(data.ok).toBe(false);
-    expect(data.error).toContain('Process kill failed');
+    expect(data.error).toBe('release failed');
   });
 
   it('GET /unknown returns 404', async () => {

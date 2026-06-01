@@ -143,15 +143,15 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   let client: RuntimeClient | undefined;
   const paths = getProjectPaths();
   const connection = readBrokerConnectionFile(paths.dataDir);
-  const relayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY);
-  const relayApiKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY);
-  const relayKeyTemplate = relayWorkspaceKeyTemplate ?? relayApiKeyTemplate;
-  const relayKeyEnvName = relayWorkspaceKeyTemplate ? 'RELAY_WORKSPACE_KEY' : 'RELAY_API_KEY';
-  const relayApiKeyResult: CheckResult | null = relayKeyTemplate
+  const hasRelayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY) !== null;
+  const hasLegacyRelayKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY) !== null;
+  const hasUnresolvedRelayKeyTemplate = hasRelayWorkspaceKeyTemplate || hasLegacyRelayKeyTemplate;
+  const relayKeyEnvName = hasRelayWorkspaceKeyTemplate ? 'RELAY_WORKSPACE_KEY' : 'RELAY_API_KEY';
+  const relayKeyTemplateResult: CheckResult | null = hasUnresolvedRelayKeyTemplate
     ? {
         name: 'Agent Relay workspace key',
         ok: false,
-        message: `Unresolved ${relayKeyEnvName} template (${relayKeyTemplate})`,
+        message: `Unresolved ${relayKeyEnvName} template`,
         remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
       }
     : null;
@@ -160,7 +160,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     const liveBrokers = findLiveBrokerProcesses(paths.projectRoot, paths.dataDir);
     if (liveBrokers.length > 0) {
       return [
-        ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+        ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
         {
           name: 'Broker connection',
           ok: false,
@@ -177,7 +177,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     }
 
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: true,
@@ -193,7 +193,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
 
   if (!connection.conn) {
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,
@@ -210,7 +210,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
 
   if (!isProcessRunning(connection.conn.pid)) {
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,
@@ -237,7 +237,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
     const pending = typedStatus.pending_deliveries ?? [];
     const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: true,
@@ -264,7 +264,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return [
-      ...(relayApiKeyResult ? [relayApiKeyResult] : []),
+      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
         name: 'Broker connection',
         ok: false,

@@ -40,7 +40,6 @@
   },
   "files": [
     "dist",
-    "bin",
     "README.md",
     "package.json"
   ],

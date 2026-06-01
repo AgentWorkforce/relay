@@ -114,36 +114,6 @@ function getOptionalDepBinaryPath(ext: string): string | null {
   return null;
 }
 
-function getDriverBinDirs(): string[] {
-  const binDirs: string[] = [];
-
-  const currentModuleDir = getCurrentModuleDir();
-  if (currentModuleDir) {
-    addUniquePath(binDirs, resolve(currentModuleDir, '..', 'bin'));
-  }
-
-  const currentModuleReference = getCurrentModuleReference();
-  if (currentModuleReference) {
-    try {
-      const driverEntry = createRequire(currentModuleReference).resolve('@agent-relay/runtime');
-      addUniquePath(binDirs, resolve(dirname(driverEntry), '..', 'bin'));
-    } catch {
-      // Continue with other resolution strategies.
-    }
-  }
-
-  const importMetaUrl = getImportMetaUrl();
-  if (importMetaUrl) {
-    try {
-      addUniquePath(binDirs, resolve(dirname(fileURLToPath(importMetaUrl)), '..', 'bin'));
-    } catch {
-      // Continue with other resolution strategies.
-    }
-  }
-
-  return binDirs;
-}
-
 function findAncestorSourceCheckoutRoot(start: string): string | null {
   let current = resolve(start);
   for (let i = 0; i < 8; i++) {
@@ -157,7 +127,7 @@ function findAncestorSourceCheckoutRoot(start: string): string | null {
   return null;
 }
 
-function getDevelopmentBinaryPaths(ext: string, binDirs: string[]): string[] {
+function getDevelopmentBinaryPaths(ext: string): string[] {
   const binaryPaths: string[] = [];
   const repoRoots = new Set<string>();
 
@@ -184,10 +154,6 @@ function getDevelopmentBinaryPaths(ext: string, binDirs: string[]): string[] {
     addRepoRoot(resolve(currentModuleDir, '..', '..', '..'));
   }
 
-  for (const binDir of binDirs) {
-    addRepoRoot(resolve(binDir, '..', '..', '..'));
-  }
-
   return binaryPaths;
 }
 
@@ -200,8 +166,8 @@ function isSourceCheckoutRoot(candidate: string): boolean {
   );
 }
 
-function getSourceCheckoutBinaryPaths(ext: string, binDirs: string[]): string[] {
-  return getDevelopmentBinaryPaths(ext, binDirs).filter((binaryPath) =>
+function getSourceCheckoutBinaryPaths(ext: string): string[] {
+  return getDevelopmentBinaryPaths(ext).filter((binaryPath) =>
     isSourceCheckoutRoot(resolve(dirname(binaryPath), '..', '..'))
   );
 }
@@ -211,21 +177,17 @@ function getSourceCheckoutBinaryPaths(ext: string, binDirs: string[]): string[] 
  *
  * Search order:
  *   1. Explicit env override (BROKER_BINARY_PATH / AGENT_RELAY_BIN)
- *   2. Local Cargo build when the SDK is loaded from an agent-relay source
- *      checkout — keeps dev workflows snappy by preferring a fresh
- *      `target/release` binary over anything staged in bin/
+ *   2. Local Cargo build when the runtime is loaded from an agent-relay source
+ *      checkout
  *   3. Platform-specific optional-dep package
  *      (`@agent-relay/broker-<platform>-<arch>`) — primary production path
- *   4. Driver's bin/ directory
- *   5. Cargo development paths (target/release and target/debug)
- *   6. PATH lookup via `which` / `where`
+ *   4. Cargo development paths (target/release and target/debug)
+ *   5. PATH lookup via `which` / `where`
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
 export function getBrokerBinaryPath(): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  const binDirs = getDriverBinDirs();
-  const platformSpecific = `${BROKER_NAME}-${process.platform}-${process.arch}${ext}`;
   const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
 
   if (override) {
@@ -235,10 +197,8 @@ export function getBrokerBinaryPath(): string | null {
     }
   }
 
-  // 1. Prefer a local Cargo build when this SDK is being used from a source checkout.
-  // In development, a binary staged in packages/runtime/bin can be stale relative
-  // to the current Rust build in target/release.
-  for (const developmentPath of getSourceCheckoutBinaryPaths(ext, binDirs)) {
+  // 1. Prefer a local Cargo build when this runtime is being used from a source checkout.
+  for (const developmentPath of getSourceCheckoutBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
@@ -250,30 +210,14 @@ export function getBrokerBinaryPath(): string | null {
     return optionalDepBinary;
   }
 
-  // 3. Driver's bin/.
-  for (const binDir of binDirs) {
-    const exactPath = join(binDir, `${BROKER_NAME}${ext}`);
-    if (existsSync(exactPath)) {
-      return exactPath;
-    }
-  }
-
-  // 4. Platform-specific name in Driver's bin/.
-  for (const binDir of binDirs) {
-    const platformPath = join(binDir, platformSpecific);
-    if (existsSync(platformPath)) {
-      return platformPath;
-    }
-  }
-
-  // 5. Common development paths for local Cargo builds.
-  for (const developmentPath of getDevelopmentBinaryPaths(ext, binDirs)) {
+  // 3. Common development paths for local Cargo builds.
+  for (const developmentPath of getDevelopmentBinaryPaths(ext)) {
     if (existsSync(developmentPath)) {
       return developmentPath;
     }
   }
 
-  // 6. PATH lookup
+  // 4. PATH lookup.
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
     const result = execFileSync(cmd, [BROKER_NAME], {
