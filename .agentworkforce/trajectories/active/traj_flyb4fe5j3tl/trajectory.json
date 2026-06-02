@@ -40,7 +40,33 @@
             "confidence": 0.82
           },
           "significance": "high",
-          "tags": ["confidence:0.82"]
+          "tags": [
+            "confidence:0.82"
+          ]
+        },
+        {
+          "ts": 1780427219451,
+          "type": "decision",
+          "content": "Added legacy MediaQueryList listener fallback: Added legacy MediaQueryList listener fallback",
+          "raw": {
+            "question": "Added legacy MediaQueryList listener fallback",
+            "chosen": "Added legacy MediaQueryList listener fallback",
+            "alternatives": [],
+            "reasoning": "The PR targets mobile rendering, and older WebKit can lack addEventListener on MediaQueryList even though modern TypeScript DOM declarations include it."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780427292730,
+          "type": "reflection",
+          "content": "PR #1026 review found the intended mobile unmount behavior sound after adding a legacy MediaQueryList listener fallback. Web TypeScript and tests pass; Next production build is killed by the local runner during optimization before diagnostics.",
+          "raw": {
+            "confidence": 0.82
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.82"
+          ]
         }
       ]
     }

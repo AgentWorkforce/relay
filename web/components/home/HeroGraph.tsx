@@ -7,6 +7,22 @@ import { MessageRelayAnimation } from '../MessageRelayAnimation';
 // Matches the mobile breakpoint in landing.module.css where .heroRight is hidden.
 const MOBILE_QUERY = '(max-width: 600px)';
 
+type MediaQueryListWithLegacyListeners = MediaQueryList & {
+  addListener?: (listener: () => void) => void;
+  removeListener?: (listener: () => void) => void;
+};
+
+function subscribeToMediaQuery(mql: MediaQueryList, listener: () => void) {
+  if (typeof mql.addEventListener === 'function') {
+    mql.addEventListener('change', listener);
+    return () => mql.removeEventListener('change', listener);
+  }
+
+  const legacyMql = mql as MediaQueryListWithLegacyListeners;
+  legacyMql.addListener?.(listener);
+  return () => legacyMql.removeListener?.(listener);
+}
+
 /**
  * Renders the hero's animated node graph only above the mobile breakpoint.
  *
@@ -22,8 +38,7 @@ export function HeroGraph() {
     const update = () => setIsDesktop(!mql.matches);
 
     update();
-    mql.addEventListener('change', update);
-    return () => mql.removeEventListener('change', update);
+    return subscribeToMediaQuery(mql, update);
   }, []);
 
   if (!isDesktop) {
