@@ -14,8 +14,14 @@ interface CodeGroupProps {
   children: ReactNode;
 }
 
-function findCodeElement(node: ReactNode): ReactElement | null {
-  if (!isValidElement(node)) {
+interface CodeBlockProps {
+  children?: ReactNode;
+  className?: string;
+  'data-label'?: string;
+}
+
+function findCodeElement(node: ReactNode): ReactElement<CodeBlockProps> | null {
+  if (!isValidElement<CodeBlockProps>(node)) {
     return null;
   }
 
@@ -33,7 +39,7 @@ function findCodeElement(node: ReactNode): ReactElement | null {
   return null;
 }
 
-function getLabel(block: ReactElement, index: number): string {
+function getLabel(block: ReactElement<CodeBlockProps>, index: number): string {
   if (block.props['data-label']) {
     return block.props['data-label'] as string;
   }
@@ -50,7 +56,7 @@ function getLabel(block: ReactElement, index: number): string {
 
 export function CodeGroup({ children }: CodeGroupProps) {
   const { language, setLanguage } = useDocsLanguage();
-  const rawBlocks = Children.toArray(children).filter((child): child is ReactElement =>
+  const rawBlocks = Children.toArray(children).filter((child): child is ReactElement<CodeBlockProps> =>
     isValidElement(child)
   );
 
