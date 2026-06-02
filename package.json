@@ -75,7 +75,6 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^14.3.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
@@ -97,15 +96,10 @@
     "zod": "^3.25.76"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
-    "flatted": "^3.4.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@posthog/next": {
-      "next": "15.5.18"
-    }
+    "flatted": "^3.4.2"
   }
 }
