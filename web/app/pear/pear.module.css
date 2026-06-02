@@ -48,29 +48,23 @@
   text-align: center;
 }
 
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.7rem 0.3rem 0.4rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--card-bg);
-  color: var(--fg-muted);
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  margin-bottom: 1.4rem;
-}
-
 .eyebrowMark {
   width: 1.05rem;
   height: 1.05rem;
 }
 
-.eyebrow b {
-  color: var(--fg);
-  font-weight: 700;
+.heroHead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0.75rem, 2vw, 1.4rem);
+  margin-bottom: 1.1rem;
+}
+
+.heroMark {
+  width: clamp(3.4rem, 9vw, 6.5rem);
+  height: clamp(3.4rem, 9vw, 6.5rem);
+  flex: 0 0 auto;
 }
 
 .headline {
@@ -80,7 +74,19 @@
   line-height: 1.02;
   letter-spacing: -0.045em;
   color: var(--fg);
-  margin: 0 0 1.1rem;
+  margin: 0;
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .heroHead {
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .headline {
+    text-align: center;
+  }
 }
 
 .headline em {

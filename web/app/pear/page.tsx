@@ -133,15 +133,12 @@ export default function PearPage() {
         <section className={s.heroWrap}>
           <div className={s.heroGlow} aria-hidden />
           <div className={s.hero}>
-            <span className={s.eyebrow}>
-              <PearMark className={s.eyebrowMark} />
-              <span>
-                <b>Pear</b> by Agent Relay
-              </span>
-            </span>
-            <h1 className={s.headline}>
-              Pair program with a <em>team</em> of agents
-            </h1>
+            <div className={s.heroHead}>
+              <PearMark className={s.heroMark} />
+              <h1 className={s.headline}>
+                Pair program with a <em>team</em> of agents
+              </h1>
+            </div>
             <p className={s.lead}>
               Pear is a desktop workspace for working with many AI coding agents at once. Each runs in
               its own terminal, they talk to each other, split up the work, and bring every diff back to
