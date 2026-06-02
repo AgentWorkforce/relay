@@ -127,18 +127,18 @@
   font-size: 0.82rem;
 }
 
-/* ── Product mock window ── */
+/* ── Product screenshot ── */
 
 .mockWrap {
   max-width: 64rem;
   margin: 3rem auto 0;
-  perspective: 1600px;
 }
 
-.mock {
+.shot {
+  display: block;
+  width: 100%;
+  height: auto;
   border-radius: 0.9rem;
-  overflow: hidden;
-  background: var(--console-bg);
   border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
   box-shadow:
     0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
@@ -146,20 +146,7 @@
     0 12px 32px -18px rgba(22, 40, 59, 0.4);
 }
 
-.mockBar {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.65rem 0.9rem;
-  background: var(--console-panel);
-  border-bottom: 1px solid var(--console-line);
-}
-
-.dots {
-  display: flex;
-  gap: 0.42rem;
-}
-
+/* Traffic-light dots — shared with the feature visual cards */
 .dot {
   width: 0.72rem;
   height: 0.72rem;
@@ -174,240 +161,6 @@
 }
 .dotG {
   background: var(--status-green);
-}
-
-.mockTitle {
-  margin-left: 0.4rem;
-  color: var(--console-muted);
-  font-size: 0.78rem;
-  font-family: var(--font-geist-mono), monospace;
-}
-
-.mockBody {
-  display: grid;
-  grid-template-columns: 13rem 1fr 17rem;
-  min-height: 25rem;
-}
-
-/* Rail */
-.rail {
-  border-right: 1px solid var(--console-line);
-  padding: 0.85rem 0.7rem;
-  background: color-mix(in srgb, var(--console-panel) 70%, var(--console-bg));
-}
-
-.railLabel {
-  color: var(--console-muted);
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  margin: 0.2rem 0.35rem 0.55rem;
-}
-
-.railLabel + .railLabel,
-.railGroup + .railGroup {
-  margin-top: 1rem;
-}
-
-.railItem {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.34rem 0.4rem;
-  border-radius: 0.45rem;
-  color: var(--console-fg);
-  font-size: 0.82rem;
-  font-family: var(--font-geist-mono), monospace;
-}
-
-.railItemActive {
-  background: color-mix(in srgb, var(--primary) 20%, transparent);
-  color: #eaf2f8;
-}
-
-.agentDot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 999px;
-  flex: 0 0 auto;
-}
-
-.live {
-  background: var(--status-green);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-green) 70%, transparent);
-  animation: pulse 2.4s infinite;
-}
-.busy {
-  background: var(--status-yellow);
-}
-.idle {
-  background: var(--console-muted);
-}
-
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-green) 60%, transparent);
-  }
-  70% {
-    box-shadow: 0 0 0 5px transparent;
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
-/* Terminal column */
-.terms {
-  display: grid;
-  grid-template-rows: 1fr 1fr;
-  border-right: 1px solid var(--console-line);
-}
-
-.pane {
-  padding: 0.7rem 0.85rem;
-  overflow: hidden;
-}
-
-.pane + .pane {
-  border-top: 1px solid var(--console-line);
-}
-
-.paneHead {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.5rem;
-  color: var(--console-muted);
-  font-size: 0.72rem;
-  font-family: var(--font-geist-mono), monospace;
-}
-
-.paneHead b {
-  color: var(--console-fg);
-  font-weight: 600;
-}
-
-.term {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 0.74rem;
-  line-height: 1.62;
-  color: var(--console-fg);
-}
-
-.term .ln {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cPrompt {
-  color: var(--pear-soft);
-}
-.cKey {
-  color: var(--console-keyword);
-}
-.cStr {
-  color: var(--console-string);
-}
-.cType {
-  color: var(--console-type);
-}
-.cMuted {
-  color: var(--console-muted);
-}
-.cMethod {
-  color: var(--console-method);
-}
-
-.caret {
-  display: inline-block;
-  width: 0.5rem;
-  height: 0.9rem;
-  vertical-align: -0.12rem;
-  background: var(--pear-soft);
-  animation: blink 1.1s steps(1) infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-/* Chat column */
-.chat {
-  display: flex;
-  flex-direction: column;
-  background: color-mix(in srgb, var(--console-panel) 55%, var(--console-bg));
-}
-
-.chatHead {
-  padding: 0.7rem 0.85rem;
-  border-bottom: 1px solid var(--console-line);
-  color: var(--console-fg);
-  font-size: 0.8rem;
-  font-weight: 600;
-  font-family: var(--font-geist-mono), monospace;
-}
-
-.chatHead span {
-  color: var(--console-muted);
-}
-
-.chatBody {
-  padding: 0.8rem 0.85rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-.msg {
-  display: grid;
-  grid-template-columns: 1.4rem 1fr;
-  gap: 0.5rem;
-}
-
-.avatar {
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 0.4rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.62rem;
-  font-weight: 700;
-  color: #fff;
-  font-family: var(--font-geist-mono), monospace;
-}
-
-.msgBody {
-  min-width: 0;
-}
-
-.msgMeta {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-}
-
-.author {
-  color: #eaf2f8;
-  font-size: 0.76rem;
-  font-weight: 600;
-}
-
-.time {
-  color: var(--console-muted);
-  font-size: 0.64rem;
-}
-
-.msgText {
-  margin: 0.12rem 0 0;
-  color: var(--console-fg);
-  font-size: 0.76rem;
-  line-height: 1.5;
 }
 
 .mention {

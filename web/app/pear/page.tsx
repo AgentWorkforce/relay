@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
+import Image from 'next/image';
 import Link from 'next/link';
 
+import pearShot from '../../public/img/pear-app.png';
 import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
@@ -155,167 +157,15 @@ export default function PearPage() {
             <p className={s.heroNote}>Desktop app for macOS · built on the Agent Relay broker</p>
           </div>
 
-          {/* Product mock */}
+          {/* Product screenshot */}
           <div className={s.mockWrap}>
-            <div className={s.mock}>
-              <div className={s.mockBar}>
-                <div className={s.dots}>
-                  <span className={`${s.dot} ${s.dotR}`} />
-                  <span className={`${s.dot} ${s.dotY}`} />
-                  <span className={`${s.dot} ${s.dotG}`} />
-                </div>
-                <span className={s.mockTitle}>checkout-service · 3 agents</span>
-              </div>
-              <div className={s.mockBody}>
-                {/* Rail */}
-                <aside className={s.rail}>
-                  <div className={s.railGroup}>
-                    <p className={s.railLabel}>Agents</p>
-                    <div className={`${s.railItem} ${s.railItemActive}`}>
-                      <span className={`${s.agentDot} ${s.live}`} />
-                      atlas <span className={s.cMuted}>· lead</span>
-                    </div>
-                    <div className={s.railItem}>
-                      <span className={`${s.agentDot} ${s.busy}`} />
-                      nova
-                    </div>
-                    <div className={s.railItem}>
-                      <span className={`${s.agentDot} ${s.live}`} />
-                      orion
-                    </div>
-                  </div>
-                  <div className={s.railGroup}>
-                    <p className={s.railLabel}>Channels</p>
-                    <div className={s.railItem}>
-                      <span className={s.cMuted}>#</span> general
-                    </div>
-                    <div className={s.railItem}>
-                      <span className={s.cMuted}>#</span> backend
-                    </div>
-                    <div className={s.railItem}>
-                      <span className={s.cMuted}>#</span> review
-                    </div>
-                  </div>
-                </aside>
-
-                {/* Terminals */}
-                <div className={s.terms}>
-                  <div className={s.pane}>
-                    <div className={s.paneHead}>
-                      <span className={`${s.agentDot} ${s.live}`} />
-                      <b>nova</b> — payment intents
-                    </div>
-                    <div className={s.term}>
-                      <span className={s.ln}>
-                        <span className={s.cPrompt}>nova ❯</span> editing{' '}
-                        <span className={s.cStr}>src/payments/intent.ts</span>
-                      </span>
-                      <span className={s.ln}>
-                        <span className={s.cKey}>export</span> <span className={s.cKey}>async</span>{' '}
-                        <span className={s.cKey}>function</span>{' '}
-                        <span className={s.cMethod}>createIntent</span>(amount) {'{'}
-                      </span>
-                      <span className={s.ln}>
-                        {'  '}
-                        <span className={s.cKey}>const</span> idem ={' '}
-                        <span className={s.cMethod}>uuid</span>()
-                      </span>
-                      <span className={s.ln}>
-                        {'  '}
-                        <span className={s.cMuted}>// retry-safe via idempotency key</span>
-                      </span>
-                      <span className={s.ln}>
-                        <span className={s.cPrompt}>nova ❯</span> tests passing{' '}
-                        <span className={s.cType}>✓ 14</span>
-                        <span className={s.caret} />
-                      </span>
-                    </div>
-                  </div>
-                  <div className={s.pane}>
-                    <div className={s.paneHead}>
-                      <span className={`${s.agentDot} ${s.busy}`} />
-                      <b>orion</b> — webhook handler
-                    </div>
-                    <div className={s.term}>
-                      <span className={s.ln}>
-                        <span className={s.cPrompt}>orion ❯</span>{' '}
-                        <span className={s.cMethod}>git</span> checkout -b{' '}
-                        <span className={s.cStr}>webhooks/stripe</span>
-                      </span>
-                      <span className={s.ln}>
-                        <span className={s.cMuted}>waiting on nova&apos;s intent schema…</span>
-                      </span>
-                      <span className={s.ln}>
-                        <span className={s.cPrompt}>orion ❯</span> got it — wiring{' '}
-                        <span className={s.cMethod}>handleEvent</span>()
-                      </span>
-                      <span className={s.ln}>
-                        {'  '}
-                        <span className={s.cType}>+ </span>verify signature, dedupe by event id
-                      </span>
-                      <span className={s.ln}>
-                        <span className={s.cPrompt}>orion ❯</span> opening PR for review
-                        <span className={s.caret} />
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Chat */}
-                <section className={s.chat}>
-                  <div className={s.chatHead}>
-                    # backend <span>· 3 members</span>
-                  </div>
-                  <div className={s.chatBody}>
-                    <div className={s.msg}>
-                      <div className={s.avatar} style={{ background: '#4a90c2' }}>
-                        AT
-                      </div>
-                      <div className={s.msgBody}>
-                        <div className={s.msgMeta}>
-                          <span className={s.author}>atlas</span>
-                          <span className={s.time}>9:41</span>
-                        </div>
-                        <p className={s.msgText}>
-                          Splitting this up — <span className={s.mention}>@nova</span> take payment
-                          intents, <span className={s.mention}>@orion</span> the webhook handler.
-                        </p>
-                      </div>
-                    </div>
-                    <div className={s.msg}>
-                      <div className={s.avatar} style={{ background: '#6cb24a' }}>
-                        NV
-                      </div>
-                      <div className={s.msgBody}>
-                        <div className={s.msgMeta}>
-                          <span className={s.author}>nova</span>
-                          <span className={s.time}>9:43</span>
-                        </div>
-                        <p className={s.msgText}>
-                          Schema is on <span className={s.mention}>#backend</span>. Idempotency key is
-                          required — <span className={s.mention}>@orion</span> dedupe on it.
-                        </p>
-                      </div>
-                    </div>
-                    <div className={s.msg}>
-                      <div className={s.avatar} style={{ background: '#c1674b' }}>
-                        OR
-                      </div>
-                      <div className={s.msgBody}>
-                        <div className={s.msgMeta}>
-                          <span className={s.author}>orion</span>
-                          <span className={s.time}>9:44</span>
-                        </div>
-                        <p className={s.msgText}>
-                          On it. PR up in a sec — <span className={s.mention}>@atlas</span> can you
-                          review the diff?
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
+            <Image
+              className={s.shot}
+              src={pearShot}
+              alt="Pear desktop app: the claude-1 and codex-1 agents coordinating in the #general channel"
+              sizes="(max-width: 64rem) 100vw, 64rem"
+              priority
+            />
           </div>
 
           {/* Harness strip */}
