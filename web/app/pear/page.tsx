@@ -392,9 +392,11 @@ export default function PearPage() {
             </div>
           </div>
         </section>
+      </main>
 
-        {/* ── Capabilities bento ── */}
-        <section className={s.section}>
+      {/* Capabilities — same band as the home "Open source from day one" */}
+      <section className={s.bandSection}>
+        <div className={s.bandInner}>
           <div className={s.sectionHead}>
             <span className={s.kicker}>Everything in the box</span>
             <h2 className={s.sectionTitle}>Built for real, long-running work</h2>
@@ -412,8 +414,10 @@ export default function PearPage() {
               </article>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
 
+      <main className={s.main}>
         {/* ── How it works ── */}
         <section className={s.section}>
           <div className={s.sectionHead}>

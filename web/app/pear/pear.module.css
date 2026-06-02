@@ -8,6 +8,11 @@
   --pear: #6cb24a;
   --pear-soft: #a6d388;
   --pear-deep: #4f8f33;
+  /* Shared band background used by the home "Works with every agent" and
+     "Open source from day one" sections. */
+  --agent-tools-band-bg:
+    radial-gradient(circle at 18% 24%, rgba(116, 184, 226, 0.16), transparent 32%),
+    linear-gradient(180deg, #10273a 0%, #17364c 52%, #0d2638 100%);
   min-height: 100vh;
   background: #0b1c2a;
   color: var(--fg);
@@ -170,9 +175,10 @@
 
 .wave {
   position: relative;
-  width: 100%;
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
   height: 70px;
-  margin: 1rem 0;
+  margin-block: 1rem;
   overflow: hidden;
   pointer-events: none;
 }
@@ -519,6 +525,22 @@
 }
 
 /* ── Bento / capabilities grid ── */
+
+/* Full-bleed band matching the home "Open source from day one" section. */
+.bandSection {
+  margin-top: 6rem;
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
+  background: var(--agent-tools-band-bg);
+  border-top: 1px solid color-mix(in srgb, white 5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, white 5%, transparent);
+}
+
+.bandInner {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 4.5rem 1.25rem;
+}
 
 .bento {
   margin-top: 2.5rem;
