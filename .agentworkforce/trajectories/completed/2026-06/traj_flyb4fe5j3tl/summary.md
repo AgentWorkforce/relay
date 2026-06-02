@@ -1,4 +1,4 @@
-# Trajectory: Build Pear landing page at /pear in web app
+# Trajectory: Upgrade web app to Next.js 16 and React 19
 
 > **Status:** ✅ Completed
 > **Confidence:** 82%

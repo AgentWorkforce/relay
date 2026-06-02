@@ -2,7 +2,7 @@
   "id": "traj_flyb4fe5j3tl",
   "version": 1,
   "task": {
-    "title": "Build Pear landing page at /pear in web app"
+    "title": "Upgrade web app to Next.js 16 and React 19"
   },
   "status": "completed",
   "startedAt": "2026-06-02T11:54:11.838Z",

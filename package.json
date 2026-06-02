@@ -96,7 +96,7 @@
     "zod": "^3.25.76"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
