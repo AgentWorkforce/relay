@@ -1,0 +1,53 @@
+{
+  "id": "traj_h4b8y58nrqnf",
+  "version": 1,
+  "task": {
+    "title": "Rewrite README as SDK spec-of-record (Phase 0)"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-02T22:49:24.245Z",
+  "completedAt": "2026-06-02T22:53:37.166Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-02T22:49:35.139Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vb6314pk52sf",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-02T22:49:35.139Z",
+      "endedAt": "2026-06-02T22:53:37.166Z",
+      "events": [
+        {
+          "ts": 1780440575141,
+          "type": "decision",
+          "content": "Locked 13 SDK API decisions via Q&A; Model A (create owns registration), addListener-only listeners, dotted events, rich envelope, messageId, relay.webhooks, createHuman self-registers: Locked 13 SDK API decisions via Q&A; Model A (create owns registration), addListener-only listeners, dotted events, rich envelope, messageId, relay.webhooks, createHuman self-registers",
+          "raw": {
+            "question": "Locked 13 SDK API decisions via Q&A; Model A (create owns registration), addListener-only listeners, dotted events, rich envelope, messageId, relay.webhooks, createHuman self-registers",
+            "chosen": "Locked 13 SDK API decisions via Q&A; Model A (create owns registration), addListener-only listeners, dotted events, rich envelope, messageId, relay.webhooks, createHuman self-registers",
+            "alternatives": [],
+            "reasoning": "README is the spec-of-record; resolving design forks before code"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Phase 0: rewrote README as SDK spec-of-record per 13 locked decisions; added events.mdx canonical reference + nav entry",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "14a0928941d5e12e8beb6dae171f34624458b704",
+    "endRef": "14a0928941d5e12e8beb6dae171f34624458b704"
+  }
+}

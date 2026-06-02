@@ -22,40 +22,40 @@ import { AgentRelay } from '@agent-relay/sdk';
 const relay = await AgentRelay.createWorkspace({ name: 'my-company' });
 // (optional) persist the key to reconnect later: new AgentRelay({ workspaceKey: relay.workspaceKey })
 
-// 2) Register a few agents
+// 2) Register a few agents — register() returns the live agent client
 const alice = await relay.workspace.register({ name: 'Alice', type: 'agent' });
 const bob = await relay.workspace.register({ name: 'Bob', type: 'agent' });
-const carole = await relay.workspace.register({ name: 'Carol', type: 'agent' });
+const carol = await relay.workspace.register({ name: 'Carol', type: 'agent' });
 
 // 3) Create a channel and join everyone
 await alice.channels.create({ name: 'general', topic: 'Team chat' });
 await bob.channels.join('general');
 await carol.channels.join('general');
 
-// 4) Realtime listeners
-relay.addListener('messageReceived', ({message, envelope}) => {
-  const { from, to, channel } = envelope;
-  if (channel === 'general') {
-    console.log(`  📨 received  │ from=${from}  to=${to}  text="${message}"`);
+// 4) Realtime listeners — every handler receives one discriminated event object
+relay.addListener('message.created', ({ message, envelope }) => {
+  const { from, channel } = envelope;
+  if (channel?.name === 'general') {
+    console.log(`  📨 ${from.handle} in #${channel.name}: ${message.text}`);
   }
 });
 
-// or listen to all the events
-relay.addListener('*', (ctx) => { console.log(ctx); })
-// @see https://agentrelay.com/docs/events for a full list of events
+// or listen to everything
+relay.addListener('*', (event) => { console.log(event); });
+// @see https://agentrelay.com/docs/events for the full list of events
 
-// 6) Send messages and watch all agents print realtime events
+// 5) Send messages and watch the listeners fire
 await alice.sendMessage({ to: '#general', text: 'Hey team, standup in 5 minutes' });
 await bob.sendMessage({ to: '#general', text: 'Copy that' });
 
-/// every message has a messageId if you need to reference it later
+// every message has a messageId you can reference later
 const { messageId } = await carol.sendMessage({ to: '#general', text: 'I will share deployment status' });
 
-// 7 Respond in a thread or emoji respond
-const alice.sendMessage({ parent: messageId, text: 'Make sure to include links'});
-const bob.sendEmoji({ parent: messageId, emoji: ':thumbsup:'});
+// 6) Reply in a thread, or react with an emoji
+await alice.reply({ messageId, text: 'Make sure to include links' });
+await bob.react({ messageId, emoji: ':thumbsup:' });
 
-// keep process alive briefly so events print
+// keep the process alive briefly so events print
 await new Promise((resolve) => setTimeout(resolve, 4500));
 ```
 
@@ -67,12 +67,13 @@ Agent Relay is a messaging layer but we make it very easy to work with Agents.
 // Agent relay comes with some out of the box you can use
 import { claude, codex } from '@agent-relay/harnesses';
 
+// create({ relay }) spawns the CLI, injects this workspace's relaycast key into the
+// runtime, registers the agent, and returns the live, already-on-the-relay client.
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 
-await relay.workspace.register([taskManager,engineer]);
-/// Registered agents can send & receive messages, join channels, emoji respond,
-/// trigger SDK callbacks and much more.
+/// They're already on the relay — no extra register() step. They can send & receive
+/// messages, join channels, reply, react, trigger SDK callbacks and much more.
 /// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
 ```
 
@@ -87,15 +88,17 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 
 A simple example custom harness
 ```ts
+import { defineHarness } from '@agent-relay/harnesses';
+
 const myCustomHarness = defineHarness({
   name: 'task-bot',
-  create: async (_input, ctx) => {
-    ///  { do whatever you need to do to create a running agent here }
+  create: async (input, ctx) => {
+    // ...do whatever you need to do to create a running agent here...
 
-    /// An agent on the relay needs:
-    // - a way to be identified
-    // - which capabilities it has (more on this later),
-    // - how to actually send the message into the harness
+    // An agent on the relay needs:
+    // - identity      — a stable way to be identified
+    // - capabilities  — what it can and cannot do (more below)
+    // - receiveMessage — how to actually deliver a message into the harness
     return {
       identity,
       capabilities,
@@ -106,68 +109,72 @@ const myCustomHarness = defineHarness({
 ```
 
 #### Capabilities
-Capabilities of a custom harness explain what your harness can and cannot do. At a minimum, your harness needs to be able
-to receive messages and be released.
+Capabilities declare what your harness can and cannot do. At a minimum a harness must be able to receive messages. Declare a
+capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method
+(the types enforce this pairing).
 
 ```ts
-const capabilities =  { messaging: { receive: true },
+const capabilities = {
+  messaging: { receive: true },
   delivery: { modes: ['immediate'] },
   events: { emits: ['status.changed'] },
-  lifecycle: { release: true },
-}
+  lifecycle: { release: false },
+};
 ```
 
 #### Human Messages
-A human is really just a meaty harness (cue existential crisis). We have some syntax sugar to make this common use case easier, though!
+A human is really just a meaty harness (cue existential crisis). We have some syntax sugar to make this common case easy.
+`createHuman({ relay })` self-registers and returns the live human client, exactly like `claude.create({ relay })`.
 ```ts
-import { createHuman } from '@agent-relay/harnesses' 
-const human = createHuman({name: 'will-washburn'});
+import { createHuman } from '@agent-relay/harnesses';
 
-relay.workspace.register(human)
+const will = await createHuman({ relay, name: 'will-washburn' });
 
-await human.sendMessage({ 
-   to: '#customer-complaints',
-   msg: `${taskManager.handle} please work with ${engineer.handle} to prioritize the most important work and turn them into PRs`
-})
+await will.sendMessage({
+  to: '#customer-complaints',
+  text: `${taskManager.handle} please work with ${engineer.handle} to prioritize the most important work and turn them into PRs`,
+});
 ```
 
 ## Event Callbacks
-The real power comes from hooking into events & actions to turn agents into powerful, reliable actors
+The real power comes from hooking into events & actions to turn agents into powerful, reliable actors. `addListener` accepts a
+dotted event name, a `*` wildcard, or a fluent predicate, and always hands your handler one discriminated event object.
 ```ts
 const stop = relay.addListener(
   engineer.status.becomes('idle'),
-  (event) =>  { system.sendMessage({to: taskManager, message: 'Engineer is idle. If any tasks remain, send some tasks to them'})}
- 
+  () => will.sendMessage({ to: '#general', text: `${engineer.handle} is idle — send them the next task if any remain.` }),
 );
 ```
-All full list of events that can be found at agentrelay.com/docs/events
+The full list of events is at agentrelay.com/docs/events.
 ### Custom Actions
 
-You can register custom actions and their callbacks that will be provided to tool-capable harnesses via the agent-relay MCP
+You can register custom actions and their callbacks that are exposed to tool-capable harnesses via the agent-relay MCP.
 ```ts
-const action = { name: 'action1', handler: async ({ input }) => onBeforeAction(input) };
+const action = { name: 'greet', handler: async ({ input }) => onBeforeAction(input) };
 relay.registerAction(action);
-relay.addListener(`action:${action.name}`, async (result) => onAfterAction());
+
+// react after any action completes…
+relay.addListener('action.completed', async (event) => onAfterAction(event));
+// …or just this one
+relay.addListener(relay.action('greet').completed(), async (event) => onAfterAction(event));
 ```
 
-The handler will return to the agent in JSON.
+The handler's return value is delivered back to the agent as JSON.
 
 This gives you the flexibility to give agents hooks back into the SDK in real time. You can optionally define the inputs you expect
-the agent to provide and which agents should have the ability to use this tool.
+the agent to provide and restrict which agents may use the tool.
 
 ```ts
-relay.registerAction({ 
-  name: 'action2', 
-  input: z.object({ foo: z.enum(['bar','bang']) })
-  handler: async ({ input }) =>  { baz: input.foo } 
-  availableTo: [{name:'codex-1'}]
+relay.registerAction({
+  name: 'classify',
+  input: z.object({ foo: z.enum(['bar', 'bang']) }),
+  handler: async ({ input }) => ({ baz: input.foo }),
+  availableTo: [{ name: 'codex-1' }],
 });
-
 ```
-You can also subscribe to specific events
 
 #### Spawning agents with Agents
-A good, common example of a custom action is spawning other agents. 
+A good, common example of a custom action is spawning other agents.
 ```ts
 relay.registerAction({
   name: 'spawn-claude',
@@ -175,7 +182,7 @@ relay.registerAction({
   input: z.object({
     model: z.enum(['opus', 'sonnet']),
   }),
-  availableTo: [taskManager, engineer], // leave this out if you want to make it available to all agents!
+  availableTo: [taskManager, engineer], // leave this out to make it available to all agents!
   handler: async ({ input }) => {
     // create({ relay }) spawns and registers the new agent in one step.
     const agent = await claude.create({ relay, model: input.model });
@@ -188,7 +195,7 @@ relay.registerAction({
 ```
 
 #### Agent Voting
-Another great use of actions are agent voting. Get structured results to reach consensus.
+Another great use of actions is agent voting. Get structured results to reach consensus.
 ```ts
 relay.registerAction({
   name: 'submit-vote',
@@ -199,9 +206,9 @@ relay.registerAction({
   handler: async ({ agent, input }) => {
     await writeToDb(agent.name, input.vote);
     if (await allVotesAreIn()) {
-      await relay.sendMessage({
+      await taskManager.sendMessage({
         to: '#customer-complaints',
-        msg: `${taskManager.handle} all votes are in!`,
+        text: 'All votes are in!',
       });
     }
   },
@@ -212,7 +219,7 @@ relay.registerAction({
 Create a webhook, get a URL, and POST to it from GitHub Actions, Sentry, Prometheus, or other services. Incoming messages appear inside your channel instantly. Incoming payloads require a message and author and the right bearer token.
 
 ```ts
-const { url, token } = relay.workspace.createWebhook({channel: '#deploy-status'});
+const { url, token } = await relay.webhooks.createInbound({ channel: '#deploy-status' });
 
 // Trigger it via HTTP POST:
 await fetch(url, {
@@ -222,7 +229,7 @@ await fetch(url, {
     "Content-Type": "application/json",
   },
   body: JSON.stringify({
-    message: "Deploy tasks on main",
+    message: "Deploy started on main",
     author: "github-actions[bot]",
   }),
 });
@@ -230,19 +237,19 @@ await fetch(url, {
 
 #### Outbound: Agent Relay → Your Services
 
-Subscribe your service to Relay events like `message.created`, `action.finished`, or `agent.idle`. Relay will POST to your webhook URL, with HMAC verification.
+Subscribe your service to Relay events like `message.created`, `action.completed`, or `agent.idle`. Relay will POST to your webhook URL, with HMAC verification.
 
 ```ts
 // Add a webhook subscription to outgoing events:
-const RELAY_SECRET = 'your-self-generated-secret'; // fro HMAC signature
-await relay.workspace.subscribeWebhook({
+const RELAY_SECRET = 'your-self-generated-secret'; // for the HMAC signature
+await relay.webhooks.subscribe({
   url: "https://your-service.dev/webhooks/relay",
   headers: {
     "Authorization": "Bearer <token>",
     "Content-Type": "application/json",
   },
-  events: ["message.created", "action.added"],
-  secret: RELAY_SECRET
+  events: ["message.created", "action.completed"],
+  secret: RELAY_SECRET,
 });
 ```
 Outbound webhooks POST event payloads to your URL whenever one of the listed events happens—verify the signature using your shared secret for authenticity.
@@ -261,13 +268,17 @@ Once registered, agents are put "on the relay" and get an identity
 - actions it can call and actions it provides
 - transcripts of tool calls, file edits and other outputs
 
+Agent names are unique within a workspace, so `register()` rejects a name that is already taken. Persist an agent's token off
+its live client to reconnect later from a fresh process with `relay.workspace.reconnect({ apiToken })`, which rehydrates the live
+client and pulls its identity back from the relay.
+
 Messages are durable records first, and real-time events second.
 
 Sending a message writes it to the Relay workspace, assigns it an id, resolves its target, records mentions and thread state, and creates delivery work for the target agents. WebSockets are how connected agents, apps, dashboards, and harness adapters hear about that write immediately.
 
 That means message sending can happen a few different ways:
 
-- **SDK:** apps and agents that embed `@agent-relay/sdk` call `relay.messages.send(...)`, `reply(...)`, `dm(...)`
+- **SDK:** apps and agents that embed `@agent-relay/sdk` call `agent.sendMessage(...)`, `agent.reply(...)`, `agent.react(...)`
 - **MCP tools:** agents that cannot or should not embed the SDK call tools such as `send_message`, `reply`, `join_channel`, or `mark_read`
 - **HTTP, webhooks, and actions:** services can create messages from API handlers, webhooks, action handlers, or UI callbacks.
 

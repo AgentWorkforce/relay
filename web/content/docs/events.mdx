@@ -1,0 +1,118 @@
+---
+title: 'Events'
+description: 'The canonical Agent Relay event vocabulary, the discriminated event object every listener receives, and the message envelope schema. One vocabulary is shared by addListener and webhook subscriptions.'
+---
+
+Agent Relay emits a single, stable set of events. The same names are used by in-process listeners
+(`relay.addListener`) and by outbound webhook subscriptions (`relay.webhooks.subscribe`), so you only learn
+one vocabulary.
+
+## Naming scheme
+
+Event names are lowercase, dotted, and past-tense: `noun.verb`.
+
+- `message.created`, `message.reacted`, `message.read`
+- `delivery.accepted`, `delivery.delivered`, `delivery.deferred`, `delivery.failed`
+- `agent.status.changed`, `agent.idle`, `agent.active`, `agent.blocked`, `agent.waiting`, `agent.offline`
+- `action.invoked`, `action.completed`, `action.failed`, `action.denied`
+- `tool.called`, `tool.completed`, `tool.failed`
+- `transcript.chunk`, `file.changed`, `terminal.output`
+
+## Listening
+
+`addListener` accepts three argument styles and always hands your handler **one discriminated event object**
+whose `type` field is the event name.
+
+```ts
+// 1) a dotted event name — the handler arg is narrowed to that event's shape
+relay.addListener('message.created', (event) => {
+  console.log(event.type, event.message.messageId);
+});
+
+// 2) a wildcard — '*' for everything, or a prefix like 'message.*' / 'action.*'
+relay.addListener('action.*', (event) => console.log(event.type));
+relay.addListener('*', (event) => console.log(event));
+
+// 3) a fluent predicate, for filtered subscriptions
+relay.addListener(engineer.status.becomes('idle'), (event) => { /* ... */ });
+relay.addListener(relay.action('spawn-claude').calledBy(engineer), (event) => { /* ... */ });
+```
+
+`addListener` returns an unsubscribe function. There is exactly one listener entry point — there is no
+`relay.on`, `relay.notify`, or `relay.actions` namespace.
+
+## The event object
+
+Every event is a discriminated union keyed on `type`. Listening to a specific name narrows the object in
+TypeScript; listening to `'*'` gives you the full union.
+
+```ts
+type RelayEvent =
+  | { type: 'message.created'; message: RelayMessage; envelope: MessageEnvelope }
+  | { type: 'message.reacted'; messageId: string; emoji: string; by: AgentRef }
+  | { type: 'delivery.failed'; deliveryId: string; messageId: string; reason: string }
+  | { type: 'agent.idle'; agent: AgentRef }
+  | { type: 'action.completed'; action: string; input: unknown; output: unknown; agent: AgentRef }
+  // ...one variant per event name above
+  ;
+```
+
+## The message envelope
+
+`message.created` (and other message events) carry both the full `message` and a flat, ergonomic
+`envelope`. The envelope fields are **rich objects**, not bare strings.
+
+```ts
+interface AgentRef {
+  id: string;
+  name: string;
+  handle: string;
+  type: 'agent' | 'human';
+}
+
+interface ChannelRef {
+  id: string;
+  name: string; // without the leading '#'
+}
+
+interface MessageEnvelope {
+  from: AgentRef;                       // the sender
+  to?: AgentRef | AgentRef[];           // DM recipient, or group-DM recipients
+  channel?: ChannelRef;                 // present for channel posts and threads in a channel
+  parent?: string;                      // messageId this is a reply to, for thread replies
+}
+```
+
+So a channel-message handler reads identity off the objects:
+
+```ts
+relay.addListener('message.created', ({ message, envelope }) => {
+  const { from, channel } = envelope;
+  if (channel?.name === 'general') {
+    console.log(`${from.handle} in #${channel.name}: ${message.text}`);
+  }
+});
+```
+
+## Message identifiers
+
+Every message exposes `messageId` (the public name for the underlying record id). Use it to reply in a
+thread or react:
+
+```ts
+const { messageId } = await alice.sendMessage({ to: '#general', text: 'Shipping now' });
+await bob.reply({ messageId, text: 'On it' });
+await bob.react({ messageId, emoji: ':rocket:' });
+```
+
+## Webhook subscriptions use the same names
+
+Outbound webhook subscriptions list the identical event names:
+
+```ts
+await relay.webhooks.subscribe({
+  url: 'https://your-service.dev/webhooks/relay',
+  events: ['message.created', 'action.completed'],
+  secret: RELAY_SECRET,
+});
+```
