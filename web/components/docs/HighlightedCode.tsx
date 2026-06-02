@@ -55,9 +55,10 @@ function parseInlineStyle(styleText?: string): React.CSSProperties | undefined {
 export async function HighlightedPre({
   children,
   ...props
-}: React.DetailedHTMLProps<React.HTMLAttributes<HTMLPreElement>, HTMLPreElement>) {
+}: React.ComponentPropsWithoutRef<'pre'>) {
   const codeChild = Children.toArray(children).find(
-    (c): c is ReactElement => isValidElement(c) && c.type === 'code'
+    (c): c is ReactElement<{ children?: React.ReactNode; className?: string }> =>
+      isValidElement(c) && c.type === 'code'
   );
 
   if (!codeChild) {

@@ -4,8 +4,17 @@ import { describe, expect, it } from 'vitest';
 import { HighlightedPre } from '../../components/docs/HighlightedCode';
 import { encodeCodeFenceMeta } from '../code-fence-meta';
 
-function findElementByType(node: React.ReactNode, type: string): React.ReactElement | null {
-  if (!React.isValidElement(node)) {
+type CodeElementProps = {
+  children?: React.ReactNode;
+  className?: string;
+  'data-language'?: string;
+};
+
+function findElementByType(
+  node: React.ReactNode,
+  type: string
+): React.ReactElement<CodeElementProps> | null {
+  if (!React.isValidElement<CodeElementProps>(node)) {
     return null;
   }
 

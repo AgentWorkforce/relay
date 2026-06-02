@@ -9,7 +9,7 @@ const postHog = process.env.NEXT_PUBLIC_POSTHOG_KEY
     })
   : null;
 
-export default function middleware(request: NextRequest) {
+export default function proxy(request: NextRequest) {
   if (!postHog) return NextResponse.next();
   return postHog(request);
 }

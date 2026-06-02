@@ -17,7 +17,7 @@ export default $config({
 
     const web = new sst.aws.Nextjs('Web', {
       path: '.',
-      openNextVersion: '3.9.16',
+      openNextVersion: '3.10.4',
       environment: {
         NEXT_PUBLIC_POSTHOG_HOST,
         NEXT_PUBLIC_POSTHOG_KEY,
