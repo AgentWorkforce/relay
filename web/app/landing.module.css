@@ -3676,7 +3676,7 @@
   }
 
   .heroRight {
-    min-height: 300px;
+    display: none;
   }
 
   .installSection {
