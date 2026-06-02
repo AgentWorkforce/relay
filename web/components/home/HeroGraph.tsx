@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { MessageRelayAnimation } from '../MessageRelayAnimation';
 
 // Matches the mobile breakpoint in landing.module.css where .heroRight is hidden.
-const DESKTOP_QUERY = '(min-width: 601px)';
+const MOBILE_QUERY = '(max-width: 600px)';
 
 /**
  * Renders the hero's animated node graph only above the mobile breakpoint.
@@ -18,8 +18,8 @@ export function HeroGraph() {
   const [isDesktop, setIsDesktop] = useState(false);
 
   useEffect(() => {
-    const mql = window.matchMedia(DESKTOP_QUERY);
-    const update = () => setIsDesktop(mql.matches);
+    const mql = window.matchMedia(MOBILE_QUERY);
+    const update = () => setIsDesktop(!mql.matches);
 
     update();
     mql.addEventListener('change', update);
