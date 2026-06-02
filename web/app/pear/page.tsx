@@ -7,7 +7,9 @@ import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { WaitlistForm } from '../../components/WaitlistForm';
+import { WorksWithEveryAgent } from '../../components/home';
 import { absoluteUrl } from '../../lib/site';
+import home from '../landing.module.css';
 import s from './pear.module.css';
 
 export const metadata: Metadata = {
@@ -55,7 +57,16 @@ function Tick() {
   );
 }
 
-const harnesses = ['Claude Code', 'Codex', 'Gemini CLI', 'Cursor', 'Aider', 'OpenCode', 'Amp'];
+function Wave() {
+  return (
+    <div className={s.wave} aria-hidden>
+      <svg className={s.waveSvg} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
+        <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
+        <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />
+      </svg>
+    </div>
+  );
+}
 
 const capabilities = [
   {
@@ -167,20 +178,13 @@ export default function PearPage() {
               priority
             />
           </div>
-
-          {/* Harness strip */}
-          <div className={s.harnesses}>
-            <p className={s.harnessesLabel}>Bring the agents you already use</p>
-            <div className={s.harnessRow}>
-              {harnesses.map((h) => (
-                <span key={h} className={s.chip}>
-                  {h}
-                </span>
-              ))}
-            </div>
-          </div>
         </section>
+      </main>
 
+      {/* Bring the agents you already use — same band + logos as the home page */}
+      <WorksWithEveryAgent />
+
+      <main className={s.main}>
         {/* ── Feature: many agents ── */}
         <section className={s.section}>
           <div className={s.sectionHead}>
@@ -266,6 +270,8 @@ export default function PearPage() {
             </div>
           </div>
 
+          <Wave />
+
           <div className={`${s.featureRow} ${s.reverse}`}>
             <div className={s.featureCopy}>
               <span className={s.featureTag}>
@@ -334,6 +340,8 @@ export default function PearPage() {
               </div>
             </div>
           </div>
+
+          <Wave />
 
           <div className={s.featureRow}>
             <div className={s.featureCopy}>
@@ -434,17 +442,24 @@ export default function PearPage() {
           </div>
         </section>
 
-        {/* ── Final CTA ── */}
-        <section id="waitlist" className={s.cta}>
-          <h2 className={s.ctaTitle}>Pair with a team that ships</h2>
-          <p className={s.ctaLead}>
-            Pear is in private beta. Join the waitlist and we&apos;ll reach out with an early build.
-          </p>
-          <div className={s.ctaForm}>
+      </main>
+
+      {/* Waitlist — same signup band as the home page */}
+      <section id="waitlist" className={home.waitlistSection} aria-labelledby="waitlist-title">
+        <div className={home.waitlistInner}>
+          <div className={home.waitlistCopy}>
+            <h2 id="waitlist-title" className={home.waitlistTitle}>
+              Pair with a team that ships
+            </h2>
+            <p className={home.waitlistSubtitle}>
+              Pear is in private beta. Join the waitlist and we&apos;ll reach out with an early build.
+            </p>
+          </div>
+          <div className={home.waitlistFormPanel}>
             <WaitlistForm />
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
 
       <SiteFooter />
     </div>
