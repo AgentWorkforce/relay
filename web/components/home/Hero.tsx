@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-import { MessageRelayAnimation } from '../MessageRelayAnimation';
+import { HeroGraph } from './HeroGraph';
 import s from '../../app/landing.module.css';
 import { GitHubIcon, HeroBackdrop } from './icons';
 
@@ -34,7 +34,7 @@ export function Hero() {
         </div>
 
         <div className={s.heroRight}>
-          <MessageRelayAnimation />
+          <HeroGraph />
         </div>
       </section>
     </div>
