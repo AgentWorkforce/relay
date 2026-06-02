@@ -174,6 +174,10 @@ export default function PearPage() {
               height={1744}
               sizes="(max-width: 64rem) 100vw, 64rem"
               priority
+              // Served as-is: the SST/OpenNext image optimizer has no working
+              // sharp runtime, so /_next/image 500s. unoptimized serves the
+              // static asset directly.
+              unoptimized
             />
           </div>
         </section>
