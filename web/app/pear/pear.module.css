@@ -139,9 +139,7 @@
   width: 100%;
   height: auto;
   border-radius: 0.9rem;
-  border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
   box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
     0 40px 80px -40px rgba(22, 40, 59, 0.55),
     0 12px 32px -18px rgba(22, 40, 59, 0.4);
 }
