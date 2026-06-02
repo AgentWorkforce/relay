@@ -100,8 +100,6 @@
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
-    "flatted": "^3.4.2",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "flatted": "^3.4.2"
   }
 }
