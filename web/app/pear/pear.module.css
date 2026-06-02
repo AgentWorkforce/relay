@@ -41,7 +41,11 @@
   height: 540px;
   z-index: -1;
   background:
-    radial-gradient(60% 60% at 30% 0%, color-mix(in srgb, var(--primary) 18%, transparent) 0%, transparent 70%),
+    radial-gradient(
+      60% 60% at 30% 0%,
+      color-mix(in srgb, var(--primary) 18%, transparent) 0%,
+      transparent 70%
+    ),
     radial-gradient(50% 50% at 78% 12%, color-mix(in srgb, var(--pear) 20%, transparent) 0%, transparent 70%);
   filter: blur(8px);
   pointer-events: none;

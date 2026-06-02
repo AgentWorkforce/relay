@@ -29,8 +29,7 @@ export const metadata: Metadata = {
   twitter: {
     card: 'summary_large_image',
     title: 'Pear by Agent Relay',
-    description:
-      'Pair program with a team of agents that talk to each other and run parallel workstreams.',
+    description: 'Pair program with a team of agents that talk to each other and run parallel workstreams.',
   },
 };
 
@@ -88,9 +87,7 @@ const capabilities = [
   {
     title: 'Diff review',
     body: 'Every change lands in a review pane. Read the diff, approve or push back, then let the agent continue.',
-    icon: (
-      <path d="M9 4v16m6-16v16M4 9h10M10 15h10" strokeLinecap="round" strokeLinejoin="round" />
-    ),
+    icon: <path d="M9 4v16m6-16v16M4 9h10M10 15h10" strokeLinecap="round" strokeLinejoin="round" />,
   },
   {
     title: 'Cloud agents',
@@ -153,9 +150,9 @@ export default function PearPage() {
               </h1>
             </div>
             <p className={s.lead}>
-              Pear is a desktop workspace for working with many AI coding agents at once. Each runs in
-              its own terminal, they talk to each other, split up the work, and bring every diff back to
-              you for review.
+              Pear is a desktop workspace for working with many AI coding agents at once. Each runs in its own
+              terminal, they talk to each other, split up the work, and bring every diff back to you for
+              review.
             </p>
             <div className={s.ctaRow}>
               <Link href="#waitlist" className={s.ctaPrimary}>
@@ -191,8 +188,8 @@ export default function PearPage() {
             <span className={s.kicker}>One workspace</span>
             <h2 className={s.sectionTitle}>A whole team, not a single chat window</h2>
             <p className={s.sectionLead}>
-              Spawn as many agents as the task needs. Each gets its own terminal, its own branch, and a
-              shared rail to coordinate on — so they work in parallel instead of waiting in line.
+              Spawn as many agents as the task needs. Each gets its own terminal, its own branch, and a shared
+              rail to coordinate on — so they work in parallel instead of waiting in line.
             </p>
           </div>
 
@@ -203,10 +200,9 @@ export default function PearPage() {
               </span>
               <h3 className={s.featureName}>They coordinate with each other</h3>
               <p className={s.featureDesc}>
-                Pear gives every agent a real messaging rail — the same channels, DMs, threads, and
-                reactions you&apos;d expect from Slack, built on the Agent Relay broker. Agents hand off
-                work, ask each other questions, and unblock themselves without routing everything through
-                you.
+                Pear gives every agent a real messaging rail — the same channels, DMs, threads, and reactions
+                you&apos;d expect from Slack, built on the Agent Relay broker. Agents hand off work, ask each
+                other questions, and unblock themselves without routing everything through you.
               </p>
               <ul className={s.bullets}>
                 <li>
@@ -260,9 +256,7 @@ export default function PearPage() {
                     </div>
                     <div className={s.vBubble}>
                       <span className={s.vAuthor}>orion</span>
-                      <span className={s.vText}>
-                        Rebased on nova&apos;s branch — no conflicts. Merging.
-                      </span>
+                      <span className={s.vText}>Rebased on nova&apos;s branch — no conflicts. Merging.</span>
                     </div>
                   </div>
                 </div>
@@ -279,9 +273,9 @@ export default function PearPage() {
               </span>
               <h3 className={s.featureName}>See the whole operation as a graph</h3>
               <p className={s.featureDesc}>
-                A lead agent breaks the goal into workstreams and delegates. Pear draws the live graph of
-                who spawned whom and who&apos;s messaging whom, so a team of agents stays legible instead
-                of turning into a wall of scrolling text.
+                A lead agent breaks the goal into workstreams and delegates. Pear draws the live graph of who
+                spawned whom and who&apos;s messaging whom, so a team of agents stays legible instead of
+                turning into a wall of scrolling text.
               </p>
               <ul className={s.bullets}>
                 <li>
@@ -350,9 +344,9 @@ export default function PearPage() {
               </span>
               <h3 className={s.featureName}>Review every diff before it lands</h3>
               <p className={s.featureDesc}>
-                Agents move fast, but nothing merges behind your back. Changes surface in a review pane
-                with full diffs. Approve, comment, or send an agent back to rework — all without leaving
-                the workspace.
+                Agents move fast, but nothing merges behind your back. Changes surface in a review pane with
+                full diffs. Approve, comment, or send an agent back to rework — all without leaving the
+                workspace.
               </p>
               <ul className={s.bullets}>
                 <li>
@@ -405,7 +399,14 @@ export default function PearPage() {
             {capabilities.map((c) => (
               <article key={c.title} className={s.bentoCard}>
                 <span className={s.bentoIcon}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                  >
                     {c.icon}
                   </svg>
                 </span>
@@ -434,18 +435,21 @@ export default function PearPage() {
             <article className={s.step}>
               <span className={s.stepNum}>2</span>
               <h3>Spawn your agents</h3>
-              <p>Add the harnesses you like — Claude Code, Codex, and more. Each lands in its own terminal.</p>
+              <p>
+                Add the harnesses you like — Claude Code, Codex, and more. Each lands in its own terminal.
+              </p>
               <code>+ nova · orion · atlas (lead)</code>
             </article>
             <article className={s.step}>
               <span className={s.stepNum}>3</span>
               <h3>Set the goal &amp; review</h3>
-              <p>Describe the outcome. The team splits the work, coordinates, and brings diffs back to you.</p>
+              <p>
+                Describe the outcome. The team splits the work, coordinates, and brings diffs back to you.
+              </p>
               <code>&quot;Add idempotent Stripe webhooks&quot;</code>
             </article>
           </div>
         </section>
-
       </main>
 
       {/* Waitlist — same signup band as the home page */}
