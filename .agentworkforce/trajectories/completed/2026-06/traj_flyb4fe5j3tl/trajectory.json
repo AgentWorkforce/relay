@@ -1,0 +1,48 @@
+{
+  "id": "traj_flyb4fe5j3tl",
+  "version": 1,
+  "task": {
+    "title": "Build Pear landing page at /pear in web app"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-02T11:54:11.838Z",
+  "completedAt": "2026-06-02T18:40:31.391Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Added /pear OG card",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "f45e456",
+    "0fc0b78",
+    "64e94ed",
+    "f02a4ac"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_flyb4fe5j3tl/trajectory.json",
+    "web/app/auth/relayauth.module.css",
+    "web/app/file/relayfile.module.css",
+    "web/app/globals.css",
+    "web/app/landing.module.css",
+    "web/app/llm.txt/route.ts",
+    "web/app/message/relaycast.module.css",
+    "web/app/pear/opengraph-image.tsx",
+    "web/app/pear/page.tsx",
+    "web/app/pear/pear.module.css",
+    "web/app/primitives/primitives.module.css",
+    "web/app/schedule/relaycron.module.css",
+    "web/app/sitemap.ts",
+    "web/lib/og/template.tsx",
+    "web/next.config.mjs",
+    "web/public/img/pear-app.png"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ce8ca5e8090d396f05f38dc422526f2485a7defb",
+    "endRef": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb",
+    "traceId": "9cb79a81-f09b-4b58-9b91-05d6943f421b"
+  }
+}
