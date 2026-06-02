@@ -42,9 +42,7 @@
     "approach": "Standard approach",
     "confidence": 0.82
   },
-  "commits": [
-    "f02a4ac"
-  ],
+  "commits": ["f02a4ac"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_flyb4fe5j3tl/trajectory.json",
     "web/app/auth/relayauth.module.css",

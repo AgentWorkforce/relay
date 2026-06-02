@@ -18,6 +18,7 @@ Upgraded web app from Next.js 15.5.18 to 16.2.7 and React 18.3 to 19.2. Kept web
 ## Key Decisions
 
 ### Keep webpack via --webpack flag for Next 16 upgrade
+
 - **Chose:** Keep webpack via --webpack flag for Next 16 upgrade
 - **Reasoning:** Only webpack-specific usage is SKILL.md?raw build-time inlining relied on by a force-dynamic route; Turbopack lacks resourceQuery support. OpenNext runs npm run build, so --webpack in the build script is honored in prod. Lowest risk, preserves exact behavior.
 
@@ -26,7 +27,8 @@ Upgraded web app from Next.js 15.5.18 to 16.2.7 and React 18.3 to 19.2. Kept web
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Keep webpack via --webpack flag for Next 16 upgrade: Keep webpack via --webpack flag for Next 16 upgrade
 

@@ -52,10 +52,7 @@ function parseInlineStyle(styleText?: string): React.CSSProperties | undefined {
 /**
  * Server component that wraps <pre><code>...</code></pre> with Shiki highlighting and a copy button.
  */
-export async function HighlightedPre({
-  children,
-  ...props
-}: React.ComponentPropsWithoutRef<'pre'>) {
+export async function HighlightedPre({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) {
   const codeChild = Children.toArray(children).find(
     (c): c is ReactElement<{ children?: React.ReactNode; className?: string }> =>
       isValidElement(c) && c.type === 'code'

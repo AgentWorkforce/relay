@@ -10,10 +10,7 @@ type CodeElementProps = {
   'data-language'?: string;
 };
 
-function findElementByType(
-  node: React.ReactNode,
-  type: string
-): React.ReactElement<CodeElementProps> | null {
+function findElementByType(node: React.ReactNode, type: string): React.ReactElement<CodeElementProps> | null {
   if (!React.isValidElement<CodeElementProps>(node)) {
     return null;
   }
