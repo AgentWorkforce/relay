@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import Image from 'next/image';
 import Link from 'next/link';
 
 import { GitHubStarsBadge } from '../../components/GitHubStars';
@@ -166,18 +165,16 @@ export default function PearPage() {
 
           {/* Product screenshot */}
           <div className={s.mockWrap}>
-            <Image
+            {/* Plain img: the SST/OpenNext image optimizer has no working sharp
+                runtime, so next/image's /_next/image endpoint 500s. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
               className={s.shot}
               src="/img/pear-app.png"
               alt="Pear desktop app: the claude-1 and codex-1 agents coordinating in the #general channel"
               width={2342}
               height={1744}
-              sizes="(max-width: 64rem) 100vw, 64rem"
-              priority
-              // Served as-is: the SST/OpenNext image optimizer has no working
-              // sharp runtime, so /_next/image 500s. unoptimized serves the
-              // static asset directly.
-              unoptimized
+              loading="eager"
             />
           </div>
         </section>
