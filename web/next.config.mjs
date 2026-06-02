@@ -53,6 +53,8 @@ const nextConfig = {
   outputFileTracingRoot: path.resolve(__dirname, '..'),
   outputFileTracingIncludes: {
     '/*': ['content/docs/**/*', 'content/blog/**/*'],
+    // The Pear OG card embeds this screenshot at render time.
+    '/pear/opengraph-image': ['public/img/pear-app.png'],
   },
   webpack(config) {
     config.module.rules.push({
