@@ -122,7 +122,7 @@ export default function PearPage() {
           <>
             <GitHubStarsBadge />
             <Link href="#waitlist" className={s.ctaPrimary} style={{ padding: '0.5rem 1rem' }}>
-              Get early access
+              Join waitlist
             </Link>
           </>
         }
@@ -146,7 +146,7 @@ export default function PearPage() {
             </p>
             <div className={s.ctaRow}>
               <Link href="#waitlist" className={s.ctaPrimary}>
-                Get early access
+                Join waitlist
               </Link>
               <Link href="/docs" className={s.ctaSecondary}>
                 Read the docs
