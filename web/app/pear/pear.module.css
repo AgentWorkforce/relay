@@ -108,48 +108,11 @@
 }
 
 .ctaPrimary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1.35rem;
-  border-radius: 0.7rem;
-  background: var(--primary);
-  color: #fff;
-  font-size: 0.96rem;
-  font-weight: 600;
-  text-decoration: none;
-  border: 1px solid transparent;
-  box-shadow: 0 8px 24px -12px color-mix(in srgb, var(--primary) 70%, transparent);
-  transition:
-    background 0.2s,
-    transform 0.15s;
-}
-
-.ctaPrimary:hover {
-  background: var(--primary-hover);
-  transform: translateY(-1px);
+  composes: btn btn-primary from global;
 }
 
 .ctaSecondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1.2rem;
-  border-radius: 0.7rem;
-  background: var(--surface-strong);
-  color: var(--fg);
-  font-size: 0.96rem;
-  font-weight: 600;
-  text-decoration: none;
-  border: 1px solid var(--line);
-  transition:
-    border-color 0.2s,
-    transform 0.15s;
-}
-
-.ctaSecondary:hover {
-  border-color: var(--card-hover-border);
-  transform: translateY(-1px);
+  composes: btn btn-secondary from global;
 }
 
 .heroNote {
