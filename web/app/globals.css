@@ -27,6 +27,54 @@ a {
   color: inherit;
 }
 
+/* ── Buttons ──
+   Canonical button design, shared across the site. Landing-page CSS
+   modules pull these in with `composes: btn btn-primary from global;`
+   so the primary button looks identical everywhere. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 12px 28px;
+  border-radius: 100px;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    border-color 0.2s,
+    color 0.2s,
+    transform 0.15s,
+    box-shadow 0.2s;
+}
+
+.btn-primary {
+  background: var(--primary-600);
+  color: var(--primary-fg);
+  border: 1.5px solid var(--primary-800);
+}
+
+.btn-primary:hover {
+  background: var(--primary-500);
+  border-color: var(--primary-800);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: var(--secondary-surface);
+  color: var(--fg);
+  border: 1.5px solid var(--line);
+}
+
+.btn-secondary:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
+}
+
 code,
 pre {
   font-family: var(--font-geist-mono), monospace;

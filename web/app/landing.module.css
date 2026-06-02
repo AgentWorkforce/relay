@@ -223,57 +223,11 @@
 }
 
 .ctaPrimary {
-  display: inline-flex;
-  align-items: center;
-  font-size: 0.92rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  padding: 12px 28px;
-  background: #2d6a9c;
-  color: var(--primary-fg);
-  border: 1.5px solid #234969;
-  border-radius: 100px;
-  text-decoration: none;
-  transition:
-    background 0.2s,
-    border-color 0.2s,
-    transform 0.15s,
-    box-shadow 0.2s;
-  cursor: pointer;
-  box-shadow: none;
-}
-
-.ctaPrimary:hover {
-  background: #4a90c2;
-  border-color: #234969;
-  transform: translateY(-1px);
-  box-shadow: none;
+  composes: btn btn-primary from global;
 }
 
 .ctaSecondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.92rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  padding: 14px 28px;
-  background: var(--secondary-surface);
-  color: var(--fg);
-  border: 1.5px solid var(--line);
-  border-radius: 100px;
-  text-decoration: none;
-  transition:
-    border-color 0.2s,
-    color 0.2s,
-    transform 0.15s;
-  cursor: pointer;
-}
-
-.ctaSecondary:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-  transform: translateY(-1px);
+  composes: btn btn-secondary from global;
 }
 
 .installSection {

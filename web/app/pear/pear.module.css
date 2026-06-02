@@ -1,0 +1,680 @@
+/* ──────────────────────────────────────────────────────────
+   Pear by Agent Relay — landing page
+   Reuses Agent Relay brand tokens (public/brand.css) with a
+   pear-green accent drawn from the product mark.
+   ────────────────────────────────────────────────────────── */
+
+.page {
+  --pear: #6cb24a;
+  --pear-soft: #a6d388;
+  --pear-deep: #4f8f33;
+  /* Shared band background used by the home "Works with every agent" and
+     "Open source from day one" sections. */
+  --agent-tools-band-bg:
+    radial-gradient(circle at 18% 24%, rgba(116, 184, 226, 0.16), transparent 32%),
+    linear-gradient(180deg, #10273a 0%, #17364c 52%, #0d2638 100%);
+  min-height: 100vh;
+  background: #0b1c2a;
+  color: var(--fg);
+  font-family: var(--font-geist-sans), sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 1.25rem 6rem;
+}
+
+/* ── Hero ── */
+
+.heroWrap {
+  position: relative;
+  isolation: isolate;
+  padding: 3.5rem 1.25rem 1rem;
+}
+
+.heroGlow {
+  position: absolute;
+  inset: -10% -20% auto -20%;
+  height: 540px;
+  z-index: -1;
+  background:
+    radial-gradient(
+      60% 60% at 30% 0%,
+      color-mix(in srgb, var(--primary) 18%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(50% 50% at 78% 12%, color-mix(in srgb, var(--pear) 20%, transparent) 0%, transparent 70%);
+  filter: blur(8px);
+  pointer-events: none;
+}
+
+.hero {
+  max-width: 50rem;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.eyebrowMark {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.heroHead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0.75rem, 2vw, 1.4rem);
+  margin-bottom: 1.1rem;
+}
+
+.heroMark {
+  width: clamp(3.4rem, 9vw, 6.5rem);
+  height: clamp(3.4rem, 9vw, 6.5rem);
+  flex: 0 0 auto;
+}
+
+.headline {
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(2.6rem, 6.2vw, 4.6rem);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+  color: var(--fg);
+  margin: 0;
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .heroHead {
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .headline {
+    text-align: center;
+  }
+}
+
+.headline em {
+  font-style: italic;
+  background: linear-gradient(105deg, var(--primary) 0%, var(--pear-deep) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.lead {
+  max-width: 38rem;
+  margin: 0 auto;
+  color: var(--fg-muted);
+  font-size: clamp(1.02rem, 1.6vw, 1.18rem);
+  line-height: 1.65;
+}
+
+.ctaRow {
+  margin-top: 1.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.ctaPrimary {
+  composes: btn btn-primary from global;
+}
+
+.ctaSecondary {
+  composes: btn btn-secondary from global;
+}
+
+.heroNote {
+  margin-top: 1rem;
+  color: var(--fg-faint);
+  font-size: 0.82rem;
+}
+
+/* ── Product screenshot ── */
+
+.mockWrap {
+  max-width: 64rem;
+  margin: 3rem auto 0;
+}
+
+.shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.9rem;
+  box-shadow:
+    0 40px 80px -40px rgba(22, 40, 59, 0.55),
+    0 12px 32px -18px rgba(22, 40, 59, 0.4);
+}
+
+/* Traffic-light dots — shared with the feature visual cards */
+.dot {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 999px;
+}
+
+.dotR {
+  background: var(--status-red);
+}
+.dotY {
+  background: var(--status-yellow);
+}
+.dotG {
+  background: var(--status-green);
+}
+
+.mention {
+  color: var(--console-keyword);
+  font-weight: 600;
+}
+
+/* ── Wave divider (matches the home page feature separator) ── */
+
+.wave {
+  position: relative;
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
+  height: 70px;
+  margin-block: 1rem;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.wave::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 128vw;
+  height: 1px;
+  transform: translate(-50%, -50%) rotate(2deg);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(116, 184, 226, 0.05) 18%,
+    rgba(116, 184, 226, 0.2) 50%,
+    rgba(116, 184, 226, 0.05) 82%,
+    transparent 100%
+  );
+}
+
+.waveSvg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 128vw;
+  height: 78px;
+  color: #74b8e2;
+  opacity: 0.4;
+  overflow: visible;
+  transform: translate(-50%, -50%) rotate(2deg);
+}
+
+.waveSvg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.waveSvg path:nth-child(2) {
+  opacity: 0.5;
+}
+
+/* ── Feature rows ── */
+
+.section {
+  margin-top: 6rem;
+}
+
+.sectionHead {
+  max-width: 40rem;
+  margin: 0 auto 3rem;
+  text-align: center;
+}
+
+.kicker {
+  color: var(--primary);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sectionTitle {
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(1.9rem, 4vw, 2.7rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  color: var(--fg);
+  margin: 0.6rem 0 0;
+}
+
+.sectionLead {
+  margin: 0.85rem auto 0;
+  color: var(--fg-muted);
+  font-size: 1.02rem;
+  line-height: 1.65;
+}
+
+.featureRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: center;
+  margin-top: 4.5rem;
+}
+
+.featureRow:first-of-type {
+  margin-top: 0;
+}
+
+.featureRow.reverse .featureCopy {
+  order: 2;
+}
+
+.featureTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--pear-deep);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.featureName {
+  font-family: var(--font-heading), sans-serif;
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--fg);
+  margin: 0.7rem 0 0.7rem;
+  line-height: 1.12;
+}
+
+.featureDesc {
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1.68;
+  margin: 0;
+}
+
+.bullets {
+  margin: 1.2rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.bullets li {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  gap: 0.6rem;
+  align-items: start;
+  color: var(--fg);
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.tick {
+  margin-top: 0.18rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 auto;
+  color: var(--pear-deep);
+}
+
+/* Feature visual cards */
+.visual {
+  border-radius: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  box-shadow: 0 24px 60px -40px rgba(22, 40, 59, 0.4);
+  overflow: hidden;
+}
+
+.visualBar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.visualBar .dot {
+  width: 0.6rem;
+  height: 0.6rem;
+}
+
+.visualTitle {
+  color: var(--fg-faint);
+  font-size: 0.72rem;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.visualBody {
+  padding: 1rem;
+}
+
+/* chat visual */
+.vChat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.vMsg {
+  display: grid;
+  grid-template-columns: 1.6rem 1fr;
+  gap: 0.55rem;
+  align-items: start;
+}
+
+.vAvatar {
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 0.45rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.vBubble {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0.2rem 0.6rem 0.6rem 0.6rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.vAuthor {
+  color: var(--fg);
+  font-size: 0.76rem;
+  font-weight: 600;
+  margin-right: 0.35rem;
+}
+
+.vText {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.vReact {
+  margin-top: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--note-bg);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+}
+
+/* graph visual */
+.graph {
+  position: relative;
+  height: 16rem;
+}
+
+.gLine {
+  position: absolute;
+  height: 1px;
+  transform-origin: left center;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 55%, transparent), transparent);
+}
+
+.node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.nodeDot {
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: var(--font-geist-mono), monospace;
+  box-shadow: 0 8px 20px -10px rgba(22, 40, 59, 0.5);
+}
+
+.nodeLabel {
+  font-size: 0.68rem;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.nodeLead {
+  outline: 2px solid color-mix(in srgb, var(--pear) 70%, transparent);
+  outline-offset: 2px;
+}
+
+/* diff visual */
+.diff {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.76rem;
+  line-height: 1.7;
+}
+
+.diffFile {
+  color: var(--fg-faint);
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.diffAdd {
+  background: color-mix(in srgb, var(--status-green) 12%, transparent);
+  color: var(--fg);
+  display: block;
+  padding: 0 0.4rem;
+  border-left: 2px solid var(--status-green);
+}
+
+.diffDel {
+  background: color-mix(in srgb, var(--status-red) 10%, transparent);
+  color: var(--fg-muted);
+  display: block;
+  padding: 0 0.4rem;
+  border-left: 2px solid var(--status-red);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--status-red) 50%, transparent);
+}
+
+.diffCtx {
+  color: var(--fg-faint);
+  display: block;
+  padding: 0 0.4rem;
+  border-left: 2px solid transparent;
+}
+
+.diffApprove {
+  margin-top: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 0.5rem;
+  background: var(--pear-deep);
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+/* ── Bento / capabilities grid ── */
+
+/* Full-bleed band matching the home "Open source from day one" section. */
+.bandSection {
+  margin-top: 6rem;
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
+  background: var(--agent-tools-band-bg);
+  border-top: 1px solid color-mix(in srgb, white 5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, white 5%, transparent);
+}
+
+.bandInner {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 4.5rem 1.25rem;
+}
+
+.bento {
+  margin-top: 2.5rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.bentoCard {
+  padding: 1.3rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+
+.bentoCard:hover {
+  border-color: var(--card-hover-border);
+  transform: translateY(-2px);
+}
+
+.bentoIcon {
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  margin-bottom: 0.85rem;
+}
+
+.bentoCard h3 {
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--fg);
+  margin: 0 0 0.4rem;
+}
+
+.bentoCard p {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* ── Steps ── */
+
+.steps {
+  margin-top: 2.5rem;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  counter-reset: step;
+}
+
+.step {
+  padding: 1.3rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+}
+
+.stepNum {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.82rem;
+  margin-bottom: 0.85rem;
+}
+
+.step h3 {
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--fg);
+  margin: 0 0 0.4rem;
+}
+
+.step p {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0 0 0.8rem;
+}
+
+.step code {
+  display: block;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 900px) {
+  .mockBody {
+    grid-template-columns: 1fr;
+  }
+  .rail,
+  .terms {
+    display: none;
+  }
+  .chat {
+    min-height: 22rem;
+  }
+}
+
+@media (max-width: 820px) {
+  .featureRow {
+    grid-template-columns: 1fr;
+    gap: 1.6rem;
+  }
+  .featureRow.reverse .featureCopy {
+    order: 0;
+  }
+  .bento,
+  .steps {
+    grid-template-columns: 1fr;
+  }
+}
