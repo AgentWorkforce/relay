@@ -444,10 +444,10 @@ describe('KeybindParser', () => {
     expect(second.actions).toEqual([]);
   });
 
-  it('handles detach while forwarding surrounding control bytes', () => {
+  it('stops forwarding the chunk after Ctrl+C detach', () => {
     const p = new KeybindParser();
     const out = p.feed(Buffer.from([0x61, 0x07, 0x62, 0x03, 0x02, 0x64]));
-    expect(Array.from(out.forward)).toEqual([0x61, 0x07, 0x62, 0x02, 0x64]);
+    expect(Array.from(out.forward)).toEqual([0x61, 0x07, 0x62]);
     expect(out.actions).toEqual(['detach']);
   });
 });

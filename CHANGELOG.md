@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/harness-driver`.
 - `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
 - `@agent-relay/sdk` adds the public session/harness contract: `HarnessConfig`, `AgentSession`, session identity, capabilities, delivery modes, message receipts, and session event types.
-- `agent-relay agent message hold|flush|auto <name>` controls local broker message delivery without relying on interactive attach key chords.
+- `agent-relay agent message hold|flush|auto <name>` controls local broker message delivery without relying on interactive attach key chords, with `--broker-url`, `--api-key`, and `--state-dir` broker selection.
 - `@agent-relay/harness-driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and runtime-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
 - `@agent-relay/harnesses` PTY harnesses (`claude`, `codex`, …) accept `create({ relay })` to spawn a live PTY session into the relay's workspace through `@agent-relay/harness-driver` and return a handle to the running, already-registered agent. One broker is started per relay and shared across agents; `create()` without `relay` still builds a descriptor for externally-run agents.
 - `agent-relay mcp` can expose registered SDK actions as explicit MCP tools plus `list_actions` and `invoke_action`.

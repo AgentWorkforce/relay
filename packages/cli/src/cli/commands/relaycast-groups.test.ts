@@ -93,10 +93,77 @@ describe('SDK-backed CLI groups', () => {
     program.exitOverride();
     registerAgentCommands(program, deps);
 
-    await program.parseAsync(['agent', 'message', 'flush', 'claude'], { from: 'user' });
+    await program.parseAsync(
+      [
+        'agent',
+        'message',
+        'flush',
+        'claude',
+        '--broker-url',
+        'http://127.0.0.1:3890',
+        '--api-key',
+        'secret',
+        '--state-dir',
+        '/tmp/relay-state',
+      ],
+      { from: 'user' }
+    );
 
+    expect(deps.connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: 'http://127.0.0.1:3890',
+      apiKey: 'secret',
+      stateDir: '/tmp/relay-state',
+    });
     expect(client.flushPending).toHaveBeenCalledWith('claude');
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
+  });
+
+  it('agent message controls resolve broker selection flags with the default local client', async () => {
+    const relay = createRelayMock();
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ flushed: 3 }), { status: 200 }));
+    const readConnectionFile = vi.fn(() => ({ url: 'http://file-broker:1111', api_key: 'file-key' }));
+    const log = vi.fn();
+    const deps: Partial<AgentCommandDependencies> = {
+      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
+      cwd: () => '/tmp/project',
+      readConnectionFile,
+      getDefaultStateDir: () => '/tmp/default-state',
+      env: {},
+      fetch: fetch as never,
+      log,
+      error: vi.fn(),
+      exit: vi.fn() as never,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerAgentCommands(program, deps);
+
+    await program.parseAsync(
+      [
+        'agent',
+        'message',
+        'flush',
+        'claude',
+        '--broker-url',
+        'http://flag-broker:2222/',
+        '--api-key',
+        'flag-key',
+        '--state-dir',
+        '/tmp/relay-state',
+      ],
+      { from: 'user' }
+    );
+
+    expect(readConnectionFile).toHaveBeenCalledWith('/tmp/relay-state');
+    expect(fetch).toHaveBeenCalledWith(
+      'http://flag-broker:2222/api/spawned/claude/flush',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'X-API-Key': 'flag-key' }),
+      })
+    );
+    expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 3 }, null, 2));
   });
 
   it('agent message hold and auto switch local broker delivery mode', async () => {
@@ -121,6 +188,16 @@ describe('SDK-backed CLI groups', () => {
     await program.parseAsync(['agent', 'message', 'hold', 'claude'], { from: 'user' });
     await program.parseAsync(['agent', 'message', 'auto', 'claude'], { from: 'user' });
 
+    expect(deps.connectLocal).toHaveBeenNthCalledWith(1, '/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir: undefined,
+    });
+    expect(deps.connectLocal).toHaveBeenNthCalledWith(2, '/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir: undefined,
+    });
     expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(1, 'claude', 'manual_flush');
     expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(2, 'claude', 'auto_inject');
     expect(log).toHaveBeenCalledWith(

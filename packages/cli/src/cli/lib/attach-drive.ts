@@ -377,7 +377,7 @@ export class KeybindParser {
     for (const byte of chunk) {
       if (byte === 0x03 /* Ctrl+C */) {
         actions.push('detach');
-        continue;
+        break;
       }
       forward.push(byte);
     }

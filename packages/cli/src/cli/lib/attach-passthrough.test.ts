@@ -364,6 +364,13 @@ describe('PassthroughKeybindParser', () => {
     expect(out.actions).toEqual(['detach']);
   });
 
+  it('stops forwarding the chunk after Ctrl+C detach', () => {
+    const p = new PassthroughKeybindParser();
+    const out = p.feed(Buffer.from([0x61, 0x03, 0x62]));
+    expect(Array.from(out.forward)).toEqual([0x61]);
+    expect(out.actions).toEqual(['detach']);
+  });
+
   it('forwards Ctrl+B sequences to the agent', () => {
     const p = new PassthroughKeybindParser();
     const out = p.feed(Buffer.from([0x02, 0x44]));

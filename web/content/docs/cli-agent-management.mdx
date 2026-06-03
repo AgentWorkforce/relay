@@ -86,7 +86,7 @@ agent-relay agent message flush reviewer
 agent-relay agent message auto reviewer
 ```
 
-`hold` switches the local agent to manual delivery, `flush` drains pending relay messages into the agent, and `auto` resumes automatic injection. Attach sessions use `Ctrl+C` to detach locally.
+`hold` switches the local agent to manual delivery, `flush` drains pending relay messages into the agent, and `auto` resumes automatic injection. Each command accepts `--broker-url`, `--api-key`, and `--state-dir` when the broker is not discoverable from the current directory. Attach sessions use `Ctrl+C` to detach locally.
 
 ## Inspect, Tail, And Attach
 
