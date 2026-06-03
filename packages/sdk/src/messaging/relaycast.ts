@@ -31,10 +31,14 @@ import type {
   RelayCapability,
   RelayCreateChannelInput,
   RelayCreateGroupDirectMessageInput,
+  RelayCreateInboundWebhookInput,
   RelayCreateSubscriptionInput,
   RelayCreateWebhookInput,
   RelayDeliveryUnsupportedResult,
   RelayEventSubscription,
+  RelayInboundWebhook,
+  RelaySubscribeInput,
+  RelayWebhookSubscription,
   RelayGroupDirectConversation,
   RelayRegisterCapabilityInput,
   RelayWebhook,
@@ -182,6 +186,37 @@ function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
   };
 }
 
+/** Normalize a relaycast inbound webhook (snake_case) into `RelayInboundWebhook`. */
+function normalizeInboundWebhook(raw: unknown): RelayInboundWebhook {
+  const record = asRecord(raw);
+  return {
+    webhookId: readStr(record, 'webhookId', 'webhook_id', 'id') ?? '',
+    url: readStr(record, 'url') ?? '',
+    token: readStr(record, 'token') ?? '',
+    channel: readStr(record, 'channel') ?? '',
+    ...(readStr(record, 'name') ? { name: readStr(record, 'name') } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+  };
+}
+
+/** Normalize a relaycast event subscription into `RelayWebhookSubscription`. */
+function normalizeWebhookSubscription(raw: unknown): RelayWebhookSubscription {
+  const record = asRecord(raw);
+  const events = Array.isArray(record.events)
+    ? record.events.filter((event): event is string => typeof event === 'string')
+    : undefined;
+  return {
+    id: readStr(record, 'id') ?? '',
+    ...(readStr(record, 'url') ? { url: readStr(record, 'url') } : {}),
+    ...(events ? { events } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+  };
+}
+
 type RelaycastWorkspaceLike = {
   agents: {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
@@ -205,9 +240,10 @@ type RelaycastWorkspaceLike = {
   dmMessages?: (conversationId: string, options?: RelayMessageListOptions) => Promise<unknown[]>;
   webhooks?: {
     create(data: unknown): Promise<unknown>;
+    createInbound(data: unknown): Promise<unknown>;
     list(): Promise<unknown[]>;
     delete(id: string): Promise<void>;
-    trigger(id: string, data: unknown): Promise<unknown>;
+    trigger(id: string, data: unknown, token?: string): Promise<unknown>;
   };
   subscriptions?: {
     create(data: unknown): Promise<unknown>;
@@ -683,6 +719,37 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       delete: async (id: string): Promise<void> => {
         await this.requireSubscriptions().delete(id);
       },
+    },
+  };
+
+  readonly webhooks = {
+    createInbound: async (input: RelayCreateInboundWebhookInput): Promise<RelayInboundWebhook> =>
+      normalizeInboundWebhook(
+        await this.requireWebhooks().createInbound({
+          channel: normalizeChannelName(input.channel),
+          ...(input.name === undefined ? {} : { name: input.name }),
+        })
+      ),
+    subscribe: async (input: RelaySubscribeInput): Promise<RelayWebhookSubscription> =>
+      normalizeWebhookSubscription(
+        await this.requireSubscriptions().create(
+          definedOptions({
+            url: input.url,
+            events: input.events,
+            secret: input.secret,
+            headers: input.headers,
+          })
+        )
+      ),
+    list: async (): Promise<RelayInboundWebhook[]> =>
+      (await this.requireWebhooks().list()).map(normalizeInboundWebhook),
+    delete: async (webhookId: string): Promise<void> => {
+      await this.requireWebhooks().delete(webhookId);
+    },
+    subscriptions: async (): Promise<RelayWebhookSubscription[]> =>
+      (await this.requireSubscriptions().list()).map(normalizeWebhookSubscription),
+    unsubscribe: async (id: string): Promise<void> => {
+      await this.requireSubscriptions().delete(id);
     },
   };
 

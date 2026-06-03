@@ -368,6 +368,38 @@ export interface RelayCreateSubscriptionInput {
   [key: string]: unknown;
 }
 
+// ── Webhooks (inbound triggers + outbound subscriptions) ─────────────────────
+
+export interface RelayCreateInboundWebhookInput {
+  /** Channel the inbound webhook posts into. A leading `#` is stripped. */
+  channel: string;
+  name?: string;
+}
+
+export interface RelayInboundWebhook {
+  webhookId: string;
+  url: string;
+  token: string;
+  channel: string;
+  name?: string;
+  createdAt?: string;
+}
+
+export interface RelaySubscribeInput {
+  url: string;
+  /** Canonical dotted event names, e.g. `'message.created'`, `'action.completed'`. */
+  events: string[];
+  secret?: string;
+  headers?: Record<string, string>;
+}
+
+export interface RelayWebhookSubscription {
+  id: string;
+  url?: string;
+  events?: string[];
+  createdAt?: string;
+}
+
 // ── Capabilities (agent commands) ───────────────────────────────────────────
 
 export interface RelayCapability {
@@ -704,6 +736,14 @@ export interface RelayMessagingClient {
       get(id: string): Promise<RelayEventSubscription>;
       delete(id: string): Promise<void>;
     };
+  };
+  readonly webhooks: {
+    createInbound(input: RelayCreateInboundWebhookInput): Promise<RelayInboundWebhook>;
+    subscribe(input: RelaySubscribeInput): Promise<RelayWebhookSubscription>;
+    list(): Promise<RelayInboundWebhook[]>;
+    delete(webhookId: string): Promise<void>;
+    subscriptions(): Promise<RelayWebhookSubscription[]>;
+    unsubscribe(id: string): Promise<void>;
   };
   readonly commands: {
     register(input: RelayRegisterCapabilityInput): Promise<RelayCapability>;
