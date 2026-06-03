@@ -275,10 +275,10 @@ try {
     const exports = Object.keys(pkg);
     console.log('Exports:', exports.join(', '));
 
-    if (typeof pkg.AgentRelayClient === 'function') {
+    if (typeof pkg.AgentRelay === 'function') {
         console.log('SDK_OK');
     } else {
-        console.log('NO_CLIENT');
+        console.log('NO_AGENT_RELAY');
     }
 } catch (e) {
     console.log('ERROR:', e.message);
@@ -287,9 +287,9 @@ try {
 
 log_info "SDK test output: $SDK_TEST"
 if echo "$SDK_TEST" | grep -q "SDK_OK"; then
-    record_pass "AgentRelayClient is accessible"
-elif echo "$SDK_TEST" | grep -q "NO_CLIENT"; then
-    record_fail "AgentRelayClient not found in exports"
+    record_pass "AgentRelay is accessible"
+elif echo "$SDK_TEST" | grep -q "NO_AGENT_RELAY"; then
+    record_fail "AgentRelay not found in exports"
 else
     record_fail "Failed to load agent-relay package: $SDK_TEST"
 fi
