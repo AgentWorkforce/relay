@@ -221,15 +221,15 @@ else
 fi
 
 # ============================================
-# Test 4: broker binary resolution via SDK resolver
+# Test 4: broker binary resolution via harness driver resolver
 # ============================================
 # The broker is delivered as a platform-specific optional dependency
 # (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
-# canonical way clients locate it at runtime.
+# canonical way harness owners locate it at runtime.
 log_header "Test 4: broker binary resolution"
 
 BROKER_TEST=$(node --input-type=module -e "
-import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
 import { accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 try {
