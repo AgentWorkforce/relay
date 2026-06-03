@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   AgentRelay,
+  ActionRegistry,
   defineHarness,
   normalizeAgentIdentity,
   MINIMAL_AGENT_SESSION_CAPABILITIES,
@@ -131,9 +132,10 @@ async function listenerExample(): Promise<void> {
 }
 
 async function actionsExample(driver: AgentDriver): Promise<void> {
-  const relay = await AgentRelay.createWorkspace({ name: 'operator-workspace' });
+  const actions = new ActionRegistry();
+  await AgentRelay.createWorkspace({ name: 'operator-workspace', actions });
 
-  relay.actions.register({
+  actions.register({
     name: 'ui.show_search_results',
     description: 'Show a result set in the operator UI.',
     inputSchema: z.object({ query: z.string() }),
@@ -144,9 +146,9 @@ async function actionsExample(driver: AgentDriver): Promise<void> {
     },
   });
 
-  registerDriverActions(relay.actions, driver);
+  registerDriverActions(actions, driver);
 
-  const result = await relay.actions.invoke({
+  const result = await actions.invoke({
     name: 'agent.create',
     input: { name: 'reviewer', cli: 'codex', task: 'Review the migration guide.', channels: ['planning'] },
     caller: { name: 'planner', type: 'agent' },

@@ -27,8 +27,9 @@ function createRelay() {
     events: { on: bus.on },
     agents: { register: vi.fn() },
   } as unknown as RelayMessaging;
-  const relay = new AgentRelay({ messaging, actions: new ActionRegistry() });
-  return { relay, bus };
+  const actions = new ActionRegistry();
+  const relay = new AgentRelay({ messaging, actions });
+  return { relay, bus, actions };
 }
 
 describe('Listener DSL (Phase B)', () => {
@@ -52,15 +53,15 @@ describe('Listener DSL (Phase B)', () => {
   });
 
   it('relay.on with action(name).calledBy(agent) fires on invocation by that caller', async () => {
-    const { relay } = createRelay();
+    const { relay, actions } = createRelay();
     const handler = vi.fn();
     relay.registerAction({ name: 'spawn-claude', handler: async () => ({ ok: true }) });
     relay.addListener(relay.action('spawn-claude').calledBy({ name: 'planner' }), handler);
 
-    await relay.actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'other', type: 'agent' } });
+    await actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'other', type: 'agent' } });
     expect(handler).not.toHaveBeenCalled();
 
-    await relay.actions.invoke({
+    await actions.invoke({
       name: 'spawn-claude',
       input: {},
       caller: { name: 'planner', type: 'agent' },
@@ -155,12 +156,12 @@ describe('Listener DSL (Phase B)', () => {
   });
 
   it('addListener("action.completed") fires after a successful invocation', async () => {
-    const { relay } = createRelay();
+    const { relay, actions } = createRelay();
     const handler = vi.fn();
     relay.registerAction({ name: 'greet', handler: async () => ({ ok: true }) });
     relay.addListener('action.completed', handler);
 
-    await relay.actions.invoke({ name: 'greet', input: {}, caller: { name: 'p', type: 'agent' } });
+    await actions.invoke({ name: 'greet', input: {}, caller: { name: 'p', type: 'agent' } });
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0][0]).toMatchObject({ type: 'action.completed', action: 'greet' });

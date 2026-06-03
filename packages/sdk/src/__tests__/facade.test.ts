@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentRelay } from '../index.js';
+import { AgentRelay, ActionRegistry } from '../index.js';
 import type { RelayMessaging } from '../messaging/index.js';
 
 function createMessagingMock() {
@@ -120,7 +120,8 @@ describe('AgentRelay facade (Phase A)', () => {
 
   it('registerAction enforces availableTo and adapts the handler shape', async () => {
     const { messaging } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const actions = new ActionRegistry();
+    const relay = new AgentRelay({ messaging, actions });
     const handler = vi.fn(async () => ({ ok: true }));
 
     relay.registerAction({
@@ -130,7 +131,7 @@ describe('AgentRelay facade (Phase A)', () => {
       handler,
     });
 
-    const denied = await relay.actions.invoke({
+    const denied = await actions.invoke({
       name: 'spawn-claude',
       input: {},
       caller: { name: 'intruder', type: 'agent' },
@@ -138,7 +139,7 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(denied.ok).toBe(false);
     expect(handler).not.toHaveBeenCalled();
 
-    const allowed = await relay.actions.invoke({
+    const allowed = await actions.invoke({
       name: 'spawn-claude',
       input: { model: 'opus' },
       caller: { name: 'planner', type: 'agent' },

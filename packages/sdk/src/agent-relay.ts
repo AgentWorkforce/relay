@@ -51,7 +51,6 @@ export interface AgentRelayCreateWorkspaceInput {
 
 export interface AgentRelayAgent {
   readonly messaging: RelayMessaging;
-  readonly actions: AgentRelayActions;
   readonly agents: RelayMessaging['agents'];
   readonly channels: RelayMessaging['channels'];
   readonly messages: EnrichedMessages;
@@ -72,7 +71,7 @@ export interface AgentRelayAgent {
 
 export class AgentRelay implements AgentRelayAgent {
   readonly messaging: RelayMessaging;
-  readonly actions: AgentRelayActions;
+  private readonly actions: AgentRelayActions;
   readonly workspaceKey?: string;
 
   private readonly messagingOptions: RelaycastMessagingOptions;
@@ -255,7 +254,6 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
   const hub = createListenerHub(messaging.events, actions);
   return {
     messaging,
-    actions,
     agents: messaging.agents,
     channels: messaging.channels,
     messages,
