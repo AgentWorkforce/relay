@@ -813,10 +813,9 @@ pub async fn configure_agent_relay_mcp_with_result(
 
     // Codex: auto-configure Agent Relay MCP (only if not already configured).
     if is_codex
-        && !existing_args.iter().any(|a| {
-            let legacy_config_prefix = format!("mcp_servers.{LEGACY_RELAYCAST_SERVER}");
-            a.contains("mcp_servers.agent-relay") || a.contains(&legacy_config_prefix)
-        })
+        && !existing_args
+            .iter()
+            .any(|a| a.contains("mcp_servers.agent-relay"))
     {
         let mcp_command = agent_relay_mcp_command();
         // NOTE: All values passed via codex `--config` are parsed as TOML.
@@ -1854,28 +1853,6 @@ mod tests {
             vec!["--config", "check_for_update_on_startup=false"],
             "should only return update suppression when user already provided mcp_servers.agent-relay config"
         );
-    }
-
-    #[tokio::test]
-    async fn codex_opt_out_when_legacy_relaycast_config_already_in_args() {
-        let temp = tempdir().expect("tempdir");
-        let legacy = super::LEGACY_RELAYCAST_SERVER;
-        let existing = vec![
-            "--config".to_string(),
-            format!("mcp_servers.{legacy}.command=custom"),
-        ];
-        let args = super::configure_agent_relay_mcp(
-            "codex",
-            "Agent",
-            Some("rk_live_abc"),
-            None,
-            &existing,
-            temp.path(),
-        )
-        .await
-        .expect("configure codex mcp opt-out");
-
-        assert_eq!(args, vec!["--config", "check_for_update_on_startup=false"]);
     }
 
     // -----------------------------------------------------------------------
