@@ -53,8 +53,8 @@ def test_on_relay_injects_mcp_server(mock_relay, mock_options):
     assert result is mock_options
     assert len(mock_options.mcp_servers) == 1
     server = mock_options.mcp_servers[0]
-    assert server["name"] == "relaycast"
-    # It should probably have some command/args for the relaycast MCP server
+    assert server["name"] == "agent-relay"
+    # It should probably have some command/args for the Agent Relay MCP server
     assert "command" in server
 
 @pytest.mark.asyncio

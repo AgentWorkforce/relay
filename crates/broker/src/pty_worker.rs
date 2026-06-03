@@ -57,25 +57,33 @@ const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(25);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const PROMPT_WINDOW_BYTES: usize = 800;
-const RELAYCAST_BOOT_MARKER: &str = "booting mcp server: relaycast";
+const AGENT_RELAY_BOOT_MARKER: &str = "booting mcp server: agent-relay";
+const AGENT_RELAY_SERVER_NAME: &str = "agent-relay";
+const LEGACY_RELAY_SERVER_NAME: &str = "relaycast";
 
-/// Detect the relaycast MCP boot marker in output. Different CLIs emit
+/// Detect the Agent Relay MCP boot marker in output. Different CLIs emit
 /// different boot messages:
-/// - Claude: "booting mcp server: relaycast"
-/// - Codex:  "Starting MCP servers (0/2): relay, relaycast"
+/// - Claude: "booting mcp server: agent-relay"
+/// - Codex:  "Starting MCP servers (0/2): relay, agent-relay"
 ///
 /// Returns the byte offset of the end of the marker, or None if not found.
-fn find_relaycast_boot_marker(lower_output: &str) -> Option<usize> {
+fn find_agent_relay_boot_marker(lower_output: &str) -> Option<usize> {
     // Claude-style marker
-    if let Some(idx) = lower_output.find(RELAYCAST_BOOT_MARKER) {
-        return Some(idx + RELAYCAST_BOOT_MARKER.len());
+    if let Some(idx) = lower_output.find(AGENT_RELAY_BOOT_MARKER) {
+        return Some(idx + AGENT_RELAY_BOOT_MARKER.len());
     }
-    // Codex-style marker: "starting mcp server" with "relaycast" nearby
+    let legacy_boot_marker = format!("booting mcp server: {LEGACY_RELAY_SERVER_NAME}");
+    if let Some(idx) = lower_output.find(&legacy_boot_marker) {
+        return Some(idx + legacy_boot_marker.len());
+    }
+    // Codex-style marker: "starting mcp server" with the configured server nearby.
     if let Some(idx) = lower_output.find("starting mcp server") {
-        // Look for "relaycast" within the same line (next ~200 chars)
         let search_end = floor_char_boundary(lower_output, (idx + 200).min(lower_output.len()));
-        if let Some(rc_idx) = lower_output[idx..search_end].find("relaycast") {
-            return Some(idx + rc_idx + "relaycast".len());
+        let boot_line = &lower_output[idx..search_end];
+        for server_name in [AGENT_RELAY_SERVER_NAME, LEGACY_RELAY_SERVER_NAME] {
+            if let Some(server_idx) = boot_line.find(server_name) {
+                return Some(idx + server_idx + server_name.len());
+            }
         }
     }
     None
@@ -89,11 +97,13 @@ fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
     }
 }
 
-fn codex_relaycast_boot_expected(cli: &str, args: &[String]) -> bool {
+fn codex_agent_relay_boot_expected(cli: &str, args: &[String]) -> bool {
     cli_basename(cli).eq_ignore_ascii_case("codex")
-        && args
-            .iter()
-            .any(|arg| arg.to_ascii_lowercase().contains("mcp_servers.relaycast"))
+        && args.iter().any(|arg| {
+            let lower = arg.to_ascii_lowercase();
+            lower.contains("mcp_servers.agent-relay")
+                || lower.contains(&format!("mcp_servers.{LEGACY_RELAY_SERVER_NAME}"))
+        })
 }
 
 fn output_has_prompt(cli: &str, output: &str) -> bool {
@@ -144,13 +154,13 @@ fn evaluate_startup_gate(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
-    wait_for_relaycast_boot: bool,
-    saw_relaycast_boot: bool,
+    wait_for_agent_relay_boot: bool,
+    saw_agent_relay_boot: bool,
     post_boot_output: &str,
     grid: GridReadinessSnapshot<'_>,
 ) -> bool {
-    if wait_for_relaycast_boot {
-        saw_relaycast_boot
+    if wait_for_agent_relay_boot {
+        saw_agent_relay_boot
             && output_has_prompt(resolved_cli, post_boot_output)
             && cli_prompt_ready(resolved_cli, grid)
     } else {
@@ -162,8 +172,8 @@ fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
-    wait_for_relaycast_boot: bool,
-    saw_relaycast_boot: bool,
+    wait_for_agent_relay_boot: bool,
+    saw_agent_relay_boot: bool,
     post_boot_output: &str,
     pty: &PtySession,
 ) -> bool {
@@ -172,8 +182,8 @@ fn startup_gate_ready(
         resolved_cli,
         startup_output,
         startup_total_bytes,
-        wait_for_relaycast_boot,
-        saw_relaycast_boot,
+        wait_for_agent_relay_boot,
+        saw_agent_relay_boot,
         post_boot_output,
         GridReadinessSnapshot {
             screen: &screen,
@@ -308,10 +318,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut last_mcp_reminder_at: Option<Instant> = None;
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
-    let wait_for_relaycast_boot = codex_relaycast_boot_expected(&resolved_cli, &effective_args);
+    let wait_for_agent_relay_boot = codex_agent_relay_boot_expected(&resolved_cli, &effective_args);
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
-    let mut saw_relaycast_boot = false;
+    let mut saw_agent_relay_boot = false;
     let mut post_boot_output = String::new();
     let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
@@ -416,8 +426,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     &resolved_cli,
                                     &startup_output,
                                     startup_total_bytes,
-                                    wait_for_relaycast_boot,
-                                    saw_relaycast_boot,
+                                    wait_for_agent_relay_boot,
+                                    saw_agent_relay_boot,
                                     &post_boot_output,
                                     &pty,
                                 );
@@ -616,14 +626,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             STARTUP_BUFFER_MAX,
                             STARTUP_BUFFER_KEEP,
                         );
-                        if wait_for_relaycast_boot {
-                            let mut just_saw_relaycast_boot = false;
-                            if !saw_relaycast_boot {
+                        if wait_for_agent_relay_boot {
+                            let mut just_saw_agent_relay_boot = false;
+                            if !saw_agent_relay_boot {
                                 let lower_startup = startup_output.to_ascii_lowercase();
-                                if let Some(marker_end_offset) = find_relaycast_boot_marker(&lower_startup)
+                                if let Some(marker_end_offset) = find_agent_relay_boot_marker(&lower_startup)
                                 {
-                                    saw_relaycast_boot = true;
-                                    just_saw_relaycast_boot = true;
+                                    saw_agent_relay_boot = true;
+                                    just_saw_agent_relay_boot = true;
                                     let marker_end = floor_char_boundary(
                                         &startup_output,
                                         marker_end_offset,
@@ -637,7 +647,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     );
                                 }
                             }
-                            if saw_relaycast_boot && !just_saw_relaycast_boot {
+                            if saw_agent_relay_boot && !just_saw_agent_relay_boot {
                                 append_bounded(
                                     &mut post_boot_output,
                                     &clean_text,
@@ -661,8 +671,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &resolved_cli,
                             &startup_output,
                             startup_total_bytes,
-                            wait_for_relaycast_boot,
-                            saw_relaycast_boot,
+                            wait_for_agent_relay_boot,
+                            saw_agent_relay_boot,
                             &post_boot_output,
                             &pty,
                         );
@@ -1022,8 +1032,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &resolved_cli,
                     &startup_output,
                     startup_total_bytes,
-                    wait_for_relaycast_boot,
-                    saw_relaycast_boot,
+                    wait_for_agent_relay_boot,
+                    saw_agent_relay_boot,
                     &post_boot_output,
                     &pty,
                 );
@@ -1268,13 +1278,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_relaycast_boot_expected_when_configured() {
+    fn codex_agent_relay_boot_expected_when_configured() {
         let args = vec![
             "--config".to_string(),
-            "mcp_servers.relaycast.command=npx".to_string(),
+            "mcp_servers.agent-relay.command=npx".to_string(),
         ];
-        assert!(codex_relaycast_boot_expected("codex", &args));
-        assert!(!codex_relaycast_boot_expected("claude", &args));
+        assert!(codex_agent_relay_boot_expected("codex", &args));
+        assert!(!codex_agent_relay_boot_expected("claude", &args));
     }
 
     #[test]
@@ -1334,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_gate_uses_ready_detection_when_relaycast_boot_not_required() {
+    fn startup_gate_uses_ready_detection_when_agent_relay_boot_not_required() {
         assert!(evaluate_startup_gate(
             "claude",
             "",

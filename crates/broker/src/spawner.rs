@@ -1,6 +1,6 @@
 use std::{collections::HashMap, process::Stdio, time::Duration};
 
-use crate::relaycast::configure_relaycast_mcp_with_token;
+use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
@@ -77,7 +77,7 @@ impl Spawner {
             .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_relaycast_mcp_with_token(
+        let mcp_args = configure_agent_relay_mcp_with_token(
             cli,
             child_name,
             api_key,

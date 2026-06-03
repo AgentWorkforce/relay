@@ -318,7 +318,7 @@ pub(crate) fn get_terminal_size() -> Option<(u16, u16)> {
 ///
 /// Auto-suggestions are rendered with reverse-video cursor + dim ghost text,
 /// and often include the "↵ send" hint.
-/// Extract Relaycast message IDs from MCP tool response output.
+/// Extract Agent Relay message IDs from MCP tool response output.
 ///
 /// When the agent sends a message via MCP (send_dm, send_message, etc.),
 /// the response JSON contains `"id": "<snowflake>"`. We extract these IDs

@@ -5,7 +5,7 @@ WORKSPACE_KEY=$(cat "${HOME}/.relay/workspace-key" 2>/dev/null || true)
 AGENT_NAME="${RELAY_AGENT_NAME:-the assigned worker name}"
 
 cat <<EOF
-Relaycast worker setup — complete these steps IN ORDER:
+Agent Relay worker setup — complete these steps IN ORDER:
 
 1. Call \`set_workspace_key(api_key: "$WORKSPACE_KEY")\`.
 2. Call \`register_agent(name: "$AGENT_NAME", type: "agent")\`.

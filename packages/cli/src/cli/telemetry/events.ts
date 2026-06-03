@@ -231,14 +231,14 @@ export interface CliUpdateEvent {
   error_class?: string;
 }
 
-export type McpActionCallType =
+export type AgentRelayToolCallType =
   | 'agent.create'
   | 'agent.release'
   | 'agent.attach'
   | 'agent.status'
   | (string & {});
 
-export type McpActionCallCategory =
+export type AgentRelayToolCallCategory =
   | 'spawn'
   | 'release'
   | 'action'
@@ -253,16 +253,16 @@ export type McpActionCallCategory =
   | (string & {});
 
 /**
- * mcp_action_call - Emitted for MCP tool/action calls without capturing arguments.
+ * agent_relay_tool_call - Emitted for `agent-relay mcp` tool calls without capturing arguments.
  */
-export interface McpActionCallEvent {
-  /** MCP tool name, e.g. 'add_agent', 'remove_agent', 'invoke_action'. */
+export interface AgentRelayToolCallEvent {
+  /** `agent-relay mcp` tool name, e.g. 'add_agent', 'remove_agent', 'invoke_action'. */
   tool_name: string;
-  /** Action kind/name, e.g. 'agent.create', 'agent.release', or 'github.open_pr'. */
-  action_type: McpActionCallType;
-  /** Coarse grouping for dashboards, e.g. 'spawn', 'release', 'action'. */
-  action_category: McpActionCallCategory;
-  /** Transport surface that served the MCP call. */
+  /** Agent Relay tool kind/name, e.g. 'agent.create', 'agent.release', or 'github.open_pr'. */
+  tool_type: AgentRelayToolCallType;
+  /** Coarse Agent Relay tool grouping for dashboards, e.g. 'spawn', 'release', 'action'. */
+  tool_category: AgentRelayToolCallCategory;
+  /** Transport surface that served the `agent-relay mcp` call. */
   transport: 'stdio' | 'http' | 'unknown' | (string & {});
   /** True when the tool returned a non-error result. */
   success: boolean;
@@ -436,7 +436,7 @@ export type TelemetryEventName =
   | 'cli_command_complete'
   | 'cli_install'
   | 'cli_update'
-  | 'mcp_action_call'
+  | 'agent_relay_tool_call'
   | 'workflow_run'
   | 'cloud_auth'
   | 'cloud_workflow_run'
@@ -458,7 +458,7 @@ export interface TelemetryEventMap {
   cli_command_complete: CliCommandCompleteEvent;
   cli_install: CliInstallEvent;
   cli_update: CliUpdateEvent;
-  mcp_action_call: McpActionCallEvent;
+  agent_relay_tool_call: AgentRelayToolCallEvent;
   workflow_run: WorkflowRunEvent;
   cloud_auth: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;

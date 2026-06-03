@@ -32,8 +32,8 @@ export interface SpawnPtyInput {
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
-   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
-   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP
+   *  authenticates with. When omitted, the Agent Relay MCP auto-mints a token
    *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
@@ -59,8 +59,8 @@ export interface SpawnHeadlessInput {
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
-   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
-   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP
+   *  authenticates with. When omitted, the Agent Relay MCP auto-mints a token
    *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */
@@ -96,8 +96,8 @@ export interface SpawnCliInput {
   agentResultSchema?: JsonSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
-   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the relaycast MCP
-   *  authenticates with. When omitted, the relaycast MCP auto-mints a token
+   *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP
+   *  authenticates with. When omitted, the Agent Relay MCP auto-mints a token
    *  using `RELAY_WORKSPACE_KEY` + the spawn name; that is the recommended path.
    *  Note: this is a relaycast credential, NOT a relayfile/relayauth token —
    *  override `env.RELAYFILE_TOKEN` on the constructor for relayfile auth. */

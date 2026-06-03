@@ -1,18 +1,18 @@
 //! End-to-end integration tests for MCP config injection.
 //!
-//! These tests verify that `configure_relaycast_mcp_with_token` produces the
+//! These tests verify that `configure_agent_relay_mcp_with_token` produces the
 //! correct `--mcp-config` args for Claude:
-//! - Only relaycast server is included (user servers loaded by Claude from .mcp.json)
+//! - Only Agent Relay server is included (user servers loaded by Claude from .mcp.json)
 //! - No `--strict-mcp-config` (so Claude loads .mcp.json alongside --mcp-config)
 //! - RELAY_API_KEY is injected into the inline JSON config
 //! - Agent token and credentials are correct
 
-use relay_broker::snippets::configure_relaycast_mcp_with_token;
+use relay_broker::snippets::configure_agent_relay_mcp_with_token;
 use serde_json::Value;
 use std::fs;
 use tempfile::tempdir;
 
-/// Helper: extract --mcp-config JSON from the args returned by configure_relaycast_mcp_with_token.
+/// Helper: extract --mcp-config JSON from the args returned by configure_agent_relay_mcp_with_token.
 fn extract_mcp_json(args: &[String]) -> Value {
     let idx = args
         .iter()
@@ -31,7 +31,7 @@ fn extract_servers(args: &[String]) -> serde_json::Map<String, Value> {
         .clone()
 }
 
-// ─── Test: --mcp-config contains only relaycast (no user servers) ───────────
+// ─── Test: --mcp-config contains only Agent Relay (no user servers) ───────────
 
 #[tokio::test]
 async fn e2e_project_level_mcp_merge_preserves_user_servers() {
@@ -58,7 +58,7 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
     )
     .expect("write .mcp.json");
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "e2e-agent",
         Some("rk_live_key"),
@@ -70,7 +70,7 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
         None,
     )
     .await
-    .expect("configure_relaycast_mcp_with_token");
+    .expect("configure_agent_relay_mcp_with_token");
 
     // Must have --mcp-config but NOT --strict-mcp-config
     assert!(
@@ -84,32 +84,32 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
 
     let servers = extract_servers(&args);
 
-    // Only relaycast in --mcp-config — user servers loaded by Claude from .mcp.json
+    // Only Agent Relay in --mcp-config — user servers loaded by Claude from .mcp.json
     assert_eq!(
         servers.len(),
         1,
-        "only relaycast server in --mcp-config; user servers loaded from .mcp.json. Got: {:?}",
+        "only Agent Relay server in --mcp-config; user servers loaded from .mcp.json. Got: {:?}",
         servers.keys().collect::<Vec<_>>()
     );
     assert!(
-        servers.contains_key("relaycast"),
-        "relaycast must be present"
+        servers.contains_key("agent-relay"),
+        "Agent Relay must be present"
     );
 
-    // Relaycast has broker-injected credentials
-    let relaycast = &servers["relaycast"];
+    // Agent Relay has broker-injected credentials
+    let agent_relay = &servers["agent-relay"];
     assert_eq!(
-        relaycast["env"]["RELAY_AGENT_NAME"].as_str(),
+        agent_relay["env"]["RELAY_AGENT_NAME"].as_str(),
         Some("e2e-agent"),
         "broker agent name must be injected"
     );
     assert_eq!(
-        relaycast["env"]["RELAY_AGENT_TOKEN"].as_str(),
+        agent_relay["env"]["RELAY_AGENT_TOKEN"].as_str(),
         Some("tok_abc"),
         "broker agent token must be injected"
     );
     assert_eq!(
-        relaycast["env"]["RELAY_API_KEY"].as_str(),
+        agent_relay["env"]["RELAY_API_KEY"].as_str(),
         Some("rk_live_key"),
         "RELAY_API_KEY must be injected in --mcp-config"
     );
@@ -121,7 +121,7 @@ async fn e2e_project_level_mcp_merge_preserves_user_servers() {
 async fn e2e_global_settings_are_merged_from_real_home() {
     let temp = tempdir().expect("tempdir");
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "global-test-agent",
         Some("rk_key"),
@@ -136,11 +136,11 @@ async fn e2e_global_settings_are_merged_from_real_home() {
     .expect("configure");
 
     let servers = extract_servers(&args);
-    // Only relaycast — global servers are loaded by Claude, not merged into --mcp-config
-    assert_eq!(servers.len(), 1, "only relaycast in --mcp-config");
+    // Only Agent Relay — global servers are loaded by Claude, not merged into --mcp-config
+    assert_eq!(servers.len(), 1, "only Agent Relay in --mcp-config");
     assert!(
-        servers.contains_key("relaycast"),
-        "relaycast must always be present"
+        servers.contains_key("agent-relay"),
+        "Agent Relay must always be present"
     );
 }
 
@@ -182,7 +182,7 @@ async fn e2e_global_settings_with_fake_home() {
     let original_home = std::env::var("HOME").ok();
     unsafe { std::env::set_var("HOME", &fake_home) };
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "agent-global",
         Some("rk_key"),
@@ -202,28 +202,28 @@ async fn e2e_global_settings_with_fake_home() {
 
     let servers = extract_servers(&args);
 
-    // Only relaycast — global and project servers loaded by Claude itself
-    assert_eq!(servers.len(), 1, "only relaycast in --mcp-config");
-    assert!(servers.contains_key("relaycast"));
+    // Only Agent Relay — global and project servers loaded by Claude itself
+    assert_eq!(servers.len(), 1, "only Agent Relay in --mcp-config");
+    assert!(servers.contains_key("agent-relay"));
 }
 
-// ─── Test: Stale relaycast in .mcp.json doesn't matter ─────────────────────
+// ─── Test: Stale Agent Relay in .mcp.json doesn't matter ─────────────────────
 // Since we no longer merge .mcp.json into --mcp-config, stale entries are
 // irrelevant — the inline config always has fresh broker credentials.
 
 #[tokio::test]
-async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
+async fn e2e_stale_agent_relay_is_overridden_by_broker_credentials() {
     let temp = tempdir().expect("tempdir");
     let project = temp.path();
 
-    // .mcp.json has stale relaycast credentials — doesn't matter since
+    // .mcp.json has stale Agent Relay credentials — doesn't matter since
     // --mcp-config passes fresh credentials and Claude's additive loading
     // means the inline config takes effect.
     fs::write(
         project.join(".mcp.json"),
         r#"{
             "mcpServers": {
-                "relaycast": {
+                "agent-relay": {
                     "command": "npx",
                     "args": ["-y", "agent-relay", "mcp"],
                     "env": {
@@ -242,7 +242,7 @@ async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
     )
     .expect("write stale .mcp.json");
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "fresh-agent",
         Some("rk_fresh_new_key"),
@@ -258,10 +258,10 @@ async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
 
     let servers = extract_servers(&args);
 
-    // Only relaycast with fresh credentials
-    assert_eq!(servers.len(), 1, "only relaycast in --mcp-config");
-    let rc = &servers["relaycast"];
-    let env = rc["env"].as_object().expect("relaycast env");
+    // Only Agent Relay with fresh credentials
+    assert_eq!(servers.len(), 1, "only Agent Relay in --mcp-config");
+    let rc = &servers["agent-relay"];
+    let env = rc["env"].as_object().expect("agent-relay env");
 
     assert_eq!(
         env["RELAY_AGENT_NAME"].as_str(),
@@ -286,7 +286,7 @@ async fn e2e_stale_relaycast_is_overridden_by_broker_credentials() {
 }
 
 // ─── Test: Precedence — no longer relevant for --mcp-config ─────────────────
-// Since we only pass relaycast, Claude handles precedence itself.
+// Since we only pass Agent Relay, Claude handles precedence itself.
 
 #[tokio::test]
 async fn e2e_project_level_overrides_global_for_same_server_name() {
@@ -294,7 +294,7 @@ async fn e2e_project_level_overrides_global_for_same_server_name() {
     let project = temp.path().join("proj");
     fs::create_dir_all(&project).expect("create project");
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "precedence-agent",
         Some("rk_key"),
@@ -309,8 +309,8 @@ async fn e2e_project_level_overrides_global_for_same_server_name() {
     .expect("configure");
 
     let servers = extract_servers(&args);
-    assert_eq!(servers.len(), 1, "only relaycast");
-    assert!(servers.contains_key("relaycast"));
+    assert_eq!(servers.len(), 1, "only Agent Relay");
+    assert!(servers.contains_key("agent-relay"));
 }
 
 #[tokio::test]
@@ -319,7 +319,7 @@ async fn e2e_local_settings_override_global() {
     let project = temp.path().join("proj2");
     fs::create_dir_all(&project).expect("create project");
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "local-test",
         Some("rk_key"),
@@ -334,8 +334,8 @@ async fn e2e_local_settings_override_global() {
     .expect("configure");
 
     let servers = extract_servers(&args);
-    assert_eq!(servers.len(), 1, "only relaycast");
-    assert!(servers.contains_key("relaycast"));
+    assert_eq!(servers.len(), 1, "only Agent Relay");
+    assert!(servers.contains_key("agent-relay"));
 }
 
 /// Verify --mcp-config is NOT added when user already provides it
@@ -347,7 +347,7 @@ async fn e2e_respects_existing_mcp_config_flag() {
         "--mcp-config".to_string(),
         r#"{"mcpServers":{}}"#.to_string(),
     ];
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         "claude",
         "agent",
         Some("rk_key"),
@@ -378,7 +378,7 @@ async fn e2e_only_claude_gets_mcp_config_flag() {
     .expect("write");
 
     // Codex uses --config, not --mcp-config
-    let codex_args = configure_relaycast_mcp_with_token(
+    let codex_args = configure_agent_relay_mcp_with_token(
         "codex",
         "codex-agent",
         Some("rk_key"),
@@ -401,7 +401,7 @@ async fn e2e_only_claude_gets_mcp_config_flag() {
     );
 
     // Unsupported CLIs get nothing
-    let aider_args = configure_relaycast_mcp_with_token(
+    let aider_args = configure_agent_relay_mcp_with_token(
         "aider",
         "aider-agent",
         Some("rk_key"),

@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_relaycast_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
+    configure_agent_relay_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_relaycast_mcp_with_token(
+    let args = configure_agent_relay_mcp_with_token(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -253,7 +253,7 @@ fn home_dir_from_env() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::relaycast::configure_relaycast_mcp_with_token;
+    use crate::relaycast::configure_agent_relay_mcp_with_token;
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
     use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -353,13 +353,13 @@ mod tests {
         let config: Value = serde_json::from_str(config_json).expect("valid mcp config json");
 
         assert!(config
-            .pointer("/mcpServers/relaycast")
+            .pointer("/mcpServers/agent-relay")
             .is_some_and(Value::is_object));
         assert!(output.side_effect_files.is_empty());
     }
 
     #[tokio::test]
-    async fn codex_output_contains_relaycast_config_args() {
+    async fn codex_output_contains_agent_relay_config_args() {
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("codex", temp.path()))
             .await
@@ -368,9 +368,9 @@ mod tests {
         assert!(output.args.contains(&"--config".to_string()));
         assert!(output
             .args
-            .contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
+            .contains(&"mcp_servers.agent-relay.command=\"npx\"".to_string()));
         assert!(output.args.contains(
-            &"mcp_servers.relaycast.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
+            &"mcp_servers.agent-relay.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string()
         ));
         assert!(output.side_effect_files.is_empty());
     }
@@ -382,7 +382,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        assert_eq!(output.args, vec!["--agent", "relaycast"]);
+        assert_eq!(output.args, vec!["--agent", "agent-relay"]);
         assert_eq!(
             output.side_effect_files,
             vec![temp.path().canonicalize().unwrap().join("opencode.json")]
@@ -621,7 +621,7 @@ mod tests {
             .to_string()
             .contains("--existing-args must be a JSON array of strings"));
         // The spawn endpoint must NOT have been hit — token rotation is a
-        // real side effect on the relaycast backend.
+        // real side effect on the Relaycast backend.
         assert_eq!(spawn_mock.hits(), 0);
     }
 
@@ -646,7 +646,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "claude",
             "test-agent",
             Some("rk_live_test"),
@@ -671,7 +671,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "codex",
             "test-agent",
             Some("rk_live_test"),

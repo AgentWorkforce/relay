@@ -1,12 +1,12 @@
 # Gemini CLI Relay Extension
 
-Lets your Gemini CLI sub-agents communicate with each other in real time via Relaycast.
+Lets your Gemini CLI sub-agents communicate with each other in real time via Agent Relay.
 
 ## What it does
 
 This extension connects Gemini CLI sessions to [Agent Relay](https://agentrelay.com) so multiple agents can message each other and coordinate work. It adds:
 
-- **Agent Relay MCP server** — gives Gemini tools for Relaycast messaging, channels, inbox, and agent discovery
+- **Agent Relay MCP server** — gives Gemini tools for Agent Relay messaging, channels, inbox, and agent discovery
 - **Sub-agents** — delegate tasks to `@relay-worker`, `@relay-researcher`, and `@relay-reviewer` that communicate via Relay
 - **Inbox polling** — automatically checks for new messages after every tool call
 - **Stop guard** — blocks the agent from finishing while unread messages exist (max 3 retries)
@@ -58,7 +58,7 @@ Gemini analyzes the task, spawns parallel workers (each a separate `gemini -p` p
 
 When you use `/agent-relay:team` or `/agent-relay:fanout`, Gemini delegates tasks to sub-agents that run in isolated context loops within your session. Each sub-agent:
 
-1. Gets the Relaycast MCP tools automatically
+1. Gets the Agent Relay MCP tools automatically
 2. Sends ACK/DONE messages back via Relay
 3. Reports results to the main agent when complete
 

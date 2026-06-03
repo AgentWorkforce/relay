@@ -75,12 +75,14 @@ impl MultiWorkspaceSession {
             if read_mcp_identity {
                 if let Ok(mcp_json) = std::fs::read_to_string(runtime_cwd.join(".mcp.json")) {
                     if let Ok(parsed) = serde_json::from_str::<Value>(&mcp_json) {
-                        if let Some(mcp_name) = parsed
-                            .pointer("/mcpServers/relaycast/env/RELAY_AGENT_NAME")
-                            .and_then(Value::as_str)
-                        {
-                            if !mcp_name.is_empty() {
-                                self_names.insert(mcp_name.to_string());
+                        for server_name in ["agent-relay", "relaycast"] {
+                            let pointer = format!("/mcpServers/{server_name}/env/RELAY_AGENT_NAME");
+                            if let Some(mcp_name) = parsed.pointer(&pointer).and_then(Value::as_str)
+                            {
+                                if !mcp_name.is_empty() {
+                                    self_names.insert(mcp_name.to_string());
+                                    break;
+                                }
                             }
                         }
                     }

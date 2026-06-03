@@ -5,7 +5,7 @@ pub(crate) mod workspace;
 pub(crate) mod ws;
 
 pub(crate) use crate::snippets::{
-    configure_relaycast_mcp_with_result, configure_relaycast_mcp_with_token,
+    configure_agent_relay_mcp_with_result, configure_agent_relay_mcp_with_token,
 };
 pub(crate) use auth::AuthClient;
 // `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`,

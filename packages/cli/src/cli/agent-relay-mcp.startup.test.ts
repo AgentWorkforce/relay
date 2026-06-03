@@ -404,7 +404,7 @@ describe('createAgentRelayMcpServer', () => {
     expect(response.structuredContent).toEqual({ success: true, result_id: 'ar_test' });
   });
 
-  it('passes Relaycast telemetry context to direct MCP Relaycast clients', async () => {
+  it('passes telemetry context through Agent Relay MCP clients', async () => {
     vi.stubEnv('AGENT_RELAY_ORCHESTRATOR_HARNESS', 'claude/opus-48');
     vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'distinct_test');
 
@@ -472,7 +472,7 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
-  it('tracks MCP action calls with Relaycast action names and coarse categories', async () => {
+  it('tracks Agent Relay tool calls with action names and coarse categories', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({
       workspaceKey: 'rk_live_existing',
@@ -486,11 +486,11 @@ describe('createAgentRelayMcpServer', () => {
       task: 'help',
     });
     expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'mcp_action_call',
+      'agent_relay_tool_call',
       expect.objectContaining({
         tool_name: 'add_agent',
-        action_type: 'agent.create',
-        action_category: 'spawn',
+        tool_type: 'agent.create',
+        tool_category: 'spawn',
         transport: 'stdio',
         success: true,
         duration_ms: expect.any(Number),
@@ -499,11 +499,11 @@ describe('createAgentRelayMcpServer', () => {
 
     await server.tools.get('remove_agent')?.handler({ name: 'WorkerB', reason: 'done' });
     expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'mcp_action_call',
+      'agent_relay_tool_call',
       expect.objectContaining({
         tool_name: 'remove_agent',
-        action_type: 'agent.release',
-        action_category: 'release',
+        tool_type: 'agent.release',
+        tool_category: 'release',
         transport: 'stdio',
         success: true,
         duration_ms: expect.any(Number),
@@ -511,7 +511,7 @@ describe('createAgentRelayMcpServer', () => {
     );
   });
 
-  it('uses registered action tool names as action types', async () => {
+  it('uses registered action tool names as tool types', async () => {
     const actions = {
       list: vi.fn(async () => [
         {
@@ -536,18 +536,18 @@ describe('createAgentRelayMcpServer', () => {
     await server.tools.get('agent.create')?.handler({ name: 'WorkerB', cli: 'claude' });
 
     expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'mcp_action_call',
+      'agent_relay_tool_call',
       expect.objectContaining({
         tool_name: 'agent.create',
-        action_type: 'agent.create',
-        action_category: 'spawn',
+        tool_type: 'agent.create',
+        tool_category: 'spawn',
         transport: 'stdio',
         success: true,
       })
     );
   });
 
-  it('uses invoke_action names as action types without argument values', async () => {
+  it('uses invoke_action names as tool types without argument values', async () => {
     const actions = {
       list: vi.fn(async () => []),
       invoke: vi.fn(async () => ({ ok: true, action: 'github.open_pr', output: {} })),
@@ -565,22 +565,22 @@ describe('createAgentRelayMcpServer', () => {
     });
 
     expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'mcp_action_call',
+      'agent_relay_tool_call',
       expect.objectContaining({
         tool_name: 'invoke_action',
-        action_type: 'github.open_pr',
-        action_category: 'action',
+        tool_type: 'github.open_pr',
+        tool_category: 'action',
         transport: 'stdio',
         success: true,
       })
     );
     const telemetryPayload = mocks.telemetryTrack.mock.calls.find(
-      ([eventName]) => eventName === 'mcp_action_call'
+      ([eventName]) => eventName === 'agent_relay_tool_call'
     )?.[1];
     expect(JSON.stringify(telemetryPayload)).not.toContain('private PR title');
   });
 
-  it('tracks failed MCP action calls without argument values', async () => {
+  it('tracks failed Agent Relay tool calls without argument values', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ telemetryTransport: 'http' });
 
@@ -593,10 +593,10 @@ describe('createAgentRelayMcpServer', () => {
       })
     ).rejects.toThrow('Workspace key not configured');
 
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith('mcp_action_call', {
+    expect(mocks.telemetryTrack).toHaveBeenCalledWith('agent_relay_tool_call', {
       tool_name: 'add_agent',
-      action_type: 'agent.create',
-      action_category: 'spawn',
+      tool_type: 'agent.create',
+      tool_category: 'spawn',
       transport: 'http',
       success: false,
       duration_ms: expect.any(Number),

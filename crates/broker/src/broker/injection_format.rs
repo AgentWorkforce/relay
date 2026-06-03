@@ -82,51 +82,51 @@ fn build_mcp_reminder(
         .unwrap_or("#general")
         .trim_start_matches('#');
 
-    // Tool names differ by MCP client: Claude uses mcp__relaycast__<tool>,
-    // Codex/others use relaycast.<tool>. Include both so any agent can act.
+    // Tool names differ by MCP client: Claude uses mcp__agent-relay__<tool>,
+    // Codex/others use agent-relay.<tool>. Include both so any agent can act.
     let dm_hint = if reply_target.eq_ignore_ascii_case(sender_name) {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{sender_name}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__agent-relay__send_dm or agent-relay.send_dm (to: \"{sender_name}\")."
         )
     } else {
         format!(
-            "- For direct replies to \"{sender_name}\", use mcp__relaycast__send_dm or relaycast.send_dm (to: \"{reply_target}\")."
+            "- For direct replies to \"{sender_name}\", use mcp__agent-relay__send_dm or agent-relay.send_dm (to: \"{reply_target}\")."
         )
     };
     let channel_hint_line = format!(
-        "- For channel replies, use mcp__relaycast__post_message or relaycast.post_message (channel: \"{channel_hint}\")."
+        "- For channel replies, use mcp__agent-relay__post_message or agent-relay.post_message (channel: \"{channel_hint}\")."
     );
 
     let registration_lines: [String; 2] = if pre_registered {
         [
             "You are pre-registered by the broker under your assigned worker name.".to_string(),
-            "Do not call mcp__relaycast__register_agent unless a send/reply fails with \"Not registered\"."
+            "Do not call mcp__agent-relay__register_agent unless a send/reply fails with \"Not registered\"."
                 .to_string(),
         ]
     } else if let Some(name) = assigned_name {
         [
             "This worker was not pre-registered by the broker.".to_string(),
             format!(
-                "Before replying, call mcp__relaycast__register_agent (name: \"{name}\", type: \"agent\")."
+                "Before replying, call mcp__agent-relay__register_agent (name: \"{name}\", type: \"agent\")."
             ),
         ]
     } else {
         [
             "This worker was not pre-registered by the broker.".to_string(),
-            "Before replying, call mcp__relaycast__register_agent (name: \"<worker-name>\", type: \"agent\")."
+            "Before replying, call mcp__agent-relay__register_agent (name: \"<worker-name>\", type: \"agent\")."
                 .to_string(),
         ]
     };
 
     [
         "<system-reminder>".to_string(),
-        "Relaycast MCP tools are available for replies.".to_string(),
+        "Agent Relay MCP tools are available for replies.".to_string(),
         registration_lines[0].clone(),
         registration_lines[1].clone(),
         dm_hint,
         channel_hint_line,
-        "- For thread replies, use mcp__relaycast__reply_to_thread or relaycast.reply_to_thread.".to_string(),
-        "- To check unread messages/reactions, use mcp__relaycast__check_inbox or relaycast.check_inbox.".to_string(),
+        "- For thread replies, use mcp__agent-relay__reply_to_thread or agent-relay.reply_to_thread.".to_string(),
+        "- To check unread messages/reactions, use mcp__agent-relay__check_inbox or agent-relay.check_inbox.".to_string(),
         "- Self-termination is not automatic. Only call remove_agent(name: \"<your-agent-name>\") or output /exit on its own line when explicitly instructed to terminate.".to_string(),
         "</system-reminder>".to_string(),
     ]
@@ -157,15 +157,15 @@ fn build_mcp_short_hint(
         String::new()
     } else if let Some(name) = assigned_name {
         format!(
-            " If unregistered, call mcp__relaycast__register_agent(name: \"{name}\", type: \"agent\") first."
+            " If unregistered, call mcp__agent-relay__register_agent(name: \"{name}\", type: \"agent\") first."
         )
     } else {
-        " If unregistered, call mcp__relaycast__register_agent(name: \"<worker-name>\", type: \"agent\") first."
+        " If unregistered, call mcp__agent-relay__register_agent(name: \"<worker-name>\", type: \"agent\") first."
             .to_string()
     };
 
     format!(
-        "<system-reminder>Reply via Relaycast MCP: mcp__relaycast__send_dm/relaycast.send_dm (to: \"{dm_target}\") or mcp__relaycast__post_message/relaycast.post_message (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
+        "<system-reminder>Reply via Agent Relay MCP: mcp__agent-relay__send_dm/agent-relay.send_dm (to: \"{dm_target}\") or mcp__agent-relay__post_message/agent-relay.post_message (channel: \"{channel_hint}\").{register_hint}</system-reminder>"
     )
 }
 
@@ -264,9 +264,9 @@ mod tests {
     fn format_injection_dm() {
         let result = format_injection("Alice", "evt_1", "hello world", "Bob");
         assert!(result.contains("<system-reminder>"));
-        assert!(result.contains("Relaycast MCP tools"));
+        assert!(result.contains("Agent Relay MCP tools"));
         assert!(result.contains("pre-registered by the broker"));
-        assert!(result.contains("mcp__relaycast__send_dm"));
+        assert!(result.contains("mcp__agent-relay__send_dm"));
         assert!(result.contains("Self-termination is not automatic"));
         assert!(result.contains("Relay message from Alice [evt_1]: hello world"));
     }
@@ -275,7 +275,7 @@ mod tests {
     fn format_injection_channel() {
         let result = format_injection("Alice", "evt_1", "hello world", "#general");
         assert!(result.contains("<system-reminder>"));
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("mcp__agent-relay__post_message"));
         assert!(result.contains("channel: \"general\""));
         assert!(result.contains("Relay message from Alice in #general [evt_1]: hello world"));
     }
@@ -293,7 +293,7 @@ mod tests {
         );
         assert!(result.contains("<system-reminder>"));
         assert!(result.contains("not pre-registered by the broker"));
-        assert!(result.contains("mcp__relaycast__register_agent"));
+        assert!(result.contains("mcp__agent-relay__register_agent"));
         assert!(result.contains("name: \"Lead\""));
     }
 
@@ -323,7 +323,7 @@ mod tests {
     fn format_injection_detects_channel_from_preformatted_body() {
         let body = "Relay message from bob [abc123] [#dev-team]: Channel update";
         let result = format_injection("system", "evt_1", body, "Worker");
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("mcp__agent-relay__post_message"));
         assert!(result.contains("channel: \"dev-team\""));
         assert!(result.contains(body));
     }
@@ -331,9 +331,9 @@ mod tests {
     #[test]
     fn format_injection_without_reminder_includes_short_mcp_hint() {
         let result = format_injection_with_reminder("alice", "evt_9", "retry body", "bob", false);
-        assert!(result.contains("<system-reminder>Reply via Relaycast MCP"));
-        assert!(result.contains("mcp__relaycast__send_dm"));
-        assert!(result.contains("mcp__relaycast__post_message"));
+        assert!(result.contains("<system-reminder>Reply via Agent Relay MCP"));
+        assert!(result.contains("mcp__agent-relay__send_dm"));
+        assert!(result.contains("mcp__agent-relay__post_message"));
         assert!(result.contains("Relay message from alice [evt_9]: retry body"));
     }
 }

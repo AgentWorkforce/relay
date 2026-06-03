@@ -4,13 +4,13 @@
  * Verifies that per-CLI MCP injection works end-to-end:
  * - Claude: `--mcp-config` flag with correct JSON (API key omitted)
  * - Codex: `--config` flags with API key included
- * - Opencode: `opencode.json` written + `--agent relaycast` flag
+ * - Opencode: `opencode.json` written + `--agent agent-relay` flag
  * - Gemini/Droid: pre-spawn `mcp add` commands
  * - Unsupported CLIs (aider, goose): no MCP, but PTY injection still works
  *
- * Tests prove that agents spawned with MCP config can actually use Relaycast
+ * Tests prove that agents spawned with MCP config can actually use Agent Relay
  * MCP tools to respond (relay_inbound events from the agent), and that the
- * credential resolution chain (relaycast.json → env var → config) works.
+ * credential resolution chain (local relay credentials → env var → config) works.
  *
  * Run:
  *   npx tsc -p tests/integration/broker/tsconfig.json
@@ -60,7 +60,7 @@ function getRelayInboundFromAgent(events: BrokerEvent[], agentName: string): Bro
 // ══════════════════════════════════════════════════════════════════════════════
 // CLAUDE MCP INJECTION
 // Verifies --mcp-config flag is injected and agent can use MCP tools.
-// API key is NOT in --mcp-config; the MCP server reads from relaycast.json.
+// API key is NOT in --mcp-config; the MCP server reads from local relay credentials.
 // ══════════════════════════════════════════════════════════════════════════════
 
 test(
@@ -98,8 +98,8 @@ test(
         'Claude: injected message should include system-reminder wrapper'
       );
       assert.ok(
-        output.includes('mcp__relaycast__send_dm'),
-        'Claude: DM should hint to use mcp__relaycast__send_dm'
+        output.includes('mcp__agent-relay__send_dm'),
+        'Claude: DM should hint to use mcp__agent-relay__send_dm'
       );
       assert.ok(
         output.includes('Relay message from test-user'),
@@ -141,8 +141,8 @@ test('mcp-injection: claude — channel message injects post_message hint', { ti
     const output = collectStreamOutput(events, agentName);
 
     assert.ok(
-      output.includes('mcp__relaycast__post_message'),
-      'Claude: channel message should hint to use mcp__relaycast__post_message'
+      output.includes('mcp__agent-relay__post_message'),
+      'Claude: channel message should hint to use mcp__agent-relay__post_message'
     );
     assert.ok(output.includes('dev-team'), 'Claude: channel hint should mention the channel name');
 
@@ -164,7 +164,7 @@ test('mcp-injection: claude — agent uses MCP tools to respond (e2e)', { timeou
 
   try {
     await harness.spawnAgent(agentName, 'claude', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -186,7 +186,7 @@ test('mcp-injection: claude — agent uses MCP tools to respond (e2e)', { timeou
     assert.ok(
       agentResponses.length >= 1,
       `Claude: agent should have sent at least 1 MCP response, got ${agentResponses.length}. ` +
-        'This proves --mcp-config was injected and the MCP server authenticated via relaycast.json.'
+        'This proves --mcp-config was injected and the MCP server authenticated via local relay credentials.'
     );
 
     await harness.releaseAgent(agentName);
@@ -215,7 +215,7 @@ test(
 
     try {
       await harness.spawnAgent(agentName, 'codex', ['general'], {
-        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+        task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
       });
       await sleep(15_000);
 
@@ -256,7 +256,7 @@ test(
 
 // ══════════════════════════════════════════════════════════════════════════════
 // OPENCODE MCP INJECTION
-// Verifies opencode.json is written and --agent relaycast flag is passed.
+// Verifies opencode.json is written and --agent agent-relay flag is passed.
 // ══════════════════════════════════════════════════════════════════════════════
 
 test(
@@ -273,7 +273,7 @@ test(
 
     try {
       await harness.spawnAgent(agentName, 'opencode', ['general'], {
-        task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+        task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
       });
       await sleep(15_000);
 
@@ -301,7 +301,7 @@ test(
       assert.ok(
         agentResponses.length >= 1,
         `Opencode: agent should have sent at least 1 MCP response, got ${agentResponses.length}. ` +
-          'This proves opencode.json was written and --agent relaycast was passed.'
+          'This proves opencode.json was written and --agent agent-relay was passed.'
       );
 
       await harness.releaseAgent(agentName);
@@ -328,7 +328,7 @@ test('mcp-injection: gemini — pre-spawn mcp add enables MCP tools', { timeout:
 
   try {
     await harness.spawnAgent(agentName, 'gemini', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -382,7 +382,7 @@ test('mcp-injection: droid — pre-spawn mcp add enables MCP tools', { timeout: 
 
   try {
     await harness.spawnAgent(agentName, 'droid', ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses to one sentence.',
     });
     await sleep(15_000);
 
@@ -540,10 +540,10 @@ test(
     try {
       // Spawn both agents with MCP
       await harness.spawnAgent(claudeName, 'claude', ['general'], {
-        task: `You are a test agent named ${claudeName}. When you receive a message, respond using mcp__relaycast__send_dm to reply to the sender. Keep responses to one sentence.`,
+        task: `You are a test agent named ${claudeName}. When you receive a message, respond using mcp__agent-relay__send_dm to reply to the sender. Keep responses to one sentence.`,
       });
       await harness.spawnAgent(codexName, 'codex', ['general'], {
-        task: `You are a test agent named ${codexName}. When you receive a message, respond using mcp__relaycast__send_dm to reply to the sender. Keep responses to one sentence.`,
+        task: `You are a test agent named ${codexName}. When you receive a message, respond using mcp__agent-relay__send_dm to reply to the sender. Keep responses to one sentence.`,
       });
 
       await sleep(15_000);
@@ -572,7 +572,7 @@ test(
       assert.ok(
         claudeResponses.length >= 1,
         `Cross-provider: Claude should respond via MCP, got ${claudeResponses.length}. ` +
-          'Claude uses --mcp-config with API key from relaycast.json.'
+          'Claude uses --mcp-config with API key from local relay credentials.'
       );
       assert.ok(
         codexResponses.length >= 1,
