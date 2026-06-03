@@ -9,9 +9,9 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:telemetry && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:telemetry && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:cli",
+    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
@@ -75,14 +75,13 @@
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^14.3.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
-    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/coverage-v8": "^4.1.0",
     "concurrently": "^9.2.1",
     "eslint": "^8.57.1",
     "jsdom": "^25.0.1",
@@ -92,20 +91,15 @@
     "syncpack": "^14.0.0",
     "turbo": "^2.8.10",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4",
+    "vitest": "^4.1.0",
     "yaml": "^2.7.0",
     "zod": "^3.25.76"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
-    "flatted": "^3.4.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@posthog/next": {
-      "next": "15.5.18"
-    }
+    "flatted": "^3.4.2"
   }
 }

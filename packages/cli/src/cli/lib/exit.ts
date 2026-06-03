@@ -15,7 +15,7 @@
  * `ExitSignal`), so this default only kicks in at production call sites.
  */
 
-import { shutdown as shutdownTelemetry } from '@agent-relay/telemetry';
+import { shutdown as shutdownTelemetry } from '../telemetry/index.js';
 
 export class CliExit extends Error {
   /** Intended process exit code. */

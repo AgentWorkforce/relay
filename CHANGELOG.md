@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/sdk` `relay.addListener(...)` on a workspace client now receives all workspace-visible events: `events.connect()` opens the relaycast 2.5 workspace stream when no agent client is present, so the documented `relay.addListener('message.created', ...)` quickstart path streams without registering an agent.
 - `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/harness-driver`.
 - `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
 - `@agent-relay/sdk` adds the public session/harness contract: `HarnessConfig`, `AgentSession`, session identity, capabilities, delivery modes, message receipts, and session event types.
@@ -25,15 +26,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` exposes `AgentRelay.spawnAgent({ runtime, cli, ... })` as the single high-level spawn facade for both PTY and headless agents.
 - `@agent-relay/sdk` adds `AgentRelay.getPersonaSpawnPlan(id)` and a `getPersonaSpawnPlan` export for dry-run inspection of a persona's resolved harness argv, skill installs, mount policy, sidecars, and inputs.
 - `agent-relay view`, `agent-relay drive`, and `agent-relay passthrough` remain available as top-level attach commands alongside `agent-relay runtime agent attach --mode`.
+- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client (identity, `status.becomes(...)`/`tools.called(...)` predicates, and an agent-scoped messaging surface); a single agent in returns one client, an array returns an array.
+- `@agent-relay/sdk` adds `relay.workspace.reconnect({ apiToken })` to rehydrate a live agent client from a persisted token.
+- `@agent-relay/sdk` adds `relay.addListener(selector, handler)` as the single listener entry point — `selector` is a dotted event name, a `*`/prefix wildcard, or a predicate — delivering one discriminated event object; message events carry a rich `envelope` (`from`/`to`/`channel`/`parent`).
+- `@agent-relay/sdk` actions are fire-and-forget over the relay: `relay.registerAction(...)` registers a descriptor and runs the handler on `action.invoked`, reporting the result; outcomes surface as `action.completed` events to `addListener`.
+- `@agent-relay/sdk` adds the `relay.webhooks` namespace: `createInbound({ channel })` returns `{ url, token }` for posting `{ message, author }` into a channel, and `subscribe({ url, events, secret, headers })` for outbound HMAC-signed event delivery.
+- `@agent-relay/sdk` agent clients send via `sendMessage({ to })` (`#channel`, `@handle`, or an array of `@handle`s for a group DM), `reply({ messageId })`, and `react({ messageId, emoji })`; every message exposes `messageId`.
+- `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
+- `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
 
 ### Changed
 
+- Relay stores per-project runtime state in `.agentworkforce/relay/` (was `.agent-relay/`), and the global data/log home moves from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`. The `~/.config/agent-relay` config directory is unchanged.
+- `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
 - Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
-- `agent-relay`, `@agent-relay/sdk`, and `@agent-relay/openclaw` now consume `@relaycast/sdk` 2.1.x for Relaycast's latest inbox delivery behavior.
+- `agent-relay` and `@agent-relay/sdk` now consume `@relaycast/sdk` 2.5.x, which carries the v8 service contract (reconnect/resolve-by-token, inbound webhooks with bearer tokens, outbound subscription headers + HMAC, the canonical dotted event vocabulary, and the fire-and-forget action invoke/complete endpoints) plus a workspace-scoped realtime stream.
+- `@agent-relay/sdk` `AgentSession.release` is now optional and `capabilities.lifecycle.release` is a boolean: provide `release()` only when the capability is `true`.
+- `@agent-relay/openclaw` consumes relaycast's unified `message.reacted` event (replacing the separate reaction-added/removed events).
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
 - `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
-- Root builds now validate the simplified core package set: config, utils, telemetry, SDK, harness-driver, harnesses, and CLI.
+- Root builds now validate the simplified core package set: config, utils, SDK, harness-driver, harnesses, and CLI.
+- `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
+- `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
+
+### Deprecated
+
+- `@agent-relay/telemetry` is deprecated as a public npm package; telemetry implementation is now internal to the `agent-relay` CLI.
 - `agent-relay mcp`: Agent Relay now ships its own MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp`.
 - `agent-relay mcp`: renamed the bundled implementation and command override to Agent Relay MCP (`AGENT_RELAY_MCP_COMMAND`).
 - `agent-relay up`: broker startup no longer writes external MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
@@ -44,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client instead of a `{ token }` registration record, and rejects duplicate agent names.
+- `@agent-relay/sdk` removes `AgentRelay.as()` / `asAgent()`; act as a registered agent through the client returned by `workspace.register(...)` / `workspace.reconnect({ apiToken })`.
+- `@agent-relay/sdk` removes the top-level `relay.sendMessage(...)` (no system sender); send from a registered agent or human client.
+- `@agent-relay/sdk` removes `relay.on(...)` and `relay.notify(...)`; use `relay.addListener(...)` (the fluent predicate builders are still accepted as selectors).
+- `@agent-relay/sdk` removes the public `relay.actions` register/invoke namespace; use `relay.registerAction(...)` and react to `action.completed` via `addListener`.
+- Relay's on-disk state directory is renamed from `.agent-relay/` to `.agentworkforce/relay/`, and the global `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, platform data dirs, and broker log dirs move under `agentworkforce/relay`. Existing brokers and state under the old paths are not migrated.
 - `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/harness-driver`.
 - `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, and GitHub/Slack primitive adapters.
 - `agent-relay` removes spawn-first, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
@@ -58,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration Guidance
 
+- Bind to the live client `register(...)` returns instead of a token: `const alice = await relay.workspace.register({ name, type })`, then call `alice.sendMessage(...)` / `alice.channels.join(...)`. Persist `alice.token` to reconnect later with `relay.workspace.reconnect({ apiToken })`; replace `relay.as(token)` with that.
+- Replace `relay.sendMessage(...)` with a send from a registered participant (`alice.sendMessage(...)` or a `createHuman(...)` client). The workspace no longer sends as a system identity.
+- Replace `relay.on(predicate, handler)` with `relay.addListener(predicate, handler)`, and prefer dotted event names (`relay.addListener('message.created', ...)`); replace `relay.notify(...)` with an inline handler that sends from a participant.
+- Replace `relay.actions.register(...)` / `relay.actions.invoke(...)` with `relay.registerAction(...)`; read outcomes from `action.completed` events (the invoking agent gets an ack, not the return value — message it from the handler if it needs the result).
+- Read a message id as `message.messageId` (not `message.id`); reply with `reply({ messageId })` and react with `react({ messageId, emoji })`.
+- Stop any running broker before upgrading, then remove the stale `.agent-relay/` directory (and `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay` if present) and restart with `agent-relay up`; state is recreated under `.agentworkforce/relay/`. The broker re-adds `.agentworkforce/relay/` to `.git/info/exclude`, leaving any tracked `.agentworkforce/trajectories/` untouched.
 - Install `@agent-relay/harness-driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
 - Replace `agent-relay up/status/down` with `agent-relay driver up/status/down` when you want Agent Relay to manage the local harness boundary.
 - Replace SDK spawn calls with driver actions (`agent.create`, `agent.release`, `agent.status`) when agents need to request managed harness work through MCP.
@@ -70,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
 - `sdk-swift`: replace `RelayCast(apiKey:baseURL:)` with `AgentRelayClient(apiKey:baseURL:)`. The public API surface is otherwise unchanged.
 - Import `HarnessDriverClient` (was `AgentRelayClient`) from `@agent-relay/harness-driver`; the `connect()`/`spawn()` API is unchanged. Update companion type names (`HarnessDriverClientOptions`, `RuntimeSpawnOptions`, `BrokerInitArgs`, `HarnessDriverEvents`, `HarnessDriverProtocolError`) at import sites.
+
+### Removed
+
+- `@agent-relay/config` removes the unused `getGlobalPaths()` and `listProjects()` exports (legacy global-storage helpers) and drops the `.agent-relay.json` project-root config fallback; shadow config now loads only from `.agentworkforce/relay/config.json`.
+- `@agent-relay/config` removes the legacy `/tmp/relay-outbox` symlink: `RelayFileWriter` no longer creates it on `ensureDirectories()`, and the `getLegacyOutboxPath()` method and `RelayPaths.legacyOutboxDir` field are gone.
+- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup. (Uninstall still purges legacy install dirs.)
 
 ### Fixed
 

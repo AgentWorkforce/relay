@@ -1,265 +1,195 @@
 ---
 title: 'Event Handlers'
-description: 'Use listeners to react to messages, deliveries, actions, status changes, tool calls, transcripts, files, terminal output, and session lifecycle.'
+description: 'Use addListener to react to messages, deliveries, actions, status changes, tool calls, and session lifecycle without polling.'
 ---
 
 The listener system lets SDK apps, MCP hosts, harness adapters, and agents react to Relay events without polling.
 
-Listeners are built from predicates and handlers.
+There is exactly one entry point: `relay.addListener(selector, handler)`. It accepts a dotted event
+name, a `*`/prefix wildcard, or a fluent predicate, and always hands your handler **one discriminated
+event object** whose `type` field is the event name. It returns an unsubscribe function. There is no
+`relay.on`, `relay.notify`, or `relay.actions` namespace.
 
 ```ts file="listeners.ts"
-const unsubscribe = relay.on(
-  relay.events.message.created().in('#customer-complaints').mentions(engineer),
-  async (event) => {
-    await relay.messages.direct({
-      to: taskManager.identity.id,
-      text: `${engineer.identity.handle} was asked to handle ${event.message.id}.`,
+const unsubscribe = relay.addListener('message.created', async ({ message, envelope }) => {
+  const { from, channel } = envelope;
+  if (channel?.name === 'customer-complaints' && message.text?.includes(`@${engineer.handle}`)) {
+    await taskManager.sendMessage({
+      to: `@${engineer.handle}`,
+      text: `You were asked to handle ${message.messageId}.`,
     });
   }
-);
+});
+
+// Later:
+unsubscribe();
 ```
 
-The same listener model should work for workspace events and harness-provided session observations.
+See [Events](/docs/events) for the canonical event vocabulary and the full event-object and envelope schemas.
 
 ## Why Events Matter
 
-Agent coordination fails when every participant has to remember to poll an inbox. Events let Relay inject, notify, and supervise at the moment something changes.
+Agent coordination fails when every participant has to remember to poll an inbox. Events let your app
+react at the moment something changes.
 
 Use listeners to:
 
 - notify an agent when another agent becomes idle
-- deliver queued messages at a tool-call boundary
 - watch for failed deliveries
 - capture tool-call and command output
 - report file edits into a review channel
-- react to custom action invocations
+- react to custom action completions
 - update an operator UI with live state
-- release or resume sessions when lifecycle events fire
 
-## Core Event Envelope
+## Three selector styles
 
-Every event should carry enough routing context to support predicates, replay, and audit.
-
-```ts
-type AgentRelayEvent = {
-  id: string;
-  workspaceId: string;
-  type: AgentRelayEventType;
-  at: Date;
-  actor?: AgentIdentity | { type: 'system' | 'service'; id?: string; name?: string };
-  subject?: AgentIdentity | RelayMessage | ActionInvocation | DeliveryRecord;
-  data?: Record<string, unknown>;
-  correlationId?: string;
-};
-```
-
-`AgentRelayEvent` is the workspace-level event envelope. `AgentSessionEvent` is the harness/session event payload emitted by one session. Relay can wrap a session event in the workspace event envelope before broadcasting it.
-
-## Workspace Event Types
+`addListener` accepts three argument styles.
 
 ```ts
-type AgentRelayEventType =
-  | 'message.created'
-  | 'message.updated'
-  | 'message.read'
-  | 'message.reacted'
-  | 'delivery.created'
-  | 'delivery.accepted'
-  | 'delivery.delivered'
-  | 'delivery.deferred'
-  | 'delivery.failed'
-  | 'agent.registered'
-  | 'agent.status.changed'
-  | 'action.registered'
-  | 'action.invoked'
-  | 'action.completed'
-  | 'action.failed'
-  | 'action.denied'
-  | 'session.started'
-  | 'session.released'
-  | 'session.resumed'
-  | 'session.forked'
-  | 'session.event'
-  | 'log'
-  | 'error';
+// 1) a dotted event name — the handler arg is narrowed to that event's shape
+relay.addListener('message.created', (event) => {
+  console.log(event.type, event.message.messageId);
+});
+
+// 2) a wildcard — '*' for everything, or a prefix like 'message.*' / 'action.*'
+relay.addListener('action.*', (event) => console.log(event.type));
+relay.addListener('*', (event) => console.log(event));
+
+// 3) a fluent predicate, for filtered subscriptions
+relay.addListener(engineer.status.becomes('idle'), (event) => { /* ... */ });
+relay.addListener(relay.action('spawn-claude').calledBy(engineer), (event) => { /* ... */ });
+relay.addListener(engineer.tools.called('bash'), (event) => { /* ... */ });
 ```
 
-The `session.event` type can carry a normalized `AgentSessionEvent` from a harness. Consumers that care about a specific session observation can use higher-level predicates instead of unpacking raw payloads.
+## The event object and envelope
 
-## Session Events
-
-Sessions can emit observations that are not messages themselves.
+Every event is a discriminated union keyed on `type`. Message events carry both the full `message` and a
+flat, ergonomic `envelope` whose fields are rich objects (`from`, `to`, `channel`, `parent`), not bare
+strings.
 
 ```ts
-type AgentSessionEvent =
-  | { type: 'status.changed'; status: AgentStatus; previousStatus?: AgentStatus; reason?: string }
-  | { type: 'tool.called'; run?: string; tool: string; input?: unknown }
-  | { type: 'tool.completed'; run?: string; tool: string; output?: unknown; durationMs?: number }
-  | { type: 'tool.failed'; run?: string; tool: string; error: string; retryable?: boolean }
-  | { type: 'tool.output'; run?: string; tool: string; output: string }
-  | { type: 'message.received'; messageId: string; deliveryId?: string }
-  | { type: 'message.sent'; messageId: string }
-  | { type: 'delivery.accepted'; deliveryId: string; messageId: string }
-  | { type: 'delivery.delivered'; deliveryId: string; messageId: string }
-  | { type: 'delivery.deferred'; deliveryId: string; messageId: string; availableAt: Date | string; reason?: string }
-  | { type: 'delivery.failed'; deliveryId: string; messageId: string; reason: string; retryable?: boolean }
-  | { type: 'action.invoked'; action: string; invocationId: string }
-  | { type: 'action.completed'; action: string; invocationId: string; durationMs?: number }
-  | { type: 'action.failed'; action: string; invocationId: string; error: string; retryable?: boolean }
-  | { type: 'action.denied'; action: string; invocationId: string; reason: string }
-  | { type: 'transcript.chunk'; chunk: TranscriptChunk }
-  | { type: 'file.changed'; path: string; operation: 'create' | 'update' | 'delete'; diff?: string }
-  | { type: 'command.started'; command: string; cwd?: string }
-  | { type: 'command.completed'; command: string; exitCode?: number; durationMs?: number }
-  | { type: 'command.failed'; command: string; error: string; exitCode?: number }
-  | { type: 'terminal.output'; stream?: 'stdout' | 'stderr' | 'combined'; text: string }
-  | { type: 'terminal.screen'; text: string; rows?: number; cols?: number }
-  | { type: 'usage.updated'; tokens?: number; costUsd?: number; metadata?: Record<string, unknown> }
-  | { type: 'session.started'; sessionId: string }
-  | { type: 'session.released'; sessionId: string; reason?: string }
-  | { type: 'session.resumed'; sessionId: string }
-  | { type: 'session.forked'; sessionId: string; parentSessionId: string }
-  | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
-  | { type: 'error'; error: string; code?: string; retryable?: boolean };
+relay.addListener('message.created', ({ message, envelope }) => {
+  const { from, channel } = envelope;
+  if (channel?.name === 'general') {
+    console.log(`${from.handle} in #${channel.name}: ${message.text}`);
+  }
+});
 ```
 
-See [Session capabilities](/docs/session-capabilities) for the full session capability model that declares which events a session emits.
+Notifications are just inline handlers that send a message from a registered participant — there is no
+separate `relay.notify` helper.
 
-## Status Listeners
+```ts
+relay.addListener(engineer.status.becomes('idle'), () =>
+  will.sendMessage({
+    to: '#general',
+    text: `${engineer.handle} is idle — send them the next task if any remain.`,
+  })
+);
+```
 
-Idle and other status states are first-class because delivery and supervision depend on them.
+## Status listeners
+
+Idle and other status states are first-class. Build a status predicate off the live agent client and pass
+it to `addListener`.
 
 ```ts file="status-listener.ts"
-relay.on(
-  relay.events.agent(engineer).status.becomes('idle'),
-  relay.notify(planner, {
-    type: 'agent.status.idle',
-    subject: engineer,
-    delivery: 'next-tool-call',
+relay.addListener(engineer.status.becomes('idle'), () =>
+  planner.sendMessage({
+    to: `@${engineer.handle}`,
+    text: 'When ready, pick up the next review thread.',
   })
 );
 
-relay.on(
-  relay.events.agent(reviewer).status.becomes('blocked'),
-  async (event) => {
-    await relay.messages.send({
-      to: '#reviews',
-      text: `${reviewer.identity.handle} is blocked: ${event.reason ?? 'no reason reported'}`,
-    });
-  }
+relay.addListener(reviewer.status.becomes('blocked'), (event) =>
+  planner.sendMessage({
+    to: '#reviews',
+    text: `${reviewer.handle} is blocked: ${event.reason ?? 'no reason reported'}.`,
+  })
 );
 ```
 
 Recommended statuses are:
 
 ```ts
-type AgentStatus =
-  | 'starting'
-  | 'active'
-  | 'idle'
-  | 'waiting'
-  | 'blocked'
-  | 'paused'
-  | 'releasing'
-  | 'released'
-  | 'offline'
-  | 'failed';
+type AgentStatus = 'active' | 'idle' | 'waiting' | 'blocked' | 'offline';
 ```
 
-## Tool And Terminal Listeners
+## Tool listeners
 
-Harnesses that can observe tool calls should emit normalized tool events.
+Harnesses that observe tool calls emit normalized `tool.called` events. Filter them with the `tools`
+predicate builder on the live client.
 
 ```ts file="tool-listener.ts"
-relay.on(
-  relay.events.agent(engineer).tools.called('bash').where((call) => {
-    return typeof call.input?.command === 'string' && call.input.command.includes('npm test');
-  }),
-  async (event) => {
-    await relay.messages.send({
+relay.addListener(
+  engineer.tools
+    .called('bash')
+    .where((call) => typeof call.input?.command === 'string' && call.input.command.includes('npm test')),
+  (event) =>
+    planner.sendMessage({
       to: '#reviews',
-      text: `${engineer.identity.handle} started tests for ${event.run ?? 'the current run'}.`,
-    });
-  }
+      text: `${engineer.handle} started tests for ${event.run ?? 'the current run'}.`,
+    })
 );
 ```
 
-Terminal output can be high-volume. Harnesses should support filtering, redaction, truncation, and backpressure before exposing it to other agents.
+## Action listeners
 
-## Delivery Listeners
+Actions are fire-and-forget: invoking returns an acknowledgement immediately, the handler runs in the
+process that registered it, and the relay emits `action.completed` (or `action.failed`) to your
+**listeners** — not inline to the invoking agent. Subscribe by name or with the `relay.action(name)`
+predicate.
+
+```ts file="action-listener.ts"
+relay.addListener('action.completed', (event) => {
+  console.log(event.action, event.output);
+});
+
+relay.addListener(relay.action('deploy.preview').completed(), (event) =>
+  planner.sendMessage({
+    to: '#ops',
+    text: `Preview deploy completed for ${event.agent.name}.`,
+  })
+);
+
+relay.addListener(relay.action('deploy.preview').failed(), (event) =>
+  planner.sendMessage({
+    to: '#ops',
+    text: `Preview deploy failed for ${event.agent.name}: ${event.error}`,
+  })
+);
+```
+
+See [Actions](/docs/actions) for the full fire-and-forget lifecycle.
+
+## Delivery listeners
 
 Delivery events turn failed injection into visible coordination state.
 
 ```ts file="delivery-listener.ts"
-relay.on(relay.events.delivery.deferred().forAgent(engineer), async (event) => {
-  await relay.messages.send({
+relay.addListener('delivery.failed', (event) =>
+  planner.sendMessage({
     to: '#ops',
-    text: `${engineer.identity.handle} deferred ${event.message.id} until ${event.availableAt}.`,
-  });
-});
-```
-
-## Action Listeners
-
-Action events let agents supervise capability use.
-
-```ts file="action-listener.ts"
-relay.on(
-  relay.action('agent.create').calledBy(planner),
-  relay.notify('#ops', {
-    type: 'action.called',
-    action: 'agent.create',
-    subject: planner,
-    delivery: 'immediate',
+    text: `Delivery ${event.deliveryId} failed for ${event.messageId}: ${event.reason}.`,
   })
 );
 ```
 
-Actions remain request/response capabilities. Events are the audit and subscription stream around them.
+## Handler contract
 
-## Listener Handler Contract
+Handlers may be sync or async; their return value is ignored.
 
 ```ts
-type EventPredicate<E extends AgentRelayEvent = AgentRelayEvent> = {
-  test(event: AgentRelayEvent): event is E;
-};
-
-type EventHandler<E extends AgentRelayEvent = AgentRelayEvent> = (
-  event: E,
-  ctx: EventHandlerContext
-) => Promise<void> | void;
-
+type ListenerHandler<E = RelayEvent> = (event: E) => void | Promise<void>;
 type Unsubscribe = () => void;
 ```
 
-Handlers should be idempotent. A workspace may replay events after reconnect, failover, or manual replay. Use event ids and correlation ids to deduplicate side effects.
+Handlers should be idempotent. A workspace may replay events after reconnect or failover. Use `messageId`,
+`deliveryId`, and similar ids to deduplicate side effects.
 
-## Delivery Policy In Listeners
+## Safety
 
-Listeners can create notifications with explicit delivery modes.
-
-```ts file="notify.ts"
-relay.on(
-  relay.events.agent(engineer).status.becomes('idle'),
-  relay.notify(engineer, {
-    type: 'review.next',
-    text: 'When ready, pick up the next review thread.',
-    delivery: 'on-idle',
-  })
-);
-```
-
-Delivery policy belongs at the event boundary because that is where the system knows whether a notification should interrupt, wait for the next message, wait for the next tool call, wait for idle, or stay manual.
-
-## Redaction And Safety
-
-Harnesses should redact secrets before events leave the session boundary. Relay can apply additional workspace-level policy, but the adapter closest to the raw terminal, transcript, file, or tool output should avoid emitting credentials in the first place.
-
-Recommended rules:
-
-- preserve ordering per session
-- return unsubscribe functions
-- include enough ids for correlation
-- avoid unbounded terminal or transcript events
-- normalize provider-specific logs into stable event types
-- keep raw provider payloads in `metadata` only when useful and safe
+Harnesses should redact secrets before events leave the session boundary. The adapter closest to the raw
+terminal, transcript, file, or tool output should avoid emitting credentials in the first place. Keep
+ordering stable per session, return unsubscribe functions, and avoid unbounded terminal or transcript
+events.

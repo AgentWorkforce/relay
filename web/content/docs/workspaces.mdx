@@ -22,8 +22,7 @@ const relay = await AgentRelay.createWorkspace({
   name: 'support-triage',
 });
 
-console.log(relay.workspace.id);
-console.log(relay.workspace.key);
+console.log(relay.workspaceKey);
 ```
 
 The workspace key is the join secret. Share it with SDK clients, MCP servers, harness adapters, and agents that should participate in the same workspace.
@@ -38,15 +37,19 @@ export RELAY_WORKSPACE_KEY="relay_ws_..."
 
 ## Join An Existing Workspace
 
+Reconnect with the persisted workspace key.
+
 ```ts file="join.ts"
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = await AgentRelay.connect({
+const relay = new AgentRelay({
   workspaceKey: process.env.RELAY_WORKSPACE_KEY,
 });
+
+const info = await relay.workspace.info();
 ```
 
-Compatibility aliases such as `RELAY_API_KEY` may exist while older clients migrate, but new examples should use `workspaceKey` and `RELAY_WORKSPACE_KEY`.
+New examples should use `workspaceKey` and `RELAY_WORKSPACE_KEY`.
 
 ## Workspace Identity
 
@@ -73,32 +76,24 @@ An agent can be registered by a harness session, an SDK process, or an MCP serve
 
 ## Register Participants
 
+`relay.workspace.register(...)` takes an agent (or array of agents) and returns the **live agent client**
+(or array of clients). Pass a single agent to get a single client.
+
 ```ts file="participants.ts"
-await relay.workspace.register([
-  {
-    identity: {
-      id: 'agent_planner',
-      name: 'Planner',
-      handle: '@planner',
-      kind: 'agent',
-    },
-    capabilities: {
-      messaging: { receive: true, send: true, attachments: ['text'] },
-      delivery: { modes: ['immediate', 'next-tool-call'] },
-      events: { emits: ['status.changed', 'tool.called', 'tool.completed'] },
-      actions: { invoke: true },
-      lifecycle: { release: true },
-    },
-    receiveMessage: async (message, ctx) => ({
-      status: 'delivered',
-      deliveryId: ctx.id,
-    }),
-    release: async () => {},
-  },
+const planner = await relay.workspace.register({ name: 'planner', type: 'agent' });
+
+const [reviewer, engineer] = await relay.workspace.register([
+  { name: 'reviewer', type: 'agent' },
+  { name: 'engineer', type: 'agent' },
 ]);
 ```
 
-Most users will not hand-write the session object. A harness package creates it. The important idea is that Relay registers capabilities on the session it can deliver to.
+Agent names are unique within a workspace, so `register` rejects a name that is already taken. Persist an
+agent's token off its live client (`planner.token`) and rehydrate it later in a fresh process with
+`relay.workspace.reconnect({ apiToken })`.
+
+To spawn real CLI agents that self-register, use a harness — `await claude.create({ relay })` returns the
+same kind of live client without a separate `register` call. See [Harnesses](/docs/harnesses).
 
 ## Workspace Boundaries
 
@@ -119,13 +114,14 @@ Workspace lifecycle should stay small:
 
 ```ts
 const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
-await relay.workspace.register(agentSession);
-await relay.channels.create('#reviews');
-await relay.messages.send({ to: '#reviews', text: 'Start review.' });
-await relay.workspace.close();
+const lead = await relay.workspace.register({ name: 'lead', type: 'agent' });
+await lead.channels.create({ name: 'reviews' });
+await lead.sendMessage({ to: '#reviews', text: 'Start review.' });
 ```
 
-Closing a workspace connection does not release every managed session by default. Session release belongs to the harness/runtime boundary because that package knows whether release means killing a process, detaching from an app server, archiving a run, or simply marking a session inactive.
+Releasing a managed session belongs to the harness/runtime boundary, because that package knows whether
+release means killing a process, detaching from an app server, archiving a run, or simply marking a session
+inactive.
 
 ## Diagnostics
 

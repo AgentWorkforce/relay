@@ -24,18 +24,19 @@ function createRelay() {
       send: vi.fn(async (i: unknown) => ({ id: 'm', text: '', from: {}, ...((i as object) ?? {}) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd', text: '', from: {}, ...((i as object) ?? {}) })),
     },
-    events: { on: bus.on },
+    events: { on: bus.on, connect: vi.fn() },
     agents: { register: vi.fn() },
   } as unknown as RelayMessaging;
-  const relay = new AgentRelay({ messaging, actions: new ActionRegistry() });
-  return { relay, bus };
+  const actions = new ActionRegistry();
+  const relay = new AgentRelay({ messaging, actions });
+  return { relay, bus, actions };
 }
 
 describe('Listener DSL (Phase B)', () => {
   it('relay.on with message.created().in().mentions() filters correctly', async () => {
     const { relay, bus } = createRelay();
     const handler = vi.fn();
-    relay.on(relay.events.message.created().in('#ops').mentions({ handle: 'eng' }), handler);
+    relay.addListener(relay.events.message.created().in('#ops').mentions({ handle: 'eng' }), handler);
 
     // wrong channel — ignored
     bus.emit('messageCreated', { type: 'messageCreated', channel: 'random', message: { text: '@eng hi' } });
@@ -52,15 +53,15 @@ describe('Listener DSL (Phase B)', () => {
   });
 
   it('relay.on with action(name).calledBy(agent) fires on invocation by that caller', async () => {
-    const { relay } = createRelay();
+    const { relay, actions } = createRelay();
     const handler = vi.fn();
     relay.registerAction({ name: 'spawn-claude', handler: async () => ({ ok: true }) });
-    relay.on(relay.action('spawn-claude').calledBy({ name: 'planner' }), handler);
+    relay.addListener(relay.action('spawn-claude').calledBy({ name: 'planner' }), handler);
 
-    await relay.actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'other', type: 'agent' } });
+    await actions.invoke({ name: 'spawn-claude', input: {}, caller: { name: 'other', type: 'agent' } });
     expect(handler).not.toHaveBeenCalled();
 
-    await relay.actions.invoke({
+    await actions.invoke({
       name: 'spawn-claude',
       input: {},
       caller: { name: 'planner', type: 'agent' },
@@ -72,7 +73,7 @@ describe('Listener DSL (Phase B)', () => {
     const { relay } = createRelay();
     const engineer = relay.agent({ id: 'a-eng', name: 'engineer' });
     const handler = vi.fn();
-    relay.on(engineer.status.becomes('idle'), handler);
+    relay.addListener(engineer.status.becomes('idle'), handler);
 
     relay.emitSessionEvent('a-other', { type: 'status.changed', status: 'idle' });
     expect(handler).not.toHaveBeenCalled();
@@ -89,7 +90,7 @@ describe('Listener DSL (Phase B)', () => {
     const { relay } = createRelay();
     const engineer = relay.agent({ id: 'a-eng', name: 'engineer' });
     const handler = vi.fn();
-    relay.on(
+    relay.addListener(
       engineer.tools
         .called('bash')
         .where((call) => String((call.input as { command?: string })?.command).includes('npm test')),
@@ -103,17 +104,82 @@ describe('Listener DSL (Phase B)', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  it('relay.notify can be used as the handler for relay.on', async () => {
+  it('addListener("message.created") delivers a discriminated event with a rich envelope', () => {
     const { relay, bus } = createRelay();
-    const notify = relay.notify({ name: 'taskManager' }, { type: 'mention' });
-    relay.on(relay.events.message.created().in('#ops'), notify);
+    const handler = vi.fn();
+    relay.addListener('message.created', handler);
 
-    bus.emit('messageCreated', { type: 'messageCreated', channel: 'ops', message: { text: 'hi' } });
-    await Promise.resolve();
-    await Promise.resolve();
+    bus.emit('any', {
+      type: 'messageCreated',
+      channel: 'general',
+      message: {
+        id: 'm1',
+        messageId: 'm1',
+        text: 'hi',
+        from: { id: 'a1', name: 'alice' },
+        channel: { name: 'general' },
+      },
+    });
 
-    expect(relay.messaging.messages.direct as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'taskManager' })
-    );
+    expect(handler).toHaveBeenCalledTimes(1);
+    const evt = handler.mock.calls[0][0];
+    expect(evt.type).toBe('message.created');
+    expect(evt.message.messageId).toBe('m1');
+    expect(evt.envelope.from).toEqual({ id: 'a1', name: 'alice' });
+    expect(evt.envelope.channel).toEqual({ name: 'general' });
+  });
+
+  it('addListener maps reactions to message.reacted with an action', () => {
+    const { relay, bus } = createRelay();
+    const handler = vi.fn();
+    relay.addListener('message.reacted', handler);
+
+    bus.emit('any', { type: 'reactionAdded', messageId: 'm9', emoji: 'eyes', agentName: 'bob' });
+    bus.emit('any', { type: 'reactionRemoved', messageId: 'm9', emoji: 'eyes', agentName: 'bob' });
+
+    expect(handler.mock.calls.map((c) => c[0].action)).toEqual(['added', 'removed']);
+  });
+
+  it('addListener supports "*" and prefix wildcards', () => {
+    const { relay, bus } = createRelay();
+    const all = vi.fn();
+    const messages = vi.fn();
+    relay.addListener('*', all);
+    relay.addListener('message.*', messages);
+
+    bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+    bus.emit('any', { type: 'agentOnline', agent: { name: 'x' } }); // not surfaced
+
+    expect(all).toHaveBeenCalledTimes(1);
+    expect(all.mock.calls[0][0].type).toBe('message.read');
+    expect(messages).toHaveBeenCalledTimes(1);
+  });
+
+  it('addListener("action.completed") fires after a successful invocation', async () => {
+    const { relay, actions } = createRelay();
+    const handler = vi.fn();
+    relay.registerAction({ name: 'greet', handler: async () => ({ ok: true }) });
+    relay.addListener('action.completed', handler);
+
+    await actions.invoke({ name: 'greet', input: {}, caller: { name: 'p', type: 'agent' } });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0]).toMatchObject({ type: 'action.completed', action: 'greet' });
+  });
+
+  it('addListener opens the event stream', () => {
+    const { relay } = createRelay();
+    relay.addListener('message.created', vi.fn());
+    expect(relay.messaging.events.connect as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
+
+  it('addListener accepts a predicate as well as a name', () => {
+    const { relay } = createRelay();
+    const engineer = relay.agent({ id: 'a-eng', name: 'engineer' });
+    const handler = vi.fn();
+    relay.addListener(engineer.status.becomes('idle'), handler);
+
+    relay.emitSessionEvent('a-eng', { type: 'status.idle' });
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });

@@ -6,7 +6,7 @@
 //! Opt-out:
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
-//!   - Or write `{"enabled": false}` to `~/.agent-relay/telemetry.json`
+//!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
 
 use std::path::PathBuf;
 
@@ -22,6 +22,8 @@ use tokio::sync::mpsc;
 /// binaries report to the production PostHog project.
 const POSTHOG_API_KEY: Option<&str> = option_env!("AGENT_RELAY_POSTHOG_KEY");
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
+const UNKNOWN_ORCHESTRATOR_HARNESS: &str = "unknown";
+const ORCHESTRATOR_HARNESS_ENV: &str = "AGENT_RELAY_ORCHESTRATOR_HARNESS";
 
 /// Returns the configured PostHog key iff it's non-empty. Empty strings are
 /// treated the same as "unset" so an accidentally-blank secret doesn't trip
@@ -185,7 +187,7 @@ impl TelemetryEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Preferences file (~/.agent-relay/telemetry.json)
+// Preferences file (~/.agentworkforce/relay/telemetry.json)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -197,7 +199,7 @@ struct TelemetryPrefs {
 }
 
 fn prefs_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agent-relay").join("telemetry.json"))
+    dirs::home_dir().map(|h| h.join(".agentworkforce/relay").join("telemetry.json"))
 }
 
 fn load_prefs() -> TelemetryPrefs {
@@ -232,7 +234,8 @@ fn machine_id_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| {
         h.join(".local")
             .join("share")
-            .join("agent-relay")
+            .join("agentworkforce")
+            .join("relay")
             .join("machine-id")
     })
 }
@@ -296,6 +299,144 @@ fn env_nonempty(key: &str) -> Option<String> {
     })
 }
 
+fn sanitize_orchestrator_harness(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                ' ' | '.' | '_' | '-' | '/' | '(' | ')' | ':' | '=' | ';' | ',' | '+'
+            )
+    }) {
+        return None;
+    }
+    Some(trimmed.chars().take(120).collect::<String>().to_lowercase())
+}
+
+fn infer_harness_from_command(command: &str) -> Option<&'static str> {
+    let lower = command.to_lowercase();
+    let normalized = lower.replace('\\', "/");
+    let base = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized.as_str())
+        .trim_end_matches(".exe");
+    let base = base
+        .strip_suffix(".cmd")
+        .or_else(|| base.strip_suffix(".bat"))
+        .unwrap_or(base);
+
+    if base == "claude" || lower.contains("claude-code") {
+        return Some("claude-code");
+    }
+    if base == "codex" || normalized.contains("/codex") {
+        return Some("codex");
+    }
+    if base == "cursor" || base == "cursor-agent" || lower.contains("cursor") {
+        return Some("cursor");
+    }
+    if base == "gemini" || base == "gemini-cli" || lower.contains("gemini-cli") {
+        return Some("gemini-cli");
+    }
+    if base == "aider" || lower.contains("aider") {
+        return Some("aider");
+    }
+    if base == "opencode" || lower.contains("opencode") {
+        return Some("opencode");
+    }
+    if base == "goose" || lower.contains("goose") {
+        return Some("goose");
+    }
+    if base == "droid" || lower.contains("droid") {
+        return Some("droid");
+    }
+    if base == "amp" || normalized.contains("/amp") {
+        return Some("amp");
+    }
+    if lower.contains("copilot") {
+        return Some("github-copilot");
+    }
+    if base == "zed" || lower.contains("zed") {
+        return Some("zed");
+    }
+
+    None
+}
+
+#[cfg(unix)]
+fn lookup_process_info(pid: i32) -> Option<(i32, String)> {
+    if pid <= 0 {
+        return None;
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-o", "comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut parts = stdout.split_whitespace();
+    let ppid = parts.next()?.parse::<i32>().ok()?;
+    let command = parts.collect::<Vec<_>>().join(" ");
+    if command.is_empty() {
+        None
+    } else {
+        Some((ppid, command))
+    }
+}
+
+#[cfg(unix)]
+fn detect_process_orchestrator_harness() -> Option<String> {
+    use std::collections::HashSet;
+
+    let mut pid = nix::unistd::getppid().as_raw();
+    let mut seen = HashSet::new();
+
+    for _ in 0..8 {
+        if pid <= 0 || !seen.insert(pid) {
+            break;
+        }
+        let Some((ppid, command)) = lookup_process_info(pid) else {
+            break;
+        };
+        if let Some(harness) = infer_harness_from_command(&command) {
+            return Some(harness.to_string());
+        }
+        if ppid == pid {
+            break;
+        }
+        pid = ppid;
+    }
+
+    None
+}
+
+#[cfg(not(unix))]
+fn detect_process_orchestrator_harness() -> Option<String> {
+    None
+}
+
+fn detect_orchestrator_harness() -> String {
+    for key in [
+        ORCHESTRATOR_HARNESS_ENV,
+        "RELAYCAST_HARNESS",
+        "X_RELAYCAST_HARNESS",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            if let Some(harness) = sanitize_orchestrator_harness(&value) {
+                return harness;
+            }
+        }
+    }
+
+    detect_process_orchestrator_harness()
+        .unwrap_or_else(|| UNKNOWN_ORCHESTRATOR_HARNESS.to_string())
+}
+
 /// Best-effort OS release string for telemetry tagging. Shells out to
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.
@@ -343,6 +484,8 @@ pub struct TelemetryClient {
     /// OS release string (best-effort via `uname -r`, empty on failure /
     /// platforms where that isn't meaningful).
     os_version: Option<String>,
+    /// Harness or agent CLI that appears to be driving Agent Relay.
+    orchestrator_harness: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,6 +514,7 @@ impl TelemetryClient {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
         }
     }
 
@@ -418,6 +562,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
+            orchestrator_harness: detect_orchestrator_harness(),
         }
     }
 
@@ -443,6 +588,12 @@ impl TelemetryClient {
         // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
             let broker_version = crate::util::version::broker_version();
+            obj.insert("app".to_string(), json!("broker"));
+            obj.insert("surface".to_string(), json!("broker"));
+            obj.insert(
+                "orchestrator_harness".to_string(),
+                json!(self.orchestrator_harness.as_str()),
+            );
             obj.insert("agent_relay_version".to_string(), json!(broker_version));
             obj.insert("broker_version".to_string(), json!(broker_version));
             if let Some(ref v) = self.cli_version {
@@ -604,6 +755,7 @@ mod tests {
             cli_version: None,
             sdk_version: None,
             os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
         };
         assert!(!client.is_enabled());
         client.track(TelemetryEvent::BrokerStart);
@@ -685,6 +837,33 @@ mod tests {
         std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_EMPTY");
         std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_WS");
         std::env::remove_var("AGENT_RELAY_TEST_TELEMETRY_SET");
+    }
+
+    #[test]
+    fn sanitize_orchestrator_harness_normalizes_safe_values() {
+        assert_eq!(
+            sanitize_orchestrator_harness("  Codex CLI  "),
+            Some("codex cli".to_string())
+        );
+        assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
+        assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn infer_harness_from_command_recognizes_known_parents() {
+        assert_eq!(
+            infer_harness_from_command("/usr/local/bin/codex"),
+            Some("codex")
+        );
+        assert_eq!(
+            infer_harness_from_command("/Applications/Cursor.app/Contents/MacOS/Cursor"),
+            Some("cursor")
+        );
+        assert_eq!(
+            infer_harness_from_command(r"C:\Users\will\AppData\Roaming\npm\gemini.cmd"),
+            Some("gemini-cli")
+        );
+        assert_eq!(infer_harness_from_command("/usr/bin/zsh"), None);
     }
 
     #[test]

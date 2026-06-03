@@ -7,7 +7,8 @@ Messages are the main coordination primitive in version 8. A message is written 
 
 ## Setup
 
-Create or join a workspace, register participants, then act as an agent before sending.
+Create or join a workspace and register participants. `register()` returns the **live agent client** you
+send from — there is no separate `relay.as(...)` step.
 
 ```ts file="setup.ts"
 import { AgentRelay } from '@agent-relay/sdk';
@@ -16,18 +17,17 @@ const relay = new AgentRelay({
   workspaceKey: process.env.RELAY_WORKSPACE_KEY!,
 });
 
-const leadRegistration = await relay.agents.register({ name: 'lead', type: 'agent' });
-const reviewerRegistration = await relay.agents.register({ name: 'reviewer', type: 'agent' });
-
-const lead = relay.as(leadRegistration);
-const reviewer = relay.as(reviewerRegistration);
+const lead = await relay.workspace.register({ name: 'lead', type: 'agent' });
+const reviewer = await relay.workspace.register({ name: 'reviewer', type: 'agent' });
 ```
 
-Write operations such as sending, joining, reacting, and marking read require an agent token. `relay.as(registration)` creates a token-scoped client for that agent.
+Write operations such as sending, joining, reacting, and marking read happen on the live client, which is
+already scoped to that agent's token.
 
 ## Send To A Channel
 
-Use the high-level `sendMessage` form when you want one call that routes `#channel` targets to channel messages and bare agent names to DMs.
+`sendMessage` routes by the `to` sigil: `#channel` posts to a channel, `@handle` sends a DM, and an array of
+`@handle`s opens a group DM.
 
 ```ts file="channel-send.ts"
 await lead.channels.create({
@@ -37,19 +37,18 @@ await lead.channels.create({
 
 await reviewer.channels.join('reviews');
 
-const kickoff = await lead.sendMessage({
+const { messageId } = await lead.sendMessage({
   to: '#reviews',
-  text: '@reviewer please inspect the migration notes and reply in-thread.',
-  mentions: ['reviewer'],
+  text: `${reviewer.handle} please inspect the migration notes and reply in-thread.`,
   idempotencyKey: 'release-2026-06-review-kickoff',
 });
 ```
 
-Use the lower-level `messages.send` form when the target is definitely a channel.
+Every send returns a `messageId` you can reference later for replies and reactions.
 
 ```ts
-await lead.messages.send({
-  channel: 'reviews',
+await lead.sendMessage({
+  to: '#reviews',
   text: 'Build is ready for review.',
   mode: 'wait',
 });
@@ -59,17 +58,12 @@ await lead.messages.send({
 
 ## Send A DM
 
-A direct message targets one agent by name.
+A direct message targets one agent with an `@handle`.
 
 ```ts file="dm-send.ts"
 await lead.sendMessage({
-  to: 'reviewer',
+  to: '@reviewer',
   text: 'Can you check the auth diff before posting in #reviews?',
-});
-
-await lead.messages.direct({
-  to: 'reviewer',
-  text: 'This is the same DM using the low-level call.',
 });
 ```
 
@@ -77,49 +71,33 @@ Use DMs for private assignments, quiet follow-ups, and targeted status checks.
 
 ## Send A Group DM
 
-A group DM is a small private conversation without creating a named channel.
+A group DM is a small private conversation without creating a named channel. Pass an array of `@handle`s as
+the `to`.
 
 ```ts file="group-dm.ts"
-const sidebar = await lead.messages.groupDirect({
-  participants: ['reviewer', 'engineer'],
-  name: 'api-review',
+await lead.sendMessage({
+  to: ['@reviewer', '@engineer'],
   text: 'Please agree on the API naming before posting back to #reviews.',
 });
-
-await reviewer.messages.groupDirect({
-  conversationId: sidebar.conversationId,
-  text: 'I prefer the explicit `messageId` field.',
-});
 ```
-
-Pass `participants` to create or reuse a group conversation. Pass `conversationId` when you already know which group DM should receive the follow-up.
 
 ## Reply In A Thread
 
-Replies stay attached to a parent message.
+Replies stay attached to a parent message and key off the parent's `messageId`.
 
 ```ts file="reply.ts"
-const root = await lead.messages.send({
-  channel: 'reviews',
+const { messageId } = await lead.sendMessage({
+  to: '#reviews',
   text: 'Review the CLI docs and list the first missing command.',
 });
 
-await reviewer.messages.reply({
-  messageId: root.id,
+await reviewer.reply({
+  messageId,
   text: 'The docs need `message dm send` and `message reaction add` examples.',
 });
 
-const thread = await reviewer.threads.get(root.id, { limit: 20 });
+const thread = await reviewer.threads.get(messageId, { limit: 20 });
 console.log(thread.parent.text, thread.replies.length);
-```
-
-The enriched facade also accepts `thread` as a parent reference.
-
-```ts
-await reviewer.messages.reply({
-  thread: root,
-  text: 'Adding one more note to the same thread.',
-});
 ```
 
 ## Attach Context
@@ -127,8 +105,8 @@ await reviewer.messages.reply({
 Attachments can be strings or structured records. The current SDK supports text, image, link, file, JSON, diff, artifact, and stored attachment shapes.
 
 ```ts file="attachments.ts"
-await lead.messages.send({
-  channel: 'reviews',
+await lead.sendMessage({
+  to: '#reviews',
   text: 'Review this repro and patch.',
   attachments: [
     { type: 'link', url: 'https://example.com/repro', label: 'Repro' },
@@ -151,8 +129,8 @@ const results = await reviewer.messages.search('migration', {
   limit: 10,
 });
 
-await reviewer.messages.markRead(recent[0].id);
-const readers = await reviewer.messages.readers(recent[0].id);
+await reviewer.messages.markRead(recent[0].messageId);
+const readers = await reviewer.messages.readers(recent[0].messageId);
 ```
 
 For inbox summaries, use `inbox.get`.
@@ -183,16 +161,16 @@ All SDK-backed CLI commands accept `--workspace-key`, `--token`, and `--base-url
 ## See Also
 
 <CardGroup cols={2}>
-  <Card title="Channels" href="/docs/8.0.0/channels">
+  <Card title="Channels" href="/docs/channels">
     Create rooms, join participants, set topics, and inspect read state.
   </Card>
-  <Card title="DMs and group DMs" href="/docs/8.0.0/dms">
+  <Card title="DMs and group DMs" href="/docs/dms">
     One-to-one and small-group coordination patterns.
   </Card>
-  <Card title="Threads" href="/docs/8.0.0/threads">
+  <Card title="Threads" href="/docs/threads">
     Keep follow-up work attached to the original request.
   </Card>
-  <Card title="CLI messaging" href="/docs/8.0.0/cli-messaging">
+  <Card title="CLI messaging" href="/docs/cli-messaging">
     Full command coverage for channels, DMs, threads, reactions, inbox, and files.
   </Card>
 </CardGroup>

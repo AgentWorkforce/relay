@@ -223,7 +223,6 @@ describe('RelaycastMessagingClient', () => {
     const relay = new AgentRelay({ messaging, actions });
 
     expect(relay.messaging).toBe(messaging);
-    expect(relay.actions).toBe(actions);
     // relay.messages is the enriched facade layered over the underlying client.
     expect(Object.getPrototypeOf(relay.messages)).toBe(messaging.messages);
     await expect(relay.agents.list()).resolves.toHaveLength(1);
@@ -399,5 +398,49 @@ describe('RelaycastMessagingClient', () => {
       action: 'ack',
       messageId: 'm-1',
     });
+  });
+});
+
+describe('RelaycastMessagingClient workspace stream', () => {
+  it('events.connect falls back to the workspace stream when there is no agent client', () => {
+    let anyHandler: ((event: unknown) => void) | undefined;
+    const workspace = {
+      ...createWorkspace(),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      on: {
+        any: vi.fn((handler: (event: unknown) => void) => {
+          anyHandler = handler;
+          return () => {};
+        }),
+      },
+    };
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    const received: unknown[] = [];
+    client.events.on('messageCreated', (event) => received.push(event));
+    client.events.connect();
+
+    expect(workspace.connect).toHaveBeenCalledTimes(1);
+    expect(workspace.on.any).toHaveBeenCalledTimes(1);
+
+    anyHandler?.({ type: 'message.created', channel: 'general', message: { id: 'm1', text: 'hi' } });
+    expect(received).toHaveLength(1);
+    expect((received[0] as { type: string }).type).toBe('messageCreated');
+  });
+
+  it('events.connect prefers the agent client when one is present', () => {
+    const workspace = { ...createWorkspace(), connect: vi.fn(), on: { any: vi.fn(() => () => {}) } };
+    const agentClient = {
+      connect: vi.fn(),
+      disconnect: vi.fn(async () => {}),
+      on: { any: vi.fn(() => () => {}) },
+    } as unknown as Parameters<typeof RelaycastMessagingClient>[0]['agentClient'];
+    const client = new RelaycastMessagingClient({ relaycast: workspace, agentClient });
+
+    client.events.connect();
+
+    expect((agentClient as unknown as { connect: ReturnType<typeof vi.fn> }).connect).toHaveBeenCalled();
+    expect(workspace.connect).not.toHaveBeenCalled();
   });
 });

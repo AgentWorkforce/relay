@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 
@@ -491,7 +491,7 @@ async function recoverHalfStartedBroker(
     if (!stopped) {
       deps.error(
         `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
       );
       return 'blocked';
     }
@@ -504,7 +504,7 @@ async function recoverHalfStartedBroker(
     if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
       deps.error(
         'Failed to stop all half-started broker processes. ' +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the processes.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the processes.'
       );
       return 'blocked';
     }
@@ -695,6 +695,44 @@ function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): s
   return existingCandidates[0];
 }
 
+function getHomeDashboardRoot(deps: CoreDependencies): string {
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
+  return path.join(homeDir, '.agentworkforce/relay', 'dashboard');
+}
+
+function getPriorDashboardRoot(deps: CoreDependencies): string | null {
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
+  if (!homeDir) {
+    return null;
+  }
+  return path.join(homeDir, '.relay', 'dashboard');
+}
+
+function getDashboardRootFromBinary(dashboardBinary: string | null, deps: CoreDependencies): string | null {
+  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    return null;
+  }
+
+  const binaryDir = path.dirname(dashboardBinary);
+  if (path.basename(binaryDir) !== 'bin') {
+    return null;
+  }
+
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
+  const resolvedBinaryDir = path.resolve(binaryDir);
+  const ignoredBinDirs = [
+    homeDir ? path.join(homeDir, '.local', 'bin') : null,
+    path.join('/usr/local', 'bin'),
+  ]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map((candidate) => path.resolve(candidate));
+  if (ignoredBinDirs.includes(resolvedBinaryDir)) {
+    return null;
+  }
+
+  return path.join(path.dirname(binaryDir), 'dashboard');
+}
+
 function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDependencies): string | null {
   const explicitStaticDir = deps.env.RELAY_DASHBOARD_STATIC_DIR ?? deps.env.STATIC_DIR;
   if (explicitStaticDir && explicitStaticDir.trim()) {
@@ -717,15 +755,17 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
     return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
   }
 
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
-  if (!homeDir) {
-    return null;
-  }
-
-  // Standalone installs download UI assets to ~/.relay/dashboard/out.
-  const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const legacyDashboardOutDir = path.join(homeDir, '.agent-relay', 'dashboard', 'out');
-  return pickDashboardStaticDir([standaloneDashboardOutDir, legacyDashboardOutDir], deps);
+  // Installs place UI assets under the install dir (~/.agentworkforce/relay/dashboard/out
+  // by default, or next to a custom install's bin/ directory). ~/.relay/dashboard/out is
+  // read as a fallback for installs predating that move.
+  const installDashboardRoot = getDashboardRootFromBinary(dashboardBinary, deps);
+  const priorDashboardRoot = getPriorDashboardRoot(deps);
+  const candidates = [
+    installDashboardRoot ? path.join(installDashboardRoot, 'out') : null,
+    path.join(getHomeDashboardRoot(deps), 'out'),
+    priorDashboardRoot ? path.join(priorDashboardRoot, 'out') : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  return pickDashboardStaticDir(candidates, deps);
 }
 
 function normalizeLocalhostRelayUrl(relayUrl: string): string {
@@ -1034,9 +1074,9 @@ async function refreshDashboardAssetsIfStale(
     return;
   }
 
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
-  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
+  const targetDir = getDashboardRootFromBinary(dashboardBinary, deps) ?? getHomeDashboardRoot(deps);
+  const assetsDir = path.join(targetDir, 'out');
+  const versionFile = path.join(targetDir, '.version');
 
   // Check if assets match the binary version
   try {
@@ -1058,7 +1098,6 @@ async function refreshDashboardAssetsIfStale(
 
   const uiUrl =
     'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
-  const targetDir = path.join(homeDir, '.relay', 'dashboard');
   let tempDir: string | undefined;
   let tempFile: string | undefined;
 
@@ -1301,7 +1340,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         if (!stopped) {
           deps.error(
             `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
-              'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+              'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
           );
         }
       }
@@ -1471,7 +1510,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     // Kill any orphaned broker processes for this project that lost their PID
-    // files (e.g. user deleted .agent-relay/ while broker was running).
+    // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
     const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);

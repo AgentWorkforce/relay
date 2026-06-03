@@ -176,7 +176,7 @@ export function registerLocalAgentCommands(
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
-    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agent-relay/)')
+    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agentworkforce/relay/)')
     .action(async (name: string, options: Record<string, unknown>) => {
       const mode = (options.mode as string) ?? 'view';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {

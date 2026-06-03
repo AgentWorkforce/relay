@@ -250,17 +250,17 @@ describe('findRelayPtyBinary - search path verification', () => {
   });
 
   describe('Bash installer (curl | bash)', () => {
-    // install.sh places binary at ~/.agent-relay/bin/relay-pty
+    // install.sh places binary at ~/.agentworkforce/relay/bin/relay-pty
     // and optionally at ~/.local/bin/relay-pty
 
-    it('should include ~/.agent-relay/bin/ in search paths', () => {
+    it('should include ~/.agentworkforce/relay/bin/ in search paths', () => {
       const callerDirname = '/some/random/path';
 
       findRelayPtyBinary(callerDirname);
       const paths = getLastSearchPaths();
 
       const home = process.env.HOME || '';
-      expect(paths.some((p) => p.startsWith(`${home}/.agent-relay/bin/`))).toBe(true);
+      expect(paths.some((p) => p.startsWith(`${home}/.agentworkforce/relay/bin/`))).toBe(true);
     });
 
     it('should include ~/.local/bin/ in search paths', () => {

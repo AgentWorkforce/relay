@@ -152,6 +152,8 @@ export type RelayMessageTarget =
 
 export interface RelayMessage {
   id: string;
+  /** Public identifier for the message; mirrors `id`. */
+  messageId: string;
   kind?: RelayMessageKind;
   text: string;
   from: RelayMessageSender;
@@ -366,6 +368,38 @@ export interface RelayCreateSubscriptionInput {
   [key: string]: unknown;
 }
 
+// ── Webhooks (inbound triggers + outbound subscriptions) ─────────────────────
+
+export interface RelayCreateInboundWebhookInput {
+  /** Channel the inbound webhook posts into. A leading `#` is stripped. */
+  channel: string;
+  name?: string;
+}
+
+export interface RelayInboundWebhook {
+  webhookId: string;
+  url: string;
+  token: string;
+  channel: string;
+  name?: string;
+  createdAt?: string;
+}
+
+export interface RelaySubscribeInput {
+  url: string;
+  /** Canonical dotted event names, e.g. `'message.created'`, `'action.completed'`. */
+  events: string[];
+  secret?: string;
+  headers?: Record<string, string>;
+}
+
+export interface RelayWebhookSubscription {
+  id: string;
+  url?: string;
+  events?: string[];
+  createdAt?: string;
+}
+
 // ── Capabilities (agent commands) ───────────────────────────────────────────
 
 export interface RelayCapability {
@@ -381,6 +415,46 @@ export interface RelayRegisterCapabilityInput {
   description: string;
   handlerAgent: string;
   parameters?: unknown;
+  /** JSON Schema describing the action input, sent as the descriptor `input_schema`. */
+  inputSchema?: Record<string, unknown>;
+  /** JSON Schema describing the action output, sent as the descriptor `output_schema`. */
+  outputSchema?: Record<string, unknown>;
+  /** Resolved agent names allowed to invoke. Omit to allow everyone. */
+  availableTo?: string[];
+}
+
+// ── Actions (agent-to-agent RPC) ────────────────────────────────────────────
+
+/** Async invocation handle returned by the relay when an agent invokes an action. */
+export interface RelayActionInvocationAck {
+  invocationId: string;
+  actionName: string;
+  handlerAgentId?: string;
+  input?: Record<string, unknown>;
+  status?: string;
+  createdAt?: string;
+}
+
+/** A single action invocation record, including its input and (once complete) result. */
+export interface RelayActionInvocation {
+  invocationId: string;
+  actionName: string;
+  callerId?: string | null;
+  callerName?: string | null;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
+  status: string;
+  error?: string | null;
+  durationMs?: number | null;
+  createdAt?: string;
+  completedAt?: string | null;
+}
+
+/** Result payload the handler agent reports for a completed invocation. */
+export interface RelayCompleteInvocationInput {
+  output?: Record<string, unknown>;
+  error?: string;
+  durationMs?: number;
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────
@@ -527,6 +601,14 @@ export interface RelayReactionEvent {
   agentName: string;
 }
 
+export interface RelayActionInvokedEvent {
+  type: 'actionInvoked';
+  invocationId: string;
+  actionName: string;
+  callerName: string;
+  handlerAgentId: string;
+}
+
 export interface RelayConnectionEvent {
   type: 'connected' | 'disconnected' | 'error';
 }
@@ -555,6 +637,7 @@ export type RelayMessagingEvent =
   | RelayChannelMembershipEvent
   | RelayMessageReadEvent
   | RelayReactionEvent
+  | RelayActionInvokedEvent
   | RelayConnectionEvent
   | RelayReconnectEvent
   | RelayUnknownEvent;
@@ -582,6 +665,8 @@ export interface RelayMessagingClient {
     list(options?: RelayListAgentsOptions): Promise<RelayAgent[]>;
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
+    /** Resolve the identity of the agent the client is authenticated as. */
+    me(): Promise<RelayAgent>;
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;
     delete(name: string): Promise<void>;
     presence(): Promise<RelayAgentPresence[]>;
@@ -652,10 +737,35 @@ export interface RelayMessagingClient {
       delete(id: string): Promise<void>;
     };
   };
+  readonly webhooks: {
+    createInbound(input: RelayCreateInboundWebhookInput): Promise<RelayInboundWebhook>;
+    subscribe(input: RelaySubscribeInput): Promise<RelayWebhookSubscription>;
+    list(): Promise<RelayInboundWebhook[]>;
+    delete(webhookId: string): Promise<void>;
+    subscriptions(): Promise<RelayWebhookSubscription[]>;
+    unsubscribe(id: string): Promise<void>;
+  };
   readonly commands: {
     register(input: RelayRegisterCapabilityInput): Promise<RelayCapability>;
     list(): Promise<RelayCapability[]>;
     delete(command: string): Promise<void>;
+    /** True when the relay action surface (descriptor registry) is available. */
+    available(): boolean;
+    /**
+     * Fire-and-forget invoke of a registered action. Requires an agent-scoped
+     * connection; returns an immediate ack with the invocation id.
+     */
+    invoke(name: string, input?: Record<string, unknown>): Promise<RelayActionInvocationAck>;
+    /** Read an action invocation (including its input) by id. Agent-scoped. */
+    getInvocation(name: string, invocationId: string): Promise<RelayActionInvocation>;
+    /** Report a handler result for an invocation. Agent-scoped (handler agent). */
+    completeInvocation(
+      name: string,
+      invocationId: string,
+      data: RelayCompleteInvocationInput
+    ): Promise<RelayActionInvocation>;
+    /** True when this client carries an agent-scoped connection (can invoke/complete/subscribe). */
+    agentScoped(): boolean;
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;

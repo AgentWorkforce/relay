@@ -33,11 +33,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let paths = if cmd.persist || custom_state_dir.is_some() {
         ensure_runtime_paths(&runtime_cwd, &resolved_name, custom_state_dir.as_deref())?
     } else {
-        // Warn only if there is *actual broker state* in .agent-relay/ from a
+        // Warn only if there is *actual broker state* in .agentworkforce/relay/ from a
         // prior `--persist` run that could confuse this ephemeral run.
         //
-        // The SDK workflow runner ALWAYS writes .agent-relay/step-outputs/ and
-        // .agent-relay/team/worker-logs/ regardless of broker mode (those are
+        // The SDK workflow runner ALWAYS writes .agentworkforce/relay/step-outputs/ and
+        // .agentworkforce/relay/team/worker-logs/ regardless of broker mode (those are
         // durable artifacts, not broker state), so a bare directory check fires
         // on virtually every workflow run — a noisy false positive.
         //
@@ -45,9 +45,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         // (the persist-mode helper in runtime/paths.rs) writes it as
         // `state-{safe_name}.json`, where `safe_name` is the sanitized broker
         // name — so the exact filename varies by run. Glob for any
-        // `state-*.json` entry in `.agent-relay/` and surface every match so
+        // `state-*.json` entry in `.agentworkforce/relay/` and surface every match so
         // the user can see exactly what's stale regardless of broker name.
-        let stale_dir = runtime_cwd.join(".agent-relay");
+        let stale_dir = runtime_cwd.join(".agentworkforce/relay");
         let stale_state_files: Vec<PathBuf> = std::fs::read_dir(&stale_dir)
             .ok()
             .into_iter()

@@ -109,7 +109,7 @@
   "devDependencies": {
     "esbuild": "^0.27.2",
     "@types/node": "^22.19.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@agent-relay/config": "7.1.1",

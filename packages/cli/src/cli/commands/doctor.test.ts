@@ -178,7 +178,7 @@ function writeConnection(overrides: Partial<{ url: string; api_key: string; pid:
 
 beforeEach(() => {
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-test-'));
-  dataDir = path.join(tempRoot, '.agent-relay');
+  dataDir = path.join(tempRoot, '.agentworkforce/relay');
   process.env.AGENT_RELAY_STORAGE_TYPE = 'sqlite';
   process.env.AGENT_RELAY_STORAGE_PATH = path.join(dataDir, 'messages.sqlite');
   mockStore = new Map<string, string>();

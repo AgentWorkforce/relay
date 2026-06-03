@@ -57,7 +57,7 @@ jobs:
       matrix:
         # Node 25 excluded - better-sqlite3 doesn't have prebuilt binaries yet
         # and fails to compile with Node 25's V8 API changes
-        node-version: ['18', '20', '22.14.0', '24']
+        node-version: ['20', '22.14.0', '24']
       fail-fast: false
 
     container:

@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "id": "9cb79a81-f09b-4b58-9b91-05d6943f421b",
-  "timestamp": "2026-06-02T18:40:31.426Z",
+  "id": "df203e8b-b360-4f1d-9fae-7041a67b63d3",
+  "timestamp": "2026-06-02T14:37:31.938Z",
   "trajectory": "traj_flyb4fe5j3tl",
   "files": [
     {
@@ -15,7 +15,7 @@
             {
               "start_line": 1,
               "end_line": 19,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -32,7 +32,7 @@
             {
               "start_line": 150,
               "end_line": 160,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -49,7 +49,7 @@
             {
               "start_line": 146,
               "end_line": 156,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -66,7 +66,7 @@
             {
               "start_line": 27,
               "end_line": 80,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -83,24 +83,7 @@
             {
               "start_line": 223,
               "end_line": 233,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "web/app/llm.txt/route.ts",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 12,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -117,24 +100,7 @@
             {
               "start_line": 144,
               "end_line": 154,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "web/app/pear/opengraph-image.tsx",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 60,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -150,8 +116,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 477,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "end_line": 475,
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -168,7 +134,7 @@
             {
               "start_line": 1,
               "end_line": 680,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -185,7 +151,7 @@
             {
               "start_line": 262,
               "end_line": 272,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -202,7 +168,7 @@
             {
               "start_line": 145,
               "end_line": 155,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }
@@ -219,41 +185,7 @@
             {
               "start_line": 14,
               "end_line": 25,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "web/lib/og/template.tsx",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 821,
-              "end_line": 1040,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "web/next.config.mjs",
-      "conversations": [
-        {
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 53,
-              "end_line": 60,
-              "revision": "f45e456aa13c1392d5bb09bee767b5f9e964e2bb"
+              "revision": "f02a4ac8a08e264aafd36dfa08e8d8acd413f9d3"
             }
           ]
         }

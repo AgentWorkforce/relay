@@ -29,7 +29,7 @@ vi.mock('@agent-relay/cloud', () => ({
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
 }));
 
-vi.mock('@agent-relay/telemetry', () => ({
+vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
 

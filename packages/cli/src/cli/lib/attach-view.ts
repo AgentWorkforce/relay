@@ -90,10 +90,10 @@ function readConnectionFileFromDisk(stateDir: string): unknown {
 }
 
 function defaultStateDir(): string {
-  // Match the Rust broker's discovery convention: `.agent-relay/` under the
+  // Match the Rust broker's discovery convention: `.agentworkforce/relay/` under the
   // project root (resolved the same way the rest of the CLI does it).
   const projectRoot = getProjectPaths().projectRoot;
-  return path.join(projectRoot, '.agent-relay');
+  return path.join(projectRoot, '.agentworkforce/relay');
 }
 
 function withDefaults(overrides: Partial<ViewDependencies> = {}): ViewDependencies {
@@ -136,7 +136,7 @@ function readString(obj: unknown, key: string): string | undefined {
  *
  *  1. `--broker-url` / `--api-key` CLI flags
  *  2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *  3. `<state-dir>/connection.json` (default `.agent-relay/connection.json`)
+ *  3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
  *
  * Matches the resolution order used by `agent-relay-broker dump-pty` so users
  * don't have to learn two patterns.
@@ -224,7 +224,7 @@ export async function runViewSession(
   if (!connection) {
     deps.error(
       'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agent-relay/connection.json.'
+        'or run from a directory containing .agentworkforce/relay/connection.json.'
     );
     return 1;
   }
