@@ -695,6 +695,44 @@ function pickDashboardStaticDir(candidates: string[], deps: CoreDependencies): s
   return existingCandidates[0];
 }
 
+function getHomeDashboardRoot(deps: CoreDependencies): string {
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
+  return path.join(homeDir, '.agentworkforce/relay', 'dashboard');
+}
+
+function getPriorDashboardRoot(deps: CoreDependencies): string | null {
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
+  if (!homeDir) {
+    return null;
+  }
+  return path.join(homeDir, '.relay', 'dashboard');
+}
+
+function getDashboardRootFromBinary(dashboardBinary: string | null, deps: CoreDependencies): string | null {
+  if (!dashboardBinary || dashboardBinary.endsWith('.js') || dashboardBinary.endsWith('.ts')) {
+    return null;
+  }
+
+  const binaryDir = path.dirname(dashboardBinary);
+  if (path.basename(binaryDir) !== 'bin') {
+    return null;
+  }
+
+  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
+  const resolvedBinaryDir = path.resolve(binaryDir);
+  const ignoredBinDirs = [
+    homeDir ? path.join(homeDir, '.local', 'bin') : null,
+    path.join('/usr/local', 'bin'),
+  ]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .map((candidate) => path.resolve(candidate));
+  if (ignoredBinDirs.includes(resolvedBinaryDir)) {
+    return null;
+  }
+
+  return path.join(path.dirname(binaryDir), 'dashboard');
+}
+
 function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDependencies): string | null {
   const explicitStaticDir = deps.env.RELAY_DASHBOARD_STATIC_DIR ?? deps.env.STATIC_DIR;
   if (explicitStaticDir && explicitStaticDir.trim()) {
@@ -717,16 +755,17 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
     return pickDashboardStaticDir([dashboardServerOutDir, siblingDashboardOutDir], deps);
   }
 
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || '';
-  if (!homeDir) {
-    return null;
-  }
-
-  // Installs place UI assets under the install dir (~/.agentworkforce/relay/dashboard/out).
-  // ~/.relay/dashboard/out is read as a fallback for installs predating that move.
-  const installDashboardOutDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
-  const priorDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  return pickDashboardStaticDir([installDashboardOutDir, priorDashboardOutDir], deps);
+  // Installs place UI assets under the install dir (~/.agentworkforce/relay/dashboard/out
+  // by default, or next to a custom install's bin/ directory). ~/.relay/dashboard/out is
+  // read as a fallback for installs predating that move.
+  const installDashboardRoot = getDashboardRootFromBinary(dashboardBinary, deps);
+  const priorDashboardRoot = getPriorDashboardRoot(deps);
+  const candidates = [
+    installDashboardRoot ? path.join(installDashboardRoot, 'out') : null,
+    path.join(getHomeDashboardRoot(deps), 'out'),
+    priorDashboardRoot ? path.join(priorDashboardRoot, 'out') : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  return pickDashboardStaticDir(candidates, deps);
 }
 
 function normalizeLocalhostRelayUrl(relayUrl: string): string {
@@ -1035,9 +1074,9 @@ async function refreshDashboardAssetsIfStale(
     return;
   }
 
-  const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
-  const assetsDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
-  const versionFile = path.join(homeDir, '.agentworkforce/relay', 'dashboard', '.version');
+  const targetDir = getDashboardRootFromBinary(dashboardBinary, deps) ?? getHomeDashboardRoot(deps);
+  const assetsDir = path.join(targetDir, 'out');
+  const versionFile = path.join(targetDir, '.version');
 
   // Check if assets match the binary version
   try {
@@ -1059,7 +1098,6 @@ async function refreshDashboardAssetsIfStale(
 
   const uiUrl =
     'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
-  const targetDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard');
   let tempDir: string | undefined;
   let tempFile: string | undefined;
 

@@ -317,6 +317,27 @@ describe('registerCoreCommands', () => {
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
   });
 
+  it('up infers static-dir from a custom install-dir dashboard binary', async () => {
+    const installDir = '/opt/agent-relay';
+    const staticDir = `${installDir}/dashboard/out`;
+    const fs = createFsMock({
+      [staticDir]: '',
+      [`${staticDir}/index.html`]: '<html></html>',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: { HOME: '/Users/tester' },
+      dashboardBinary: `${installDir}/bin/relay-dashboard-server`,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
+  });
+
   it('up infers static-dir for prior ~/.relay dashboard layout (fallback)', async () => {
     const home = '/Users/tester';
     const staticDir = `${home}/.relay/dashboard/out`;
@@ -333,6 +354,38 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
+  });
+
+  it('up skips dashboard asset refresh when custom install-dir assets match binary version', async () => {
+    const installDir = '/opt/agent-relay';
+    const staticDir = `${installDir}/dashboard/out`;
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === `${JSON.stringify(`${installDir}/bin/relay-dashboard-server`)} --version`) {
+        return { stdout: '1.2.3\n', stderr: '' };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const fs = createFsMock({
+      [staticDir]: '',
+      [`${staticDir}/index.html`]: '<html></html>',
+      [`${installDir}/dashboard/.version`]: '1.2.3\n',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand,
+      env: { HOME: '/Users/tester' },
+      dashboardBinary: `${installDir}/bin/relay-dashboard-server`,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    expect(execCommand).toHaveBeenCalledWith(`${JSON.stringify(`${installDir}/bin/relay-dashboard-server`)} --version`);
+    expect(execCommand).not.toHaveBeenCalledWith(expect.stringContaining('curl -fsSL'));
+    expect(fs.rmSync).not.toHaveBeenCalledWith(staticDir, { recursive: true, force: true });
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0][1] as string[];
     expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
