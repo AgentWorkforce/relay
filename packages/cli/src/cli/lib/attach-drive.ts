@@ -51,6 +51,8 @@ import {
   type PtyInputStreamOptions,
   type PtyInputWriteResult,
 } from '../lib/attach-broker.js';
+import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
+import type { PredictiveEcho } from '@agent-relay/harness-driver';
 
 type ExitFn = (code: number) => never;
 
@@ -102,6 +104,8 @@ export interface CliPtyInputStream {
   waitUntilOpen(): Promise<void>;
   send(data: string): Promise<PtyInputWriteResult>;
   close(code?: number, reason?: string): void;
+  /** Smoothed input→ack RTT (ms), or null before the first ack. */
+  readonly srttMs?: number | null;
 }
 
 export interface DriveDependencies {
@@ -138,6 +142,11 @@ export interface DriveDependencies {
     name: string,
     options?: PtyInputStreamOptions
   ) => CliPtyInputStream;
+  /**
+   * Builds the adaptive predictive-echo engine, or returns null to disable
+   * it (degenerate terminal). Omitted by tests that want plain pass-through.
+   */
+  createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
 }
 
 function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependencies {
@@ -180,6 +189,7 @@ function withDefaults(overrides: Partial<DriveDependencies> = {}): DriveDependen
       },
     },
     openInputStream: (connection, name, options) => openPtyInputStream(connection, name, fetchFn, options),
+    createPredictiveEcho,
     ...overrides,
   };
 }
@@ -472,6 +482,10 @@ interface DriveSessionState {
   previousMode: InboundDeliveryMode | null;
   initialPending: number;
   initialTerminalRows: number | undefined;
+  /** Local terminal size at attach, for sizing the predictive-echo model. */
+  initialLocalSize: { rows: number; cols: number } | null;
+  /** Painted snapshot bytes, used to seed the predictive-echo model. */
+  snapshotBytes: string;
 }
 
 /**
@@ -500,6 +514,19 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
 
+    // Adaptive predictive echo masks round-trip latency on remote brokers.
+    // Seeded with the snapshot so its confirmed model matches the screen.
+    const predictiveEcho =
+      deps.createPredictiveEcho?.({
+        cols: state.initialLocalSize?.cols ?? 0,
+        rows: state.initialLocalSize?.rows ?? 0,
+        write: deps.writeChunk,
+        getInputSrtt: () => inputStream?.srttMs ?? null,
+      }) ?? null;
+    if (predictiveEcho) {
+      void predictiveEcho.seed(state.snapshotBytes);
+    }
+
     const paintStatus = (): void => {
       deps.writeChunk(
         renderStatusLine({
@@ -522,6 +549,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
+      predictiveEcho?.onResize(size.cols, size.rows);
       void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
           deps.log(`[drive] resize forward failed: ${res.message ?? 'unknown error'}`);
@@ -554,6 +582,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           const message = err instanceof Error ? err.message : String(err);
           deps.log(`[drive] input stream send failed: ${message}`);
         });
+        predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
         switch (action) {
@@ -630,6 +659,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
         }
       }
       teardownStdin();
+      predictiveEcho?.reset();
       closeInputStream();
       try {
         socket.close(1000, 'drive client exiting');
@@ -690,10 +720,17 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
-          deps.writeChunk(event.chunk);
-          // Repaint the status line so the worker's writes don't
-          // obscure it. Cheap — it's just an ANSI escape sequence.
-          paintStatus();
+          if (predictiveEcho) {
+            // The engine owns pass-through (it must restore the cursor
+            // before writing server bytes when predictions are live);
+            // repaint the status line once it has flushed.
+            void predictiveEcho.onServerOutput(event.chunk).then(paintStatus, paintStatus);
+          } else {
+            deps.writeChunk(event.chunk);
+            // Repaint the status line so the worker's writes don't
+            // obscure it. Cheap — it's just an ANSI escape sequence.
+            paintStatus();
+          }
           break;
         case 'delivery_queued':
           pending += 1;
@@ -750,9 +787,17 @@ export async function runDriveSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
+  // Tee the snapshot's painted bytes so we can seed the predictive-echo
+  // model with them — its cursor must match the real screen before we
+  // optimistically echo, or predicted glyphs land at the wrong position.
+  let snapshotBytes = '';
+  const captureWrite = (chunk: string): void => {
+    deps.writeChunk(chunk);
+    snapshotBytes += chunk;
+  };
   const snapshotResult = await captureInitialSnapshot(connection, name, previousMode, 'drive', 'drive', {
     fetch: deps.fetch,
-    writeChunk: deps.writeChunk,
+    writeChunk: captureWrite,
     log: deps.log,
     error: deps.error,
     captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
@@ -772,6 +817,8 @@ export async function runDriveSession(
       previousMode,
       initialPending,
       initialTerminalRows,
+      initialLocalSize,
+      snapshotBytes,
     },
     deps
   );

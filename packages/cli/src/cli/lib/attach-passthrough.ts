@@ -51,6 +51,8 @@ import {
   setInboundDeliveryMode,
   type InboundDeliveryMode,
 } from './attach-drive.js';
+import { createPredictiveEcho, type CreatePredictiveEchoOptions } from './predictive-echo-screen.js';
+import type { PredictiveEcho } from '@agent-relay/harness-driver';
 
 type ExitFn = (code: number) => never;
 
@@ -107,6 +109,11 @@ export interface PassthroughDependencies {
   terminal: PassthroughTerminal;
   /** Opens the SDK PTY input stream used for raw human keystrokes. */
   openInputStream: (connection: BrokerConnection, name: string) => CliPtyInputStream;
+  /**
+   * Builds the adaptive predictive-echo engine, or returns null to disable
+   * it (degenerate terminal). Omitted by tests that want plain pass-through.
+   */
+  createPredictiveEcho?: (opts: CreatePredictiveEchoOptions) => PredictiveEcho | null;
 }
 
 function withDefaults(overrides: Partial<PassthroughDependencies> = {}): PassthroughDependencies {
@@ -145,6 +152,7 @@ function withDefaults(overrides: Partial<PassthroughDependencies> = {}): Passthr
       },
     },
     openInputStream: (connection, name) => openPtyInputStream(connection, name, fetchFn),
+    createPredictiveEcho,
     ...overrides,
   };
 }
@@ -296,6 +304,14 @@ export async function runPassthroughSession(
   if (!flipResult) return 1;
   const { previousMode } = flipResult;
 
+  // Tee the snapshot's painted bytes so we can seed the predictive-echo
+  // model with them — its cursor must match the real screen before we
+  // optimistically echo, or predicted glyphs land at the wrong position.
+  let snapshotBytes = '';
+  const captureWrite = (chunk: string): void => {
+    deps.writeChunk(chunk);
+    snapshotBytes += chunk;
+  };
   const snapshotResult = await captureInitialSnapshot(
     connection,
     name,
@@ -304,7 +320,7 @@ export async function runPassthroughSession(
     'attach to',
     {
       fetch: deps.fetch,
-      writeChunk: deps.writeChunk,
+      writeChunk: captureWrite,
       log: deps.log,
       error: deps.error,
       captureAndRenderSnapshot: deps.captureAndRenderSnapshot,
@@ -338,10 +354,24 @@ export async function runPassthroughSession(
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
 
+    // Adaptive predictive echo masks round-trip latency on remote brokers.
+    // Seeded with the snapshot so its confirmed model matches the screen.
+    const predictiveEcho =
+      deps.createPredictiveEcho?.({
+        cols: initialLocalSize?.cols ?? 0,
+        rows: initialLocalSize?.rows ?? 0,
+        write: deps.writeChunk,
+        getInputSrtt: () => inputStream?.srttMs ?? null,
+      }) ?? null;
+    if (predictiveEcho) {
+      void predictiveEcho.seed(snapshotBytes);
+    }
+
     const resizeHandler = (): void => {
       const size = deps.terminal.getSize();
       if (!size) return;
       terminalRows = size.rows;
+      predictiveEcho?.onResize(size.cols, size.rows);
       void resizeWorker(connection, name, size.rows, size.cols, deps.fetch).then((res) => {
         if (!res.ok) {
           deps.log(`[passthrough] resize forward failed: ${res.message ?? 'unknown error'}`);
@@ -363,6 +393,7 @@ export async function runPassthroughSession(
           const message = err instanceof Error ? err.message : String(err);
           deps.log(`[passthrough] input stream send failed: ${message}`);
         });
+        predictiveEcho?.onUserInput(outcome.forward);
       }
       for (const action of outcome.actions) {
         switch (action) {
@@ -432,6 +463,7 @@ export async function runPassthroughSession(
         }
       }
       teardownStdin();
+      predictiveEcho?.reset();
       closeInputStream();
       try {
         socket.close(1000, 'passthrough client exiting');
@@ -486,8 +518,15 @@ export async function runPassthroughSession(
       const event = classifyWsEvent(text, name);
       switch (event.kind) {
         case 'worker_stream':
-          deps.writeChunk(event.chunk);
-          paintStatus();
+          if (predictiveEcho) {
+            // The engine owns pass-through (it must restore the cursor
+            // before writing server bytes when predictions are live);
+            // repaint the status line once it has flushed.
+            void predictiveEcho.onServerOutput(event.chunk).then(paintStatus, paintStatus);
+          } else {
+            deps.writeChunk(event.chunk);
+            paintStatus();
+          }
           break;
         case 'other':
           break;

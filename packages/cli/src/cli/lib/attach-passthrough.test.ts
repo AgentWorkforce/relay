@@ -157,6 +157,34 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /** When set, inject this fake engine via the createPredictiveEcho factory. */
+  predictiveEcho?: FakePredictiveEcho;
+}
+
+/** Records the calls the session routes into the predictive-echo engine. */
+class FakePredictiveEcho {
+  readonly seeded: string[] = [];
+  readonly inputs: string[] = [];
+  readonly outputs: string[] = [];
+  resetCount = 0;
+
+  async seed(data: string): Promise<void> {
+    this.seeded.push(data);
+  }
+
+  onUserInput(forward: Buffer): void {
+    this.inputs.push(forward.toString('utf-8'));
+  }
+
+  async onServerOutput(chunk: string): Promise<void> {
+    this.outputs.push(chunk);
+  }
+
+  onResize(): void {}
+
+  reset(): void {
+    this.resetCount += 1;
+  }
 }
 
 function createHarness(opts: FetchScript = {}): {
@@ -170,6 +198,7 @@ function createHarness(opts: FetchScript = {}): {
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   fetchLog: Array<{ url: string; method: string; body?: unknown; headers: Record<string, string> }>;
   inputStreams: FakeInputStream[];
+  predictiveEcho?: FakePredictiveEcho;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
@@ -301,9 +330,22 @@ function createHarness(opts: FetchScript = {}): {
       inputStreams.push(stream);
       return stream;
     }),
+    createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
   };
 
-  return { deps, stdin, terminal, sockets, writes, errors, logs, signals, fetchLog, inputStreams };
+  return {
+    deps,
+    stdin,
+    terminal,
+    sockets,
+    writes,
+    errors,
+    logs,
+    signals,
+    fetchLog,
+    inputStreams,
+    predictiveEcho: opts.predictiveEcho,
+  };
 }
 
 afterEach(() => {
@@ -625,6 +667,33 @@ describe('runPassthroughSession', () => {
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
+  });
+
+  // ---- predictive-echo wiring ----
+
+  it('seeds the engine with the snapshot and routes input + output through it', async () => {
+    const fake = new FakePredictiveEcho();
+    const { deps, sockets, stdin } = createHarness({ predictiveEcho: fake });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+
+    // Snapshot bytes seeded the confirmed model.
+    expect(fake.seeded.length).toBe(1);
+
+    // Live output is routed through the engine (it owns pass-through), not
+    // written directly.
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fake.outputs).toContain('live');
+
+    // Keystrokes are mirrored to the engine for optimistic echo.
+    stdin.type(Buffer.from('hi'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fake.inputs).toContain('hi');
+
+    stdin.type(Buffer.from([0x03])); // Ctrl+C detach
+    await sessionPromise;
+    expect(fake.resetCount).toBe(1);
   });
 
   it('skips resize forwarding when stdout is not a TTY', async () => {

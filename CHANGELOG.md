@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay drive` and `agent-relay passthrough` add mosh-style adaptive predictive echo: printable keystrokes echo locally (underlined until the server confirms them) so typing stays responsive on high-latency/remote brokers, and stays invisible on fast local links. Reconciles against authoritative output and suspends on full-screen TUIs.
+- `@agent-relay/harness-driver` exports the host-agnostic `PredictiveEchoEngine` (with `ScreenModel`/`PredictiveEcho` contracts) so any attach UI — the CLI's headless-xterm host, or an Electron host backing it with a live `@xterm/xterm` terminal — can reuse one predictive-echo implementation. Accepts `string | Uint8Array` input and uses no Node-only APIs, so it runs in a browser/renderer.
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace client now receives all workspace-visible events: `events.connect()` opens the relaycast 2.5 workspace stream when no agent client is present, so the documented `relay.addListener('message.created', ...)` quickstart path streams without registering an agent.
 - `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/harness-driver`.
 - `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
@@ -37,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent-relay-broker` streams interactive PTY output on a ~16ms leading-edge flush (was a fixed 100ms coalescing window), so keystroke echo and live output feel smooth instead of arriving in batches; bulk output still coalesces by size.
+- `@agent-relay/harness-driver` pipelines PTY input over its WebSocket stream (FIFO, settled by ack) instead of stop-and-wait, removing one round-trip of latency per keystroke when driving a remote agent.
 - Relay stores per-project runtime state in `.agentworkforce/relay/` (was `.agent-relay/`), and the global data/log home moves from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`. The `~/.config/agent-relay` config directory is unchanged.
 - `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
 - Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.

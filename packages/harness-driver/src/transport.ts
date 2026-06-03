@@ -62,6 +62,8 @@ interface PendingPtyInput {
   resolve: (result: PtyInputWriteResult) => void;
   reject: (error: Error) => void;
   settled: boolean;
+  /** Epoch ms the frame was handed to the WebSocket; used for ack-RTT. */
+  sentAt?: number;
 }
 
 const DEFAULT_INPUT_HIGH_WATER_MARK_BYTES = 1024 * 1024;
@@ -75,11 +77,19 @@ export class PtyInputStream {
   private openResolve?: () => void;
   private openReject?: (error: Error) => void;
   private openTimer: ReturnType<typeof setTimeout> | null = null;
-  private inFlight: PendingPtyInput | null = null;
+  /**
+   * Frames sent over the WebSocket and awaiting their `pty_input_ack`, in
+   * send order. Pipelined rather than stop-and-wait: queued keystrokes are
+   * all sent eagerly (TCP preserves order) and settled FIFO as acks arrive,
+   * so interactive input never pays one round-trip per keystroke.
+   */
+  private readonly inFlight: PendingPtyInput[] = [];
   private bufferedBytes = 0;
   private opened = false;
   private _closed = false;
   private flushing = false;
+  /** EWMA of input→ack round-trip in ms, or null before the first ack. */
+  private _srttMs: number | null = null;
 
   constructor(options: { url: string; apiKey?: string } & PtyInputStreamOptions) {
     this.highWaterMarkBytes = normalizePositiveIntegerOption(
@@ -157,6 +167,21 @@ export class PtyInputStream {
     return this.bufferedBytes;
   }
 
+  /**
+   * Smoothed input→ack round-trip in ms, or null before the first ack.
+   * Cheap latency signal for adaptive predictive echo to bootstrap from
+   * before it has measured its own echo-confirmation latency.
+   */
+  get srttMs(): number | null {
+    return this._srttMs;
+  }
+
+  private recordAckRtt(sampleMs: number): void {
+    if (!Number.isFinite(sampleMs) || sampleMs < 0) return;
+    // Standard RFC 6298-style EWMA (alpha = 1/8).
+    this._srttMs = this._srttMs === null ? sampleMs : this._srttMs * 0.875 + sampleMs * 0.125;
+  }
+
   waitUntilOpen(): Promise<void> {
     return this.openPromise;
   }
@@ -214,7 +239,7 @@ export class PtyInputStream {
   }
 
   private async flush(): Promise<void> {
-    if (this.flushing || this.inFlight || this.queue.length === 0 || this._closed) {
+    if (this.flushing || this.queue.length === 0 || this._closed) {
       return;
     }
     this.flushing = true;
@@ -227,27 +252,29 @@ export class PtyInputStream {
       this.flushing = false;
     }
 
-    if (this.inFlight || this.queue.length === 0 || this._closed) {
-      return;
-    }
-
-    const next = this.queue.shift();
-    if (!next) return;
-    this.inFlight = next;
-    this.ws.send(next.data, (error) => {
-      if (!error) return;
-      if (this.inFlight === next) {
-        this.inFlight = null;
-      }
-      const protocolError = new HarnessDriverProtocolError({
-        code: 'input_stream_send_failed',
-        message: error.message,
-        retryable: true,
-        data: error,
+    // Drain the entire queue in one synchronous pass — no `await` between
+    // here and the loop's end, so a concurrent `flush()` can't interleave.
+    while (this.queue.length > 0 && !this._closed) {
+      const next = this.queue.shift();
+      if (!next) break;
+      next.sentAt = Date.now();
+      this.inFlight.push(next);
+      this.ws.send(next.data, (error) => {
+        if (!error) return;
+        const idx = this.inFlight.indexOf(next);
+        if (idx !== -1) {
+          this.inFlight.splice(idx, 1);
+        }
+        const protocolError = new HarnessDriverProtocolError({
+          code: 'input_stream_send_failed',
+          message: error.message,
+          retryable: true,
+          data: error,
+        });
+        this.settle(next, protocolError);
+        this.failAll(protocolError);
       });
-      this.settle(next, protocolError);
-      this.failAll(protocolError);
-    });
+    }
   }
 
   private handleMessage(data: RawData): void {
@@ -272,14 +299,16 @@ export class PtyInputStream {
     }
 
     if (type === 'pty_input_ack') {
-      const current = this.inFlight;
+      // Acks arrive in send order; settle the oldest outstanding frame.
+      const current = this.inFlight.shift();
       if (!current) return;
-      this.inFlight = null;
+      if (typeof current.sentAt === 'number') {
+        this.recordAckRtt(Date.now() - current.sentAt);
+      }
       this.settle(current, {
         name: typeof message.name === 'string' ? message.name : '',
         bytes_written: typeof message.bytes_written === 'number' ? message.bytes_written : current.bytes,
       });
-      this.flush();
       return;
     }
 
@@ -309,9 +338,9 @@ export class PtyInputStream {
   }
 
   private failAll(error: Error): void {
-    if (this.inFlight) {
-      this.settle(this.inFlight, error);
-      this.inFlight = null;
+    while (this.inFlight.length > 0) {
+      const item = this.inFlight.shift();
+      if (item) this.settle(item, error);
     }
     while (this.queue.length > 0) {
       const item = this.queue.shift();

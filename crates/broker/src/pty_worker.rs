@@ -353,12 +353,26 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // across chunks; the decoder holds incomplete trailing bytes for the
     // next chunk instead of corrupting them into U+FFFD.
     let mut utf8_decoder = Utf8StreamDecoder::new();
-    // Rate-limited buffering for worker_stream emissions.
-    // Chunks are accumulated and flushed at most every 100ms or when buffer exceeds threshold.
+    // Coalesced buffering for worker_stream emissions, tuned for
+    // interactive (`drive`/`passthrough`) latency. Output flushes on a
+    // leading edge — the first chunk after an idle gap goes out
+    // immediately — then coalesces at ~60Hz during sustained bursts, or
+    // sooner when the buffer crosses the size cap. A trailing flush is
+    // armed via `stream_flush_deadline` so the last chunk of a burst
+    // reaches the client within one interval instead of waiting on a
+    // slower housekeeping tick. The size cap protects the heavy-output
+    // path (large dumps flush by size, not time), so the short interval
+    // only multiplies frame count for light interactive load, where the
+    // volume is negligible.
     let mut stream_buffer = String::new();
     let mut stream_buffer_last_flush = Instant::now();
     const STREAM_BUFFER_MAX: usize = 4096;
-    const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+    const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+    // Armed only while output is buffered mid-burst; when `None` the
+    // corresponding select arm parks on `pending()` so idle workers incur
+    // no extra timer wakeups. Declared before the macro so the macro's
+    // mixed-site hygiene resolves it.
+    let mut stream_flush_deadline: Option<tokio::time::Instant> = None;
 
     /// Flush `stream_buffer` via a `worker_stream` frame if non-empty.
     macro_rules! flush_stream_buffer {
@@ -371,6 +385,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 })).await;
                 stream_buffer_last_flush = Instant::now();
             }
+            stream_flush_deadline = None;
         };
     }
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
@@ -694,7 +709,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if stream_buffer.len() >= STREAM_BUFFER_MAX
                             || stream_buffer_last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
                         {
+                            // Size cap hit, or the leading edge after an idle
+                            // gap — flush now so interactive echo isn't held.
                             flush_stream_buffer!();
+                        } else if stream_flush_deadline.is_none() {
+                            // Mid-burst: arm a trailing flush so the tail of
+                            // this burst lands within one interval.
+                            stream_flush_deadline =
+                                Some(tokio::time::Instant::now() + STREAM_FLUSH_INTERVAL);
                         }
 
                         if pending_verifications.is_empty()
@@ -922,6 +944,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         running = false;
                     }
                 }
+            }
+
+            // Trailing flush for the tail of an output burst. Parks on
+            // `pending()` (never wakes) whenever no flush is armed.
+            _ = async {
+                match stream_flush_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            }, if stream_flush_deadline.is_some() => {
+                flush_stream_buffer!();
             }
 
             _ = pending_injection_interval.tick() => {
