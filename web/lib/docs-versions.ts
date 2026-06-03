@@ -8,48 +8,51 @@ export interface DocsVersion {
   shortLabel: string;
 }
 
+// v8 is the default, served at the bare `/docs` path.
+// v7.1.1 is archived under `/docs/7.1.1` and reachable from the version dropdown.
 export const docsVersions: DocsVersion[] = [
-  { id: 'v7.1.1', label: 'v7.1.1 (latest)', shortLabel: 'v7.1.1' },
-  { id: 'v8', label: 'v8.0.0 (preview)', shortLabel: 'v8.0.0' },
+  { id: 'v8', label: 'v8.0.0 (latest)', shortLabel: 'v8.0.0' },
+  { id: 'v7.1.1', label: 'v7.1.1', shortLabel: 'v7.1.1' },
 ];
 
-export const currentDocsVersion: DocsVersionId = 'v7.1.1';
+export const currentDocsVersion: DocsVersionId = 'v8';
 export const legacyDocsBasePath = '/docs/7.1.1';
-export const v8DocsBasePath = '/docs/8.0.0';
+export const v8DocsBasePath = '/docs';
+const legacyV8DocsBasePath = '/docs/8.0.0';
 
 function normalizePathname(pathname: string): string {
   const pathOnly = pathname.split('?')[0].split('#')[0].replace(/\/+$/, '');
   return pathOnly || '/docs';
 }
 
+function isLegacyPath(normalized: string): boolean {
+  return normalized === legacyDocsBasePath || normalized.startsWith(`${legacyDocsBasePath}/`);
+}
+
 export function getDocsVersionForPath(pathname: string): DocsVersionId {
   const normalized = normalizePathname(pathname);
 
-  if (normalized.startsWith(v8DocsBasePath)) {
-    return 'v8';
-  }
-
-  if (normalized.startsWith(legacyDocsBasePath)) {
+  if (isLegacyPath(normalized)) {
     return 'v7.1.1';
   }
 
   const slug = getDocsSlugFromPath(normalized);
-  if (legacyDocsSlugs.includes(slug)) {
-    return 'v7.1.1';
+  if (currentDocsSlugs.includes(slug)) {
+    return 'v8';
   }
 
-  return currentDocsSlugs.includes(slug) ? 'v8' : currentDocsVersion;
+  return legacyDocsSlugs.includes(slug) ? 'v7.1.1' : currentDocsVersion;
 }
 
 function getDocsSlugFromPath(pathname: string): string {
   const normalized = normalizePathname(pathname);
 
-  if (normalized === '/docs' || normalized === legacyDocsBasePath || normalized === v8DocsBasePath) {
+  if (normalized === '/docs' || normalized === legacyDocsBasePath || normalized === legacyV8DocsBasePath) {
     return 'introduction';
   }
 
-  if (normalized.startsWith(`${v8DocsBasePath}/`)) {
-    return normalized.slice(`${v8DocsBasePath}/`.length).split('/')[0] || 'introduction';
+  if (normalized.startsWith(`${legacyV8DocsBasePath}/`)) {
+    return normalized.slice(`${legacyV8DocsBasePath}/`.length).split('/')[0] || 'introduction';
   }
 
   if (normalized.startsWith(`${legacyDocsBasePath}/`)) {
@@ -67,16 +70,18 @@ export function getDocsVersionHref(version: DocsVersionId, pathname: string): st
   const slug = getDocsSlugFromPath(pathname);
 
   if (version === 'v7.1.1') {
-    return legacyDocsSlugs.includes(slug) ? `/docs/${slug}` : '/docs/introduction';
+    return legacyDocsSlugs.includes(slug)
+      ? `${legacyDocsBasePath}/${slug}`
+      : `${legacyDocsBasePath}/introduction`;
   }
 
   return currentDocsSlugs.includes(slug) ? `${v8DocsBasePath}/${slug}` : `${v8DocsBasePath}/introduction`;
 }
 
 export function getDefaultDocsVersionForSlug(slug: string): DocsVersionId {
-  if (legacyDocsSlugs.includes(slug)) {
-    return 'v7.1.1';
+  if (currentDocsSlugs.includes(slug)) {
+    return 'v8';
   }
 
-  return currentDocsSlugs.includes(slug) ? 'v8' : currentDocsVersion;
+  return legacyDocsSlugs.includes(slug) ? 'v7.1.1' : currentDocsVersion;
 }
