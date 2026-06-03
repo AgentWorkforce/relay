@@ -1009,8 +1009,8 @@ export function PearVariant({
             maxWidth: 480,
           }}
         >
-          A desktop workspace where AI coding agents run in their own terminals, talk to each other, and
-          bring every diff back to you.
+          A desktop workspace where AI coding agents run in their own terminals, talk to each other, and bring
+          every diff back to you.
         </div>
       </div>
 
