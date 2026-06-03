@@ -152,18 +152,4 @@ describe('AgentRelay facade (Phase A)', () => {
     );
   });
 
-  it('notify returns a handler that DMs the target', async () => {
-    const { messaging, messages } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
-
-    const handler = relay.notify(
-      { name: 'taskManager' },
-      { type: 'agent.status.idle', subject: { handle: 'engineer' } }
-    );
-    await handler();
-
-    expect(messages.direct).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'taskManager', text: '[agent.status.idle] @engineer' })
-    );
-  });
 });

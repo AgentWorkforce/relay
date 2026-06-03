@@ -10,15 +10,12 @@ import {
 } from './messaging/index.js';
 import {
   createEnrichedMessages,
-  createNotifyHandler,
   createWorkspaceFacade,
   registerFacadeAction,
   resolveAgentToken,
   type AgentLike,
   type EnrichedMessages,
   type MessagingResolver,
-  type NotifyHandler,
-  type NotifyOptions,
   type RegisterActionInput,
   type RelayAgentClient,
   type RelaySendMessageInput,
@@ -67,8 +64,6 @@ export interface AgentRelayAgent {
   readonly workspace: RelayWorkspace;
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
-  notify(target: AgentLike, options: NotifyOptions): NotifyHandler;
-  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
@@ -203,14 +198,6 @@ export class AgentRelay implements AgentRelayAgent {
     return registerFacadeAction(this.actions, def);
   }
 
-  notify(target: AgentLike, options: NotifyOptions): NotifyHandler {
-    return createNotifyHandler(this.messages, target, options);
-  }
-
-  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void {
-    return this.listenerHub.on(predicate, handler);
-  }
-
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void {
     return this.listenerHub.addListener(selector, handler);
@@ -281,8 +268,6 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     workspace: createWorkspaceFacade(messaging),
     sendMessage: (input) => messages.send(input),
     registerAction: (def) => registerFacadeAction(actions, def),
-    notify: (target, options) => createNotifyHandler(messages, target, options),
-    on: (predicate, handler) => hub.on(predicate, handler),
     addListener: (selector, handler) => hub.addListener(selector, handler),
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),

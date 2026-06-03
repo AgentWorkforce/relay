@@ -55,6 +55,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780462668057,
+          "type": "decision",
+          "content": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.: Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+          "raw": {
+            "question": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+            "chosen": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }
