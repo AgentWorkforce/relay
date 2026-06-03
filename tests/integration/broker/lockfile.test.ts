@@ -366,7 +366,11 @@ test('lockfile: stale lock from dead process is recovered', { timeout: 30_000 },
 
     // PID file and lock should still exist (stale)
     const pidPath = path.join(cwd, '.agentworkforce/relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
-    const lockPath = path.join(cwd, '.agentworkforce/relay', `broker-${brokerNameForDir(cwd, 'locktest')}.lock`);
+    const lockPath = path.join(
+      cwd,
+      '.agentworkforce/relay',
+      `broker-${brokerNameForDir(cwd, 'locktest')}.lock`
+    );
     assert.ok(fs.existsSync(pidPath), 'PID file should persist after SIGKILL');
     assert.ok(fs.existsSync(lockPath), 'Lock file should persist after SIGKILL');
 
@@ -567,7 +571,11 @@ test(
     if (skipIfMissing(t)) return;
     const apiKey = await ensureApiKey();
     const cwd = makeTempDir();
-    const lockPath = path.join(cwd, '.agentworkforce/relay', `broker-${brokerNameForDir(cwd, 'locktest')}.lock`);
+    const lockPath = path.join(
+      cwd,
+      '.agentworkforce/relay',
+      `broker-${brokerNameForDir(cwd, 'locktest')}.lock`
+    );
     const pidPath = path.join(cwd, '.agentworkforce/relay', brokerPidFile(brokerNameForDir(cwd, 'locktest')));
 
     try {

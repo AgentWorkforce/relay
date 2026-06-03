@@ -46,7 +46,10 @@ export interface TeamsConfig {
  * Possible locations for teams.json (in order of precedence)
  */
 function getTeamsConfigPaths(projectRoot: string): string[] {
-  return [path.join(projectRoot, '.agentworkforce/relay', 'teams.json'), path.join(projectRoot, 'teams.json')];
+  return [
+    path.join(projectRoot, '.agentworkforce/relay', 'teams.json'),
+    path.join(projectRoot, 'teams.json'),
+  ];
 }
 
 /**

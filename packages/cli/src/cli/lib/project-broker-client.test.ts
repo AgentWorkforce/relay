@@ -22,7 +22,9 @@ describe('project broker client resolution', () => {
     const { connectProjectBrokerClient, getProjectBrokerConnectionPath } =
       await import('./project-broker-client.js');
 
-    expect(getProjectBrokerConnectionPath('/tmp/project')).toBe('/tmp/project/.agentworkforce/relay/connection.json');
+    expect(getProjectBrokerConnectionPath('/tmp/project')).toBe(
+      '/tmp/project/.agentworkforce/relay/connection.json'
+    );
     expect(connectProjectBrokerClient('/tmp/project')).toBe(client);
     expect(connectMock).toHaveBeenCalledWith({
       cwd: '/tmp/project',

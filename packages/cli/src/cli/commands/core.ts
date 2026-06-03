@@ -341,7 +341,10 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .option('--foreground', 'Run --no-dashboard attached to this terminal')
     .option('--verbose', 'Enable verbose logging')
     .option('--workspace-key <key>', 'Use a pre-established Relaycast workspace key')
-    .option('--state-dir <path>', 'Directory for broker state and connection files (default: .agentworkforce/relay/)')
+    .option(
+      '--state-dir <path>',
+      'Directory for broker state and connection files (default: .agentworkforce/relay/)'
+    )
     .option('--broker-name <name>', 'Override the broker name (defaults to project directory basename)')
     .action(
       async (options: {

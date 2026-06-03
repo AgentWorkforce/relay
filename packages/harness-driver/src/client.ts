@@ -384,7 +384,8 @@ export class HarnessDriverClient {
     const cwd = options?.cwd ?? process.cwd();
     const stateDir = process.env.AGENT_RELAY_STATE_DIR;
     const connPath =
-      options?.connectionPath ?? path.join(stateDir ?? path.join(cwd, '.agentworkforce/relay'), 'connection.json');
+      options?.connectionPath ??
+      path.join(stateDir ?? path.join(cwd, '.agentworkforce/relay'), 'connection.json');
 
     if (!existsSync(connPath)) {
       throw new Error(
