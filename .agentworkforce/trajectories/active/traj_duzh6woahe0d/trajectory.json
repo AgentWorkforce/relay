@@ -31,6 +31,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780461977469,
+          "type": "decision",
+          "content": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs: Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+          "raw": {
+            "question": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+            "chosen": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }

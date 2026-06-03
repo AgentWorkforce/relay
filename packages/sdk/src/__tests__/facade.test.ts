@@ -9,6 +9,7 @@ function createMessagingMock() {
     direct: vi.fn(async (input: unknown) => ({ id: 'd1', text: '', from: {}, ...((input as object) ?? {}) })),
     reply: vi.fn(async (input: unknown) => ({ id: 'r1', text: '', from: {}, ...((input as object) ?? {}) })),
     react: vi.fn(async (messageId: string, emoji: string) => ({ emoji, count: 1, agents: [] })),
+    groupDirect: vi.fn(async (input: unknown) => ({ id: 'g1', text: '', from: {}, ...((input as object) ?? {}) })),
   };
   const agents = {
     register: vi.fn(async (input: { name: string }) => ({
@@ -78,6 +79,16 @@ describe('AgentRelay facade (Phase A)', () => {
     await relay.sendMessage({ to: 'engineer', msg: 'hello agent' });
     expect(messages.direct).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'engineer', text: 'hello agent' })
+    );
+  });
+
+  it('sendMessage routes an array of handles to a group DM', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+
+    await relay.sendMessage({ to: ['@alice', '@bob'], text: 'group hello' });
+    expect(messages.groupDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ participants: ['alice', 'bob'], text: 'group hello' })
     );
   });
 

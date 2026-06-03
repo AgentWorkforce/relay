@@ -92,7 +92,8 @@ function resolveMessageId(ref: string | { id?: string; threadId?: string } | und
 }
 
 export interface RelaySendMessageInput {
-  to: string;
+  /** `#channel`, `@handle` (DM), or an array of `@handle`s (group DM). */
+  to: string | string[];
   from?: AgentLike;
   text?: string;
   /** README shorthand for `text`. */
@@ -223,6 +224,15 @@ export function createEnrichedMessages(
     const sendInput = input as RelaySendMessageInput;
     const messages = resolveFrom(sendInput.from);
     const text = buildText(sendInput.text ?? sendInput.msg, sendInput.mentions);
+    if (Array.isArray(sendInput.to)) {
+      return messages.groupDirect({
+        participants: sendInput.to.map(resolveAgentName),
+        text,
+        attachments: sendInput.attachments,
+        mode: sendInput.mode,
+        idempotencyKey: sendInput.idempotencyKey,
+      });
+    }
     if (isChannelTarget(sendInput.to)) {
       return messages.send({
         channel: stripSigil(sendInput.to),

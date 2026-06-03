@@ -221,20 +221,6 @@ export class AgentRelay implements AgentRelayAgent {
     this.listenerHub.emitSessionEvent(agentId, event);
   }
 
-  /** @deprecated Use `workspace.register(...)` / `workspace.reconnect(...)`, which return the live client. */
-  as(agent: RelayAgentRegistration | { token: string } | string): AgentRelayAgent {
-    const token = typeof agent === 'string' ? agent : agent.token;
-    return agentRelayAgent(
-      new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token }),
-      this.actions
-    );
-  }
-
-  /** @deprecated Use `workspace.reconnect({ apiToken })`. */
-  asAgent(agentToken: string): AgentRelayAgent {
-    return this.as(agentToken);
-  }
-
   private messagingForToken(token: string): RelayMessaging {
     let client = this.clientsByToken.get(token);
     if (!client) {
