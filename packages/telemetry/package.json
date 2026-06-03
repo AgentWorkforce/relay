@@ -1,36 +1,14 @@
 {
   "name": "@agent-relay/telemetry",
   "version": "7.1.1",
-  "description": "Anonymous telemetry for Agent Relay usage analytics",
+  "description": "Deprecated Agent Relay telemetry package placeholder",
+  "private": true,
+  "deprecated": "@agent-relay/telemetry is deprecated. Telemetry is now internal to the agent-relay CLI.",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
-    "build": "tsc",
+    "build": "echo '@agent-relay/telemetry is deprecated; telemetry now lives inside the agent-relay CLI.'",
     "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "posthog-node": "^5.29.2"
-  },
-  "devDependencies": {
-    "@types/node": "^22.19.3",
-    "vitest": "^4.1.0"
-  },
-  "publishConfig": {
-    "access": "public"
+    "test": "echo '@agent-relay/telemetry is deprecated; no package tests to run.'"
   },
   "repository": {
     "type": "git",

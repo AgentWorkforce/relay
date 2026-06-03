@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { track } from '@agent-relay/telemetry';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 

@@ -21,6 +21,12 @@
 /** Source of spawn/release action */
 export type ActionSource = 'human_cli' | 'human_dashboard' | 'agent' | 'protocol';
 
+/** Component that emitted the telemetry event. */
+export type TelemetryApp = 'cli' | 'broker' | 'sdk' | 'relaycast-server' | 'dashboard' | 'unknown';
+
+/** User-facing product surface responsible for the event. */
+export type TelemetrySurface = 'cli' | 'broker' | 'sdk' | 'cloud' | 'mcp' | 'dashboard' | 'unknown';
+
 /**
  * Reason for agent release.
  *
@@ -53,6 +59,12 @@ export type ReleaseReason = string;
  *     broker-originated events.
  */
 export interface CommonProperties {
+  /** Component that emitted the event, e.g. `cli`, `broker`, `sdk`. */
+  app: TelemetryApp | string;
+  /** Product surface responsible for the event, e.g. `cli`, `sdk`, `cloud`. */
+  surface: TelemetrySurface | string;
+  /** Parent harness driving Agent Relay, e.g. `claude-code`, `codex`, `cursor`, or `unknown`. */
+  orchestrator_harness: string;
   /** Back-compat alias — same value as the emitter's primary version. */
   agent_relay_version: string;
   /** `agent-relay` CLI version, if known to the emitter. */

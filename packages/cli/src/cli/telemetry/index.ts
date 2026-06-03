@@ -1,5 +1,5 @@
 /**
- * @agent-relay/telemetry - Anonymous usage analytics (opt-out via env or CLI)
+ * CLI telemetry internals - usage analytics (opt-out via env or CLI)
  */
 
 export {
@@ -7,7 +7,7 @@ export {
   track,
   shutdown,
   isEnabled,
-  getAnonymousId,
+  getDistinctId,
   getStatus,
   type InitTelemetryOptions,
 } from './client.js';
@@ -28,6 +28,8 @@ export {
 export type {
   CommonProperties,
   ActionSource,
+  TelemetryApp,
+  TelemetrySurface,
   ReleaseReason,
   WorkflowFileType,
   BrokerStartEvent,
@@ -50,4 +52,14 @@ export type {
   TelemetryEventMap,
 } from './events.js';
 
-export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';
+export { loadMachineId, createDistinctId, getMachineIdPath } from './machine-id.js';
+
+export {
+  ORCHESTRATOR_HARNESS_ENV,
+  UNKNOWN_ORCHESTRATOR_HARNESS,
+  detectOrchestratorHarness,
+  inferHarnessFromCommand,
+  sanitizeOrchestratorHarness,
+  type DetectOrchestratorHarnessOptions,
+  type ProcessInfo,
+} from './orchestrator-harness.js';

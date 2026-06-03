@@ -1,4 +1,5 @@
 import { REFRESH_WINDOW_MS } from './types.js';
+import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 
 export type CloudApiClientOptions = {
   apiUrl: string;
@@ -157,7 +158,7 @@ export class CloudApiClient {
   private buildHeaders(headers: HeaderInput | undefined): Headers {
     const merged = new Headers(headers);
     merged.set('Authorization', `Bearer ${this.accessToken}`);
-    return merged;
+    return appendAgentRelayTelemetryHeaders(merged);
   }
 
   private shouldRefresh(): boolean {

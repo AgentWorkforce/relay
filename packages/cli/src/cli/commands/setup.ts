@@ -1,6 +1,6 @@
 import { Command } from 'commander';
-import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '@agent-relay/telemetry';
 import { defaultExit } from '../lib/exit.js';
+import { enableTelemetry, disableTelemetry, getStatus, isDisabledByEnv } from '../telemetry/index.js';
 
 type ExitFn = (code: number) => never;
 
@@ -40,7 +40,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
     }
     enableTelemetry();
     io.log('Telemetry enabled');
-    io.log('Anonymous usage data will be collected to improve Agent Relay.');
+    io.log('Usage telemetry will be collected to improve Agent Relay.');
     return;
   }
   if (action === 'disable') {
@@ -56,7 +56,7 @@ function runTelemetryDefault(action: string | undefined, io: SetupIo): void {
   if (status.disabledByEnv) {
     io.log('(Disabled via AGENT_RELAY_TELEMETRY_DISABLED or DO_NOT_TRACK environment variable)');
   }
-  io.log(`Anonymous ID: ${status.anonymousId}`);
+  io.log(`Distinct ID: ${status.distinctId}`);
   if (status.notifiedAt) {
     io.log(`First run notice shown: ${new Date(status.notifiedAt).toLocaleString()}`);
   }

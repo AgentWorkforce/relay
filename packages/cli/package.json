@@ -47,13 +47,13 @@
     "@agent-relay/config": "7.1.1",
     "@agent-relay/harness-driver": "7.1.1",
     "@agent-relay/sdk": "7.1.1",
-    "@agent-relay/telemetry": "7.1.1",
     "@agent-relay/utils": "7.1.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^2.5.1",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "esbuild": "^0.27.2",
+    "posthog-node": "^5.29.2",
     "zod": "^3.23.8"
   },
   "engines": {

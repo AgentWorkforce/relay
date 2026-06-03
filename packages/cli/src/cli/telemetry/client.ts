@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isTelemetryEnabled,
-  getAnonymousId,
+  getDistinctId,
   wasNotified,
   markNotified,
   isDisabledByEnv,
@@ -17,10 +17,11 @@ import {
 } from './config.js';
 import type { CommonProperties, TelemetryEventName, TelemetryEventMap } from './events.js';
 import { getPostHogConfig } from './posthog-config.js';
+import { detectOrchestratorHarness, UNKNOWN_ORCHESTRATOR_HARNESS } from './orchestrator-harness.js';
 
 let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
-let anonymousId: string | null = null;
+let distinctId: string | null = null;
 let initialized = false;
 
 function findPackageJson(startDir: string): string | null {
@@ -60,6 +61,9 @@ function buildCommonProperties(versions: {
   cliVersion?: string;
   sdkVersion?: string;
   brokerVersion?: string;
+  app?: string;
+  surface?: string;
+  orchestratorHarness?: string;
 }): CommonProperties {
   // The primary version depends on who's emitting: prefer CLI > broker > SDK
   // > fallback. This keeps `agent_relay_version` meaningful for existing
@@ -69,6 +73,26 @@ function buildCommonProperties(versions: {
     versions.cliVersion ?? versions.brokerVersion ?? versions.sdkVersion ?? getFallbackVersion();
 
   return {
+    app:
+      versions.app ??
+      (versions.cliVersion
+        ? 'cli'
+        : versions.brokerVersion
+          ? 'broker'
+          : versions.sdkVersion
+            ? 'sdk'
+            : 'unknown'),
+    surface:
+      versions.surface ??
+      (versions.cliVersion
+        ? 'cli'
+        : versions.brokerVersion
+          ? 'broker'
+          : versions.sdkVersion
+            ? 'sdk'
+            : 'unknown'),
+    orchestrator_harness:
+      versions.orchestratorHarness ?? detectOrchestratorHarness() ?? UNKNOWN_ORCHESTRATOR_HARNESS,
     agent_relay_version: primary,
     ...(versions.cliVersion ? { cli_version: versions.cliVersion } : {}),
     ...(versions.sdkVersion ? { sdk_version: versions.sdkVersion } : {}),
@@ -89,7 +113,7 @@ function showFirstRunNotice(): void {
   }
 
   console.log('');
-  console.log('Agent Relay collects anonymous usage data to improve the product.');
+  console.log('Agent Relay collects usage telemetry to improve the product.');
   console.log('Run `agent-relay telemetry disable` to opt out.');
   console.log('Learn more: https://agentrelay.com/telemetry');
   console.log('');
@@ -110,20 +134,25 @@ export interface InitTelemetryOptions {
   sdkVersion?: string;
   /** `agent-relay-broker` Rust binary version, if known. */
   brokerVersion?: string;
+  /** Component emitting telemetry, e.g. `cli`, `broker`, or `sdk`. */
+  app?: string;
+  /** Product surface responsible for telemetry, e.g. `cli`, `cloud`, or `sdk`. */
+  surface?: string;
+  /** Parent harness driving Agent Relay, if already detected by the caller. */
+  orchestratorHarness?: string;
 }
 
 export function initTelemetry(options: InitTelemetryOptions = {}): void {
   if (initialized) return;
   initialized = true;
 
+  const posthogConfig = getPostHogConfig();
+  if (!posthogConfig) return;
+
   if (options.showNotice !== false) {
     showFirstRunNotice();
   }
-
   if (!isTelemetryEnabled()) return;
-
-  const posthogConfig = getPostHogConfig();
-  if (!posthogConfig) return;
 
   client = new PostHog(posthogConfig.apiKey, {
     host: posthogConfig.host,
@@ -136,15 +165,21 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     cliVersion: options.cliVersion,
     sdkVersion: options.sdkVersion,
     brokerVersion: options.brokerVersion,
+    app: options.app,
+    surface: options.surface,
+    orchestratorHarness: options.orchestratorHarness,
   });
-  anonymousId = getAnonymousId();
+  distinctId = getDistinctId();
 }
 
-export function track<E extends TelemetryEventName>(event: E, properties?: TelemetryEventMap[E]): void {
-  if (!client || !commonProps || !anonymousId) return;
+export function track<E extends TelemetryEventName>(
+  event: E,
+  properties?: TelemetryEventMap[E] & Partial<CommonProperties>
+): void {
+  if (!client || !commonProps || !distinctId) return;
 
   client.capture({
-    distinctId: anonymousId,
+    distinctId,
     event,
     properties: {
       ...commonProps,
@@ -163,7 +198,7 @@ export async function shutdown(): Promise<void> {
   } finally {
     client = null;
     commonProps = null;
-    anonymousId = null;
+    distinctId = null;
     initialized = false;
   }
 }
@@ -172,19 +207,19 @@ export function isEnabled(): boolean {
   return isTelemetryEnabled();
 }
 
-export { getAnonymousId };
+export { getDistinctId };
 
 export function getStatus(): {
   enabled: boolean;
   disabledByEnv: boolean;
-  anonymousId: string;
+  distinctId: string;
   notifiedAt: string | undefined;
 } {
   const prefs = loadPrefs();
   return {
     enabled: isTelemetryEnabled(),
     disabledByEnv: isDisabledByEnv(),
-    anonymousId: prefs.anonymousId,
+    distinctId: prefs.distinctId,
     notifiedAt: prefs.notifiedAt,
   };
 }

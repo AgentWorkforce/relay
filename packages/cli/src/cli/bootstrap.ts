@@ -9,7 +9,15 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
-import { initTelemetry, shutdown as shutdownTelemetry, track } from '@agent-relay/telemetry';
+import {
+  ORCHESTRATOR_HARNESS_ENV,
+  detectOrchestratorHarness,
+  getDistinctId,
+  initTelemetry,
+  isEnabled as isTelemetryEnabled,
+  shutdown as shutdownTelemetry,
+  track,
+} from './telemetry/index.js';
 
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
@@ -80,6 +88,14 @@ function resolveSdkVersion(): string | undefined {
 
 export const SDK_VERSION = resolveSdkVersion();
 
+const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
+const TELEMETRY_SURFACE_ENV = 'AGENT_RELAY_TELEMETRY_SURFACE';
+const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
+
+function hasConfiguredTelemetryKey(): boolean {
+  return Boolean(process.env.POSTHOG_API_KEY?.trim() || process.env.AGENT_RELAY_POSTHOG_KEY?.trim());
+}
+
 function resolveProgramName(argv: string[] = process.argv): string {
   const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
@@ -99,13 +115,29 @@ function resolveProgramName(argv: string[] = process.argv): string {
  * We only set these if they're not already present — so a parent caller that
  * has set its own values (e.g. in tests or in nested CLI invocations) wins.
  */
-function propagateVersionsToChildren(): void {
+function propagateTelemetryContextToChildren(): string {
+  const orchestratorHarness = detectOrchestratorHarness();
+
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
     process.env.AGENT_RELAY_CLI_VERSION = VERSION;
   }
   if (SDK_VERSION && !process.env.AGENT_RELAY_SDK_VERSION) {
     process.env.AGENT_RELAY_SDK_VERSION = SDK_VERSION;
   }
+  if (!process.env[ORCHESTRATOR_HARNESS_ENV]) {
+    process.env[ORCHESTRATOR_HARNESS_ENV] = orchestratorHarness;
+  }
+  if (!process.env[TELEMETRY_SURFACE_ENV]) {
+    process.env[TELEMETRY_SURFACE_ENV] = 'cli';
+  }
+  if (!process.env[TELEMETRY_CLIENT_ENV]) {
+    process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
+  }
+  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
+    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
+  }
+
+  return orchestratorHarness;
 }
 
 // Commands that should skip the update check / first-run-notice entirely.
@@ -315,13 +347,16 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   maybeRunUpdateCheck(VERSION, argv);
-  propagateVersionsToChildren();
+  const orchestratorHarness = propagateTelemetryContextToChildren();
 
   if (!shouldSkipTelemetryInit(argv)) {
     initTelemetry({
       showNotice: true,
       cliVersion: VERSION,
       sdkVersion: SDK_VERSION,
+      app: 'cli',
+      surface: 'cli',
+      orchestratorHarness,
     });
   }
 

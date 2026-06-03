@@ -22,7 +22,7 @@ vi.mock('node:child_process', () => ({
   spawn: childProcessMocks.spawn,
 }));
 
-import { ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
+import { authorizedApiFetch, ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
 import type { StoredAuth } from './types.js';
 
 const FILE_AUTH: StoredAuth = {
@@ -278,5 +278,93 @@ describe('refreshStoredAuth', () => {
     });
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
     expect(fsMocks.mkdir).not.toHaveBeenCalled();
+  });
+});
+
+describe('authorizedApiFetch telemetry headers', () => {
+  const telemetryEnvKeys = [
+    'AGENT_RELAY_DISTINCT_ID',
+    'AGENT_RELAY_ORCHESTRATOR_HARNESS',
+    'AGENT_RELAY_TELEMETRY_SURFACE',
+    'AGENT_RELAY_TELEMETRY_CLIENT',
+    'AGENT_RELAY_CLI_VERSION',
+    'AGENT_RELAY_SDK_VERSION',
+    'AGENT_RELAY_TELEMETRY_DISABLED',
+    'DO_NOT_TRACK',
+  ] as const;
+
+  function clearTelemetryEnv(): void {
+    for (const key of telemetryEnvKeys) {
+      delete process.env[key];
+    }
+  }
+
+  it('adds Agent Relay identity and origin headers when the CLI provides a telemetry distinct id', async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const previousEnv = { ...process.env };
+    clearTelemetryEnv();
+    process.env.AGENT_RELAY_DISTINCT_ID = 'abc123def4567890';
+    process.env.AGENT_RELAY_ORCHESTRATOR_HARNESS = 'Codex';
+    process.env.AGENT_RELAY_TELEMETRY_SURFACE = 'cli';
+    process.env.AGENT_RELAY_TELEMETRY_CLIENT = 'agent-relay';
+    process.env.AGENT_RELAY_CLI_VERSION = '7.1.1';
+
+    try {
+      await authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+        }
+      );
+    } finally {
+      process.env = previousEnv;
+    }
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('accept')).toBe('application/json');
+    expect(headers.get('authorization')).toBe('Bearer access-token');
+    expect(headers.get('x-agent-relay-distinct-id')).toBe('abc123def4567890');
+    expect(headers.get('x-relaycast-harness')).toBe('Codex');
+    expect(headers.get('x-relaycast-origin-surface')).toBe('cli');
+    expect(headers.get('x-relaycast-origin-client')).toBe('agent-relay');
+    expect(headers.get('x-relaycast-origin-version')).toBe('7.1.1');
+  });
+
+  it('omits telemetry headers when no distinct id is provided', async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const previousEnv = { ...process.env };
+    clearTelemetryEnv();
+
+    try {
+      await authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        { method: 'POST' }
+      );
+    } finally {
+      process.env = previousEnv;
+    }
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-agent-relay-distinct-id')).toBeNull();
+    expect(headers.get('x-relaycast-harness')).toBeNull();
   });
 });

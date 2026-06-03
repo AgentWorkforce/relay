@@ -218,7 +218,7 @@ export function createEnrichedMessages(
 ): EnrichedMessages {
   const enriched: EnrichedMessages = Object.create(base) as EnrichedMessages;
 
-  enriched.send = (input: RelaySendChannelMessageInput | RelaySendMessageInput) => {
+  enriched.send = async (input: RelaySendChannelMessageInput | RelaySendMessageInput) => {
     if ('channel' in input && input.channel) {
       return base.send(input);
     }
@@ -253,7 +253,7 @@ export function createEnrichedMessages(
     });
   };
 
-  enriched.reply = (input: RelayReplyInput) => {
+  enriched.reply = async (input: RelayReplyInput) => {
     const messages = resolveFrom(input.from);
     return messages.reply({
       messageId: resolveMessageId(input.messageId ?? input.thread),
@@ -263,7 +263,7 @@ export function createEnrichedMessages(
     });
   };
 
-  enriched.react = ((arg1: string | RelayReactInput, arg2?: string): Promise<RelayMessageReaction> => {
+  enriched.react = (async (arg1: string | RelayReactInput, arg2?: string): Promise<RelayMessageReaction> => {
     if (typeof arg1 === 'string') {
       return base.react(arg1, arg2 as string);
     }
@@ -272,7 +272,7 @@ export function createEnrichedMessages(
     return messages.react(messageId, arg1.emoji);
   }) as EnrichedMessages['react'];
 
-  enriched.dm = (input: RelayDirectInput) => {
+  enriched.dm = async (input: RelayDirectInput) => {
     const messages = resolveFrom(input.from);
     return messages.direct({
       to: resolveAgentName(input.to),
@@ -325,7 +325,7 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
   return {
     info: () => messaging.workspace.info(),
     register: register as RelayWorkspace['register'],
-    reconnect: ({ apiToken }) => {
+    reconnect: async ({ apiToken }) => {
       if (!deps) {
         throw new Error('reconnect() is only available on the workspace client.');
       }
