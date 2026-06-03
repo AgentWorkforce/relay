@@ -18,6 +18,7 @@ export const docsVersions: DocsVersion[] = [
 export const currentDocsVersion: DocsVersionId = 'v8';
 export const legacyDocsBasePath = '/docs/7.1.1';
 export const v8DocsBasePath = '/docs';
+const legacyV8DocsBasePath = '/docs/8.0.0';
 
 function normalizePathname(pathname: string): string {
   const pathOnly = pathname.split('?')[0].split('#')[0].replace(/\/+$/, '');
@@ -46,8 +47,12 @@ export function getDocsVersionForPath(pathname: string): DocsVersionId {
 function getDocsSlugFromPath(pathname: string): string {
   const normalized = normalizePathname(pathname);
 
-  if (normalized === '/docs' || normalized === legacyDocsBasePath) {
+  if (normalized === '/docs' || normalized === legacyDocsBasePath || normalized === legacyV8DocsBasePath) {
     return 'introduction';
+  }
+
+  if (normalized.startsWith(`${legacyV8DocsBasePath}/`)) {
+    return normalized.slice(`${legacyV8DocsBasePath}/`.length).split('/')[0] || 'introduction';
   }
 
   if (normalized.startsWith(`${legacyDocsBasePath}/`)) {
