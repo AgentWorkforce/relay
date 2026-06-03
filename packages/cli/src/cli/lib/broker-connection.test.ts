@@ -5,7 +5,7 @@ import { resolveBrokerConnection, toWsUrl, type BrokerConnectionDeps } from './b
 function makeDeps(overrides: Partial<BrokerConnectionDeps> = {}): BrokerConnectionDeps {
   return {
     readConnectionFile: vi.fn(() => null),
-    getDefaultStateDir: vi.fn(() => '/tmp/fake/.agent-relay'),
+    getDefaultStateDir: vi.fn(() => '/tmp/fake/.agentworkforce/relay'),
     env: {},
     ...overrides,
   };

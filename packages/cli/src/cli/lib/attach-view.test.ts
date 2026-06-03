@@ -77,7 +77,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
 
   const deps: ViewDependencies = {
     readConnectionFile: vi.fn(() => overrides.connectionFile ?? null),
-    getDefaultStateDir: vi.fn(() => overrides.defaultStateDir ?? '/tmp/fake/.agent-relay'),
+    getDefaultStateDir: vi.fn(() => overrides.defaultStateDir ?? '/tmp/fake/.agentworkforce/relay'),
     env: overrides.env ?? {},
     createWebSocket: vi.fn((url: string, headers: Record<string, string>) => {
       const socket = new FakeWebSocket(url, headers);

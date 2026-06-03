@@ -21,7 +21,7 @@ interface StartedStep {
   startedAtMs: number;
 }
 
-const DEFAULT_USAGE_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'usage.jsonl');
+const DEFAULT_USAGE_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'usage.jsonl');
 
 export class CostTracker {
   private readonly usageFilePath: string;

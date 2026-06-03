@@ -10,14 +10,16 @@ import type {
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
 } from './messaging/index.js';
-import type {
-  AgentRelayActions,
-  ActionContext,
-  ActionHandle,
-  ActionPolicy,
-  ActionSchema,
+import {
+  actionSchemaToJsonSchema,
+  type AgentRelayActions,
+  type ActionContext,
+  type ActionHandle,
+  type ActionPolicy,
+  type ActionSchema,
 } from './actions/index.js';
 import type { DeliveryMode } from './delivery/index.js';
+import type { RelayAgentHandle } from './listeners.js';
 
 /**
  * A reference to an agent accepted by the high-level facade APIs. Agents may be
@@ -91,7 +93,8 @@ function resolveMessageId(ref: string | { id?: string; threadId?: string } | und
 }
 
 export interface RelaySendMessageInput {
-  to: string;
+  /** `#channel`, `@handle` (DM), or an array of `@handle`s (group DM). */
+  to: string | string[];
   from?: AgentLike;
   text?: string;
   /** README shorthand for `text`. */
@@ -137,8 +140,40 @@ export type EnrichedMessages = RelayMessaging['messages'] & {
   dm(input: RelayDirectInput): Promise<RelayMessage>;
 };
 
+/** Emoji reaction input on the live agent client. */
+export interface RelayClientReactInput {
+  messageId: string;
+  emoji: string;
+}
+
+/**
+ * A live, registered agent. Returned by `relay.workspace.register(...)` /
+ * `reconnect(...)` and by harness `create(...)`. Carries the agent's identity
+ * and status/tool predicate builders alongside a messaging surface scoped to
+ * that agent.
+ */
+export interface RelayAgentClient extends RelayAgentHandle {
+  readonly agents: RelayMessaging['agents'];
+  readonly channels: RelayMessaging['channels'];
+  readonly messages: EnrichedMessages;
+  readonly threads: RelayMessaging['threads'];
+  readonly inbox: RelayMessaging['inbox'];
+  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
+  reply(input: RelayReplyInput): Promise<RelayMessage>;
+  react(input: RelayClientReactInput): Promise<RelayMessageReaction>;
+}
+
+/** Dependencies that let the workspace facade mint live agent clients. */
+export interface WorkspaceFacadeDeps {
+  buildAgentClient(registration: RelayAgentRegistration): RelayAgentClient;
+  reconnectAgent(apiToken: string): Promise<RelayAgentClient>;
+}
+
 export interface RelayWorkspace {
-  register(agents: AgentLike | AgentLike[]): Promise<RelayAgentRegistration[]>;
+  register<T extends AgentLike | AgentLike[]>(
+    agents: T
+  ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
+  reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
 }
 
@@ -190,6 +225,15 @@ export function createEnrichedMessages(
     const sendInput = input as RelaySendMessageInput;
     const messages = resolveFrom(sendInput.from);
     const text = buildText(sendInput.text ?? sendInput.msg, sendInput.mentions);
+    if (Array.isArray(sendInput.to)) {
+      return messages.groupDirect({
+        participants: sendInput.to.map(resolveAgentName),
+        text,
+        attachments: sendInput.attachments,
+        mode: sendInput.mode,
+        idempotencyKey: sendInput.idempotencyKey,
+      });
+    }
     if (isChannelTarget(sendInput.to)) {
       return messages.send({
         channel: stripSigil(sendInput.to),
@@ -242,32 +286,70 @@ export function createEnrichedMessages(
   return enriched;
 }
 
-export function createWorkspaceFacade(messaging: RelayMessaging): RelayWorkspace {
+export function createWorkspaceFacade(messaging: RelayMessaging, deps?: WorkspaceFacadeDeps): RelayWorkspace {
+  const register = async (
+    agents: AgentLike | AgentLike[]
+  ): Promise<RelayAgentClient | RelayAgentClient[]> => {
+    if (!deps) {
+      throw new Error('register() is only available on the workspace client.');
+    }
+    const list = Array.isArray(agents) ? agents : [agents];
+    const inputs = list.map((agent) =>
+      typeof agent === 'string'
+        ? { name: stripSigil(agent) }
+        : {
+            name: resolveAgentName(agent),
+            type: agent.type,
+            persona: agent.persona,
+            metadata: agent.metadata,
+          }
+    );
+
+    // Fail fast on in-batch duplicates so a batch can't partially register
+    // before the relay rejects a later duplicate name.
+    const seen = new Set<string>();
+    for (const { name } of inputs) {
+      if (seen.has(name)) {
+        throw new Error(`Duplicate agent name in register(): "${name}".`);
+      }
+      seen.add(name);
+    }
+
+    const clients: RelayAgentClient[] = [];
+    for (const input of inputs) {
+      clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
+    }
+    return Array.isArray(agents) ? clients : clients[0];
+  };
+
   return {
     info: () => messaging.workspace.info(),
-    async register(agents) {
-      const list = Array.isArray(agents) ? agents : [agents];
-      const registrations: RelayAgentRegistration[] = [];
-      for (const agent of list) {
-        const input =
-          typeof agent === 'string'
-            ? { name: stripSigil(agent) }
-            : {
-                name: resolveAgentName(agent),
-                type: agent.type,
-                persona: agent.persona,
-                metadata: agent.metadata,
-              };
-        registrations.push(await messaging.agents.register(input));
+    register: register as RelayWorkspace['register'],
+    reconnect: ({ apiToken }) => {
+      if (!deps) {
+        throw new Error('reconnect() is only available on the workspace client.');
       }
-      return registrations;
+      return deps.reconnectAgent(apiToken);
     },
   };
 }
 
+/**
+ * Optional relay wiring for {@link registerFacadeAction}. When present and the
+ * messaging client carries an agent-scoped action surface, `registerAction`
+ * additionally registers the descriptor on the relay and subscribes the handler
+ * agent to `action.invoked` so it can run the handler and post the result back.
+ */
+export interface ActionRelayWiring {
+  messaging: RelayMessaging;
+  /** The agent that owns and runs the handler (descriptor `handler_agent`). */
+  handlerAgent?: string;
+}
+
 export function registerFacadeAction<TInput, TOutput>(
   actions: AgentRelayActions,
-  def: RegisterActionInput<TInput, TOutput>
+  def: RegisterActionInput<TInput, TOutput>,
+  wiring?: ActionRelayWiring
 ): ActionHandle {
   const allowed = def.availableTo?.map(resolveAgentName);
   const policy: ActionPolicy | undefined =
@@ -283,7 +365,7 @@ export function registerFacadeAction<TInput, TOutput>(
         }
       : undefined;
 
-  return actions.register<TInput, TOutput>({
+  const localHandle = actions.register<TInput, TOutput>({
     name: def.name,
     description: def.description,
     input: def.input,
@@ -294,6 +376,114 @@ export function registerFacadeAction<TInput, TOutput>(
     policy,
     handler: (input, ctx) => def.handler({ input, agent: ctx.caller, ctx }),
   });
+
+  const relayUnsubscribe = wireRelayAction(actions, def, wiring, allowed);
+
+  if (!relayUnsubscribe) {
+    return localHandle;
+  }
+
+  return {
+    unregister: () => {
+      relayUnsubscribe();
+      localHandle.unregister();
+    },
+  };
+}
+
+/**
+ * Register the action descriptor on the relay and subscribe the handler agent
+ * to its `action.invoked` events. Returns an unsubscribe callback, or
+ * `undefined` when no agent-scoped relay connection is available (in which case
+ * the action stays purely in-process, matching legacy behavior).
+ */
+function wireRelayAction<TInput, TOutput>(
+  actions: AgentRelayActions,
+  def: RegisterActionInput<TInput, TOutput>,
+  wiring: ActionRelayWiring | undefined,
+  allowed: string[] | undefined
+): (() => void) | undefined {
+  const commands = wiring?.messaging.commands;
+  if (!wiring || !commands?.agentScoped?.() || !commands.available?.()) {
+    return undefined;
+  }
+
+  const handlerAgent = wiring.handlerAgent;
+  if (!handlerAgent) {
+    return undefined;
+  }
+
+  // Register the descriptor on the relay (fire-and-forget; failures are logged
+  // but do not break local registration).
+  void commands
+    .register({
+      command: def.name,
+      description: def.description ?? def.name,
+      handlerAgent,
+      inputSchema: actionSchemaToJsonSchema(def.inputSchema ?? def.input),
+      outputSchema: actionSchemaToJsonSchema(def.outputSchema ?? def.output),
+      ...(allowed ? { availableTo: allowed } : {}),
+    })
+    .catch((error) => {
+      console.error(`[agent-relay] failed to register action descriptor "${def.name}":`, error);
+    });
+
+  // Subscribe to invocations routed to this handler agent, then open the event
+  // stream — `events.on(...)` only registers the handler; the socket is opened
+  // by `events.connect()`. Without this the handler never sees `action.invoked`.
+  const unsubscribe = wiring.messaging.events.on('actionInvoked', async (event) => {
+    if (event.actionName !== def.name) {
+      return;
+    }
+    await handleActionInvoked(actions, commands, def.name, event);
+  });
+  try {
+    wiring.messaging.events.connect();
+  } catch (error) {
+    console.error(`[agent-relay] failed to open the event stream for action "${def.name}":`, error);
+  }
+  return unsubscribe;
+}
+
+async function handleActionInvoked(
+  actions: AgentRelayActions,
+  commands: RelayMessaging['commands'],
+  actionName: string,
+  event: { invocationId: string; actionName: string; callerName: string }
+): Promise<void> {
+  let input: unknown = {};
+  try {
+    const invocation = await commands.getInvocation(actionName, event.invocationId);
+    input = invocation.input ?? {};
+  } catch (error) {
+    console.error(`[agent-relay] failed to load invocation "${event.invocationId}":`, error);
+  }
+
+  const result = await actions.invoke({
+    name: actionName,
+    input,
+    caller: { name: event.callerName, type: 'agent' },
+  });
+
+  try {
+    await commands.completeInvocation(
+      actionName,
+      event.invocationId,
+      result.ok
+        ? { output: toOutputRecord(result.output) }
+        : { error: result.error?.message ?? 'handler failed' }
+    );
+  } catch (error) {
+    console.error(`[agent-relay] failed to complete invocation "${event.invocationId}":`, error);
+  }
+}
+
+/** Coerce a handler return value into the `output` object the relay accepts. */
+function toOutputRecord(output: unknown): Record<string, unknown> {
+  if (output !== null && typeof output === 'object' && !Array.isArray(output)) {
+    return output as Record<string, unknown>;
+  }
+  return { value: output };
 }
 
 export function createNotifyHandler(

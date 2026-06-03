@@ -44,8 +44,7 @@ const mockAgentClient = {
     dmReceived: registerHandler('dmReceived'),
     groupDmReceived: registerHandler('groupDmReceived'),
     actionInvoked: registerHandler('actionInvoked'),
-    reactionAdded: registerHandler('reactionAdded'),
-    reactionRemoved: registerHandler('reactionRemoved'),
+    messageReacted: registerHandler('messageReacted'),
     reconnecting: registerHandler('reconnecting'),
     disconnected: registerHandler('disconnected'),
     error: registerHandler('error'),
@@ -533,11 +532,12 @@ describe('InboundGateway — thread reply injection', () => {
       const { gateway, sendMessage } = createGateway();
       await gateway.start();
 
-      fireEvent('reactionAdded', {
-        type: 'reaction.added',
+      fireEvent('messageReacted', {
+        type: 'message.reacted',
         messageId: 'msg_800',
         emoji: 'thumbsup',
         agentName: 'eve',
+        action: 'added',
       });
 
       await vi.waitFor(() => {
@@ -556,11 +556,12 @@ describe('InboundGateway — thread reply injection', () => {
       const { gateway, sendMessage } = createGateway();
       await gateway.start();
 
-      fireEvent('reactionRemoved', {
-        type: 'reaction.removed',
+      fireEvent('messageReacted', {
+        type: 'message.reacted',
         messageId: 'msg_900',
         emoji: 'rocket',
         agentName: 'frank',
+        action: 'removed',
       });
 
       await vi.waitFor(() => {
@@ -579,11 +580,12 @@ describe('InboundGateway — thread reply injection', () => {
       const { gateway, sendMessage } = createGateway({ clawName: 'my-claw' });
       await gateway.start();
 
-      fireEvent('reactionAdded', {
-        type: 'reaction.added',
+      fireEvent('messageReacted', {
+        type: 'message.reacted',
         messageId: 'msg_1000',
         emoji: 'check',
         agentName: 'my-claw',
+        action: 'added',
       });
 
       await new Promise((r) => setTimeout(r, 50));
@@ -841,11 +843,12 @@ describe('InboundGateway — thread reply injection', () => {
       const { gateway, sendMessage } = createGateway();
       await gateway.start();
 
-      fireEvent('reactionAdded', {
-        type: 'reaction.added',
+      fireEvent('messageReacted', {
+        type: 'message.reacted',
         messageId: 'msg_fmt_react',
         emoji: 'fire',
         agentName: 'dave',
+        action: 'added',
       });
 
       await vi.waitFor(() => {

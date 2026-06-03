@@ -24,8 +24,7 @@ import type {
   DmReceivedEvent,
   GroupDmReceivedEvent,
   ActionInvokedEvent,
-  ReactionAddedEvent,
-  ReactionRemovedEvent,
+  MessageReactedEvent,
 } from '@relaycast/sdk';
 import WebSocket from 'ws';
 
@@ -1394,19 +1393,13 @@ export class InboundGateway {
       })
     );
     this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.reactionAdded((event: ReactionAddedEvent) => {
+      this.relayAgentClient.on.messageReacted((event: MessageReactedEvent) => {
         if (!this.shouldProcessWsInbound()) return;
-        console.log(`[gateway] Reaction :${event.emoji}: added by @${event.agentName} on ${event.messageId}`);
-        void this.handleRealtimeReaction(event, 'added');
-      })
-    );
-    this.unsubscribeHandlers.push(
-      this.relayAgentClient.on.reactionRemoved((event: ReactionRemovedEvent) => {
-        if (!this.shouldProcessWsInbound()) return;
+        const action = event.action ?? 'added';
         console.log(
-          `[gateway] Reaction :${event.emoji}: removed by @${event.agentName} from ${event.messageId}`
+          `[gateway] Reaction :${event.emoji}: ${action} by @${event.agentName} on ${event.messageId}`
         );
-        void this.handleRealtimeReaction(event, 'removed');
+        void this.handleRealtimeReaction(event, action);
       })
     );
     this.unsubscribeHandlers.push(
@@ -1872,14 +1865,14 @@ export class InboundGateway {
         ).committed;
       case 'reaction.added':
         return (
-          await this.handleRealtimeReaction(event.payload as unknown as ReactionAddedEvent, 'added', {
+          await this.handleRealtimeReaction(event.payload as unknown as MessageReactedEvent, 'added', {
             ...baseOptions,
             eventId: event.id,
           })
         ).committed;
       case 'reaction.removed':
         return (
-          await this.handleRealtimeReaction(event.payload as unknown as ReactionRemovedEvent, 'removed', {
+          await this.handleRealtimeReaction(event.payload as unknown as MessageReactedEvent, 'removed', {
             ...baseOptions,
             eventId: event.id,
           })
@@ -2118,7 +2111,7 @@ export class InboundGateway {
   }
 
   private async handleRealtimeReaction(
-    event: ReactionAddedEvent | ReactionRemovedEvent,
+    event: MessageReactedEvent,
     action: 'added' | 'removed',
     options: RealtimeHandlingOptions = {}
   ): Promise<InboundProcessingResult> {

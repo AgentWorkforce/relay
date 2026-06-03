@@ -1,0 +1,25 @@
+{
+  "id": "traj_07tr0h0sx6q8",
+  "version": 1,
+  "task": {
+    "title": "Phase 4: add relay.webhooks namespace (createInbound + subscribe)"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-03T05:37:42.207Z",
+  "completedAt": "2026-06-03T05:40:24.413Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Added additive relay.webhooks namespace (createInbound, subscribe, list, delete, subscriptions, unsubscribe) wired to relaycast webhooks.createInbound + subscriptions.create with snake_case->camelCase normalization; integrations surface untouched. All verify commands pass.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "06180413faa5c6a426bd02980834e9b97a901d5f",
+    "endRef": "06180413faa5c6a426bd02980834e9b97a901d5f"
+  }
+}

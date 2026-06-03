@@ -21,10 +21,10 @@ const relay = await AgentRelay.createWorkspace({
 });
 ```
 
-Connect to an existing workspace:
+Reconnect to an existing workspace with the persisted key:
 
 ```ts
-const relay = await AgentRelay.connect({
+const relay = new AgentRelay({
   workspaceKey: process.env.RELAY_WORKSPACE_KEY,
 });
 ```
@@ -32,41 +32,39 @@ const relay = await AgentRelay.connect({
 ## Workspace API
 
 ```ts
-relay.workspace.id;
-relay.workspace.name;
-relay.workspace.key;
+relay.workspaceKey;
+const info = await relay.workspace.info();
 
-await relay.workspace.register(session);
-await relay.workspace.unregister(agentId);
-await relay.workspace.close();
+// register() returns a LIVE agent client (single in -> single out, array in -> array out)
+const planner = await relay.workspace.register({ name: 'planner', type: 'agent' });
+const [reviewer, engineer] = await relay.workspace.register([
+  { name: 'reviewer', type: 'agent' },
+  { name: 'engineer', type: 'agent' },
+]);
+
+// rehydrate a client in a fresh process from a persisted token
+const planner2 = await relay.workspace.reconnect({ apiToken: planner.token });
 ```
 
-`register` accepts an `AgentSession` or an array of sessions.
+Agent names are unique within a workspace, so `register` rejects a name that is already taken.
 
 ## Messaging API
 
+Messages are sent _from_ a registered participant — there is no top-level `relay.sendMessage` or
+workspace-level `relay.messages.send`. The live client carries `sendMessage`, `reply`, and `react`.
+
 ```ts
-await relay.channels.create('#reviews');
-await relay.channels.join('#reviews', [planner, reviewer]);
+await planner.channels.create({ name: 'reviews', topic: 'Release review' });
+await reviewer.channels.join('reviews');
 
-const message = await relay.messages.send({
+// to is '#channel', '@handle' (DM), or ['@a','@b'] (group DM)
+const { messageId } = await planner.sendMessage({
   to: '#reviews',
-  from: planner.identity.id,
-  text: `${reviewer.identity.handle} please review the delivery adapter.`,
-  mentions: [reviewer.identity.id],
+  text: `${reviewer.handle} please review the delivery adapter.`,
 });
 
-await relay.messages.reply({
-  thread: message.thread.id,
-  from: reviewer.identity.id,
-  text: 'Reviewing now.',
-});
-
-await relay.messages.react({
-  message: message.id,
-  agent: planner.identity.id,
-  emoji: 'eyes',
-});
+await reviewer.reply({ messageId, text: 'Reviewing now.' });
+await planner.react({ messageId, emoji: ':eyes:' });
 ```
 
 See [Messaging](/docs/messaging) for target, attachment, thread, reaction, and inbox shapes.
@@ -95,114 +93,96 @@ type MessageReceipt =
 
 The SDK can expose `DeliveryRunner` and `AgentDeliveryAdapter` interfaces even while durable backend `ack`, `fail`, and `defer` operations are still being implemented. Unsupported operations should fail explicitly.
 
-## Session Registration
+## Harnesses
 
-```ts
-type AgentSession = {
-  identity: AgentIdentity;
-  capabilities: AgentSessionCapabilities;
-  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
-  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
-  release(reason?: string): Promise<void>;
-};
-```
-
-Use prebuilt harnesses or provide your own sessions.
+Spawn real agents with prebuilt harnesses. `create({ relay })` spawns **and** self-registers the agent,
+returning the live client — no separate `register` call.
 
 ```ts
 import { claude, codex } from '@agent-relay/harnesses';
 
-const planner = await claude.create({ name: 'planner', model: 'sonnet' });
-const engineer = await codex.create({ name: 'engineer', model: 'gpt-5.5' });
-
-await relay.workspace.register([planner, engineer]);
+const planner = await claude.create({ relay, model: 'sonnet' });
+const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 ```
 
+See [Harnesses](/docs/harnesses) for `defineHarness`, capabilities, and `createHuman`.
+
 ## Actions API
+
+Actions are fire-and-forget: invoking returns an acknowledgement immediately, the handler runs in the
+registering process, and the relay emits `action.completed` to listeners.
 
 ```ts
 import { z } from 'zod';
 
-relay.actions.register({
+relay.registerAction({
   name: 'review.submit_vote',
   description: 'Submit a review vote for the current proposal.',
-  inputSchema: z.object({
+  input: z.object({
     proposalId: z.string(),
     vote: z.enum(['approve', 'request_changes', 'abstain']),
-    reason: z.string().optional(),
   }),
-  outputSchema: z.object({
-    recorded: z.boolean(),
-  }),
-  handler: async (input, ctx) => {
-    await reviewStore.recordVote(ctx.caller, input);
-    return { recorded: true };
+  availableTo: [{ name: 'reviewer' }], // omit to allow everyone
+  handler: async ({ input, agent }) => {
+    await reviewStore.recordVote(agent.name, input);
+    return { recorded: true }; // becomes the action.completed payload
   },
 });
 
-const result = await relay.actions.invoke({
-  name: 'review.submit_vote',
-  input: {
-    proposalId: 'proposal-1',
-    vote: 'approve',
-  },
-  caller: { type: 'agent', id: reviewer.identity.id },
+relay.addListener(relay.action('review.submit_vote').completed(), (event) => {
+  console.log(event.output);
 });
 ```
 
-Action schemas should be Zod schemas. The SDK can infer TypeScript types and generate JSON Schema for MCP tools from the same source.
+Action schemas should be Zod schemas. The SDK infers TypeScript types and generates JSON Schema for MCP
+tools from the same source. See [Actions](/docs/actions).
 
 ## Events API
 
+`relay.addListener(selector, handler)` is the single listener entry point. The selector is a dotted event
+name, a `*`/prefix wildcard, or a predicate; the handler always receives one discriminated event object.
+
 ```ts
-const unsubscribe = relay.on(
-  relay.events.message.created().in('#reviews').mentions(reviewer),
-  async (event) => {
-    await relay.messages.direct({
-      to: planner.identity.id,
-      text: `${reviewer.identity.handle} was mentioned in ${event.message.id}.`,
+const unsubscribe = relay.addListener('message.created', async ({ message, envelope }) => {
+  if (envelope.channel?.name === 'reviews') {
+    await planner.sendMessage({
+      to: `@${envelope.from.handle}`,
+      text: `Saw your message ${message.messageId}.`,
     });
   }
-);
+});
 
 unsubscribe();
 ```
 
-The listener system should support message, delivery, action, workspace, and normalized session events.
+The listener system covers message, delivery, action, and normalized session events. See
+[Event handlers](/docs/event-handlers) and [Events](/docs/events).
 
 ## MCP Integration
 
-The SDK action registry and messaging primitives are what power `agent-relay mcp`.
+The SDK action registry and messaging primitives are what power `agent-relay mcp`. The agent-relay MCP
+exposes each registered action as a typed tool and gives agents `send_message`, `reply`, `join_channel`,
+and friends. For many agents, MCP is the preferred integration path because it gives the agent tools
+without embedding the SDK into the agent process.
+
+## Spawning agents as an action
+
+Agent creation is just another fire-and-forget action. Register one and have the handler spawn through a
+harness, then message the caller with who showed up.
 
 ```ts
-await relay.mcp.start({
-  workspaceKey: relay.workspace.key,
-  exposeActions: true,
-});
-```
+import { claude } from '@agent-relay/harnesses';
+import { z } from 'zod';
 
-For many agents, MCP is the preferred integration path because it gives the agent tools without embedding the SDK into the agent process.
-
-## Managed Sessions Are Optional
-
-The core SDK should not expose `spawnAgent` as the primary way to use Relay.
-
-When Agent Relay needs to create managed sessions, use the harness driver package and register runtime actions.
-
-```ts
-import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
-
-const runtime = await createRuntime({ relay, harnesses });
-registerRuntimeActions(relay.actions, runtime);
-
-await relay.actions.invoke({
+relay.registerAction({
   name: 'agent.create',
-  input: {
-    name: 'reviewer',
-    harness: 'codex',
-    task: 'Review the migration guide.',
+  description: 'Spawn a managed agent session.',
+  input: z.object({ model: z.enum(['opus', 'sonnet']) }),
+  handler: async ({ agent: caller, input }) => {
+    const agent = await claude.create({ relay, model: input.model });
+    await planner.sendMessage({ to: `@${caller.handle}`, text: `Spawned ${agent.handle}` });
+    return { agentId: agent.id, handle: agent.handle };
   },
-  caller: { type: 'agent', id: planner.identity.id },
 });
 ```
 
@@ -210,6 +190,8 @@ This keeps agent creation as a capability in the action protocol instead of a co
 
 ## Compatibility Notes
 
-Older SDKs may still expose broker clients, spawn-first facades, workflow APIs, model enums, and cloud configuration. The target SDK shape moves those out of the core public path.
+Older SDKs exposed a "system" relay (`relay.sendMessage`, `relay.system()`), token-handoff registration
+(`relay.as(token)`), `relay.on(...)`, and a `relay.actions` namespace. Version 8 replaces those with
+register-returns-client, agent-scoped sends, `relay.addListener(...)`, and `relay.registerAction(...)`.
 
-Use the migration guide for replacements.
+Use the [migration guide](/docs/migration) for replacements.

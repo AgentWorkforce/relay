@@ -209,11 +209,11 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   }
 
   // Bash installer locations (curl | bash install method)
-  // install.sh puts relay-pty at $INSTALL_DIR/bin/ (default: ~/.agent-relay/bin/)
+  // install.sh puts relay-pty at $INSTALL_DIR/bin/ (default: ~/.agentworkforce/relay/bin/)
   const bashInstallerDir = process.env.AGENT_RELAY_INSTALL_DIR
     ? path.join(process.env.AGENT_RELAY_INSTALL_DIR, 'bin')
     : home
-      ? path.join(home, '.agent-relay', 'bin')
+      ? path.join(home, '.agentworkforce/relay', 'bin')
       : null;
   const bashInstallerBinDir =
     process.env.AGENT_RELAY_BIN_DIR || (home ? path.join(home, '.local', 'bin') : null);
@@ -246,7 +246,7 @@ export function findRelayPtyBinary(callerDirname: string): string | null {
   }
 
   // Bash installer paths (curl | bash install method)
-  // install.sh downloads relay-pty to ~/.agent-relay/bin/relay-pty
+  // install.sh downloads relay-pty to ~/.agentworkforce/relay/bin/relay-pty
   if (bashInstallerDir) {
     if (platformBinary) {
       candidates.push(path.join(bashInstallerDir, platformBinary));

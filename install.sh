@@ -6,7 +6,7 @@ set -e
 #
 # Options (set as environment variables):
 #   AGENT_RELAY_VERSION              - Specific version to install (default: latest)
-#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agent-relay)
+#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
 #   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
 #   AGENT_RELAY_NO_DASHBOARD         - Skip dashboard installation (default: false)
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
@@ -14,7 +14,7 @@ set -e
 REPO_RELAY="AgentWorkforce/relay"
 REPO_DASHBOARD="AgentWorkforce/relay-dashboard"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
-INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agent-relay}"
+INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
 ORIGINAL_PATH="${PATH:-}"
 STANDALONE_FAILURE_REASON=""
@@ -966,7 +966,7 @@ case "${1:-}" in
         echo ""
         echo "Environment variables:"
         echo "  AGENT_RELAY_VERSION              Specific version to install (default: latest)"
-        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agent-relay)"
+        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agentworkforce/relay)"
         echo "  AGENT_RELAY_BIN_DIR              Binary directory (default: ~/.local/bin)"
         echo "  AGENT_RELAY_NO_DASHBOARD         Skip dashboard installation (default: false)"
         echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"

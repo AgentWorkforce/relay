@@ -305,10 +305,10 @@ lsof -ti:$DASHBOARD_PORT | xargs kill -9 2>/dev/null || true
 sleep 1
 
 # Clean stale socket
-rm -f "$PROJECT_DIR/.agent-relay/relay.sock" 2>/dev/null || true
+rm -f "$PROJECT_DIR/.agentworkforce/relay/relay.sock" 2>/dev/null || true
 
 # Start daemon with local build
-DAEMON_LOG="$PROJECT_DIR/.agent-relay/test-spawn-refactor.log"
+DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/test-spawn-refactor.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
 "$CLI_CMD" up --dashboard --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
@@ -378,7 +378,7 @@ else
 fi
 
 # Test daemon socket is functional (CLI uses socket, which requires the daemon's PID file)
-if [ -S "$PROJECT_DIR/.agent-relay/relay.sock" ]; then
+if [ -S "$PROJECT_DIR/.agentworkforce/relay/relay.sock" ]; then
   pass "Daemon socket exists"
   TOTAL=$((TOTAL + 1))
 else
@@ -386,7 +386,7 @@ else
 fi
 
 # Verify daemon PID file
-if [ -f "$PROJECT_DIR/.agent-relay/relay.sock.pid" ]; then
+if [ -f "$PROJECT_DIR/.agentworkforce/relay/relay.sock.pid" ]; then
   pass "Daemon PID file exists"
   TOTAL=$((TOTAL + 1))
 else

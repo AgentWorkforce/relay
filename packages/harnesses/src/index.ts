@@ -1,6 +1,17 @@
 import { definePtyHarness, type PtyHarness } from './define.js';
 
 export * from './define.js';
+export * from './create-human.js';
+
+// Custom (non-PTY) harnesses are defined with the SDK's harness contract;
+// re-export it here so harness authors have one import surface.
+export { defineHarness, normalizeAgentIdentity, MINIMAL_AGENT_SESSION_CAPABILITIES } from '@agent-relay/sdk';
+export type {
+  AgentSession,
+  AgentSessionCapabilities,
+  HarnessConfig,
+  HarnessCreateContext,
+} from '@agent-relay/sdk';
 
 export const claude: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'claude' });
 

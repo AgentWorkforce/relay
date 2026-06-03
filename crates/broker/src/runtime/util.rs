@@ -81,10 +81,10 @@ fn sanitize_filename_segment(value: &str) -> String {
 
 /// Platform-standard directory for broker tracing logs.
 ///
-/// - macOS: `~/Library/Logs/agent-relay`
-/// - Linux / other Unix: `$XDG_STATE_HOME/agent-relay/logs` (defaults to
-///   `~/.local/state/agent-relay/logs`)
-/// - Windows: `%LOCALAPPDATA%\agent-relay\Logs`
+/// - macOS: `~/Library/Logs/agentworkforce/relay`
+/// - Linux / other Unix: `$XDG_STATE_HOME/agentworkforce/relay/logs` (defaults to
+///   `~/.local/state/agentworkforce/relay/logs`)
+/// - Windows: `%LOCALAPPDATA%\agentworkforce\relay\Logs`
 ///
 /// Returns `None` only when neither the platform-specific directory nor the
 /// home directory can be resolved.
@@ -92,18 +92,23 @@ pub(crate) fn broker_log_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir()?;
-        Some(home.join("Library").join("Logs").join("agent-relay"))
+        Some(
+            home.join("Library")
+                .join("Logs")
+                .join("agentworkforce")
+                .join("relay"),
+        )
     }
     #[cfg(target_os = "windows")]
     {
         let local = dirs::data_local_dir()?;
-        Some(local.join("agent-relay").join("Logs"))
+        Some(local.join("agentworkforce").join("relay").join("Logs"))
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
         let state = dirs::state_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))?;
-        Some(state.join("agent-relay").join("logs"))
+        Some(state.join("agentworkforce").join("relay").join("logs"))
     }
 }
 
@@ -452,17 +457,19 @@ mod tests {
 
         if cfg!(target_os = "macos") {
             assert!(
-                path_str.contains("/Library/Logs/agent-relay"),
+                path_str.contains("/Library/Logs/agentworkforce/relay"),
                 "expected macOS Library/Logs path, got: {path_str}"
             );
         } else if cfg!(target_os = "windows") {
             assert!(
-                path_str.to_ascii_lowercase().contains("agent-relay/logs"),
+                path_str
+                    .to_ascii_lowercase()
+                    .contains("agentworkforce/relay/logs"),
                 "expected Windows LocalAppData layout, got: {path_str}"
             );
         } else {
             assert!(
-                path_str.contains("agent-relay/logs"),
+                path_str.contains("agentworkforce/relay/logs"),
                 "expected Unix state path, got: {path_str}"
             );
         }

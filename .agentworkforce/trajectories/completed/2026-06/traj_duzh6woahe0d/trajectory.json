@@ -1,0 +1,147 @@
+{
+  "id": "traj_duzh6woahe0d",
+  "version": 1,
+  "task": {
+    "title": "Phase 1: SDK client model reshape (register/create return live client, reconnect, messageId, to-routing)"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-03T04:22:17.620Z",
+  "completedAt": "2026-06-03T05:32:41.170Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-03T04:39:39.560Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_t8nx52iqd36v",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-03T04:39:39.560Z",
+      "endedAt": "2026-06-03T05:32:41.170Z",
+      "events": [
+        {
+          "ts": 1780461579561,
+          "type": "decision",
+          "content": "Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event: Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event",
+          "raw": {
+            "question": "Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event",
+            "chosen": "Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780461977469,
+          "type": "decision",
+          "content": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs: Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+          "raw": {
+            "question": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+            "chosen": "Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780462445644,
+          "type": "decision",
+          "content": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources: Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+          "raw": {
+            "question": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+            "chosen": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780462668057,
+          "type": "decision",
+          "content": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.: Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+          "raw": {
+            "question": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+            "chosen": "Phase 2b (partial): removed relay.on/relay.notify (zero prod callers); migrated listener tests to addListener. Deferred relay.actions getter removal pending MCP/harness-driver tracing.",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780463255537,
+          "type": "decision",
+          "content": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not): Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+          "raw": {
+            "question": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+            "chosen": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780463684781,
+          "type": "decision",
+          "content": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.: Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+          "raw": {
+            "question": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+            "chosen": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Wired registerAction onto relaycast 2.3.0 fire-and-forget actions: SDK registers descriptor, subscribes handler agent to action.invoked, runs local registry, posts completion. MCP invoke is now fire-and-forget with local fallback.",
+    "approach": "Standard approach",
+    "confidence": 0.75
+  },
+  "commits": [
+    "8320d18b",
+    "08c26413",
+    "e9611420",
+    "af9dff75",
+    "2c95c094",
+    "866fa3f6",
+    "71883acf",
+    "2f53ef38",
+    "9c6fb458"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_duzh6woahe0d/trajectory.json",
+    "README.md",
+    "packages/cli/src/cli/lib/sdk-client.ts",
+    "packages/harnesses/src/create-human.test.ts",
+    "packages/harnesses/src/create-human.ts",
+    "packages/harnesses/src/index.ts",
+    "packages/harnesses/src/readme-quickstart.test.ts",
+    "packages/openclaw/src/__tests__/gateway-control.test.ts",
+    "packages/openclaw/src/__tests__/gateway-poll-fallback.test.ts",
+    "packages/openclaw/src/__tests__/gateway-threads.test.ts",
+    "packages/openclaw/src/__tests__/ws-client.test.ts",
+    "packages/openclaw/src/gateway.ts",
+    "packages/sdk/src/__tests__/facade.test.ts",
+    "packages/sdk/src/__tests__/listeners.test.ts",
+    "packages/sdk/src/__tests__/messaging.test.ts",
+    "packages/sdk/src/agent-relay.ts",
+    "packages/sdk/src/facade.ts",
+    "packages/sdk/src/listeners.ts",
+    "packages/sdk/src/messaging/normalize.ts",
+    "packages/sdk/src/messaging/relaycast.ts",
+    "packages/sdk/src/messaging/types.ts",
+    "packages/sdk/src/session/types.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6a184c83a0a316020bd9a32e47dc749a61d80b17",
+    "endRef": "8320d18b95eb4297a59580cd6a711a04db6f7413",
+    "traceId": "8df8444a-2d59-44b4-b119-2a1d51cf7154"
+  }
+}

@@ -63,14 +63,14 @@ No Agent Relay API key should be required for the basic adapter path.
 If OpenClaw can perform provider-specific operations, expose them as actions.
 
 ```ts
-relay.actions.register({
+relay.registerAction({
   name: 'openclaw.run_analysis',
   description: 'Run an OpenClaw analysis job.',
-  inputSchema: z.object({
+  input: z.object({
     target: z.string(),
     depth: z.enum(['quick', 'full']).default('quick'),
   }),
-  handler: async (input) => openclawClient.runAnalysis(input),
+  handler: async ({ input }) => openclawClient.runAnalysis(input),
 });
 ```
 
