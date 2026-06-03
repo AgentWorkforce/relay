@@ -3,21 +3,23 @@ import { SpawnManager } from '../spawn/manager.js';
 
 // Mock the spawn providers
 vi.mock('../spawn/docker.js', () => ({
-  DockerSpawnProvider: vi.fn().mockImplementation(() => ({
-    spawn: vi.fn().mockResolvedValue({
-      id: 'test-id-1',
-      displayName: 'test-claw',
-      agentName: 'claw-ws123-test-claw',
-      gatewayPort: 18789,
+  DockerSpawnProvider: vi.fn(function () {
+    return {
+      spawn: vi.fn().mockResolvedValue({
+        id: 'test-id-1',
+        displayName: 'test-claw',
+        agentName: 'claw-ws123-test-claw',
+        gatewayPort: 18789,
+        destroy: vi.fn().mockResolvedValue(undefined),
+      }),
       destroy: vi.fn().mockResolvedValue(undefined),
-    }),
-    destroy: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn().mockResolvedValue([]),
-  })),
+      list: vi.fn().mockResolvedValue([]),
+    };
+  }),
 }));
 
 vi.mock('../spawn/process.js', () => ({
-  ProcessSpawnProvider: vi.fn().mockImplementation(() => {
+  ProcessSpawnProvider: vi.fn(function () {
     let callCount = 0;
     return {
       spawn: vi.fn().mockImplementation((options: { name: string }) => {

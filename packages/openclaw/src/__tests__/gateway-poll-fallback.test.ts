@@ -54,25 +54,29 @@ const fsMocks = vi.hoisted(() => ({
 const { readFile, writeFile, rename, mkdir } = fsMocks;
 
 vi.mock('@relaycast/sdk', () => ({
-  RelayCast: vi.fn().mockImplementation(() => ({
-    agents: {
-      registerOrGet,
-      registerOrRotate,
-    },
-    as: vi.fn().mockReturnValue(mockAgentClient),
-  })),
+  RelayCast: vi.fn(function () {
+    return {
+      agents: {
+        registerOrGet,
+        registerOrRotate,
+      },
+      as: vi.fn().mockReturnValue(mockAgentClient),
+    };
+  }),
 }));
 
 vi.mock('../spawn/manager.js', () => ({
-  SpawnManager: vi.fn().mockImplementation(() => ({
-    size: 0,
-    spawn: vi.fn(),
-    release: vi.fn(),
-    releaseByName: vi.fn(),
-    releaseAll: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn().mockReturnValue([]),
-    get: vi.fn(),
-  })),
+  SpawnManager: vi.fn(function () {
+    return {
+      size: 0,
+      spawn: vi.fn(),
+      release: vi.fn(),
+      releaseByName: vi.fn(),
+      releaseAll: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockReturnValue([]),
+      get: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock('node:fs/promises', () => ({
