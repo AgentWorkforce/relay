@@ -724,8 +724,7 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
 
   // Standalone installs download UI assets to ~/.relay/dashboard/out.
   const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const legacyDashboardOutDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
-  return pickDashboardStaticDir([standaloneDashboardOutDir, legacyDashboardOutDir], deps);
+  return pickDashboardStaticDir([standaloneDashboardOutDir], deps);
 }
 
 function normalizeLocalhostRelayUrl(relayUrl: string): string {

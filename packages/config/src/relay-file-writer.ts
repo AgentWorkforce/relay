@@ -37,8 +37,6 @@ export interface RelayPaths {
   attachmentsDir: string;
   /** Meta directory for configuration/state */
   metaDir: string;
-  /** Legacy outbox path (for backward compatibility) */
-  legacyOutboxDir: string;
 }
 
 export interface AgentPaths extends RelayPaths {
@@ -76,7 +74,6 @@ const MAX_SOCKET_PATH_LENGTH = 107;
 const DEFAULT_OUTBOX_DIR = 'outbox';
 const DEFAULT_ATTACHMENTS_DIR = 'attachments';
 const DEFAULT_META_DIR = 'meta';
-const LEGACY_OUTBOX_BASE = '/tmp/relay-outbox';
 
 // ============================================================================
 // Path Resolution
@@ -132,7 +129,6 @@ function getWorkspacePaths(workspaceId: string): RelayPaths {
     outboxDir: path.join(workspaceDir, DEFAULT_OUTBOX_DIR),
     attachmentsDir: path.join(workspaceDir, DEFAULT_ATTACHMENTS_DIR),
     metaDir: path.join(workspaceDir, DEFAULT_META_DIR),
-    legacyOutboxDir: LEGACY_OUTBOX_BASE,
   };
 }
 
@@ -148,7 +144,6 @@ function getLocalPaths(): RelayPaths {
     outboxDir: path.join(baseDir, DEFAULT_OUTBOX_DIR),
     attachmentsDir: path.join(baseDir, DEFAULT_ATTACHMENTS_DIR),
     metaDir: path.join(baseDir, DEFAULT_META_DIR),
-    legacyOutboxDir: LEGACY_OUTBOX_BASE,
   };
 }
 
@@ -210,70 +205,13 @@ export class RelayFileWriter {
   }
 
   /**
-   * Get the legacy outbox path (for backwards compatibility symlinks).
-   */
-  getLegacyOutboxPath(): string {
-    return path.join(this.paths.legacyOutboxDir, this.agentName);
-  }
-
-  /**
    * Ensure all necessary directories exist for this agent.
-   * In workspace mode, also sets up symlinks from canonical path to workspace path.
    */
   async ensureDirectories(): Promise<void> {
     // Create agent-specific directories at canonical path
     await fs.promises.mkdir(this.paths.agentOutbox, { recursive: true });
     await fs.promises.mkdir(this.paths.agentAttachments, { recursive: true });
     await fs.promises.mkdir(this.paths.metaDir, { recursive: true });
-
-    // In workspace mode, set up symlinks so canonical path routes to workspace
-    // (Note: The orchestrator handles symlink setup, this is just for standalone use)
-    if (this.paths.isWorkspace) {
-      await this.setupWorkspaceSymlinks();
-    }
-  }
-
-  /**
-   * Set up symlinks for workspace mode.
-   * Creates symlink from legacy /tmp/relay-outbox path to workspace path.
-   * (The orchestrator creates the canonical→workspace symlink)
-   */
-  private async setupWorkspaceSymlinks(): Promise<void> {
-    const legacyPath = path.join(this.paths.legacyOutboxDir, this.agentName);
-
-    try {
-      await this.createSymlinkSafe(legacyPath, this.paths.agentOutbox);
-    } catch (err: any) {
-      console.error(`[relay-file-writer] Failed to setup workspace symlinks: ${err.message}`);
-    }
-  }
-
-  /**
-   * Helper to create a symlink, cleaning up existing path first.
-   */
-  private async createSymlinkSafe(linkPath: string, targetPath: string): Promise<void> {
-    const linkParent = path.dirname(linkPath);
-    await fs.promises.mkdir(linkParent, { recursive: true });
-
-    try {
-      const stats = await fs.promises.lstat(linkPath);
-      if (stats.isSymbolicLink()) {
-        const target = await fs.promises.readlink(linkPath);
-        if (target === targetPath) {
-          return; // Already correctly configured
-        }
-        await fs.promises.unlink(linkPath);
-      } else if (stats.isDirectory()) {
-        await fs.promises.rm(linkPath, { recursive: true, force: true });
-      }
-    } catch (err: any) {
-      if (err.code !== 'ENOENT') {
-        throw err;
-      }
-      // Path doesn't exist - proceed to create symlink
-    }
-
-    await fs.promises.symlink(targetPath, linkPath);
   }
 
   /**
@@ -494,7 +432,6 @@ export async function ensureBaseDirectories(workspaceId?: string): Promise<Relay
   await fs.promises.mkdir(paths.outboxDir, { recursive: true });
   await fs.promises.mkdir(paths.attachmentsDir, { recursive: true });
   await fs.promises.mkdir(paths.metaDir, { recursive: true });
-  await fs.promises.mkdir(paths.legacyOutboxDir, { recursive: true });
 
   return paths;
 }
