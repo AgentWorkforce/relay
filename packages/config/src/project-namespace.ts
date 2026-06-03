@@ -10,32 +10,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
-
-/**
- * Get the global base directory for agent-relay data (used for cross-project data).
- * Priority:
- * 1. AGENT_RELAY_DATA_DIR environment variable
- * 2. XDG_DATA_HOME/agentworkforce/relay (Linux/macOS standard)
- * 3. ~/.agentworkforce/relay (fallback)
- */
-function getGlobalBaseDir(): string {
-  // Explicit override
-  if (process.env.AGENT_RELAY_DATA_DIR) {
-    return process.env.AGENT_RELAY_DATA_DIR;
-  }
-
-  // XDG Base Directory Specification
-  const xdgDataHome = process.env.XDG_DATA_HOME;
-  if (xdgDataHome) {
-    return path.join(xdgDataHome, 'agentworkforce', 'relay');
-  }
-
-  // Default: ~/.agentworkforce/relay
-  return path.join(os.homedir(), '.agentworkforce/relay');
-}
-
-const GLOBAL_BASE_DIR = getGlobalBaseDir();
 
 /** Directory name within project root */
 const PROJECT_DATA_DIR = '.agentworkforce/relay';
@@ -111,20 +85,6 @@ export function getProjectPaths(projectRoot?: string): ProjectPaths {
     socketPath: path.join(dataDir, 'relay.sock'),
     projectRoot: root,
     projectId,
-  };
-}
-
-/**
- * Get the default paths (for backwards compatibility or explicit global usage)
- */
-export function getGlobalPaths(): ProjectPaths {
-  return {
-    dataDir: GLOBAL_BASE_DIR,
-    teamDir: path.join(GLOBAL_BASE_DIR, 'team'),
-    dbPath: path.join(GLOBAL_BASE_DIR, 'messages.sqlite'),
-    socketPath: path.join(GLOBAL_BASE_DIR, 'relay.sock'),
-    projectRoot: process.cwd(),
-    projectId: 'global',
   };
 }
 
@@ -226,39 +186,6 @@ export function ensureProjectDir(projectRoot?: string): ProjectPaths {
   );
 
   return paths;
-}
-
-/**
- * List all known projects (scans global base dir for legacy data)
- * Note: With project-local storage, this only finds projects that
- * used the old global storage location.
- */
-export function listProjects(): Array<{ projectId: string; projectRoot: string; dataDir: string }> {
-  if (!fs.existsSync(GLOBAL_BASE_DIR)) {
-    return [];
-  }
-
-  const projects: Array<{ projectId: string; projectRoot: string; dataDir: string }> = [];
-
-  for (const entry of fs.readdirSync(GLOBAL_BASE_DIR)) {
-    const dataDir = path.join(GLOBAL_BASE_DIR, entry);
-    const markerPath = path.join(dataDir, '.project');
-
-    if (fs.existsSync(markerPath)) {
-      try {
-        const info = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
-        projects.push({
-          projectId: entry,
-          projectRoot: info.projectRoot,
-          dataDir,
-        });
-      } catch {
-        // Invalid marker, skip
-      }
-    }
-  }
-
-  return projects;
 }
 
 /**
