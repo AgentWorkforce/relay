@@ -225,11 +225,7 @@ export class PassthroughKeybindParser {
  * save/restore-cursor trick as `drive`, no pending counter (there
  * isn't one in passthrough session).
  */
-export function renderStatusLine(opts: {
-  name: string;
-  mode: InboundDeliveryMode;
-  rows?: number;
-}): string {
+export function renderStatusLine(opts: { name: string; mode: InboundDeliveryMode; rows?: number }): string {
   const row = Math.max(opts.rows ?? 24, 1);
   const text = `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`;
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
