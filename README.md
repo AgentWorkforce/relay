@@ -149,20 +149,23 @@ The full list of events is at agentrelay.com/docs/events.
 ### Custom Actions
 
 You can register custom actions and their callbacks that are exposed to tool-capable harnesses via the agent-relay MCP.
+The descriptor (name + input schema) is stored on the relay, so the agent's MCP discovers it and the handler can run in any SDK
+process that registered it — it doesn't need to share a machine with the agent.
 ```ts
-const action = { name: 'greet', handler: async ({ input }) => onBeforeAction(input) };
+const action = { name: 'greet', handler: async ({ input }) => doSomething(input) };
 relay.registerAction(action);
 
 // react after any action completes…
-relay.addListener('action.completed', async (event) => onAfterAction(event));
+relay.addListener('action.completed', async (event) => onActionCompleted(event));
 // …or just this one
-relay.addListener(relay.action('greet').completed(), async (event) => onAfterAction(event));
+relay.addListener(relay.action('greet').completed(), async (event) => onActionCompleted(event));
 ```
 
-The handler's return value is delivered back to the agent as JSON.
+Actions are **fire-and-forget**: the agent's tool call returns immediately with an acknowledgement, the handler runs in whichever
+process registered it, and its return value is emitted as an `action.completed` event for your SDK listeners. The invoking agent
+does **not** get the return value inline — if it needs the outcome, message it from the handler (see the voting example below).
 
-This gives you the flexibility to give agents hooks back into the SDK in real time. You can optionally define the inputs you expect
-the agent to provide and restrict which agents may use the tool.
+You can optionally define the inputs you expect the agent to provide and restrict which agents may use the tool.
 
 ```ts
 relay.registerAction({
@@ -183,13 +186,12 @@ relay.registerAction({
     model: z.enum(['opus', 'sonnet']),
   }),
   availableTo: [taskManager, engineer], // leave this out to make it available to all agents!
-  handler: async ({ input }) => {
+  handler: async ({ agent: caller, input }) => {
     // create({ relay }) spawns and registers the new agent in one step.
     const agent = await claude.create({ relay, model: input.model });
-    return {
-      agentId: agent.id,
-      handle: agent.handle,
-    };
+    // tell the caller who showed up — the return value only reaches SDK listeners
+    await taskManager.sendMessage({ to: `@${caller.handle}`, text: `Spawned ${agent.handle}` });
+    return { agentId: agent.id, handle: agent.handle }; // becomes the action.completed payload
   },
 });
 ```

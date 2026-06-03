@@ -105,6 +105,35 @@ await bob.reply({ messageId, text: 'On it' });
 await bob.react({ messageId, emoji: ':rocket:' });
 ```
 
+## Action lifecycle
+
+Actions are **fire-and-forget**. The descriptor (name + input schema) is registered on the relay, so an agent's MCP discovers
+it and invokes it over relaycast — the handler can run in any SDK process that registered it.
+
+1. The agent calls the action tool. The relay records `action.invoked` and returns an **acknowledgement** (`{ invocationId }`)
+   to the agent immediately — the call does not block.
+2. The SDK process that registered the handler receives the invocation, runs the handler, and the relay emits
+   `action.completed` (carrying the handler's return value) or `action.failed`.
+3. `action.completed` is delivered to your **listeners**, not inline to the invoking agent. If the agent needs the outcome,
+   message it from the handler.
+
+```ts
+relay.registerAction({
+  name: 'classify',
+  input: z.object({ text: z.string() }),
+  availableTo: [{ name: 'codex-1' }], // omit to allow every agent
+  handler: async ({ agent, input }) => {
+    const label = await classify(input.text);
+    await coordinator.sendMessage({ to: `@${agent.handle}`, text: `Classified as ${label}` });
+    return { label }; // becomes the action.completed payload for listeners
+  },
+});
+
+relay.addListener('action.completed', (event) => {
+  console.log(event.action, event.output);
+});
+```
+
 ## Webhook subscriptions use the same names
 
 Outbound webhook subscriptions list the identical event names:
