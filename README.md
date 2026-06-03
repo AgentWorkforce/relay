@@ -36,7 +36,7 @@ await carol.channels.join('general');
 relay.addListener('message.created', ({ message, envelope }) => {
   const { from, channel } = envelope;
   if (channel?.name === 'general') {
-    console.log(`  📨 ${from.handle} in #${channel.name}: ${message.text}`);
+    console.log(`${from.handle} in #${channel.name}: ${message.text}`);
   }
 });
 
@@ -67,14 +67,12 @@ Agent Relay is a messaging layer but we make it very easy to work with Agents.
 // Agent relay comes with some out of the box you can use
 import { claude, codex } from '@agent-relay/harnesses';
 
-// create({ relay }) spawns the CLI, injects this workspace's relaycast key into the
-// runtime, registers the agent, and returns the live, already-on-the-relay client.
+// create({ relay }) starts the agent in the CLI, joins it to the relay with the workspace key
+// Agents can send/receive messages, join channels, reply, react, and more.
+// See https://agentrelay.com/docs/agent-relay-mcp for all available skills.
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 
-/// They're already on the relay — no extra register() step. They can send & receive
-/// messages, join channels, reply, react, trigger SDK callbacks and much more.
-/// @see https://agentrelay.com/docs/agent-relay-mcp for the full list of available skills
 ```
 
 ### Define your own harness
@@ -109,9 +107,7 @@ const myCustomHarness = defineHarness({
 ```
 
 #### Capabilities
-Capabilities declare what your harness can and cannot do. At a minimum a harness must be able to receive messages. Declare a
-capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method
-(the types enforce this pairing).
+Capabilities declare what your harness can and cannot do. At a minimum a harness must be able to receive messages.
 
 ```ts
 const capabilities = {
@@ -121,10 +117,11 @@ const capabilities = {
   lifecycle: { release: false },
 };
 ```
+>[!NOTE]
+> Declare a capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method (the types enforce this pairing).
 
 #### Human Messages
 A human is really just a meaty harness (cue existential crisis). We have some syntax sugar to make this common case easy.
-`createHuman({ relay })` self-registers and returns the live human client, exactly like `claude.create({ relay })`.
 ```ts
 import { createHuman } from '@agent-relay/harnesses';
 
@@ -137,8 +134,7 @@ await will.sendMessage({
 ```
 
 ## Event Callbacks
-The real power comes from hooking into events & actions to turn agents into powerful, reliable actors. `addListener` accepts a
-dotted event name, a `*` wildcard, or a fluent predicate, and always hands your handler one discriminated event object.
+The real power comes from hooking into events & actions to turn agents into powerful, reliable actors. 
 ```ts
 const stop = relay.addListener(
   engineer.status.becomes('idle'),
@@ -146,11 +142,14 @@ const stop = relay.addListener(
 );
 ```
 The full list of events is at agentrelay.com/docs/events.
+
+> [!NOTE]
+> `addListener` accepts a dotted event name, a `*` wildcard, or a fluent predicate, and always hands your handler one discriminated event object.
+
 ### Custom Actions
 
-You can register custom actions and their callbacks that are exposed to tool-capable harnesses via the agent-relay MCP.
-The descriptor (name + input schema) is stored on the relay, so the agent's MCP discovers it and the handler can run in any SDK
-process that registered it — it doesn't need to share a machine with the agent.
+You can register custom actions that will be exposed to tool-capable harnesses via the agent-relay MCP.
+
 ```ts
 const action = { name: 'greet', handler: async ({ input }) => doSomething(input) };
 relay.registerAction(action);
@@ -160,10 +159,6 @@ relay.addListener('action.completed', async (event) => onActionCompleted(event))
 // …or just this one
 relay.addListener(relay.action('greet').completed(), async (event) => onActionCompleted(event));
 ```
-
-Actions are **fire-and-forget**: the agent's tool call returns immediately with an acknowledgement, the handler runs in whichever
-process registered it, and its return value is emitted as an `action.completed` event for your SDK listeners. The invoking agent
-does **not** get the return value inline — if it needs the outcome, message it from the handler (see the voting example below).
 
 You can optionally define the inputs you expect the agent to provide and restrict which agents may use the tool.
 
