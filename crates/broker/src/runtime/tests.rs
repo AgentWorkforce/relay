@@ -1903,7 +1903,8 @@ fn continuity_dir_derives_correct_path_from_state_json() {
 
 #[test]
 fn continuity_dir_works_with_nested_project_path() {
-    let state_path = std::path::Path::new("/home/user/projects/my-app/.agentworkforce/relay/state.json");
+    let state_path =
+        std::path::Path::new("/home/user/projects/my-app/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
@@ -1915,7 +1916,10 @@ fn continuity_dir_works_with_nested_project_path() {
 fn continuity_dir_preserves_relative_paths() {
     let state_path = std::path::Path::new(".agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
-    assert_eq!(result, std::path::PathBuf::from(".agentworkforce/relay/continuity"));
+    assert_eq!(
+        result,
+        std::path::PathBuf::from(".agentworkforce/relay/continuity")
+    );
 }
 
 #[test]

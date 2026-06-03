@@ -92,7 +92,12 @@ pub(crate) fn broker_log_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir()?;
-        Some(home.join("Library").join("Logs").join("agentworkforce").join("relay"))
+        Some(
+            home.join("Library")
+                .join("Logs")
+                .join("agentworkforce")
+                .join("relay"),
+        )
     }
     #[cfg(target_os = "windows")]
     {
@@ -457,7 +462,9 @@ mod tests {
             );
         } else if cfg!(target_os = "windows") {
             assert!(
-                path_str.to_ascii_lowercase().contains("agentworkforce/relay/logs"),
+                path_str
+                    .to_ascii_lowercase()
+                    .contains("agentworkforce/relay/logs"),
                 "expected Windows LocalAppData layout, got: {path_str}"
             );
         } else {

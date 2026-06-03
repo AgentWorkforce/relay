@@ -232,7 +232,8 @@ fn machine_id_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| {
         h.join(".local")
             .join("share")
-            .join("agentworkforce").join("relay")
+            .join("agentworkforce")
+            .join("relay")
             .join("machine-id")
     })
 }

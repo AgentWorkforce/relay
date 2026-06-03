@@ -22,7 +22,10 @@ fn continuity_dir(state_path: &Path) -> std::path::PathBuf {
 fn continuity_dir_from_state_path() {
     let state_path = Path::new("/project/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
-    assert_eq!(result, Path::new("/project/.agentworkforce/relay/continuity"));
+    assert_eq!(
+        result,
+        Path::new("/project/.agentworkforce/relay/continuity")
+    );
 }
 
 #[test]
