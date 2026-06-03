@@ -18,6 +18,7 @@ Reviewed PR 1028 path rename, kept new .agentworkforce/relay behavior, added leg
 ## Key Decisions
 
 ### Kept uninstall cleanup for legacy ~/.agent-relay installer artifacts
+
 - **Chose:** Kept uninstall cleanup for legacy ~/.agent-relay installer artifacts
 - **Reasoning:** The PR intentionally moves new runtime/global paths to ~/.agentworkforce/relay, but users upgrading from old installer layouts still need uninstall to remove old dashboard assets and bin directories.
 
@@ -26,6 +27,7 @@ Reviewed PR 1028 path rename, kept new .agentworkforce/relay behavior, added leg
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Kept uninstall cleanup for legacy ~/.agent-relay installer artifacts: Kept uninstall cleanup for legacy ~/.agent-relay installer artifacts
