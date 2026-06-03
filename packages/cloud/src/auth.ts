@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { buildApiUrl } from './api-client.js';
+import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import { AUTH_FILE_PATH, REFRESH_WINDOW_MS, type StoredAuth } from './types.js';
 
 const envBackedAuth = new WeakSet<StoredAuth>();
@@ -339,13 +340,16 @@ function apiFetch(
   requestPath: string,
   init: RequestInit
 ): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  headers.set('authorization', `Bearer ${accessToken}`);
+  appendAgentRelayTelemetryHeaders(headers);
+
   return fetch(buildApiUrl(apiUrl, requestPath), {
     ...init,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${accessToken}`,
-      ...(init.headers ?? {}),
-    },
+    headers,
   });
 }
 

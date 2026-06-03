@@ -28,6 +28,8 @@ export {
 export type {
   CommonProperties,
   ActionSource,
+  TelemetryApp,
+  TelemetrySurface,
   ReleaseReason,
   WorkflowFileType,
   BrokerStartEvent,
@@ -39,6 +41,8 @@ export type {
   MessageSendEvent,
   CliCommandRunEvent,
   CliCommandCompleteEvent,
+  SdkMethodCallEvent,
+  SdkWorkflowRunEvent,
   WorkflowRunEvent,
   CloudAuthEvent,
   CloudWorkflowRunEvent,
@@ -51,3 +55,13 @@ export type {
 } from './events.js';
 
 export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';
+
+export {
+  ORCHESTRATOR_HARNESS_ENV,
+  UNKNOWN_ORCHESTRATOR_HARNESS,
+  detectOrchestratorHarness,
+  inferHarnessFromCommand,
+  sanitizeOrchestratorHarness,
+  type DetectOrchestratorHarnessOptions,
+  type ProcessInfo,
+} from './orchestrator-harness.js';
