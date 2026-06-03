@@ -296,7 +296,28 @@ describe('registerCoreCommands', () => {
     expect(dashboardOptions.env?.RELAY_URL).toBe('http://127.0.0.1:5000');
   });
 
-  it('up infers static-dir for standalone dashboard binary install layout', async () => {
+  it('up infers static-dir for install-dir dashboard layout', async () => {
+    const home = '/Users/tester';
+    const staticDir = `${home}/.agentworkforce/relay/dashboard/out`;
+    const fs = createFsMock({
+      [staticDir]: '',
+      [`${staticDir}/index.html`]: '<html></html>',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: { HOME: home },
+      dashboardBinary: `${home}/.local/bin/relay-dashboard-server`,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
+  });
+
+  it('up infers static-dir for prior ~/.relay dashboard layout (fallback)', async () => {
     const home = '/Users/tester';
     const staticDir = `${home}/.relay/dashboard/out`;
     const fs = createFsMock({

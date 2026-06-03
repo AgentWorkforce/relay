@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Relay stores per-project runtime state in `.agentworkforce/relay/` (was `.agent-relay/`), and the global data/log home moves from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`. The `~/.config/agent-relay` config directory is unchanged.
+- `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
 - Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
 - `agent-relay`, `@agent-relay/sdk`, and `@agent-relay/openclaw` now consume `@relaycast/sdk` 2.1.x for Relaycast's latest inbox delivery behavior.
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
@@ -78,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@agent-relay/config` removes the unused `getGlobalPaths()` and `listProjects()` exports (legacy global-storage helpers) and drops the `.agent-relay.json` project-root config fallback; shadow config now loads only from `.agentworkforce/relay/config.json`.
 - `@agent-relay/config` removes the legacy `/tmp/relay-outbox` symlink: `RelayFileWriter` no longer creates it on `ensureDirectories()`, and the `getLegacyOutboxPath()` method and `RelayPaths.legacyOutboxDir` field are gone.
-- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup; dashboard assets resolve only from `~/.relay/dashboard`. (Uninstall still purges legacy install dirs.)
+- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup. (Uninstall still purges legacy install dirs.)
 
 ### Fixed
 
