@@ -282,7 +282,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use workspace tsc instead of network-fetched typescript
 - Document harness runtime plan
 - Replace stringly-typed protocol IDs with newtypes
-- Remove external Relaycast MCP dependency
+- Remove external MCP dependency
 - Cache workspace node_modules too
 - Return harness session IDs from spawns
 - Sdk: forward-compat persona-kit ≥3.0.20 (optional harness/model)
@@ -413,7 +413,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Claude PTY workers pre-register so Relaycast MCP boots faster.
+- Claude PTY workers pre-register so `agent-relay mcp` boots faster.
 
 ## [6.3.0] - 2026-05-20
 
@@ -522,7 +522,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay.spawn({ task })` returns `success: false` and terminates the agent when task delivery fails after retries.
 - Broker worker teardown emits `message_delivery_failed` for dropped pending deliveries so SDK delivery waiters terminate.
 - SDK `sendAndWaitForDelivery` waits for terminal delivery confirmation or failure instead of treating `delivery_ack` as final.
-- Relaycast MCP startup ignores unresolved `RELAY_*` environment placeholders before auto-registering.
+- `agent-relay mcp` startup ignores unresolved `RELAY_*` environment placeholders before auto-registering.
 - `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
 - `agent-relay replies --unread` prints nothing when there are no unread messages.
 - Messaging `--limit` values clamp invalid negative inputs.
@@ -909,7 +909,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Wire relaycast MCP for headless opencode spawner
+- Wire Agent Relay MCP for headless OpenCode spawner
 
 ## [4.0.15] - 2026-04-12
 

@@ -9,7 +9,7 @@ This package gives Codex a reusable relay coordination layer so sub-agents can c
 It includes:
 
 - a Codex skill that teaches lead and worker messaging protocol
-- an MCP dependency declaration for Relaycast
+- an Agent Relay MCP dependency declaration
 - a template Agent Relay MCP config block for `.codex/config.toml`
 - a `relay-worker` custom agent template for `.codex/agents/`
 
@@ -60,7 +60,7 @@ If you prefer to configure everything manually instead of using the auto-install
 ```toml
 features.codex_hooks = true
 
-[mcp_servers.relaycast]
+[mcp_servers.agent-relay]
 command = "npx"
 args = ["-y", "agent-relay", "mcp"]
 env = { RELAY_API_KEY = "", RELAY_BASE_URL = "https://api.relaycast.dev", RELAY_AGENT_TYPE = "agent" }

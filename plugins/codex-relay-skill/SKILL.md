@@ -84,7 +84,7 @@ Use `add_agent` to create a Relaycast-native agent. Best for tasks that are prim
 
 ### Codex sub-agents (for code-heavy tasks)
 
-Use `spawn_agent` with the `relay-worker` agent definition for tasks that need full code editing, file access, and tool use. The worker gets its own Codex runtime with Relaycast MCP tools available.
+Use `spawn_agent` with the `relay-worker` agent definition for tasks that need full code editing, file access, and tool use. The worker gets its own Codex runtime with Agent Relay MCP tools available.
 
 **Lead steps:**
 

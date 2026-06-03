@@ -140,7 +140,7 @@ ensure_top_level_approval_policy() {
   write_if_changed "$file" "$tmp"
 }
 
-ensure_relaycast_mcp_block() {
+ensure_agent_relay_mcp_block() {
   local file="$1"
   local tmp
   tmp=$(mktemp)
@@ -172,30 +172,30 @@ ensure_relaycast_mcp_block() {
       }
     }
     {
-      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]relaycast[.]command[[:space:]]*=/) {
+      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]agent-relay[.]command[[:space:]]*=/) {
         block_seen = 1
         dotted_seen = 1
         command_seen = 1
         command_line = $0
-        sub(/^[[:space:]]*mcp_servers[.]relaycast[.]command[[:space:]]*=/, "command =", command_line)
+        sub(/^[[:space:]]*mcp_servers[.]agent-relay[.]command[[:space:]]*=/, "command =", command_line)
         print
         next
       }
-      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]relaycast[.]args[[:space:]]*=/) {
+      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]agent-relay[.]args[[:space:]]*=/) {
         block_seen = 1
         dotted_seen = 1
         args_seen = 1
         args_line = $0
-        sub(/^[[:space:]]*mcp_servers[.]relaycast[.]args[[:space:]]*=/, "args =", args_line)
+        sub(/^[[:space:]]*mcp_servers[.]agent-relay[.]args[[:space:]]*=/, "args =", args_line)
         print
         next
       }
-      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]relaycast[.]env[[:space:]]*=/) {
+      if (!in_block && $0 ~ /^[[:space:]]*mcp_servers[.]agent-relay[.]env[[:space:]]*=/) {
         block_seen = 1
         dotted_seen = 1
         env_seen = 1
         env_line = $0
-        sub(/^[[:space:]]*mcp_servers[.]relaycast[.]env[[:space:]]*=/, "env =", env_line)
+        sub(/^[[:space:]]*mcp_servers[.]agent-relay[.]env[[:space:]]*=/, "env =", env_line)
         print
         next
       }
@@ -204,7 +204,7 @@ ensure_relaycast_mcp_block() {
         if (in_block) {
           write_missing_keys()
         }
-        if ($0 == "[mcp_servers.relaycast]") {
+        if ($0 == "[mcp_servers.agent-relay]") {
           in_block = 1
           block_seen = 1
         } else {
@@ -242,7 +242,7 @@ ensure_relaycast_mcp_block() {
         if (NR > 0) {
           print ""
         }
-        print "[mcp_servers.relaycast]"
+        print "[mcp_servers.agent-relay]"
         print command_line
         print args_line
         print env_line
@@ -368,7 +368,7 @@ main() {
 
   ensure_features_codex_hooks "$CONFIG_FILE"
   ensure_top_level_approval_policy "$CONFIG_FILE"
-  ensure_relaycast_mcp_block "$CONFIG_FILE"
+  ensure_agent_relay_mcp_block "$CONFIG_FILE"
   merge_hooks_file "$(desired_hooks_json)"
   install_worker_agent
 }

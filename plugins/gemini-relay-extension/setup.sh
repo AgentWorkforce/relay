@@ -3,15 +3,15 @@
 # Agent Relay extension setup for Gemini CLI
 #
 # Ensures ~/.gemini/settings.json has the required tool permissions
-# so background workers can use Relaycast MCP tools.
+# so background workers can use Agent Relay MCP tools.
 #
 
 set -euo pipefail
 
 SETTINGS_FILE="$HOME/.gemini/settings.json"
 PERMISSIONS=(
-  "relaycast.*"
-  "mcp_relaycast_*"
+  "agent-relay.*"
+  "mcp_agent_relay_*"
 )
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -35,7 +35,7 @@ missing=$(jq --argjson perms "$PERMS_JSON" '
 ' "$SETTINGS_FILE")
 
 if [ "$missing" = "[]" ]; then
-  echo "Relaycast MCP permissions already configured in $SETTINGS_FILE."
+  echo "Agent Relay MCP permissions already configured in $SETTINGS_FILE."
 else
   # Add missing permissions, preserving existing settings
   tmp=$(mktemp)
@@ -45,7 +45,7 @@ else
     .tools.allowed += $perms |
     .tools.allowed |= unique
   ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
-  echo "Added Relaycast MCP permissions to $SETTINGS_FILE."
+  echo "Added Agent Relay MCP permissions to $SETTINGS_FILE."
 fi
 
 echo ""

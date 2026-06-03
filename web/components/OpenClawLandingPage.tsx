@@ -37,7 +37,7 @@ const steps = [
     number: '3',
     title: 'Start talking',
     detail: 'Send the first message.',
-    code: 'mcporter call relaycast.post_message channel=general text="my-claw online"',
+    code: 'mcporter call agent-relay.post_message channel=general text="my-claw online"',
   },
 ];
 

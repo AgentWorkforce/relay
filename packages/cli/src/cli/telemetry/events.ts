@@ -205,6 +205,73 @@ export interface CliCommandCompleteEvent {
   error_class?: string;
 }
 
+/**
+ * cli_install - Emitted when a fresh CLI install initializes telemetry for the first time.
+ */
+export interface CliInstallEvent {
+  /** Installed CLI version. */
+  version: string;
+  /** True when install attribution completed successfully. */
+  success: boolean;
+  /** Error constructor/category when success=false. */
+  error_class?: string;
+}
+
+/**
+ * cli_update - Emitted when `agent-relay update` attempts to install a newer CLI.
+ */
+export interface CliUpdateEvent {
+  /** CLI version before the update attempt. */
+  from_version: string;
+  /** Target CLI version, or 'latest' if the registry did not return a concrete version. */
+  to_version: string;
+  /** True when the update install command completed successfully. */
+  success: boolean;
+  /** Error constructor/category when success=false. */
+  error_class?: string;
+}
+
+export type AgentRelayToolCallType =
+  | 'agent.create'
+  | 'agent.release'
+  | 'agent.attach'
+  | 'agent.status'
+  | (string & {});
+
+export type AgentRelayToolCallCategory =
+  | 'spawn'
+  | 'release'
+  | 'action'
+  | 'workspace'
+  | 'agent'
+  | 'message'
+  | 'channel'
+  | 'reaction'
+  | 'inbox'
+  | 'result'
+  | 'tool'
+  | (string & {});
+
+/**
+ * agent_relay_tool_call - Emitted for `agent-relay mcp` tool calls without capturing arguments.
+ */
+export interface AgentRelayToolCallEvent {
+  /** `agent-relay mcp` tool name, e.g. 'add_agent', 'remove_agent', 'invoke_action'. */
+  tool_name: string;
+  /** Agent Relay tool kind/name, e.g. 'agent.create', 'agent.release', or 'github.open_pr'. */
+  tool_type: AgentRelayToolCallType;
+  /** Coarse Agent Relay tool grouping for dashboards, e.g. 'spawn', 'release', 'action'. */
+  tool_category: AgentRelayToolCallCategory;
+  /** Transport surface that served the `agent-relay mcp` call. */
+  transport: 'stdio' | 'http' | 'unknown' | (string & {});
+  /** True when the tool returned a non-error result. */
+  success: boolean;
+  /** Wall-clock duration in milliseconds. */
+  duration_ms: number;
+  /** Error constructor/category when success=false. */
+  error_class?: string;
+}
+
 // =============================================================================
 // Tier 3: Domain Events (high-signal product flows)
 // =============================================================================
@@ -367,6 +434,9 @@ export type TelemetryEventName =
   | 'message_send'
   | 'cli_command_run'
   | 'cli_command_complete'
+  | 'cli_install'
+  | 'cli_update'
+  | 'agent_relay_tool_call'
   | 'workflow_run'
   | 'cloud_auth'
   | 'cloud_workflow_run'
@@ -386,6 +456,9 @@ export interface TelemetryEventMap {
   message_send: MessageSendEvent;
   cli_command_run: CliCommandRunEvent;
   cli_command_complete: CliCommandCompleteEvent;
+  cli_install: CliInstallEvent;
+  cli_update: CliUpdateEvent;
+  agent_relay_tool_call: AgentRelayToolCallEvent;
   workflow_run: WorkflowRunEvent;
   cloud_auth: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;

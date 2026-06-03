@@ -27,9 +27,19 @@ import type {
   ZodLikeSchema,
 } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
+import {
+  initTelemetry,
+  shutdown as shutdownTelemetry,
+  track,
+  type AgentRelayToolCallCategory,
+  type AgentRelayToolCallType,
+} from './telemetry/index.js';
+import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
+import { errorClassName } from './lib/telemetry-helpers.js';
 
 const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
+let mcpTelemetryExitHookInstalled = false;
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
@@ -142,6 +152,26 @@ function isEntrypoint(): boolean {
   } catch {
     return path.resolve(invocationPath) === fileURLToPath(import.meta.url);
   }
+}
+
+function initMcpTelemetry(): void {
+  initTelemetry({
+    showNotice: false,
+    cliVersion: process.env.AGENT_RELAY_CLI_VERSION ?? AGENT_RELAY_MCP_VERSION,
+    sdkVersion: process.env.AGENT_RELAY_SDK_VERSION,
+    app: 'cli',
+    surface: 'mcp',
+    orchestratorHarness: process.env.AGENT_RELAY_ORCHESTRATOR_HARNESS ?? process.env.AGENT_RELAY_HARNESS,
+  });
+
+  if (mcpTelemetryExitHookInstalled) {
+    return;
+  }
+
+  mcpTelemetryExitHookInstalled = true;
+  process.on('beforeExit', () => {
+    void shutdownTelemetry().catch(() => undefined);
+  });
 }
 
 export function envFlagEnabled(value: string | undefined): boolean {
@@ -289,7 +319,10 @@ function createInitialSession(options: {
 }
 
 async function createWorkspace(name: string, baseUrl?: string): Promise<Record<string, unknown>> {
-  return (await RelayCast.createWorkspace(name, { baseUrl })) as Record<string, unknown>;
+  return (await RelayCast.createWorkspace(name, {
+    baseUrl,
+    ...relaycastWorkspaceTelemetryOptions(),
+  })) as Record<string, unknown>;
 }
 
 function extractWorkspaceKey(payload: Record<string, unknown>): string | undefined {
@@ -488,7 +521,8 @@ function registerAgentRelayActionTools(
   actions: AgentRelayActions | undefined,
   getSession: () => SessionState,
   onAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void,
-  getAgentClient?: (asIdentity?: string) => AgentClientLike
+  getAgentClient?: (asIdentity?: string) => AgentClientLike,
+  actionToolNames?: Set<string>
 ): void {
   if (!actions) {
     return;
@@ -567,6 +601,7 @@ function registerAgentRelayActionTools(
     .list({ visibility: 'agent' })
     .then((descriptors) => {
       for (const descriptor of descriptors) {
+        actionToolNames?.add(descriptor.name);
         server.registerTool(
           descriptor.name,
           {
@@ -948,11 +983,133 @@ function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
   };
 }
 
+interface AgentRelayToolCallMetadata {
+  toolType: AgentRelayToolCallType;
+  toolCategory: AgentRelayToolCallCategory;
+}
+
+const AGENT_RELAY_TOOL_CALL_METADATA = {
+  add_agent: { toolType: 'agent.create', toolCategory: 'spawn' },
+  remove_agent: { toolType: 'agent.release', toolCategory: 'release' },
+  invoke_action: { toolType: 'action.invoke', toolCategory: 'action' },
+  list_actions: { toolType: 'action.list', toolCategory: 'action' },
+  submit_result: { toolType: 'result.submit', toolCategory: 'result' },
+  create_workspace: { toolType: 'workspace.create', toolCategory: 'workspace' },
+  set_workspace_key: { toolType: 'workspace.set_key', toolCategory: 'workspace' },
+  register_agent: { toolType: 'agent.register', toolCategory: 'agent' },
+  list_agents: { toolType: 'agent.list', toolCategory: 'agent' },
+  post_message: { toolType: 'message.post', toolCategory: 'message' },
+  send_dm: { toolType: 'message.dm', toolCategory: 'message' },
+  send_group_dm: { toolType: 'message.group_dm', toolCategory: 'message' },
+  list_dms: { toolType: 'message.dm_list', toolCategory: 'message' },
+  list_messages: { toolType: 'message.list', toolCategory: 'message' },
+  get_message: { toolType: 'message.get', toolCategory: 'message' },
+  reply_to_thread: { toolType: 'message.reply', toolCategory: 'message' },
+  get_message_thread: { toolType: 'message.thread', toolCategory: 'message' },
+  get_thread: { toolType: 'message.thread', toolCategory: 'message' },
+  search_messages: { toolType: 'message.search', toolCategory: 'message' },
+  create_channel: { toolType: 'channel.create', toolCategory: 'channel' },
+  list_channels: { toolType: 'channel.list', toolCategory: 'channel' },
+  join_channel: { toolType: 'channel.join', toolCategory: 'channel' },
+  leave_channel: { toolType: 'channel.leave', toolCategory: 'channel' },
+  set_channel_topic: { toolType: 'channel.set_topic', toolCategory: 'channel' },
+  archive_channel: { toolType: 'channel.archive', toolCategory: 'channel' },
+  invite_to_channel: { toolType: 'channel.invite', toolCategory: 'channel' },
+  list_channel_members: { toolType: 'channel.member_list', toolCategory: 'channel' },
+  add_reaction: { toolType: 'reaction.add', toolCategory: 'reaction' },
+  remove_reaction: { toolType: 'reaction.remove', toolCategory: 'reaction' },
+  check_inbox: { toolType: 'inbox.check', toolCategory: 'inbox' },
+  mark_message_read: { toolType: 'inbox.mark_read', toolCategory: 'inbox' },
+  get_message_readers: { toolType: 'inbox.reader_list', toolCategory: 'inbox' },
+} satisfies Record<string, AgentRelayToolCallMetadata>;
+
+function readInvokedActionName(name: string, args: unknown[]): AgentRelayToolCallType | undefined {
+  if (name !== 'invoke_action') {
+    return undefined;
+  }
+  const [input] = args;
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const actionName = (input as { name?: unknown }).name;
+  return typeof actionName === 'string' && actionName.trim() ? actionName : undefined;
+}
+
+function agentRelayActionNameCategory(name: string): AgentRelayToolCallCategory {
+  const leaf = name.split(/[._-]/).filter(Boolean).at(-1)?.toLowerCase();
+  switch (leaf) {
+    case 'create':
+    case 'spawn':
+    case 'attach':
+      return 'spawn';
+    case 'release':
+      return 'release';
+    case 'status':
+      return 'agent';
+    default:
+      return 'action';
+  }
+}
+
+function agentRelayToolCallMetadata(
+  name: string,
+  args: unknown[],
+  actionToolNames: Set<string>
+): AgentRelayToolCallMetadata {
+  const invokedActionName = readInvokedActionName(name, args);
+  if (invokedActionName) {
+    return {
+      toolType: invokedActionName,
+      toolCategory: agentRelayActionNameCategory(invokedActionName),
+    };
+  }
+
+  const known = (AGENT_RELAY_TOOL_CALL_METADATA as Partial<Record<string, AgentRelayToolCallMetadata>>)[name];
+  if (known) {
+    return known;
+  }
+
+  if (actionToolNames.has(name)) {
+    return {
+      toolType: name,
+      toolCategory: agentRelayActionNameCategory(name),
+    };
+  }
+
+  return { toolType: name, toolCategory: 'tool' };
+}
+
+function isErrorToolResult(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && (value as { isError?: unknown }).isError === true);
+}
+
+function trackAgentRelayToolCall(input: {
+  toolName: string;
+  toolType: AgentRelayToolCallType;
+  toolCategory: AgentRelayToolCallCategory;
+  transport?: AgentRelayMcpServerOptions['telemetryTransport'];
+  startedAt: number;
+  success: boolean;
+  errorClass?: string;
+}): void {
+  track('agent_relay_tool_call', {
+    tool_name: input.toolName,
+    tool_type: input.toolType,
+    tool_category: input.toolCategory,
+    transport: input.transport ?? 'unknown',
+    success: input.success,
+    duration_ms: Date.now() - input.startedAt,
+    ...(input.errorClass ? { error_class: input.errorClass } : {}),
+  });
+}
+
 function enableInboxPiggyback(
   mcpServer: McpServer,
   getSession: () => SessionState,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
-  invalidateAgentToken: (asIdentity?: string) => void
+  invalidateAgentToken: (asIdentity?: string) => void,
+  telemetryTransport?: AgentRelayMcpServerOptions['telemetryTransport'],
+  actionToolNames = new Set<string>()
 ): void {
   const original = mcpServer.registerTool.bind(mcpServer);
   const mutableServer = mcpServer as McpServer & {
@@ -966,6 +1123,8 @@ function enableInboxPiggyback(
 
     const wrapped = async (...args: unknown[]) => {
       const asIdentity = readAsIdentity(args);
+      const startedAt = Date.now();
+      const toolMetadata = agentRelayToolCallMetadata(name, args, actionToolNames);
 
       let result: any;
       try {
@@ -975,39 +1134,74 @@ function enableInboxPiggyback(
         // freshly-issued token, and let registration errors bubble normally.
         if (name !== 'register_agent' && isInvalidAgentTokenError(err)) {
           invalidateAgentToken(asIdentity);
+          trackAgentRelayToolCall({
+            toolName: name,
+            toolType: toolMetadata.toolType,
+            toolCategory: toolMetadata.toolCategory,
+            transport: telemetryTransport,
+            startedAt,
+            success: false,
+            errorClass: errorClassName(err) ?? 'InvalidAgentToken',
+          });
           return invalidAgentTokenToolResult();
         }
+        trackAgentRelayToolCall({
+          toolName: name,
+          toolType: toolMetadata.toolType,
+          toolCategory: toolMetadata.toolCategory,
+          transport: telemetryTransport,
+          startedAt,
+          success: false,
+          errorClass: errorClassName(err),
+        });
         throw err;
       }
 
       // Successful response that still carries an "Invalid agent token" body.
       if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {
         invalidateAgentToken(asIdentity);
+        trackAgentRelayToolCall({
+          toolName: name,
+          toolType: toolMetadata.toolType,
+          toolCategory: toolMetadata.toolCategory,
+          transport: telemetryTransport,
+          startedAt,
+          success: false,
+          errorClass: 'InvalidAgentToken',
+        });
         if (hasContentArray(result)) {
           result.content.push({ type: 'text', text: agentTokenRecoveryMessage() });
         }
         return result;
       }
 
-      if (SKIP_PIGGYBACK.has(name) || !getSession().agentToken || !hasContentArray(result)) {
-        return result;
-      }
-
-      try {
-        const inbox = await getAgentClient(asIdentity).inbox();
-        const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
-        if (inboxText) {
-          result.content.push({ type: 'text', text: inboxText });
-        }
-      } catch (err) {
-        // Inbox piggyback is opportunistic; the original tool result should
-        // still win. But if the inbox fetch itself reveals an invalid token,
-        // clear the stale identity so the next call doesn't reuse it.
-        if (isInvalidAgentTokenError(err)) {
-          invalidateAgentToken(asIdentity);
+      if (!SKIP_PIGGYBACK.has(name) && getSession().agentToken && hasContentArray(result)) {
+        try {
+          const inbox = await getAgentClient(asIdentity).inbox();
+          const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
+          if (inboxText) {
+            result.content.push({ type: 'text', text: inboxText });
+          }
+        } catch (err) {
+          // Inbox piggyback is opportunistic; the original tool result should
+          // still win. But if the inbox fetch itself reveals an invalid token,
+          // clear the stale identity so the next call doesn't reuse it.
+          if (isInvalidAgentTokenError(err)) {
+            invalidateAgentToken(asIdentity);
+          }
         }
       }
 
+      const resultIsError = isErrorToolResult(result);
+      trackAgentRelayToolCall({
+        toolName: name,
+        toolType: toolMetadata.toolType,
+        toolCategory: toolMetadata.toolCategory,
+        transport: telemetryTransport,
+        startedAt,
+        success: !resultIsError,
+        ...(resultIsError ? { errorClass: 'ToolResultError' } : {}),
+      });
       return result;
     };
 
@@ -1654,6 +1848,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     agentToken: options.agentToken ?? null,
     agentName: options.agentName ?? null,
   });
+  const actionToolNames = new Set<string>();
 
   const mcpServer = new McpServer(
     { name: 'agent-relay', version: AGENT_RELAY_MCP_VERSION },
@@ -1675,10 +1870,12 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
       );
     }
 
-    return new RelayCast({
-      apiKey: workspaceKey,
-      baseUrl: options.baseUrl,
-    });
+    return new RelayCast(
+      withRelaycastTelemetry({
+        apiKey: workspaceKey,
+        baseUrl: options.baseUrl,
+      })
+    );
   };
 
   const notifySubscribers = () => {
@@ -1707,10 +1904,12 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     if (session.agentToken && !session.wsBridge && !session.wsInitAttempted) {
       try {
         const subscriptions = new SubscriptionManager();
-        const wsClient = new WsClient({
-          token: session.agentToken,
-          baseUrl: options.baseUrl,
-        });
+        const wsClient = new WsClient(
+          withRelaycastTelemetry({
+            token: session.agentToken,
+            baseUrl: options.baseUrl,
+          })
+        );
         const wsBridge = new RealtimeResourceBridge(wsClient, subscriptions, (uri) => {
           mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
         });
@@ -1771,13 +1970,22 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return new RelayCast({
-      apiKey: agentToken,
-      baseUrl: options.baseUrl,
-    }).as(agentToken, { autoHeartbeatMs: false });
+    return new RelayCast(
+      withRelaycastTelemetry({
+        apiKey: agentToken,
+        baseUrl: options.baseUrl,
+      })
+    ).as(agentToken, { autoHeartbeatMs: false });
   };
 
-  enableInboxPiggyback(mcpServer, getSession, getAgentClient, invalidateAgentToken);
+  enableInboxPiggyback(
+    mcpServer,
+    getSession,
+    getAgentClient,
+    invalidateAgentToken,
+    options.telemetryTransport,
+    actionToolNames
+  );
   registerResourceDefinitions(mcpServer, getAgentClient, getRelay);
   mcpServer.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
     session.subscriptions?.subscribe(req.params.uri);
@@ -1803,7 +2011,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.actions,
     getSession,
     options.onActionAuditEvent,
-    getAgentClient
+    getAgentClient,
+    actionToolNames
   );
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
 
@@ -1878,10 +2087,12 @@ export async function resolveStdioBootstrapOptions(
     return options;
   }
 
-  const relay = new RelayCast({
-    apiKey: workspaceKey,
-    baseUrl: options.baseUrl,
-  });
+  const relay = new RelayCast(
+    withRelaycastTelemetry({
+      apiKey: workspaceKey,
+      baseUrl: options.baseUrl,
+    })
+  );
 
   const registered = await relay.agents.registerOrRotate({
     name: options.agentName,
@@ -1895,6 +2106,7 @@ export async function resolveStdioBootstrapOptions(
 }
 
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
+  initMcpTelemetry();
   const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
@@ -1922,9 +2134,10 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
 }
 
 if (isEntrypoint()) {
-  startAgentRelayMcpStdio(optionsFromEnv()).catch((error) => {
+  startAgentRelayMcpStdio(optionsFromEnv()).catch(async (error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     process.stderr.write(`${message}\n`);
+    await shutdownTelemetry().catch(() => undefined);
     process.exit(1);
   });
 }

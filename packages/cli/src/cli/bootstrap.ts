@@ -328,6 +328,11 @@ function shouldSkipTelemetryInit(argv: string[]): boolean {
   );
 }
 
+function isStdioServerCommand(argv: string[]): boolean {
+  const commandName = argv[2];
+  return Boolean(commandName && STDIO_SERVER_COMMANDS.has(commandName));
+}
+
 /**
  * Top-level verb names that the verbless `-n NAME CLI` silent alias
  * must NOT swallow. Built once from the program's leaf+group command
@@ -406,10 +411,12 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     throw err;
   }
 
-  try {
-    await shutdownTelemetry();
-  } catch {
-    // Ignore — the command succeeded.
+  if (!isStdioServerCommand(argv)) {
+    try {
+      await shutdownTelemetry();
+    } catch {
+      // Ignore — the command succeeded.
+    }
   }
 
   return program;

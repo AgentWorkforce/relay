@@ -42,7 +42,7 @@
       "description": "Gemini CLI extension for Agent Relay - MCP server, lifecycle hooks, custom commands, and multi-agent skills",
       "format": "generic",
       "subtype": "plugin",
-      "tags": ["gemini-cli", "extension", "multi-agent", "relaycast", "mcp", "hooks"],
+      "tags": ["gemini-cli", "extension", "multi-agent", "agent-relay", "mcp", "hooks"],
       "files": [
         "plugins/gemini-relay-extension/gemini-extension.json",
         "plugins/gemini-relay-extension/relay-server.js",

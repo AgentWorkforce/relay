@@ -15,7 +15,49 @@ const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
 
 const MCP_FILE: &str = ".mcp.json";
-const RELAYCAST_SERVER: &str = "relaycast";
+const AGENT_RELAY_MCP_SERVER: &str = "agent-relay";
+const LEGACY_RELAYCAST_SERVER: &str = "relaycast";
+
+fn is_agent_relay_mcp_server_name(name: &str) -> bool {
+    name == AGENT_RELAY_MCP_SERVER || name == LEGACY_RELAYCAST_SERVER
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentRelayMcpCommand {
+    command: String,
+    args: Vec<String>,
+}
+
+fn parse_agent_relay_mcp_command(custom_cmd: Option<&str>) -> AgentRelayMcpCommand {
+    if let Some(custom_cmd) = custom_cmd {
+        let parts: Vec<String> = custom_cmd
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect();
+        if let Some((command, args)) = parts.split_first() {
+            return AgentRelayMcpCommand {
+                command: command.clone(),
+                args: args.to_vec(),
+            };
+        }
+    }
+
+    AgentRelayMcpCommand {
+        command: "npx".to_string(),
+        args: vec![
+            "-y".to_string(),
+            AGENT_RELAY_MCP_PACKAGE.to_string(),
+            AGENT_RELAY_MCP_SUBCOMMAND.to_string(),
+        ],
+    }
+}
+
+fn agent_relay_mcp_command() -> AgentRelayMcpCommand {
+    // Allow overriding the Agent Relay MCP command for local development/testing.
+    // e.g. AGENT_RELAY_MCP_COMMAND="node /path/to/agent-relay/dist/cli/agent-relay-mcp.js"
+    let custom_cmd = std::env::var("AGENT_RELAY_MCP_COMMAND").ok();
+    parse_agent_relay_mcp_command(custom_cmd.as_deref())
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct McpInstallReport {
@@ -24,7 +66,7 @@ pub struct McpInstallReport {
     pub skipped: usize,
 }
 
-pub fn ensure_relaycast_mcp_config(
+pub fn ensure_agent_relay_mcp_config(
     root: &Path,
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
@@ -32,7 +74,7 @@ pub fn ensure_relaycast_mcp_config(
 ) -> io::Result<McpInstallReport> {
     let mut report = McpInstallReport::default();
     let path = root.join(MCP_FILE);
-    let relaycast_server = relaycast_server_config(
+    let agent_relay_server = agent_relay_mcp_server_config(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -44,7 +86,7 @@ pub fn ensure_relaycast_mcp_config(
 
     if !path.exists() {
         let mut servers = Map::new();
-        servers.insert(RELAYCAST_SERVER.to_string(), relaycast_server);
+        servers.insert(AGENT_RELAY_MCP_SERVER.to_string(), agent_relay_server);
         let mut top = Map::new();
         top.insert("mcpServers".to_string(), Value::Object(servers));
         write_pretty_json(&path, &Value::Object(top))?;
@@ -78,36 +120,21 @@ pub fn ensure_relaycast_mcp_config(
         )
     })?;
 
-    if let Some(existing) = servers_obj.get_mut(RELAYCAST_SERVER) {
-        // Update env vars on existing entry (e.g. RELAY_AGENT_NAME may have changed)
-        if let Some(new_env) = relaycast_server.get("env") {
-            if let Some(obj) = existing.as_object_mut() {
-                obj.insert("env".to_string(), new_env.clone());
-                write_pretty_json(&path, &parsed)?;
-                report.updated = 1;
-            } else {
-                report.skipped = 1;
-            }
-        } else {
-            report.skipped = 1;
-        }
-        return Ok(report);
-    }
-
-    servers_obj.insert(RELAYCAST_SERVER.to_string(), relaycast_server);
+    servers_obj.remove(LEGACY_RELAYCAST_SERVER);
+    servers_obj.insert(AGENT_RELAY_MCP_SERVER.to_string(), agent_relay_server);
     write_pretty_json(&path, &parsed)?;
     report.updated = 1;
     Ok(report)
 }
 
-/// Build the full MCP config JSON string for the relaycast server.
+/// Build the full MCP config JSON string for the Agent Relay MCP server.
 /// Suitable for passing to `--mcp-config` CLI flags.
-pub fn relaycast_mcp_config_json(
+pub fn agent_relay_mcp_config_json(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
 ) -> String {
-    relaycast_mcp_config_json_with_token(
+    agent_relay_mcp_config_json_with_token(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -117,7 +144,7 @@ pub fn relaycast_mcp_config_json(
     )
 }
 
-pub fn relaycast_mcp_config_json_with_token(
+pub fn agent_relay_mcp_config_json_with_token(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
@@ -125,7 +152,7 @@ pub fn relaycast_mcp_config_json_with_token(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> String {
-    relaycast_mcp_config_json_with_result(
+    agent_relay_mcp_config_json_with_result(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -136,7 +163,7 @@ pub fn relaycast_mcp_config_json_with_token(
     )
 }
 
-pub fn relaycast_mcp_config_json_with_result(
+pub fn agent_relay_mcp_config_json_with_result(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
@@ -145,7 +172,7 @@ pub fn relaycast_mcp_config_json_with_result(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> String {
-    let server = relaycast_server_config(
+    let server = agent_relay_mcp_server_config(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -155,23 +182,23 @@ pub fn relaycast_mcp_config_json_with_result(
         agent_result,
     );
     let mut servers = Map::new();
-    servers.insert(RELAYCAST_SERVER.to_string(), server);
+    servers.insert(AGENT_RELAY_MCP_SERVER.to_string(), server);
     let mut top = Map::new();
     top.insert("mcpServers".to_string(), Value::Object(servers));
     serde_json::to_string(&Value::Object(top)).expect("MCP config serialization cannot fail")
 }
 
-/// Merge the broker's relaycast MCP config with the user's MCP servers from all
+/// Merge the broker's Agent Relay MCP config with the user's MCP servers from all
 /// Claude config sources:
 ///   1. `~/.claude/settings.json`       (global user settings)
 ///   2. `~/.claude/settings.local.json`  (local user settings, gitignored)
 ///   3. `.mcp.json`                      (project-level)
 ///
 /// Later sources override earlier ones (matching Claude's own precedence).
-/// The relaycast entry always wins (prevents stale entries from overriding broker creds).
+/// The Agent Relay entry always wins (prevents stale entries from overriding broker creds).
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
-fn merge_relaycast_with_project_mcp(
+fn merge_agent_relay_with_project_mcp(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
@@ -181,7 +208,7 @@ fn merge_relaycast_with_project_mcp(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> String {
-    merge_relaycast_with_project_mcp_inner(
+    merge_agent_relay_with_project_mcp_inner(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -197,7 +224,7 @@ fn merge_relaycast_with_project_mcp(
 /// Inner implementation that accepts an explicit home directory for testability.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
-fn merge_relaycast_with_project_mcp_inner(
+fn merge_agent_relay_with_project_mcp_inner(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
@@ -208,7 +235,7 @@ fn merge_relaycast_with_project_mcp_inner(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> String {
-    let relaycast_server = relaycast_server_config(
+    let agent_relay_server = agent_relay_mcp_server_config(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -242,7 +269,7 @@ fn merge_relaycast_with_project_mcp_inner(
                 if let Some(existing_servers) = parsed.get("mcpServers").and_then(Value::as_object)
                 {
                     for (name, config) in existing_servers {
-                        if name != RELAYCAST_SERVER {
+                        if !is_agent_relay_mcp_server_name(name) {
                             servers.insert(name.clone(), config.clone());
                         }
                     }
@@ -251,15 +278,15 @@ fn merge_relaycast_with_project_mcp_inner(
         }
     }
 
-    // Insert relaycast with broker-injected credentials (always wins)
-    servers.insert(RELAYCAST_SERVER.to_string(), relaycast_server);
+    // Insert Agent Relay with broker-injected credentials (always wins).
+    servers.insert(AGENT_RELAY_MCP_SERVER.to_string(), agent_relay_server);
 
     let mut top = Map::new();
     top.insert("mcpServers".to_string(), Value::Object(servers));
     serde_json::to_string(&Value::Object(top)).expect("MCP config serialization cannot fail")
 }
 
-fn relaycast_server_config(
+fn agent_relay_mcp_server_config(
     relay_api_key: Option<&str>,
     relay_base_url: Option<&str>,
     relay_agent_name: Option<&str>,
@@ -269,33 +296,12 @@ fn relaycast_server_config(
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> Value {
     let mut server = Map::new();
-    // Allow overriding the Agent Relay MCP command for local development/testing.
-    // e.g. AGENT_RELAY_MCP_COMMAND="node /path/to/agent-relay/dist/cli/agent-relay-mcp.js"
-    if let Ok(custom_cmd) = std::env::var("AGENT_RELAY_MCP_COMMAND") {
-        let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
-        if let Some((cmd, args_slice)) = parts.split_first() {
-            server.insert("command".into(), Value::String(cmd.to_string()));
-            server.insert(
-                "args".into(),
-                Value::Array(
-                    args_slice
-                        .iter()
-                        .map(|a| Value::String(a.to_string()))
-                        .collect(),
-                ),
-            );
-        }
-    } else {
-        server.insert("command".into(), Value::String("npx".into()));
-        server.insert(
-            "args".into(),
-            Value::Array(vec![
-                Value::String("-y".into()),
-                Value::String(AGENT_RELAY_MCP_PACKAGE.into()),
-                Value::String(AGENT_RELAY_MCP_SUBCOMMAND.into()),
-            ]),
-        );
-    }
+    let mcp_command = agent_relay_mcp_command();
+    server.insert("command".into(), Value::String(mcp_command.command));
+    server.insert(
+        "args".into(),
+        Value::Array(mcp_command.args.into_iter().map(Value::String).collect()),
+    );
 
     let mut env = Map::new();
     // NOTE: RELAY_API_KEY is intentionally omitted from .mcp.json — the broker
@@ -363,8 +369,38 @@ fn escape_toml_basic_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Inject RELAY_API_KEY into the relaycast server's env block within a merged
-/// MCP config JSON string.  The shared `relaycast_server_config()` omits it
+fn toml_basic_string(value: &str) -> String {
+    format!("\"{}\"", escape_toml_basic_string(value))
+}
+
+fn toml_basic_string_array(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| toml_basic_string(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn push_codex_mcp_command_config_args(args: &mut Vec<String>, mcp_command: &AgentRelayMcpCommand) {
+    args.extend([
+        "--config".to_string(),
+        format!(
+            "mcp_servers.agent-relay.command={}",
+            toml_basic_string(&mcp_command.command)
+        ),
+        "--config".to_string(),
+        format!(
+            "mcp_servers.agent-relay.args={}",
+            toml_basic_string_array(&mcp_command.args)
+        ),
+    ]);
+}
+
+/// Inject RELAY_API_KEY into the Agent Relay server's env block within a merged
+/// MCP config JSON string.  The shared `agent_relay_mcp_server_config()` omits it
 /// (codex strips API keys from .mcp.json env), but for Claude's inline
 /// `--mcp-config` arg this is safe and necessary — Claude Code does not
 /// reliably inherit parent process env vars into MCP server subprocesses.
@@ -378,12 +414,12 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
         Err(_) => return mcp_json.to_string(),
     };
     if let Some(env_obj) = parsed
-        .pointer_mut("/mcpServers/relaycast/env")
+        .pointer_mut("/mcpServers/agent-relay/env")
         .and_then(Value::as_object_mut)
     {
         env_obj.insert("RELAY_API_KEY".into(), Value::String(api_key.to_string()));
     } else if let Some(server) = parsed
-        .pointer_mut("/mcpServers/relaycast")
+        .pointer_mut("/mcpServers/agent-relay")
         .and_then(Value::as_object_mut)
     {
         let mut env_map = Map::new();
@@ -394,10 +430,10 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
 }
 
 const OPENCODE_CONFIG: &str = "opencode.json";
-const OPENCODE_AGENT_NAME: &str = "relaycast";
+const OPENCODE_AGENT_NAME: &str = AGENT_RELAY_MCP_SERVER;
 
-/// Ensure an `opencode.json` config exists with the relaycast MCP server and
-/// a custom `relaycast` agent that has those tools enabled.
+/// Ensure an `opencode.json` config exists with the Agent Relay MCP server and
+/// a custom `agent-relay` agent that has those tools enabled.
 /// Returns `true` if the config was created or updated.
 pub fn ensure_opencode_config(
     root: &Path,
@@ -433,7 +469,7 @@ pub fn ensure_opencode_config_with_result(
 ) -> io::Result<bool> {
     let path = root.join(OPENCODE_CONFIG);
 
-    // Build the relaycast MCP entry in opencode format.
+    // Build the Agent Relay MCP entry in opencode format.
     let mut mcp_server = Map::new();
     mcp_server.insert("type".into(), Value::String("local".into()));
     mcp_server.insert(
@@ -496,7 +532,7 @@ pub fn ensure_opencode_config_with_result(
         Value::String("Agent with Agent Relay MCP enabled".into()),
     );
     let mut tools = Map::new();
-    tools.insert("relaycast_*".into(), Value::Bool(true));
+    tools.insert("agent-relay_*".into(), Value::Bool(true));
     agent.insert("tools".into(), Value::Object(tools));
 
     if !path.exists() {
@@ -528,20 +564,24 @@ pub fn ensure_opencode_config_with_result(
 
     let mut changed = false;
 
-    // Upsert mcp.relaycast
+    // Upsert mcp.agent-relay
     let mcp = top
         .entry("mcp")
         .or_insert_with(|| Value::Object(Map::new()));
     if let Some(mcp_obj) = mcp.as_object_mut() {
+        mcp_obj.remove(LEGACY_RELAYCAST_SERVER);
         mcp_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(mcp_server));
         changed = true;
     }
 
-    // Upsert agent.relaycast
+    // Upsert agent.agent-relay
     let agents = top
         .entry("agent")
         .or_insert_with(|| Value::Object(Map::new()));
     if let Some(agents_obj) = agents.as_object_mut() {
+        if agents_obj.remove(LEGACY_RELAYCAST_SERVER).is_some() {
+            changed = true;
+        }
         if !agents_obj.contains_key(OPENCODE_AGENT_NAME) {
             agents_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
             changed = true;
@@ -554,7 +594,7 @@ pub fn ensure_opencode_config_with_result(
     Ok(changed)
 }
 
-/// Configure the relaycast MCP server for any supported CLI tool.
+/// Configure the Agent Relay MCP server for any supported CLI tool.
 ///
 /// Returns extra CLI arguments to append when spawning the agent.
 /// For Gemini/Droid this runs a pre-spawn `mcp add` command (removing first
@@ -579,7 +619,7 @@ pub fn ensure_cursor_mcp_config(
     fs::create_dir_all(&cursor_dir)?;
     let path = cursor_dir.join("mcp.json");
 
-    let mcp_json = relaycast_mcp_config_json_with_result(
+    let mcp_json = agent_relay_mcp_config_json_with_result(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -596,15 +636,15 @@ pub fn ensure_cursor_mcp_config(
     })?;
     // Cursor does not pass parent process env vars to MCP server subprocesses,
     // so RELAY_API_KEY must be in the .cursor/mcp.json env block explicitly.
-    // (The shared relaycast_server_config omits it because codex strips API keys.)
+    // (The shared agent_relay_mcp_server_config omits it because codex strips API keys.)
     if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(env_obj) = new_value
-            .pointer_mut("/mcpServers/relaycast/env")
+            .pointer_mut("/mcpServers/agent-relay/env")
             .and_then(Value::as_object_mut)
         {
             env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
         } else if let Some(server) = new_value
-            .pointer_mut("/mcpServers/relaycast")
+            .pointer_mut("/mcpServers/agent-relay")
             .and_then(Value::as_object_mut)
         {
             let mut env_map = Map::new();
@@ -631,6 +671,7 @@ pub fn ensure_cursor_mcp_config(
             .and_then(|o| o.get("mcpServers"))
             .and_then(|v| v.as_object()),
     ) {
+        existing_servers.remove(LEGACY_RELAYCAST_SERVER);
         for (k, v) in new_servers {
             existing_servers.insert(k.clone(), v.clone());
         }
@@ -652,7 +693,7 @@ pub fn ensure_cursor_mcp_config(
 /// - `base_url`: optional relay base URL (empty or `None` means omit)
 /// - `existing_args`: args already provided by the user (used to detect opt-outs)
 /// - `cwd`: working directory for the agent (used by opencode/cursor config)
-pub async fn configure_relaycast_mcp(
+pub async fn configure_agent_relay_mcp(
     cli: &str,
     agent_name: &str,
     api_key: Option<&str>,
@@ -664,7 +705,7 @@ pub async fn configure_relaycast_mcp(
     // maps still get the vars if set on the process.
     let workspaces_json = std::env::var("RELAY_WORKSPACES_JSON").ok();
     let default_workspace = std::env::var("RELAY_DEFAULT_WORKSPACE").ok();
-    configure_relaycast_mcp_with_token(
+    configure_agent_relay_mcp_with_token(
         cli,
         agent_name,
         api_key,
@@ -679,7 +720,7 @@ pub async fn configure_relaycast_mcp(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn configure_relaycast_mcp_with_token(
+pub async fn configure_agent_relay_mcp_with_token(
     cli: &str,
     agent_name: &str,
     api_key: Option<&str>,
@@ -690,7 +731,7 @@ pub async fn configure_relaycast_mcp_with_token(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> Result<Vec<String>> {
-    configure_relaycast_mcp_with_result(
+    configure_agent_relay_mcp_with_result(
         cli,
         agent_name,
         api_key,
@@ -706,7 +747,7 @@ pub async fn configure_relaycast_mcp_with_token(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn configure_relaycast_mcp_with_result(
+pub async fn configure_agent_relay_mcp_with_result(
     cli: &str,
     agent_name: &str,
     api_key: Option<&str>,
@@ -736,12 +777,12 @@ pub async fn configure_relaycast_mcp_with_result(
             .iter()
             .any(|a| a == "--mcp-config" || a.starts_with("--mcp-config="))
     {
-        // Build relaycast-only MCP config and pass via --mcp-config (additive).
+        // Build Agent Relay-only MCP config and pass via --mcp-config (additive).
         // Claude will also load .mcp.json normally, preserving user-configured
         // MCP servers (filesystem, database, etc.).
         // We do NOT pass --strict-mcp-config — that would block .mcp.json loading
         // and prevent child agents from inheriting MCP servers.
-        let mcp_json = relaycast_mcp_config_json_with_result(
+        let mcp_json = agent_relay_mcp_config_json_with_result(
             api_key,
             base_url,
             Some(agent_name),
@@ -757,8 +798,8 @@ pub async fn configure_relaycast_mcp_with_result(
         args.push(mcp_json);
     }
 
-    // Codex: always disable interactive update prompt (independent of relaycast config).
-    // This must run even when user provides custom mcp_servers.relaycast config.
+    // Codex: always disable interactive update prompt (independent of Agent Relay config).
+    // This must run even when user provides custom Agent Relay MCP config.
     if is_codex
         && !existing_args
             .iter()
@@ -770,27 +811,23 @@ pub async fn configure_relaycast_mcp_with_result(
         ]);
     }
 
-    // Codex: auto-configure relaycast MCP (only if not already configured).
+    // Codex: auto-configure Agent Relay MCP (only if not already configured).
     if is_codex
         && !existing_args
             .iter()
-            .any(|a| a.contains("mcp_servers.relaycast"))
+            .any(|a| a.contains("mcp_servers.agent-relay"))
     {
+        let mcp_command = agent_relay_mcp_command();
         // NOTE: All values passed via codex `--config` are parsed as TOML.
         // String values MUST be quoted (e.g. `"npx"` not `npx`) to avoid parse
         // errors or type mismatches.  Bare `1` is an integer; bare `at_live_xxx`
         // is a TOML parse error; only quoted values are reliably treated as strings.
-        args.extend([
-            "--config".to_string(),
-            "mcp_servers.relaycast.command=\"npx\"".to_string(),
-            "--config".to_string(),
-            "mcp_servers.relaycast.args=[\"-y\", \"agent-relay\", \"mcp\"]".to_string(),
-        ]);
+        push_codex_mcp_command_config_args(&mut args, &mcp_command);
         if let Some(key) = api_key {
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.relaycast.env.RELAY_API_KEY=\"{}\"",
+                    "mcp_servers.agent-relay.env.RELAY_API_KEY=\"{}\"",
                     escape_toml_basic_string(key)
                 ),
             ]);
@@ -799,7 +836,7 @@ pub async fn configure_relaycast_mcp_with_result(
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.relaycast.env.RELAY_BASE_URL=\"{}\"",
+                    "mcp_servers.agent-relay.env.RELAY_BASE_URL=\"{}\"",
                     escape_toml_basic_string(url)
                 ),
             ]);
@@ -807,30 +844,30 @@ pub async fn configure_relaycast_mcp_with_result(
         args.extend([
             "--config".to_string(),
             format!(
-                "mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"{}\"",
+                "mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"{}\"",
                 escape_toml_basic_string(agent_name)
             ),
         ]);
         args.extend([
             "--config".to_string(),
-            "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\"".to_string(),
+            "mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\"".to_string(),
         ]);
         args.extend([
             "--config".to_string(),
-            "mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
+            "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
         ]);
         if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"{}\"",
+                    "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"{}\"",
                     escape_toml_basic_string(token)
                 ),
             ]);
             // Skip bootstrap when the broker has already pre-registered the agent.
             args.extend([
                 "--config".to_string(),
-                "mcp_servers.relaycast.env.RELAY_SKIP_BOOTSTRAP=\"1\"".to_string(),
+                "mcp_servers.agent-relay.env.RELAY_SKIP_BOOTSTRAP=\"1\"".to_string(),
             ]);
         }
         // Forward multi-workspace context to codex child agents.
@@ -839,7 +876,7 @@ pub async fn configure_relaycast_mcp_with_result(
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.relaycast.env.RELAY_WORKSPACES_JSON=\"{}\"",
+                    "mcp_servers.agent-relay.env.RELAY_WORKSPACES_JSON=\"{}\"",
                     escape_toml_basic_string(wj)
                 ),
             ]);
@@ -848,7 +885,7 @@ pub async fn configure_relaycast_mcp_with_result(
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.relaycast.env.RELAY_DEFAULT_WORKSPACE=\"{}\"",
+                    "mcp_servers.agent-relay.env.RELAY_DEFAULT_WORKSPACE=\"{}\"",
                     escape_toml_basic_string(dw)
                 ),
             ]);
@@ -858,7 +895,7 @@ pub async fn configure_relaycast_mcp_with_result(
                 args.extend([
                     "--config".to_string(),
                     format!(
-                        "mcp_servers.relaycast.env.{key}=\"{}\"",
+                        "mcp_servers.agent-relay.env.{key}=\"{}\"",
                         escape_toml_basic_string(&value)
                     ),
                 ]);
@@ -895,11 +932,11 @@ pub async fn configure_relaycast_mcp_with_result(
             None,
         )
         .with_context(|| {
-            "failed to write opencode.json for relaycast MCP. \
-             Please configure the relaycast MCP server manually in opencode.json"
+            "failed to write opencode.json for Agent Relay MCP. \
+             Please configure the Agent Relay MCP server manually in opencode.json"
         })?;
         args.push("--agent".to_string());
-        args.push("relaycast".to_string());
+        args.push(AGENT_RELAY_MCP_SERVER.to_string());
     } else if is_cursor {
         ensure_cursor_mcp_config(
             cwd,
@@ -912,8 +949,8 @@ pub async fn configure_relaycast_mcp_with_result(
             None,
         )
         .with_context(|| {
-            "failed to write .cursor/mcp.json for relaycast MCP. \
-                 Please configure the relaycast MCP server manually in .cursor/mcp.json"
+            "failed to write .cursor/mcp.json for Agent Relay MCP. \
+                 Please configure the Agent Relay MCP server manually in .cursor/mcp.json"
         })?;
     }
 
@@ -972,7 +1009,7 @@ fn ensure_gemini_folder_trusted(cwd: &Path) {
     }
 }
 
-/// Run `<cli> mcp remove relaycast` then `<cli> mcp add` for Gemini or Droid.
+/// Run `<cli> mcp remove agent-relay` then `<cli> mcp add` for Gemini or Droid.
 fn gemini_droid_mcp_env_flag(is_gemini: bool) -> &'static str {
     if is_gemini {
         "-e"
@@ -984,8 +1021,13 @@ fn gemini_droid_mcp_env_flag(is_gemini: bool) -> &'static str {
 fn gemini_droid_manual_mcp_add_cmd(cli: &str, is_gemini: bool) -> String {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
     let cmd_separator = if is_gemini { "" } else { " --" };
+    let mcp_command = agent_relay_mcp_command();
+    let rendered_mcp_command = std::iter::once(mcp_command.command)
+        .chain(mcp_command.args)
+        .collect::<Vec<_>>()
+        .join(" ");
     format!(
-        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> relaycast{cmd_separator} npx -y agent-relay mcp"
+        "{cli} mcp add {env_flag} RELAY_API_KEY=<key> {env_flag} RELAY_BASE_URL=<url> {AGENT_RELAY_MCP_SERVER}{cmd_separator} {rendered_mcp_command}"
     )
 }
 
@@ -1056,16 +1098,15 @@ fn gemini_droid_mcp_add_args_with_result(
         args.push(env_flag.to_string());
         args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
     }
-    args.push("relaycast".to_string());
+    args.push(AGENT_RELAY_MCP_SERVER.to_string());
     // Droid's CLI parser continues parsing options after positional args.
     // Insert `--` so `-y` is treated as an argument to `npx`.
     if !is_gemini {
         args.push("--".to_string());
     }
-    args.push("npx".to_string());
-    args.push("-y".to_string());
-    args.push(AGENT_RELAY_MCP_PACKAGE.to_string());
-    args.push(AGENT_RELAY_MCP_SUBCOMMAND.to_string());
+    let mcp_command = agent_relay_mcp_command();
+    args.push(mcp_command.command);
+    args.extend(mcp_command.args);
     args
 }
 
@@ -1089,13 +1130,15 @@ async fn configure_gemini_droid_mcp(
     let manual_cmd = gemini_droid_manual_mcp_add_cmd(&exe, is_gemini);
 
     // Remove first for idempotency (ignore errors — may not exist yet).
-    let _ = std::process::Command::new(&exe)
-        .args(["mcp", "remove", "relaycast"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .and_then(|mut c| c.wait());
+    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
+        let _ = std::process::Command::new(&exe)
+            .args(["mcp", "remove", server_name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|mut c| c.wait());
+    }
 
     let mut mcp_cmd = Command::new(&exe);
     mcp_cmd.args(gemini_droid_mcp_add_args_with_result(
@@ -1117,30 +1160,30 @@ async fn configure_gemini_droid_mcp(
         Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
             Ok(Ok(status)) if !status.success() => {
                 anyhow::bail!(
-                        "failed to configure relaycast MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
-                         Please configure the relaycast MCP server manually:\n  {manual_cmd}",
+                        "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
+                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}",
                         status.code()
                     );
             }
             Ok(Err(error)) => {
                 anyhow::bail!(
-                    "failed to configure relaycast MCP for {cli}: {error}. \
-                         Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                    "failed to configure Agent Relay MCP for {cli}: {error}. \
+                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
                 );
             }
             Err(_) => {
                 let _ = child.kill().await;
                 anyhow::bail!(
-                        "failed to configure relaycast MCP for {cli}: `{cli} mcp add` timed out after 15s. \
-                         Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                        "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` timed out after 15s. \
+                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
                     );
             }
             _ => {}
         },
         Err(error) => {
             anyhow::bail!(
-                "failed to configure relaycast MCP for {cli}: could not run `{cli} mcp add`: {error}. \
-                 Please configure the relaycast MCP server manually:\n  {manual_cmd}"
+                "failed to configure Agent Relay MCP for {cli}: could not run `{cli} mcp add`: {error}. \
+                 Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
             );
         }
     }
@@ -1163,10 +1206,10 @@ mod tests {
     use serde_json::{json, Map, Value};
     use tempfile::tempdir;
 
-    use super::ensure_relaycast_mcp_config;
+    use super::ensure_agent_relay_mcp_config;
 
     fn assert_is_agent_relay_mcp_args(args: Option<&Vec<Value>>) {
-        let args = args.expect("expected relaycast mcp args");
+        let args = args.expect("expected agent-relay mcp args");
         assert_eq!(args.get(0).and_then(Value::as_str), Some("-y"));
         assert_eq!(args.get(1).and_then(Value::as_str), Some("agent-relay"));
         assert_eq!(args.get(2).and_then(Value::as_str), Some("mcp"));
@@ -1180,6 +1223,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn agent_relay_mcp_command_defaults_to_npx_agent_relay() {
+        let command = super::parse_agent_relay_mcp_command(None);
+
+        assert_eq!(command.command, "npx");
+        assert_eq!(command.args, vec!["-y", "agent-relay", "mcp"]);
+    }
+
+    #[test]
+    fn agent_relay_mcp_command_parses_custom_override() {
+        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"));
+
+        assert_eq!(command.command, "node");
+        assert_eq!(command.args, vec!["/tmp/agent-relay-mcp.js"]);
+    }
+
+    #[test]
+    fn codex_mcp_command_config_args_use_custom_command() {
+        let command = super::parse_agent_relay_mcp_command(Some("node /tmp/agent-relay-mcp.js"));
+        let mut args = Vec::new();
+
+        super::push_codex_mcp_command_config_args(&mut args, &command);
+
+        assert_eq!(
+            args,
+            vec![
+                "--config",
+                "mcp_servers.agent-relay.command=\"node\"",
+                "--config",
+                "mcp_servers.agent-relay.args=[\"/tmp/agent-relay-mcp.js\"]",
+            ]
+        );
+    }
+
     fn assert_agent_result_env_absent(env: &Value) {
         assert!(env["AGENT_RELAY_RESULT_URL"].is_null());
         assert!(env["AGENT_RELAY_RESULT_TOKEN"].is_null());
@@ -1191,7 +1268,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let root = temp.path();
 
-        let report = ensure_relaycast_mcp_config(root, Some("rk_test_123"), None, None)
+        let report = ensure_agent_relay_mcp_config(root, Some("rk_test_123"), None, None)
             .expect("create mcp config");
         assert_eq!(report.created, 1);
         assert_eq!(report.updated, 0);
@@ -1200,10 +1277,10 @@ mod tests {
         let contents = fs::read_to_string(root.join(".mcp.json")).expect("read mcp file");
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
             Some("npx")
         );
-        assert_is_agent_relay_mcp_args(json["mcpServers"]["relaycast"]["args"].as_array());
+        assert_is_agent_relay_mcp_args(json["mcpServers"]["agent-relay"]["args"].as_array());
     }
 
     #[test]
@@ -1217,7 +1294,7 @@ mod tests {
         .expect("write existing mcp file");
 
         let report =
-            ensure_relaycast_mcp_config(root, None, Some("https://api.relaycast.dev"), None)
+            ensure_agent_relay_mcp_config(root, None, Some("https://api.relaycast.dev"), None)
                 .expect("update mcp config");
         assert_eq!(report.created, 0);
         assert_eq!(report.updated, 1);
@@ -1227,22 +1304,23 @@ mod tests {
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
         assert!(json["mcpServers"]["other"].is_object());
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
             Some("npx")
         );
     }
 
     #[test]
-    fn updates_env_on_existing_reaycast_server() {
+    fn migrates_legacy_server_to_agent_relay() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path();
+        let legacy = super::LEGACY_RELAYCAST_SERVER;
         fs::write(
             root.join(".mcp.json"),
-            r#"{"mcpServers":{"relaycast":{"command":"node","args":["custom.js"]}}}"#,
+            format!(r#"{{"mcpServers":{{"{legacy}":{{"command":"node","args":["custom.js"]}}}}}}"#),
         )
         .expect("write existing mcp file");
 
-        let report = ensure_relaycast_mcp_config(root, Some("rk_new"), None, Some("my-agent"))
+        let report = ensure_agent_relay_mcp_config(root, Some("rk_new"), None, Some("my-agent"))
             .expect("update mcp config env");
         assert_eq!(report.created, 0);
         assert_eq!(report.updated, 1);
@@ -1250,26 +1328,26 @@ mod tests {
 
         let contents = fs::read_to_string(root.join(".mcp.json")).expect("read mcp file");
         let json: Value = serde_json::from_str(&contents).expect("parse mcp file");
-        // Command preserved, env updated with agent name
+        assert!(json["mcpServers"][legacy].is_null());
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
-            Some("node")
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
+            Some("npx")
         );
         // RELAY_API_KEY is intentionally omitted from .mcp.json — injected via process env by the broker
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             None
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("my-agent")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TYPE"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TYPE"].as_str(),
             Some("agent")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
             Some("1")
         );
     }
@@ -1277,7 +1355,7 @@ mod tests {
     #[tokio::test]
     async fn codex_args_include_strict_agent_name_flag() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "codex",
             "Lead",
             Some("rk_live_test"),
@@ -1290,13 +1368,13 @@ mod tests {
 
         assert!(
             args.iter()
-                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\""),
+                .any(|arg| arg == "mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\""),
             "expected fixed agent type codex config arg"
         );
 
         assert!(
             args.iter()
-                .any(|arg| arg == "mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\""),
+                .any(|arg| arg == "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\""),
             "expected strict agent name codex config arg"
         );
     }
@@ -1308,7 +1386,7 @@ mod tests {
     #[tokio::test]
     async fn claude_returns_mcp_config_flag_with_valid_json() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "claude",
             "Worker",
             Some("rk_live_abc"),
@@ -1332,10 +1410,10 @@ mod tests {
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
             Some("npx")
         );
-        let mcp_args = json["mcpServers"]["relaycast"]["args"]
+        let mcp_args = json["mcpServers"]["agent-relay"]["args"]
             .as_array()
             .expect("args array");
         assert_eq!(mcp_args[0].as_str(), Some("-y"));
@@ -1346,7 +1424,7 @@ mod tests {
     #[tokio::test]
     async fn claude_includes_api_key_in_mcp_config() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "claude",
             "Worker",
             Some("rk_live_secret"),
@@ -1359,7 +1437,7 @@ mod tests {
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_secret"),
             "RELAY_API_KEY must appear in Claude --mcp-config (Claude Code does not reliably \
              inherit parent env vars to MCP server subprocesses)"
@@ -1370,12 +1448,12 @@ mod tests {
     async fn claude_includes_agent_name_type_and_strict_flag() {
         let temp = tempdir().expect("tempdir");
         let args =
-            super::configure_relaycast_mcp("claude", "MyAgent", None, None, &[], temp.path())
+            super::configure_agent_relay_mcp("claude", "MyAgent", None, None, &[], temp.path())
                 .await
                 .expect("configure claude mcp");
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
-        let env = &json["mcpServers"]["relaycast"]["env"];
+        let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(env["RELAY_AGENT_NAME"].as_str(), Some("MyAgent"));
         assert_eq!(env["RELAY_AGENT_TYPE"].as_str(), Some("agent"));
         assert_eq!(env["RELAY_STRICT_AGENT_NAME"].as_str(), Some("1"));
@@ -1384,7 +1462,7 @@ mod tests {
     #[tokio::test]
     async fn claude_includes_agent_token_when_provided() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "claude",
             "Worker",
             None,
@@ -1400,7 +1478,7 @@ mod tests {
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc123")
         );
     }
@@ -1409,7 +1487,7 @@ mod tests {
     async fn claude_opt_out_when_mcp_config_already_in_args() {
         let temp = tempdir().expect("tempdir");
         let existing = vec!["--mcp-config".to_string(), "{}".to_string()];
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "claude",
             "Worker",
             Some("rk_live_abc"),
@@ -1433,7 +1511,7 @@ mod tests {
         // broker from injecting --mcp-config (the old substring check matched
         // "mcp-config" inside "--strict-mcp-config").
         let existing = vec!["--strict-mcp-config".to_string()];
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "claude",
             "Worker",
             Some("rk_live_abc"),
@@ -1458,7 +1536,7 @@ mod tests {
     #[tokio::test]
     async fn claude_detected_from_absolute_path() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "/usr/local/bin/claude",
             "Worker",
             None,
@@ -1475,10 +1553,16 @@ mod tests {
     #[tokio::test]
     async fn claude_colon_variant_detected() {
         let temp = tempdir().expect("tempdir");
-        let args =
-            super::configure_relaycast_mcp("claude:latest", "Worker", None, None, &[], temp.path())
-                .await
-                .expect("configure claude:latest");
+        let args = super::configure_agent_relay_mcp(
+            "claude:latest",
+            "Worker",
+            None,
+            None,
+            &[],
+            temp.path(),
+        )
+        .await
+        .expect("configure claude:latest");
 
         assert_eq!(args[0], "--mcp-config");
     }
@@ -1486,7 +1570,7 @@ mod tests {
     #[tokio::test]
     async fn claude_with_inline_args_still_injects_mcp_config() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "claude --model sonnet",
             "Worker",
             None,
@@ -1512,15 +1596,15 @@ mod tests {
             None,
         );
 
-        let relaycast_idx = args
+        let agent_relay_idx = args
             .iter()
-            .position(|arg| arg == "relaycast")
-            .expect("relaycast arg");
-        assert_eq!(args[relaycast_idx + 1], "--");
-        assert_eq!(args[relaycast_idx + 2], "npx");
-        assert_eq!(args[relaycast_idx + 3], "-y");
-        assert_eq!(args[relaycast_idx + 4], "agent-relay");
-        assert_eq!(args[relaycast_idx + 5], "mcp");
+            .position(|arg| arg == "agent-relay")
+            .expect("agent-relay arg");
+        assert_eq!(args[agent_relay_idx + 1], "--");
+        assert_eq!(args[agent_relay_idx + 2], "npx");
+        assert_eq!(args[agent_relay_idx + 3], "-y");
+        assert_eq!(args[agent_relay_idx + 4], "agent-relay");
+        assert_eq!(args[agent_relay_idx + 5], "mcp");
     }
 
     #[test]
@@ -1543,11 +1627,11 @@ mod tests {
         assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_gem_123".to_string()));
 
-        let relaycast_idx = args
+        let agent_relay_idx = args
             .iter()
-            .position(|arg| arg == "relaycast")
-            .expect("relaycast arg");
-        assert_eq!(args[relaycast_idx + 1], "npx");
+            .position(|arg| arg == "agent-relay")
+            .expect("agent-relay arg");
+        assert_eq!(args[agent_relay_idx + 1], "npx");
         assert!(
             !args.iter().any(|arg| arg == "--"),
             "Gemini command should not include `--` argument separator"
@@ -1557,11 +1641,11 @@ mod tests {
     #[test]
     fn droid_manual_mcp_add_command_uses_option_separator() {
         let droid_cmd = super::gemini_droid_manual_mcp_add_cmd("droid", false);
-        assert!(droid_cmd.contains("relaycast -- npx -y agent-relay mcp"));
+        assert!(droid_cmd.contains("agent-relay -- npx -y agent-relay mcp"));
 
         let gemini_cmd = super::gemini_droid_manual_mcp_add_cmd("gemini", true);
-        assert!(!gemini_cmd.contains("relaycast -- npx -y agent-relay mcp"));
-        assert!(gemini_cmd.contains("relaycast npx -y agent-relay mcp"));
+        assert!(!gemini_cmd.contains("agent-relay -- npx -y agent-relay mcp"));
+        assert!(gemini_cmd.contains("agent-relay npx -y agent-relay mcp"));
     }
 
     #[test]
@@ -1612,7 +1696,7 @@ mod tests {
     #[tokio::test]
     async fn codex_returns_config_flags_with_all_env_vars() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "codex",
             "CodexAgent",
             Some("rk_live_xyz"),
@@ -1628,22 +1712,23 @@ mod tests {
         assert!(args.iter().step_by(2).all(|a| a == "--config"));
 
         // Verify key config values
-        assert!(args.contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
+        assert!(args.contains(&"mcp_servers.agent-relay.command=\"npx\"".to_string()));
         assert!(args
             .iter()
-            .any(|a| a.contains("mcp_servers.relaycast.args=")));
+            .any(|a| a.contains("mcp_servers.agent-relay.args=")));
         assert!(
-            args.contains(&"mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
+            args.contains(&"mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
         );
         assert!(args.contains(
-            &"mcp_servers.relaycast.env.RELAY_BASE_URL=\"https://api.relaycast.dev\"".to_string()
+            &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://api.relaycast.dev\"".to_string()
         ));
+        assert!(args
+            .contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string()));
         assert!(
-            args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"CodexAgent\"".to_string())
+            args.contains(&"mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\"".to_string())
         );
-        assert!(args.contains(&"mcp_servers.relaycast.env.RELAY_AGENT_TYPE=\"agent\"".to_string()));
         assert!(
-            args.contains(&"mcp_servers.relaycast.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
+            args.contains(&"mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string())
         );
         assert!(
             args.contains(&"check_for_update_on_startup=false".to_string()),
@@ -1654,7 +1739,7 @@ mod tests {
     #[tokio::test]
     async fn codex_includes_api_key_unlike_claude() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "codex",
             "Agent",
             Some("rk_live_secret"),
@@ -1667,7 +1752,7 @@ mod tests {
 
         assert!(
             args.iter()
-                .any(|a| a == "mcp_servers.relaycast.env.RELAY_API_KEY=\"rk_live_secret\""),
+                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_secret\""),
             "Codex must include RELAY_API_KEY in --config args"
         );
     }
@@ -1675,7 +1760,7 @@ mod tests {
     #[tokio::test]
     async fn codex_includes_agent_token_when_provided() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "codex",
             "Agent",
             None,
@@ -1691,7 +1776,7 @@ mod tests {
 
         assert!(
             args.iter()
-                .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
+                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
             "Codex must include RELAY_AGENT_TOKEN when provided"
         );
     }
@@ -1700,7 +1785,7 @@ mod tests {
     async fn codex_includes_agent_result_env_in_inline_config() {
         let temp = tempdir().expect("tempdir");
         let config = test_agent_result_config();
-        let args = super::configure_relaycast_mcp_with_result(
+        let args = super::configure_agent_relay_mcp_with_result(
             "codex",
             "Agent",
             None,
@@ -1717,7 +1802,7 @@ mod tests {
 
         assert!(
             args.iter()
-                .any(|a| a == "mcp_servers.relaycast.env.AGENT_RELAY_RESULT_TOKEN=\"arr_test\""),
+                .any(|a| a == "mcp_servers.agent-relay.env.AGENT_RELAY_RESULT_TOKEN=\"arr_test\""),
             "Codex inline config can carry per-agent result callback env"
         );
     }
@@ -1725,7 +1810,7 @@ mod tests {
     #[tokio::test]
     async fn codex_omits_optional_fields_when_none() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp("codex", "Agent", None, None, &[], temp.path())
+        let args = super::configure_agent_relay_mcp("codex", "Agent", None, None, &[], temp.path())
             .await
             .expect("configure codex mcp minimal");
 
@@ -1740,17 +1825,17 @@ mod tests {
         // Agent name and type are always present
         assert!(args
             .iter()
-            .any(|a| a == "mcp_servers.relaycast.env.RELAY_AGENT_NAME=\"Agent\""));
+            .any(|a| a == "mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"Agent\""));
     }
 
     #[tokio::test]
-    async fn codex_opt_out_when_relaycast_config_already_in_args() {
+    async fn codex_opt_out_when_agent_relay_config_already_in_args() {
         let temp = tempdir().expect("tempdir");
         let existing = vec![
             "--config".to_string(),
-            "mcp_servers.relaycast.command=custom".to_string(),
+            "mcp_servers.agent-relay.command=custom".to_string(),
         ];
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "codex",
             "Agent",
             Some("rk_live_abc"),
@@ -1761,12 +1846,12 @@ mod tests {
         .await
         .expect("configure codex mcp opt-out");
 
-        // When user provides custom relaycast config, we skip relaycast MCP setup
+        // When user provides custom Agent Relay config, we skip Agent Relay MCP setup
         // but STILL add the update suppression to prevent interactive prompts.
         assert_eq!(
             args,
             vec!["--config", "check_for_update_on_startup=false"],
-            "should only return update suppression when user already provided mcp_servers.relaycast config"
+            "should only return update suppression when user already provided mcp_servers.agent-relay config"
         );
     }
 
@@ -1777,7 +1862,7 @@ mod tests {
     #[tokio::test]
     async fn opencode_creates_config_file_and_returns_agent_flag() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "opencode",
             "OcAgent",
             Some("rk_live_oc"),
@@ -1788,7 +1873,7 @@ mod tests {
         .await
         .expect("configure opencode mcp");
 
-        assert_eq!(args, vec!["--agent", "relaycast"]);
+        assert_eq!(args, vec!["--agent", "agent-relay"]);
 
         // Verify opencode.json was created
         let path = temp.path().join("opencode.json");
@@ -1798,7 +1883,7 @@ mod tests {
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
 
         // MCP server structure
-        let mcp = &json["mcp"]["relaycast"];
+        let mcp = &json["mcp"]["agent-relay"];
         assert_eq!(mcp["type"].as_str(), Some("local"));
         let cmd = mcp["command"].as_array().expect("command array");
         assert_eq!(cmd[0].as_str(), Some("npx"));
@@ -1822,19 +1907,19 @@ mod tests {
         assert_eq!(oc_env["RELAY_STRICT_AGENT_NAME"].as_str(), Some("1"));
 
         // Agent entry
-        let agent = &json["agent"]["relaycast"];
+        let agent = &json["agent"]["agent-relay"];
         assert_eq!(
             agent["description"].as_str(),
             Some("Agent with Agent Relay MCP enabled")
         );
-        assert_eq!(agent["tools"]["relaycast_*"].as_bool(), Some(true));
+        assert_eq!(agent["tools"]["agent-relay_*"].as_bool(), Some(true));
     }
 
     #[tokio::test]
     async fn opencode_result_contract_does_not_persist_callback_env() {
         let temp = tempdir().expect("tempdir");
         let config = test_agent_result_config();
-        let args = super::configure_relaycast_mcp_with_result(
+        let args = super::configure_agent_relay_mcp_with_result(
             "opencode",
             "OcAgent",
             Some("rk_live_oc"),
@@ -1849,11 +1934,11 @@ mod tests {
         .await
         .expect("configure opencode mcp with result");
 
-        assert_eq!(args, vec!["--agent", "relaycast"]);
+        assert_eq!(args, vec!["--agent", "agent-relay"]);
         let contents =
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
-        assert_agent_result_env_absent(&json["mcp"]["relaycast"]["environment"]);
+        assert_agent_result_env_absent(&json["mcp"]["agent-relay"]["environment"]);
     }
 
     #[tokio::test]
@@ -1867,7 +1952,7 @@ mod tests {
         }"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "opencode",
             "Agent",
             Some("rk_live_test"),
@@ -1878,7 +1963,7 @@ mod tests {
         .await
         .expect("configure opencode mcp upsert");
 
-        assert_eq!(args, vec!["--agent", "relaycast"]);
+        assert_eq!(args, vec!["--agent", "agent-relay"]);
 
         let contents =
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
@@ -1892,15 +1977,15 @@ mod tests {
         );
 
         // Relaycast added
-        assert!(json["mcp"]["relaycast"].is_object());
-        assert!(json["agent"]["relaycast"].is_object());
+        assert!(json["mcp"]["agent-relay"].is_object());
+        assert!(json["agent"]["agent-relay"].is_object());
     }
 
     #[tokio::test]
     async fn opencode_opt_out_when_agent_flag_already_in_args() {
         let temp = tempdir().expect("tempdir");
         let existing = vec!["--agent".to_string(), "custom".to_string()];
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "opencode",
             "Agent",
             Some("rk_live_abc"),
@@ -1922,9 +2007,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_writes_mcp_json_with_relaycast_server() {
+    async fn cursor_writes_mcp_json_with_agent_relay_server() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "cursor",
             "CursorAgent",
             Some("rk_live_cursor"),
@@ -1946,27 +2031,27 @@ mod tests {
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
 
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
             Some("npx")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_cursor")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_BASE_URL"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
             Some("https://api.relaycast.dev")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("CursorAgent")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TYPE"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TYPE"].as_str(),
             Some("agent")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
             Some("1")
         );
     }
@@ -1975,7 +2060,7 @@ mod tests {
     async fn cursor_result_contract_does_not_persist_callback_env() {
         let temp = tempdir().expect("tempdir");
         let config = test_agent_result_config();
-        let args = super::configure_relaycast_mcp_with_result(
+        let args = super::configure_agent_relay_mcp_with_result(
             "cursor",
             "CursorAgent",
             Some("rk_live_cursor"),
@@ -1997,13 +2082,13 @@ mod tests {
         let contents = fs::read_to_string(temp.path().join(".cursor").join("mcp.json"))
             .expect("read cursor mcp config");
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
-        assert_agent_result_env_absent(&json["mcpServers"]["relaycast"]["env"]);
+        assert_agent_result_env_absent(&json["mcpServers"]["agent-relay"]["env"]);
     }
 
     #[tokio::test]
     async fn cursor_agent_alias_writes_mcp_json_with_token() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "agent",
             "CursorAlias",
             None,
@@ -2028,7 +2113,7 @@ mod tests {
         let json: Value = serde_json::from_str(&contents).expect("parse cursor alias mcp config");
 
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_cursor_123")
         );
     }
@@ -2040,7 +2125,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_cli_returns_empty_args() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp(
+        let args = super::configure_agent_relay_mcp(
             "aider",
             "Agent",
             Some("rk_live_abc"),
@@ -2060,7 +2145,7 @@ mod tests {
     #[tokio::test]
     async fn goose_cli_returns_empty_args() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp("goose", "Agent", None, None, &[], temp.path())
+        let args = super::configure_agent_relay_mcp("goose", "Agent", None, None, &[], temp.path())
             .await
             .expect("configure goose cli");
 
@@ -2068,12 +2153,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // relaycast_mcp_config_json direct tests
+    // agent_relay_mcp_config_json direct tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn mcp_config_json_produces_valid_structure() {
-        let json_str = super::relaycast_mcp_config_json(
+        let json_str = super::agent_relay_mcp_config_json(
             Some("rk_live_test"),
             Some("https://api.relaycast.dev"),
             Some("TestAgent"),
@@ -2081,30 +2166,30 @@ mod tests {
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         // Top-level structure
-        assert!(json["mcpServers"]["relaycast"].is_object());
+        assert!(json["mcpServers"]["agent-relay"].is_object());
 
         // Command
         assert_eq!(
-            json["mcpServers"]["relaycast"]["command"].as_str(),
+            json["mcpServers"]["agent-relay"]["command"].as_str(),
             Some("npx")
         );
 
         // API key intentionally omitted
         assert!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_API_KEY"].is_null(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].is_null(),
             "API key must not appear in mcp config JSON"
         );
 
         // Agent env vars present
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("TestAgent")
         );
     }
 
     #[test]
     fn mcp_config_json_with_token_includes_token() {
-        let json_str = super::relaycast_mcp_config_json_with_token(
+        let json_str = super::agent_relay_mcp_config_json_with_token(
             Some("rk_live_test"),
             Some("https://example.com"),
             Some("Agent"),
@@ -2115,14 +2200,14 @@ mod tests {
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_xyz")
         );
     }
 
     #[test]
     fn mcp_config_json_with_no_token_omits_token_field() {
-        let json_str = super::relaycast_mcp_config_json_with_token(
+        let json_str = super::agent_relay_mcp_config_json_with_token(
             None,
             None,
             Some("Agent"),
@@ -2133,18 +2218,18 @@ mod tests {
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         assert!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].is_null(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].is_null(),
             "RELAY_AGENT_TOKEN should not be present when token is None"
         );
     }
 
     #[test]
     fn mcp_config_json_omits_env_when_no_values_provided() {
-        let json_str = super::relaycast_mcp_config_json(None, None, None);
+        let json_str = super::agent_relay_mcp_config_json(None, None, None);
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         assert!(
-            json["mcpServers"]["relaycast"]["env"].is_null(),
+            json["mcpServers"]["agent-relay"]["env"].is_null(),
             "env object should not be present when all values are None"
         );
     }
@@ -2155,7 +2240,7 @@ mod tests {
 
     #[test]
     fn mcp_config_json_trims_whitespace_values() {
-        let json_str = super::relaycast_mcp_config_json(
+        let json_str = super::agent_relay_mcp_config_json(
             Some("  rk_live_test  "),
             Some("  https://api.relaycast.dev  "),
             Some("  Agent  "),
@@ -2164,22 +2249,22 @@ mod tests {
 
         // base_url and agent_name are trimmed
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_BASE_URL"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
             Some("https://api.relaycast.dev")
         );
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("Agent")
         );
     }
 
     #[test]
     fn mcp_config_json_treats_whitespace_only_as_none() {
-        let json_str = super::relaycast_mcp_config_json(Some("   "), Some("   "), Some("   "));
+        let json_str = super::agent_relay_mcp_config_json(Some("   "), Some("   "), Some("   "));
         let json: Value = serde_json::from_str(&json_str).expect("parse JSON");
 
         assert!(
-            json["mcpServers"]["relaycast"]["env"].is_null(),
+            json["mcpServers"]["agent-relay"]["env"].is_null(),
             "whitespace-only values should be treated as None"
         );
     }
@@ -2187,7 +2272,7 @@ mod tests {
     #[tokio::test]
     async fn claude_trims_whitespace_in_agent_token() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "claude",
             "Agent",
             None,
@@ -2203,7 +2288,7 @@ mod tests {
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_123")
         );
     }
@@ -2211,7 +2296,7 @@ mod tests {
     #[tokio::test]
     async fn codex_ignores_whitespace_only_token() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "codex",
             "Agent",
             None,
@@ -2255,11 +2340,11 @@ mod tests {
 
         // Opencode uses "environment" key, not "env"
         assert!(
-            json["mcp"]["relaycast"]["environment"].is_object(),
+            json["mcp"]["agent-relay"]["environment"].is_object(),
             "opencode must use 'environment' key"
         );
         assert!(
-            json["mcp"]["relaycast"]["env"].is_null(),
+            json["mcp"]["agent-relay"]["env"].is_null(),
             "opencode must not use 'env' key"
         );
     }
@@ -2270,9 +2355,9 @@ mod tests {
         let existing = r#"{
             "mcp": {},
             "agent": {
-                "relaycast": {
+                "agent-relay": {
                     "description": "Custom agent",
-                    "tools": {"relaycast_*": true, "custom_tool": true}
+                    "tools": {"agent-relay_*": true, "custom_tool": true}
                 }
             }
         }"#;
@@ -2295,12 +2380,12 @@ mod tests {
 
         // Agent entry should be preserved (not overwritten)
         assert_eq!(
-            json["agent"]["relaycast"]["description"].as_str(),
+            json["agent"]["agent-relay"]["description"].as_str(),
             Some("Custom agent"),
             "existing agent entry must not be overwritten"
         );
         assert_eq!(
-            json["agent"]["relaycast"]["tools"]["custom_tool"].as_bool(),
+            json["agent"]["agent-relay"]["tools"]["custom_tool"].as_bool(),
             Some(true),
             "custom tools in existing agent entry must be preserved"
         );
@@ -2329,7 +2414,7 @@ mod tests {
         )
         .expect("write .mcp.json");
 
-        let merged = super::merge_relaycast_with_project_mcp(
+        let merged = super::merge_agent_relay_with_project_mcp(
             Some("rk_fresh_key"),
             None,
             Some("test-agent"),
@@ -2348,15 +2433,20 @@ mod tests {
             "user's filesystem MCP should be preserved"
         );
 
-        // Relaycast entry uses broker-injected credentials, not stale ones
-        let relaycast_env = &servers["relaycast"]["env"];
+        assert!(
+            !servers.contains_key("relaycast"),
+            "legacy relaycast server entry must be removed"
+        );
+
+        // Agent Relay entry uses broker-injected credentials, not stale ones.
+        let agent_relay_env = &servers["agent-relay"]["env"];
         assert_ne!(
-            relaycast_env["RELAY_API_KEY"].as_str(),
+            agent_relay_env["RELAY_API_KEY"].as_str(),
             Some("old_stale_key"),
-            "stale relaycast key must be overridden"
+            "stale workspace key must be overridden"
         );
         assert_eq!(
-            relaycast_env["RELAY_AGENT_NAME"].as_str(),
+            agent_relay_env["RELAY_AGENT_NAME"].as_str(),
             Some("test-agent"),
             "broker-injected agent name must be present"
         );
@@ -2367,7 +2457,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         // No .mcp.json exists
 
-        let merged = super::merge_relaycast_with_project_mcp(
+        let merged = super::merge_agent_relay_with_project_mcp(
             Some("rk_key"),
             None,
             Some("agent-1"),
@@ -2380,8 +2470,12 @@ mod tests {
         let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
         let servers = parsed["mcpServers"].as_object().expect("mcpServers");
 
-        assert_eq!(servers.len(), 1, "only relaycast server when no .mcp.json");
-        assert!(servers.contains_key("relaycast"));
+        assert_eq!(
+            servers.len(),
+            1,
+            "only Agent Relay server when no .mcp.json"
+        );
+        assert!(servers.contains_key("agent-relay"));
     }
 
     #[test]
@@ -2390,7 +2484,7 @@ mod tests {
         let mcp_path = temp.path().join(".mcp.json");
         fs::write(&mcp_path, "not valid json {{{").expect("write bad .mcp.json");
 
-        let merged = super::merge_relaycast_with_project_mcp(
+        let merged = super::merge_agent_relay_with_project_mcp(
             Some("rk_key"),
             None,
             Some("agent-1"),
@@ -2408,7 +2502,7 @@ mod tests {
             1,
             "malformed .mcp.json should be ignored gracefully"
         );
-        assert!(servers.contains_key("relaycast"));
+        assert!(servers.contains_key("agent-relay"));
     }
 
     #[test]
@@ -2436,11 +2530,11 @@ mod tests {
         )
         .expect("write project .mcp.json");
 
-        // Note: this test calls merge_relaycast_with_project_mcp which uses
+        // Note: this test calls merge_agent_relay_with_project_mcp which uses
         // dirs::home_dir() internally, so the global settings from our temp dir
         // won't be found. This test validates that project-level .mcp.json works.
         // The global settings path is tested implicitly by the real system.
-        let merged = super::merge_relaycast_with_project_mcp(
+        let merged = super::merge_agent_relay_with_project_mcp(
             Some("rk_key"),
             None,
             Some("agent-1"),
@@ -2454,7 +2548,7 @@ mod tests {
         let servers = parsed["mcpServers"].as_object().expect("mcpServers");
 
         assert!(servers.contains_key("filesystem"), "project MCP preserved");
-        assert!(servers.contains_key("relaycast"), "relaycast injected");
+        assert!(servers.contains_key("agent-relay"), "Agent Relay injected");
     }
 
     #[test]
@@ -2485,8 +2579,8 @@ mod tests {
             None,
         )
         .expect("second opencode config");
-        // MCP is always upserted (changed=true) because we unconditionally insert mcp.relaycast,
-        // but agent.relaycast is only inserted if missing.
+        // MCP is always upserted (changed=true) because we unconditionally insert mcp.agent-relay,
+        // but agent.agent-relay is only inserted if missing.
         // The function returns true because mcp upsert always sets changed=true.
         assert!(changed, "mcp section always gets upserted");
     }
@@ -2496,10 +2590,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Test A: End-to-end MCP config generation for Claude spawns.
-    /// --mcp-config is additive (no --strict-mcp-config) — only relaycast is
+    /// --mcp-config is additive (no --strict-mcp-config) — only Agent Relay is
     /// passed inline; Claude loads the user's .mcp.json servers itself.
     #[tokio::test]
-    async fn mcp_e2e_claude_spawn_relaycast_only() {
+    async fn mcp_e2e_claude_spawn_agent_relay_only() {
         let temp = tempdir().expect("tempdir");
         // User has filesystem and github MCP servers in .mcp.json — Claude
         // will load these independently; we should NOT merge them into --mcp-config.
@@ -2521,7 +2615,7 @@ mod tests {
         )
         .expect("write .mcp.json");
 
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "claude",
             "TestWorker",
             Some("rk_live_test"),
@@ -2546,25 +2640,25 @@ mod tests {
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         let servers = json["mcpServers"].as_object().expect("mcpServers object");
 
-        // Only relaycast — user servers loaded separately by Claude from .mcp.json
-        assert_eq!(servers.len(), 1, "only relaycast server in --mcp-config");
+        // Only Agent Relay — user servers loaded separately by Claude from .mcp.json
+        assert_eq!(servers.len(), 1, "only Agent Relay server in --mcp-config");
         assert!(
-            servers.contains_key("relaycast"),
-            "relaycast must be present"
+            servers.contains_key("agent-relay"),
+            "Agent Relay must be present"
         );
 
-        // Relaycast has broker-injected credentials
+        // Agent Relay has broker-injected credentials
         assert_eq!(
-            servers["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            servers["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("TestWorker")
         );
         assert_eq!(
-            servers["relaycast"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            servers["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc")
         );
         // RELAY_API_KEY is injected for Claude --mcp-config
         assert_eq!(
-            servers["relaycast"]["env"]["RELAY_API_KEY"].as_str(),
+            servers["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
             Some("rk_live_test"),
             "RELAY_API_KEY must be present in Claude --mcp-config"
         );
@@ -2616,7 +2710,7 @@ mod tests {
         )
         .expect("write project .mcp.json");
 
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
             None,
             Some("agent"),
@@ -2664,7 +2758,7 @@ mod tests {
         let project = temp.path().join("project");
         fs::create_dir_all(&project).expect("create project dir");
 
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
             None,
             Some("agent"),
@@ -2709,7 +2803,7 @@ mod tests {
         let project = temp.path().join("project");
         fs::create_dir_all(&project).expect("create project dir");
 
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
             None,
             Some("agent"),
@@ -2723,7 +2817,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
         let servers = parsed["mcpServers"].as_object().expect("mcpServers");
 
-        assert_eq!(servers.len(), 3, "global servers + relaycast");
+        assert_eq!(servers.len(), 3, "global servers + Agent Relay");
         assert!(
             servers.contains_key("database"),
             "global database server must appear"
@@ -2732,7 +2826,10 @@ mod tests {
             servers.contains_key("slack"),
             "global slack server must appear"
         );
-        assert!(servers.contains_key("relaycast"), "relaycast must appear");
+        assert!(
+            servers.contains_key("agent-relay"),
+            "Agent Relay must appear"
+        );
     }
 
     /// Test D: Disabled servers — servers with `disabled: true` should be preserved as-is.
@@ -2757,7 +2854,7 @@ mod tests {
         )
         .expect("write .mcp.json");
 
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
             None,
             Some("agent"),
@@ -2789,10 +2886,10 @@ mod tests {
 
         // Enabled server also present
         assert!(servers.contains_key("enabled-server"));
-        assert!(servers.contains_key("relaycast"));
+        assert!(servers.contains_key("agent-relay"));
     }
 
-    /// Test E: Large config — .mcp.json with 10+ servers. All must be preserved plus relaycast.
+    /// Test E: Large config — .mcp.json with 10+ servers. All must be preserved plus Agent Relay.
     #[test]
     fn merge_mcp_large_config_preserves_all_servers() {
         let temp = tempdir().expect("tempdir");
@@ -2817,7 +2914,7 @@ mod tests {
         let mcp_json = serde_json::to_string_pretty(&Value::Object(top)).expect("serialize");
         fs::write(temp.path().join(".mcp.json"), &mcp_json).expect("write .mcp.json");
 
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             Some("rk_key"),
             Some("https://api.relaycast.dev"),
             Some("agent"),
@@ -2856,9 +2953,9 @@ mod tests {
         }
 
         // Relaycast is present with broker credentials
-        assert!(servers.contains_key("relaycast"));
+        assert!(servers.contains_key("agent-relay"));
         assert_eq!(
-            servers["relaycast"]["env"]["RELAY_AGENT_NAME"].as_str(),
+            servers["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("agent")
         );
     }
@@ -2868,8 +2965,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn relaycast_server_config_includes_workspace_vars() {
-        let server = super::relaycast_server_config(
+    fn agent_relay_mcp_server_config_includes_workspace_vars() {
+        let server = super::agent_relay_mcp_server_config(
             None,
             None,
             None,
@@ -2892,7 +2989,7 @@ mod tests {
     }
 
     #[test]
-    fn relaycast_server_config_includes_agent_result_vars() {
+    fn agent_relay_mcp_server_config_includes_agent_result_vars() {
         let schema = json!({
             "type": "object",
             "properties": {
@@ -2907,7 +3004,7 @@ mod tests {
             schema: Some(schema.clone()),
         };
 
-        let server = super::relaycast_server_config(
+        let server = super::agent_relay_mcp_server_config(
             None,
             None,
             Some("agent-1"),
@@ -2930,9 +3027,16 @@ mod tests {
     }
 
     #[test]
-    fn relaycast_server_config_empty_workspace_vars_omitted() {
-        let server =
-            super::relaycast_server_config(None, None, None, None, Some(""), Some("  "), None);
+    fn agent_relay_mcp_server_config_empty_workspace_vars_omitted() {
+        let server = super::agent_relay_mcp_server_config(
+            None,
+            None,
+            None,
+            None,
+            Some(""),
+            Some("  "),
+            None,
+        );
         // env may be absent (Value::Null) or present but without workspace keys
         let env = &server["env"];
         assert!(
@@ -2948,7 +3052,7 @@ mod tests {
     #[test]
     fn merge_relaycast_injects_workspace_vars() {
         let temp = tempdir().expect("tempdir");
-        let merged = super::merge_relaycast_with_project_mcp_inner(
+        let merged = super::merge_agent_relay_with_project_mcp_inner(
             None,
             None,
             None,
@@ -2961,21 +3065,21 @@ mod tests {
         );
         let parsed: Value = serde_json::from_str(&merged).expect("valid JSON");
         assert_eq!(
-            parsed["mcpServers"]["relaycast"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj"),
             "RELAY_WORKSPACES_JSON must be forwarded through merge function"
         );
         assert_eq!(
-            parsed["mcpServers"]["relaycast"]["env"]["RELAY_DEFAULT_WORKSPACE"].as_str(),
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_DEFAULT_WORKSPACE"].as_str(),
             Some("dw"),
             "RELAY_DEFAULT_WORKSPACE must be forwarded through merge function"
         );
     }
 
     #[tokio::test]
-    async fn configure_relaycast_mcp_with_token_passes_workspace_vars() {
+    async fn configure_agent_relay_mcp_with_token_passes_workspace_vars() {
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "claude",
             "worker",
             None,
@@ -2990,7 +3094,7 @@ mod tests {
         .expect("configure claude mcp with workspace vars");
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
-        let env = &json["mcpServers"]["relaycast"]["env"];
+        let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(
             env["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj"),
@@ -3004,12 +3108,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configure_relaycast_mcp_with_token_opencode_headless_call_site() {
+    async fn configure_agent_relay_mcp_with_token_opencode_headless_call_site() {
         // Mirrors the worker.rs AgentRuntime::Headless call site for opencode:
-        // ensures --agent relaycast is returned and opencode.json is written
+        // ensures --agent agent-relay is returned and opencode.json is written
         // with the workspace context forwarded through to the MCP environment.
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "opencode",
             "headless-worker",
             Some("rk_live_hl"),
@@ -3023,13 +3127,13 @@ mod tests {
         .await
         .expect("configure opencode headless mcp");
 
-        assert_eq!(args, vec!["--agent", "relaycast"]);
+        assert_eq!(args, vec!["--agent", "agent-relay"]);
 
         let path = temp.path().join("opencode.json");
         assert!(path.exists(), "opencode.json must be created");
         let contents = fs::read_to_string(&path).expect("read opencode.json");
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
-        let env = &json["mcp"]["relaycast"]["environment"];
+        let env = &json["mcp"]["agent-relay"]["environment"];
         assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
         assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
         assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
@@ -3037,12 +3141,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configure_relaycast_mcp_with_token_claude_headless_call_site() {
+    async fn configure_agent_relay_mcp_with_token_claude_headless_call_site() {
         // Mirrors the worker.rs AgentRuntime::Headless call site for claude:
         // ensures --mcp-config JSON is returned with the workspace context
         // forwarded through to the MCP environment.
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp_with_token(
+        let args = super::configure_agent_relay_mcp_with_token(
             "claude",
             "headless-worker",
             Some("rk_live_hl"),
@@ -3060,7 +3164,7 @@ mod tests {
         assert_eq!(args[0], "--mcp-config");
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
-        let env = &json["mcpServers"]["relaycast"]["env"];
+        let env = &json["mcpServers"]["agent-relay"]["env"];
         assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
         assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
         assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
@@ -3068,20 +3172,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configure_relaycast_mcp_public_reads_env_fallback() {
+    async fn configure_agent_relay_mcp_public_reads_env_fallback() {
         // Set env vars before calling the public wrapper
         std::env::set_var("RELAY_WORKSPACES_JSON", "wj-from-env");
         let temp = tempdir().expect("tempdir");
-        let args = super::configure_relaycast_mcp("claude", "worker", None, None, &[], temp.path())
-            .await
-            .expect("configure claude mcp from env");
+        let args =
+            super::configure_agent_relay_mcp("claude", "worker", None, None, &[], temp.path())
+                .await
+                .expect("configure claude mcp from env");
         std::env::remove_var("RELAY_WORKSPACES_JSON");
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["relaycast"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
+            json["mcpServers"]["agent-relay"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj-from-env"),
-            "public configure_relaycast_mcp must read RELAY_WORKSPACES_JSON from process env"
+            "public configure_agent_relay_mcp must read RELAY_WORKSPACES_JSON from process env"
         );
     }
 }

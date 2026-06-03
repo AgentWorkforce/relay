@@ -1,8 +1,8 @@
 /**
  * Detectors for relaycast `agent_token_invalid` responses.
  *
- * Mirrors the recovery contract introduced in relaycast PR #137. The MCP
- * server (and any SDK consumer) uses these helpers to recognise when a
+ * Mirrors the recovery contract introduced in upstream PR #137. The Agent Relay
+ * MCP server (and any SDK consumer) uses these helpers to recognise when a
  * Relaycast agent token has been invalidated mid-session so the stale
  * credential can be cleared and the caller pointed at a fresh
  * `register_agent` call.
@@ -95,7 +95,7 @@ interface MaybeToolResult {
 
 /**
  * True when a tool result swallowed an invalid-token error into its
- * content array (the pattern the relaycast MCP server uses when an upstream
+ * content array (the pattern the Agent Relay MCP server uses when an upstream
  * call returns `Invalid agent token` in a 401 body).
  */
 export function isInvalidAgentTokenToolResult(result: unknown): boolean {
@@ -112,7 +112,7 @@ export function isInvalidAgentTokenToolResult(result: unknown): boolean {
 
 /**
  * Human-readable guidance returned to the MCP client after invalidating a
- * stale agent token. Matches the wording surfaced by the relaycast MCP
+ * stale agent token. Matches the wording surfaced by the Agent Relay MCP
  * server so prompts that key on this string keep working across both
  * implementations.
  */

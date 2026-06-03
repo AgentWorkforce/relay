@@ -1,6 +1,7 @@
 import { RelayCast } from '@relaycast/sdk';
 import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
 
+import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
 import {
   normalizeAgent,
   normalizeAgentPresence,
@@ -356,7 +357,7 @@ type RelaycastAgentLike = {
   };
 };
 
-export interface RelaycastMessagingOptions {
+export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   /** Workspace key returned when creating or joining an Agent Relay workspace. */
   workspaceKey?: string;
   /** @deprecated Use workspaceKey for public Agent Relay flows. */
@@ -401,6 +402,10 @@ function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWor
       apiKey: workspaceKey,
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
+      ...relaycastTelemetryOptions({
+        harness: options.harness,
+        agentRelayDistinctId: options.agentRelayDistinctId,
+      }),
     }) as RelayCastOptions
   ) as unknown as RelaycastWorkspaceLike;
 }

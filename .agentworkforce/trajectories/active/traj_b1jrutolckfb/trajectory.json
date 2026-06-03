@@ -31,6 +31,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780504388616,
+          "type": "decision",
+          "content": "Port PR 888 telemetry lessons to current split: Port PR 888 telemetry lessons to current split",
+          "raw": {
+            "question": "Port PR 888 telemetry lessons to current split",
+            "chosen": "Port PR 888 telemetry lessons to current split",
+            "alternatives": [],
+            "reasoning": "User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values."
+          },
+          "significance": "high"
         }
       ]
     }

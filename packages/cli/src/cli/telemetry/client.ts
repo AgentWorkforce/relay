@@ -23,6 +23,7 @@ let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
 let distinctId: string | null = null;
 let initialized = false;
+let firstRunDetected = false;
 
 function findPackageJson(startDir: string): string | null {
   let dir = startDir;
@@ -107,6 +108,8 @@ function buildCommonProperties(versions: {
 function showFirstRunNotice(): void {
   if (wasNotified()) return;
 
+  firstRunDetected = true;
+
   if (isDisabledByEnv()) {
     markNotified();
     return;
@@ -152,7 +155,10 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
   if (options.showNotice !== false) {
     showFirstRunNotice();
   }
-  if (!isTelemetryEnabled()) return;
+  if (!isTelemetryEnabled()) {
+    firstRunDetected = false;
+    return;
+  }
 
   client = new PostHog(posthogConfig.apiKey, {
     host: posthogConfig.host,
@@ -170,6 +176,14 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     orchestratorHarness: options.orchestratorHarness,
   });
   distinctId = getDistinctId();
+
+  if (firstRunDetected) {
+    track('cli_install', {
+      version: commonProps.cli_version ?? commonProps.agent_relay_version,
+      success: true,
+    });
+    firstRunDetected = false;
+  }
 }
 
 export function track<E extends TelemetryEventName>(

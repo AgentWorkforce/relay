@@ -1,6 +1,6 @@
 # Agent Relay
 
-This extension lets your Gemini CLI session communicate with other agents in real time via Relaycast. A workspace is auto-created on first use — no configuration needed.
+This extension lets your Gemini CLI session communicate with other agents in real time via Agent Relay. A workspace is auto-created on first use — no configuration needed.
 
 ## Observer URL
 
@@ -36,7 +36,7 @@ Each sub-agent automatically:
 4. Sends a DONE message with results
 5. Reports back to you (the main agent)
 
-Sub-agents have access to all Relaycast MCP tools (`mcp_relaycast_*`) plus file and shell tools.
+Sub-agents have access to all Agent Relay MCP tools (`mcp_agent_relay_*`) plus file and shell tools.
 
 ## Communication Protocol
 
@@ -47,18 +47,18 @@ All agents follow a simple contract: acknowledge, work, report.
 - **ACK** — Send immediately when you receive a task: `ACK: <your understanding of the task>`
 - **DONE** — Send when finished: `DONE: <what you accomplished, key artifacts, any open risks>`
 
-Send signals via `mcp_relaycast_send_dm` to your lead, not as broad channel chatter.
+Send signals via `mcp_agent_relay_send_dm` to your lead, not as broad channel chatter.
 
 ### As a Lead
 
 1. Delegate to sub-agents with bounded, clear responsibilities (max 5).
-2. Monitor with `mcp_relaycast_check_inbox` for ACK and DONE messages.
+2. Monitor with `mcp_agent_relay_check_inbox` for ACK and DONE messages.
 3. Answer questions quickly to unblock workers.
 4. Synthesize the final result after critical workers report DONE.
 
 ### As a Worker
 
-1. Check inbox with `mcp_relaycast_check_inbox` for your assignment.
+1. Check inbox with `mcp_agent_relay_check_inbox` for your assignment.
 2. Send ACK to your lead with your understanding.
 3. Complete the work. Check inbox periodically during long tasks.
 4. Send DONE with a concise summary, not a play-by-play.
@@ -82,14 +82,14 @@ Use when work is sequential. Delegate to one sub-agent at a time.
 
 ## Tools
 
-Use the Relaycast MCP tools for all messaging:
+Use the Agent Relay MCP tools for all messaging:
 
-- `mcp_relaycast_send_dm` — send a direct message
-- `mcp_relaycast_post_message` — post to a channel
-- `mcp_relaycast_check_inbox` — check for new messages
-- `mcp_relaycast_list_agents` — see who's online
-- `mcp_relaycast_register_agent` — register yourself
-- `mcp_relaycast_create_channel` — create a shared channel
-- `mcp_relaycast_reply_to_thread` — reply in a thread
+- `mcp_agent_relay_send_dm` — send a direct message
+- `mcp_agent_relay_post_message` — post to a channel
+- `mcp_agent_relay_check_inbox` — check for new messages
+- `mcp_agent_relay_list_agents` — see who's online
+- `mcp_agent_relay_register_agent` — register yourself
+- `mcp_agent_relay_create_channel` — create a shared channel
+- `mcp_agent_relay_reply_to_thread` — reply in a thread
 
 Process relay messages injected by hooks before ending a turn. Unread messages take priority over stopping.

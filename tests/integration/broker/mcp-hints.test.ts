@@ -2,7 +2,7 @@
  * MCP Reply Hints integration tests.
  *
  * Verifies that injected messages include system-reminder wrappers
- * that guide agents to respond using Relaycast MCP tools.
+ * that guide agents to respond using Agent Relay MCP tools.
  *
  * Run:
  *   npx tsc -p tests/integration/broker/tsconfig.json
@@ -77,8 +77,8 @@ test('mcp-hints: injected messages include system-reminder wrapper', { timeout: 
     );
 
     // Verify MCP tool hints are present
-    assert.ok(output.includes('mcp__relaycast__'), 'Injected message should mention Relaycast MCP tools');
-    assert.ok(output.includes('Relaycast MCP'), 'Injected message should mention Relaycast MCP');
+    assert.ok(output.includes('mcp__agent-relay__'), 'Injected message should mention Agent Relay MCP tools');
+    assert.ok(output.includes('Agent Relay MCP'), 'Injected message should mention Agent Relay MCP');
 
     // Verify the actual relay message is present
     assert.ok(
@@ -121,7 +121,10 @@ test('mcp-hints: DM messages hint to use send_dm', { timeout: 90_000 }, async (t
     const output = collectStreamOutput(events, agentName);
 
     // DM should hint to use send_dm with sender name
-    assert.ok(output.includes('mcp__relaycast__send_dm'), 'DM should hint to use mcp__relaycast__send_dm');
+    assert.ok(
+      output.includes('mcp__agent-relay__send_dm'),
+      'DM should hint to use mcp__agent-relay__send_dm'
+    );
     assert.ok(output.includes('alice'), 'DM hint should mention the sender (alice) to reply to');
 
     await harness.releaseAgent(agentName);
@@ -161,8 +164,8 @@ test('mcp-hints: channel messages hint to use post_message with channel', { time
 
     // Channel message should hint to use post_message with specific channel
     assert.ok(
-      output.includes('mcp__relaycast__post_message'),
-      'Channel message should hint to use mcp__relaycast__post_message'
+      output.includes('mcp__agent-relay__post_message'),
+      'Channel message should hint to use mcp__agent-relay__post_message'
     );
     assert.ok(
       output.includes('#dev-team') || output.includes('dev-team'),
@@ -305,7 +308,7 @@ test('e2e-mcp: agent responds to DM using MCP send_dm', { timeout: 180_000 }, as
   try {
     // Spawn agent with explicit task to respond via MCP
     await harness.spawnAgent(agentName, cli, ['general'], {
-      task: 'You are a test agent. When you receive a message, respond using the mcp__relaycast__send_dm tool to reply directly to the sender. Keep responses brief.',
+      task: 'You are a test agent. When you receive a message, respond using the mcp__agent-relay__send_dm tool to reply directly to the sender. Keep responses brief.',
     });
     await sleep(15_000);
 
@@ -357,7 +360,7 @@ test('e2e-mcp: agent responds to channel message using MCP post_message', { time
 
   try {
     await harness.spawnAgent(agentName, cli, [channelName], {
-      task: `You are a test agent in channel #${channelName}. When you receive a channel message, respond using the mcp__relaycast__post_message tool with channel: "${channelName}". Keep responses brief.`,
+      task: `You are a test agent in channel #${channelName}. When you receive a channel message, respond using the mcp__agent-relay__post_message tool with channel: "${channelName}". Keep responses brief.`,
     });
     await sleep(15_000);
 
@@ -410,7 +413,7 @@ test('e2e-mcp: agent responds to thread using MCP reply_to_thread', { timeout: 1
 
   try {
     await harness.spawnAgent(agentName, cli, ['general'], {
-      task: 'You are a test agent. When you receive a thread message, respond using the mcp__relaycast__reply_to_thread tool. Keep responses brief.',
+      task: 'You are a test agent. When you receive a thread message, respond using the mcp__agent-relay__reply_to_thread tool. Keep responses brief.',
     });
     await sleep(15_000);
 
@@ -468,7 +471,7 @@ test('e2e-mcp: agent can check inbox for reactions', { timeout: 180_000 }, async
 
   try {
     await harness.spawnAgent(agentName, cli, ['general'], {
-      task: 'You are a test agent. Use the mcp__relaycast__check_inbox tool to see if you have any new messages or reactions. Report what you find.',
+      task: 'You are a test agent. Use the mcp__agent-relay__check_inbox tool to see if you have any new messages or reactions. Report what you find.',
     });
     await sleep(15_000);
 
@@ -478,7 +481,7 @@ test('e2e-mcp: agent can check inbox for reactions', { timeout: 180_000 }, async
     await harness.sendMessage({
       to: agentName,
       from: 'test-user',
-      text: 'Please check your inbox using mcp__relaycast__check_inbox and tell me if you see any messages or reactions.',
+      text: 'Please check your inbox using mcp__agent-relay__check_inbox and tell me if you see any messages or reactions.',
     });
 
     await sleep(60_000);
@@ -490,7 +493,7 @@ test('e2e-mcp: agent can check inbox for reactions', { timeout: 180_000 }, async
     // This is indicated by MCP tool calls in the output
     const usedCheckInbox =
       output.includes('check_inbox') ||
-      output.includes('mcp__relaycast__check_inbox') ||
+      output.includes('mcp__agent-relay__check_inbox') ||
       output.includes('inbox');
 
     assert.ok(usedCheckInbox, 'Agent should attempt to check inbox when asked about reactions');
