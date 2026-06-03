@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import os from 'node:os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sdkStatusClient = {
@@ -298,6 +299,27 @@ describe('registerCoreCommands', () => {
   it('up infers static-dir for standalone dashboard binary install layout', async () => {
     const home = '/Users/tester';
     const staticDir = `${home}/.relay/dashboard/out`;
+    const fs = createFsMock({
+      [staticDir]: '',
+      [`${staticDir}/index.html`]: '<html></html>',
+    });
+    const { program, deps } = createHarness({
+      fs,
+      env: { HOME: home },
+      dashboardBinary: `${home}/.local/bin/relay-dashboard-server`,
+    });
+
+    const exitCode = await runCommand(program, ['up', '--port', '4999']);
+
+    expect(exitCode).toBeUndefined();
+    const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as string[];
+    expect(dashboardArgs).toEqual(expect.arrayContaining(['--static-dir', staticDir]));
+  });
+
+  it('up infers static-dir for renamed installer dashboard layout', async () => {
+    const home = '/Users/tester';
+    const staticDir = `${home}/.agentworkforce/relay/dashboard/out`;
     const fs = createFsMock({
       [staticDir]: '',
       [`${staticDir}/index.html`]: '<html></html>',
@@ -1159,6 +1181,35 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('New version available: 2.0.0');
+    expect(deps.execCommand).not.toHaveBeenCalled();
+  });
+
+  it('uninstall dry-run covers renamed and legacy installer asset directories', async () => {
+    const { deps } = createHarness();
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+    const home = os.homedir();
+    const paths = [
+      `${home}/.agentworkforce/relay/dashboard/out`,
+      `${home}/.agentworkforce/relay/dashboard/.version`,
+      `${home}/.agent-relay/dashboard/out`,
+      `${home}/.agent-relay/dashboard/.version`,
+      `${home}/.agentworkforce/relay/bin`,
+      `${home}/.agent-relay/bin`,
+    ];
+    for (const filePath of paths) {
+      deps.fs.writeFileSync(filePath, '');
+    }
+
+    const exitCode = await runCommand(program, ['uninstall', '--dry-run']);
+
+    expect(exitCode).toBeUndefined();
+    for (const filePath of paths.slice(0, 4)) {
+      expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove dashboard asset path: ${filePath}`);
+    }
+    for (const filePath of paths.slice(4)) {
+      expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove directory: ${filePath}`);
+    }
     expect(deps.execCommand).not.toHaveBeenCalled();
   });
 

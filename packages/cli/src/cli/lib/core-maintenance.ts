@@ -11,6 +11,7 @@ const MCP_CONFIG_FILE = '.mcp.json';
 const RELAYCAST_SERVER_KEY = 'relaycast';
 const ZED_SETTINGS_PATH = path.join('.config', 'zed', 'settings.json');
 const DEFAULT_ZED_SERVER_NAME = 'Agent Relay';
+const INSTALL_DIR_NAMES = ['.agentworkforce/relay', '.agent-relay'] as const;
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -256,12 +257,15 @@ export async function runUninstallCommand(
 
   // --- Dashboard static assets removal ---
   const homeDir = os.homedir();
-  for (const assetPath of [
+  const dashboardAssetPaths = [
     path.join(homeDir, '.relay', 'dashboard', 'out'),
     path.join(homeDir, '.relay', 'dashboard', '.version'),
-    path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out'),
-    path.join(homeDir, '.agentworkforce/relay', 'dashboard', '.version'),
-  ]) {
+    ...INSTALL_DIR_NAMES.flatMap((installDir) => [
+      path.join(homeDir, installDir, 'dashboard', 'out'),
+      path.join(homeDir, installDir, 'dashboard', '.version'),
+    ]),
+  ];
+  for (const assetPath of dashboardAssetPaths) {
     if (deps.fs.existsSync(assetPath)) {
       if (isDryRun) {
         deps.log(`[dry-run] Would remove dashboard asset path: ${assetPath}`);
@@ -284,7 +288,7 @@ export async function runUninstallCommand(
 
   // --- Binary removal (standalone binaries + npm packages) ---
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
-  const installBinDir = path.join(homeDir, '.agentworkforce/relay', 'bin');
+  const installBinDirs = INSTALL_DIR_NAMES.map((installDir) => path.join(homeDir, installDir, 'bin'));
 
   // Remove standalone binaries from ~/.local/bin
   for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
@@ -318,8 +322,11 @@ export async function runUninstallCommand(
     }
   }
 
-  // Remove broker binary from ~/.agentworkforce/relay/bin/ (not the parent dir which stores global data)
-  if (deps.fs.existsSync(installBinDir)) {
+  // Remove installer bin dirs without deleting the parent data directories.
+  for (const installBinDir of installBinDirs) {
+    if (!deps.fs.existsSync(installBinDir)) {
+      continue;
+    }
     if (isDryRun) {
       deps.log(`[dry-run] Would remove directory: ${installBinDir}`);
     } else {
