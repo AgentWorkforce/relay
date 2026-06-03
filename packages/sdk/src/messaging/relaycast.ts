@@ -264,6 +264,11 @@ type RelaycastWorkspaceLike = {
     info(): Promise<unknown>;
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
+  // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
+  // client receive all workspace-visible events without an agent identity.
+  connect?: () => void;
+  disconnect?: () => void;
+  on?: { any(handler: (event: unknown) => void): () => void };
 };
 
 type RelaycastAgentLike = {
@@ -647,18 +652,31 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   readonly events = {
     connect: (): void => {
-      const agent = this.requireAgentClient('events.connect');
       if (this.eventUnsubscribe) return;
-      agent.connect();
-      this.eventUnsubscribe = agent.on.any((event) => {
-        this.emitEvent(normalizeMessagingEvent(event));
-      });
+      const forward = (event: unknown): void => this.emitEvent(normalizeMessagingEvent(event));
+      // Agent-scoped clients stream through their own connection; a workspace-key
+      // client streams all workspace-visible events through the workspace stream.
+      if (this.agentClient) {
+        this.agentClient.connect();
+        this.eventUnsubscribe = this.agentClient.on.any(forward);
+        return;
+      }
+      if (typeof this.relaycast.connect === 'function' && this.relaycast.on) {
+        this.relaycast.connect();
+        this.eventUnsubscribe = this.relaycast.on.any(forward);
+        return;
+      }
+      // No agent client and no workspace stream available: preserve the
+      // explicit "needs an agent token" error.
+      this.requireAgentClient('events.connect');
     },
     disconnect: async (): Promise<void> => {
       this.eventUnsubscribe?.();
       this.eventUnsubscribe = undefined;
       if (this.agentClient) {
         await this.agentClient.disconnect();
+      } else if (typeof this.relaycast.disconnect === 'function') {
+        this.relaycast.disconnect();
       }
     },
     subscribe: (channels: string[]): void => {
