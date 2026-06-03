@@ -115,10 +115,9 @@ jobs:
       - name: Build packages
         run: |
           npm run build
-          # cloud and openclaw sit outside the core build chain;
-          # build them so package validation can verify their dist output.
+          # cloud sits outside the core build chain;
+          # build it so package validation can verify its dist output.
           npm --prefix packages/cloud run build
-          npm --prefix packages/openclaw run build
 
       - name: Validate all
         run: |
