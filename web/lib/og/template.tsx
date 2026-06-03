@@ -822,6 +822,220 @@ export function LandingVariant({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Pear mark — the ripe-pear glyph from app/pear/page.tsx (green body + brown
+// stem), inlined for satori. Used by the Pear OG card's lockup.
+// ───────────────────────────────────────────────────────────────────────────
+
+const PEAR_BODY_PATH =
+  'M7.681 9.097c1.587-3.151 7.698-1.916 11.958 2.171 2.697 2.586 8.056 1.498 11.498 4.804 3.493 3.354 3.259 9.361-3.053 15.767C23 37 16 37 11.835 33.384c-4.388-3.811-2.476-8.61-4.412-13.585S3.1 9.375 7.681 9.097Z';
+const PEAR_STEM_PATH =
+  'M8.178 9.534c-.43.448-1.114.489-1.527.093-3.208-3.079-3.918-7.544-3.946-7.776-.074-.586.348-1.157.939-1.278.592-.121 1.131.257 1.205.842.006.05.657 3.997 3.359 6.59.413.397.4 1.081-.03 1.529Z';
+
+const PEAR_GREEN = '#A6D388';
+
+function PearMark({ size = 46 }: { size?: number }): ReactElement {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 36 36"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ display: 'flex' }}
+    >
+      <path fill={PEAR_GREEN} d={PEAR_BODY_PATH} />
+      <path fill="#662113" d={PEAR_STEM_PATH} />
+    </svg>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Variant: PEAR — left copy column + the Pear desktop-app screenshot pinned
+// into the bottom-right corner.
+//
+// Reuses the LandingVariant composition (left ~50% copy, a graphic bled off the
+// right + bottom edges with the terracotta accent peeking at its top-left) but
+// swaps the synthetic chat panel for the real product screenshot
+// (public/img/pear-app.png), zoomed in on its top-left so the #general channel
+// reads clearly and the rest of the window runs off the bottom-right of the card.
+//
+// `screenshot` is a data URL (the PNG read + base64-encoded by the route). When
+// it is absent (e.g. the file could not be read at build) the panel still
+// renders its frame so the card never breaks.
+// ───────────────────────────────────────────────────────────────────────────
+
+function PearShot({ screenshot, scale = 1 }: { screenshot?: string; scale?: number }): ReactElement {
+  return (
+    // Terracotta accent frame filling the cropping wrapper, peeking out on the
+    // window's top + left, carrying the faint white diagonal texture. Top-left
+    // corner is rounded; right + bottom run flush to the canvas corner.
+    <div
+      style={{
+        display: 'flex',
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: 660 * scale,
+        height: 600 * scale,
+        borderTopLeftRadius: 24 * scale,
+        overflow: 'hidden',
+        background: `linear-gradient(135deg, ${PALETTE.terracotta} 0%, ${PALETTE.terracottaDeep} 100%)`,
+      }}
+    >
+      <svg
+        width={640 * scale}
+        height={640 * scale}
+        viewBox="0 0 640 640"
+        fill="none"
+        style={{ position: 'absolute', left: 0, top: 0, display: 'flex' }}
+      >
+        <g stroke="#FFFFFF" strokeWidth="1.6" strokeLinecap="round">
+          <line x1="-60" y1="150" x2="170" y2="-80" opacity="0.22" />
+          <line x1="-60" y1="220" x2="240" y2="-80" opacity="0.18" />
+          <line x1="-60" y1="430" x2="120" y2="250" opacity="0.16" />
+          <line x1="-40" y1="600" x2="150" y2="410" opacity="0.13" />
+        </g>
+      </svg>
+
+      {/* The window: a dark card anchored flush to the right + bottom edges
+          (which bleed off-canvas), inset from the top + left so the orange peeks
+          at its top-left. Asymmetric radius like the homepage chat preview. The
+          screenshot is anchored to the card's top-left and rendered larger than
+          the card, so only its zoomed top-left shows; the rest is clipped. */}
+      <div
+        style={{
+          display: 'flex',
+          position: 'absolute',
+          top: 22 * scale,
+          left: 38 * scale,
+          width: 622 * scale,
+          height: 578 * scale,
+          background: PALETTE.surface,
+          border: '2px solid rgba(116, 184, 226, 0.30)',
+          borderRadius: `${16 * scale}px 0 0 0`,
+          overflow: 'hidden',
+          boxShadow: '-16px 16px 44px rgba(0,0,0,0.5)',
+        }}
+      >
+        {screenshot ? (
+          // satori renders raster images directly; next/image is not usable here.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={screenshot}
+            alt="Pear desktop app"
+            width={1112 * scale}
+            height={828 * scale}
+            style={{ position: 'absolute', left: 0, top: 0, display: 'flex' }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function PearVariant({
+  headingFamily,
+  bodyFamily,
+  screenshot,
+}: {
+  headingFamily: string;
+  bodyFamily: string;
+  screenshot?: string;
+}): ReactElement {
+  return (
+    <Frame bodyFamily={bodyFamily}>
+      <SwoopLines top={420} opacity={0.18} />
+
+      {/* LEFT: copy */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          width: 600,
+          flexShrink: 0,
+          padding: '0 0 0 80px',
+          position: 'relative',
+        }}
+      >
+        {/* Lockup: pear mark + "Pear" wordmark + a muted "by Agent Relay". */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 40 }}>
+          <PearMark size={48} />
+          <span
+            style={{
+              display: 'flex',
+              fontFamily: headingFamily,
+              fontWeight: 800,
+              fontSize: 42,
+              letterSpacing: '-0.03em',
+              color: PALETTE.fg,
+            }}
+          >
+            Pear
+          </span>
+          <span style={{ display: 'flex', fontSize: 18, color: PALETTE.faint, marginTop: 14 }}>
+            by Agent Relay
+          </span>
+        </div>
+
+        {/* Hero headline, heavier Sora 800 with "team" in pear green. */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            fontFamily: headingFamily,
+            fontWeight: 800,
+            fontSize: 58,
+            lineHeight: 1.0,
+            letterSpacing: '-0.04em',
+            color: PALETTE.fg,
+          }}
+        >
+          <span style={{ display: 'flex', fontWeight: 800 }}>Pair program</span>
+          <span style={{ display: 'flex', flexWrap: 'wrap', fontWeight: 800 }}>
+            <span style={{ display: 'flex', fontWeight: 800 }}>with a&nbsp;</span>
+            <span style={{ display: 'flex', fontWeight: 800, color: PEAR_GREEN }}>team</span>
+            <span style={{ display: 'flex', fontWeight: 800 }}>&nbsp;of agents</span>
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            fontSize: 22,
+            lineHeight: 1.5,
+            color: PALETTE.muted,
+            marginTop: 24,
+            maxWidth: 480,
+          }}
+        >
+          A desktop workspace where AI coding agents run in their own terminals, talk to each other, and bring
+          every diff back to you.
+        </div>
+      </div>
+
+      {/* RIGHT: the product screenshot pinned into the bottom-right corner. Same
+          cropping-box trick as the landing chat card: a fixed box anchored to the
+          canvas bottom-right so the window bleeds off the right + bottom edges,
+          with the terracotta accent peeking at the on-canvas top-left corner. */}
+      <div
+        style={{
+          display: 'flex',
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: 594,
+          height: 540,
+          overflow: 'hidden',
+        }}
+      >
+        <PearShot screenshot={screenshot} scale={0.9} />
+      </div>
+    </Frame>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Variant: BLOG — logo + wordmark, big title, author/date/meta footer.
 // ───────────────────────────────────────────────────────────────────────────
 
