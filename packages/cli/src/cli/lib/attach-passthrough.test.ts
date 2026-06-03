@@ -180,6 +180,11 @@ class FakePredictiveEcho {
     this.outputs.push(chunk);
   }
 
+  rollbackCount = 0;
+  rollback(): void {
+    this.rollbackCount += 1;
+  }
+
   onResize(): void {}
 
   reset(): void {

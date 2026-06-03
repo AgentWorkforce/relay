@@ -213,4 +213,75 @@ describe('PredictiveEchoEngine — non-printable input', () => {
     expect(h.engine.hasPredictions).toBe(false);
     expect(h.writes).toEqual([]);
   });
+
+  it('does not predict wide / non-ASCII characters', () => {
+    const h = createHarness({ inputSrtt: 100 });
+    type(h.engine, '中'); // CJK, two columns — would desync cursor math
+    expect(h.engine.hasPredictions).toBe(false);
+    expect(h.writes.join('')).not.toContain('\x1b[4m');
+  });
+});
+
+describe('PredictiveEchoEngine — adaptive re-engagement', () => {
+  it('re-engages when latency climbs again after a quiet period', () => {
+    const h = createHarness({ inputSrtt: 5 }); // below threshold → dormant
+    type(h.engine, 'a');
+    expect(h.engine.hasPredictions).toBe(false);
+
+    h.setSrtt(100); // latency spikes back up
+    type(h.engine, 'b');
+    expect(h.engine.hasPredictions).toBe(true);
+    expect(h.writes.join('')).toContain('\x1b[4m');
+  });
+});
+
+describe('PredictiveEchoEngine — off-regime safety', () => {
+  it('suspends (without stranding glyphs) when output moves to a new row', async () => {
+    const h = createHarness({ inputSrtt: 100 });
+    type(h.engine, 'a');
+    expect(h.engine.hasPredictions).toBe(true);
+
+    await h.engine.onServerOutput('\n'); // cursor leaves the prediction row
+    expect(h.engine.hasPredictions).toBe(false);
+  });
+
+  it('rolls back on a same-row cursor retreat without erasing confirmed output', async () => {
+    const h = createHarness({ inputSrtt: 100 });
+    await h.model.write('hello'); // confirmed prompt; cursor at col 5
+    type(h.engine, 'a'); // predicted at col 5
+    expect(h.engine.hasPredictions).toBe(true);
+    h.writes.length = 0;
+
+    await h.engine.onServerOutput('\r'); // carriage return — cursor retreats
+    expect(h.engine.hasPredictions).toBe(false);
+    // Erased only from the predicted column (5) rightward; 'hello' intact.
+    expect(h.writes.join('')).toContain('\x1b[K');
+    expect(h.model.rowText(0)).toBe('hello');
+  });
+});
+
+describe('PredictiveEchoEngine — explicit rollback', () => {
+  it('discards predictions on rollback() (e.g. a failed send)', () => {
+    const h = createHarness({ inputSrtt: 100 });
+    type(h.engine, 'a');
+    expect(h.engine.hasPredictions).toBe(true);
+    h.writes.length = 0;
+
+    h.engine.rollback();
+    expect(h.engine.hasPredictions).toBe(false);
+    expect(h.writes.join('')).toContain('\x1b[K');
+  });
+});
+
+describe('PredictiveEchoEngine — seed gate', () => {
+  it('does not predict until an in-flight seed has applied', async () => {
+    const h = createHarness({ inputSrtt: 100 });
+    const seeding = h.engine.seed(''); // seeded := false synchronously
+    type(h.engine, 'a');
+    expect(h.engine.hasPredictions).toBe(false);
+
+    await seeding;
+    type(h.engine, 'a');
+    expect(h.engine.hasPredictions).toBe(true);
+  });
 });

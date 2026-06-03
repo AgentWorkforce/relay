@@ -581,6 +581,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           if (settled) return;
           const message = err instanceof Error ? err.message : String(err);
           deps.log(`[drive] input stream send failed: ${message}`);
+          // The keystroke never reached the PTY — drop any optimistic echo
+          // for it so the screen doesn't show input the agent didn't get.
+          predictiveEcho?.rollback();
         });
         predictiveEcho?.onUserInput(outcome.forward);
       }
