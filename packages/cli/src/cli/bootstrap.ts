@@ -25,6 +25,7 @@ import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerLocalAgentCommands } from './commands/local-agent.js';
+import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
 import { registerAgentCommands } from './commands/agent.js';
@@ -292,6 +293,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   const local = program.command('local').description('Manage the local Agent Relay broker and its agents');
   registerCoreCommands(local);
   registerLocalAgentCommands(local);
+  registerLocalWorkflowCommands(local);
 
   registerCoreMaintenance(program);
   registerStatusCommand(program);

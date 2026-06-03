@@ -133,6 +133,9 @@ The SDK-backed groups are `channel`, `message`, `integration`, and `capabilities
 | `agent-relay local up [flags]` | Start the local broker and optional dashboard. |
 | `agent-relay local status [--state-dir <path>] [--wait-for <seconds>]` | Check local broker daemon state. |
 | `agent-relay local metrics [--agent <name>]` | Show local broker and agent resource usage. |
+| `agent-relay local run <workflow> [--file-type <type>]` | Start an executable local workflow file in the background. |
+| `agent-relay local logs <run-id> [--follow]` | Read local workflow run logs. |
+| `agent-relay local sync <run-id>` | Finalize a local workflow run and report sync state. |
 | `agent-relay local down [--force] [--all] [--timeout <ms>] [--state-dir <path>]` | Stop the local broker. |
 
 ## Local Agents

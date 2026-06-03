@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` agent clients send via `sendMessage({ to })` (`#channel`, `@handle`, or an array of `@handle`s for a group DM), `reply({ messageId })`, and `react({ messageId, emoji })`; every message exposes `messageId`.
 - `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
 - `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
+- `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape for laptop-hosted workflows.
 
 ### Changed
 

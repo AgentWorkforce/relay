@@ -27,6 +27,10 @@ agent-relay local up
 agent-relay local status
 agent-relay local down
 
+agent-relay local run workflows/my-workflow.ts
+agent-relay local logs <run-id> --follow
+agent-relay local sync <run-id>
+
 agent-relay local agent new claude          # spawn + attach
 agent-relay local agent list
 agent-relay local agent attach <name> --mode view

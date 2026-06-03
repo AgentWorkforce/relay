@@ -102,6 +102,10 @@ agent-relay local up --background
 agent-relay local status
 agent-relay local metrics
 
+agent-relay local run workflows/my-workflow.ts
+agent-relay local logs <run-id> --follow
+agent-relay local sync <run-id>
+
 agent-relay local agent spawn codex --name reviewer --channels reviews --task "Review the docs."
 agent-relay local agent list
 agent-relay local agent attach reviewer --mode view
@@ -110,7 +114,7 @@ agent-relay local agent release reviewer
 agent-relay local down
 ```
 
-The local runtime is optional. It manages a broker process, dashboard, PTY/headless agents, attach modes, logs, and release for CLI agents running on this machine.
+The local runtime is optional. It manages a broker process, dashboard, PTY/headless agents, attach modes, workflow logs, and release for CLI agents running on this machine. Local workflow runs execute in the current checkout and keep metadata under `.agentworkforce/relay/local-runs`.
 
 ## Composite Status And Maintenance
 
