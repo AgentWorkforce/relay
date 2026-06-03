@@ -2,6 +2,11 @@ import { RelayCast } from '@relaycast/sdk';
 
 import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './actions/index.js';
 import {
+  relaycastTelemetryOptions,
+  relaycastWorkspaceTelemetryOptions,
+  type RelaycastTelemetryOptions,
+} from './relaycast-telemetry.js';
+import {
   RelaycastMessagingClient,
   type RelayAgentRegistration,
   type RelayMessaging,
@@ -40,7 +45,7 @@ export interface AgentRelayOptions extends RelaycastMessagingOptions {
   createAgentMessaging?: (token: string) => RelayMessaging;
 }
 
-export interface AgentRelayCreateWorkspaceInput {
+export interface AgentRelayCreateWorkspaceInput extends RelaycastTelemetryOptions {
   name: string;
   baseUrl?: string;
   retryPolicy?: RelaycastMessagingOptions['retryPolicy'];
@@ -93,8 +98,10 @@ export class AgentRelay implements AgentRelayAgent {
 
   static async createWorkspace(input: string | AgentRelayCreateWorkspaceInput): Promise<AgentRelay> {
     const options = typeof input === 'string' ? { name: input } : input;
+    const telemetry = relaycastTelemetryOptions(options);
     const workspace = (await RelayCast.createWorkspace(options.name, {
       baseUrl: options.baseUrl,
+      ...relaycastWorkspaceTelemetryOptions(options),
     })) as Record<string, unknown>;
     const workspaceKey = extractWorkspaceKey(workspace);
 
@@ -107,6 +114,7 @@ export class AgentRelay implements AgentRelayAgent {
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
       actions: options.actions,
+      ...telemetry,
     });
   }
 

@@ -14,12 +14,21 @@ vi.mock('@agent-relay/harness-driver', () => ({
   }),
 }));
 
+const telemetryMocks = vi.hoisted(() => ({
+  track: vi.fn(),
+}));
+
+vi.mock('../telemetry/index.js', () => ({
+  track: telemetryMocks.track,
+}));
+
 beforeEach(() => {
   sdkStatusClient.getStatus.mockReset();
   sdkStatusClient.getStatus.mockResolvedValue({ agent_count: 0, pending_delivery_count: 0 });
   sdkStatusClient.getSession.mockReset();
   sdkStatusClient.getSession.mockResolvedValue({ workspace_key: '' });
   sdkStatusClient.disconnect.mockClear();
+  telemetryMocks.track.mockClear();
 });
 
 import {
@@ -1239,6 +1248,47 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('New version available: 2.0.0');
     expect(deps.execCommand).not.toHaveBeenCalled();
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith('cli_update', expect.any(Object));
+  });
+
+  it('update tracks successful install attempts', async () => {
+    const { deps } = createHarness({
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => ({ stdout: 'updated\n', stderr: '' })),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@latest');
+    expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
+      from_version: '1.2.3',
+      to_version: '2.0.0',
+      success: true,
+    });
+  });
+
+  it('update tracks failed install attempts without leaking messages', async () => {
+    const { deps } = createHarness({
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => {
+        throw new Error('registry token /tmp/private');
+      }),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['update']);
+
+    expect(exitCode).toBe(1);
+    expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
+      from_version: '1.2.3',
+      to_version: '2.0.0',
+      success: false,
+      error_class: 'Error',
+    });
   });
 
   it('uninstall dry-run covers renamed and legacy installer asset directories', async () => {

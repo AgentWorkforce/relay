@@ -2,7 +2,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { CoreDependencies, CoreFileSystem } from '../commands/core.js';
+import { track } from '../telemetry/index.js';
 import { readBrokerConnection } from './broker-lifecycle.js';
+import { errorClassName } from './telemetry-helpers.js';
 
 const SNIPPET_MARKER_START_PREFIX = '<!-- prpm:snippet:start @agent-relay/agent-relay-snippet@';
 const SNIPPET_MARKER_END_PREFIX = '<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@';
@@ -177,6 +179,7 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
   }
 
   deps.log('Installing update...');
+  const toVersion = info.latestVersion ?? 'latest';
   try {
     const { stdout, stderr } = await deps.execCommand('npm install -g agent-relay@latest');
     if (stdout.trim().length > 0) {
@@ -185,8 +188,20 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
     if (stderr.trim().length > 0) {
       deps.error(stderr.trimEnd());
     }
-    deps.log(`Successfully updated to ${info.latestVersion ?? 'latest'}`);
+    deps.log(`Successfully updated to ${toVersion}`);
+    track('cli_update', {
+      from_version: currentVersion,
+      to_version: toVersion,
+      success: true,
+    });
   } catch (err: unknown) {
+    const errorClass = errorClassName(err);
+    track('cli_update', {
+      from_version: currentVersion,
+      to_version: toVersion,
+      success: false,
+      ...(errorClass ? { error_class: errorClass } : {}),
+    });
     deps.error(`Failed to install update: ${toErrorMessage(err)}`);
     deps.log('Try running manually: npm install -g agent-relay@latest');
     deps.exit(1);
