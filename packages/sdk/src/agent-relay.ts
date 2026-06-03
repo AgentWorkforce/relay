@@ -186,7 +186,11 @@ export class AgentRelay implements AgentRelayAgent {
   }
 
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
-    return registerFacadeAction(this.actions, def);
+    // The workspace-scoped client has no single handler-agent identity or
+    // agent connection, so relay wiring is skipped and the action stays
+    // in-process. Use an agent client (workspace.register / reconnect) to
+    // register a relay-routed action.
+    return registerFacadeAction(this.actions, def, { messaging: this.messaging });
   }
 
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
@@ -239,7 +243,11 @@ function extractWorkspaceKey(payload: Record<string, unknown>): string | undefin
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayActions): AgentRelayAgent {
+export function agentRelayAgent(
+  messaging: RelayMessaging,
+  actions: AgentRelayActions,
+  handlerAgent?: string
+): AgentRelayAgent {
   // An acting-as agent client sends through its own token; `from` overrides are
   // best-effort and fall back to this client.
   const messages = createEnrichedMessages(messaging.messages, () => messaging.messages);
@@ -256,7 +264,7 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     integrations: messaging.integrations,
     capabilities: messaging.commands,
     workspace: createWorkspaceFacade(messaging),
-    registerAction: (def) => registerFacadeAction(actions, def),
+    registerAction: (def) => registerFacadeAction(actions, def, { messaging, handlerAgent }),
     addListener: (selector, handler) => hub.addListener(selector, handler),
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
@@ -274,7 +282,7 @@ export function assembleAgentClient(
   actions: AgentRelayActions,
   identity: { id: string; name: string; handle?: string; token: string }
 ): RelayAgentClient {
-  const base = agentRelayAgent(messaging, actions);
+  const base = agentRelayAgent(messaging, actions, identity.name);
   const handle = createAgentHandle(identity);
   return {
     ...base,

@@ -383,6 +383,46 @@ export interface RelayRegisterCapabilityInput {
   description: string;
   handlerAgent: string;
   parameters?: unknown;
+  /** JSON Schema describing the action input, sent as the descriptor `input_schema`. */
+  inputSchema?: Record<string, unknown>;
+  /** JSON Schema describing the action output, sent as the descriptor `output_schema`. */
+  outputSchema?: Record<string, unknown>;
+  /** Resolved agent names allowed to invoke. Omit to allow everyone. */
+  availableTo?: string[];
+}
+
+// ── Actions (agent-to-agent RPC) ────────────────────────────────────────────
+
+/** Async invocation handle returned by the relay when an agent invokes an action. */
+export interface RelayActionInvocationAck {
+  invocationId: string;
+  actionName: string;
+  handlerAgentId?: string;
+  input?: Record<string, unknown>;
+  status?: string;
+  createdAt?: string;
+}
+
+/** A single action invocation record, including its input and (once complete) result. */
+export interface RelayActionInvocation {
+  invocationId: string;
+  actionName: string;
+  callerId?: string | null;
+  callerName?: string | null;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
+  status: string;
+  error?: string | null;
+  durationMs?: number | null;
+  createdAt?: string;
+  completedAt?: string | null;
+}
+
+/** Result payload the handler agent reports for a completed invocation. */
+export interface RelayCompleteInvocationInput {
+  output?: Record<string, unknown>;
+  error?: string;
+  durationMs?: number;
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────
@@ -529,6 +569,14 @@ export interface RelayReactionEvent {
   agentName: string;
 }
 
+export interface RelayActionInvokedEvent {
+  type: 'actionInvoked';
+  invocationId: string;
+  actionName: string;
+  callerName: string;
+  handlerAgentId: string;
+}
+
 export interface RelayConnectionEvent {
   type: 'connected' | 'disconnected' | 'error';
 }
@@ -557,6 +605,7 @@ export type RelayMessagingEvent =
   | RelayChannelMembershipEvent
   | RelayMessageReadEvent
   | RelayReactionEvent
+  | RelayActionInvokedEvent
   | RelayConnectionEvent
   | RelayReconnectEvent
   | RelayUnknownEvent;
@@ -660,6 +709,23 @@ export interface RelayMessagingClient {
     register(input: RelayRegisterCapabilityInput): Promise<RelayCapability>;
     list(): Promise<RelayCapability[]>;
     delete(command: string): Promise<void>;
+    /** True when the relay action surface (descriptor registry) is available. */
+    available(): boolean;
+    /**
+     * Fire-and-forget invoke of a registered action. Requires an agent-scoped
+     * connection; returns an immediate ack with the invocation id.
+     */
+    invoke(name: string, input?: Record<string, unknown>): Promise<RelayActionInvocationAck>;
+    /** Read an action invocation (including its input) by id. Agent-scoped. */
+    getInvocation(name: string, invocationId: string): Promise<RelayActionInvocation>;
+    /** Report a handler result for an invocation. Agent-scoped (handler agent). */
+    completeInvocation(
+      name: string,
+      invocationId: string,
+      data: RelayCompleteInvocationInput
+    ): Promise<RelayActionInvocation>;
+    /** True when this client carries an agent-scoped connection (can invoke/complete/subscribe). */
+    agentScoped(): boolean;
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;

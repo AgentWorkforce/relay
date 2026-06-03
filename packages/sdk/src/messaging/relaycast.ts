@@ -19,6 +19,9 @@ import {
   normalizeThread,
 } from './normalize.js';
 import type {
+  RelayActionInvocation,
+  RelayActionInvocationAck,
+  RelayCompleteInvocationInput,
   RelayAgent,
   RelayAgentPresence,
   RelayAgentRegistration,
@@ -75,11 +78,16 @@ import type {
  * `command` → `name`, `parameters` → `inputSchema`.
  */
 function toRegisterActionRequest(input: RelayRegisterCapabilityInput): Record<string, unknown> {
+  // `inputSchema` (a converted JSON Schema) takes precedence over the legacy
+  // `parameters` field when both are present.
+  const inputSchema = input.inputSchema ?? input.parameters;
   return {
     name: input.command,
     description: input.description,
     handlerAgent: input.handlerAgent,
-    ...(input.parameters === undefined ? {} : { inputSchema: input.parameters }),
+    ...(inputSchema === undefined ? {} : { inputSchema }),
+    ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+    ...(input.availableTo === undefined ? {} : { availableTo: input.availableTo }),
   };
 }
 
@@ -96,6 +104,81 @@ function toRelayCapability(raw: unknown): RelayCapability {
     description: action.description as string | undefined,
     handlerAgent: action.handlerAgent as string | undefined,
     parameters: action.inputSchema ?? action.parameters,
+  };
+}
+
+/** Translate a relay completion result into the relaycast `CompleteInvocationRequest` shape. */
+function toCompleteInvocationRequest(data: RelayCompleteInvocationInput): Record<string, unknown> {
+  return {
+    ...(data.output === undefined ? {} : { output: data.output }),
+    ...(data.error === undefined ? {} : { error: data.error }),
+    ...(data.durationMs === undefined ? {} : { durationMs: data.durationMs }),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readStr(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
+function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+/** Normalize a relaycast invoke ack (camelized) into the relay `RelayActionInvocationAck`. */
+function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
+  const record = asRecord(raw);
+  return {
+    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
+    actionName: readStr(record, 'actionName', 'action_name') ?? '',
+    ...(readStr(record, 'handlerAgentId', 'handler_agent_id')
+      ? { handlerAgentId: readStr(record, 'handlerAgentId', 'handler_agent_id') }
+      : {}),
+    ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
+    ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+  };
+}
+
+/** Normalize a relaycast invocation record (camelized) into `RelayActionInvocation`. */
+function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
+  const record = asRecord(raw);
+  return {
+    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
+    actionName: readStr(record, 'actionName', 'action_name') ?? '',
+    callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
+    callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
+    input: readRecord(record, 'input') ?? {},
+    output: readRecord(record, 'output') ?? null,
+    status: readStr(record, 'status') ?? 'invoked',
+    error: (readStr(record, 'error') ?? null) as string | null,
+    durationMs:
+      typeof record.durationMs === 'number'
+        ? record.durationMs
+        : typeof record.duration_ms === 'number'
+          ? (record.duration_ms as number)
+          : null,
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+    completedAt: (readStr(record, 'completedAt', 'completed_at') ?? null) as string | null,
   };
 }
 
@@ -221,8 +304,14 @@ type RelaycastAgentLike = {
     query: string,
     options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }
   ): Promise<unknown[]>;
+  actions?: {
+    invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;
+    getInvocation(name: string, invocationId: string): Promise<unknown>;
+    completeInvocation(name: string, invocationId: string, data: unknown): Promise<unknown>;
+  };
   on: {
     any(handler: (event: unknown) => void): () => void;
+    actionInvoked?(handler: (event: unknown) => void): () => void;
   };
 };
 
@@ -604,6 +693,31 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     delete: async (command: string): Promise<void> => {
       await this.requireActions().delete(command);
     },
+    available: (): boolean => Boolean(this.relaycast.actions),
+    agentScoped: (): boolean => Boolean(this.agentClient?.actions),
+    invoke: async (
+      name: string,
+      input?: Record<string, unknown>
+    ): Promise<RelayActionInvocationAck> =>
+      normalizeActionInvocationAck(
+        await this.requireAgentActions('commands.invoke').invoke(name, input)
+      ),
+    getInvocation: async (name: string, invocationId: string): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.getInvocation').getInvocation(name, invocationId)
+      ),
+    completeInvocation: async (
+      name: string,
+      invocationId: string,
+      data: RelayCompleteInvocationInput
+    ): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.completeInvocation').completeInvocation(
+          name,
+          invocationId,
+          toCompleteInvocationRequest(data)
+        )
+      ),
   };
 
   readonly workspace = {
@@ -636,6 +750,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error('RelaycastMessagingClient.commands requires the relaycast actions API.');
     }
     return this.relaycast.actions;
+  }
+
+  private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {
+    const actions = this.agentClient?.actions;
+    if (!actions) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires an agent-scoped client with the actions API.`
+      );
+    }
+    return actions;
   }
 
   private requireAgentClient(operation: string): RelaycastAgentLike {

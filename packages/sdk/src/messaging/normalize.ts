@@ -676,6 +676,14 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
         emoji: readString(record, 'emoji') ?? '',
         agentName: readString(record, 'agentName', 'agent_name') ?? '',
       };
+    case 'action.invoked':
+      return {
+        type: 'actionInvoked',
+        invocationId: readString(record, 'invocationId', 'invocation_id') ?? '',
+        actionName: readString(record, 'actionName', 'action_name') ?? '',
+        callerName: readString(record, 'callerName', 'caller_name') ?? '',
+        handlerAgentId: readString(record, 'handlerAgentId', 'handler_agent_id') ?? '',
+      };
     case 'open':
       return { type: 'connected' };
     case 'close':

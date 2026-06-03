@@ -1,4 +1,7 @@
+import { createRequire } from 'node:module';
+
 import type {
+  ActionSchema,
   ActionValidationIssue,
   ActionValidationResult,
   JsonSchemaLite,
@@ -330,4 +333,108 @@ function jsonEqual(left: unknown, right: JsonValue): boolean {
   }
 
   return false;
+}
+
+/**
+ * Coerce an {@link ActionSchema} into a plain JSON Schema object suitable for
+ * sending to the relay as an action descriptor's `input_schema`/`output_schema`.
+ *
+ * - A JSON-schema-lite object (the relay's native shape) is returned as-is.
+ * - A standard-schema validator (e.g. `zod`) is converted via its JSON Schema
+ *   bridge when one is available, falling back to a permissive object schema.
+ * - `undefined` yields `undefined` (the descriptor omits the schema).
+ */
+export function actionSchemaToJsonSchema(
+  schema: ActionSchema | undefined
+): Record<string, unknown> | undefined {
+  if (schema === undefined) {
+    return undefined;
+  }
+
+  if (isValidatorSchema(schema)) {
+    return validatorToJsonSchema(schema);
+  }
+
+  // A JSON-schema-lite definition: pass the object form through. Boolean
+  // schemas (`true`/`false`) have no object representation the relay accepts,
+  // so omit them.
+  if (typeof schema === 'object' && !Array.isArray(schema)) {
+    return schema as Record<string, unknown>;
+  }
+
+  return undefined;
+}
+
+function isValidatorSchema(schema: ActionSchema): schema is { safeParse: (input: unknown) => unknown } {
+  return (
+    typeof schema === 'object' &&
+    schema !== null &&
+    !Array.isArray(schema) &&
+    typeof (schema as { safeParse?: unknown }).safeParse === 'function'
+  );
+}
+
+/**
+ * Best-effort conversion of a validator (zod and the like) into JSON Schema.
+ * Supports a per-instance `toJSONSchema()`/`toJsonSchema()` method or a zod-v4
+ * style schema convertible via `z.toJSONSchema`. Anything else degrades to a
+ * permissive object schema so descriptor registration never throws.
+ */
+function validatorToJsonSchema(schema: {
+  safeParse: (input: unknown) => unknown;
+}): Record<string, unknown> {
+  const candidate = schema as Record<string, unknown>;
+
+  for (const method of ['toJSONSchema', 'toJsonSchema'] as const) {
+    const fn = candidate[method];
+    if (typeof fn === 'function') {
+      try {
+        const result = (fn as () => unknown).call(schema);
+        if (isPlainObject(result)) {
+          return result as Record<string, unknown>;
+        }
+      } catch {
+        // fall through to other strategies
+      }
+    }
+  }
+
+  const zodSchema = tryZodToJsonSchema(schema);
+  if (zodSchema) {
+    return zodSchema;
+  }
+
+  return { type: 'object', additionalProperties: true };
+}
+
+function tryZodToJsonSchema(schema: object): Record<string, unknown> | undefined {
+  // The marker `_zod`/`_def` distinguishes a real zod schema from an arbitrary
+  // `safeParse` object, so conversion is only attempted on zod instances.
+  const looksLikeZod =
+    '_zod' in (schema as Record<string, unknown>) || '_def' in (schema as Record<string, unknown>);
+  if (!looksLikeZod) {
+    return undefined;
+  }
+
+  try {
+    // Resolved lazily to avoid a hard zod dependency in the SDK.
+    const req = createRequire(import.meta.url);
+    for (const entry of ['zod/v4', 'zod'] as const) {
+      try {
+        const mod = req(entry) as { toJSONSchema?: (s: unknown) => unknown };
+        if (typeof mod.toJSONSchema === 'function') {
+          const result = mod.toJSONSchema(schema);
+          if (isPlainObject(result)) {
+            return result as Record<string, unknown>;
+          }
+        }
+      } catch {
+        // try the next entry point
+      }
+    }
+  } catch {
+    // require unavailable (unexpected in Node); degrade gracefully
+  }
+
+  return undefined;
 }
