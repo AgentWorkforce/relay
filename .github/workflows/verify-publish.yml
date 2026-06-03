@@ -163,8 +163,8 @@ jobs:
 
       # Test: broker binary resolution after installing agent-relay.
       # The broker is delivered as a platform-specific optional-dep of
-      # @agent-relay/sdk (itself a regular dep of agent-relay), so npm
-      # hoists both to node_modules/@agent-relay/ at install time.
+      # @agent-relay/harness-driver (itself a regular dep of agent-relay), so
+      # npm hoists both to node_modules/@agent-relay/ at install time.
       - name: 'Test: broker binary resolves after npm install agent-relay'
         run: |
           rm -rf ~/.npm/_npx 2>/dev/null || true
@@ -174,7 +174,7 @@ jobs:
           npm init -y --silent >/dev/null
           npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             const expected = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
@@ -221,15 +221,15 @@ jobs:
             exit 1
           fi
 
-      # Test 4: Broker binary resolution via SDK resolver.
+      # Test 4: Broker binary resolution via harness driver resolver.
       # The broker ships as a platform-specific optional-dep package
       # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
-      # is the canonical way clients find it.
+      # is the canonical way harness owners find it.
       - name: 'Test: broker binary resolves and runs'
         run: |
           cd /tmp/test-project
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -309,14 +309,14 @@ jobs:
           fi
 
       # Broker resolution on macOS arm64. Under the optional-dep model the
-      # SDK's resolver finds the binary at
+      # harness driver's resolver finds the binary at
       # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
       # running it also exercises macOS code signing end-to-end.
       - name: 'Test: broker binary resolves and runs (macOS arm64)'
         run: |
           cd /tmp/test-project
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();

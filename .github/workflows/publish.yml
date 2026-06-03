@@ -461,13 +461,13 @@ jobs:
   # mocking. Each matrix leg:
   #   1. Stages the platform's broker binary into its package tree and
   #      injects os/cpu so the package validates like the published one.
-  #   2. `npm pack`s the SDK (with packages/sdk/bin emptied so the SDK
-  #      tarball cannot fall back to a bundled binary).
+  #   2. `npm pack`s the harness driver and SDK (with packages/sdk/bin emptied
+  #      so the SDK tarball cannot fall back to a bundled binary).
   #   3. `npm pack`s the matching broker package.
-  #   4. Installs both tarballs into a scratch project.
+  #   4. Installs the tarballs into a scratch project.
   #   5. Asserts getBrokerBinaryPath() resolves through the optional-dep
   #      package and returns an executable file.
-  #   6. Runs AgentRelayClient.spawn() end-to-end and shuts it down.
+  #   6. Runs HarnessDriverClient.spawn() end-to-end and shuts it down.
   # Gates publish-broker-packages — we do not ship if any platform fails.
   smoke-broker-packages:
     name: Smoke ${{ matrix.platform }}
@@ -560,7 +560,7 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      - name: Pack SDK, broker, and internal deps
+      - name: Pack harness driver, SDK, and broker
         shell: bash
         run: |
           set -euo pipefail
@@ -572,16 +572,9 @@ jobs:
           # resolution path instead of the legacy bundled fallback.
           rm -rf packages/sdk/bin
           mkdir -p packages/sdk/bin
+          (cd packages/harness-driver && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd packages/sdk && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           (cd "packages/${{ matrix.broker_pkg }}" && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          # The build job bumped every workspace to NEW_VERSION. The SDK pins
-          # several internal @agent-relay/* packages at that exact version,
-          # none of which are on the registry yet at this point in the
-          # workflow — so pack them locally and install them alongside the
-          # SDK. Keep this list in sync with packages/sdk/package.json's
-          # `dependencies` whenever a new internal dep is added.
-          (cd packages/cloud && npm pack --ignore-scripts --pack-destination "$TARBALLS")
-          (cd packages/config && npm pack --ignore-scripts --pack-destination "$TARBALLS")
           ls -lh "$TARBALLS"
 
       - name: Install tarballs into scratch project
@@ -593,13 +586,12 @@ jobs:
           echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
           cd "$SCRATCH"
           npm init -y --silent >/dev/null
+          HARNESS_DRIVER_TGZ=$(ls "$TARBALLS"/agent-relay-harness-driver-*.tgz | head -n1)
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
           BROKER_TGZ=$(ls "$TARBALLS"/agent-relay-broker-${{ matrix.platform }}-*.tgz | head -n1)
-          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
-          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          echo "Installing $SDK_TGZ + $BROKER_TGZ + $CLOUD_TGZ + $CONFIG_TGZ"
+          echo "Installing $HARNESS_DRIVER_TGZ + $SDK_TGZ + $BROKER_TGZ"
           npm install --ignore-scripts --no-audit --no-fund \
-            "$SDK_TGZ" "$BROKER_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
+            "$HARNESS_DRIVER_TGZ" "$SDK_TGZ" "$BROKER_TGZ"
           ls node_modules/@agent-relay/
 
       - name: Resolver smoke — getBrokerBinaryPath()
@@ -607,7 +599,7 @@ jobs:
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             const expectedPkg = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
@@ -622,19 +614,19 @@ jobs:
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
 
-      - name: Spawn smoke — AgentRelayClient.spawn()
+      - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { AgentRelayClient } from '@agent-relay/sdk';
-            const client = await AgentRelayClient.spawn({
+            import { HarnessDriverClient } from '@agent-relay/harness-driver';
+            const client = await HarnessDriverClient.spawn({
               cwd: process.cwd(),
               channels: ['general'],
               startupTimeoutMs: 45000,
               onStderr: (line) => console.error('[broker]', line),
             });
-            console.log('OK: AgentRelayClient.spawn() returned');
+            console.log('OK: HarnessDriverClient.spawn() returned');
             await client.shutdown();
             console.log('OK: client.shutdown() completed');
           " || { echo 'SPAWN_FAILED'; exit 1; }
@@ -648,19 +640,17 @@ jobs:
           mkdir -p "$NEGATIVE"
           cd "$NEGATIVE"
           npm init -y --silent >/dev/null
+          HARNESS_DRIVER_TGZ=$(ls "$TARBALLS"/agent-relay-harness-driver-*.tgz | head -n1)
           SDK_TGZ=$(ls "$TARBALLS"/agent-relay-sdk-*.tgz | head -n1)
-          CLOUD_TGZ=$(ls "$TARBALLS"/agent-relay-cloud-*.tgz | head -n1)
-          CONFIG_TGZ=$(ls "$TARBALLS"/agent-relay-config-*.tgz | head -n1)
-          # Install SDK + every internal required dep whose bumped version
-          # isn't on the registry yet, but skip the broker optional deps
-          # entirely. The resolver should return null and spawn() should
-          # throw the clear error.
+          # Install harness driver and SDK, but skip the broker optional deps
+          # entirely. The resolver should return null and spawn() should throw
+          # the clear error.
           npm install --ignore-scripts --no-audit --no-fund --no-optional \
-            "$SDK_TGZ" "$CLOUD_TGZ" "$CONFIG_TGZ"
+            "$HARNESS_DRIVER_TGZ" "$SDK_TGZ"
           node --input-type=module -e "
-            import { AgentRelayClient } from '@agent-relay/sdk';
+            import { HarnessDriverClient } from '@agent-relay/harness-driver';
             try {
-              await AgentRelayClient.spawn({ cwd: process.cwd() });
+              await HarnessDriverClient.spawn({ cwd: process.cwd() });
               console.error('FAIL: spawn() should have thrown');
               process.exit(1);
             } catch (err) {
@@ -1432,14 +1422,14 @@ jobs:
       - name: Update npm for OIDC support
         run: npm install -g npm@latest
 
-      - name: Wait for root internal dependencies
+      - name: Wait for CLI internal dependencies
         if: github.event.inputs.dry_run != 'true'
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t INTERNAL_DEPS < <(node --input-type=module -e "
             import fs from 'node:fs';
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('packages/cli/package.json', 'utf8'));
             const deps = Object.entries(pkg.dependencies ?? {})
               .filter(([name]) => name.startsWith('@agent-relay/'))
               .map(([name, version]) => name + '@' + version);
@@ -1447,7 +1437,7 @@ jobs:
           ")
 
           if [ "${#INTERNAL_DEPS[@]}" -eq 0 ]; then
-            echo "No @agent-relay/* root dependencies to verify."
+            echo "No @agent-relay/* CLI dependencies to verify."
             exit 0
           fi
 
@@ -1462,7 +1452,7 @@ jobs:
             done
 
             if [ "${#missing[@]}" -eq 0 ]; then
-              echo "All root @agent-relay/* dependencies are available on npm."
+              echo "All CLI @agent-relay/* dependencies are available on npm."
               exit 0
             fi
 
@@ -1470,7 +1460,7 @@ jobs:
             sleep 10
           done
 
-          echo "Timed out waiting for root @agent-relay/* dependencies:"
+          echo "Timed out waiting for CLI @agent-relay/* dependencies:"
           printf '  - %s\n' "${missing[@]}"
           exit 1
 
@@ -1989,23 +1979,20 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
-  # Post-publish cross-platform verification of @agent-relay/sdk and its
-  # per-platform broker optional deps. Installs from the registry on every
-  # target (macOS arm64/x64, Linux x64/arm64, Windows x64) and runs spawn
+  # Post-publish cross-platform verification of @agent-relay/harness-driver and
+  # its per-platform broker optional deps. Installs from the registry on every
+  # target (macOS arm64, Linux x64/arm64, Windows x64) and runs spawn
   # end-to-end. Catches registry-round-trip failures that smoke-broker-packages
   # can't see (missing/wrong os/cpu on published manifests, CDN propagation).
   verify-publish-sdk:
-    name: Verify Published SDK (Cross-Platform)
-    # publish-packages and publish-sdk-only are mutually exclusive: the first
-    # runs on package='all', the second on package='sdk'. Depend on both and
-    # accept a success from either so this gate fires for both release flows.
+    name: Verify Published Harness Driver (Cross-Platform)
     needs: [build, publish-broker-packages, publish-packages, publish-sdk-only]
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
-      (github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk') &&
+      github.event.inputs.package == 'all' &&
       needs.publish-broker-packages.result == 'success' &&
-      (needs.publish-packages.result == 'success' || needs.publish-sdk-only.result == 'success')
+      needs.publish-packages.result == 'success'
     uses: ./.github/workflows/verify-publish-sdk.yml
     with:
       version: ${{ needs.build.outputs.new_version }}
