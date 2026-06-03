@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import {
   addSdkOptions,
@@ -9,14 +10,38 @@ import {
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
 
-export type AgentCommandDependencies = SdkCommandDeps;
+export interface AgentCommandDependencies extends SdkCommandDeps {
+  connectLocal: (cwd: string) => Promise<HarnessDriverClient>;
+  cwd: () => string;
+}
+
+function withAgentDefaults(overrides: Partial<AgentCommandDependencies> = {}): AgentCommandDependencies {
+  return {
+    ...withSdkDefaults(overrides),
+    connectLocal: (cwd: string) => Promise.resolve(HarnessDriverClient.connect({ cwd })),
+    cwd: () => process.cwd(),
+    ...overrides,
+  };
+}
+
+async function runLocalBroker(
+  deps: AgentCommandDependencies,
+  fn: (client: HarnessDriverClient) => Promise<void>
+): Promise<void> {
+  try {
+    await fn(await deps.connectLocal(deps.cwd()));
+  } catch (err) {
+    deps.error(err instanceof Error ? err.message : String(err));
+    deps.exit(1);
+  }
+}
 
 export function registerAgentCommands(
   program: Command,
   overrides: Partial<AgentCommandDependencies> = {}
 ): void {
-  const deps = withSdkDefaults(overrides);
-  const group = program.command('agent').description('Manage workspace agents (Relaycast-backed)');
+  const deps = withAgentDefaults(overrides);
+  const group = program.command('agent').description('Manage workspace agents and local delivery controls');
 
   addSdkOptions(
     group
@@ -71,4 +96,36 @@ export function registerAgentCommands(
       deps.log(`Removed agent ${name}.`);
     });
   });
+
+  const message = group.command('message').description('Control local broker message delivery for an agent');
+
+  message
+    .command('flush')
+    .description('Flush queued relay messages into a held local agent')
+    .argument('<name>', 'Agent name')
+    .action(async (name: string) => {
+      await runLocalBroker(deps, async (client) => {
+        printJson(deps, { name, ...(await client.flushPending(name)) });
+      });
+    });
+
+  message
+    .command('hold')
+    .description('Hold new relay messages for a local agent until flushed')
+    .argument('<name>', 'Agent name')
+    .action(async (name: string) => {
+      await runLocalBroker(deps, async (client) => {
+        printJson(deps, { name, ...(await client.setInboundDeliveryMode(name, 'manual_flush')) });
+      });
+    });
+
+  message
+    .command('auto')
+    .description('Resume automatic relay message injection for a local agent')
+    .argument('<name>', 'Agent name')
+    .action(async (name: string) => {
+      await runLocalBroker(deps, async (client) => {
+        printJson(deps, { name, ...(await client.setInboundDeliveryMode(name, 'auto_inject')) });
+      });
+    });
 }

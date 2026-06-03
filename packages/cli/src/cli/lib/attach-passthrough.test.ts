@@ -364,21 +364,10 @@ describe('PassthroughKeybindParser', () => {
     expect(out.actions).toEqual(['detach']);
   });
 
-  it('recognises Ctrl+B D as detach across chunks', () => {
+  it('forwards Ctrl+B sequences to the agent', () => {
     const p = new PassthroughKeybindParser();
-    expect(p.feed(Buffer.from([0x02])).actions).toEqual([]);
-    expect(p.feed(Buffer.from([0x44])).actions).toEqual(['detach']);
-  });
-
-  it('recognises Ctrl+B ? as toggle_help', () => {
-    const p = new PassthroughKeybindParser();
-    expect(p.feed(Buffer.from([0x02, 0x3f])).actions).toEqual(['toggle_help']);
-  });
-
-  it('forwards Ctrl+B + unknown byte verbatim', () => {
-    const p = new PassthroughKeybindParser();
-    const out = p.feed(Buffer.from([0x02, 0x78]));
-    expect(Array.from(out.forward)).toEqual([0x02, 0x78]);
+    const out = p.feed(Buffer.from([0x02, 0x44]));
+    expect(Array.from(out.forward)).toEqual([0x02, 0x44]);
     expect(out.actions).toEqual([]);
   });
 
@@ -393,15 +382,15 @@ describe('PassthroughKeybindParser', () => {
 
 describe('renderStatusLine', () => {
   it('shows [passthrough name | delivery=auto_inject] without a pending counter', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'auto_inject', showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'auto_inject' });
     expect(out).toContain('passthrough Alice');
     expect(out).toContain('delivery=auto_inject');
-    expect(out).toContain('Ctrl+B D detach');
+    expect(out).toContain('Ctrl+C detach');
     expect(out).not.toContain('pending=');
   });
 
   it('uses save/restore cursor + reverse video', () => {
-    const out = renderStatusLine({ name: 'A', mode: 'auto_inject', showHelp: false });
+    const out = renderStatusLine({ name: 'A', mode: 'auto_inject' });
     expect(out.startsWith('\x1b7')).toBe(true);
     expect(out.endsWith('\x1b8')).toBe(true);
     expect(out).toContain('\x1b[7m');
@@ -424,7 +413,7 @@ describe('runPassthroughSession', () => {
     expect(afterAttach.map((c) => c.body)).toEqual([{ mode: 'auto_inject' }]);
     expect(stdin.rawModeCalls).toEqual([true]);
 
-    stdin.type(Buffer.from([0x02, 0x44])); // Ctrl+B D
+    stdin.type(Buffer.from([0x03])); // Ctrl+C
     const code = await sessionPromise;
     expect(code).toBe(0);
 
