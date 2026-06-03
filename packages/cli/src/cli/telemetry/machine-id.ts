@@ -1,5 +1,5 @@
 /**
- * Machine ID utilities for anonymous user identification.
+ * Machine ID utilities for stable telemetry identity.
  * Uses existing machine-id file at ~/.local/share/agentworkforce/relay/machine-id
  */
 
@@ -58,7 +58,7 @@ export function loadMachineId(): string {
 }
 
 /** SHA256 hash of machine ID, truncated to 16 chars */
-export function createAnonymousId(): string {
+export function createDistinctId(): string {
   const machineId = loadMachineId();
   return createHash('sha256').update(machineId).digest('hex').substring(0, 16);
 }

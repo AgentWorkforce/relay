@@ -5,16 +5,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createAnonymousId } from './machine-id.js';
+import { createDistinctId } from './machine-id.js';
 
 export interface TelemetryPrefs {
   /** Whether telemetry is enabled (default: true) */
   enabled: boolean;
   /** ISO timestamp when user was shown the first-run notice */
   notifiedAt?: string;
-  /** Anonymous ID derived from machine-id hash */
-  anonymousId: string;
+  /** Stable hashed machine identifier used as the PostHog distinctId. */
+  distinctId: string;
 }
+
+type StoredTelemetryPrefs = Partial<TelemetryPrefs> & { anonymousId?: string };
 
 export function getPrefsPath(): string {
   const configDir = process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.agentworkforce/relay');
@@ -27,18 +29,19 @@ export function loadPrefs(): TelemetryPrefs {
   try {
     if (fs.existsSync(prefsPath)) {
       const content = fs.readFileSync(prefsPath, 'utf-8');
-      const prefs = JSON.parse(content) as Partial<TelemetryPrefs>;
-
-      if (!prefs.anonymousId) {
-        prefs.anonymousId = createAnonymousId();
-        savePrefs(prefs as TelemetryPrefs);
-      }
-
-      return {
+      const prefs = JSON.parse(content) as StoredTelemetryPrefs;
+      const distinctId = prefs.distinctId ?? prefs.anonymousId ?? createDistinctId();
+      const normalized: TelemetryPrefs = {
         enabled: prefs.enabled ?? true,
         notifiedAt: prefs.notifiedAt,
-        anonymousId: prefs.anonymousId,
+        distinctId,
       };
+
+      if (prefs.distinctId !== distinctId || prefs.anonymousId !== undefined) {
+        savePrefs(normalized);
+      }
+
+      return normalized;
     }
   } catch {
     // Fall through to defaults
@@ -46,7 +49,7 @@ export function loadPrefs(): TelemetryPrefs {
 
   return {
     enabled: true,
-    anonymousId: createAnonymousId(),
+    distinctId: createDistinctId(),
   };
 }
 
@@ -107,6 +110,6 @@ export function wasNotified(): boolean {
   return loadPrefs().notifiedAt !== undefined;
 }
 
-export function getAnonymousId(): string {
-  return loadPrefs().anonymousId;
+export function getDistinctId(): string {
+  return loadPrefs().distinctId;
 }

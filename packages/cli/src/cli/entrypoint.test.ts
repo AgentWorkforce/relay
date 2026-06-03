@@ -15,10 +15,10 @@ function mockBootstrapDependencies(parseSpy: ReturnType<typeof vi.fn>): void {
   vi.doMock('@agent-relay/utils', () => ({
     checkForUpdatesInBackground: vi.fn(),
   }));
-  vi.doMock('@agent-relay/telemetry', () => ({
+  vi.doMock('./telemetry/index.js', () => ({
     ORCHESTRATOR_HARNESS_ENV: 'AGENT_RELAY_ORCHESTRATOR_HARNESS',
     detectOrchestratorHarness: vi.fn(() => 'unknown'),
-    getAnonymousId: vi.fn(() => 'anon-test'),
+    getDistinctId: vi.fn(() => 'distinct-test'),
     initTelemetry: vi.fn(),
     isEnabled: vi.fn(() => false),
     track: vi.fn(),

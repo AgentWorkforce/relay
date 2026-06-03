@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
-import { track } from '@agent-relay/telemetry';
 
 import {
   ensureAuthenticated,
@@ -29,6 +28,7 @@ import {
 
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
+import { track } from '../telemetry/index.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',

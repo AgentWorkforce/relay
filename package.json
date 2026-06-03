@@ -9,9 +9,9 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:telemetry && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:telemetry && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:cli",
+    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",

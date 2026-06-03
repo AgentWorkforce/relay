@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` adds the `relay.webhooks` namespace: `createInbound({ channel })` returns `{ url, token }` for posting `{ message, author }` into a channel, and `subscribe({ url, events, secret, headers })` for outbound HMAC-signed event delivery.
 - `@agent-relay/sdk` agent clients send via `sendMessage({ to })` (`#channel`, `@handle`, or an array of `@handle`s for a group DM), `reply({ messageId })`, and `react({ messageId, emoji })`; every message exposes `messageId`.
 - `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
-- `agent-relay` telemetry now tags CLI, broker, SDK, and hosted cloud requests with app, surface, orchestrator harness, and distinct client identity context when telemetry is enabled.
+- `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
 
 ### Changed
 
@@ -45,7 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
 - `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
-- Root builds now validate the simplified core package set: config, utils, telemetry, SDK, harness-driver, harnesses, and CLI.
+- Root builds now validate the simplified core package set: config, utils, SDK, harness-driver, harnesses, and CLI.
+- `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
+
+### Deprecated
+
+- `@agent-relay/telemetry` is deprecated as a public npm package; telemetry implementation is now internal to the `agent-relay` CLI.
 - `agent-relay mcp`: Agent Relay now ships its own MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp`.
 - `agent-relay mcp`: renamed the bundled implementation and command override to Agent Relay MCP (`AGENT_RELAY_MCP_COMMAND`).
 - `agent-relay up`: broker startup no longer writes external MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.

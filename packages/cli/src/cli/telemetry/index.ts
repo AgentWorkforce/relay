@@ -1,5 +1,5 @@
 /**
- * @agent-relay/telemetry - Anonymous usage analytics (opt-out via env or CLI)
+ * CLI telemetry internals - usage analytics (opt-out via env or CLI)
  */
 
 export {
@@ -7,7 +7,7 @@ export {
   track,
   shutdown,
   isEnabled,
-  getAnonymousId,
+  getDistinctId,
   getStatus,
   type InitTelemetryOptions,
 } from './client.js';
@@ -41,8 +41,6 @@ export type {
   MessageSendEvent,
   CliCommandRunEvent,
   CliCommandCompleteEvent,
-  SdkMethodCallEvent,
-  SdkWorkflowRunEvent,
   WorkflowRunEvent,
   CloudAuthEvent,
   CloudWorkflowRunEvent,
@@ -54,7 +52,7 @@ export type {
   TelemetryEventMap,
 } from './events.js';
 
-export { loadMachineId, createAnonymousId, getMachineIdPath } from './machine-id.js';
+export { loadMachineId, createDistinctId, getMachineIdPath } from './machine-id.js';
 
 export {
   ORCHESTRATOR_HARNESS_ENV,

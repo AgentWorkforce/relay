@@ -58,7 +58,6 @@
     "@types/node": "^22.13.10"
   },
   "dependencies": {
-    "@agent-relay/telemetry": "7.1.1",
     "@relaycast/sdk": "^2.3.0"
   }
 }

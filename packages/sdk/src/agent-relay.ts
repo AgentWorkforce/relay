@@ -32,7 +32,6 @@ import {
   type RelayEvent,
 } from './listeners.js';
 import type { AgentSessionEvent } from './session/index.js';
-import { withSdkWorkflowTelemetry } from './telemetry.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
   messaging?: RelayMessaging;
@@ -93,23 +92,21 @@ export class AgentRelay implements AgentRelayAgent {
   }
 
   static async createWorkspace(input: string | AgentRelayCreateWorkspaceInput): Promise<AgentRelay> {
-    return withSdkWorkflowTelemetry('create_workspace', async () => {
-      const options = typeof input === 'string' ? { name: input } : input;
-      const workspace = (await RelayCast.createWorkspace(options.name, {
-        baseUrl: options.baseUrl,
-      })) as Record<string, unknown>;
-      const workspaceKey = extractWorkspaceKey(workspace);
+    const options = typeof input === 'string' ? { name: input } : input;
+    const workspace = (await RelayCast.createWorkspace(options.name, {
+      baseUrl: options.baseUrl,
+    })) as Record<string, unknown>;
+    const workspaceKey = extractWorkspaceKey(workspace);
 
-      if (!workspaceKey) {
-        throw new Error('Workspace created, but the response did not include a workspace key.');
-      }
+    if (!workspaceKey) {
+      throw new Error('Workspace created, but the response did not include a workspace key.');
+    }
 
-      return new AgentRelay({
-        workspaceKey,
-        baseUrl: options.baseUrl,
-        retryPolicy: options.retryPolicy,
-        actions: options.actions,
-      });
+    return new AgentRelay({
+      workspaceKey,
+      baseUrl: options.baseUrl,
+      retryPolicy: options.retryPolicy,
+      actions: options.actions,
     });
   }
 

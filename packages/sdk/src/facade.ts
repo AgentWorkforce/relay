@@ -20,7 +20,6 @@ import {
 } from './actions/index.js';
 import type { DeliveryMode } from './delivery/index.js';
 import type { RelayAgentHandle } from './listeners.js';
-import { withSdkMethodTelemetry } from './telemetry.js';
 
 /**
  * A reference to an agent accepted by the high-level facade APIs. Agents may be
@@ -219,124 +218,122 @@ export function createEnrichedMessages(
 ): EnrichedMessages {
   const enriched: EnrichedMessages = Object.create(base) as EnrichedMessages;
 
-  enriched.send = (input: RelaySendChannelMessageInput | RelaySendMessageInput) =>
-    withSdkMethodTelemetry('messages.send', async () => {
-      if ('channel' in input && input.channel) {
-        return base.send(input);
-      }
-      const sendInput = input as RelaySendMessageInput;
-      const messages = resolveFrom(sendInput.from);
-      const text = buildText(sendInput.text ?? sendInput.msg, sendInput.mentions);
-      if (Array.isArray(sendInput.to)) {
-        return messages.groupDirect({
-          participants: sendInput.to.map(resolveAgentName),
-          text,
-          attachments: sendInput.attachments,
-          mode: sendInput.mode,
-          idempotencyKey: sendInput.idempotencyKey,
-        });
-      }
-      if (isChannelTarget(sendInput.to)) {
-        return messages.send({
-          channel: stripSigil(sendInput.to),
-          text,
-          blocks: sendInput.blocks,
-          attachments: sendInput.attachments,
-          mode: sendInput.mode,
-          idempotencyKey: sendInput.idempotencyKey,
-        });
-      }
-      return messages.direct({
-        to: resolveAgentName(sendInput.to),
+  enriched.send = async (input: RelaySendChannelMessageInput | RelaySendMessageInput) => {
+    if ('channel' in input && input.channel) {
+      return base.send(input);
+    }
+    const sendInput = input as RelaySendMessageInput;
+    const messages = resolveFrom(sendInput.from);
+    const text = buildText(sendInput.text ?? sendInput.msg, sendInput.mentions);
+    if (Array.isArray(sendInput.to)) {
+      return messages.groupDirect({
+        participants: sendInput.to.map(resolveAgentName),
         text,
         attachments: sendInput.attachments,
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
       });
-    });
-
-  enriched.reply = (input: RelayReplyInput) =>
-    withSdkMethodTelemetry('messages.reply', async () => {
-      const messages = resolveFrom(input.from);
-      return messages.reply({
-        messageId: resolveMessageId(input.messageId ?? input.thread),
-        text: input.text,
-        blocks: input.blocks,
-        idempotencyKey: input.idempotencyKey,
+    }
+    if (isChannelTarget(sendInput.to)) {
+      return messages.send({
+        channel: stripSigil(sendInput.to),
+        text,
+        blocks: sendInput.blocks,
+        attachments: sendInput.attachments,
+        mode: sendInput.mode,
+        idempotencyKey: sendInput.idempotencyKey,
       });
+    }
+    return messages.direct({
+      to: resolveAgentName(sendInput.to),
+      text,
+      attachments: sendInput.attachments,
+      mode: sendInput.mode,
+      idempotencyKey: sendInput.idempotencyKey,
     });
+  };
 
-  enriched.react = ((arg1: string | RelayReactInput, arg2?: string): Promise<RelayMessageReaction> => {
-    return withSdkMethodTelemetry('messages.react', async () => {
-      if (typeof arg1 === 'string') {
-        return base.react(arg1, arg2 as string);
-      }
-      const messageId = typeof arg1.message === 'string' ? arg1.message : arg1.message.id;
-      const messages = resolveFrom(arg1.agent);
-      return messages.react(messageId, arg1.emoji);
+  enriched.reply = async (input: RelayReplyInput) => {
+    const messages = resolveFrom(input.from);
+    return messages.reply({
+      messageId: resolveMessageId(input.messageId ?? input.thread),
+      text: input.text,
+      blocks: input.blocks,
+      idempotencyKey: input.idempotencyKey,
     });
+  };
+
+  enriched.react = (async (
+    arg1: string | RelayReactInput,
+    arg2?: string
+  ): Promise<RelayMessageReaction> => {
+    if (typeof arg1 === 'string') {
+      return base.react(arg1, arg2 as string);
+    }
+    const messageId = typeof arg1.message === 'string' ? arg1.message : arg1.message.id;
+    const messages = resolveFrom(arg1.agent);
+    return messages.react(messageId, arg1.emoji);
   }) as EnrichedMessages['react'];
 
-  enriched.dm = (input: RelayDirectInput) =>
-    withSdkMethodTelemetry('messages.direct', async () => {
-      const messages = resolveFrom(input.from);
-      return messages.direct({
-        to: resolveAgentName(input.to),
-        text: input.text ?? input.msg ?? '',
-        attachments: input.attachments,
-        mode: input.mode,
-        idempotencyKey: input.idempotencyKey,
-      });
+  enriched.dm = async (input: RelayDirectInput) => {
+    const messages = resolveFrom(input.from);
+    return messages.direct({
+      to: resolveAgentName(input.to),
+      text: input.text ?? input.msg ?? '',
+      attachments: input.attachments,
+      mode: input.mode,
+      idempotencyKey: input.idempotencyKey,
     });
+  };
 
   return enriched;
 }
 
 export function createWorkspaceFacade(messaging: RelayMessaging, deps?: WorkspaceFacadeDeps): RelayWorkspace {
-  const register = async (agents: AgentLike | AgentLike[]): Promise<RelayAgentClient | RelayAgentClient[]> =>
-    withSdkMethodTelemetry('workspace.register', async () => {
-      if (!deps) {
-        throw new Error('register() is only available on the workspace client.');
-      }
-      const list = Array.isArray(agents) ? agents : [agents];
-      const inputs = list.map((agent) =>
-        typeof agent === 'string'
-          ? { name: stripSigil(agent) }
-          : {
-              name: resolveAgentName(agent),
-              type: agent.type,
-              persona: agent.persona,
-              metadata: agent.metadata,
-            }
-      );
+  const register = async (
+    agents: AgentLike | AgentLike[]
+  ): Promise<RelayAgentClient | RelayAgentClient[]> => {
+    if (!deps) {
+      throw new Error('register() is only available on the workspace client.');
+    }
+    const list = Array.isArray(agents) ? agents : [agents];
+    const inputs = list.map((agent) =>
+      typeof agent === 'string'
+        ? { name: stripSigil(agent) }
+        : {
+            name: resolveAgentName(agent),
+            type: agent.type,
+            persona: agent.persona,
+            metadata: agent.metadata,
+          }
+    );
 
-      // Fail fast on in-batch duplicates so a batch can't partially register
-      // before the relay rejects a later duplicate name.
-      const seen = new Set<string>();
-      for (const { name } of inputs) {
-        if (seen.has(name)) {
-          throw new Error(`Duplicate agent name in register(): "${name}".`);
-        }
-        seen.add(name);
+    // Fail fast on in-batch duplicates so a batch can't partially register
+    // before the relay rejects a later duplicate name.
+    const seen = new Set<string>();
+    for (const { name } of inputs) {
+      if (seen.has(name)) {
+        throw new Error(`Duplicate agent name in register(): "${name}".`);
       }
+      seen.add(name);
+    }
 
-      const clients: RelayAgentClient[] = [];
-      for (const input of inputs) {
-        clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
-      }
-      return Array.isArray(agents) ? clients : clients[0];
-    });
+    const clients: RelayAgentClient[] = [];
+    for (const input of inputs) {
+      clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
+    }
+    return Array.isArray(agents) ? clients : clients[0];
+  };
 
   return {
-    info: () => withSdkMethodTelemetry('workspace.info', () => messaging.workspace.info()),
+    info: () => messaging.workspace.info(),
     register: register as RelayWorkspace['register'],
-    reconnect: ({ apiToken }) =>
-      withSdkMethodTelemetry('workspace.reconnect', async () => {
-        if (!deps) {
-          throw new Error('reconnect() is only available on the workspace client.');
-        }
-        return deps.reconnectAgent(apiToken);
-      }),
+    reconnect: async ({ apiToken }) => {
+      if (!deps) {
+        throw new Error('reconnect() is only available on the workspace client.');
+      }
+      return deps.reconnectAgent(apiToken);
+    },
   };
 }
 

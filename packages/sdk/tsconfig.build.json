@@ -8,9 +8,7 @@
       "@agent-relay/config": ["../config/dist/index.d.ts"],
       "@agent-relay/config/*": ["../config/dist/*"],
       "@agent-relay/cloud": ["../cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["../cloud/dist/*"],
-      "@agent-relay/telemetry": ["../telemetry/dist/index.d.ts"],
-      "@agent-relay/telemetry/*": ["../telemetry/dist/*"]
+      "@agent-relay/cloud/*": ["../cloud/dist/*"]
     },
     "strict": true,
     "declaration": true,
@@ -26,7 +24,6 @@
     "src/agent-relay.ts",
     "src/capabilities.ts",
     "src/facade.ts",
-    "src/telemetry.ts",
     "src/relaycast-errors.ts",
     "src/messaging/**/*.ts",
     "src/delivery/**/*.ts",

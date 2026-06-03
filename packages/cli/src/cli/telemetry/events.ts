@@ -205,34 +205,6 @@ export interface CliCommandCompleteEvent {
   error_class?: string;
 }
 
-/**
- * sdk_method_call - Emitted by @agent-relay/sdk around high-level public methods.
- */
-export interface SdkMethodCallEvent {
-  /** Stable method identifier, e.g. `messages.send` or `workspace.register`. */
-  method: string;
-  /** True if the method completed without throwing. */
-  success: boolean;
-  /** Wall-clock duration in milliseconds. */
-  duration_ms: number;
-  /** Error constructor name on failure. */
-  error_class?: string;
-}
-
-/**
- * sdk_workflow_run - Emitted by @agent-relay/sdk for higher-level SDK workflows.
- */
-export interface SdkWorkflowRunEvent {
-  /** Stable operation identifier, e.g. `create_workspace`. */
-  operation: string;
-  /** True if the workflow completed without throwing. */
-  success: boolean;
-  /** Wall-clock duration in milliseconds. */
-  duration_ms: number;
-  /** Error constructor name on failure. */
-  error_class?: string;
-}
-
 // =============================================================================
 // Tier 3: Domain Events (high-signal product flows)
 // =============================================================================
@@ -395,8 +367,6 @@ export type TelemetryEventName =
   | 'message_send'
   | 'cli_command_run'
   | 'cli_command_complete'
-  | 'sdk_method_call'
-  | 'sdk_workflow_run'
   | 'workflow_run'
   | 'cloud_auth'
   | 'cloud_workflow_run'
@@ -416,8 +386,6 @@ export interface TelemetryEventMap {
   message_send: MessageSendEvent;
   cli_command_run: CliCommandRunEvent;
   cli_command_complete: CliCommandCompleteEvent;
-  sdk_method_call: SdkMethodCallEvent;
-  sdk_workflow_run: SdkWorkflowRunEvent;
   workflow_run: WorkflowRunEvent;
   cloud_auth: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;

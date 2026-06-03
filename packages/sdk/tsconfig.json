@@ -7,9 +7,7 @@
       "@agent-relay/config": ["../config/src/index.ts"],
       "@agent-relay/config/*": ["../config/src/*"],
       "@agent-relay/cloud": ["../cloud/src/index.ts"],
-      "@agent-relay/cloud/*": ["../cloud/src/*"],
-      "@agent-relay/telemetry": ["../telemetry/src/index.ts"],
-      "@agent-relay/telemetry/*": ["../telemetry/src/*"]
+      "@agent-relay/cloud/*": ["../cloud/src/*"]
     },
     "noEmit": true
   },
@@ -18,7 +16,6 @@
     "src/agent-relay.ts",
     "src/capabilities.ts",
     "src/facade.ts",
-    "src/telemetry.ts",
     "src/relaycast-errors.ts",
     "src/messaging/**/*.ts",
     "src/delivery/**/*.ts",

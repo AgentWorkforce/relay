@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isTelemetryEnabled,
-  getAnonymousId,
+  getDistinctId,
   wasNotified,
   markNotified,
   isDisabledByEnv,
@@ -21,7 +21,7 @@ import { detectOrchestratorHarness, UNKNOWN_ORCHESTRATOR_HARNESS } from './orche
 
 let client: PostHog | null = null;
 let commonProps: CommonProperties | null = null;
-let anonymousId: string | null = null;
+let distinctId: string | null = null;
 let initialized = false;
 
 function findPackageJson(startDir: string): string | null {
@@ -113,7 +113,7 @@ function showFirstRunNotice(): void {
   }
 
   console.log('');
-  console.log('Agent Relay collects anonymous usage data to improve the product.');
+  console.log('Agent Relay collects usage telemetry to improve the product.');
   console.log('Run `agent-relay telemetry disable` to opt out.');
   console.log('Learn more: https://agentrelay.com/telemetry');
   console.log('');
@@ -169,17 +169,17 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     surface: options.surface,
     orchestratorHarness: options.orchestratorHarness,
   });
-  anonymousId = getAnonymousId();
+  distinctId = getDistinctId();
 }
 
 export function track<E extends TelemetryEventName>(
   event: E,
   properties?: TelemetryEventMap[E] & Partial<CommonProperties>
 ): void {
-  if (!client || !commonProps || !anonymousId) return;
+  if (!client || !commonProps || !distinctId) return;
 
   client.capture({
-    distinctId: anonymousId,
+    distinctId,
     event,
     properties: {
       ...commonProps,
@@ -198,7 +198,7 @@ export async function shutdown(): Promise<void> {
   } finally {
     client = null;
     commonProps = null;
-    anonymousId = null;
+    distinctId = null;
     initialized = false;
   }
 }
@@ -207,19 +207,19 @@ export function isEnabled(): boolean {
   return isTelemetryEnabled();
 }
 
-export { getAnonymousId };
+export { getDistinctId };
 
 export function getStatus(): {
   enabled: boolean;
   disabledByEnv: boolean;
-  anonymousId: string;
+  distinctId: string;
   notifiedAt: string | undefined;
 } {
   const prefs = loadPrefs();
   return {
     enabled: isTelemetryEnabled(),
     disabledByEnv: isDisabledByEnv(),
-    anonymousId: prefs.anonymousId,
+    distinctId: prefs.distinctId,
     notifiedAt: prefs.notifiedAt,
   };
 }

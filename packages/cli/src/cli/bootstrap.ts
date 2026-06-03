@@ -12,12 +12,12 @@ import { checkForUpdatesInBackground } from '@agent-relay/utils';
 import {
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
-  getAnonymousId,
+  getDistinctId,
   initTelemetry,
   isEnabled as isTelemetryEnabled,
   shutdown as shutdownTelemetry,
   track,
-} from '@agent-relay/telemetry';
+} from './telemetry/index.js';
 
 import { CliExit } from './lib/exit.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
@@ -134,7 +134,7 @@ function propagateTelemetryContextToChildren(): string {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
   if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getAnonymousId();
+    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
   }
 
   return orchestratorHarness;
