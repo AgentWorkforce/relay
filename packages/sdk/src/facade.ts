@@ -18,6 +18,7 @@ import type {
   ActionSchema,
 } from './actions/index.js';
 import type { DeliveryMode } from './delivery/index.js';
+import type { RelayAgentHandle } from './listeners.js';
 
 /**
  * A reference to an agent accepted by the high-level facade APIs. Agents may be
@@ -137,8 +138,40 @@ export type EnrichedMessages = RelayMessaging['messages'] & {
   dm(input: RelayDirectInput): Promise<RelayMessage>;
 };
 
+/** Emoji reaction input on the live agent client. */
+export interface RelayClientReactInput {
+  messageId: string;
+  emoji: string;
+}
+
+/**
+ * A live, registered agent. Returned by `relay.workspace.register(...)` /
+ * `reconnect(...)` and by harness `create(...)`. Carries the agent's identity
+ * and status/tool predicate builders alongside a messaging surface scoped to
+ * that agent.
+ */
+export interface RelayAgentClient extends RelayAgentHandle {
+  readonly agents: RelayMessaging['agents'];
+  readonly channels: RelayMessaging['channels'];
+  readonly messages: EnrichedMessages;
+  readonly threads: RelayMessaging['threads'];
+  readonly inbox: RelayMessaging['inbox'];
+  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
+  reply(input: RelayReplyInput): Promise<RelayMessage>;
+  react(input: RelayClientReactInput): Promise<RelayMessageReaction>;
+}
+
+/** Dependencies that let the workspace facade mint live agent clients. */
+export interface WorkspaceFacadeDeps {
+  buildAgentClient(registration: RelayAgentRegistration): RelayAgentClient;
+  reconnectAgent(apiToken: string): Promise<RelayAgentClient>;
+}
+
 export interface RelayWorkspace {
-  register(agents: AgentLike | AgentLike[]): Promise<RelayAgentRegistration[]>;
+  register<T extends AgentLike | AgentLike[]>(
+    agents: T
+  ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
+  reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
 }
 
@@ -242,25 +275,39 @@ export function createEnrichedMessages(
   return enriched;
 }
 
-export function createWorkspaceFacade(messaging: RelayMessaging): RelayWorkspace {
+export function createWorkspaceFacade(
+  messaging: RelayMessaging,
+  deps?: WorkspaceFacadeDeps
+): RelayWorkspace {
+  const register = async (agents: AgentLike | AgentLike[]): Promise<RelayAgentClient | RelayAgentClient[]> => {
+    if (!deps) {
+      throw new Error('register() is only available on the workspace client.');
+    }
+    const list = Array.isArray(agents) ? agents : [agents];
+    const clients: RelayAgentClient[] = [];
+    for (const agent of list) {
+      const input =
+        typeof agent === 'string'
+          ? { name: stripSigil(agent) }
+          : {
+              name: resolveAgentName(agent),
+              type: agent.type,
+              persona: agent.persona,
+              metadata: agent.metadata,
+            };
+      clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
+    }
+    return Array.isArray(agents) ? clients : clients[0];
+  };
+
   return {
     info: () => messaging.workspace.info(),
-    async register(agents) {
-      const list = Array.isArray(agents) ? agents : [agents];
-      const registrations: RelayAgentRegistration[] = [];
-      for (const agent of list) {
-        const input =
-          typeof agent === 'string'
-            ? { name: stripSigil(agent) }
-            : {
-                name: resolveAgentName(agent),
-                type: agent.type,
-                persona: agent.persona,
-                metadata: agent.metadata,
-              };
-        registrations.push(await messaging.agents.register(input));
+    register: register as RelayWorkspace['register'],
+    reconnect: ({ apiToken }) => {
+      if (!deps) {
+        throw new Error('reconnect() is only available on the workspace client.');
       }
-      return registrations;
+      return deps.reconnectAgent(apiToken);
     },
   };
 }

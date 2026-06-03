@@ -324,8 +324,11 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
     context.kind ??
     (parentId ? 'thread_reply' : conversationId ? 'dm' : channelId || channelName ? 'channel' : 'unknown');
 
+  const id = readString(record, 'id', 'messageId', 'message_id') ?? '';
+
   return {
-    id: readString(record, 'id', 'messageId', 'message_id') ?? '',
+    id,
+    messageId: id,
     kind,
     text: readString(record, 'text', 'body') ?? '',
     from: {

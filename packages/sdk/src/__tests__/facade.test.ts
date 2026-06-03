@@ -17,20 +17,53 @@ function createMessagingMock() {
       token: `tok-${input.name}`,
       status: 'online',
     })),
+    me: vi.fn(async () => ({
+      id: 'id-self',
+      name: 'self',
+      type: 'agent',
+      status: 'online',
+      metadata: {},
+      channels: [],
+    })),
   };
-  const messaging = { messages, agents } as unknown as RelayMessaging;
+  const messaging = { messages, agents, events: {} } as unknown as RelayMessaging;
   return { messaging, messages, agents };
 }
 
 describe('AgentRelay facade (Phase A)', () => {
-  it('workspace.register registers each agent and returns registrations', async () => {
+  it('workspace.register returns live agent clients', async () => {
     const { messaging, agents } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
-    const registrations = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
+    const clients = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
 
     expect(agents.register).toHaveBeenCalledTimes(2);
-    expect(registrations.map((r) => r.name)).toEqual(['triager', 'engineer']);
+    expect(clients.map((c) => c.name)).toEqual(['triager', 'engineer']);
+    expect(clients.map((c) => c.id)).toEqual(['id-triager', 'id-engineer']);
+    expect(clients[0].token).toBe('tok-triager');
+    expect(typeof clients[0].status.becomes).toBe('function');
+  });
+
+  it('workspace.register returns a single client for a single agent', async () => {
+    const { messaging } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const alice = await relay.workspace.register({ name: 'Alice' });
+
+    expect(alice.id).toBe('id-Alice');
+    expect(alice.name).toBe('Alice');
+  });
+
+  it('workspace.reconnect resolves identity from the agent token', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const client = await relay.workspace.reconnect({ apiToken: 'tok-self' });
+
+    expect(agents.me).toHaveBeenCalledTimes(1);
+    expect(client.id).toBe('id-self');
+    expect(client.name).toBe('self');
+    expect(client.token).toBe('tok-self');
   });
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {

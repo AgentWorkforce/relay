@@ -152,6 +152,8 @@ export type RelayMessageTarget =
 
 export interface RelayMessage {
   id: string;
+  /** Public identifier for the message; mirrors `id`. */
+  messageId: string;
   kind?: RelayMessageKind;
   text: string;
   from: RelayMessageSender;
@@ -582,6 +584,8 @@ export interface RelayMessagingClient {
     list(options?: RelayListAgentsOptions): Promise<RelayAgent[]>;
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
+    /** Resolve the identity of the agent the client is authenticated as. */
+    me(): Promise<RelayAgent>;
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;
     delete(name: string): Promise<void>;
     presence(): Promise<RelayAgentPresence[]>;

@@ -148,6 +148,7 @@ type RelaycastWorkspaceLike = {
 };
 
 type RelaycastAgentLike = {
+  me(): Promise<unknown>;
   connect(): void;
   disconnect(): Promise<void>;
   subscribe(channels: string[]): void;
@@ -306,6 +307,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     get: async (name: string): Promise<RelayAgent> => normalizeAgent(await this.relaycast.agents.get(name)),
     register: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
       normalizeAgentRegistration(await this.relaycast.agents.register(input)),
+    me: async (): Promise<RelayAgent> =>
+      normalizeAgent(await this.requireAgentClient('agents.me').me()),
     update: async (name: string, input: RelayUpdateAgentInput): Promise<RelayAgent> =>
       normalizeAgent(await this.relaycast.agents.update(name, input)),
     delete: async (name: string): Promise<void> => {
