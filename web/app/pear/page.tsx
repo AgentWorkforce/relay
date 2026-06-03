@@ -24,12 +24,7 @@ export const metadata: Metadata = {
       'A desktop workspace where multiple AI agents code alongside you, coordinate with each other, and run parallel workstreams.',
     url: absoluteUrl('/pear'),
     type: 'website',
-    images: [
-      ogImage(
-        '/pear/og.png',
-        'Pear by Agent Relay — pair program with a team of AI coding agents.'
-      ),
-    ],
+    images: [ogImage('/pear/og.png', 'Pear by Agent Relay — pair program with a team of AI coding agents.')],
   },
   twitter: {
     card: 'summary_large_image',
