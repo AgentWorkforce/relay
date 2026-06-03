@@ -379,7 +379,7 @@ fn lookup_process_info(pid: i32) -> Option<(i32, String)> {
         return None;
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
-    let mut parts = stdout.trim().split_whitespace();
+    let mut parts = stdout.split_whitespace();
     let ppid = parts.next()?.parse::<i32>().ok()?;
     let command = parts.collect::<Vec<_>>().join(" ");
     if command.is_empty() {
