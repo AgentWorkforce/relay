@@ -88,7 +88,7 @@ export interface AgentSessionCapabilities {
     expose?: boolean;
   };
   lifecycle: {
-    release: true;
+    release: boolean;
     pause?: boolean;
     resume?: boolean;
     fork?: boolean;
@@ -280,7 +280,12 @@ export interface AgentSession {
   capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, context: MessageContext): Promise<MessageReceipt>;
   onEvent?(emit: (event: AgentSessionEvent) => void | Promise<void>): () => void;
-  release(reason?: string): Promise<void>;
+  /**
+   * Tear down the session. Provide this if and only if
+   * `capabilities.lifecycle.release` is `true`; omit it for sessions that
+   * declare `release: false`.
+   */
+  release?(reason?: string): Promise<void>;
 }
 
 export type HarnessCleanup = () => void | Promise<void>;

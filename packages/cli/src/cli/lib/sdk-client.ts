@@ -53,7 +53,10 @@ export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay
  * workspace-scoped client is returned.
  */
 export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
-  const relay = createWorkspaceRelay(options);
   const token = resolveAgentToken(options);
-  return token ? relay.as(token) : relay;
+  return new AgentRelay({
+    workspaceKey: resolveWorkspaceKey(options),
+    baseUrl: resolveBaseUrl(options),
+    ...(token ? { agentToken: token } : {}),
+  });
 }

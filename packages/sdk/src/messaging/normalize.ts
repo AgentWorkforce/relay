@@ -324,8 +324,11 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
     context.kind ??
     (parentId ? 'thread_reply' : conversationId ? 'dm' : channelId || channelName ? 'channel' : 'unknown');
 
+  const id = readString(record, 'id', 'messageId', 'message_id') ?? '';
+
   return {
-    id: readString(record, 'id', 'messageId', 'message_id') ?? '',
+    id,
+    messageId: id,
     kind,
     text: readString(record, 'text', 'body') ?? '',
     from: {
@@ -672,6 +675,14 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
         messageId: readString(record, 'messageId', 'message_id') ?? '',
         emoji: readString(record, 'emoji') ?? '',
         agentName: readString(record, 'agentName', 'agent_name') ?? '',
+      };
+    case 'action.invoked':
+      return {
+        type: 'actionInvoked',
+        invocationId: readString(record, 'invocationId', 'invocation_id') ?? '',
+        actionName: readString(record, 'actionName', 'action_name') ?? '',
+        callerName: readString(record, 'callerName', 'caller_name') ?? '',
+        handlerAgentId: readString(record, 'handlerAgentId', 'handler_agent_id') ?? '',
       };
     case 'open':
       return { type: 'connected' };

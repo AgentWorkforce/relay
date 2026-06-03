@@ -17,7 +17,7 @@ type AgentSession = {
   capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
   onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
-  release(reason?: string): Promise<void>;
+  release?(reason?: string): Promise<void>;
 };
 ```
 
@@ -172,12 +172,12 @@ type DeliveryEvent =
 Listeners can then react to delivery outcomes:
 
 ```ts file="delivery-listener.ts"
-relay.on(relay.events.delivery.failed().forAgent(engineer), async (event) => {
-  await relay.messages.send({
+relay.addListener('delivery.failed', (event) =>
+  planner.sendMessage({
     to: '#ops',
-    text: `${engineer.identity.handle} could not receive ${event.message.id}: ${event.reason}`,
-  });
-});
+    text: `Delivery ${event.deliveryId} failed for ${event.messageId}: ${event.reason}.`,
+  })
+);
 ```
 
 ## WebSocket Role
@@ -198,6 +198,6 @@ Harnesses and adapters should:
 - Use `failed` with `retryable: true` when Relay should retry later.
 - Expose explicit unsupported errors for delivery-state operations the backend cannot persist yet.
 
-<BannerLink href="/docs/8.0.0/harnesses" icon="docs">
+<BannerLink href="/docs/harnesses" icon="docs">
   Continue to the harness and session contract.
 </BannerLink>

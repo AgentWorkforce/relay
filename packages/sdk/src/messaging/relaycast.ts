@@ -19,6 +19,9 @@ import {
   normalizeThread,
 } from './normalize.js';
 import type {
+  RelayActionInvocation,
+  RelayActionInvocationAck,
+  RelayCompleteInvocationInput,
   RelayAgent,
   RelayAgentPresence,
   RelayAgentRegistration,
@@ -28,10 +31,14 @@ import type {
   RelayCapability,
   RelayCreateChannelInput,
   RelayCreateGroupDirectMessageInput,
+  RelayCreateInboundWebhookInput,
   RelayCreateSubscriptionInput,
   RelayCreateWebhookInput,
   RelayDeliveryUnsupportedResult,
   RelayEventSubscription,
+  RelayInboundWebhook,
+  RelaySubscribeInput,
+  RelayWebhookSubscription,
   RelayGroupDirectConversation,
   RelayRegisterCapabilityInput,
   RelayWebhook,
@@ -75,11 +82,16 @@ import type {
  * `command` → `name`, `parameters` → `inputSchema`.
  */
 function toRegisterActionRequest(input: RelayRegisterCapabilityInput): Record<string, unknown> {
+  // `inputSchema` (a converted JSON Schema) takes precedence over the legacy
+  // `parameters` field when both are present.
+  const inputSchema = input.inputSchema ?? input.parameters;
   return {
     name: input.command,
     description: input.description,
     handlerAgent: input.handlerAgent,
-    ...(input.parameters === undefined ? {} : { inputSchema: input.parameters }),
+    ...(inputSchema === undefined ? {} : { inputSchema }),
+    ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+    ...(input.availableTo === undefined ? {} : { availableTo: input.availableTo }),
   };
 }
 
@@ -96,6 +108,112 @@ function toRelayCapability(raw: unknown): RelayCapability {
     description: action.description as string | undefined,
     handlerAgent: action.handlerAgent as string | undefined,
     parameters: action.inputSchema ?? action.parameters,
+  };
+}
+
+/** Translate a relay completion result into the relaycast `CompleteInvocationRequest` shape. */
+function toCompleteInvocationRequest(data: RelayCompleteInvocationInput): Record<string, unknown> {
+  return {
+    ...(data.output === undefined ? {} : { output: data.output }),
+    ...(data.error === undefined ? {} : { error: data.error }),
+    ...(data.durationMs === undefined ? {} : { durationMs: data.durationMs }),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readStr(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
+function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+/** Normalize a relaycast invoke ack (camelized) into the relay `RelayActionInvocationAck`. */
+function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
+  const record = asRecord(raw);
+  return {
+    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
+    actionName: readStr(record, 'actionName', 'action_name') ?? '',
+    ...(readStr(record, 'handlerAgentId', 'handler_agent_id')
+      ? { handlerAgentId: readStr(record, 'handlerAgentId', 'handler_agent_id') }
+      : {}),
+    ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
+    ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+  };
+}
+
+/** Normalize a relaycast invocation record (camelized) into `RelayActionInvocation`. */
+function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
+  const record = asRecord(raw);
+  return {
+    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
+    actionName: readStr(record, 'actionName', 'action_name') ?? '',
+    callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
+    callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
+    input: readRecord(record, 'input') ?? {},
+    output: readRecord(record, 'output') ?? null,
+    status: readStr(record, 'status') ?? 'invoked',
+    error: (readStr(record, 'error') ?? null) as string | null,
+    durationMs:
+      typeof record.durationMs === 'number'
+        ? record.durationMs
+        : typeof record.duration_ms === 'number'
+          ? (record.duration_ms as number)
+          : null,
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+    completedAt: (readStr(record, 'completedAt', 'completed_at') ?? null) as string | null,
+  };
+}
+
+/** Normalize a relaycast inbound webhook (snake_case) into `RelayInboundWebhook`. */
+function normalizeInboundWebhook(raw: unknown): RelayInboundWebhook {
+  const record = asRecord(raw);
+  return {
+    webhookId: readStr(record, 'webhookId', 'webhook_id', 'id') ?? '',
+    url: readStr(record, 'url') ?? '',
+    token: readStr(record, 'token') ?? '',
+    channel: readStr(record, 'channel') ?? '',
+    ...(readStr(record, 'name') ? { name: readStr(record, 'name') } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
+  };
+}
+
+/** Normalize a relaycast event subscription into `RelayWebhookSubscription`. */
+function normalizeWebhookSubscription(raw: unknown): RelayWebhookSubscription {
+  const record = asRecord(raw);
+  const events = Array.isArray(record.events)
+    ? record.events.filter((event): event is string => typeof event === 'string')
+    : undefined;
+  return {
+    id: readStr(record, 'id') ?? '',
+    ...(readStr(record, 'url') ? { url: readStr(record, 'url') } : {}),
+    ...(events ? { events } : {}),
+    ...(readStr(record, 'createdAt', 'created_at')
+      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
+      : {}),
   };
 }
 
@@ -122,9 +240,10 @@ type RelaycastWorkspaceLike = {
   dmMessages?: (conversationId: string, options?: RelayMessageListOptions) => Promise<unknown[]>;
   webhooks?: {
     create(data: unknown): Promise<unknown>;
+    createInbound(data: unknown): Promise<unknown>;
     list(): Promise<unknown[]>;
     delete(id: string): Promise<void>;
-    trigger(id: string, data: unknown): Promise<unknown>;
+    trigger(id: string, data: unknown, token?: string): Promise<unknown>;
   };
   subscriptions?: {
     create(data: unknown): Promise<unknown>;
@@ -148,6 +267,7 @@ type RelaycastWorkspaceLike = {
 };
 
 type RelaycastAgentLike = {
+  me(): Promise<unknown>;
   connect(): void;
   disconnect(): Promise<void>;
   subscribe(channels: string[]): void;
@@ -220,8 +340,14 @@ type RelaycastAgentLike = {
     query: string,
     options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }
   ): Promise<unknown[]>;
+  actions?: {
+    invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;
+    getInvocation(name: string, invocationId: string): Promise<unknown>;
+    completeInvocation(name: string, invocationId: string, data: unknown): Promise<unknown>;
+  };
   on: {
     any(handler: (event: unknown) => void): () => void;
+    actionInvoked?(handler: (event: unknown) => void): () => void;
   };
 };
 
@@ -306,6 +432,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     get: async (name: string): Promise<RelayAgent> => normalizeAgent(await this.relaycast.agents.get(name)),
     register: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
       normalizeAgentRegistration(await this.relaycast.agents.register(input)),
+    me: async (): Promise<RelayAgent> => normalizeAgent(await this.requireAgentClient('agents.me').me()),
     update: async (name: string, input: RelayUpdateAgentInput): Promise<RelayAgent> =>
       normalizeAgent(await this.relaycast.agents.update(name, input)),
     delete: async (name: string): Promise<void> => {
@@ -594,6 +721,37 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     },
   };
 
+  readonly webhooks = {
+    createInbound: async (input: RelayCreateInboundWebhookInput): Promise<RelayInboundWebhook> =>
+      normalizeInboundWebhook(
+        await this.requireWebhooks().createInbound({
+          channel: normalizeChannelName(input.channel),
+          ...(input.name === undefined ? {} : { name: input.name }),
+        })
+      ),
+    subscribe: async (input: RelaySubscribeInput): Promise<RelayWebhookSubscription> =>
+      normalizeWebhookSubscription(
+        await this.requireSubscriptions().create(
+          definedOptions({
+            url: input.url,
+            events: input.events,
+            secret: input.secret,
+            headers: input.headers,
+          })
+        )
+      ),
+    list: async (): Promise<RelayInboundWebhook[]> =>
+      (await this.requireWebhooks().list()).map(normalizeInboundWebhook),
+    delete: async (webhookId: string): Promise<void> => {
+      await this.requireWebhooks().delete(webhookId);
+    },
+    subscriptions: async (): Promise<RelayWebhookSubscription[]> =>
+      (await this.requireSubscriptions().list()).map(normalizeWebhookSubscription),
+    unsubscribe: async (id: string): Promise<void> => {
+      await this.requireSubscriptions().delete(id);
+    },
+  };
+
   readonly commands = {
     register: async (input: RelayRegisterCapabilityInput): Promise<RelayCapability> =>
       toRelayCapability(await this.requireActions().register(toRegisterActionRequest(input))),
@@ -601,6 +759,26 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     delete: async (command: string): Promise<void> => {
       await this.requireActions().delete(command);
     },
+    available: (): boolean => Boolean(this.relaycast.actions),
+    agentScoped: (): boolean => Boolean(this.agentClient?.actions),
+    invoke: async (name: string, input?: Record<string, unknown>): Promise<RelayActionInvocationAck> =>
+      normalizeActionInvocationAck(await this.requireAgentActions('commands.invoke').invoke(name, input)),
+    getInvocation: async (name: string, invocationId: string): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.getInvocation').getInvocation(name, invocationId)
+      ),
+    completeInvocation: async (
+      name: string,
+      invocationId: string,
+      data: RelayCompleteInvocationInput
+    ): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.completeInvocation').completeInvocation(
+          name,
+          invocationId,
+          toCompleteInvocationRequest(data)
+        )
+      ),
   };
 
   readonly workspace = {
@@ -633,6 +811,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error('RelaycastMessagingClient.commands requires the relaycast actions API.');
     }
     return this.relaycast.actions;
+  }
+
+  private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {
+    const actions = this.agentClient?.actions;
+    if (!actions) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires an agent-scoped client with the actions API.`
+      );
+    }
+    return actions;
   }
 
   private requireAgentClient(operation: string): RelaycastAgentLike {

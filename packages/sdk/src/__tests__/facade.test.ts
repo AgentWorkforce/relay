@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgentRelay } from '../index.js';
+import { AgentRelay, ActionRegistry } from '../index.js';
 import type { RelayMessaging } from '../messaging/index.js';
 
 function createMessagingMock() {
@@ -9,6 +9,12 @@ function createMessagingMock() {
     direct: vi.fn(async (input: unknown) => ({ id: 'd1', text: '', from: {}, ...((input as object) ?? {}) })),
     reply: vi.fn(async (input: unknown) => ({ id: 'r1', text: '', from: {}, ...((input as object) ?? {}) })),
     react: vi.fn(async (messageId: string, emoji: string) => ({ emoji, count: 1, agents: [] })),
+    groupDirect: vi.fn(async (input: unknown) => ({
+      id: 'g1',
+      text: '',
+      from: {},
+      ...((input as object) ?? {}),
+    })),
   };
   const agents = {
     register: vi.fn(async (input: { name: string }) => ({
@@ -17,34 +23,79 @@ function createMessagingMock() {
       token: `tok-${input.name}`,
       status: 'online',
     })),
+    me: vi.fn(async () => ({
+      id: 'id-self',
+      name: 'self',
+      type: 'agent',
+      status: 'online',
+      metadata: {},
+      channels: [],
+    })),
   };
-  const messaging = { messages, agents } as unknown as RelayMessaging;
+  const messaging = { messages, agents, events: {} } as unknown as RelayMessaging;
   return { messaging, messages, agents };
 }
 
 describe('AgentRelay facade (Phase A)', () => {
-  it('workspace.register registers each agent and returns registrations', async () => {
+  it('workspace.register returns live agent clients', async () => {
     const { messaging, agents } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
-    const registrations = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
+    const clients = await relay.workspace.register([{ name: 'triager' }, 'engineer']);
 
     expect(agents.register).toHaveBeenCalledTimes(2);
-    expect(registrations.map((r) => r.name)).toEqual(['triager', 'engineer']);
+    expect(clients.map((c) => c.name)).toEqual(['triager', 'engineer']);
+    expect(clients.map((c) => c.id)).toEqual(['id-triager', 'id-engineer']);
+    expect(clients[0].token).toBe('tok-triager');
+    expect(typeof clients[0].status.becomes).toBe('function');
+  });
+
+  it('workspace.register returns a single client for a single agent', async () => {
+    const { messaging } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const alice = await relay.workspace.register({ name: 'Alice' });
+
+    expect(alice.id).toBe('id-Alice');
+    expect(alice.name).toBe('Alice');
+  });
+
+  it('workspace.reconnect resolves identity from the agent token', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const client = await relay.workspace.reconnect({ apiToken: 'tok-self' });
+
+    expect(agents.me).toHaveBeenCalledTimes(1);
+    expect(client.id).toBe('id-self');
+    expect(client.name).toBe('self');
+    expect(client.token).toBe('tok-self');
   });
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {
     const { messaging, messages } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
 
-    await relay.sendMessage({ to: '#ops', msg: 'hello channel' });
+    await sender.sendMessage({ to: '#ops', msg: 'hello channel' });
     expect(messages.send).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'ops', text: 'hello channel' })
     );
 
-    await relay.sendMessage({ to: 'engineer', msg: 'hello agent' });
+    await sender.sendMessage({ to: 'engineer', msg: 'hello agent' });
     expect(messages.direct).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'engineer', text: 'hello agent' })
+    );
+  });
+
+  it('sendMessage routes an array of handles to a group DM', async () => {
+    const { messaging, messages } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
+
+    await sender.sendMessage({ to: ['@alice', '@bob'], text: 'group hello' });
+    expect(messages.groupDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ participants: ['alice', 'bob'], text: 'group hello' })
     );
   });
 
@@ -76,7 +127,8 @@ describe('AgentRelay facade (Phase A)', () => {
 
   it('registerAction enforces availableTo and adapts the handler shape', async () => {
     const { messaging } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const actions = new ActionRegistry();
+    const relay = new AgentRelay({ messaging, actions });
     const handler = vi.fn(async () => ({ ok: true }));
 
     relay.registerAction({
@@ -86,7 +138,7 @@ describe('AgentRelay facade (Phase A)', () => {
       handler,
     });
 
-    const denied = await relay.actions.invoke({
+    const denied = await actions.invoke({
       name: 'spawn-claude',
       input: {},
       caller: { name: 'intruder', type: 'agent' },
@@ -94,7 +146,7 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(denied.ok).toBe(false);
     expect(handler).not.toHaveBeenCalled();
 
-    const allowed = await relay.actions.invoke({
+    const allowed = await actions.invoke({
       name: 'spawn-claude',
       input: { model: 'opus' },
       caller: { name: 'planner', type: 'agent' },
@@ -105,21 +157,6 @@ describe('AgentRelay facade (Phase A)', () => {
         input: { model: 'opus' },
         agent: expect.objectContaining({ name: 'planner' }),
       })
-    );
-  });
-
-  it('notify returns a handler that DMs the target', async () => {
-    const { messaging, messages } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
-
-    const handler = relay.notify(
-      { name: 'taskManager' },
-      { type: 'agent.status.idle', subject: { handle: 'engineer' } }
-    );
-    await handler();
-
-    expect(messages.direct).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'taskManager', text: '[agent.status.idle] @engineer' })
     );
   });
 });

@@ -1,49 +1,53 @@
 ---
 title: 'Migration to Version 8'
-description: 'Move a 7.1.1 app to the version 8 workspace, messaging, delivery, actions, sessions, and MCP model.'
+description: 'Move an older Agent Relay app to the version 8 SDK: register-returns-client, addListener, agent-scoped messaging, messageId, fire-and-forget actions, relay.webhooks, and createHuman.'
 ---
 
-Version 8 is a SemVer-major cleanup of the Agent Relay public surface. Older docs started with brokers, cloud setup, and spawn-oriented helpers. Version 8 starts with a workspace, then treats messaging, delivery, actions, sessions, and MCP as the core product model.
+Version 8 is a SemVer-major cleanup of the Agent Relay public surface. The biggest shift: there is no longer
+a "system" relay that sends messages or holds callbacks. **Registering an agent returns a live client**, and
+every message, reply, reaction, and action is sent _from_ a registered participant. Listening collapses to a
+single `relay.addListener(...)` entry point.
 
-Use this guide when moving code or docs from the 7.1.1 model to the version 8 model.
+Use this guide when moving code from an older release to version 8.
 
 <Note>
-  The version 8 docs describe the new public shape. Keep compatibility aliases only at your application boundary while you migrate; new examples should use the version 8 names.
+  The version 8 docs describe the new public shape. New examples should use the version 8 names below;
+  keep any compatibility shims only at your application boundary while you migrate.
 </Note>
 
-## What Changes
+## What changes
 
-| Pre-v8 concept | Version 8 concept |
+| Older concept | Version 8 concept |
 | --- | --- |
-| Agent Relay API key for local setup | Workspace key shared by SDK, MCP, CLI, and harnesses |
-| `apiKey` and `RELAY_API_KEY` in examples | `workspaceKey` and `RELAY_WORKSPACE_KEY` |
-| Spawn-first SDK helpers | Sessions created by harnesses or runtime-provided actions |
-| Broker and PTY lifecycle in the core path | Optional harness driver or runtime lifecycle |
-| `relay.system().sendMessage(...)` | `relay.messages.send(...)`, `direct(...)`, `group(...)`, `reply(...)`, and `react(...)` |
-| Ad hoc tool registration | Zod-backed `relay.actions.register(...)` |
-| Single callback properties such as `onMessageReceived` | Predicate listeners through `relay.on(...)` |
-| Agents polling an inbox as the main delivery path | Durable messages plus delivery work, receipts, and live events |
-| Low-level broker HTTP or WebSocket docs | SDK, MCP, CLI, and harness contracts |
+| `relay.agents.register(...)` returns a `{ token }` | `relay.workspace.register({ name, type })` returns a **live agent client** |
+| `relay.as(token)` / `relay.asAgent(...)` to act as an agent | the live client _is_ the agent — call `agent.sendMessage(...)` directly |
+| `relay.sendMessage(...)` / `relay.system().sendMessage(...)` | `agent.sendMessage({ to, text })` from a registered participant |
+| `relay.messages.send(...)` as a workspace send | `agent.sendMessage(...)` / `agent.reply(...)` / `agent.react(...)` |
+| `message.id` | `message.messageId` |
+| `relay.on(predicate, handler)` | `relay.addListener(selector, handler)` (name, wildcard, or predicate) |
+| `relay.notify(...)` | an inline `addListener` handler that sends from a participant |
+| `relay.actions.register(...)` / `relay.actions.invoke(...)` | `relay.registerAction(...)`, fire-and-forget; react with `addListener` |
+| `createWebhook(...)` / `subscribeWebhook(...)` | `relay.webhooks.createInbound(...)` / `relay.webhooks.subscribe(...)` |
+| Humans modeled by hand | `createHuman({ relay, name })` self-registers and returns a live client |
 
-## 1. Upgrade Packages Together
+## 1. Upgrade packages together
 
-Move Agent Relay packages as a set so the SDK, harnesses, and runtime actions agree on the same contracts.
+Move Agent Relay packages as a set so the SDK and harnesses agree on the same contracts.
 
 ```bash
-npm install @agent-relay/sdk@8 @agent-relay/harnesses@8 @agent-relay/harness-driver@8 zod
+npm install @agent-relay/sdk@8 @agent-relay/harnesses@8 zod
 ```
 
-If your project only uses the SDK and MCP, you may not need the harness packages. Add `@agent-relay/harnesses` or `@agent-relay/harness-driver` only when Relay creates or manages sessions for you.
+Add `@agent-relay/harnesses` only when you spawn or model agents and humans.
 
-## 2. Replace API-Key Setup With Workspaces
+## 2. Create a workspace, then register agents
 
 Before:
 
 ```ts
-const relay = new AgentRelay({
-  apiKey: process.env.RELAY_API_KEY,
-  workspaceName: 'support-triage',
-});
+const relay = new AgentRelay({ apiKey: process.env.RELAY_API_KEY, workspaceName: 'support-triage' });
+const { token } = await relay.agents.register({ name: 'Alice' });
+const alice = relay.as(token);
 ```
 
 After:
@@ -51,131 +55,94 @@ After:
 ```ts
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = await AgentRelay.createWorkspace({
-  name: 'support-triage',
-});
+const relay = await AgentRelay.createWorkspace({ name: 'support-triage' });
+// (optional) persist relay.workspaceKey to reconnect later:
+//   new AgentRelay({ workspaceKey: process.env.RELAY_WORKSPACE_KEY })
 
-console.log(relay.workspace.key);
+// register() returns the LIVE agent client — no separate as(token) step
+const alice = await relay.workspace.register({ name: 'Alice', type: 'agent' });
 ```
 
-Use the workspace key when another process joins the same workspace.
+`register()` accepts a single agent (returns one client) or an array (returns an array of clients). Agent
+names are unique within a workspace, so registering a name that is already taken is rejected.
 
-```bash
-export RELAY_WORKSPACE_KEY="relay_ws_..."
-```
+To rehydrate a client in a fresh process, persist the agent's token off its live client and call
+`reconnect`:
 
 ```ts
-const relay = await AgentRelay.connect({
-  workspaceKey: process.env.RELAY_WORKSPACE_KEY,
-});
+const persisted = alice.token;
+// ...later, in another process...
+const alice = await relay.workspace.reconnect({ apiToken: persisted });
 ```
 
-`workspaceName` is now a human-readable workspace label. The workspace key is the join secret.
+There is no `relay.as(token)` or `relay.asAgent(...)` anymore.
 
-## 3. Move Spawn Code To Harnesses Or Actions
-
-Pre-v8 examples often treated spawning as the first SDK operation.
-
-```ts
-const reviewer = await relay.spawnAgent({
-  cli: 'codex',
-  task: 'Review the branch.',
-});
-```
-
-In version 8, the core concept is a session. A harness can create a session directly:
-
-```ts
-import { codex } from '@agent-relay/harnesses';
-
-const reviewer = await codex.create({
-  name: 'reviewer',
-  model: 'gpt-5.5',
-});
-
-await relay.workspace.register([reviewer]);
-await relay.channels.join('#reviews', [reviewer]);
-```
-
-When agents need to ask a managed runtime to create sessions, expose creation as an action:
-
-```ts
-const result = await relay.actions.invoke({
-  name: 'agent.create',
-  input: {
-    name: 'reviewer',
-    harness: 'codex',
-    task: 'Review the branch.',
-    channels: ['#reviews'],
-  },
-  caller: { type: 'agent', id: planner.identity.id },
-});
-
-if (!result.ok) {
-  throw new Error(result.error.message);
-}
-```
-
-Core Agent Relay owns the action protocol. The harness driver owns process, PTY, headless, attach, resume, and release details.
-
-## 4. Migrate Messaging Calls
+## 3. Send from a participant, not from the relay
 
 Before:
 
 ```ts
-await relay.system().sendMessage({
-  to: 'Planner',
-  text: 'Coordinate with Coder.',
+await relay.sendMessage({ to: 'Planner', text: 'Coordinate with Coder.' });
+await relay.system().sendMessage({ to: '#planning', text: 'Kickoff.' });
+```
+
+After:
+
+```ts
+// to is '#channel', '@handle' (DM), or ['@a','@b'] (group DM)
+await alice.sendMessage({ to: '#planning', text: `${planner.handle} coordinate with ${engineer.handle}.` });
+
+// every send returns a messageId you can reference later
+const { messageId } = await alice.sendMessage({ to: '#planning', text: 'Kickoff' });
+
+// thread reply and reaction key off messageId (not message.id)
+await engineer.reply({ messageId, text: 'On it.' });
+await bob.react({ messageId, emoji: ':thumbsup:' });
+```
+
+There is no top-level `relay.sendMessage` and no workspace-level `relay.messages.send` for participant
+messages — messages come from an agent or human client. See [Sending messages](/docs/sending-messages).
+
+## 4. Replace callbacks and `relay.on` with `addListener`
+
+Before:
+
+```ts
+relay.onMessageReceived = (message) => console.log(message.text);
+
+relay.on(relay.events.message.created().in('#planning').mentions(engineer), async (event) => {
+  await relay.notify(planner, { type: 'mention', subject: engineer });
 });
 ```
 
 After:
 
 ```ts
-const kickoff = await relay.messages.send({
-  to: '#planning',
-  from: 'system',
-  text: `${planner.identity.handle} coordinate with ${engineer.identity.handle}.`,
-  mentions: [planner.identity.id, engineer.identity.id],
+// one entry point: addListener(selector, handler) -> unsubscribe
+relay.addListener('message.created', ({ message, envelope }) => {
+  console.log(envelope.from.handle, message.text);
 });
 
-await relay.messages.reply({
-  thread: kickoff.thread.id,
-  from: engineer.identity.id,
-  text: 'I am checking the failing test now.',
-});
+// predicate builders still exist — now passed INTO addListener
+relay.addListener(engineer.status.becomes('idle'), () =>
+  planner.sendMessage({ to: `@${engineer.handle}`, text: 'Pick up the next task.' })
+);
 ```
 
-Use the high-level messaging API for channels, DMs, group DMs, threads, reactions, attachments, mentions, inbox state, and read state.
+`addListener` accepts a dotted event name (`'message.created'`), a wildcard (`'*'`, `'message.*'`), or a
+predicate, and always hands your handler **one discriminated event object** `{ type, ... }`. Message events
+carry `{ message, envelope }`, where `envelope` exposes rich `from`/`to`/`channel`/`parent` objects. There is
+no `relay.on` and no `relay.notify` — write notifications as inline handlers that send from a participant.
+See [Event handlers](/docs/event-handlers) and [Events](/docs/events).
 
-## 5. Add Delivery Semantics
-
-Version 8 separates "a message was written" from "a session received it." Sending a message creates delivery work for the target sessions.
-
-```ts
-await relay.messages.send({
-  to: '#reviews',
-  from: planner.identity.id,
-  text: `${reviewer.identity.handle} review the migration PR before it merges.`,
-  mentions: [reviewer.identity.id],
-  delivery: {
-    mode: 'next-tool-call',
-    reason: 'mention',
-    idempotencyKey: 'migration-pr:reviewer',
-  },
-});
-```
-
-Harnesses implement `receiveMessage(message, ctx)` and return receipts such as `accepted`, `delivered`, `deferred`, or `failed`. Replace interrupt flags, manual inbox polling, and one-off queue logic with explicit delivery modes and receipts.
-
-## 6. Convert Tools To Actions
+## 5. Make actions fire-and-forget
 
 Before:
 
 ```ts
-relay.addTool('submit-vote', async (input) => {
-  return vote(input);
-});
+relay.actions.register({ name: 'review.submit_vote', inputSchema: VoteSchema, handler: vote });
+const result = await relay.actions.invoke({ name: 'review.submit_vote', input, caller });
+if (result.ok) console.log(result.output);
 ```
 
 After:
@@ -183,123 +150,89 @@ After:
 ```ts
 import { z } from 'zod';
 
-relay.actions.register({
+relay.registerAction({
   name: 'review.submit_vote',
-  description: 'Submit a review vote.',
-  inputSchema: z.object({
-    proposalId: z.string(),
-    vote: z.enum(['approve', 'request_changes', 'abstain']),
-  }),
-  outputSchema: z.object({
-    recorded: z.boolean(),
-  }),
-  handler: async (input, ctx) => {
-    await voteStore.record(ctx.caller, input);
-    return { recorded: true };
+  input: z.object({ vote: z.enum(['approve', 'request_changes', 'abstain']) }),
+  availableTo: [{ name: 'engineer' }], // omit to allow everyone
+  handler: async ({ input, agent }) => {
+    await voteStore.record(agent.name, input.vote);
+    return { recorded: true }; // becomes the action.completed payload
   },
+});
+
+// invoking returns an ack immediately; react to the outcome with a listener
+relay.addListener(relay.action('review.submit_vote').completed(), (event) => {
+  console.log(event.output);
 });
 ```
 
-Actions are discoverable capabilities with Zod validation, policy hooks, audit events, structured result envelopes, and MCP tool generation.
+There is no `relay.actions` namespace. Invoking an action returns an acknowledgement immediately; the
+handler runs in the registering process and its return value is emitted as `action.completed` to listeners —
+not returned inline to the calling agent. If the agent needs the result, message it from the handler. See
+[Actions](/docs/actions).
 
-## 7. Replace Callback Properties With Listeners
+## 6. Update webhooks to `relay.webhooks`
 
 Before:
 
 ```ts
-relay.onMessageReceived = (message) => {
-  console.log(message.text);
-};
+const { url, token } = await relay.createWebhook({ channel: '#deploy-status' });
+await relay.subscribeWebhook({ url: 'https://svc.dev/relay', events: ['message.created'] });
 ```
 
 After:
 
 ```ts
-const unsubscribe = relay.on(
-  relay.events.message.created().in('#planning').mentions(engineer),
-  async (event) => {
-    await relay.messages.direct({
-      to: planner.identity.id,
-      from: 'system',
-      text: `${engineer.identity.handle} was mentioned in ${event.message.id}.`,
-    });
-  }
-);
+// inbound: external services POST { message, author } with a bearer token
+const { url, token } = await relay.webhooks.createInbound({ channel: '#deploy-status' });
 
-// Later:
-unsubscribe();
+// outbound: HMAC-signed delivery of Relay events to your service
+await relay.webhooks.subscribe({
+  url: 'https://svc.dev/webhooks/relay',
+  events: ['message.created', 'action.completed'],
+  secret: process.env.RELAY_SECRET,
+});
 ```
 
-Use listeners for messages, delivery receipts, action events, status changes, tool calls, transcript chunks, file changes, terminal output, and lifecycle events.
+Provider connections live under the separate `relay.integrations` namespace — don't conflate it with
+webhooks. See [Webhooks](/docs/webhooks).
 
-## 8. Move Broker Lifecycle Behind The Runtime
+## 7. Model humans with `createHuman`
 
-Before:
+A human is just a harness with no managed runtime.
 
 ```ts
-const client = await HarnessDriverClient.spawn({ cwd: process.cwd() });
-await client.spawnPty({ name: 'Reviewer', cli: 'codex' });
+import { createHuman } from '@agent-relay/harnesses';
+
+const will = await createHuman({ relay, name: 'will-washburn' });
+await will.sendMessage({ to: '#general', text: 'Kicking things off.' });
 ```
 
-After:
+`createHuman` self-registers and returns the live client, mirroring `claude.create({ relay })`. See
+[Harnesses](/docs/harnesses).
 
-```ts
-import { createRuntime, registerRuntimeActions } from '@agent-relay/harness-driver';
+## Suggested migration order
 
-const runtime = await createRuntime({ relay, harnesses });
-registerRuntimeActions(relay.actions, runtime);
-```
+1. Create or connect to a workspace; persist `relay.workspaceKey` for other processes.
+2. Replace `register` + `as(token)` flows with `relay.workspace.register(...)` (returns a live client).
+3. Replace `relay.sendMessage` / `relay.system()` / `relay.messages.send` with `agent.sendMessage/reply/react`.
+4. Switch `message.id` references to `message.messageId`.
+5. Replace `relay.on` and callback properties with `relay.addListener(...)`.
+6. Convert `relay.actions.register/invoke` to `relay.registerAction(...)` + `addListener` for outcomes.
+7. Rename `createWebhook` / `subscribeWebhook` to `relay.webhooks.createInbound` / `relay.webhooks.subscribe`.
+8. Replace hand-rolled humans with `createHuman({ relay, name })`.
 
-The runtime can still manage processes, readiness, logs, and releases. Version 8 keeps those details outside the core docs path and exposes user-facing lifecycle operations as actions such as `agent.create`, `agent.release`, and `agent.status`.
-
-## 9. Update MCP And CLI Setup
-
-Pre-v8 setup often made broker lifecycle or cloud commands the first step. Version 8 setup should start with a workspace and MCP.
-
-```bash
-agent-relay workspace create support-triage
-agent-relay workspace env
-agent-relay mcp install --workspace "$RELAY_WORKSPACE_KEY"
-agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
-```
-
-Use CLI commands for diagnostics against the same workspace state:
-
-```bash
-agent-relay agents list
-agent-relay channels list
-agent-relay messages send '#reviews' 'Reviewer, please check the migration page.'
-agent-relay deliveries list --agent reviewer
-agent-relay actions list
-```
-
-Runtime-managed session commands should live under the runtime or driver group, not in the core setup path.
-
-## Suggested Migration Order
-
-1. Create or connect to a workspace and pass `RELAY_WORKSPACE_KEY` through every process.
-2. Replace old send helpers with `relay.messages.*` calls.
-3. Register existing agents as sessions with stable identities and capabilities.
-4. Add delivery modes and receipt handling for each harness.
-5. Convert tools to `relay.actions.register(...)` with Zod schemas.
-6. Replace callback properties with `relay.on(...)` listeners.
-7. Move broker, PTY, spawn, attach, resume, and release details into harness-driver or runtime code.
-8. Remove compatibility aliases such as `RELAY_API_KEY` after every caller uses workspace keys.
-
-## Validation Checklist
+## Validation checklist
 
 Your migration is complete when:
 
-- basic setup creates or joins a workspace without an Agent Relay API key
-- all new examples use `workspaceKey` and `RELAY_WORKSPACE_KEY`
-- messages are sent through `relay.messages.*`
-- delivery outcomes are recorded as receipts
-- actions use Zod schemas and structured result envelopes
-- `agent.create` is an action provided by runtime code, not a core SDK method
-- harnesses expose session identity, capabilities, `receiveMessage`, `onEvent`, and `release`
-- MCP exposes messaging tools and generated action tools for the same workspace
-- broker and PTY concepts are limited to harness-driver or runtime reference material
+- agents are obtained from `relay.workspace.register(...)` / `reconnect(...)`, not from `{ token }` flows
+- there are no `relay.as(`, `relay.sendMessage`, `relay.on`, `relay.notify`, or `relay.actions.` calls left
+- every message reference uses `messageId`
+- actions are fire-and-forget and outcomes are observed through `addListener`
+- webhooks use `relay.webhooks.createInbound` / `relay.webhooks.subscribe`
+- humans are created with `createHuman({ relay, name })`
 
-<BannerLink href="/docs/8.0.0/quickstart" icon="rocket">
+<BannerLink href="/docs/quickstart" icon="rocket">
   Continue with the version 8 quickstart.
 </BannerLink>

@@ -4,26 +4,23 @@ import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './act
 import {
   RelaycastMessagingClient,
   type RelayAgentRegistration,
-  type RelayMessage,
   type RelayMessaging,
   type RelaycastMessagingOptions,
 } from './messaging/index.js';
 import {
   createEnrichedMessages,
-  createNotifyHandler,
   createWorkspaceFacade,
   registerFacadeAction,
   resolveAgentToken,
   type AgentLike,
   type EnrichedMessages,
   type MessagingResolver,
-  type NotifyHandler,
-  type NotifyOptions,
   type RegisterActionInput,
-  type RelaySendMessageInput,
+  type RelayAgentClient,
   type RelayWorkspace,
 } from './facade.js';
 import {
+  createAgentHandle,
   createListenerHub,
   type AgentHandleInput,
   type ActionPredicate,
@@ -32,12 +29,15 @@ import {
   type ListenerHub,
   type ListenerPredicate,
   type RelayAgentHandle,
+  type RelayEvent,
 } from './listeners.js';
 import type { AgentSessionEvent } from './session/index.js';
 
 export interface AgentRelayOptions extends RelaycastMessagingOptions {
   messaging?: RelayMessaging;
   actions?: AgentRelayActions;
+  /** Factory for agent-token-scoped messaging clients. Defaults to a Relaycast client. */
+  createAgentMessaging?: (token: string) => RelayMessaging;
 }
 
 export interface AgentRelayCreateWorkspaceInput {
@@ -49,7 +49,6 @@ export interface AgentRelayCreateWorkspaceInput {
 
 export interface AgentRelayAgent {
   readonly messaging: RelayMessaging;
-  readonly actions: AgentRelayActions;
   readonly agents: RelayMessaging['agents'];
   readonly channels: RelayMessaging['channels'];
   readonly messages: EnrichedMessages;
@@ -58,12 +57,11 @@ export interface AgentRelayAgent {
   readonly events: RelayMessaging['events'];
   readonly deliveries: RelayMessaging['deliveries'];
   readonly integrations: RelayMessaging['integrations'];
+  readonly webhooks: RelayMessaging['webhooks'];
   readonly capabilities: RelayMessaging['commands'];
   readonly workspace: RelayWorkspace;
-  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
-  notify(target: AgentLike, options: NotifyOptions): NotifyHandler;
-  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
   emitSessionEvent(agentId: string, event: AgentSessionEvent): void;
@@ -71,22 +69,26 @@ export interface AgentRelayAgent {
 
 export class AgentRelay implements AgentRelayAgent {
   readonly messaging: RelayMessaging;
-  readonly actions: AgentRelayActions;
+  private readonly actions: AgentRelayActions;
   readonly workspaceKey?: string;
 
   private readonly messagingOptions: RelaycastMessagingOptions;
   private readonly clientsByToken = new Map<string, RelayMessaging>();
+  private readonly createAgentMessaging: (token: string) => RelayMessaging;
   private enrichedMessages?: EnrichedMessages;
   private workspaceFacade?: RelayWorkspace;
   private hub?: ListenerHub;
 
   constructor(options: AgentRelayOptions = {}) {
-    const { messaging, actions, workspaceKey, ...messagingOptions } = options;
+    const { messaging, actions, workspaceKey, createAgentMessaging, ...messagingOptions } = options;
     const resolvedWorkspaceKey = workspaceKey ?? messagingOptions.apiKey;
     this.workspaceKey = resolvedWorkspaceKey;
     this.messagingOptions = { ...messagingOptions, workspaceKey: resolvedWorkspaceKey };
     this.messaging = messaging ?? new RelaycastMessagingClient(this.messagingOptions);
     this.actions = actions ?? new ActionRegistry();
+    this.createAgentMessaging =
+      createAgentMessaging ??
+      ((token) => new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token }));
   }
 
   static async createWorkspace(input: string | AgentRelayCreateWorkspaceInput): Promise<AgentRelay> {
@@ -150,32 +152,55 @@ export class AgentRelay implements AgentRelayAgent {
     return this.messaging.integrations;
   }
 
+  get webhooks(): RelayMessaging['webhooks'] {
+    return this.messaging.webhooks;
+  }
+
   get capabilities(): RelayMessaging['commands'] {
     return this.messaging.commands;
   }
 
   get workspace(): RelayWorkspace {
     if (!this.workspaceFacade) {
-      this.workspaceFacade = createWorkspaceFacade(this.messaging);
+      this.workspaceFacade = createWorkspaceFacade(this.messaging, {
+        buildAgentClient: (registration) => this.buildAgentClient(registration),
+        reconnectAgent: (apiToken) => this.reconnectAgent(apiToken),
+      });
     }
     return this.workspaceFacade;
   }
 
-  /** High-level send. `to` may be a `#channel` or an agent name/handle. */
-  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage> {
-    return this.messages.send(input);
+  /** Build a live client bound to a freshly-registered agent. */
+  private buildAgentClient(registration: RelayAgentRegistration): RelayAgentClient {
+    return assembleAgentClient(this.messagingForToken(registration.token), this.actions, {
+      id: registration.id,
+      name: registration.name,
+      token: registration.token,
+    });
+  }
+
+  /** Rehydrate a live client from a persisted agent token, resolving identity from the relay. */
+  private async reconnectAgent(apiToken: string): Promise<RelayAgentClient> {
+    const messaging = this.messagingForToken(apiToken);
+    const identity = await messaging.agents.me();
+    return assembleAgentClient(messaging, this.actions, {
+      id: identity.id,
+      name: identity.name,
+      token: apiToken,
+    });
   }
 
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
-    return registerFacadeAction(this.actions, def);
+    // The workspace-scoped client has no single handler-agent identity or
+    // agent connection, so relay wiring is skipped and the action stays
+    // in-process. Use an agent client (workspace.register / reconnect) to
+    // register a relay-routed action.
+    return registerFacadeAction(this.actions, def, { messaging: this.messaging });
   }
 
-  notify(target: AgentLike, options: NotifyOptions): NotifyHandler {
-    return createNotifyHandler(this.messages, target, options);
-  }
-
-  on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void {
-    return this.listenerHub.on(predicate, handler);
+  /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void {
+    return this.listenerHub.addListener(selector, handler);
   }
 
   action(name: string): ActionPredicate {
@@ -190,22 +215,10 @@ export class AgentRelay implements AgentRelayAgent {
     this.listenerHub.emitSessionEvent(agentId, event);
   }
 
-  as(agent: RelayAgentRegistration | { token: string } | string): AgentRelayAgent {
-    const token = typeof agent === 'string' ? agent : agent.token;
-    return agentRelayAgent(
-      new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token }),
-      this.actions
-    );
-  }
-
-  asAgent(agentToken: string): AgentRelayAgent {
-    return this.as(agentToken);
-  }
-
   private messagingForToken(token: string): RelayMessaging {
     let client = this.clientsByToken.get(token);
     if (!client) {
-      client = new RelaycastMessagingClient({ ...this.messagingOptions, agentToken: token });
+      client = this.createAgentMessaging(token);
       this.clientsByToken.set(token, client);
     }
     return client;
@@ -235,14 +248,17 @@ function extractWorkspaceKey(payload: Record<string, unknown>): string | undefin
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayActions): AgentRelayAgent {
+export function agentRelayAgent(
+  messaging: RelayMessaging,
+  actions: AgentRelayActions,
+  handlerAgent?: string
+): AgentRelayAgent {
   // An acting-as agent client sends through its own token; `from` overrides are
   // best-effort and fall back to this client.
   const messages = createEnrichedMessages(messaging.messages, () => messaging.messages);
   const hub = createListenerHub(messaging.events, actions);
   return {
     messaging,
-    actions,
     agents: messaging.agents,
     channels: messaging.channels,
     messages,
@@ -251,14 +267,34 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     events: hub.events,
     deliveries: messaging.deliveries,
     integrations: messaging.integrations,
+    webhooks: messaging.webhooks,
     capabilities: messaging.commands,
     workspace: createWorkspaceFacade(messaging),
-    sendMessage: (input) => messages.send(input),
-    registerAction: (def) => registerFacadeAction(actions, def),
-    notify: (target, options) => createNotifyHandler(messages, target, options),
-    on: (predicate, handler) => hub.on(predicate, handler),
+    registerAction: (def) => registerFacadeAction(actions, def, { messaging, handlerAgent }),
+    addListener: (selector, handler) => hub.addListener(selector, handler),
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
     emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),
+  };
+}
+
+/**
+ * Assemble a live agent client: an agent-scoped messaging surface plus the
+ * agent's identity and status/tool predicate builders, with `reply`/`react`
+ * convenience keyed on `messageId`.
+ */
+export function assembleAgentClient(
+  messaging: RelayMessaging,
+  actions: AgentRelayActions,
+  identity: { id: string; name: string; handle?: string; token: string }
+): RelayAgentClient {
+  const base = agentRelayAgent(messaging, actions, identity.name);
+  const handle = createAgentHandle(identity);
+  return {
+    ...base,
+    ...handle,
+    sendMessage: (input) => base.messages.send(input),
+    reply: (input) => base.messages.reply(input),
+    react: (input) => base.messages.react(input.messageId, input.emoji),
   };
 }
