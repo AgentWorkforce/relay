@@ -3,12 +3,18 @@ export interface RelaycastTelemetryOptions {
   agentRelayDistinctId?: string;
 }
 
+type Env = Record<string, string | undefined>;
+
 const HARNESS_ENV_KEYS = [
   'AGENT_RELAY_HARNESS',
   'AGENT_RELAY_ORCHESTRATOR_HARNESS',
   'RELAYCAST_HARNESS',
   'X_RELAYCAST_HARNESS',
 ] as const;
+
+function defaultEnv(): Env {
+  return (globalThis as { process?: { env?: Env } }).process?.env ?? {};
+}
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -17,7 +23,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 export function relaycastTelemetryOptions(
   explicit: RelaycastTelemetryOptions = {},
-  env: NodeJS.ProcessEnv = process.env
+  env: Env = defaultEnv()
 ): RelaycastTelemetryOptions {
   const harness =
     nonEmpty(explicit.harness) ??
@@ -33,7 +39,7 @@ export function relaycastTelemetryOptions(
 
 export function relaycastWorkspaceTelemetryOptions(
   explicit: RelaycastTelemetryOptions = {},
-  env: NodeJS.ProcessEnv = process.env
+  env: Env = defaultEnv()
 ): Pick<RelaycastTelemetryOptions, 'agentRelayDistinctId'> {
   const { agentRelayDistinctId } = relaycastTelemetryOptions(explicit, env);
   return agentRelayDistinctId ? { agentRelayDistinctId } : {};
@@ -42,7 +48,7 @@ export function relaycastWorkspaceTelemetryOptions(
 export function withRelaycastTelemetry<T extends Record<string, unknown>>(
   options: T,
   explicit: RelaycastTelemetryOptions = {},
-  env: NodeJS.ProcessEnv = process.env
+  env: Env = defaultEnv()
 ): T & RelaycastTelemetryOptions {
   return { ...options, ...relaycastTelemetryOptions(explicit, env) };
 }

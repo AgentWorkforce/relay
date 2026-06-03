@@ -35,6 +35,7 @@ vi.mock('@relaycast/sdk', () => {
 });
 
 import { AgentRelay } from '../index.js';
+import { relaycastTelemetryOptions } from '../relaycast-telemetry.js';
 
 describe('AgentRelay workspace setup', () => {
   beforeEach(() => {
@@ -49,6 +50,7 @@ describe('AgentRelay workspace setup', () => {
     relaycastMocks.createWorkspace.mockReset();
     relaycastMocks.relayCast.mockClear();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('creates a workspace and initializes messaging with its workspace key', async () => {
@@ -144,5 +146,26 @@ describe('AgentRelay workspace setup', () => {
       harness: 'claude/opus-48',
       agentRelayDistinctId: 'distinct_test',
     });
+  });
+
+  it('does not require a Node process global for SDK client construction', () => {
+    const originalProcess = globalThis.process;
+    vi.stubGlobal('process', undefined);
+
+    try {
+      expect(relaycastTelemetryOptions()).toEqual({});
+      const relay = new AgentRelay({
+        workspaceKey: 'rk_live_existing',
+        baseUrl: 'https://api.example.test',
+      });
+
+      expect(relay.workspaceKey).toBe('rk_live_existing');
+      expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
+        apiKey: 'rk_live_existing',
+        baseUrl: 'https://api.example.test',
+      });
+    } finally {
+      vi.stubGlobal('process', originalProcess);
+    }
   });
 });

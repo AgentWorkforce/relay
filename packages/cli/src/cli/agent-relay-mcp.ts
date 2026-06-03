@@ -27,12 +27,18 @@ import type {
   ZodLikeSchema,
 } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
-import { track } from './telemetry/index.js';
+import {
+  initTelemetry,
+  shutdown as shutdownTelemetry,
+  track,
+  type McpActionCallType,
+} from './telemetry/index.js';
 import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 
 const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
+let mcpTelemetryExitHookInstalled = false;
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
@@ -145,6 +151,26 @@ function isEntrypoint(): boolean {
   } catch {
     return path.resolve(invocationPath) === fileURLToPath(import.meta.url);
   }
+}
+
+function initMcpTelemetry(): void {
+  initTelemetry({
+    showNotice: false,
+    cliVersion: process.env.AGENT_RELAY_CLI_VERSION ?? AGENT_RELAY_MCP_VERSION,
+    sdkVersion: process.env.AGENT_RELAY_SDK_VERSION,
+    app: 'cli',
+    surface: 'mcp',
+    orchestratorHarness: process.env.AGENT_RELAY_ORCHESTRATOR_HARNESS ?? process.env.AGENT_RELAY_HARNESS,
+  });
+
+  if (mcpTelemetryExitHookInstalled) {
+    return;
+  }
+
+  mcpTelemetryExitHookInstalled = true;
+  process.on('beforeExit', () => {
+    void shutdownTelemetry().catch(() => undefined);
+  });
 }
 
 export function envFlagEnabled(value: string | undefined): boolean {
@@ -494,7 +520,8 @@ function registerAgentRelayActionTools(
   actions: AgentRelayActions | undefined,
   getSession: () => SessionState,
   onAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void,
-  getAgentClient?: (asIdentity?: string) => AgentClientLike
+  getAgentClient?: (asIdentity?: string) => AgentClientLike,
+  actionToolNames?: Set<string>
 ): void {
   if (!actions) {
     return;
@@ -573,6 +600,7 @@ function registerAgentRelayActionTools(
     .list({ visibility: 'agent' })
     .then((descriptors) => {
       for (const descriptor of descriptors) {
+        actionToolNames?.add(descriptor.name);
         server.registerTool(
           descriptor.name,
           {
@@ -954,7 +982,7 @@ function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
   };
 }
 
-const MCP_TOOL_ACTION_TYPES: Record<string, string> = {
+const MCP_TOOL_ACTION_TYPES = {
   add_agent: 'spawn',
   remove_agent: 'release',
   invoke_action: 'action',
@@ -987,10 +1015,28 @@ const MCP_TOOL_ACTION_TYPES: Record<string, string> = {
   check_inbox: 'inbox',
   mark_message_read: 'inbox',
   get_message_readers: 'inbox',
-};
+} satisfies Record<string, McpActionCallType>;
 
-function mcpToolActionType(name: string): string {
-  return MCP_TOOL_ACTION_TYPES[name] ?? 'action';
+function relaycastActionNameType(name: string): McpActionCallType {
+  const leaf = name.split(/[._-]/).filter(Boolean).at(-1)?.toLowerCase();
+  switch (leaf) {
+    case 'create':
+    case 'spawn':
+    case 'attach':
+      return 'spawn';
+    case 'release':
+      return 'release';
+    default:
+      return 'action';
+  }
+}
+
+function mcpToolActionType(name: string, actionToolNames: Set<string>): McpActionCallType {
+  const known = (MCP_TOOL_ACTION_TYPES as Partial<Record<string, McpActionCallType>>)[name];
+  if (known) {
+    return known;
+  }
+  return actionToolNames.has(name) ? relaycastActionNameType(name) : 'tool';
 }
 
 function isErrorToolResult(value: unknown): boolean {
@@ -999,7 +1045,7 @@ function isErrorToolResult(value: unknown): boolean {
 
 function trackMcpActionCall(input: {
   toolName: string;
-  actionType: string;
+  actionType: McpActionCallType;
   transport?: AgentRelayMcpServerOptions['telemetryTransport'];
   startedAt: number;
   success: boolean;
@@ -1020,7 +1066,8 @@ function enableInboxPiggyback(
   getSession: () => SessionState,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
   invalidateAgentToken: (asIdentity?: string) => void,
-  telemetryTransport?: AgentRelayMcpServerOptions['telemetryTransport']
+  telemetryTransport?: AgentRelayMcpServerOptions['telemetryTransport'],
+  actionToolNames = new Set<string>()
 ): void {
   const original = mcpServer.registerTool.bind(mcpServer);
   const mutableServer = mcpServer as McpServer & {
@@ -1035,7 +1082,7 @@ function enableInboxPiggyback(
     const wrapped = async (...args: unknown[]) => {
       const asIdentity = readAsIdentity(args);
       const startedAt = Date.now();
-      const actionType = mcpToolActionType(name);
+      const actionType = mcpToolActionType(name, actionToolNames);
 
       let result: any;
       try {
@@ -1083,6 +1130,23 @@ function enableInboxPiggyback(
         return result;
       }
 
+      if (!SKIP_PIGGYBACK.has(name) && getSession().agentToken && hasContentArray(result)) {
+        try {
+          const inbox = await getAgentClient(asIdentity).inbox();
+          const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
+          if (inboxText) {
+            result.content.push({ type: 'text', text: inboxText });
+          }
+        } catch (err) {
+          // Inbox piggyback is opportunistic; the original tool result should
+          // still win. But if the inbox fetch itself reveals an invalid token,
+          // clear the stale identity so the next call doesn't reuse it.
+          if (isInvalidAgentTokenError(err)) {
+            invalidateAgentToken(asIdentity);
+          }
+        }
+      }
+
       const resultIsError = isErrorToolResult(result);
       trackMcpActionCall({
         toolName: name,
@@ -1092,26 +1156,6 @@ function enableInboxPiggyback(
         success: !resultIsError,
         ...(resultIsError ? { errorClass: 'ToolResultError' } : {}),
       });
-
-      if (SKIP_PIGGYBACK.has(name) || !getSession().agentToken || !hasContentArray(result)) {
-        return result;
-      }
-
-      try {
-        const inbox = await getAgentClient(asIdentity).inbox();
-        const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
-        if (inboxText) {
-          result.content.push({ type: 'text', text: inboxText });
-        }
-      } catch (err) {
-        // Inbox piggyback is opportunistic; the original tool result should
-        // still win. But if the inbox fetch itself reveals an invalid token,
-        // clear the stale identity so the next call doesn't reuse it.
-        if (isInvalidAgentTokenError(err)) {
-          invalidateAgentToken(asIdentity);
-        }
-      }
-
       return result;
     };
 
@@ -1758,6 +1802,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     agentToken: options.agentToken ?? null,
     agentName: options.agentName ?? null,
   });
+  const actionToolNames = new Set<string>();
 
   const mcpServer = new McpServer(
     { name: 'agent-relay', version: AGENT_RELAY_MCP_VERSION },
@@ -1892,7 +1937,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     getSession,
     getAgentClient,
     invalidateAgentToken,
-    options.telemetryTransport
+    options.telemetryTransport,
+    actionToolNames
   );
   registerResourceDefinitions(mcpServer, getAgentClient, getRelay);
   mcpServer.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
@@ -1919,7 +1965,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.actions,
     getSession,
     options.onActionAuditEvent,
-    getAgentClient
+    getAgentClient,
+    actionToolNames
   );
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
 
@@ -2013,6 +2060,7 @@ export async function resolveStdioBootstrapOptions(
 }
 
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
+  initMcpTelemetry();
   const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
@@ -2040,9 +2088,10 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
 }
 
 if (isEntrypoint()) {
-  startAgentRelayMcpStdio(optionsFromEnv()).catch((error) => {
+  startAgentRelayMcpStdio(optionsFromEnv()).catch(async (error) => {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     process.stderr.write(`${message}\n`);
+    await shutdownTelemetry().catch(() => undefined);
     process.exit(1);
   });
 }

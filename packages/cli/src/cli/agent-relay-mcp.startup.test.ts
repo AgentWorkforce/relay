@@ -28,6 +28,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   const serverInstances: FakeMcpServer[] = [];
   const wsClientInstances: FakeWsClient[] = [];
   const telemetryTrack = vi.fn();
+  const telemetryInit = vi.fn();
+  const telemetryShutdown = vi.fn(async () => undefined);
   const relayInstances: Array<{
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
@@ -230,6 +232,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     SDK_VERSION: 'test-sdk-version',
   }));
   vi.doMock('./telemetry/index.js', () => ({
+    initTelemetry: telemetryInit,
+    shutdown: telemetryShutdown,
     track: telemetryTrack,
   }));
 
@@ -246,6 +250,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       relayInstances,
       wsClientInstances,
       telemetryTrack,
+      telemetryInit,
+      telemetryShutdown,
       RelayCast,
       FakeTransport,
     },
@@ -448,6 +454,22 @@ describe('createAgentRelayMcpServer', () => {
       baseUrl: 'https://api.relaycast.dev/',
       agentRelayDistinctId: 'distinct_test',
     });
+
+    await mod.resolveStdioBootstrapOptions({
+      apiKey: 'rk_live_bootstrap',
+      agentName: 'BootstrapWorker',
+      agentToken: 'jwt_or_external_token',
+      baseUrl: 'https://api.relaycast.dev/',
+    });
+    const bootstrapRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_bootstrap'
+    );
+    expect(bootstrapRelay?.config).toMatchObject({
+      apiKey: 'rk_live_bootstrap',
+      baseUrl: 'https://api.relaycast.dev/',
+      harness: 'claude/opus-48',
+      agentRelayDistinctId: 'distinct_test',
+    });
   });
 
   it('tracks MCP action calls with spawn and release action types', async () => {
@@ -483,6 +505,41 @@ describe('createAgentRelayMcpServer', () => {
         transport: 'stdio',
         success: true,
         duration_ms: expect.any(Number),
+      })
+    );
+  });
+
+  it('infers lifecycle action types from registered action tool names', async () => {
+    const actions = {
+      list: vi.fn(async () => [
+        {
+          name: 'agent.create',
+          description: 'Create an agent',
+          visibility: 'agent' as const,
+        },
+      ]),
+      invoke: vi.fn(async () => ({ ok: true, action: 'agent.create', output: {} })),
+    };
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      actions: actions as any,
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    await vi.waitFor(() => {
+      expect(server.tools.get('agent.create')).toBeDefined();
+    });
+
+    await server.tools.get('agent.create')?.handler({ name: 'WorkerB', cli: 'claude' });
+
+    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
+      'mcp_action_call',
+      expect.objectContaining({
+        tool_name: 'agent.create',
+        action_type: 'spawn',
+        transport: 'stdio',
+        success: true,
       })
     );
   });
@@ -711,6 +768,13 @@ describe('startAgentRelayMcpStdio', () => {
     const server = mocks.serverInstances[0];
     expect(server.connect).toHaveBeenCalledTimes(1);
     expect(server.connect.mock.calls[0][0]).toBeInstanceOf(mocks.FakeTransport);
+    expect(mocks.telemetryInit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        showNotice: false,
+        app: 'cli',
+        surface: 'mcp',
+      })
+    );
   });
 
   it('reports entrypoint startup failures to stderr and exits', async () => {
