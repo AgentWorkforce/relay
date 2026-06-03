@@ -110,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
 - Root package builds now compile `@agent-relay/cloud` before SDK and CLI packages that consume its generated declarations, without rewriting a tracked broker binary.
 - `agent-relay-broker` harness configs now report harness PIDs instead of wrapper worker PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.

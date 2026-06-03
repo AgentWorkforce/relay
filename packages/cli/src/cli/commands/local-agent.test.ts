@@ -1,6 +1,14 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
+const harnessConnectMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@agent-relay/harness-driver', () => ({
+  HarnessDriverClient: {
+    connect: harnessConnectMock,
+  },
+}));
+
 import { registerLocalAgentCommands, type LocalAgentDependencies } from './local-agent.js';
 
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
@@ -54,6 +62,29 @@ describe('local agent subtree', () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
     expect(client.listAgents).toHaveBeenCalled();
+  });
+
+  it('list connects to the existing project broker instead of spawning one', async () => {
+    const client = {
+      listAgents: vi.fn(async () => []),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const log = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    const group = program.command('local');
+    registerLocalAgentCommands(group, {
+      cwd: () => '/tmp/project',
+      log,
+    });
+
+    await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
+
+    expect(harnessConnectMock).toHaveBeenCalledWith({ cwd: '/tmp/project' });
+    expect(client.listAgents).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('[]');
+    expect(client.disconnect).toHaveBeenCalled();
   });
 
   it('release calls client.release', async () => {
