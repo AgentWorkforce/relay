@@ -8,7 +8,9 @@ const sdkStatusClient = {
 };
 
 vi.mock('@agent-relay/harness-driver', () => ({
-  HarnessDriverClient: vi.fn().mockImplementation(() => sdkStatusClient),
+  HarnessDriverClient: vi.fn(function () {
+    return sdkStatusClient;
+  }),
 }));
 
 beforeEach(() => {

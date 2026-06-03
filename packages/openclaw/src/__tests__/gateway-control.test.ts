@@ -42,14 +42,16 @@ const mockAgentClient = {
 };
 
 vi.mock('@relaycast/sdk', () => ({
-  RelayCast: vi.fn().mockImplementation(() => ({
-    agents: {
-      registerOrGet: vi.fn().mockResolvedValue({ name: 'test-claw', token: 'tok_test' }),
-    },
-    channels: { join: vi.fn().mockResolvedValue({ ok: true }) },
-    messages: { list: vi.fn().mockResolvedValue([]) },
-    as: vi.fn().mockReturnValue(mockAgentClient),
-  })),
+  RelayCast: vi.fn(function () {
+    return {
+      agents: {
+        registerOrGet: vi.fn().mockResolvedValue({ name: 'test-claw', token: 'tok_test' }),
+      },
+      channels: { join: vi.fn().mockResolvedValue({ ok: true }) },
+      messages: { list: vi.fn().mockResolvedValue([]) },
+      as: vi.fn().mockReturnValue(mockAgentClient),
+    };
+  }),
 }));
 
 const mockSpawnManager = {
@@ -63,7 +65,9 @@ const mockSpawnManager = {
 };
 
 vi.mock('../spawn/manager.js', () => ({
-  SpawnManager: vi.fn().mockImplementation(() => mockSpawnManager),
+  SpawnManager: vi.fn(function () {
+    return mockSpawnManager;
+  }),
 }));
 
 vi.mock('node:fs/promises', () => ({

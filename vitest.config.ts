@@ -57,7 +57,6 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    threads: true,
     setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
     include: [
       'tests/fixtures/**/*.test.ts',
