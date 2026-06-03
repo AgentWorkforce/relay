@@ -292,10 +292,6 @@ export async function runViewSession(
       if (typeof cleanup === 'function') cleanupSignals.push(cleanup);
     }
 
-    socket.on('open', () => {
-      deps.log(`[view] streaming ${name} from ${connection.url} (Ctrl+C to exit)`);
-    });
-
     socket.on('message', (data) => {
       const text =
         typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : String(data);

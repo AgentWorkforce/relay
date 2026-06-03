@@ -476,7 +476,6 @@ export async function runPassthroughSession(
     }
 
     socket.on('open', () => {
-      deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
       void openInputStreamAndTakeStdin();
     });
 
