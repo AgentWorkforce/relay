@@ -339,7 +339,7 @@ download_dashboard_ui() {
     step "Downloading dashboard UI files..."
 
     local ui_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/dashboard-ui.tar.gz"
-    local target_dir="$HOME/.relay/dashboard"
+    local target_dir="$INSTALL_DIR/dashboard"
     local temp_file="/tmp/dashboard-ui-$$"
 
     mkdir -p "$target_dir"

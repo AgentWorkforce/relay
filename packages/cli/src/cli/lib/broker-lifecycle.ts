@@ -722,9 +722,11 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
     return null;
   }
 
-  // Standalone installs download UI assets to ~/.relay/dashboard/out.
-  const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  return pickDashboardStaticDir([standaloneDashboardOutDir], deps);
+  // Installs place UI assets under the install dir (~/.agentworkforce/relay/dashboard/out).
+  // ~/.relay/dashboard/out is read as a fallback for installs predating that move.
+  const installDashboardOutDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
+  const priorDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
+  return pickDashboardStaticDir([installDashboardOutDir, priorDashboardOutDir], deps);
 }
 
 function normalizeLocalhostRelayUrl(relayUrl: string): string {
@@ -1034,8 +1036,8 @@ async function refreshDashboardAssetsIfStale(
   }
 
   const homeDir = deps.env.HOME || deps.env.USERPROFILE || os.homedir();
-  const assetsDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const versionFile = path.join(homeDir, '.relay', 'dashboard', '.version');
+  const assetsDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
+  const versionFile = path.join(homeDir, '.agentworkforce/relay', 'dashboard', '.version');
 
   // Check if assets match the binary version
   try {
@@ -1057,7 +1059,7 @@ async function refreshDashboardAssetsIfStale(
 
   const uiUrl =
     'https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/dashboard-ui.tar.gz';
-  const targetDir = path.join(homeDir, '.relay', 'dashboard');
+  const targetDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard');
   let tempDir: string | undefined;
   let tempFile: string | undefined;
 
