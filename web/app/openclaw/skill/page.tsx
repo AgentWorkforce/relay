@@ -26,7 +26,8 @@ export const metadata: Metadata = {
   twitter: {
     title: 'OpenClaw Skill',
     description: 'Hosted setup and troubleshooting instructions for OpenClaw on Agent Relay.',
-    card: 'summary',
+    card: 'summary_large_image',
+    images: [defaultOgImage().url],
   },
 };
 

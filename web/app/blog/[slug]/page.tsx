@@ -17,6 +17,7 @@ import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
 import { getAllPosts, getPost, slugifyHeading } from '../../../lib/blog';
 import { getAuthorInitials, getBlogAuthor } from '../../../lib/blog-authors';
+import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from '../../../lib/og-meta';
 import { absoluteUrl, SITE_NAME, SITE_URL } from '../../../lib/site';
 
 type PageProps = {
@@ -92,7 +93,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
         {
           url: imageUrl,
           alt: post.frontmatter.coverImageAlt || `${post.frontmatter.title} social card`,
-          ...(usingGeneratedCard ? { width: 1200, height: 630, type: 'image/png' as const } : {}),
+          ...(usingGeneratedCard
+            ? { width: OG_IMAGE_WIDTH, height: OG_IMAGE_HEIGHT, type: 'image/png' as const }
+            : {}),
         },
       ],
     },
