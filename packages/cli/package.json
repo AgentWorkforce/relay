@@ -50,6 +50,7 @@
     "@agent-relay/utils": "8.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^2.5.1",
+    "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "esbuild": "^0.27.2",
@@ -79,5 +80,6 @@
   "bugs": {
     "url": "https://github.com/AgentWorkforce/relay/issues"
   },
-  "homepage": "https://github.com/AgentWorkforce/relay#readme"
+  "homepage": "https://github.com/AgentWorkforce/relay#readme",
+  "bundleDependencies": []
 }
