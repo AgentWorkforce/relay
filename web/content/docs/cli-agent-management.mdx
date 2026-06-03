@@ -75,8 +75,18 @@ Attach modes:
 | Mode | Behavior |
 | --- | --- |
 | `view` | Read-only view of the agent output. |
-| `drive` | Interactive control with manual message flushing. |
+| `drive` | Interactive control while new relay messages are held for explicit flushing. |
 | `passthrough` | Interactive typing while broker auto-injection remains enabled. |
+
+Drive mode uses out-of-band message controls so terminal control keys can pass through to the agent TUI:
+
+```bash
+agent-relay agent message hold reviewer
+agent-relay agent message flush reviewer
+agent-relay agent message auto reviewer
+```
+
+`hold` switches the local agent to manual delivery, `flush` drains pending relay messages into the agent, and `auto` resumes automatic injection. Attach sessions use `Ctrl+C` to detach locally.
 
 ## Inspect, Tail, And Attach
 

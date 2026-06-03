@@ -420,11 +420,11 @@ describe('KeybindParser', () => {
     expect(out.actions).toEqual([]);
   });
 
-  it('intercepts Ctrl+G as flush', () => {
+  it('forwards Ctrl+G to the agent instead of flushing', () => {
     const p = new KeybindParser();
     const out = p.feed(Buffer.from([0x68, 0x07, 0x69])); // h, Ctrl+G, i
-    expect(out.forward.toString()).toBe('hi');
-    expect(out.actions).toEqual(['flush']);
+    expect(Array.from(out.forward)).toEqual([0x68, 0x07, 0x69]);
+    expect(out.actions).toEqual([]);
   });
 
   it('intercepts Ctrl+C as detach', () => {
@@ -434,54 +434,35 @@ describe('KeybindParser', () => {
     expect(out.actions).toEqual(['detach']);
   });
 
-  it('recognises Ctrl+B D (capital) as detach across chunks', () => {
+  it('forwards Ctrl+B sequences to the agent', () => {
     const p = new KeybindParser();
     const first = p.feed(Buffer.from([0x02]));
-    expect(first.forward.length).toBe(0);
+    expect(Array.from(first.forward)).toEqual([0x02]);
     expect(first.actions).toEqual([]);
     const second = p.feed(Buffer.from([0x44])); // 'D'
-    expect(second.forward.length).toBe(0);
-    expect(second.actions).toEqual(['detach']);
+    expect(Array.from(second.forward)).toEqual([0x44]);
+    expect(second.actions).toEqual([]);
   });
 
-  it('recognises Ctrl+B d (lowercase) and Ctrl+B Ctrl+D as detach', () => {
-    const p1 = new KeybindParser();
-    expect(p1.feed(Buffer.from([0x02, 0x64])).actions).toEqual(['detach']);
-    const p2 = new KeybindParser();
-    expect(p2.feed(Buffer.from([0x02, 0x04])).actions).toEqual(['detach']);
-  });
-
-  it('recognises Ctrl+B ? as toggle_help', () => {
+  it('handles detach while forwarding surrounding control bytes', () => {
     const p = new KeybindParser();
-    expect(p.feed(Buffer.from([0x02, 0x3f])).actions).toEqual(['toggle_help']);
-  });
-
-  it('forwards Ctrl+B + unknown byte verbatim so the agent is not deprived', () => {
-    const p = new KeybindParser();
-    const out = p.feed(Buffer.from([0x02, 0x78])); // Ctrl+B, 'x'
-    expect(Array.from(out.forward)).toEqual([0x02, 0x78]);
-    expect(out.actions).toEqual([]);
-  });
-
-  it('handles multiple keybinds in one chunk in order', () => {
-    const p = new KeybindParser();
-    const out = p.feed(Buffer.from([0x61, 0x07, 0x62, 0x02, 0x64])); // 'a', Ctrl+G, 'b', Ctrl+B, 'd'
-    expect(out.forward.toString()).toBe('ab');
-    expect(out.actions).toEqual(['flush', 'detach']);
+    const out = p.feed(Buffer.from([0x61, 0x07, 0x62, 0x03, 0x02, 0x64]));
+    expect(Array.from(out.forward)).toEqual([0x61, 0x07, 0x62, 0x02, 0x64]);
+    expect(out.actions).toEqual(['detach']);
   });
 });
 
 describe('renderStatusLine', () => {
   it('includes agent name, mode, pending count, and detach hint', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 3 });
     expect(out).toContain('drive Alice');
     expect(out).toContain('delivery=manual_flush');
     expect(out).toContain('pending=3');
-    expect(out).toContain('Ctrl+B D detach');
+    expect(out).toContain('Ctrl+C detach');
   });
 
   it('uses save/restore cursor + reverse video so the agent screen is preserved', () => {
-    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 0, showHelp: false });
+    const out = renderStatusLine({ name: 'Alice', mode: 'manual_flush', pending: 0 });
     expect(out.startsWith('\x1b7')).toBe(true); // save cursor
     expect(out.endsWith('\x1b8')).toBe(true); // restore cursor
     expect(out).toContain('\x1b[7m'); // reverse video
@@ -493,15 +474,9 @@ describe('renderStatusLine', () => {
       name: 'A',
       mode: 'manual_flush',
       pending: 0,
-      showHelp: false,
       rows: 50,
     });
     expect(out).toContain('\x1b[50;1H');
-  });
-
-  it('shows extra hint when help is toggled on', () => {
-    const out = renderStatusLine({ name: 'A', mode: 'manual_flush', pending: 0, showHelp: true });
-    expect(out).toContain('hide help');
   });
 });
 
@@ -521,8 +496,8 @@ describe('runDriveSession', () => {
     // Raw mode should be on after open.
     expect(stdin.rawModeCalls.includes(true)).toBe(true);
 
-    // Detach via Ctrl+B D.
-    stdin.type(Buffer.from([0x02, 0x44]));
+    // Detach via Ctrl+C.
+    stdin.type(Buffer.from([0x03]));
     const code = await sessionPromise;
     expect(code).toBe(0);
 
@@ -647,15 +622,16 @@ describe('runDriveSession', () => {
     expect(errors.some((args) => String(args[0]).includes('could not open PTY input stream'))).toBe(true);
   });
 
-  it('Ctrl+G triggers POST /api/spawned/{name}/flush', async () => {
-    const { deps, sockets, stdin, fetchLog } = createHarness();
+  it('forwards Ctrl+G through the PTY input stream instead of flushing', async () => {
+    const { deps, sockets, stdin, fetchLog, inputStreams } = createHarness();
     const sessionPromise = runDriveSession('Alice', {}, deps);
     await openSocket(sockets);
 
     stdin.type(Buffer.from([0x07])); // Ctrl+G
     await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams[0].writes).toEqual(['\x07']);
     const flush = fetchLog.find((c) => c.method === 'POST' && c.url.endsWith('/flush'));
-    expect(flush).toBeDefined();
+    expect(flush).toBeUndefined();
 
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;

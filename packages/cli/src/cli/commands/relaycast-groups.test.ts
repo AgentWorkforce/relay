@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerAgentCommands } from './agent.js';
+import { registerAgentCommands, type AgentCommandDependencies } from './agent.js';
 import { registerChannelCommands } from './channel.js';
 import { registerMessageCommands } from './message.js';
 import { registerIntegrationCommands } from './integration.js';
@@ -74,6 +74,61 @@ describe('SDK-backed CLI groups', () => {
       expect.objectContaining({ name: 'reviewer', type: 'agent' })
     );
     expect(log).toHaveBeenCalled();
+  });
+
+  it('agent message flush drains a local broker agent queue', async () => {
+    const relay = createRelayMock();
+    const client = { flushPending: vi.fn(async () => ({ flushed: 2 })) };
+    const log = vi.fn();
+    const deps: Partial<AgentCommandDependencies> = {
+      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
+      connectLocal: vi.fn(async () => client as never),
+      cwd: () => '/tmp/project',
+      log,
+      error: vi.fn(),
+      exit: vi.fn() as never,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerAgentCommands(program, deps);
+
+    await program.parseAsync(['agent', 'message', 'flush', 'claude'], { from: 'user' });
+
+    expect(client.flushPending).toHaveBeenCalledWith('claude');
+    expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
+  });
+
+  it('agent message hold and auto switch local broker delivery mode', async () => {
+    const relay = createRelayMock();
+    const client = {
+      setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
+    };
+    const log = vi.fn();
+    const deps: Partial<AgentCommandDependencies> = {
+      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
+      connectLocal: vi.fn(async () => client as never),
+      cwd: () => '/tmp/project',
+      log,
+      error: vi.fn(),
+      exit: vi.fn() as never,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerAgentCommands(program, deps);
+
+    await program.parseAsync(['agent', 'message', 'hold', 'claude'], { from: 'user' });
+    await program.parseAsync(['agent', 'message', 'auto', 'claude'], { from: 'user' });
+
+    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(1, 'claude', 'manual_flush');
+    expect(client.setInboundDeliveryMode).toHaveBeenNthCalledWith(2, 'claude', 'auto_inject');
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ name: 'claude', mode: 'manual_flush', flushed: 0 }, null, 2)
+    );
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({ name: 'claude', mode: 'auto_inject', flushed: 0 }, null, 2)
+    );
   });
 
   it('channel set_topic calls channels.update', async () => {
