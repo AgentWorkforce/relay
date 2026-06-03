@@ -1,8 +1,13 @@
 import type { ActionListenerEvent } from './actions/index.js';
 import { resolveAgentName, type AgentLike } from './facade.js';
 import type {
+  RelayMessage,
+  RelayMessageChannelRef,
   RelayMessageCreatedEvent,
   RelayMessageReadEvent,
+  RelayMessageSender,
+  RelayMessageTarget,
+  RelayMessagingEvent,
   RelayMessagingEventsSurface,
   RelayReactionEvent,
 } from './messaging/index.js';
@@ -222,6 +227,155 @@ export interface AgentHandleInput {
 }
 
 // ---------------------------------------------------------------------------
+// Public event surface — addListener(name | predicate, handler)
+// ---------------------------------------------------------------------------
+
+/** Flat, ergonomic view of a message event's participants and location. */
+export interface RelayEventEnvelope {
+  from?: RelayMessageSender;
+  to?: RelayMessageTarget;
+  channel?: RelayMessageChannelRef;
+  parent?: string;
+}
+
+export interface RelayMessageEvent {
+  type: 'message.created' | 'message.updated' | 'thread.reply' | 'dm.received' | 'group_dm.received';
+  message: RelayMessage;
+  envelope: RelayEventEnvelope;
+}
+
+export interface RelayMessageReadEventPublic {
+  type: 'message.read';
+  messageId: string;
+  agentName: string;
+  readAt?: string;
+}
+
+export interface RelayMessageReactedEvent {
+  type: 'message.reacted';
+  messageId: string;
+  emoji: string;
+  agentName: string;
+  action: 'added' | 'removed';
+}
+
+export interface RelayActionEvent {
+  type: 'action.invoked' | 'action.completed' | 'action.failed' | 'action.denied';
+  action: string;
+  agent: ActionListenerEvent['caller'];
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  reason?: string;
+  at: string;
+}
+
+export interface RelayAgentStatusEvent {
+  type:
+    | 'agent.status.changed'
+    | 'agent.status.idle'
+    | 'agent.status.active'
+    | 'agent.status.blocked'
+    | 'agent.status.waiting'
+    | 'agent.status.offline';
+  agentId: string;
+  status?: AgentSessionStatus;
+  reason?: string;
+}
+
+export interface RelaySessionEvent {
+  type: string;
+  agentId: string;
+  event: AgentSessionEvent;
+}
+
+/** The discriminated event object delivered to every `addListener` handler. */
+export type RelayEvent =
+  | RelayMessageEvent
+  | RelayMessageReadEventPublic
+  | RelayMessageReactedEvent
+  | RelayActionEvent
+  | RelayAgentStatusEvent
+  | RelaySessionEvent;
+
+const PUBLIC_MESSAGE_TYPE: Partial<Record<RelayMessagingEvent['type'], RelayMessageEvent['type']>> = {
+  messageCreated: 'message.created',
+  messageUpdated: 'message.updated',
+  threadReply: 'thread.reply',
+  dmReceived: 'dm.received',
+  groupDmReceived: 'group_dm.received',
+};
+
+function buildEnvelope(message: RelayMessage, channelName?: string): RelayEventEnvelope {
+  const channel = message.channel ?? (channelName ? { name: stripSigil(channelName) } : undefined);
+  return {
+    ...(message.from ? { from: message.from } : {}),
+    ...(message.target ? { to: message.target } : {}),
+    ...(channel ? { channel } : {}),
+    ...(message.parentId ? { parent: message.parentId } : {}),
+  };
+}
+
+/** Map a raw messaging event to its public form, or `undefined` if not surfaced. */
+export function toPublicMessagingEvent(raw: RelayMessagingEvent): RelayEvent | undefined {
+  const messageType = PUBLIC_MESSAGE_TYPE[raw.type];
+  if (messageType && 'message' in raw) {
+    const channelName = 'channel' in raw && typeof raw.channel === 'string' ? raw.channel : undefined;
+    return { type: messageType, message: raw.message, envelope: buildEnvelope(raw.message, channelName) };
+  }
+  if (raw.type === 'messageRead') {
+    return {
+      type: 'message.read',
+      messageId: raw.messageId,
+      agentName: raw.agentName,
+      ...(raw.readAt ? { readAt: raw.readAt } : {}),
+    };
+  }
+  if (raw.type === 'reactionAdded' || raw.type === 'reactionRemoved') {
+    return {
+      type: 'message.reacted',
+      messageId: raw.messageId,
+      emoji: raw.emoji,
+      agentName: raw.agentName,
+      action: raw.type === 'reactionAdded' ? 'added' : 'removed',
+    };
+  }
+  return undefined;
+}
+
+function toPublicActionEvent(raw: ActionListenerEvent): RelayActionEvent {
+  return {
+    type: raw.type,
+    action: raw.action,
+    agent: raw.caller,
+    input: raw.input,
+    output: raw.output,
+    error: raw.error,
+    reason: raw.reason,
+    at: raw.at,
+  };
+}
+
+function toPublicSessionEvent(agentId: string, event: AgentSessionEvent): RelayEvent {
+  if (event.type.startsWith('status.')) {
+    return {
+      type: `agent.${event.type}` as RelayAgentStatusEvent['type'],
+      agentId,
+      ...('status' in event && event.status ? { status: event.status } : {}),
+      ...('reason' in event && event.reason ? { reason: event.reason } : {}),
+    };
+  }
+  return { type: event.type, agentId, event };
+}
+
+/** Match a selector (`'*'`, `'message.*'`, or an exact dotted name) against an event type. */
+export function matchesSelector(selector: string, type: string): boolean {
+  if (selector === '*') return true;
+  if (selector.endsWith('.*')) return type.startsWith(selector.slice(0, -1));
+  return selector === type;
+}
+
+// ---------------------------------------------------------------------------
 // Listener hub — binds the messaging, action, and session event sources
 // ---------------------------------------------------------------------------
 
@@ -232,6 +386,8 @@ export interface ActionEventSource {
 export interface ListenerHub {
   readonly events: EnrichedEvents;
   on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
   /** Feed a harness session event into the hub so agent predicates can fire. */
@@ -254,9 +410,34 @@ export function createListenerHub(
     },
   };
 
+  const addListener = (
+    selector: string | ListenerPredicate,
+    handler: ListenerHandler<RelayEvent>
+  ): (() => void) => {
+    if (typeof selector !== 'string') {
+      return selector.subscribe(context, handler as ListenerHandler);
+    }
+    const offs = [
+      context.events.on('any', (raw) => {
+        const evt = toPublicMessagingEvent(raw);
+        if (evt && matchesSelector(selector, evt.type)) runHandler(handler, evt);
+      }),
+      context.onActionEvent((raw) => {
+        const evt = toPublicActionEvent(raw);
+        if (matchesSelector(selector, evt.type)) runHandler(handler, evt);
+      }),
+      context.onSessionEvent(({ agentId, event }) => {
+        const evt = toPublicSessionEvent(agentId, event);
+        if (matchesSelector(selector, evt.type)) runHandler(handler, evt);
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  };
+
   return {
     events,
     on: (predicate, handler) => predicate.subscribe(context, handler),
+    addListener,
     action: (name) => new ActionPredicate(name),
     agent: (input) => createAgentHandle(input),
     emitSessionEvent: (agentId, event) => {

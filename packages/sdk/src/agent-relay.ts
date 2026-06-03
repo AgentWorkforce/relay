@@ -34,6 +34,7 @@ import {
   type ListenerHub,
   type ListenerPredicate,
   type RelayAgentHandle,
+  type RelayEvent,
 } from './listeners.js';
 import type { AgentSessionEvent } from './session/index.js';
 
@@ -68,6 +69,7 @@ export interface AgentRelayAgent {
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
   notify(target: AgentLike, options: NotifyOptions): NotifyHandler;
   on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
   emitSessionEvent(agentId: string, event: AgentSessionEvent): void;
@@ -209,6 +211,11 @@ export class AgentRelay implements AgentRelayAgent {
     return this.listenerHub.on(predicate, handler);
   }
 
+  /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void {
+    return this.listenerHub.addListener(selector, handler);
+  }
+
   action(name: string): ActionPredicate {
     return this.listenerHub.action(name);
   }
@@ -276,6 +283,7 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     registerAction: (def) => registerFacadeAction(actions, def),
     notify: (target, options) => createNotifyHandler(messages, target, options),
     on: (predicate, handler) => hub.on(predicate, handler),
+    addListener: (selector, handler) => hub.addListener(selector, handler),
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
     emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),

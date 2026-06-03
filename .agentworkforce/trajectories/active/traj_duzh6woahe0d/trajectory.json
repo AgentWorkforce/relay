@@ -43,6 +43,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780462445644,
+          "type": "decision",
+          "content": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources: Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+          "raw": {
+            "question": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+            "chosen": "Phase 2a: added relay.addListener(name|wildcard|predicate, handler) over a discriminated RelayEvent union with rich envelope; maps camelCase raw events to dotted public names across messaging/action/session sources",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }
