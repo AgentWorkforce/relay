@@ -1,9 +1,9 @@
 import type { Command } from 'commander';
 
-import type { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import { defaultExit } from '../lib/exit.js';
-import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory.js';
+import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { attachDrive } from '../lib/attach-drive.js';
 import { attachView } from '../lib/attach-view.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
@@ -44,7 +44,7 @@ export interface LocalAgentDependencies {
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
   return {
-    connect: (cwd: string) => createRuntimeClient({ cwd, preferConnect: true }),
+    connect: async (cwd: string) => HarnessDriverClient.connect({ cwd }),
     attach: runAttach,
     cwd: () => process.cwd(),
     log: (...args: unknown[]) => console.log(...args),
@@ -65,6 +65,8 @@ async function run(
   } catch (err) {
     deps.error(err instanceof Error ? err.message : String(err));
     deps.exit(1);
+  } finally {
+    client?.disconnect?.();
   }
 }
 

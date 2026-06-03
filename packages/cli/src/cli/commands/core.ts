@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { Command } from 'commander';
 
 import { getProjectPaths, loadTeamsConfig } from '@agent-relay/config';
-import type { BrokerInitArgs } from '@agent-relay/harness-driver';
+import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
 import { checkForUpdates, generateAgentName } from '@agent-relay/utils';
 
 import { runDownCommand, runStatusCommand, runUpCommand } from '../lib/broker-lifecycle.js';
@@ -387,13 +387,16 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
     .description('Show resource usage for the local broker and its agents')
     .option('--agent <name>', 'Filter to a single agent')
     .action(async (options: { agent?: string }) => {
+      let client: HarnessDriverClient | undefined;
       try {
-        const client = await createRuntimeClient({ cwd: process.cwd(), preferConnect: true });
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
         const metrics = await client.getMetrics(options.agent);
         deps.log(JSON.stringify(metrics, null, 2));
       } catch (err) {
         deps.error(err instanceof Error ? err.message : String(err));
         deps.exit(1);
+      } finally {
+        client?.disconnect();
       }
     });
 }
