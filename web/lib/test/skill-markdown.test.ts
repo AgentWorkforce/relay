@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { applyInviteToken, readSkillMarkdown } from '../skill-markdown';
 
 describe('OpenClaw skill markdown', () => {
-  it('bundles the package skill markdown as route content', () => {
+  it('bundles the OpenClaw skill markdown as route content', () => {
     const markdown = readSkillMarkdown();
 
     expect(markdown).toContain('# Relaycast for OpenClaw (v1)');
