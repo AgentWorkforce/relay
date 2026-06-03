@@ -2,27 +2,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const relaycastMocks = vi.hoisted(() => {
   const createWorkspace = vi.fn();
-  const relayCast = vi.fn().mockImplementation((config: Record<string, unknown>) => ({
-    config,
-    agents: {
-      list: vi.fn(async () => []),
-      get: vi.fn(),
-      register: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
-      presence: vi.fn(async () => []),
-    },
-    channels: {
-      list: vi.fn(async () => []),
-      get: vi.fn(),
-    },
-    messages: {
-      list: vi.fn(async () => []),
-      get: vi.fn(),
-      thread: vi.fn(),
-      reactions: vi.fn(async () => []),
-    },
-  }));
+  const relayCast = vi.fn().mockImplementation(function (config: Record<string, unknown>) {
+    return {
+      config,
+      agents: {
+        list: vi.fn(async () => []),
+        get: vi.fn(),
+        register: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+        presence: vi.fn(async () => []),
+      },
+      channels: {
+        list: vi.fn(async () => []),
+        get: vi.fn(),
+      },
+      messages: {
+        list: vi.fn(async () => []),
+        get: vi.fn(),
+        thread: vi.fn(),
+        reactions: vi.fn(async () => []),
+      },
+    };
+  });
 
   return { createWorkspace, relayCast };
 });
