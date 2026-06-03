@@ -3,6 +3,7 @@ import { PostHogProvider } from '@posthog/next';
 import { Geist_Mono, Inter, Sora } from 'next/font/google';
 import type { ReactNode } from 'react';
 
+import { defaultOgImage } from '../lib/og-meta';
 import { POSTHOG_HOST, SITE_URL } from '../lib/site';
 import { WebsitePostHogPageView } from './PostHogPageView';
 import './globals.css';
@@ -50,12 +51,14 @@ export const metadata: Metadata = {
     siteName: 'Agent Relay',
     type: 'website',
     locale: 'en_US',
+    images: [defaultOgImage()],
   },
   icons: {
     icon: '/favicon.svg',
   },
   twitter: {
     card: 'summary_large_image',
+    images: [defaultOgImage().url],
   },
 };
 

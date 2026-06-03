@@ -67,7 +67,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const post = getPost(slug);
   if (!post) return { title: 'Not Found' };
   const postUrl = absoluteUrl(`/blog/${slug}`);
-  const imageUrl = post.frontmatter.coverImage || absoluteUrl(`/blog/${slug}/opengraph-image`);
+  const usingGeneratedCard = !post.frontmatter.coverImage;
+  const imageUrl = post.frontmatter.coverImage || absoluteUrl(`/blog/${slug}/og.png`);
 
   return {
     title: post.frontmatter.title,
@@ -91,6 +92,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
         {
           url: imageUrl,
           alt: post.frontmatter.coverImageAlt || `${post.frontmatter.title} social card`,
+          ...(usingGeneratedCard ? { width: 1200, height: 630, type: 'image/png' as const } : {}),
         },
       ],
     },
@@ -127,7 +129,7 @@ export default async function BlogPostPage({ params }: PageProps) {
     .filter((candidate) => candidate.slug !== post.slug)
     .slice(0, 4);
   const postUrl = absoluteUrl(`/blog/${slug}`);
-  const imageUrl = post.frontmatter.coverImage || absoluteUrl(`/blog/${slug}/opengraph-image`);
+  const imageUrl = post.frontmatter.coverImage || absoluteUrl(`/blog/${slug}/og.png`);
   const structuredData = {
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',

@@ -3,13 +3,11 @@ import path from 'node:path';
 
 import { ImageResponse } from 'next/og';
 
-import { loadBrandFonts, OG_CONTENT_TYPE, OG_SIZE, PearVariant } from '../../lib/og/template';
+import { loadBrandFonts, OG_SIZE, PearVariant } from '../../../lib/og/template';
 
 export const runtime = 'nodejs';
-export const size = OG_SIZE;
-export const contentType = OG_CONTENT_TYPE;
-export const alt =
-  'Pear by Agent Relay — a desktop workspace where you pair program with a team of AI coding agents.';
+// Prerender at build time — the Pear card never changes between deploys.
+export const dynamic = 'force-static';
 
 /**
  * Candidate paths for the Pear desktop-app screenshot. The card is generated at
@@ -44,9 +42,10 @@ function loadScreenshot(): string | undefined {
  * The Pear landing page's Open Graph card: the same composition as the homepage
  * card (left copy column, a graphic bled into the bottom-right with the
  * terracotta accent peeking at its top-left), but the graphic is the real Pear
- * desktop-app screenshot zoomed in on its top-left.
+ * desktop-app screenshot zoomed in on its top-left. Served as a `.png` route
+ * handler so the URL ends in a real image extension.
  */
-export default async function PearOpenGraphImage() {
+export async function GET() {
   const { fonts, headingFamily, bodyFamily } = await loadBrandFonts();
   const screenshot = loadScreenshot();
 

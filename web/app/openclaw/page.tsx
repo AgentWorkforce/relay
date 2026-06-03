@@ -4,6 +4,7 @@ import { CopyInstructionsButton } from '../../components/CopyInstructionsButton'
 import { GitHubStarsBadge } from '../../components/GitHubStars';
 import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
+import { defaultOgImage } from '../../lib/og-meta';
 import { absoluteUrl, SITE_HOST } from '../../lib/site';
 import s from './openclaw.module.css';
 
@@ -20,6 +21,14 @@ export const metadata: Metadata = {
       'Set up Agent Relay for OpenClaw with a clean first-run flow, shared channels, DMs, threads, reactions, and observer mode.',
     url: absoluteUrl('/openclaw'),
     type: 'website',
+    images: [defaultOgImage()],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Agent Relay for OpenClaw',
+    description:
+      'Set up Agent Relay for OpenClaw with a clean first-run flow, shared channels, DMs, threads, reactions, and observer mode.',
+    images: [defaultOgImage().url],
   },
 };
 
