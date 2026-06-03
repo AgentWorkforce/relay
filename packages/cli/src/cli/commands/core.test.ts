@@ -383,7 +383,9 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--port', '4999']);
 
     expect(exitCode).toBeUndefined();
-    expect(execCommand).toHaveBeenCalledWith(`${JSON.stringify(`${installDir}/bin/relay-dashboard-server`)} --version`);
+    expect(execCommand).toHaveBeenCalledWith(
+      `${JSON.stringify(`${installDir}/bin/relay-dashboard-server`)} --version`
+    );
     expect(execCommand).not.toHaveBeenCalledWith(expect.stringContaining('curl -fsSL'));
     expect(fs.rmSync).not.toHaveBeenCalledWith(staticDir, { recursive: true, force: true });
     const dashboardArgs = (deps.spawnProcess as unknown as { mock: { calls: unknown[][] } }).mock

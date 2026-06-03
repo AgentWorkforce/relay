@@ -18,6 +18,7 @@ Reviewed PR #1030 dashboard asset install-dir move, fixed custom install-root as
 ## Key Decisions
 
 ### Resolved dashboard assets relative to nonstandard installed dashboard binaries
+
 - **Chose:** Resolved dashboard assets relative to nonstandard installed dashboard binaries
 - **Reasoning:** install.sh supports custom AGENT_RELAY_INSTALL_DIR, so the broker must not only look under the default home install directory when the dashboard binary path identifies a custom install root.
 
@@ -26,6 +27,7 @@ Reviewed PR #1030 dashboard asset install-dir move, fixed custom install-root as
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Resolved dashboard assets relative to nonstandard installed dashboard binaries: Resolved dashboard assets relative to nonstandard installed dashboard binaries
