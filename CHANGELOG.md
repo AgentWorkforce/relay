@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `@agent-relay/openclaw` is no longer published from this monorepo; the hosted OpenClaw skill page now owns its markdown copy directly.
 - `@agent-relay/config` removes the unused `getGlobalPaths()` and `listProjects()` exports (legacy global-storage helpers) and drops the `.agent-relay.json` project-root config fallback; shadow config now loads only from `.agentworkforce/relay/config.json`.
 - `@agent-relay/config` removes the legacy `/tmp/relay-outbox` symlink: `RelayFileWriter` no longer creates it on `ensureDirectories()`, and the `getLegacyOutboxPath()` method and `RelayPaths.legacyOutboxDir` field are gone.
 - `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup. (Uninstall still purges legacy install dirs.)

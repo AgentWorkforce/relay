@@ -1270,6 +1270,52 @@ describe('registerCoreCommands', () => {
     expect(deps.execCommand).not.toHaveBeenCalled();
   });
 
+  it('uninstall removes renamed and legacy MCP server entries', async () => {
+    const mcpPath = '/tmp/project/.mcp.json';
+    const fs = createFsMock({
+      [mcpPath]: JSON.stringify({
+        mcpServers: {
+          'agent-relay': { command: 'npx', args: ['-y', 'agent-relay', 'mcp'] },
+          relaycast: { command: 'npx', args: ['-y', 'agent-relay', 'mcp'] },
+          other: { command: 'other' },
+        },
+      }),
+    });
+    const { deps } = createHarness({ fs });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['uninstall']);
+
+    expect(exitCode).toBeUndefined();
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      mcpPath,
+      JSON.stringify({ mcpServers: { other: { command: 'other' } } }, null, 2) + '\n',
+      'utf-8'
+    );
+    expect(fs.unlinkSync).not.toHaveBeenCalledWith(mcpPath);
+  });
+
+  it('uninstall removes an empty MCP config after deleting Agent Relay entries', async () => {
+    const mcpPath = '/tmp/project/.mcp.json';
+    const fs = createFsMock({
+      [mcpPath]: JSON.stringify({
+        mcpServers: {
+          'agent-relay': { command: 'npx', args: ['-y', 'agent-relay', 'mcp'] },
+          relaycast: { command: 'npx', args: ['-y', 'agent-relay', 'mcp'] },
+        },
+      }),
+    });
+    const { deps } = createHarness({ fs });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    const exitCode = await runCommand(program, ['uninstall']);
+
+    expect(exitCode).toBeUndefined();
+    expect(fs.unlinkSync).toHaveBeenCalledWith(mcpPath);
+  });
+
   it('up always logs the workspace key after broker starts', async () => {
     const relay = createRelayMock();
     const { program, deps } = createHarness({ relay });

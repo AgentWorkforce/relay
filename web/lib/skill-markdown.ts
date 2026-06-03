@@ -1,4 +1,4 @@
-import skillMarkdown from '../../packages/openclaw/skill/SKILL.md?raw';
+import skillMarkdown from '../content/openclaw/skill.md?raw';
 
 const JOIN_WORKSPACE_LINE =
   'Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:';

@@ -29,7 +29,7 @@
       "project": ["src/**/*.ts"]
     }
   },
-  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
+  "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**"],
   "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": [
     "packages/agent",

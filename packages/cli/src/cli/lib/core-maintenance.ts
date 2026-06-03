@@ -73,12 +73,13 @@ function removeAgentRelayFromMcpConfig(
   try {
     const raw = fileSystem.readFileSync(mcpPath, 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const servers = parsed.mcpServers as Record<string, unknown> | undefined;
-    if (!servers) {
+    const servers = parsed.mcpServers;
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
       return false;
     }
 
-    const keysToRemove = [MCP_SERVER_KEY, ...LEGACY_MCP_SERVER_KEYS].filter((key) => key in servers);
+    const mcpServers = servers as Record<string, unknown>;
+    const keysToRemove = [MCP_SERVER_KEY, ...LEGACY_MCP_SERVER_KEYS].filter((key) => key in mcpServers);
     if (keysToRemove.length === 0) {
       return false;
     }
@@ -89,14 +90,17 @@ function removeAgentRelayFromMcpConfig(
     }
 
     for (const key of keysToRemove) {
-      delete servers[key];
+      delete mcpServers[key];
     }
 
-    // If mcpServers is now empty, remove the whole file.
-    if (Object.keys(servers).length === 0 && Object.keys(parsed).length === 1) {
+    // If mcpServers is now empty, remove the key or the whole file.
+    if (Object.keys(mcpServers).length === 0 && Object.keys(parsed).length === 1) {
       fileSystem.unlinkSync(mcpPath);
       log(`Removed ${mcpPath} (no remaining servers)`);
     } else {
+      if (Object.keys(mcpServers).length === 0) {
+        delete parsed.mcpServers;
+      }
       fileSystem.writeFileSync(mcpPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
       log(`Removed ${keysToRemove.map((k) => `'${k}'`).join(', ')} from ${mcpPath}`);
     }
