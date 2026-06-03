@@ -9,7 +9,7 @@
 
 ## Summary
 
-Rewrote 20 web/content/docs/*.mdx pages from old Agent Relay API to v8: register-returns-client, agent-scoped sendMessage/reply/react, messageId, addListener, fire-and-forget registerAction, relay.webhooks, createHuman/defineHarness, optional release. Fixed /docs/8.0.0 links in edited pages.
+Rewrote 20 web/content/docs/\*.mdx pages from old Agent Relay API to v8: register-returns-client, agent-scoped sendMessage/reply/react, messageId, addListener, fire-and-forget registerAction, relay.webhooks, createHuman/defineHarness, optional release. Fixed /docs/8.0.0 links in edited pages.
 
 **Approach:** Standard approach
 
@@ -18,7 +18,8 @@ Rewrote 20 web/content/docs/*.mdx pages from old Agent Relay API to v8: register
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - HIGH-priority pages rewritten (event-handlers, actions, migration, typescript-sdk, sending-messages, quickstart, messaging). Now MEDIUM pages.
 

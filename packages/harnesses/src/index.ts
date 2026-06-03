@@ -5,11 +5,7 @@ export * from './create-human.js';
 
 // Custom (non-PTY) harnesses are defined with the SDK's harness contract;
 // re-export it here so harness authors have one import surface.
-export {
-  defineHarness,
-  normalizeAgentIdentity,
-  MINIMAL_AGENT_SESSION_CAPABILITIES,
-} from '@agent-relay/sdk';
+export { defineHarness, normalizeAgentIdentity, MINIMAL_AGENT_SESSION_CAPABILITIES } from '@agent-relay/sdk';
 export type {
   AgentSession,
   AgentSessionCapabilities,

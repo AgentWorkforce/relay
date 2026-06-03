@@ -176,5 +176,4 @@ describe('Listener DSL (Phase B)', () => {
     relay.emitSessionEvent('a-eng', { type: 'status.idle' });
     expect(handler).toHaveBeenCalledTimes(1);
   });
-
 });

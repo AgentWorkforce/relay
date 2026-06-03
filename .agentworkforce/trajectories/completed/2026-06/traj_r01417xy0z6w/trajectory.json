@@ -30,9 +30,7 @@
             "confidence": 0.8
           },
           "significance": "high",
-          "tags": [
-            "confidence:0.8"
-          ]
+          "tags": ["confidence:0.8"]
         }
       ]
     }
@@ -42,9 +40,7 @@
     "approach": "Standard approach",
     "confidence": 0.85
   },
-  "commits": [
-    "e40e0eef"
-  ],
+  "commits": ["e40e0eef"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_r01417xy0z6w/trajectory.json",
     "CHANGELOG.md",

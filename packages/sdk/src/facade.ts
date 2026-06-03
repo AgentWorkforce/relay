@@ -286,11 +286,10 @@ export function createEnrichedMessages(
   return enriched;
 }
 
-export function createWorkspaceFacade(
-  messaging: RelayMessaging,
-  deps?: WorkspaceFacadeDeps
-): RelayWorkspace {
-  const register = async (agents: AgentLike | AgentLike[]): Promise<RelayAgentClient | RelayAgentClient[]> => {
+export function createWorkspaceFacade(messaging: RelayMessaging, deps?: WorkspaceFacadeDeps): RelayWorkspace {
+  const register = async (
+    agents: AgentLike | AgentLike[]
+  ): Promise<RelayAgentClient | RelayAgentClient[]> => {
     if (!deps) {
       throw new Error('register() is only available on the workspace client.');
     }

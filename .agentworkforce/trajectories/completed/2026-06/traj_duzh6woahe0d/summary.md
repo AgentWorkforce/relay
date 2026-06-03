@@ -18,7 +18,8 @@ Wired registerAction onto relaycast 2.3.0 fire-and-forget actions: SDK registers
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event: Phase 1a: workspace.register/reconnect return a live RelayAgentClient (identity+status+reply/react); added messageId, agents.me(), injectable agent-messaging factory; migrated openclaw to relaycast 2.3.0 unified messageReacted event
 - Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs: Phase 1b/1c: removed as()/asAgent() (migrated CLI createAgentRelay to new AgentRelay({agentToken})); sendMessage to: string|string[] routes @handle arrays to group DMs

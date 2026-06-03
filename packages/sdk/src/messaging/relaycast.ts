@@ -432,8 +432,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     get: async (name: string): Promise<RelayAgent> => normalizeAgent(await this.relaycast.agents.get(name)),
     register: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
       normalizeAgentRegistration(await this.relaycast.agents.register(input)),
-    me: async (): Promise<RelayAgent> =>
-      normalizeAgent(await this.requireAgentClient('agents.me').me()),
+    me: async (): Promise<RelayAgent> => normalizeAgent(await this.requireAgentClient('agents.me').me()),
     update: async (name: string, input: RelayUpdateAgentInput): Promise<RelayAgent> =>
       normalizeAgent(await this.relaycast.agents.update(name, input)),
     delete: async (name: string): Promise<void> => {
@@ -762,13 +761,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     },
     available: (): boolean => Boolean(this.relaycast.actions),
     agentScoped: (): boolean => Boolean(this.agentClient?.actions),
-    invoke: async (
-      name: string,
-      input?: Record<string, unknown>
-    ): Promise<RelayActionInvocationAck> =>
-      normalizeActionInvocationAck(
-        await this.requireAgentActions('commands.invoke').invoke(name, input)
-      ),
+    invoke: async (name: string, input?: Record<string, unknown>): Promise<RelayActionInvocationAck> =>
+      normalizeActionInvocationAck(await this.requireAgentActions('commands.invoke').invoke(name, input)),
     getInvocation: async (name: string, invocationId: string): Promise<RelayActionInvocation> =>
       normalizeActionInvocation(
         await this.requireAgentActions('commands.getInvocation').getInvocation(name, invocationId)

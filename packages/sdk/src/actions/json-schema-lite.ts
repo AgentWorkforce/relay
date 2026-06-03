@@ -380,9 +380,7 @@ function isValidatorSchema(schema: ActionSchema): schema is { safeParse: (input:
  * style schema convertible via `z.toJSONSchema`. Anything else degrades to a
  * permissive object schema so descriptor registration never throws.
  */
-function validatorToJsonSchema(schema: {
-  safeParse: (input: unknown) => unknown;
-}): Record<string, unknown> {
+function validatorToJsonSchema(schema: { safeParse: (input: unknown) => unknown }): Record<string, unknown> {
   const candidate = schema as Record<string, unknown>;
 
   for (const method of ['toJSONSchema', 'toJsonSchema'] as const) {

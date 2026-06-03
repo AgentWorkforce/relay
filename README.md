@@ -41,7 +41,9 @@ relay.addListener('message.created', ({ message, envelope }) => {
 });
 
 // or listen to everything
-relay.addListener('*', (event) => { console.log(event); });
+relay.addListener('*', (event) => {
+  console.log(event);
+});
 // @see https://agentrelay.com/docs/events for the full list of events
 
 // 5) Send messages and watch the listeners fire
@@ -60,7 +62,9 @@ await new Promise((resolve) => setTimeout(resolve, 4500));
 ```
 
 ## Working with real Agents
+
 Agent Relay is a messaging layer but we make it very easy to work with Agents.
+
 ```ts
 // Harnesses are like codex in the CLI, or the Claude SDK, or an OpenCode server. They can be
 // running anywhere (they don't need to be on the same machine) as long as they have access to the internet
@@ -72,10 +76,10 @@ import { claude, codex } from '@agent-relay/harnesses';
 // See https://agentrelay.com/docs/agent-relay-mcp for all available skills.
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
-
 ```
 
 ### Define your own harness
+
 A harness is any runtime boundary that can implement the Agent Relay runtime adapter: Claude Code or Codex in a terminal, an OpenCode server, an OpenClaw or Hermes agent, a browser app, or your own hosted agent.
 
 The minimum contract is to receive a message, i.e. take a Relay message plus delivery context and report what happened.
@@ -85,6 +89,7 @@ The full harness contract also declares lifecycle, delivery modes, observable ev
 > Usually CLI harnesses like Claude Code and Codex will use injection and hooks to receive messages and mcp to send messages. However, as long as your harness implements the Agent Relay interface you can use it. Agent Relay **does not need to own the process** to get a harness on the relay.
 
 A simple example custom harness
+
 ```ts
 import { defineHarness } from '@agent-relay/harnesses';
 
@@ -107,6 +112,7 @@ const myCustomHarness = defineHarness({
 ```
 
 #### Capabilities
+
 Capabilities declare what your harness can and cannot do. At a minimum a harness must be able to receive messages.
 
 ```ts
@@ -117,11 +123,14 @@ const capabilities = {
   lifecycle: { release: false },
 };
 ```
->[!NOTE]
+
+> [!NOTE]
 > Declare a capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method, and omit `release()` when `release: false`.
 
 #### Human Messages
+
 A human is really just a meaty harness (cue existential crisis). We have some syntax sugar to make this common case easy.
+
 ```ts
 import { createHuman } from '@agent-relay/harnesses';
 
@@ -134,13 +143,18 @@ await will.sendMessage({
 ```
 
 ## Event Callbacks
-The real power comes from hooking into events & actions to turn agents into powerful, reliable actors. 
+
+The real power comes from hooking into events & actions to turn agents into powerful, reliable actors.
+
 ```ts
-const stop = relay.addListener(
-  engineer.status.becomes('idle'),
-  () => will.sendMessage({ to: '#general', text: `${engineer.handle} is idle — send them the next task if any remain.` }),
+const stop = relay.addListener(engineer.status.becomes('idle'), () =>
+  will.sendMessage({
+    to: '#general',
+    text: `${engineer.handle} is idle — send them the next task if any remain.`,
+  })
 );
 ```
+
 The full list of events is at agentrelay.com/docs/events.
 
 > [!NOTE]
@@ -172,7 +186,9 @@ relay.registerAction({
 ```
 
 #### Spawning agents with Agents
+
 A good, common example of a custom action is spawning other agents.
+
 ```ts
 relay.registerAction({
   name: 'spawn-claude',
@@ -192,7 +208,9 @@ relay.registerAction({
 ```
 
 #### Agent Voting
+
 Another great use of actions is agent voting. Get structured results to reach consensus.
+
 ```ts
 relay.registerAction({
   name: 'submit-vote',
@@ -213,6 +231,7 @@ relay.registerAction({
 ```
 
 ## Webhooks
+
 Create a webhook, get a URL, and POST to it from GitHub Actions, Sentry, Prometheus, or other services. Incoming messages appear inside your channel instantly. Incoming payloads require a message and author and the right bearer token.
 
 ```ts
@@ -220,14 +239,14 @@ const { url, token } = await relay.webhooks.createInbound({ channel: '#deploy-st
 
 // Trigger it via HTTP POST:
 await fetch(url, {
-  method: "POST",
+  method: 'POST',
   headers: {
-    "Authorization": `Bearer ${token}`,
-    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
   },
   body: JSON.stringify({
-    message: "Deploy started on main",
-    author: "github-actions[bot]",
+    message: 'Deploy started on main',
+    author: 'github-actions[bot]',
   }),
 });
 ```
@@ -240,21 +259,24 @@ Subscribe your service to Relay events like `message.created`, `action.completed
 // Add a webhook subscription to outgoing events:
 const RELAY_SECRET = 'your-self-generated-secret'; // for the HMAC signature
 await relay.webhooks.subscribe({
-  url: "https://your-service.dev/webhooks/relay",
+  url: 'https://your-service.dev/webhooks/relay',
   headers: {
-    "Authorization": "Bearer <token>",
-    "Content-Type": "application/json",
+    Authorization: 'Bearer <token>',
+    'Content-Type': 'application/json',
   },
-  events: ["message.created", "action.completed"],
+  events: ['message.created', 'action.completed'],
   secret: RELAY_SECRET,
 });
 ```
+
 Outbound webhooks POST event payloads to your URL whenever one of the listed events happens—verify the signature using your shared secret for authenticity.
 
 ## Why Agent Relay
+
 Most agent frameworks focus on what a single agent can do. Agent Relay focuses on how agents work together, providing the messaging, delivery, and context-sharing primitives needed to build reliable multi-agent systems.
 
 ## How it works
+
 Messages and delivery follow the c2a protocol https://github.com/AgentWorkforce/c2a.
 
 Once registered, agents are put "on the relay" and get an identity

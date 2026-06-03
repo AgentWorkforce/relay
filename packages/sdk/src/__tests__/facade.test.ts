@@ -9,7 +9,12 @@ function createMessagingMock() {
     direct: vi.fn(async (input: unknown) => ({ id: 'd1', text: '', from: {}, ...((input as object) ?? {}) })),
     reply: vi.fn(async (input: unknown) => ({ id: 'r1', text: '', from: {}, ...((input as object) ?? {}) })),
     react: vi.fn(async (messageId: string, emoji: string) => ({ emoji, count: 1, agents: [] })),
-    groupDirect: vi.fn(async (input: unknown) => ({ id: 'g1', text: '', from: {}, ...((input as object) ?? {}) })),
+    groupDirect: vi.fn(async (input: unknown) => ({
+      id: 'g1',
+      text: '',
+      from: {},
+      ...((input as object) ?? {}),
+    })),
   };
   const agents = {
     register: vi.fn(async (input: { name: string }) => ({
@@ -154,5 +159,4 @@ describe('AgentRelay facade (Phase A)', () => {
       })
     );
   });
-
 });
