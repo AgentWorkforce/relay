@@ -48,23 +48,23 @@ are registered participants too; their peer-messaging reference is the
 
 ## Quick Reference
 
-| Step                              | Command/Tool                                                  |
-| --------------------------------- | ------------------------------------------------------------- |
-| Verify installation               | `command -v agent-relay` or `npx agent-relay --version`       |
-| Verify Node runtime if shim fails | `node --version` or fix mise/asdf first                       |
-| Start infrastructure              | `agent-relay local up --no-dashboard --verbose`               |
-| Check broker readiness            | `agent-relay local status --wait-for=10`                      |
-| Spawn worker                      | `agent-relay local agent spawn claude --name Worker1 --task "…"` |
-| List workers                      | `agent-relay local agent list`                                |
-| Resource usage                    | `agent-relay local metrics`                                   |
-| Register for a messaging token    | `agent-relay agent register Lead` (sets up `RELAY_AGENT_TOKEN`) |
-| DM a worker (via relay)           | `agent-relay message dm send Worker1 "…"`                     |
-| Post to a channel (via relay)     | `agent-relay message post general "…"`                        |
-| Read a worker's replies (via relay) | `agent-relay message dm list <conversationId>`              |
-| Check inbox (via relay)           | `agent-relay message inbox check`                             |
-| Debug raw worker output (not messaging) | `agent-relay local tail --agent Worker1`                |
-| Release worker                    | `agent-relay local agent release Worker1`                     |
-| Stop infrastructure               | `agent-relay local down`                                      |
+| Step                                    | Command/Tool                                                     |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| Verify installation                     | `command -v agent-relay` or `npx agent-relay --version`          |
+| Verify Node runtime if shim fails       | `node --version` or fix mise/asdf first                          |
+| Start infrastructure                    | `agent-relay local up --no-dashboard --verbose`                  |
+| Check broker readiness                  | `agent-relay local status --wait-for=10`                         |
+| Spawn worker                            | `agent-relay local agent spawn claude --name Worker1 --task "…"` |
+| List workers                            | `agent-relay local agent list`                                   |
+| Resource usage                          | `agent-relay local metrics`                                      |
+| Register for a messaging token          | `agent-relay agent register Lead` (sets up `RELAY_AGENT_TOKEN`)  |
+| DM a worker (via relay)                 | `agent-relay message dm send Worker1 "…"`                        |
+| Post to a channel (via relay)           | `agent-relay message post general "…"`                           |
+| Read a worker's replies (via relay)     | `agent-relay message dm list <conversationId>`                   |
+| Check inbox (via relay)                 | `agent-relay message inbox check`                                |
+| Debug raw worker output (not messaging) | `agent-relay local tail --agent Worker1`                         |
+| Release worker                          | `agent-relay local agent release Worker1`                        |
+| Stop infrastructure                     | `agent-relay local down`                                         |
 
 ## Bootstrap Flow
 
@@ -341,23 +341,23 @@ The broker emits these events (available via SDK subscriptions and
 
 ## Common Mistakes
 
-| Mistake                                                  | Fix                                                                                                                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Using old top-level verbs (`up`, `spawn`, `who`, `send`) | They moved under `local`/`message`. Use `agent-relay local up`, `local agent spawn`, `local agent list`, `message dm send` / `message post`                  |
-| `agent-relay: command not found` or mise/asdf shim error | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                               |
-| "Nested session" error                                   | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                           |
-| Broker not starting                                      | Try `agent-relay local down` first, then `agent-relay local up --no-dashboard --verbose` and `agent-relay local status --wait-for=10`                         |
-| Broker stuck in STARTING after `status --wait-for`       | The process is alive but the broker API is not ready; inspect output via `local tail`, retry readiness, or `agent-relay local down --force` if wedged         |
-| Broker shows STOPPED immediately after start             | Check `ps aux \| grep agent-relay-broker` and `.agentworkforce/relay/connection.json`; rerun status from the project root or pass `--state-dir`               |
-| Worktree verification leaves git status dirty            | Run `agent-relay local down --force`, then remove generated `.agentworkforce/relay/` and `.mcp.json` from throwaway validation worktrees before committing    |
-| `Not registered. Call agent.register first.`             | `message`/`channel`/`dm` are token-gated. Run `agent-relay agent register <name>` and set `RELAY_AGENT_TOKEN` (or pass `--token`). The `local` group is exempt |
-| Spawn fails with `internal reply dropped`                | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                          |
-| Workers not connecting                                   | Ensure broker started; check `agent-relay local agent list`, then `agent-relay local tail --agent <name>` to debug raw output                                 |
+| Mistake                                                  | Fix                                                                                                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Using old top-level verbs (`up`, `spawn`, `who`, `send`) | They moved under `local`/`message`. Use `agent-relay local up`, `local agent spawn`, `local agent list`, `message dm send` / `message post`                     |
+| `agent-relay: command not found` or mise/asdf shim error | Ensure Node is available first (`node --version`); if a shim is broken, fix the runtime manager, then install/use `agent-relay`                                 |
+| "Nested session" error                                   | Broker handles this automatically; if running manually, unset `CLAUDECODE` env var                                                                              |
+| Broker not starting                                      | Try `agent-relay local down` first, then `agent-relay local up --no-dashboard --verbose` and `agent-relay local status --wait-for=10`                           |
+| Broker stuck in STARTING after `status --wait-for`       | The process is alive but the broker API is not ready; inspect output via `local tail`, retry readiness, or `agent-relay local down --force` if wedged           |
+| Broker shows STOPPED immediately after start             | Check `ps aux \| grep agent-relay-broker` and `.agentworkforce/relay/connection.json`; rerun status from the project root or pass `--state-dir`                 |
+| Worktree verification leaves git status dirty            | Run `agent-relay local down --force`, then remove generated `.agentworkforce/relay/` and `.mcp.json` from throwaway validation worktrees before committing      |
+| `Not registered. Call agent.register first.`             | `message`/`channel`/`dm` are token-gated. Run `agent-relay agent register <name>` and set `RELAY_AGENT_TOKEN` (or pass `--token`). The `local` group is exempt  |
+| Spawn fails with `internal reply dropped`                | Broker likely is not fully ready yet; wait for readiness, then spawn one worker first                                                                           |
+| Workers not connecting                                   | Ensure broker started; check `agent-relay local agent list`, then `agent-relay local tail --agent <name>` to debug raw output                                   |
 | Reading worker replies with `local tail` / broker output | Messages go through relay — read them with `agent-relay message inbox check` / `message dm list <conversationId>`. `local tail` is raw broker output, not relay |
-| Sending a message via a `local` command                  | The `local` group is lifecycle only and cannot message. Send through relay: `agent-relay message dm send` / `message post`                                     |
-| Not monitoring workers                                   | Poll `agent-relay local agent list` for liveness and read replies via `agent-relay message inbox check`                                                       |
-| Posting to a channel with a `#` prefix                   | `message post` takes a bare channel name (`general`, not `#general`)                                                                                          |
-| Sent to wrong destination                                | `agent-relay message dm send Worker1 "..."` = DM; `agent-relay message post general "..."` = channel broadcast                                                |
+| Sending a message via a `local` command                  | The `local` group is lifecycle only and cannot message. Send through relay: `agent-relay message dm send` / `message post`                                      |
+| Not monitoring workers                                   | Poll `agent-relay local agent list` for liveness and read replies via `agent-relay message inbox check`                                                         |
+| Posting to a channel with a `#` prefix                   | `message post` takes a bare channel name (`general`, not `#general`)                                                                                            |
+| Sent to wrong destination                                | `agent-relay message dm send Worker1 "..."` = DM; `agent-relay message post general "..."` = channel broadcast                                                  |
 
 ## Prerequisites
 
