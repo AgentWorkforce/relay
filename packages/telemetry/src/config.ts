@@ -1,5 +1,5 @@
 /**
- * Telemetry preference storage (~/.agent-relay/telemetry.json)
+ * Telemetry preference storage (~/.agentworkforce/relay/telemetry.json)
  */
 
 import fs from 'node:fs';
@@ -17,7 +17,7 @@ export interface TelemetryPrefs {
 }
 
 export function getPrefsPath(): string {
-  const configDir = process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.agent-relay');
+  const configDir = process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.agentworkforce/relay');
   return path.join(configDir, 'telemetry.json');
 }
 
@@ -75,7 +75,7 @@ export function isDisabledByEnv(): boolean {
  * Check if telemetry is enabled.
  * Order of precedence:
  * 1. AGENT_RELAY_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 -> disabled
- * 2. ~/.agent-relay/telemetry.json -> use stored pref
+ * 2. ~/.agentworkforce/relay/telemetry.json -> use stored pref
  * 3. Default -> enabled
  */
 export function isTelemetryEnabled(): boolean {

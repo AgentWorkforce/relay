@@ -1,10 +1,8 @@
 /**
  * Shadow Agent Configuration
- * Handles loading and parsing shadow agent configuration from .agent-relay.json.
+ * Handles loading and parsing shadow agent configuration.
  *
- * Configuration can be placed in:
- * - Project root: ./.agent-relay.json
- * - Agent-relay dir: ./.agent-relay/config.json
+ * Configuration lives at ./.agentworkforce/relay/config.json.
  *
  * Shadow configuration structure:
  * {
@@ -87,10 +85,10 @@ const ROLE_PRESETS: Record<string, SpeakOnTrigger[]> = {
 };
 
 /**
- * Possible locations for .agent-relay.json (in order of precedence)
+ * Path to the shadow config file (`.agentworkforce/relay/config.json`)
  */
-function getConfigPaths(projectRoot: string): string[] {
-  return [path.join(projectRoot, '.agent-relay', 'config.json'), path.join(projectRoot, '.agent-relay.json')];
+function getConfigFilePath(projectRoot: string): string {
+  return path.join(projectRoot, '.agentworkforce/relay', 'config.json');
 }
 
 /**
@@ -98,19 +96,17 @@ function getConfigPaths(projectRoot: string): string[] {
  * Returns null if no config found
  */
 export function loadAgentRelayConfig(projectRoot: string): AgentRelayConfig | null {
-  const configPaths = getConfigPaths(projectRoot);
+  const configPath = getConfigFilePath(projectRoot);
 
-  for (const configPath of configPaths) {
-    if (fs.existsSync(configPath)) {
-      try {
-        const content = fs.readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(content) as AgentRelayConfig;
+  if (fs.existsSync(configPath)) {
+    try {
+      const content = fs.readFileSync(configPath, 'utf-8');
+      const config = JSON.parse(content) as AgentRelayConfig;
 
-        console.log(`[shadow-config] Loaded config from ${configPath}`);
-        return config;
-      } catch (err) {
-        console.error(`[shadow-config] Failed to parse ${configPath}:`, err);
-      }
+      console.log(`[shadow-config] Loaded config from ${configPath}`);
+      return config;
+    } catch (err) {
+      console.error(`[shadow-config] Failed to parse ${configPath}:`, err);
     }
   }
 
@@ -199,11 +195,6 @@ export function hasShadowConfig(projectRoot: string): boolean {
  * Get the config file path that would be used
  */
 export function getConfigPath(projectRoot: string): string | null {
-  const configPaths = getConfigPaths(projectRoot);
-  for (const configPath of configPaths) {
-    if (fs.existsSync(configPath)) {
-      return configPath;
-    }
-  }
-  return null;
+  const configPath = getConfigFilePath(projectRoot);
+  return fs.existsSync(configPath) ? configPath : null;
 }

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import os from 'node:os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sdkStatusClient = {
@@ -105,10 +106,10 @@ function createHarness(options?: {
   checkForUpdatesResult?: Awaited<ReturnType<CoreDependencies['checkForUpdates']>>;
 }) {
   const projectRoot = '/tmp/project';
-  const dataDir = '/tmp/project/.agent-relay';
-  const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-  const connectionPath = '/tmp/project/.agent-relay/connection.json';
-  const runtimePath = '/tmp/project/.agent-relay/runtime.json';
+  const dataDir = '/tmp/project/.agentworkforce/relay';
+  const relaySockPath = '/tmp/project/.agentworkforce/relay/relay.sock';
+  const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+  const runtimePath = '/tmp/project/.agentworkforce/relay/runtime.json';
 
   const fs = options?.fs ?? createFsMock();
   const relay = options?.relay ?? createRelayMock();
@@ -122,8 +123,8 @@ function createHarness(options?: {
     getProjectPaths: vi.fn(() => ({
       projectRoot,
       dataDir,
-      teamDir: '/tmp/project/.agent-relay/teams',
-      dbPath: '/tmp/project/.agent-relay/messages.db',
+      teamDir: '/tmp/project/.agentworkforce/relay/teams',
+      dbPath: '/tmp/project/.agentworkforce/relay/messages.db',
       projectId: 'project',
     })),
     loadTeamsConfig: vi.fn(() => options?.teamsConfig ?? null),
@@ -230,7 +231,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('up exits early when connection metadata points to a running process', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(3030) });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 3030 && signal === 0) {
@@ -255,7 +256,7 @@ describe('registerCoreCommands', () => {
     const relay = createRelayMock({
       getStatus: vi.fn(async () => {
         throw new Error(
-          'broker exited (code=1, signal=null): Error: another broker instance is already running in this directory (/tmp/project/.agent-relay)'
+          'broker exited (code=1, signal=null): Error: another broker instance is already running in this directory (/tmp/project/.agentworkforce/relay)'
         );
       }),
     });
@@ -265,7 +266,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
-      'Broker already running for this project (lock: /tmp/project/.agent-relay).'
+      'Broker already running for this project (lock: /tmp/project/.agentworkforce/relay).'
     );
     expect(deps.error).toHaveBeenCalledWith(
       'Run `agent-relay status` to inspect it, then `agent-relay down` to stop it.'
@@ -448,7 +449,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if ((pid === 9001 || pid === 4242) && signal === 0) return;
@@ -571,7 +572,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if ((pid === 9001 || pid === 4242) && signal === 0) return;
@@ -648,10 +649,10 @@ describe('registerCoreCommands', () => {
             'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
             'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
             'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
-            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agent-relay --persist',
-            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agent-relay --persist',
-            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay status --wait-for=30',
+            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agentworkforce/relay --persist',
+            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agentworkforce/relay --persist',
+            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up --no-dashboard --foreground',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay status --wait-for=30',
           ].join('\n'),
           stderr: '',
         };
@@ -710,7 +711,7 @@ describe('registerCoreCommands', () => {
         return {
           stdout: [
             'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agent-relay/bin/agent-relay up --no-dashboard --foreground',
+            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up --no-dashboard --foreground',
           ].join('\n'),
           stderr: '',
         };
@@ -722,7 +723,7 @@ describe('registerCoreCommands', () => {
     });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -753,11 +754,11 @@ describe('registerCoreCommands', () => {
   it('up --no-dashboard replaces a live broker PID whose API never becomes ready', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     const runningPids = new Set([3030, 9001, 4242]);
-    const fs = createFsMock({ ['/tmp/project/.agent-relay/connection.json']: connectionFile(3030) });
+    const fs = createFsMock({ ['/tmp/project/.agentworkforce/relay/connection.json']: connectionFile(3030) });
     let now = 0;
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -781,7 +782,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(0);
     expect(killImpl).toHaveBeenCalledWith(3030, 'SIGTERM');
-    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agent-relay/connection.json');
+    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agentworkforce/relay/connection.json');
     expect(deps.warn).toHaveBeenCalledWith(
       'Broker process is running but the API is not ready; killing half-started broker (pid: 3030).'
     );
@@ -796,7 +797,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
@@ -894,9 +895,9 @@ describe('registerCoreCommands', () => {
   });
 
   it('down stops broker and cleans stale files', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
-    const relaySockPath = '/tmp/project/.agent-relay/relay.sock';
-    const runtimePath = '/tmp/project/.agent-relay/runtime.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const relaySockPath = '/tmp/project/.agentworkforce/relay/relay.sock';
+    const runtimePath = '/tmp/project/.agentworkforce/relay/runtime.json';
 
     const fs = createFsMock({
       [connectionPath]: connectionFile(3030),
@@ -940,7 +941,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status checks broker status and prints metrics', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 4, pending_delivery_count: 2 });
     sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_test123' });
@@ -959,7 +960,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status omits workspace key and observer when broker has no workspace_key', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 0, pending_delivery_count: 0 });
     sdkStatusClient.getSession.mockResolvedValueOnce({});
@@ -976,7 +977,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('status cleans stale connection metadata when broker is not running', async () => {
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(9999) });
     const killImpl = vi.fn(() => {
       const err = new Error('gone') as Error & { code?: string };
@@ -998,7 +999,7 @@ describe('registerCoreCommands', () => {
     const fs = createFsMock();
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
-      fs.writeFileSync('/tmp/project/.agent-relay/connection.json', connectionFile(4242));
+      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 4242 && signal === 0) return;
@@ -1021,7 +1022,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for waits for the broker API after the PID appears', async () => {
     let now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
@@ -1055,7 +1056,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for treats getStatus success as ready even when session lookup fails', async () => {
     const now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (pid === 4242 && signal === 0) return;
@@ -1092,7 +1093,7 @@ describe('registerCoreCommands', () => {
 
   it('status --wait-for reports STARTING and exits non-zero when the PID is live but the API is unready', async () => {
     let now = 0;
-    const connectionPath = '/tmp/project/.agent-relay/connection.json';
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
     const sleepImpl = vi.fn(async (ms: number) => {
       now += ms;
@@ -1159,6 +1160,35 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('New version available: 2.0.0');
+    expect(deps.execCommand).not.toHaveBeenCalled();
+  });
+
+  it('uninstall dry-run covers renamed and legacy installer asset directories', async () => {
+    const { deps } = createHarness();
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+    const home = os.homedir();
+    const paths = [
+      `${home}/.agentworkforce/relay/dashboard/out`,
+      `${home}/.agentworkforce/relay/dashboard/.version`,
+      `${home}/.agent-relay/dashboard/out`,
+      `${home}/.agent-relay/dashboard/.version`,
+      `${home}/.agentworkforce/relay/bin`,
+      `${home}/.agent-relay/bin`,
+    ];
+    for (const filePath of paths) {
+      deps.fs.writeFileSync(filePath, '');
+    }
+
+    const exitCode = await runCommand(program, ['uninstall', '--dry-run']);
+
+    expect(exitCode).toBeUndefined();
+    for (const filePath of paths.slice(0, 4)) {
+      expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove dashboard asset path: ${filePath}`);
+    }
+    for (const filePath of paths.slice(4)) {
+      expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove directory: ${filePath}`);
+    }
     expect(deps.execCommand).not.toHaveBeenCalled();
   });
 

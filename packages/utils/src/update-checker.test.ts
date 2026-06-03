@@ -158,12 +158,12 @@ describe('update-checker', () => {
   });
 
   describe('cache path', () => {
-    it('cache is stored in ~/.agent-relay directory', () => {
-      const expectedDir = path.join(os.homedir(), '.agent-relay');
+    it('cache is stored in ~/.agentworkforce/relay directory', () => {
+      const expectedDir = path.join(os.homedir(), '.agentworkforce/relay');
       const expectedFile = path.join(expectedDir, 'update-cache.json');
 
       // We can verify the path structure is correct
-      expect(expectedFile).toContain('.agent-relay');
+      expect(expectedFile).toContain('.agentworkforce/relay');
       expect(expectedFile).toContain('update-cache.json');
     });
   });

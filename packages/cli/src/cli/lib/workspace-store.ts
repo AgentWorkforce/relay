@@ -15,7 +15,7 @@ export interface WorkspaceStore {
 const RESERVED_WORKSPACE_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
 
 export function workspaceStorePath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agent-relay');
+  const dir = env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agentworkforce/relay');
   return path.join(dir, 'workspaces.json');
 }
 
