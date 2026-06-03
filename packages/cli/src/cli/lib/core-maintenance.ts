@@ -8,7 +8,8 @@ const SNIPPET_MARKER_START_PREFIX = '<!-- prpm:snippet:start @agent-relay/agent-
 const SNIPPET_MARKER_END_PREFIX = '<!-- prpm:snippet:end @agent-relay/agent-relay-snippet@';
 const SNIPPET_TARGET_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md'];
 const MCP_CONFIG_FILE = '.mcp.json';
-const RELAYCAST_SERVER_KEY = 'relaycast';
+const MCP_SERVER_KEY = 'agent-relay';
+const LEGACY_MCP_SERVER_KEYS = ['relaycast'] as const;
 const ZED_SETTINGS_PATH = path.join('.config', 'zed', 'settings.json');
 const DEFAULT_ZED_SERVER_NAME = 'Agent Relay';
 const INSTALL_DIR_NAMES = ['.agentworkforce/relay', '.agent-relay'] as const;
@@ -55,10 +56,10 @@ function removeSnippetBlocks(content: string): string | null {
 }
 
 /**
- * Remove the relaycast entry from .mcp.json if present.
- * Returns true if the file was modified.
+ * Remove the Agent Relay entry (and any legacy `relaycast` entry) from
+ * .mcp.json if present. Returns true if the file was modified.
  */
-function removeRelaycastFromMcpConfig(
+function removeAgentRelayFromMcpConfig(
   projectRoot: string,
   fileSystem: CoreFileSystem,
   dryRun: boolean,
@@ -73,16 +74,23 @@ function removeRelaycastFromMcpConfig(
     const raw = fileSystem.readFileSync(mcpPath, 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const servers = parsed.mcpServers as Record<string, unknown> | undefined;
-    if (!servers || !(RELAYCAST_SERVER_KEY in servers)) {
+    if (!servers) {
+      return false;
+    }
+
+    const keysToRemove = [MCP_SERVER_KEY, ...LEGACY_MCP_SERVER_KEYS].filter((key) => key in servers);
+    if (keysToRemove.length === 0) {
       return false;
     }
 
     if (dryRun) {
-      log(`[dry-run] Would remove '${RELAYCAST_SERVER_KEY}' from ${mcpPath}`);
+      log(`[dry-run] Would remove ${keysToRemove.map((k) => `'${k}'`).join(', ')} from ${mcpPath}`);
       return true;
     }
 
-    delete servers[RELAYCAST_SERVER_KEY];
+    for (const key of keysToRemove) {
+      delete servers[key];
+    }
 
     // If mcpServers is now empty, remove the whole file.
     if (Object.keys(servers).length === 0 && Object.keys(parsed).length === 1) {
@@ -90,7 +98,7 @@ function removeRelaycastFromMcpConfig(
       log(`Removed ${mcpPath} (no remaining servers)`);
     } else {
       fileSystem.writeFileSync(mcpPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
-      log(`Removed '${RELAYCAST_SERVER_KEY}' from ${mcpPath}`);
+      log(`Removed ${keysToRemove.map((k) => `'${k}'`).join(', ')} from ${mcpPath}`);
     }
     return true;
   } catch {
@@ -246,8 +254,8 @@ export async function runUninstallCommand(
     deps.log(`Removed ${paths.dataDir}`);
   }
 
-  // --- MCP config cleanup (.mcp.json relaycast entry) ---
-  removeRelaycastFromMcpConfig(paths.projectRoot, deps.fs, isDryRun, deps.log);
+  // --- MCP config cleanup (.mcp.json agent-relay entry, plus legacy relaycast) ---
+  removeAgentRelayFromMcpConfig(paths.projectRoot, deps.fs, isDryRun, deps.log);
 
   // --- Zed editor config cleanup ---
   if (options.zed) {
