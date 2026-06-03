@@ -65,7 +65,9 @@ export function getDocsVersionHref(version: DocsVersionId, pathname: string): st
   const slug = getDocsSlugFromPath(pathname);
 
   if (version === 'v7.1.1') {
-    return legacyDocsSlugs.includes(slug) ? `${legacyDocsBasePath}/${slug}` : `${legacyDocsBasePath}/introduction`;
+    return legacyDocsSlugs.includes(slug)
+      ? `${legacyDocsBasePath}/${slug}`
+      : `${legacyDocsBasePath}/introduction`;
   }
 
   return currentDocsSlugs.includes(slug) ? `${v8DocsBasePath}/${slug}` : `${v8DocsBasePath}/introduction`;
