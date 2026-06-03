@@ -67,6 +67,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780463255537,
+          "type": "decision",
+          "content": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not): Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+          "raw": {
+            "question": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+            "chosen": "Removed two deferred surfaces via subagents: public relay.actions namespace and top-level relay.sendMessage (interface split — agent clients keep sendMessage, workspace does not)",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }
