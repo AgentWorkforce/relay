@@ -23,7 +23,7 @@ interface UpdateCache {
 }
 
 function getCachePath(): string {
-  const cacheDir = path.join(os.homedir(), '.agent-relay');
+  const cacheDir = path.join(os.homedir(), '.agentworkforce/relay');
   return path.join(cacheDir, 'update-cache.json');
 }
 

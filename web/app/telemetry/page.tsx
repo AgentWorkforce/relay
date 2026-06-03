@@ -199,7 +199,7 @@ export default function TelemetryPage() {
               Events are sent to <strong>PostHog</strong> (our analytics provider) over HTTPS.
             </li>
             <li>
-              Preferences are stored locally at <code>~/.agent-relay/telemetry.json</code>.
+              Preferences are stored locally at <code>~/.agentworkforce/relay/telemetry.json</code>.
             </li>
             <li>
               The telemetry module is designed to be <strong>infallible</strong> &mdash; if anything fails, it

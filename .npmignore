@@ -58,7 +58,7 @@ packages/*/tests/
 .relay/
 .openskills/
 .trails/
-.agent-relay/
+.agentworkforce/relay/
 .turbo/
 .cursor/
 .mcp.json

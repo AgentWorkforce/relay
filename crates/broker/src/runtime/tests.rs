@@ -1893,29 +1893,33 @@ fn is_pid_alive_eperm_means_alive() {
 
 #[test]
 fn continuity_dir_derives_correct_path_from_state_json() {
-    let state_path = std::path::Path::new("/project/.agent-relay/state.json");
+    let state_path = std::path::Path::new("/project/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
-        std::path::PathBuf::from("/project/.agent-relay/continuity")
+        std::path::PathBuf::from("/project/.agentworkforce/relay/continuity")
     );
 }
 
 #[test]
 fn continuity_dir_works_with_nested_project_path() {
-    let state_path = std::path::Path::new("/home/user/projects/my-app/.agent-relay/state.json");
+    let state_path =
+        std::path::Path::new("/home/user/projects/my-app/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
-        std::path::PathBuf::from("/home/user/projects/my-app/.agent-relay/continuity")
+        std::path::PathBuf::from("/home/user/projects/my-app/.agentworkforce/relay/continuity")
     );
 }
 
 #[test]
 fn continuity_dir_preserves_relative_paths() {
-    let state_path = std::path::Path::new(".agent-relay/state.json");
+    let state_path = std::path::Path::new(".agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
-    assert_eq!(result, std::path::PathBuf::from(".agent-relay/continuity"));
+    assert_eq!(
+        result,
+        std::path::PathBuf::from(".agentworkforce/relay/continuity")
+    );
 }
 
 #[test]

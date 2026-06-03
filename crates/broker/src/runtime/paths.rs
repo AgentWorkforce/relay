@@ -11,11 +11,11 @@ pub(crate) struct RuntimePaths {
 }
 
 /// Returns the continuity directory path derived from the state file path.
-/// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
+/// State path is always `{cwd}/.agentworkforce/relay/state.json`, so parent is `{cwd}/.agentworkforce/relay/`.
 pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
     state_path
         .parent()
-        .expect("state_path always has a parent (.agent-relay/)")
+        .expect("state_path always has a parent (.agentworkforce/relay/)")
         .join("continuity")
 }
 
@@ -74,7 +74,7 @@ pub(crate) fn ensure_runtime_paths(
 ) -> Result<RuntimePaths> {
     let root = state_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.join(".agent-relay"));
+        .unwrap_or_else(|| cwd.join(".agentworkforce/relay"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
@@ -150,7 +150,7 @@ pub(crate) fn ensure_runtime_paths(
                 }
             }
             // PID file missing or unreadable while lock is held — treat as stale.
-            // This happens when the user deletes .agent-relay/ while an old broker
+            // This happens when the user deletes .agentworkforce/relay/ while an old broker
             // is still alive, or during the shutdown race (PID deleted before flock
             // released).
             tracing::warn!(

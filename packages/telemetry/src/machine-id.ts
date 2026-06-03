@@ -1,6 +1,6 @@
 /**
  * Machine ID utilities for anonymous user identification.
- * Uses existing machine-id file at ~/.local/share/agent-relay/machine-id
+ * Uses existing machine-id file at ~/.local/share/agentworkforce/relay/machine-id
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -10,7 +10,7 @@ import os from 'node:os';
 
 export function getMachineIdPath(): string {
   const dataDir =
-    process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agent-relay');
+    process.env.AGENT_RELAY_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'agentworkforce', 'relay');
   return path.join(dataDir, 'machine-id');
 }
 

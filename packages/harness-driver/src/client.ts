@@ -370,7 +370,7 @@ export class HarnessDriverClient {
   /**
    * Connect to an already-running broker by reading its connection file.
    *
-   * The broker writes `connection.json` to its data directory ({cwd}/.agent-relay/
+   * The broker writes `connection.json` to its data directory ({cwd}/.agentworkforce/relay/
    * in persist mode). This method reads that file to get the URL and API key.
    *
    * @param cwd — project directory (default: process.cwd())
@@ -384,7 +384,8 @@ export class HarnessDriverClient {
     const cwd = options?.cwd ?? process.cwd();
     const stateDir = process.env.AGENT_RELAY_STATE_DIR;
     const connPath =
-      options?.connectionPath ?? path.join(stateDir ?? path.join(cwd, '.agent-relay'), 'connection.json');
+      options?.connectionPath ??
+      path.join(stateDir ?? path.join(cwd, '.agentworkforce/relay'), 'connection.json');
 
     if (!existsSync(connPath)) {
       throw new Error(

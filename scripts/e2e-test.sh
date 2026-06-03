@@ -161,7 +161,7 @@ fi
 sleep 1
 
 # Start broker+dashboard in background, redirect output to log file
-DAEMON_LOG="$PROJECT_DIR/.agent-relay/e2e-daemon.log"
+DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
 "$CLI_CMD" local up --port "$DASHBOARD_PORT" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
