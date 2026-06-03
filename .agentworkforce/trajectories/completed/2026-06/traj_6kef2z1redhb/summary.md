@@ -18,14 +18,17 @@ Routed telemetry context through the CLI, SDK, cloud client, Rust broker, and ho
 ## Key Decisions
 
 ### Propagated Agent Relay telemetry context through child process env and cloud request headers
+
 - **Chose:** Propagated Agent Relay telemetry context through child process env and cloud request headers
 - **Reasoning:** CLI owns telemetry preferences and anonymous id creation, so cloud requests only include identity, surface, client version, and harness headers when telemetry is enabled and a PostHog key is configured.
 
 ### Hosted relaycast telemetry prefers Agent Relay anonymous id
+
 - **Chose:** Hosted relaycast telemetry prefers Agent Relay anonymous id
 - **Reasoning:** When the hosted backend receives X-Agent-Relay-Anonymous-Id, using it as PostHog distinctId ties CLI, SDK, and server-side events together while preserving workspace_id as an event property.
 
 ### Kept SDK telemetry minimal
+
 - **Chose:** Kept SDK telemetry minimal
 - **Reasoning:** SDK events capture stable method/workflow names, success, duration, and error class only, avoiding user content, paths, payloads, tokens, URLs, and argument values.
 
@@ -34,7 +37,8 @@ Routed telemetry context through the CLI, SDK, cloud client, Rust broker, and ho
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Propagated Agent Relay telemetry context through child process env and cloud request headers: Propagated Agent Relay telemetry context through child process env and cloud request headers
 - Hosted relaycast telemetry prefers Agent Relay anonymous id: Hosted relaycast telemetry prefers Agent Relay anonymous id
