@@ -1,0 +1,53 @@
+{
+  "id": "traj_btwekvdri4hl",
+  "version": 1,
+  "task": {
+    "title": "Review and repair PR #1030"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-03T06:43:22.943Z",
+  "completedAt": "2026-06-03T06:49:18.128Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-03T06:49:02.876Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3tpuw8sjt5fo",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-03T06:49:02.876Z",
+      "endedAt": "2026-06-03T06:49:18.128Z",
+      "events": [
+        {
+          "ts": 1780469342877,
+          "type": "decision",
+          "content": "Resolved dashboard assets relative to nonstandard installed dashboard binaries: Resolved dashboard assets relative to nonstandard installed dashboard binaries",
+          "raw": {
+            "question": "Resolved dashboard assets relative to nonstandard installed dashboard binaries",
+            "chosen": "Resolved dashboard assets relative to nonstandard installed dashboard binaries",
+            "alternatives": [],
+            "reasoning": "install.sh supports custom AGENT_RELAY_INSTALL_DIR, so the broker must not only look under the default home install directory when the dashboard binary path identifies a custom install root."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reviewed PR #1030 dashboard asset install-dir move, fixed custom install-root asset resolution and refresh targeting, and verified focused CLI tests/typecheck/lint.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "96002d36ebe106d2dce181ea90d1c0143439c591",
+    "endRef": "96002d36ebe106d2dce181ea90d1c0143439c591"
+  }
+}
