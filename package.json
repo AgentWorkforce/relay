@@ -100,9 +100,6 @@
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
-    "flatted": "^3.4.2",
-    "next@16.2.7": {
-      "postcss": "^8.5.10"
-    }
+    "flatted": "^3.4.2"
   }
 }
