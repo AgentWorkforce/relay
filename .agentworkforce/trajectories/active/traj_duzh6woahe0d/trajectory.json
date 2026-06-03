@@ -79,6 +79,18 @@
             "reasoning": ""
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780463684781,
+          "type": "decision",
+          "content": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.: Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+          "raw": {
+            "question": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+            "chosen": "Phase 3b: AgentSession.release optional + lifecycle.release:boolean. Strict compile-time 'iff' rejected — discriminated union fights the README's const-capabilities pattern (literals widen to boolean); documented the pairing convention instead.",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
         }
       ]
     }

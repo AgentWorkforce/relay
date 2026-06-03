@@ -118,7 +118,7 @@ const capabilities = {
 };
 ```
 >[!NOTE]
-> Declare a capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method (the types enforce this pairing).
+> Declare a capability only when you implement it — e.g. set `lifecycle.release: true` only if your session also returns a `release()` method, and omit `release()` when `release: false`.
 
 #### Human Messages
 A human is really just a meaty harness (cue existential crisis). We have some syntax sugar to make this common case easy.
