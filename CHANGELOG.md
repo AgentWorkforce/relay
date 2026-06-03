@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` adds the `relay.webhooks` namespace: `createInbound({ channel })` returns `{ url, token }` for posting `{ message, author }` into a channel, and `subscribe({ url, events, secret, headers })` for outbound HMAC-signed event delivery.
 - `@agent-relay/sdk` agent clients send via `sendMessage({ to })` (`#channel`, `@handle`, or an array of `@handle`s for a group DM), `reply({ messageId })`, and `react({ messageId, emoji })`; every message exposes `messageId`.
 - `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
-- `agent-relay` telemetry now tags CLI, broker, SDK, and hosted cloud requests with app, surface, orchestrator harness, and anonymous client identity context when telemetry is enabled.
+- `agent-relay` telemetry now tags CLI, broker, SDK, and hosted cloud requests with app, surface, orchestrator harness, and distinct client identity context when telemetry is enabled.
 
 ### Changed
 

@@ -1,15 +1,15 @@
-export const AGENT_RELAY_ANONYMOUS_ID_HEADER = 'X-Agent-Relay-Anonymous-Id';
+export const AGENT_RELAY_DISTINCT_ID_HEADER = 'X-Agent-Relay-Distinct-Id';
 export const RELAYCAST_HARNESS_HEADER = 'X-Relaycast-Harness';
 export const RELAYCAST_ORIGIN_SURFACE_HEADER = 'X-Relaycast-Origin-Surface';
 export const RELAYCAST_ORIGIN_CLIENT_HEADER = 'X-Relaycast-Origin-Client';
 export const RELAYCAST_ORIGIN_VERSION_HEADER = 'X-Relaycast-Origin-Version';
 
-const AGENT_RELAY_CLIENT_ID_ENV = 'AGENT_RELAY_CLIENT_ID';
+const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const ORCHESTRATOR_HARNESS_ENV = 'AGENT_RELAY_ORCHESTRATOR_HARNESS';
 const TELEMETRY_SURFACE_ENV = 'AGENT_RELAY_TELEMETRY_SURFACE';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
-const CLIENT_ID_ALLOWED = /^[a-z0-9._:-]+$/i;
+const DISTINCT_ID_ALLOWED = /^[a-z0-9._:-]+$/i;
 const HEADER_VALUE_ALLOWED = /^[a-z0-9 ._\-/():=;,+@]+$/i;
 
 function sanitizeHeaderValue(
@@ -33,14 +33,14 @@ export function buildAgentRelayTelemetryHeaders(
 ): Record<string, string> {
   if (isTelemetryDisabledByEnv(env)) return {};
 
-  const clientId = sanitizeHeaderValue(env[AGENT_RELAY_CLIENT_ID_ENV], {
+  const distinctId = sanitizeHeaderValue(env[AGENT_RELAY_DISTINCT_ID_ENV], {
     maxLength: 128,
-    pattern: CLIENT_ID_ALLOWED,
+    pattern: DISTINCT_ID_ALLOWED,
   });
-  if (!clientId) return {};
+  if (!distinctId) return {};
 
   const headers: Record<string, string> = {
-    [AGENT_RELAY_ANONYMOUS_ID_HEADER]: clientId,
+    [AGENT_RELAY_DISTINCT_ID_HEADER]: distinctId,
   };
 
   const harness = sanitizeHeaderValue(env[ORCHESTRATOR_HARNESS_ENV], {

@@ -88,7 +88,7 @@ function resolveSdkVersion(): string | undefined {
 
 export const SDK_VERSION = resolveSdkVersion();
 
-const AGENT_RELAY_CLIENT_ID_ENV = 'AGENT_RELAY_CLIENT_ID';
+const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const TELEMETRY_SURFACE_ENV = 'AGENT_RELAY_TELEMETRY_SURFACE';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
@@ -133,8 +133,8 @@ function propagateTelemetryContextToChildren(): string {
   if (!process.env[TELEMETRY_CLIENT_ENV]) {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
-  if (!process.env[AGENT_RELAY_CLIENT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    process.env[AGENT_RELAY_CLIENT_ID_ENV] = getAnonymousId();
+  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
+    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getAnonymousId();
   }
 
   return orchestratorHarness;

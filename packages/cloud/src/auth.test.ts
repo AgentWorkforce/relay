@@ -283,7 +283,7 @@ describe('refreshStoredAuth', () => {
 
 describe('authorizedApiFetch telemetry headers', () => {
   const telemetryEnvKeys = [
-    'AGENT_RELAY_CLIENT_ID',
+    'AGENT_RELAY_DISTINCT_ID',
     'AGENT_RELAY_ORCHESTRATOR_HARNESS',
     'AGENT_RELAY_TELEMETRY_SURFACE',
     'AGENT_RELAY_TELEMETRY_CLIENT',
@@ -299,13 +299,13 @@ describe('authorizedApiFetch telemetry headers', () => {
     }
   }
 
-  it('adds Agent Relay identity and origin headers when the CLI provides a telemetry client id', async () => {
+  it('adds Agent Relay identity and origin headers when the CLI provides a telemetry distinct id', async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
 
     const previousEnv = { ...process.env };
     clearTelemetryEnv();
-    process.env.AGENT_RELAY_CLIENT_ID = 'abc123def4567890';
+    process.env.AGENT_RELAY_DISTINCT_ID = 'abc123def4567890';
     process.env.AGENT_RELAY_ORCHESTRATOR_HARNESS = 'Codex';
     process.env.AGENT_RELAY_TELEMETRY_SURFACE = 'cli';
     process.env.AGENT_RELAY_TELEMETRY_CLIENT = 'agent-relay';
@@ -334,14 +334,14 @@ describe('authorizedApiFetch telemetry headers', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('accept')).toBe('application/json');
     expect(headers.get('authorization')).toBe('Bearer access-token');
-    expect(headers.get('x-agent-relay-anonymous-id')).toBe('abc123def4567890');
+    expect(headers.get('x-agent-relay-distinct-id')).toBe('abc123def4567890');
     expect(headers.get('x-relaycast-harness')).toBe('Codex');
     expect(headers.get('x-relaycast-origin-surface')).toBe('cli');
     expect(headers.get('x-relaycast-origin-client')).toBe('agent-relay');
     expect(headers.get('x-relaycast-origin-version')).toBe('7.1.1');
   });
 
-  it('omits telemetry headers when no client id is provided', async () => {
+  it('omits telemetry headers when no distinct id is provided', async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
     const previousEnv = { ...process.env };
@@ -364,7 +364,7 @@ describe('authorizedApiFetch telemetry headers', () => {
 
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
     const headers = new Headers(init.headers);
-    expect(headers.get('x-agent-relay-anonymous-id')).toBeNull();
+    expect(headers.get('x-agent-relay-distinct-id')).toBeNull();
     expect(headers.get('x-relaycast-harness')).toBeNull();
   });
 });
