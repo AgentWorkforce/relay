@@ -126,6 +126,186 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
 
+## [8.0.0] - 2026-06-03
+
+### Added
+
+- Composite status, telemetry-only setup, drop dead modules
+- Add SDK-backed workspace/agent/channel/message/integration/capabilities groups + runtime agent subtree
+- Restore cloud command group, add runtime alias + top-level lifecycle verbs
+- Add create()/new() factories returning registerable agents
+- Add listener/predicate DSL (relay.on, event/action/agent predicates)
+- Add README facade surface (workspace, sendMessage, registerAction, notify, message overloads)
+- Default spawnAgent name and runtime
+- Expose provider spawn facade methods
+
+### Changed
+
+- Route telemetry context through CLI, SDK, and cloud
+- SDK: workspace-level event stream via relaycast 2.5 (closes)
+- Remove vendored openclaw package and orchestrating skill; align MCP name to agent-relay
+- Make v8 the default docs version
+- Fix npm audit: upgrade vitest to 4.x (resolves critical advisory)
+- Move dashboard UI assets under the install dir
+- V8 SDK redesign: live agent clients, addListener, fire-and-forget actions, webhooks
+- Rename relay state directory to .agentworkforce/relay
+- Add Pear by Agent Relay landing page at /pear
+- Fix OpenClaw skill route build
+- Enhance README with project details and badges
+- Complete trajectory and update packages
+- Add v8 docs pages and blog UI tweaks
+- Harnesses: add create({ relay }) live PTY spawn
+- Fix Tailwind oxide lockfile entries
+- Update README.md
+- Update SDK examples for driver & events
+- Remove core simplification scope doc
+- Rename runtime package to harness-driver
+- Remove in-repo ACP bridge package
+- Apply prettier formatting
+- Fix package build and security checks
+- Upgrade relaycast to 2.0 and support actions
+- Update sdk.md to reflect post-split SDK surface
+- Rename runtime-agent module to local-agent; drop stray .mcp.json
+- Remove stray self-hosting placeholder doc
+- Move attach session logic to lib/
+- Rename driver namespace to local, restructure agent ops
+- Apply pr-reviewer fixes for
+- Remove dead bridge plumbing from CoreDependencies
+- Drop start/bridge from runtime group; version/update/uninstall are root-only
+- Nudge preview-web redeploy (path filter blind past 300-file cap)
+- Route interactive attach through RuntimeClient's real WS PTY input
+- Add trajectory traces and update runtime/CLI
+- Compile-time contract for the full README API + accept real zod schemas
+- Use driver subcommand in package-validation CLI smoke
+- Drop SDK agent-spawn lifecycle from E2E and export check
+- Match E2E command surface and build peripheral packages
+- Format pullfrog.yml to satisfy prettier check
+- Align CI with simplified core surface
+- Update AGENTS.md
+- Add `pullfrog.yml` workflow
+- Trigger checks after auto-format
+- Clean stale package references
+- Remove migrated packages from CI workflows
+- Remove migrated packages and consolidate shared into utils
+- Make workspace setup first-class
+- Keep OpenClaw adapter
+- Keep ACP bridge adapter
+- Align SDK with session contract
+- Human writing
+- Move delivery policy into harness docs
+- Clarify CLI harness message path
+- Document message send paths
+- Show harness contract as interface
+- Flesh out target harness contract
+- Document target messaging and delivery contracts
+- Adding ideas
+- Humans be writing like humans
+- More human writing
+- Use Zod schemas in action docs
+- Clarify Agent Relay README examples
+- Simplify Agent Relay core surfaces
+- Relocate root configs/assets and add trajectories
+- Update spawnAgent examples
+- Move MCP tools reference into docs
+- Simplify high-level spawn facade
+- Remove stale MCP compatibility aliases
+- Rename bundled MCP server to Agent Relay MCP
+- Remove skills/ directory
+- Rename spawn provider api to cli
+- Make headless facade cli-based
+- Restore persona changelog history
+- Remove personas from SDK
+- Apply prettier to packages/sdk/src/relaycast-errors.ts
+- Mcp: recover from invalid Relaycast agent tokens mid-session
+- Clean up after workflow extraction: tests, exports, CI
+- Fix CLI imports after cloud-sdk teardown
+- Merge @agent-relay/cloud-sdk into @agent-relay/cloud; relayfile bits → @relayfile/sdk
+- Extract @agent-relay/cloud-sdk from @agent-relay/sdk
+- Break relay → relayflows dep; relay has zero workflow code
+- Decouple SDK from workflow knowledge
+- Remove workflow code; depend on @relayflows/core via compat shims
+- Move doctor repro docs into web
+- Move harness runtime docs into web
+- Clarify headless app-server worker naming
+- Move trajectories under agentworkforce
+- Revert "Move trajectories into .agentworkforce"
+- Track GitHub traffic in PostHog
+- Move trajectories into .agentworkforce
+- Collapse /test/ dir into root vitest.setup.ts
+- Remove stale openapi.yaml
+- Add Prettier auto-format workflow
+- Format merge trajectory files
+- Fix stale src/cli refs in cli-modules rule and watch script
+- Delete unused scripts/build-release.sh
+- Remove unused inbox-check hook, tighten descriptions
+- Add Swift SDK test job on macOS
+- Drop 'not the cloud service' framing
+- Skip Node/Rust jobs when only sdk-swift changes
+- Move CLI to packages/cli, root becomes workspace orchestrator
+- Drop comments narrating removed v6 behavior
+- Drop RelayCast deprecated typealias
+- Rename RelayCast to AgentRelayClient
+- Delete deprecated src/ re-export shims
+- Remove unused dev release-plan scaffolding
+- Apply prettier across the repo
+- Fix SDK spawn pid null handling
+- Remove husky, enforce formatting in CI
+- Document MCP tool overview
+- Use underscore MCP tool names
+- Remove harness registry state
+- Add broker harness registry
+- Fix bootstrap command snapshot
+- Default headless harness driver
+- Fix harness clippy warnings
+- Stop pack:validate from poisoning the node_modules cache
+- Clarify harness config naming docs
+- Rename harness plans to configs
+- Fix harness runtime review issues
+- Retrigger CI
+- Refine harness adapter docs
+- Clarify headless app-server harnesses
+- Implement harness runtime plans
+- Use workspace tsc instead of network-fetched typescript
+- Document harness runtime plan
+- Replace stringly-typed protocol IDs with newtypes
+- Remove external Relaycast MCP dependency
+- Cache workspace node_modules too
+- Return harness session IDs from spawns
+- Sdk: forward-compat persona-kit ≥3.0.20 (optional harness/model)
+- Sdk: migrate persona spawn to @agentworkforce/persona-kit
+- Address CodeRabbit follow-up review on Codex adapter
+- Address remaining cubic review comments on Codex adapter
+- Address Codex adapter review comments
+- Add Codex communicate adapter
+
+### Fixed
+
+- Use local broker commands in smoke tests
+- Avoid logging tainted auth data
+- Address review — kill, broker flags, tail signal, stale refs
+- Pin zod for fresh installs
+- Limit turbo concurrency in cold build to prevent OOM
+- Use node:crypto randomUUID instead of global crypto
+- Remove stale tsconfig paths for deleted packages; increase build memory
+- Remove @agent-relay/hooks from package-validation import test
+- Correct trailing comma in sdk/package.json exports and regenerate lockfile
+- Tolerate stray CLI login callbacks
+- Use AgentRelay.spawnAgent instead of removed spawnPty
+- Type spawn patch merging
+- Avoid headless result contract clobber
+- Cd into packages/cli before npm link, not --prefix
+- Npm link from packages/cli, not from monorepo root
+- Avoid overlapping access on URLComponents query filter
+- Revert @relayfile/local-mount to ^0.2.2
+- Repair lockfile platform variants + remaining test paths
+- Restore install.sh at root, bump local-mount, format script
+- Make bundledDependencies work from packages/cli
+- Correct URL building and reconnect on register
+- Honor model override and harden persona shadow-path test
+- Align RelayCast with v7 broker contract
+- Bump sdk-py and gemini extension to clear Dependabot alerts
+- Restore delivery_id keying for terminal_failed_deliveries
+
 ## [7.1.1] - 2026-05-25
 
 ### Changed
