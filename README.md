@@ -328,6 +328,12 @@ References:
 
 Apache-2.0 - Copyright 2026 Agent Workforce Incorporated
 
+## Contributors
+
+<a href="https://github.com/AgentWorkforce/relay/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=AgentWorkforce/relay" alt="Contributors" />
+</a>
+
 ---
 
 **Links:** [Website](https://agentrelay.com) · [Documentation](https://agentrelay.com/docs) · [Docs (Markdown)](https://agentrelay.com/docs/markdown) · [Discord](https://discord.gg/6E6CTxM8um)
