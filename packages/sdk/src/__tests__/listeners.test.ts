@@ -24,7 +24,7 @@ function createRelay() {
       send: vi.fn(async (i: unknown) => ({ id: 'm', text: '', from: {}, ...((i as object) ?? {}) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd', text: '', from: {}, ...((i as object) ?? {}) })),
     },
-    events: { on: bus.on },
+    events: { on: bus.on, connect: vi.fn() },
     agents: { register: vi.fn() },
   } as unknown as RelayMessaging;
   const actions = new ActionRegistry();
@@ -165,6 +165,12 @@ describe('Listener DSL (Phase B)', () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0][0]).toMatchObject({ type: 'action.completed', action: 'greet' });
+  });
+
+  it('addListener opens the event stream', () => {
+    const { relay } = createRelay();
+    relay.addListener('message.created', vi.fn());
+    expect(relay.messaging.events.connect as ReturnType<typeof vi.fn>).toHaveBeenCalled();
   });
 
   it('addListener accepts a predicate as well as a name', () => {

@@ -414,6 +414,14 @@ export function createListenerHub(
     selector: string | ListenerPredicate,
     handler: ListenerHandler<RelayEvent>
   ): (() => void) => {
+    // Open the event stream — `events.on(...)` only registers handlers; the
+    // socket is opened by `events.connect()`. Idempotent on agent-scoped
+    // clients; a no-op (no stream) on workspace-only clients.
+    try {
+      context.events.connect();
+    } catch {
+      // Workspace-only clients have no realtime stream; listen on an agent client.
+    }
     if (typeof selector !== 'string') {
       return selector.subscribe(context, handler as ListenerHandler);
     }

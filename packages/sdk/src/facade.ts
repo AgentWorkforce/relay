@@ -294,17 +294,29 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
       throw new Error('register() is only available on the workspace client.');
     }
     const list = Array.isArray(agents) ? agents : [agents];
+    const inputs = list.map((agent) =>
+      typeof agent === 'string'
+        ? { name: stripSigil(agent) }
+        : {
+            name: resolveAgentName(agent),
+            type: agent.type,
+            persona: agent.persona,
+            metadata: agent.metadata,
+          }
+    );
+
+    // Fail fast on in-batch duplicates so a batch can't partially register
+    // before the relay rejects a later duplicate name.
+    const seen = new Set<string>();
+    for (const { name } of inputs) {
+      if (seen.has(name)) {
+        throw new Error(`Duplicate agent name in register(): "${name}".`);
+      }
+      seen.add(name);
+    }
+
     const clients: RelayAgentClient[] = [];
-    for (const agent of list) {
-      const input =
-        typeof agent === 'string'
-          ? { name: stripSigil(agent) }
-          : {
-              name: resolveAgentName(agent),
-              type: agent.type,
-              persona: agent.persona,
-              metadata: agent.metadata,
-            };
+    for (const input of inputs) {
       clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
     }
     return Array.isArray(agents) ? clients : clients[0];
@@ -416,13 +428,21 @@ function wireRelayAction<TInput, TOutput>(
       console.error(`[agent-relay] failed to register action descriptor "${def.name}":`, error);
     });
 
-  // Subscribe to invocations routed to this handler agent.
-  return wiring.messaging.events.on('actionInvoked', async (event) => {
+  // Subscribe to invocations routed to this handler agent, then open the event
+  // stream — `events.on(...)` only registers the handler; the socket is opened
+  // by `events.connect()`. Without this the handler never sees `action.invoked`.
+  const unsubscribe = wiring.messaging.events.on('actionInvoked', async (event) => {
     if (event.actionName !== def.name) {
       return;
     }
     await handleActionInvoked(actions, commands, def.name, event);
   });
+  try {
+    wiring.messaging.events.connect();
+  } catch (error) {
+    console.error(`[agent-relay] failed to open the event stream for action "${def.name}":`, error);
+  }
+  return unsubscribe;
 }
 
 async function handleActionInvoked(

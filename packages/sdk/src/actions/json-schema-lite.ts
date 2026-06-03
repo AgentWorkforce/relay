@@ -1,4 +1,15 @@
-import { createRequire } from 'node:module';
+/**
+ * Resolve Node's `createRequire` without a static `node:module` import, so
+ * browser/edge bundles don't fail to resolve it. Returns `undefined` off Node
+ * (or on Node versions without `process.getBuiltinModule`).
+ */
+function nodeCreateRequire(): ((path: string) => (id: string) => unknown) | undefined {
+  const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+  const mod = proc?.getBuiltinModule?.('node:module') as
+    | { createRequire?: (path: string) => (id: string) => unknown }
+    | undefined;
+  return mod?.createRequire;
+}
 
 import type {
   ActionSchema,
@@ -402,6 +413,12 @@ function validatorToJsonSchema(schema: { safeParse: (input: unknown) => unknown 
     return zodSchema;
   }
 
+  // Could not convert the validator: the relay descriptor advertises a
+  // permissive schema, but local validation still enforces the real one.
+  console.warn(
+    '[agent-relay] could not convert an action input schema to JSON Schema; ' +
+      'the relay descriptor will advertise a permissive schema (local validation is unaffected).'
+  );
   return { type: 'object', additionalProperties: true };
 }
 
@@ -415,7 +432,12 @@ function tryZodToJsonSchema(schema: object): Record<string, unknown> | undefined
   }
 
   try {
-    // Resolved lazily to avoid a hard zod dependency in the SDK.
+    // Resolved lazily to avoid a hard zod dependency (and a static node:module
+    // import) in the SDK.
+    const createRequire = nodeCreateRequire();
+    if (!createRequire) {
+      return undefined;
+    }
     const req = createRequire(import.meta.url);
     for (const entry of ['zod/v4', 'zod'] as const) {
       try {

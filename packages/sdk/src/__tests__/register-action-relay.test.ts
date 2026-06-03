@@ -112,6 +112,8 @@ describe('registerFacadeAction relay wiring', () => {
       })
     );
     expect(mock.events.on).toHaveBeenCalledWith('actionInvoked', expect.any(Function));
+    // The event stream must be opened, or the handler never sees invocations.
+    expect(mock.events.connect).toHaveBeenCalled();
   });
 
   it('runs the local handler and completes with its output on action.invoked', async () => {
