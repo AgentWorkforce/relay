@@ -14,8 +14,8 @@
  * the prior mode and leaves the agent running.
  *
  * The session loop (snapshot-on-attach, raw stdin, resize forwarding,
- * detach keybind, Ctrl+C-as-detach safety alias) mirrors the shape of
- * `drive.ts` minus the pending-queue UI and `Ctrl+G` flush binding
+ * Ctrl+C detach) mirrors the shape of
+ * `drive.ts` minus the pending-queue UI and manual delivery controls
  * (there's no queue in passthrough session). `drive.ts` is the more
  * heavily-commented version of the shared shape; this module
  * duplicates rather than abstracts because the trimmed surface is
@@ -190,52 +190,24 @@ export interface PassthroughKeybindOutcome {
   actions: PassthroughKeybindAction[];
 }
 
-export type PassthroughKeybindAction = 'detach' | 'toggle_help';
+export type PassthroughKeybindAction = 'detach';
 
 /**
- * Stateful parser for the passthrough client's keybind vocabulary.
- * Smaller than `drive`'s because there's no queue to flush — no
- * `Ctrl+G` binding.
+ * Parser for the one local control byte passthrough keeps: `Ctrl+C` detaches.
  *
  * Semantics:
  *   - `Ctrl+C` (0x03)    → emit `detach`, never forwarded.
- *   - `Ctrl+B` (0x02)    → swallow, arm the prefix state.
- *     Next byte:
- *       - 'd' / 'D' / 0x04 (Ctrl+D) → emit `detach`.
- *       - '?'                       → emit `toggle_help`.
- *       - anything else             → forward `Ctrl+B` + the byte so
- *                                     TUI apps using `Ctrl+B` themselves
- *                                     aren't deprived.
+ *   - Every other byte, including Ctrl+B and Ctrl+G, is forwarded to the agent.
  */
 export class PassthroughKeybindParser {
-  private pendingPrefix = false;
-
   feed(chunk: Buffer): PassthroughKeybindOutcome {
     const forward: number[] = [];
     const actions: PassthroughKeybindAction[] = [];
 
     for (const byte of chunk) {
-      if (this.pendingPrefix) {
-        this.pendingPrefix = false;
-        if (byte === 0x44 /* 'D' */ || byte === 0x64 /* 'd' */ || byte === 0x04 /* Ctrl+D */) {
-          actions.push('detach');
-          continue;
-        }
-        if (byte === 0x3f /* '?' */) {
-          actions.push('toggle_help');
-          continue;
-        }
-        forward.push(0x02);
-        forward.push(byte);
-        continue;
-      }
       if (byte === 0x03 /* Ctrl+C */) {
         actions.push('detach');
-        continue;
-      }
-      if (byte === 0x02 /* Ctrl+B */) {
-        this.pendingPrefix = true;
-        continue;
+        break;
       }
       forward.push(byte);
     }
@@ -243,9 +215,7 @@ export class PassthroughKeybindParser {
     return { forward: Buffer.from(forward), actions };
   }
 
-  reset(): void {
-    this.pendingPrefix = false;
-  }
+  reset(): void {}
 }
 
 /** ----- Status line rendering ----- */
@@ -255,15 +225,9 @@ export class PassthroughKeybindParser {
  * save/restore-cursor trick as `drive`, no pending counter (there
  * isn't one in passthrough session).
  */
-export function renderStatusLine(opts: {
-  name: string;
-  mode: InboundDeliveryMode;
-  showHelp: boolean;
-  rows?: number;
-}): string {
+export function renderStatusLine(opts: { name: string; mode: InboundDeliveryMode; rows?: number }): string {
   const row = Math.max(opts.rows ?? 24, 1);
-  const help = opts.showHelp ? ' | Ctrl+B D detach | Ctrl+B ? hide help' : ' | Ctrl+B D detach';
-  const text = `[passthrough ${opts.name} | delivery=${opts.mode}${help}]`;
+  const text = `[passthrough ${opts.name} | delivery=${opts.mode} | Ctrl+C detach]`;
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
 }
 
@@ -312,13 +276,11 @@ export async function runPassthroughSession(
   );
   if (!snapshotResult) return 1;
 
-  let showHelp = false;
-
   const initialLocalSize = deps.terminal.getSize();
   let terminalRows = pickInitialTerminalRows(initialLocalSize, snapshotResult.snapshotRows);
 
   const paintStatus = (): void => {
-    deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', showHelp, rows: terminalRows }));
+    deps.writeChunk(renderStatusLine({ name, mode: 'auto_inject', rows: terminalRows }));
   };
   paintStatus();
 
@@ -369,10 +331,6 @@ export async function runPassthroughSession(
           case 'detach':
             finish(0);
             return;
-          case 'toggle_help':
-            showHelp = !showHelp;
-            paintStatus();
-            break;
         }
       }
     };
@@ -476,7 +434,6 @@ export async function runPassthroughSession(
     }
 
     socket.on('open', () => {
-      deps.log(`[passthrough] attached to ${name} via ${connection.url} (Ctrl+B D to detach)`);
       void openInputStreamAndTakeStdin();
     });
 

@@ -3,10 +3,12 @@
  *
  * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
  * broker parks new relay messages in a per-worker queue, and forwards your
- * keystrokes to the worker's PTY. You can drain the queue on demand with
- * `Ctrl+G` and detach with `Ctrl+B D` (or `Ctrl+C` as a safety alias).
- * Detaching restores the worker's previous inbound delivery mode and leaves the
- * agent running under the broker — `drive` never kills the worker.
+ * keystrokes to the worker's PTY. Message queue control is deliberately out of
+ * band: use `agent message flush`, `agent message hold`, and `agent message auto`
+ * from another terminal instead of terminal control chords that agent TUIs may
+ * intercept. `Ctrl+C` detaches, restores the worker's previous inbound delivery
+ * mode, and leaves the agent running under the broker — `drive` never kills the
+ * worker.
  *
  * Sequence of operations on attach:
  *
@@ -357,69 +359,25 @@ export interface KeybindOutcome {
   actions: KeybindAction[];
 }
 
-export type KeybindAction = 'flush' | 'detach' | 'toggle_help';
+export type KeybindAction = 'detach';
 
 /**
- * Stateful parser that recognises the `Ctrl+B <key>` two-byte prefix
- * sequence, plus the single-byte safety keybinds (`Ctrl+G` flush,
- * `Ctrl+C` detach).
- *
- * The parser is intentionally tiny — no readline, no keypress — because
- * the keybinds are all ASCII control characters, and pulling in a
- * keypress parser would just add a dependency for no real benefit.
+ * Parser for the one local control byte drive keeps: `Ctrl+C` detaches.
  *
  * Semantics:
- *   - `Ctrl+G` (0x07)    → emit `flush`, never forwarded.
  *   - `Ctrl+C` (0x03)    → emit `detach`, never forwarded.
- *   - `Ctrl+B` (0x02)    → swallow, arm the prefix state.
- *     Next byte (within the same chunk OR a subsequent chunk):
- *       - 'd' / 'D' / 0x04 (Ctrl+D) → emit `detach`.
- *       - '?'                       → emit `toggle_help`.
- *       - anything else             → forward the original `Ctrl+B` byte
- *                                     followed by the new byte, so the
- *                                     agent isn't deprived if the user
- *                                     hit Ctrl+B by accident.
- *
- * Multiple keybinds in one chunk are handled in order; bytes between
- * them are forwarded normally.
+ *   - Every other byte, including Ctrl+B and Ctrl+G, is forwarded to the agent.
  */
 export class KeybindParser {
-  private pendingPrefix = false;
-
   /** Process one chunk; returns bytes to forward + actions to take. */
   feed(chunk: Buffer): KeybindOutcome {
     const forward: number[] = [];
     const actions: KeybindAction[] = [];
 
     for (const byte of chunk) {
-      if (this.pendingPrefix) {
-        this.pendingPrefix = false;
-        if (byte === 0x44 /* 'D' */ || byte === 0x64 /* 'd' */ || byte === 0x04 /* Ctrl+D */) {
-          actions.push('detach');
-          continue;
-        }
-        if (byte === 0x3f /* '?' */) {
-          actions.push('toggle_help');
-          continue;
-        }
-        // Not a recognised prefix command — forward Ctrl+B + the byte
-        // so the agent isn't deprived (some TUI apps use Ctrl+B for
-        // their own bindings).
-        forward.push(0x02);
-        forward.push(byte);
-        continue;
-      }
-      if (byte === 0x07 /* Ctrl+G */) {
-        actions.push('flush');
-        continue;
-      }
       if (byte === 0x03 /* Ctrl+C */) {
         actions.push('detach');
-        continue;
-      }
-      if (byte === 0x02 /* Ctrl+B */) {
-        this.pendingPrefix = true;
-        continue;
+        break;
       }
       forward.push(byte);
     }
@@ -431,9 +389,7 @@ export class KeybindParser {
   }
 
   /** Reset the parser (e.g. before tearing down). */
-  reset(): void {
-    this.pendingPrefix = false;
-  }
+  reset(): void {}
 }
 
 /** ----- Status line rendering ----- */
@@ -449,15 +405,11 @@ export function renderStatusLine(opts: {
   name: string;
   mode: InboundDeliveryMode;
   pending: number;
-  showHelp: boolean;
   /** Terminal rows — defaults to 24 if unknown. The status line lands on row N. */
   rows?: number;
 }): string {
   const row = Math.max(opts.rows ?? 24, 1);
-  const help = opts.showHelp
-    ? ' | Ctrl+G flush | Ctrl+B D detach | Ctrl+B ? hide help'
-    : ' | Ctrl+G flush | Ctrl+B D detach';
-  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending}${help}]`;
+  const text = `[drive ${opts.name} | delivery=${opts.mode} | pending=${opts.pending} | Ctrl+C detach]`;
   // ESC 7 = save cursor; ESC[<row>;1H = move to bottom row; ESC[2K = clear line;
   // ESC[7m = reverse video; ESC[0m = reset; ESC 8 = restore cursor.
   return `\x1b7\x1b[${row};1H\x1b[2K\x1b[7m${text}\x1b[0m\x1b8`;
@@ -476,7 +428,7 @@ interface DriveSessionState {
 
 /**
  * Run the interactive session: opens the WS, takes over stdin on
- * `open`, drives keybinds/resize/status-line, and restores the
+ * `open`, drives resize/status-line handling, and restores the
  * worker's previous mode on any exit path. Resolves with the exit
  * code the CLI should propagate.
  */
@@ -494,7 +446,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     let rawModeWasSet = false;
     let unsubscribeResize: (() => void) | null = null;
     let pending = state.initialPending;
-    let showHelp = false;
     let terminalRows = state.initialTerminalRows;
     const parser = new KeybindParser();
     let inputStream: CliPtyInputStream | null = null;
@@ -506,7 +457,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
           name,
           mode: 'manual_flush',
           pending,
-          showHelp,
           rows: terminalRows,
         })
       );
@@ -557,20 +507,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       }
       for (const action of outcome.actions) {
         switch (action) {
-          case 'flush':
-            void flushPending(connection, name, deps.fetch).then((res) => {
-              if (!res.ok) {
-                deps.log(`[drive] flush failed: ${res.message ?? 'unknown error'}`);
-              }
-            });
-            break;
           case 'detach':
             finish(0);
             return;
-          case 'toggle_help':
-            showHelp = !showHelp;
-            paintStatus();
-            break;
         }
       }
     };
@@ -677,7 +616,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     }
 
     socket.on('open', () => {
-      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
       // Now that the event WS is up, open the SDK input stream before
       // taking over stdin. A failed stream should not leave the user's
       // terminal in raw mode with nowhere to send bytes.

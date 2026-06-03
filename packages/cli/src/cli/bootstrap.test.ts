@@ -46,6 +46,9 @@ const expectedLeafCommands = [
   'agent list',
   'agent add',
   'agent remove',
+  'agent message flush',
+  'agent message hold',
+  'agent message auto',
   // channel
   'channel create',
   'channel list',

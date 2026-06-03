@@ -28,7 +28,7 @@ SDK-backed command groups accept these options:
 | `--token <token>` | `RELAY_AGENT_TOKEN` | Acting agent token. |
 | `--base-url <url>` | `RELAY_BASE_URL` | API base URL override. |
 
-The SDK-backed groups are `agent`, `channel`, `message`, `integration`, and `capabilities`.
+The SDK-backed groups are `channel`, `message`, `integration`, and `capabilities`. Most `agent` commands are SDK-backed; `agent message ...` controls the local broker.
 
 ## Workspaces
 
@@ -48,6 +48,9 @@ The SDK-backed groups are `agent`, `channel`, `message`, `integration`, and `cap
 | `agent-relay agent list [--status <status>]` | List workspace agents. |
 | `agent-relay agent add <name> [--type <type>]` | Add an agent identity. |
 | `agent-relay agent remove <name>` | Remove an agent identity. |
+| `agent-relay agent message hold <name> [--broker-url <url>] [--api-key <key>] [--state-dir <dir>]` | Hold new relay messages for a local broker agent. |
+| `agent-relay agent message flush <name> [--broker-url <url>] [--api-key <key>] [--state-dir <dir>]` | Flush queued relay messages into a held local broker agent. |
+| `agent-relay agent message auto <name> [--broker-url <url>] [--api-key <key>] [--state-dir <dir>]` | Resume automatic relay message injection for a local broker agent. |
 
 `--type` accepts `agent`, `human`, or `system`.
 
@@ -144,7 +147,7 @@ The SDK-backed groups are `agent`, `channel`, `message`, `integration`, and `cap
 | `agent-relay local agent attach <name> [--mode <mode>]` | Attach to a running agent. |
 | `agent-relay local tail [--agent <name>]` | Stream broker events or one agent output stream. |
 
-Local attach mode is one of `view`, `drive`, or `passthrough`.
+Local attach mode is one of `view`, `drive`, or `passthrough`. Use `agent message hold`, `agent message flush`, and `agent message auto` to control drive-mode delivery from another terminal. These commands accept the same `--broker-url`, `--api-key`, and `--state-dir` broker selection flags as `local agent attach`.
 
 ## Cloud
 
