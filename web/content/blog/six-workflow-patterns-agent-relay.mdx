@@ -15,12 +15,12 @@ tags:
 
 [Thariq Shihipar had a great post on Claude's workflows](https://x.com/trq212/status/2061907337154367865). The pattern is right and indeed super useful: give the agent a custom harness for tasks that break a single long context window. But it is missing one thing I care about: the ability to mix agent runtimes like Claude Code, Codex, OpenCode, and Gemini in the same workflow. Use the right tool for the job and all that.
 
-We've been using [Relayflows](https://github.com/agentworkforce/relayflows) for a few months and they've proven to be a power tool we keep coming back to. Use Claude where communication and judgment matter, Codex where deep implementation matters, OpenCode where provider flexibility matters, Gemini where broad context helps, and deterministic gates where trust matters. 
+We've been using [Relayflows](https://github.com/agentworkforce/relayflows) for a few months and they've proven to be a power tool we keep coming back to. Use Claude where communication and judgment matter, Codex where deep implementation matters, OpenCode where provider flexibility matters, Gemini where broad context helps, and deterministic gates where trust matters.
 
 It's not for every job, of course, but when you need it it's invaluable.
 
-
 ## Basic Shape
+
 Run a workflow from a file:
 
 ```bash
@@ -37,6 +37,7 @@ agent-relay cloud run workflows/my-workflow.ts --sync-code
 agent-relay cloud logs <run-id> --follow
 agent-relay cloud sync <run-id>
 ```
+
 <br />
 
 The most important lesson:
@@ -257,17 +258,26 @@ Use a Relayflow when at least one is true:
 - The job is mostly classification, ranking, synthesis, or verification.
 - Different agent runtimes should own different roles.
 
-
-<div style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "start", gap: "1rem", marginTop: "60px" }}>
+<div
+  style={{
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    alignItems: 'start',
+    gap: '1rem',
+    marginTop: '60px',
+  }}
+>
   <span>
-    <em>If you found this playbook helpful, check out <a href="https://agentrelay.com">Agent Relay</a> (aka the engine powering these workflow patterns). Open source from day one.</em>
+    <em>
+      If you found this playbook helpful, check out <a href="https://agentrelay.com">Agent Relay</a> (aka the
+      engine powering these workflow patterns). Open source from day one.
+    </em>
   </span>
   <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer">
     <img
       src="https://img.shields.io/github/stars/agentworkforce/relay?style=for-the-badge&label=Star%20on%20GitHub&color=2E6A9C&logo=github"
       alt="Star Agent Relay on GitHub"
-      style={{ display: "block" }}
+      style={{ display: 'block' }}
     />
   </a>
 </div>
-
