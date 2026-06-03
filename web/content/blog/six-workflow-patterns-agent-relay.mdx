@@ -25,6 +25,7 @@ Run a workflow from a file:
 
 ```bash
 npm -g install agent-relay
+npm install @relayflows/core
 agent-relay local run workflows/my-workflow.ts
 agent-relay local logs <run-id> --follow
 agent-relay local sync <run-id>
@@ -50,7 +51,7 @@ Use this when one agent should route the task to the right specialist. Good for 
 Relay shape: `handoff` or a live classifier in a channel. If you want deterministic workflow steps, let non-selected specialists return `SKIP`.
 
 ```ts
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 await workflow('classify-and-act')
   .pattern('handoff')
   .agent('router', { cli: 'claude', role: 'classifier' })
