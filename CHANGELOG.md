@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
 - Root builds now validate the simplified core package set: config, utils, SDK, harness-driver, harnesses, and CLI.
 - `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
+- `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
 
 ### Deprecated
 

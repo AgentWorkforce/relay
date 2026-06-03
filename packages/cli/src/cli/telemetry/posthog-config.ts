@@ -10,7 +10,8 @@
  *   POSTHOG_API_KEY         - Per-process override (mainly for local
  *                              debugging or staging). Wins over
  *                              `AGENT_RELAY_POSTHOG_KEY` when set.
- *   POSTHOG_HOST            - Override host URL.
+ *   POSTHOG_HOST            - Override host URL. Defaults to the hosted
+ *                              Agent Relay ingestion proxy.
  *
  * Key selection order:
  *   1. POSTHOG_API_KEY (process override, any environment)
@@ -18,7 +19,7 @@
  *   3. None → returns `null` and `initTelemetry()` becomes a no-op.
  */
 
-const HOST = 'https://us.i.posthog.com';
+const HOST = 'https://i.agentrelay.com';
 
 function readKey(name: string): string | null {
   const raw = process.env[name];
