@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 
 import { SkillPage } from '../../../components/SkillPage';
 import { readSkillMarkdown } from '../../../lib/skill-markdown';
+import { defaultOgImage } from '../../../lib/og-meta';
 import { absoluteUrl } from '../../../lib/site';
 
 export const dynamic = 'force-static';
@@ -20,11 +21,13 @@ export const metadata: Metadata = {
     description: 'Hosted setup and troubleshooting instructions for connecting OpenClaw to Agent Relay.',
     url: absoluteUrl('/openclaw/skill'),
     type: 'article',
+    images: [defaultOgImage()],
   },
   twitter: {
     title: 'OpenClaw Skill',
     description: 'Hosted setup and troubleshooting instructions for OpenClaw on Agent Relay.',
-    card: 'summary',
+    card: 'summary_large_image',
+    images: [defaultOgImage().url],
   },
 };
 

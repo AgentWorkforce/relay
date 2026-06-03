@@ -34,6 +34,7 @@ export const metadata: Metadata = {
         url: absoluteUrl('/brand-kit/agent-relay-logo-circle.png'),
         width: 1024,
         height: 1024,
+        type: 'image/png',
         alt: 'Agent Relay logo',
       },
     ],

@@ -11,7 +11,7 @@ const nextConfig = {
   outputFileTracingIncludes: {
     '/*': ['content/docs/**/*', 'content/blog/**/*'],
     // The Pear OG card embeds this screenshot at render time.
-    '/pear/opengraph-image': ['public/img/pear-app.png'],
+    '/pear/og.png': ['public/img/pear-app.png'],
   },
   webpack(config) {
     config.module.rules.push({

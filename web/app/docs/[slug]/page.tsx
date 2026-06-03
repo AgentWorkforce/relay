@@ -21,6 +21,7 @@ import { getDoc } from '../../../lib/docs';
 import { getDocMarkdownUrl } from '../../../lib/docs-markdown';
 import { getAllDocSlugs, getAllLegacyDocSlugs } from '../../../lib/docs-nav';
 import { getDefaultDocsVersionForSlug } from '../../../lib/docs-versions';
+import { ogImage } from '../../../lib/og-meta';
 import { absoluteUrl } from '../../../lib/site';
 
 function slugify(text: string): string {
@@ -96,6 +97,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description: doc.frontmatter.description,
       url: absoluteUrl(`/docs/${slug}`),
       type: 'article',
+      images: [ogImage(`/docs/${slug}/og.png`, `${doc.frontmatter.title} — Agent Relay docs`)],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: doc.frontmatter.title,
+      description: doc.frontmatter.description,
+      images: [absoluteUrl(`/docs/${slug}/og.png`)],
     },
   };
 }

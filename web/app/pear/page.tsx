@@ -6,6 +6,7 @@ import { SiteFooter } from '../../components/SiteFooter';
 import { SiteNav } from '../../components/SiteNav';
 import { WaitlistForm } from '../../components/WaitlistForm';
 import { WorksWithEveryAgent } from '../../components/home';
+import { ogImage } from '../../lib/og-meta';
 import { absoluteUrl } from '../../lib/site';
 import home from '../landing.module.css';
 import s from './pear.module.css';
@@ -23,11 +24,13 @@ export const metadata: Metadata = {
       'A desktop workspace where multiple AI agents code alongside you, coordinate with each other, and run parallel workstreams.',
     url: absoluteUrl('/pear'),
     type: 'website',
+    images: [ogImage('/pear/og.png', 'Pear by Agent Relay — pair program with a team of AI coding agents.')],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Pear by Agent Relay',
     description: 'Pair program with a team of agents that talk to each other and run parallel workstreams.',
+    images: [absoluteUrl('/pear/og.png')],
   },
 };
 

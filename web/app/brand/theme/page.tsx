@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { GitHubStarsBadge } from '../../../components/GitHubStars';
 import { SiteFooter } from '../../../components/SiteFooter';
 import { SiteNav } from '../../../components/SiteNav';
+import { defaultOgImage } from '../../../lib/og-meta';
 import { absoluteUrl } from '../../../lib/site';
 import { ThemeShowcase } from './ThemeShowcase';
 
@@ -28,11 +29,13 @@ export const metadata: Metadata = {
     description,
     url: absoluteUrl('/brand/theme'),
     type: 'website',
+    images: [defaultOgImage()],
   },
   twitter: {
     card: 'summary_large_image',
     title: `${title} · Agent Relay`,
     description,
+    images: [defaultOgImage().url],
   },
 };
 

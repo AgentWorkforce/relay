@@ -1,9 +1,10 @@
 /**
  * Shared building blocks for Agent Relay's dynamically generated Open Graph
- * cards (next/og + satori, 1200x630). This module is NOT a route — the route
- * files (`app/opengraph-image.tsx`, `app/og-home/route.tsx`, the blog and docs
- * `opengraph-image.tsx`) import these helpers so every card shares one frame,
- * one palette, and one font/logo treatment.
+ * cards (next/og + satori, 1200x630). This module is NOT a route — the `.png`
+ * route handlers (`app/og-home.png/route.tsx`, `app/og-default.png/route.tsx`,
+ * and the per-segment `og.png/route.tsx` files under blog/docs/pear) import
+ * these helpers so every card shares one frame, one palette, and one font/logo
+ * treatment.
  *
  * Satori constraints respected throughout: flexbox only (no grid), every node
  * carries an explicit `display`, every text node has a flex parent, and SVG/img

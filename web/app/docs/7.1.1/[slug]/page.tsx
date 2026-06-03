@@ -18,6 +18,7 @@ import { Warning } from '../../../../components/docs/Warning';
 import styles from '../../../../components/docs/docs.module.css';
 import { getDoc } from '../../../../lib/docs';
 import { getAllLegacyDocSlugs } from '../../../../lib/docs-nav';
+import { defaultOgImage } from '../../../../lib/og-meta';
 import { absoluteUrl } from '../../../../lib/site';
 
 function slugify(text: string): string {
@@ -81,6 +82,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description: doc.frontmatter.description,
       url: absoluteUrl(`/docs/7.1.1/${slug}`),
       type: 'article',
+      images: [defaultOgImage()],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: `${doc.frontmatter.title} - Version 7.1.1`,
+      description: doc.frontmatter.description,
+      images: [defaultOgImage().url],
     },
   };
 }
