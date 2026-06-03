@@ -1,0 +1,19 @@
+{
+  "id": "traj_r01417xy0z6w",
+  "version": 1,
+  "task": {
+    "title": "Rewrite v8 SDK docs to new API"
+  },
+  "status": "active",
+  "startedAt": "2026-06-03T05:44:23.865Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "86ccb27dc1ca11ad9f48a1b77fa445317fffd342",
+    "endRef": "86ccb27dc1ca11ad9f48a1b77fa445317fffd342"
+  }
+}
