@@ -1,0 +1,284 @@
+---
+title: 'Six Workflow Patterns with Agent Relay'
+description: "Claude workflows are great, but they do not let you mix agent runtimes. Here is a short playbook for Claude's recommended multi-agent strategies using Agent Relayflows, with compact code examples."
+date: '2026-06-03'
+author: 'Will Washburn'
+category: 'Playbooks'
+tags:
+  - Playbooks
+  - Engineering
+  - Relayflows
+  - Agent Relay
+  - Workflow patterns
+  - Multi-agent orchestration
+---
+
+[Thariq Shihipar had a great post on Claude's workflows](https://x.com/trq212/status/2061907337154367865). The pattern is right and indeed super useful: give the agent a custom harness for tasks that break a single long context window. But it is missing one thing I care about: the ability to mix agent runtimes like Claude Code, Codex, OpenCode, and Gemini in the same workflow. Use the right tool for the job and all that.
+
+We've been using [Relayflows](https://github.com/agentworkforce/relayflows) for a few months and they've proven to be a power tool we keep coming back to. Use Claude where communication and judgment matter, Codex where deep implementation matters, OpenCode where provider flexibility matters, Gemini where broad context helps, and deterministic gates where trust matters.
+
+It's not for every job, of course, but when you need it it's invaluable.
+
+## Basic Shape
+
+Run a workflow from a file:
+
+```bash
+npm -g install agent-relay
+npm install @relayflows/core
+agent-relay local run workflows/my-workflow.ts
+agent-relay local logs <run-id> --follow
+agent-relay local sync <run-id>
+```
+
+As long as you're ok leaving your laptop open to run for awhile, this is great. But if you want to run it on a remote machine (and not cook an egg on your laptop spinning up a bazillion agents), you can use the Agent Relay cloud.
+
+```bash
+agent-relay cloud run workflows/my-workflow.ts --sync-code
+agent-relay cloud logs <run-id> --follow
+agent-relay cloud sync <run-id>
+```
+
+<br />
+
+The most important lesson:
+Pick the topology first, then agents, then gates. A workflow that starts with "spawn five agents" usually has the wrong center of gravity.
+
+## 1. Classify And Act
+
+Use this when one agent should route the task to the right specialist. Good for support queues, issue triage, model routing, and mixed backlog grooming.
+
+Relay shape: `handoff` or a live classifier in a channel. If you want deterministic workflow steps, let non-selected specialists return `SKIP`.
+
+```ts
+import { workflow } from '@relayflows/core';
+await workflow('classify-and-act')
+  .pattern('handoff')
+  .agent('router', { cli: 'claude', role: 'classifier' })
+  .agent('bugfix', { cli: 'codex', role: 'bugfix specialist' })
+  .agent('docs', { cli: 'claude', role: 'docs specialist' })
+  .agent('research', { cli: 'gemini', role: 'research specialist' })
+  .step('classify', {
+    agent: 'router',
+    task: 'Classify {{task}} as bugfix, docs, or research. Output ROUTE:<name> and a short brief.',
+  })
+  .step('bugfix', {
+    agent: 'bugfix',
+    dependsOn: ['classify'],
+    task: 'If ROUTE:bugfix is absent, output SKIP. Otherwise execute the brief:\n{{steps.classify.output}}',
+  })
+  .step('docs', {
+    agent: 'docs',
+    dependsOn: ['classify'],
+    task: 'If ROUTE:docs is absent, output SKIP. Otherwise execute the brief:\n{{steps.classify.output}}',
+  })
+  .step('research', {
+    agent: 'research',
+    dependsOn: ['classify'],
+    task: 'If ROUTE:research is absent, output SKIP. Otherwise execute the brief:\n{{steps.classify.output}}',
+  })
+  .run();
+```
+
+## 2. Fanout And Synthesize
+
+Use this when the subtasks are independent and a lead can merge the outputs. Good for parallel reviews, research sweeps, claim checks, and subsystem audits.
+
+Relay shape: `fan-out`. Workers do not need to talk to each other; the synthesizer owns the final answer.
+
+```ts
+await workflow('fanout-and-synthesize')
+  .pattern('fan-out')
+  .agent('lead', { cli: 'claude', role: 'synthesizer' })
+  .agent('api', { cli: 'codex', role: 'worker', interactive: false })
+  .agent('web', { cli: 'codex', role: 'worker', interactive: false })
+  .agent('docs', { cli: 'claude', role: 'worker', interactive: false })
+  .step('api-review', { agent: 'api', task: 'Review API risks for {{task}}.' })
+  .step('web-review', { agent: 'web', task: 'Review frontend risks for {{task}}.' })
+  .step('docs-review', { agent: 'docs', task: 'Review docs and migration risks for {{task}}.' })
+  .step('synthesize', {
+    agent: 'lead',
+    dependsOn: ['api-review', 'web-review', 'docs-review'],
+    task: `Merge the findings into one plan.
+
+API:
+{{steps.api-review.output}}
+
+Web:
+{{steps.web-review.output}}
+
+Docs:
+{{steps.docs-review.output}}`,
+  })
+  .run();
+```
+
+## 3. Adversarial Verification
+
+Use this when "done" is expensive to trust. Good for security, billing, permissions, migrations, factual claims, and anything with hidden failure modes.
+
+Relay shape: `verifier` or `red-team`. The worker builds; verifiers attack the claim; the worker repairs.
+
+```ts
+await workflow('adversarial-verification')
+  .pattern('verifier')
+  .agent('worker', { cli: 'codex', role: 'implementer' })
+  .agent('security', { cli: 'claude', role: 'verifier' })
+  .agent('tests', { cli: 'codex', role: 'verifier' })
+  .agent('product', { cli: 'claude', role: 'verifier' })
+  .step('build', { agent: 'worker', task: 'Implement {{task}}. Output DONE only with evidence.' })
+  .step('security-check', {
+    agent: 'security',
+    dependsOn: ['build'],
+    task: 'Try to disprove DONE. Focus on auth, secrets, and abuse cases.',
+  })
+  .step('test-check', {
+    agent: 'tests',
+    dependsOn: ['build'],
+    task: 'Try to break the change with focused tests and repros.',
+  })
+  .step('product-check', {
+    agent: 'product',
+    dependsOn: ['build'],
+    task: 'Check whether the shipped behavior matches the user promise.',
+  })
+  .step('repair', {
+    agent: 'worker',
+    dependsOn: ['security-check', 'test-check', 'product-check'],
+    task: 'Fix valid findings and rerun proof commands before final DONE.',
+  })
+  .run();
+```
+
+## 4. Generate And Filter
+
+Use this when you want many candidates, not one careful answer. Good for names, test cases, design options, prompts, rules, and refactor approaches.
+
+Relay shape: parallel generators plus one filter. The filter needs a rubric and dedupe rule.
+
+```ts
+await workflow('generate-and-filter')
+  .pattern('fan-out')
+  .agent('gen-a', { cli: 'claude', role: 'generator' })
+  .agent('gen-b', { cli: 'codex', role: 'generator' })
+  .agent('gen-c', { cli: 'gemini', role: 'generator' })
+  .agent('filter', { cli: 'claude', role: 'rubric judge' })
+  .step('a', { agent: 'gen-a', task: 'Generate 5 candidate approaches for {{task}}.' })
+  .step('b', { agent: 'gen-b', task: 'Generate 5 candidate approaches for {{task}}.' })
+  .step('c', { agent: 'gen-c', task: 'Generate 5 candidate approaches for {{task}}.' })
+  .step('filter', {
+    agent: 'filter',
+    dependsOn: ['a', 'b', 'c'],
+    task: 'Dedupe, score against impact/effort/risk, and return the best 3 candidates.',
+  })
+  .run();
+```
+
+## 5. Tournament
+
+Use this when independent attempts can compete. Good for tricky algorithms, UX copy, data transforms, qualitative ranking, evals, and implementation alternatives.
+
+Relay shape: `competitive`. Attempts stay separate; judges compare pairwise; a final judge picks the winner.
+
+```ts
+await workflow('tournament')
+  .pattern('competitive')
+  .agent('attempt-a', { cli: 'codex', role: 'competitor' })
+  .agent('attempt-b', { cli: 'claude', role: 'competitor' })
+  .agent('attempt-c', { cli: 'gemini', role: 'competitor' })
+  .agent('judge', { cli: 'claude', role: 'judge' })
+  .step('a', { agent: 'attempt-a', task: 'Solve {{task}} independently. Include proof.' })
+  .step('b', { agent: 'attempt-b', task: 'Solve {{task}} independently. Include proof.' })
+  .step('c', { agent: 'attempt-c', task: 'Solve {{task}} independently. Include proof.' })
+  .step('final', {
+    agent: 'judge',
+    dependsOn: ['a', 'b', 'c'],
+    task: 'Compare the attempts pairwise. Pick one winner and explain the tradeoff.',
+  })
+  .run();
+```
+
+## 6. Loop Until Done
+
+Use this when the first answer is probably wrong and the amount of work is unknown. Good for implementation work, release checks, flaky tests, migration hardening, triage queues, and anything that needs deterministic acceptance.
+
+Relay shape: `review-loop` plus repairable gates. The loop is not "try harder"; it is build, verify, repair, verify again.
+
+```ts
+await workflow('loop-until-done')
+  .pattern('review-loop')
+  .repairable()
+  .agent('builder', { cli: 'codex', role: 'implementer', retries: 3 })
+  .agent('reviewer', { cli: 'claude', role: 'reviewer' })
+  .step('build', {
+    agent: 'builder',
+    task: 'Implement {{task}}. Add or update tests. Output DONE only after proof.',
+  })
+  .step('review', {
+    agent: 'reviewer',
+    dependsOn: ['build'],
+    task: 'Fresh-eyes review the actual files. Output NO_ISSUES_FOUND or concrete findings.',
+  })
+  .step('test', {
+    type: 'deterministic',
+    dependsOn: ['review'],
+    command: 'npm test',
+    captureOutput: true,
+    failOnError: false,
+  })
+  .step('repair', {
+    agent: 'builder',
+    dependsOn: ['test'],
+    task: 'If tests failed or review had findings, repair them and rerun the same proof:\n{{steps.test.output}}',
+    verification: { type: 'output_contains', value: 'DONE' },
+  })
+  .onError('retry', { maxRetries: 3 })
+  .run();
+```
+
+## Useful Compositions
+
+- **Migration:** fan out by module, adversarially verify each patch, then loop until tests pass.
+- **Deep research:** fan out source discovery, verify claims, synthesize a cited report.
+- **Root cause:** generate independent hypotheses from logs, code, and data; run verifier agents against each theory.
+- **Rule adherence:** one verifier per rule, then a filter to remove noisy or redundant findings.
+- **Triage at scale:** classify each item, quarantine untrusted inputs, and let only privileged agents act.
+- **Taste work:** generate many options, filter by rubric, then tournament the finalists.
+
+Need routing? Use classify-and-act. Need breadth? Use fanout-and-synthesize. Need trust? Use adversarial verification. Need options? Use generate-and-filter. Need best-of-N? Use tournament. Need completion evidence? Use loop-until-done.
+
+## When Not To Use A Relayflow
+
+Do not reach for a workflow just because it feels powerful. Most ordinary coding tasks do not need a panel of agents.
+
+Use a Relayflow when at least one is true:
+
+- The task benefits from parallel clean context windows.
+- The result needs adversarial review.
+- The work has an unknown stopping point.
+- The job is mostly classification, ranking, synthesis, or verification.
+- Different agent runtimes should own different roles.
+
+<div
+  style={{
+    display: 'grid',
+    gridTemplateColumns: '1fr auto',
+    alignItems: 'start',
+    gap: '1rem',
+    marginTop: '60px',
+  }}
+>
+  <span>
+    <em>
+      If you found this playbook helpful, check out <a href="https://agentrelay.com">Agent Relay</a> (aka the
+      engine powering these workflow patterns). Open source from day one.
+    </em>
+  </span>
+  <a href="https://github.com/agentworkforce/relay" target="_blank" rel="noopener noreferrer">
+    <img
+      src="https://img.shields.io/github/stars/agentworkforce/relay?style=for-the-badge&label=Star%20on%20GitHub&color=2E6A9C&logo=github"
+      alt="Star Agent Relay on GitHub"
+      style={{ display: 'block' }}
+    />
+  </a>
+</div>

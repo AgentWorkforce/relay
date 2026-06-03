@@ -682,11 +682,33 @@
 
 .article ul,
 .article ol {
-  padding-left: 1.35rem;
+  list-style-position: outside;
+  padding-left: 1.55rem;
+}
+
+.article ul {
+  list-style-type: disc;
+}
+
+.article ol {
+  list-style-type: decimal;
 }
 
 .article li {
   margin: 0.4rem 0;
+  padding-left: 0.15rem;
+}
+
+.article li::marker {
+  color: var(--primary);
+}
+
+.article ul li::marker {
+  font-size: 0.92em;
+}
+
+.article ol li::marker {
+  font-weight: 700;
 }
 
 .article strong {
