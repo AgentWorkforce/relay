@@ -6,7 +6,7 @@
 //! Opt-out:
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
-//!   - Or write `{"enabled": false}` to `~/.agent-relay/telemetry.json`
+//!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
 
 use std::path::PathBuf;
 
@@ -185,7 +185,7 @@ impl TelemetryEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Preferences file (~/.agent-relay/telemetry.json)
+// Preferences file (~/.agentworkforce/relay/telemetry.json)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -197,7 +197,7 @@ struct TelemetryPrefs {
 }
 
 fn prefs_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agent-relay").join("telemetry.json"))
+    dirs::home_dir().map(|h| h.join(".agentworkforce/relay").join("telemetry.json"))
 }
 
 fn load_prefs() -> TelemetryPrefs {
@@ -232,7 +232,7 @@ fn machine_id_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| {
         h.join(".local")
             .join("share")
-            .join("agent-relay")
+            .join("agentworkforce").join("relay")
             .join("machine-id")
     })
 }

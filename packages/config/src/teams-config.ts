@@ -4,7 +4,7 @@
  *
  * teams.json can be placed in:
  * - Project root: ./teams.json
- * - Agent-relay dir: ./.agent-relay/teams.json
+ * - Agent-relay dir: ./.agentworkforce/relay/teams.json
  */
 
 import fs from 'node:fs';
@@ -46,11 +46,11 @@ export interface TeamsConfig {
  * Possible locations for teams.json (in order of precedence)
  */
 function getTeamsConfigPaths(projectRoot: string): string[] {
-  return [path.join(projectRoot, '.agent-relay', 'teams.json'), path.join(projectRoot, 'teams.json')];
+  return [path.join(projectRoot, '.agentworkforce/relay', 'teams.json'), path.join(projectRoot, 'teams.json')];
 }
 
 /**
- * Load teams.json from project root or .agent-relay directory
+ * Load teams.json from project root or .agentworkforce/relay directory
  * Returns null if no config found.
  * Results are cached and only reloaded when the file changes.
  */

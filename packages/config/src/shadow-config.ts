@@ -4,7 +4,7 @@
  *
  * Configuration can be placed in:
  * - Project root: ./.agent-relay.json
- * - Agent-relay dir: ./.agent-relay/config.json
+ * - Agent-relay dir: ./.agentworkforce/relay/config.json
  *
  * Shadow configuration structure:
  * {
@@ -90,7 +90,7 @@ const ROLE_PRESETS: Record<string, SpeakOnTrigger[]> = {
  * Possible locations for .agent-relay.json (in order of precedence)
  */
 function getConfigPaths(projectRoot: string): string[] {
-  return [path.join(projectRoot, '.agent-relay', 'config.json'), path.join(projectRoot, '.agent-relay.json')];
+  return [path.join(projectRoot, '.agentworkforce/relay', 'config.json'), path.join(projectRoot, '.agent-relay.json')];
 }
 
 /**

@@ -267,7 +267,7 @@ function createHarness(opts: FetchScript = {}): {
 
   const deps: PassthroughDependencies = {
     readConnectionFile: vi.fn(() => ({ url: 'http://localhost:3889', api_key: 'k' })),
-    getDefaultStateDir: vi.fn(() => '/tmp/fake/.agent-relay'),
+    getDefaultStateDir: vi.fn(() => '/tmp/fake/.agentworkforce/relay'),
     env: {},
     createWebSocket: vi.fn((url: string, headers: Record<string, string>) => {
       const socket = new FakeWebSocket(url, headers);

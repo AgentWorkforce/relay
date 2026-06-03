@@ -491,7 +491,7 @@ async function recoverHalfStartedBroker(
     if (!stopped) {
       deps.error(
         `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
       );
       return 'blocked';
     }
@@ -504,7 +504,7 @@ async function recoverHalfStartedBroker(
     if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
       deps.error(
         'Failed to stop all half-started broker processes. ' +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the processes.'
+          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the processes.'
       );
       return 'blocked';
     }
@@ -724,7 +724,7 @@ function resolveDashboardStaticDir(dashboardBinary: string | null, deps: CoreDep
 
   // Standalone installs download UI assets to ~/.relay/dashboard/out.
   const standaloneDashboardOutDir = path.join(homeDir, '.relay', 'dashboard', 'out');
-  const legacyDashboardOutDir = path.join(homeDir, '.agent-relay', 'dashboard', 'out');
+  const legacyDashboardOutDir = path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out');
   return pickDashboardStaticDir([standaloneDashboardOutDir, legacyDashboardOutDir], deps);
 }
 
@@ -1301,7 +1301,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         if (!stopped) {
           deps.error(
             `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
-              'Run `agent-relay down --force` to retry cleanup, or remove `.agent-relay/` after stopping the process.'
+              'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
           );
         }
       }
@@ -1471,7 +1471,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     // Kill any orphaned broker processes for this project that lost their PID
-    // files (e.g. user deleted .agent-relay/ while broker was running).
+    // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
     const started = await startBrokerWithPortFallback(paths, dashboardPort, deps, options.brokerName);

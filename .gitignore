@@ -80,7 +80,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-.agent-relay/
+.agentworkforce/relay/
 .relay/
 
 .sst

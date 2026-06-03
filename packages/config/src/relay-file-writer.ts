@@ -5,7 +5,7 @@
  * to the file system with a structured directory layout.
  *
  * Directory structure (project-local):
- * {projectRoot}/.agent-relay/
+ * {projectRoot}/.agentworkforce/relay/
  *   outbox/{agent-name}/              # Agent outbox messages
  *   attachments/{agent-name}/{ts}/    # Attachments organized by timestamp
  *   meta/                             # Configuration and state files
@@ -93,8 +93,8 @@ function hashWorkspaceId(workspaceId: string): string {
  * Get the base directory for relay data.
  * Priority:
  * 1. AGENT_RELAY_DATA_DIR environment variable
- * 2. XDG_DATA_HOME/agent-relay (Linux/macOS standard)
- * 3. ~/.agent-relay (fallback)
+ * 2. XDG_DATA_HOME/agentworkforce/relay (Linux/macOS standard)
+ * 3. ~/.agentworkforce/relay (fallback)
  */
 function getBaseDir(): string {
   // Explicit override
@@ -105,11 +105,11 @@ function getBaseDir(): string {
   // XDG Base Directory Specification
   const xdgDataHome = process.env.XDG_DATA_HOME;
   if (xdgDataHome) {
-    return path.join(xdgDataHome, 'agent-relay');
+    return path.join(xdgDataHome, 'agentworkforce', 'relay');
   }
 
-  // Default: ~/.agent-relay
-  return path.join(os.homedir(), '.agent-relay');
+  // Default: ~/.agentworkforce/relay
+  return path.join(os.homedir(), '.agentworkforce/relay');
 }
 
 /**
@@ -138,7 +138,7 @@ function getWorkspacePaths(workspaceId: string): RelayPaths {
 
 /**
  * Get local (non-workspace) relay paths.
- * Uses ~/.agent-relay for persistent storage.
+ * Uses ~/.agentworkforce/relay for persistent storage.
  */
 function getLocalPaths(): RelayPaths {
   const baseDir = getBaseDir();
@@ -201,7 +201,7 @@ export class RelayFileWriter {
 
   /**
    * Get the outbox path that agents should write to.
-   * Always returns the canonical ~/.agent-relay path.
+   * Always returns the canonical ~/.agentworkforce/relay path.
    * In workspace mode, this path is symlinked to the actual workspace path.
    */
   getOutboxPath(): string {
@@ -481,7 +481,7 @@ export function getBaseRelayPaths(workspaceId?: string): RelayPaths {
  */
 export function getAgentOutboxTemplate(_agentNameVar = '$AGENT_RELAY_NAME'): string {
   // Agents should use $AGENT_RELAY_OUTBOX which is set by the orchestrator
-  // This handles both local (project-local .agent-relay/) and cloud (workspace) modes
+  // This handles both local (project-local .agentworkforce/relay/) and cloud (workspace) modes
   return '$AGENT_RELAY_OUTBOX';
 }
 

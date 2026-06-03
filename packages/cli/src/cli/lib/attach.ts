@@ -155,7 +155,7 @@ export function prepareAttachTarget(
   if (!connection) {
     deps.error(
       'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agent-relay/connection.json.'
+        'or run from a directory containing .agentworkforce/relay/connection.json.'
     );
     return null;
   }

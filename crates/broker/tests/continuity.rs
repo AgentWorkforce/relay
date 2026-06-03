@@ -14,24 +14,24 @@ use std::path::Path;
 fn continuity_dir(state_path: &Path) -> std::path::PathBuf {
     state_path
         .parent()
-        .expect("state_path always has a parent (.agent-relay/)")
+        .expect("state_path always has a parent (.agentworkforce/relay/)")
         .join("continuity")
 }
 
 #[test]
 fn continuity_dir_from_state_path() {
-    let state_path = Path::new("/project/.agent-relay/state.json");
+    let state_path = Path::new("/project/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
-    assert_eq!(result, Path::new("/project/.agent-relay/continuity"));
+    assert_eq!(result, Path::new("/project/.agentworkforce/relay/continuity"));
 }
 
 #[test]
 fn continuity_dir_from_deeply_nested_state_path() {
-    let state_path = Path::new("/home/user/work/repo/.agent-relay/state.json");
+    let state_path = Path::new("/home/user/work/repo/.agentworkforce/relay/state.json");
     let result = continuity_dir(state_path);
     assert_eq!(
         result,
-        Path::new("/home/user/work/repo/.agent-relay/continuity")
+        Path::new("/home/user/work/repo/.agentworkforce/relay/continuity")
     );
 }
 

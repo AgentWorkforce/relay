@@ -2,7 +2,7 @@
  * Project Namespace Utility
  *
  * Generates project-specific paths for agent-relay data storage.
- * Data is stored in .agent-relay/ within the project root directory.
+ * Data is stored in .agentworkforce/relay/ within the project root directory.
  * This allows multiple projects to use agent-relay simultaneously
  * without conflicts, and keeps data with the project.
  */
@@ -16,8 +16,8 @@ import os from 'node:os';
  * Get the global base directory for agent-relay data (used for cross-project data).
  * Priority:
  * 1. AGENT_RELAY_DATA_DIR environment variable
- * 2. XDG_DATA_HOME/agent-relay (Linux/macOS standard)
- * 3. ~/.agent-relay (fallback)
+ * 2. XDG_DATA_HOME/agentworkforce/relay (Linux/macOS standard)
+ * 3. ~/.agentworkforce/relay (fallback)
  */
 function getGlobalBaseDir(): string {
   // Explicit override
@@ -28,17 +28,17 @@ function getGlobalBaseDir(): string {
   // XDG Base Directory Specification
   const xdgDataHome = process.env.XDG_DATA_HOME;
   if (xdgDataHome) {
-    return path.join(xdgDataHome, 'agent-relay');
+    return path.join(xdgDataHome, 'agentworkforce', 'relay');
   }
 
-  // Default: ~/.agent-relay
-  return path.join(os.homedir(), '.agent-relay');
+  // Default: ~/.agentworkforce/relay
+  return path.join(os.homedir(), '.agentworkforce/relay');
 }
 
 const GLOBAL_BASE_DIR = getGlobalBaseDir();
 
 /** Directory name within project root */
-const PROJECT_DATA_DIR = '.agent-relay';
+const PROJECT_DATA_DIR = '.agentworkforce/relay';
 
 /**
  * Generate a short hash of a path for namespacing
@@ -65,7 +65,7 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
   let current = path.resolve(startDir);
   const root = path.parse(current).root;
 
-  const markers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agent-relay'];
+  const markers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agentworkforce/relay'];
 
   while (current !== root) {
     for (const marker of markers) {
@@ -101,7 +101,7 @@ export interface ProjectPaths {
 export function getProjectPaths(projectRoot?: string): ProjectPaths {
   const root = projectRoot ?? findProjectRoot();
   const projectId = hashPath(root);
-  // Store data in project-local .agent-relay/ directory
+  // Store data in project-local .agentworkforce/relay/ directory
   const dataDir = path.join(root, PROJECT_DATA_DIR);
 
   return {
@@ -129,7 +129,7 @@ export function getGlobalPaths(): ProjectPaths {
 }
 
 /**
- * Add .agent-relay/ to .git/info/exclude (local per-repo gitignore).
+ * Add .agentworkforce/relay/ to .git/info/exclude (local per-repo gitignore).
  *
  * This file is:
  * - Per-repository (not shared across clones)
@@ -159,15 +159,15 @@ function ensureGitExclude(projectRoot: string): { modified: boolean } {
     let content = '';
     if (fs.existsSync(excludePath)) {
       content = fs.readFileSync(excludePath, 'utf-8');
-      // Check if .agent-relay is already in exclude
+      // Check if .agentworkforce/relay is already in exclude
       const lines = content.split('\n');
       const hasEntry = lines.some((line) => {
         const trimmed = line.trim();
         return (
-          trimmed === '.agent-relay' ||
-          trimmed === '.agent-relay/' ||
-          trimmed === '/.agent-relay' ||
-          trimmed === '/.agent-relay/'
+          trimmed === '.agentworkforce/relay' ||
+          trimmed === '.agentworkforce/relay/' ||
+          trimmed === '/.agentworkforce/relay' ||
+          trimmed === '/.agentworkforce/relay/'
         );
       });
       if (hasEntry) {
@@ -175,8 +175,8 @@ function ensureGitExclude(projectRoot: string): { modified: boolean } {
       }
     }
 
-    // Add .agent-relay/ to exclude
-    const newEntry = '.agent-relay/';
+    // Add .agentworkforce/relay/ to exclude
+    const newEntry = '.agentworkforce/relay/';
     const newContent =
       content.endsWith('\n') || content === '' ? `${content}${newEntry}\n` : `${content}\n${newEntry}\n`;
 
@@ -203,7 +203,7 @@ export function ensureProjectDir(projectRoot?: string): ProjectPaths {
     // Add to .git/info/exclude (local per-repo gitignore, not committed)
     const excludeResult = ensureGitExclude(paths.projectRoot);
     if (excludeResult.modified) {
-      console.log('[agent-relay] Added .agent-relay/ to .git/info/exclude');
+      console.log('[agent-relay] Added .agentworkforce/relay/ to .git/info/exclude');
     }
   }
   if (!fs.existsSync(paths.teamDir)) {

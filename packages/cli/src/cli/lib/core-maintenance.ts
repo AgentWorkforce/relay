@@ -259,8 +259,8 @@ export async function runUninstallCommand(
   for (const assetPath of [
     path.join(homeDir, '.relay', 'dashboard', 'out'),
     path.join(homeDir, '.relay', 'dashboard', '.version'),
-    path.join(homeDir, '.agent-relay', 'dashboard', 'out'),
-    path.join(homeDir, '.agent-relay', 'dashboard', '.version'),
+    path.join(homeDir, '.agentworkforce/relay', 'dashboard', 'out'),
+    path.join(homeDir, '.agentworkforce/relay', 'dashboard', '.version'),
   ]) {
     if (deps.fs.existsSync(assetPath)) {
       if (isDryRun) {
@@ -284,7 +284,7 @@ export async function runUninstallCommand(
 
   // --- Binary removal (standalone binaries + npm packages) ---
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
-  const installBinDir = path.join(homeDir, '.agent-relay', 'bin');
+  const installBinDir = path.join(homeDir, '.agentworkforce/relay', 'bin');
 
   // Remove standalone binaries from ~/.local/bin
   for (const binaryName of ['agent-relay', 'relay-dashboard-server', 'relay-acp']) {
@@ -318,7 +318,7 @@ export async function runUninstallCommand(
     }
   }
 
-  // Remove broker binary from ~/.agent-relay/bin/ (not the parent dir which stores global data)
+  // Remove broker binary from ~/.agentworkforce/relay/bin/ (not the parent dir which stores global data)
   if (deps.fs.existsSync(installBinDir)) {
     if (isDryRun) {
       deps.log(`[dry-run] Would remove directory: ${installBinDir}`);

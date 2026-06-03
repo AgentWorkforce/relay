@@ -140,16 +140,16 @@ pub(crate) struct DumpPtyCommand {
     pub(crate) format: DumpPtyFormat,
 
     /// Override the broker base URL. Falls back to RELAY_BROKER_URL, then to
-    /// reading `.agent-relay/connection.json` in the current directory.
+    /// reading `.agentworkforce/relay/connection.json` in the current directory.
     #[arg(long)]
     pub(crate) broker_url: Option<String>,
 
     /// Override the broker API key. Falls back to RELAY_BROKER_API_KEY, then
-    /// to reading `.agent-relay/connection.json` in the current directory.
+    /// to reading `.agentworkforce/relay/connection.json` in the current directory.
     #[arg(long)]
     pub(crate) api_key: Option<String>,
 
-    /// Override the directory containing `.agent-relay/connection.json` when
+    /// Override the directory containing `.agentworkforce/relay/connection.json` when
     /// auto-discovering the broker.
     #[arg(long)]
     pub(crate) state_dir: Option<PathBuf>,
@@ -232,7 +232,7 @@ pub(crate) struct InitCommand {
     pub(crate) api_bind: String,
 
     /// Enable persistence: write state, pending-deliveries, lock, and PID files
-    /// to `.agent-relay/` in the working directory. MCP configuration is injected
+    /// to `.agentworkforce/relay/` in the working directory. MCP configuration is injected
     /// into spawned agents at launch time instead of being written to project
     /// config files. When omitted (the default), runtime files are written to a
     /// deterministic temp directory and cleaned up opportunistically; identity
@@ -242,7 +242,7 @@ pub(crate) struct InitCommand {
     pub(crate) persist: bool,
 
     /// Override the directory used for broker state files (connection.json,
-    /// locks, state, pending-deliveries). Defaults to `.agent-relay/` in the
+    /// locks, state, pending-deliveries). Defaults to `.agentworkforce/relay/` in the
     /// working directory when `--persist` is set, or a temp directory otherwise.
     #[arg(long)]
     pub(crate) state_dir: Option<String>,
