@@ -39,9 +39,9 @@ async function quickStart(): Promise<void> {
   const engineer = await harnesses.codex.create({ relay, model: 'gpt-5.5' });
 
   const taskManager = await harnesses.custom.create();
-  await relay.workspace.register(taskManager);
+  const taskManagerClient = await relay.workspace.register(taskManager);
 
-  await relay.sendMessage({
+  await taskManagerClient.sendMessage({
     to: '#customer-complaints',
     msg: `${complaintTriager.handle} please work with ${taskManager.handle} and ${engineer.handle}`,
   });

@@ -4,7 +4,6 @@ import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './act
 import {
   RelaycastMessagingClient,
   type RelayAgentRegistration,
-  type RelayMessage,
   type RelayMessaging,
   type RelaycastMessagingOptions,
 } from './messaging/index.js';
@@ -18,7 +17,6 @@ import {
   type MessagingResolver,
   type RegisterActionInput,
   type RelayAgentClient,
-  type RelaySendMessageInput,
   type RelayWorkspace,
 } from './facade.js';
 import {
@@ -61,7 +59,6 @@ export interface AgentRelayAgent {
   readonly integrations: RelayMessaging['integrations'];
   readonly capabilities: RelayMessaging['commands'];
   readonly workspace: RelayWorkspace;
-  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
@@ -188,11 +185,6 @@ export class AgentRelay implements AgentRelayAgent {
     });
   }
 
-  /** High-level send. `to` may be a `#channel` or an agent name/handle. */
-  sendMessage(input: RelaySendMessageInput): Promise<RelayMessage> {
-    return this.messages.send(input);
-  }
-
   registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
     return registerFacadeAction(this.actions, def);
   }
@@ -264,7 +256,6 @@ export function agentRelayAgent(messaging: RelayMessaging, actions: AgentRelayAc
     integrations: messaging.integrations,
     capabilities: messaging.commands,
     workspace: createWorkspaceFacade(messaging),
-    sendMessage: (input) => messages.send(input),
     registerAction: (def) => registerFacadeAction(actions, def),
     addListener: (selector, handler) => hub.addListener(selector, handler),
     action: (name) => hub.action(name),
@@ -288,6 +279,7 @@ export function assembleAgentClient(
   return {
     ...base,
     ...handle,
+    sendMessage: (input) => base.messages.send(input),
     reply: (input) => base.messages.reply(input),
     react: (input) => base.messages.react(input.messageId, input.emoji),
   };

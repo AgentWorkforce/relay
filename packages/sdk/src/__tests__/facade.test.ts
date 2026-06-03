@@ -69,14 +69,15 @@ describe('AgentRelay facade (Phase A)', () => {
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {
     const { messaging, messages } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
 
-    await relay.sendMessage({ to: '#ops', msg: 'hello channel' });
+    await sender.sendMessage({ to: '#ops', msg: 'hello channel' });
     expect(messages.send).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'ops', text: 'hello channel' })
     );
 
-    await relay.sendMessage({ to: 'engineer', msg: 'hello agent' });
+    await sender.sendMessage({ to: 'engineer', msg: 'hello agent' });
     expect(messages.direct).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'engineer', text: 'hello agent' })
     );
@@ -84,9 +85,10 @@ describe('AgentRelay facade (Phase A)', () => {
 
   it('sendMessage routes an array of handles to a group DM', async () => {
     const { messaging, messages } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
 
-    await relay.sendMessage({ to: ['@alice', '@bob'], text: 'group hello' });
+    await sender.sendMessage({ to: ['@alice', '@bob'], text: 'group hello' });
     expect(messages.groupDirect).toHaveBeenCalledWith(
       expect.objectContaining({ participants: ['alice', 'bob'], text: 'group hello' })
     );
