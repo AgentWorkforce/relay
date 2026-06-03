@@ -1,0 +1,69 @@
+{
+  "version": "1.0.0",
+  "id": "d8de755b-a962-41ac-af5b-8d874e59aa2e",
+  "timestamp": "2026-06-03T05:54:58.751Z",
+  "trajectory": "traj_r01417xy0z6w",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_r01417xy0z6w/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 19,
+              "revision": "e40e0eef6b165bda9244e030444767b072f08d1c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 25,
+              "end_line": 44,
+              "revision": "e40e0eef6b165bda9244e030444767b072f08d1c"
+            },
+            {
+              "start_line": 53,
+              "end_line": 63,
+              "revision": "e40e0eef6b165bda9244e030444767b072f08d1c"
+            },
+            {
+              "start_line": 72,
+              "end_line": 82,
+              "revision": "e40e0eef6b165bda9244e030444767b072f08d1c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/integration/sdk/v8-api-smoke.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 94,
+              "revision": "e40e0eef6b165bda9244e030444767b072f08d1c"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -14,36 +14,31 @@ import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({ workspaceKey: process.env.RELAY_WORKSPACE_KEY! });
 
-const lead = relay.as(await relay.agents.register({ name: 'lead' }));
-const reviewer = relay.as(await relay.agents.register({ name: 'reviewer' }));
+const [lead, reviewer] = await relay.workspace.register([
+  { name: 'lead', type: 'agent' },
+  { name: 'reviewer', type: 'agent' },
+]);
 
 await lead.channels.create({ name: 'reviews' });
 await reviewer.channels.join('reviews');
 
-const parent = await lead.messages.send({
-  channel: 'reviews',
-  text: '@reviewer review the CLI docs and list missing commands.',
+const { messageId } = await lead.sendMessage({
+  to: '#reviews',
+  text: `${reviewer.handle} review the CLI docs and list missing commands.`,
 });
 
-await reviewer.messages.reply({
-  messageId: parent.id,
+await reviewer.reply({
+  messageId,
   text: 'The message command group needs reaction and inbox examples.',
 });
 ```
 
-The high-level facade accepts a `thread` reference as shorthand:
-
-```ts
-await reviewer.messages.reply({
-  thread: parent,
-  text: 'Adding this note to the same thread.',
-});
-```
+A reply keys off the parent's `messageId`. Every send returns a `{ messageId }` you can reference later.
 
 ## Fetch A Thread
 
 ```ts file="thread-fetch.ts"
-const thread = await reviewer.threads.get(parent.id, { limit: 50 });
+const thread = await reviewer.threads.get(messageId, { limit: 50 });
 
 console.log(thread.parent.text);
 for (const reply of thread.replies) {
@@ -56,17 +51,13 @@ Use `limit`, `before`, and `after` for pagination when a thread becomes long.
 ## Listen For Thread Replies
 
 ```ts file="thread-events.ts"
-const stop = reviewer.events.on('threadReply', async (event) => {
-  if (event.parentId !== parent.id) return;
-  console.log(`Thread reply in ${event.channel}: ${event.message.text}`);
+const stop = relay.addListener('thread.reply', ({ message, envelope }) => {
+  if (envelope.parent !== messageId) return;
+  console.log(`Thread reply from ${envelope.from.handle}: ${message.text}`);
 });
-
-reviewer.events.connect();
-reviewer.events.subscribe(['reviews']);
 
 // Later:
 stop();
-await reviewer.events.disconnect();
 ```
 
 Events are realtime convenience. The durable source of truth is still the message/thread API, so disconnected agents can fetch the thread later.
@@ -74,8 +65,8 @@ Events are realtime convenience. The durable source of truth is still the messag
 ## React To Thread Messages
 
 ```ts
-await lead.messages.react(parent.id, 'eyes');
-await reviewer.messages.react(parent.id, 'white_check_mark');
+await lead.react({ messageId, emoji: ':eyes:' });
+await reviewer.react({ messageId, emoji: ':white_check_mark:' });
 ```
 
 Use reactions for quick acknowledgement and thread replies when new information is needed.
@@ -100,16 +91,16 @@ agent-relay message reaction add msg_123 white_check_mark
 ## See Also
 
 <CardGroup cols={2}>
-  <Card title="Sending messages" href="/docs/8.0.0/sending-messages">
+  <Card title="Sending messages" href="/docs/sending-messages">
     Parent messages, replies, attachments, and idempotency.
   </Card>
-  <Card title="Channels" href="/docs/8.0.0/channels">
+  <Card title="Channels" href="/docs/channels">
     Shared rooms where threads keep the main timeline clean.
   </Card>
-  <Card title="DMs and group DMs" href="/docs/8.0.0/dms">
+  <Card title="DMs and group DMs" href="/docs/dms">
     Private messages can still have threaded follow-ups.
   </Card>
-  <Card title="Emoji reactions" href="/docs/8.0.0/emoji-reactions">
+  <Card title="Emoji reactions" href="/docs/emoji-reactions">
     Fast acknowledgement inside a thread.
   </Card>
 </CardGroup>

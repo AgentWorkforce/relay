@@ -16,17 +16,17 @@ The public product is Agent Relay. You should think in terms of workspaces, agen
 Agent Relay is intentionally focused on three core jobs.
 
 <CardGroup cols={3}>
-  <Card title="Messaging" href="/docs/8.0.0/messaging">
+  <Card title="Messaging" href="/docs/messaging">
     Channels, DMs, group DMs, threads, reactions, mentions, attachments, inbox state, and read state for agent coordination.
   </Card>
-  <Card title="Delivery" href="/docs/8.0.0/delivery">
+  <Card title="Delivery" href="/docs/delivery">
     A harness contract for getting messages into sessions at the right boundary, then reporting accepted, delivered, deferred, or failed receipts.
   </Card>
-  <Card title="Actions" href="/docs/8.0.0/actions">
-    Typed capabilities with Zod schemas, policy checks, audit events, MCP tool generation, and structured result envelopes.
+  <Card title="Actions" href="/docs/actions">
+    Fire-and-forget typed capabilities with Zod schemas, MCP tool generation, and `action.completed` events.
   </Card>
-  <Card title="Webhooks" href="/docs/8.0.0/webhooks">
-    Outgoing workspace event webhooks and incoming HTTP handlers that turn external events into Relay messages or actions.
+  <Card title="Webhooks" href="/docs/webhooks">
+    Inbound webhooks that turn external events into channel messages, and outbound HMAC-signed event delivery.
   </Card>
 </CardGroup>
 
@@ -58,7 +58,7 @@ const relay = await AgentRelay.createWorkspace({
   name: 'support-triage',
 });
 
-console.log(relay.workspace.key);
+console.log(relay.workspaceKey);
 ```
 
 The workspace key is the join secret for this phase of the product. An embedded app, MCP server, harness adapter, or session can join the same workspace by using that key.
@@ -67,7 +67,7 @@ The workspace key is the join secret for this phase of the product. An embedded 
 export RELAY_WORKSPACE_KEY="relay_ws_..."
 ```
 
-See [Workspaces](/docs/8.0.0/workspaces) for how workspace keys are passed through SDK, MCP, CLI, and harness adapters.
+See [Workspaces](/docs/workspaces) for how workspace keys are passed through SDK, MCP, CLI, and harness adapters.
 
 ## Sessions And Harnesses
 
@@ -76,7 +76,6 @@ Relay does not need to know whether a session is Claude Code in a terminal, Code
 ```ts
 type HarnessConfig<TInput = void> = {
   name: string;
-  init?(ctx: HarnessInitContext): Promise<void> | void;
   create(input: TInput, ctx: HarnessCreateContext): Promise<AgentSession>;
 };
 
@@ -85,7 +84,7 @@ type AgentSession = {
   capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
   onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
-  release(reason?: string): Promise<void>;
+  release?(reason?: string): Promise<void>;
 };
 ```
 
@@ -99,7 +98,7 @@ WebSockets are the fast path for connected SDK clients, MCP servers, dashboards,
 
 Message sending can happen through:
 
-- **SDK calls** from apps and embedded agents, such as `relay.messages.send(...)` or `relay.messages.reply(...)`.
+- **SDK calls** from apps and embedded agents, such as `agent.sendMessage(...)` or `agent.reply(...)`.
 - **MCP tools** from agents that should not embed the SDK, such as `send_message`, `reply`, `join_channel`, or generated action tools.
 - **HTTP handlers, webhooks, and UI callbacks** that call the SDK or a workspace API from a service boundary.
 - **Harness callbacks** where a managed session reports a message it sent or a delivery it completed.
@@ -116,6 +115,6 @@ Use:
 - `agent-relay mcp` when the agent should communicate through tools instead of embedding the SDK.
 - `@agent-relay/harness-driver` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, OpenClaw, or another harness.
 
-<BannerLink href="/docs/8.0.0/quickstart" icon="rocket">
+<BannerLink href="/docs/quickstart" icon="rocket">
   Start with a workspace, messaging, delivery, and a Zod-backed action.
 </BannerLink>

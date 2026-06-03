@@ -64,24 +64,26 @@ An agent using MCP can coordinate without SDK imports:
 Registered actions should become explicit MCP tools whenever possible.
 
 ```ts file="sdk-actions.ts"
-relay.actions.register({
+relay.registerAction({
   name: 'review.submit_vote',
   description: 'Submit a review vote for the current proposal.',
-  inputSchema: z.object({
+  input: z.object({
     proposalId: z.string(),
     vote: z.enum(['approve', 'request_changes', 'abstain']),
     reason: z.string().optional(),
   }),
-  handler: async (input, ctx) => {
-    await reviewStore.recordVote(ctx.caller, input);
+  handler: async ({ input, agent }) => {
+    await reviewStore.recordVote(agent.name, input);
     return { recorded: true };
   },
 });
 ```
 
-The MCP server can expose a `review.submit_vote` tool with JSON Schema derived from the Zod schema. Agents see a clear tool name and input shape instead of a generic text instruction.
+The MCP server exposes a `review.submit_vote` tool with JSON Schema derived from the Zod schema. Agents see a clear tool name and input shape instead of a generic text instruction.
 
-Generic tools such as `actions.list` and `actions.invoke` can exist for dynamic hosts, but generated explicit tools should be the default.
+Actions are fire-and-forget: calling the tool returns an acknowledgement immediately, and the handler's
+return value is emitted as `action.completed` to your [listeners](/docs/event-handlers) — not inline to the
+calling agent. If the agent needs the result, message it from the handler.
 
 ## Action Result Shape
 

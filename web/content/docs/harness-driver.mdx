@@ -33,7 +33,7 @@ const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
 const driver = new BrokerDriver();
 
 // Expose that lifecycle as actions (agent.create, agent.release, agent.status).
-registerDriverActions(relay.actions, driver);
+registerDriverActions(relay, driver);
 ```
 
 The harness driver package should be optional. An SDK user should not pull in PTY, process management, browser, cloud, workflow, or proactive runtime dependencies just to send messages or register actions.
@@ -48,24 +48,25 @@ action.
 ```ts
 import { registerDriverActions } from '@agent-relay/harness-driver';
 
-registerDriverActions(relay.actions, driver);
+registerDriverActions(relay, driver);
 
-const result = await relay.actions.invoke({
-  name: 'agent.create',
-  input: { name: 'reviewer', cli: 'codex', task: 'Review the migration guide.', channels: ['reviews'] },
-  caller: { name: 'planner', type: 'agent' },
+// An agent invokes `agent.create` through its MCP tools. Like every action it is
+// fire-and-forget: the call returns an acknowledgement and the driver emits
+// `action.completed` when the session is up. React with a listener.
+relay.addListener(relay.action('agent.create').completed(), (event) => {
+  console.log('spawned', event.output);
 });
 
-if (!result.ok) {
-  throw new Error(result.error?.message);
-}
+relay.addListener(relay.action('agent.create').failed(), (event) => {
+  console.error('spawn failed', event.error);
+});
 ```
 
 Pass `{ actionPrefix }` to `registerDriverActions` to namespace the actions, and
 provide any `AgentDriver` implementation; `BrokerDriver` is the built-in one that
 manages a local broker.
 
-This keeps agent creation in line with every other capability. Agents call a tool or SDK action; the harness driver owns the implementation.
+This keeps agent creation in line with every other capability. Agents call a tool; the harness driver owns the implementation and reports the result through `action.completed`.
 
 ## The Harness Driver Is Not Core Messaging
 

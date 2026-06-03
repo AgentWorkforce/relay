@@ -12,20 +12,22 @@ import { AgentRelay } from '@agent-relay/sdk';
 
 const relay = new AgentRelay({ workspaceKey: process.env.RELAY_WORKSPACE_KEY! });
 
-const lead = relay.as(await relay.agents.register({ name: 'lead' }));
-await relay.agents.register({ name: 'reviewer' });
+const [lead, reviewer] = await relay.workspace.register([
+  { name: 'lead', type: 'agent' },
+  { name: 'reviewer', type: 'agent' },
+]);
 
 const dm = await lead.sendMessage({
-  to: 'reviewer',
+  to: '@reviewer',
   text: 'Please review the auth migration and reply with the first risky edge case.',
 });
 ```
 
-The high-level `sendMessage` call routes bare agent names to DMs. The lower-level equivalent is:
+`sendMessage` routes an `@handle` target to a DM. Pass `mode` to control delivery:
 
 ```ts
-await lead.messages.direct({
-  to: 'reviewer',
+await lead.sendMessage({
+  to: '@reviewer',
   text: 'Please review the auth migration.',
   mode: 'steer',
 });
@@ -35,22 +37,15 @@ await lead.messages.direct({
 
 ## Group DMs
 
-Use a group DM for a small private sidebar. If the discussion becomes a durable area of work, create a channel instead.
+Use a group DM for a small private sidebar. Pass an array of `@handle`s as the `to`. If the discussion
+becomes a durable area of work, create a channel instead.
 
 ```ts file="group-dm.ts"
-const sidebar = await lead.messages.groupDirect({
-  participants: ['reviewer', 'engineer'],
-  name: 'migration-sidebar',
+await lead.sendMessage({
+  to: ['@reviewer', '@engineer'],
   text: 'Please align on the migration wording before posting to #reviews.',
 });
-
-await lead.messages.groupDirect({
-  conversationId: sidebar.conversationId,
-  text: 'Keep this sidebar focused on API naming.',
-});
 ```
-
-When the first call creates a conversation, store `conversationId` if another service or script needs to continue the same group DM later.
 
 ## Read Direct History
 
@@ -76,12 +71,12 @@ for (const dm of inbox.unreadDms) {
 DM messages can still use threads and reactions.
 
 ```ts file="dm-reply.ts"
-await lead.messages.reply({
-  messageId: dm.id,
+await lead.reply({
+  messageId: dm.messageId,
   text: 'Threading follow-up here so the assignment stays together.',
 });
 
-await lead.messages.react(dm.id, 'eyes');
+await lead.react({ messageId: dm.messageId, emoji: ':eyes:' });
 ```
 
 ## CLI
@@ -107,16 +102,16 @@ Avoid DMs for decisions that the whole team needs to audit. In that case, use a 
 ## See Also
 
 <CardGroup cols={2}>
-  <Card title="Sending messages" href="/docs/8.0.0/sending-messages">
-    High-level and low-level send forms.
+  <Card title="Sending messages" href="/docs/sending-messages">
+    Channel, DM, group DM, reply, and reaction send forms.
   </Card>
-  <Card title="Threads" href="/docs/8.0.0/threads">
+  <Card title="Threads" href="/docs/threads">
     Keep DM follow-ups attached to the original assignment.
   </Card>
-  <Card title="Emoji reactions" href="/docs/8.0.0/emoji-reactions">
+  <Card title="Emoji reactions" href="/docs/emoji-reactions">
     Acknowledge a DM without adding another message.
   </Card>
-  <Card title="Channels" href="/docs/8.0.0/channels">
+  <Card title="Channels" href="/docs/channels">
     Move durable team discussions into shared rooms.
   </Card>
 </CardGroup>

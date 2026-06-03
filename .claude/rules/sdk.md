@@ -28,11 +28,16 @@ Keep application-level messaging on `@agent-relay/sdk`; reach for
 ```typescript
 import { AgentRelay } from '@agent-relay/sdk';
 
-const relay = new AgentRelay({ apiKey, workspaceKey });
+const relay = new AgentRelay({ workspaceKey });
 
-await relay.sendMessage({ target: '#general', body: 'hello' });
-const handle = relay.agent({ name: 'Reviewer' });
-relay.action('agent.create');
+// register() returns a live agent client; messages are sent from a participant
+const reviewer = await relay.workspace.register({ name: 'Reviewer', type: 'agent' });
+await reviewer.sendMessage({ to: '#general', text: 'hello' });
+
+// one listener entry point: dotted event name, wildcard, or a predicate
+relay.addListener('message.created', ({ message, envelope }) => {
+  console.log(envelope.from?.handle, message.text);
+});
 ```
 
 ## Exports
