@@ -472,7 +472,7 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
-  it('tracks MCP action calls with spawn and release action types', async () => {
+  it('tracks MCP action calls with Relaycast action names and coarse categories', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({
       workspaceKey: 'rk_live_existing',
@@ -489,7 +489,8 @@ describe('createAgentRelayMcpServer', () => {
       'mcp_action_call',
       expect.objectContaining({
         tool_name: 'add_agent',
-        action_type: 'spawn',
+        action_type: 'agent.create',
+        action_category: 'spawn',
         transport: 'stdio',
         success: true,
         duration_ms: expect.any(Number),
@@ -501,7 +502,8 @@ describe('createAgentRelayMcpServer', () => {
       'mcp_action_call',
       expect.objectContaining({
         tool_name: 'remove_agent',
-        action_type: 'release',
+        action_type: 'agent.release',
+        action_category: 'release',
         transport: 'stdio',
         success: true,
         duration_ms: expect.any(Number),
@@ -509,7 +511,7 @@ describe('createAgentRelayMcpServer', () => {
     );
   });
 
-  it('infers lifecycle action types from registered action tool names', async () => {
+  it('uses registered action tool names as action types', async () => {
     const actions = {
       list: vi.fn(async () => [
         {
@@ -537,11 +539,45 @@ describe('createAgentRelayMcpServer', () => {
       'mcp_action_call',
       expect.objectContaining({
         tool_name: 'agent.create',
-        action_type: 'spawn',
+        action_type: 'agent.create',
+        action_category: 'spawn',
         transport: 'stdio',
         success: true,
       })
     );
+  });
+
+  it('uses invoke_action names as action types without argument values', async () => {
+    const actions = {
+      list: vi.fn(async () => []),
+      invoke: vi.fn(async () => ({ ok: true, action: 'github.open_pr', output: {} })),
+    };
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      actions: actions as any,
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    await server.tools.get('invoke_action')?.handler({
+      name: 'github.open_pr',
+      input: { title: 'private PR title' },
+    });
+
+    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
+      'mcp_action_call',
+      expect.objectContaining({
+        tool_name: 'invoke_action',
+        action_type: 'github.open_pr',
+        action_category: 'action',
+        transport: 'stdio',
+        success: true,
+      })
+    );
+    const telemetryPayload = mocks.telemetryTrack.mock.calls.find(
+      ([eventName]) => eventName === 'mcp_action_call'
+    )?.[1];
+    expect(JSON.stringify(telemetryPayload)).not.toContain('private PR title');
   });
 
   it('tracks failed MCP action calls without argument values', async () => {
@@ -559,7 +595,8 @@ describe('createAgentRelayMcpServer', () => {
 
     expect(mocks.telemetryTrack).toHaveBeenCalledWith('mcp_action_call', {
       tool_name: 'add_agent',
-      action_type: 'spawn',
+      action_type: 'agent.create',
+      action_category: 'spawn',
       transport: 'http',
       success: false,
       duration_ms: expect.any(Number),

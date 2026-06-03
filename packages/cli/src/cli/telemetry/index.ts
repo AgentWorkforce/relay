@@ -43,6 +43,7 @@ export type {
   CliCommandCompleteEvent,
   CliInstallEvent,
   CliUpdateEvent,
+  McpActionCallCategory,
   McpActionCallType,
   McpActionCallEvent,
   WorkflowRunEvent,

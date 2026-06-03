@@ -31,6 +31,7 @@ import {
   initTelemetry,
   shutdown as shutdownTelemetry,
   track,
+  type McpActionCallCategory,
   type McpActionCallType,
 } from './telemetry/index.js';
 import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
@@ -982,42 +983,59 @@ function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
   };
 }
 
-const MCP_TOOL_ACTION_TYPES = {
-  add_agent: 'spawn',
-  remove_agent: 'release',
-  invoke_action: 'action',
-  list_actions: 'action',
-  submit_result: 'result',
-  create_workspace: 'workspace',
-  set_workspace_key: 'workspace',
-  register_agent: 'agent',
-  list_agents: 'agent',
-  post_message: 'message',
-  send_dm: 'message',
-  send_group_dm: 'message',
-  list_dms: 'message',
-  list_messages: 'message',
-  get_message: 'message',
-  reply_to_thread: 'message',
-  get_message_thread: 'message',
-  get_thread: 'message',
-  search_messages: 'message',
-  create_channel: 'channel',
-  list_channels: 'channel',
-  join_channel: 'channel',
-  leave_channel: 'channel',
-  set_channel_topic: 'channel',
-  archive_channel: 'channel',
-  invite_to_channel: 'channel',
-  list_channel_members: 'channel',
-  add_reaction: 'reaction',
-  remove_reaction: 'reaction',
-  check_inbox: 'inbox',
-  mark_message_read: 'inbox',
-  get_message_readers: 'inbox',
-} satisfies Record<string, McpActionCallType>;
+interface McpToolActionMetadata {
+  actionType: McpActionCallType;
+  actionCategory: McpActionCallCategory;
+}
 
-function relaycastActionNameType(name: string): McpActionCallType {
+const MCP_TOOL_ACTION_METADATA = {
+  add_agent: { actionType: 'agent.create', actionCategory: 'spawn' },
+  remove_agent: { actionType: 'agent.release', actionCategory: 'release' },
+  invoke_action: { actionType: 'action.invoke', actionCategory: 'action' },
+  list_actions: { actionType: 'action.list', actionCategory: 'action' },
+  submit_result: { actionType: 'result.submit', actionCategory: 'result' },
+  create_workspace: { actionType: 'workspace.create', actionCategory: 'workspace' },
+  set_workspace_key: { actionType: 'workspace.set_key', actionCategory: 'workspace' },
+  register_agent: { actionType: 'agent.register', actionCategory: 'agent' },
+  list_agents: { actionType: 'agent.list', actionCategory: 'agent' },
+  post_message: { actionType: 'message.post', actionCategory: 'message' },
+  send_dm: { actionType: 'message.dm', actionCategory: 'message' },
+  send_group_dm: { actionType: 'message.group_dm', actionCategory: 'message' },
+  list_dms: { actionType: 'message.dm_list', actionCategory: 'message' },
+  list_messages: { actionType: 'message.list', actionCategory: 'message' },
+  get_message: { actionType: 'message.get', actionCategory: 'message' },
+  reply_to_thread: { actionType: 'message.reply', actionCategory: 'message' },
+  get_message_thread: { actionType: 'message.thread', actionCategory: 'message' },
+  get_thread: { actionType: 'message.thread', actionCategory: 'message' },
+  search_messages: { actionType: 'message.search', actionCategory: 'message' },
+  create_channel: { actionType: 'channel.create', actionCategory: 'channel' },
+  list_channels: { actionType: 'channel.list', actionCategory: 'channel' },
+  join_channel: { actionType: 'channel.join', actionCategory: 'channel' },
+  leave_channel: { actionType: 'channel.leave', actionCategory: 'channel' },
+  set_channel_topic: { actionType: 'channel.set_topic', actionCategory: 'channel' },
+  archive_channel: { actionType: 'channel.archive', actionCategory: 'channel' },
+  invite_to_channel: { actionType: 'channel.invite', actionCategory: 'channel' },
+  list_channel_members: { actionType: 'channel.member_list', actionCategory: 'channel' },
+  add_reaction: { actionType: 'reaction.add', actionCategory: 'reaction' },
+  remove_reaction: { actionType: 'reaction.remove', actionCategory: 'reaction' },
+  check_inbox: { actionType: 'inbox.check', actionCategory: 'inbox' },
+  mark_message_read: { actionType: 'inbox.mark_read', actionCategory: 'inbox' },
+  get_message_readers: { actionType: 'inbox.reader_list', actionCategory: 'inbox' },
+} satisfies Record<string, McpToolActionMetadata>;
+
+function readInvokedActionName(name: string, args: unknown[]): McpActionCallType | undefined {
+  if (name !== 'invoke_action') {
+    return undefined;
+  }
+  const [input] = args;
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const actionName = (input as { name?: unknown }).name;
+  return typeof actionName === 'string' && actionName.trim() ? actionName : undefined;
+}
+
+function relaycastActionNameCategory(name: string): McpActionCallCategory {
   const leaf = name.split(/[._-]/).filter(Boolean).at(-1)?.toLowerCase();
   switch (leaf) {
     case 'create':
@@ -1026,17 +1044,39 @@ function relaycastActionNameType(name: string): McpActionCallType {
       return 'spawn';
     case 'release':
       return 'release';
+    case 'status':
+      return 'agent';
     default:
       return 'action';
   }
 }
 
-function mcpToolActionType(name: string, actionToolNames: Set<string>): McpActionCallType {
-  const known = (MCP_TOOL_ACTION_TYPES as Partial<Record<string, McpActionCallType>>)[name];
+function mcpToolActionMetadata(
+  name: string,
+  args: unknown[],
+  actionToolNames: Set<string>
+): McpToolActionMetadata {
+  const invokedActionName = readInvokedActionName(name, args);
+  if (invokedActionName) {
+    return {
+      actionType: invokedActionName,
+      actionCategory: relaycastActionNameCategory(invokedActionName),
+    };
+  }
+
+  const known = (MCP_TOOL_ACTION_METADATA as Partial<Record<string, McpToolActionMetadata>>)[name];
   if (known) {
     return known;
   }
-  return actionToolNames.has(name) ? relaycastActionNameType(name) : 'tool';
+
+  if (actionToolNames.has(name)) {
+    return {
+      actionType: name,
+      actionCategory: relaycastActionNameCategory(name),
+    };
+  }
+
+  return { actionType: name, actionCategory: 'tool' };
 }
 
 function isErrorToolResult(value: unknown): boolean {
@@ -1046,6 +1086,7 @@ function isErrorToolResult(value: unknown): boolean {
 function trackMcpActionCall(input: {
   toolName: string;
   actionType: McpActionCallType;
+  actionCategory: McpActionCallCategory;
   transport?: AgentRelayMcpServerOptions['telemetryTransport'];
   startedAt: number;
   success: boolean;
@@ -1054,6 +1095,7 @@ function trackMcpActionCall(input: {
   track('mcp_action_call', {
     tool_name: input.toolName,
     action_type: input.actionType,
+    action_category: input.actionCategory,
     transport: input.transport ?? 'unknown',
     success: input.success,
     duration_ms: Date.now() - input.startedAt,
@@ -1082,7 +1124,7 @@ function enableInboxPiggyback(
     const wrapped = async (...args: unknown[]) => {
       const asIdentity = readAsIdentity(args);
       const startedAt = Date.now();
-      const actionType = mcpToolActionType(name, actionToolNames);
+      const actionMetadata = mcpToolActionMetadata(name, args, actionToolNames);
 
       let result: any;
       try {
@@ -1094,7 +1136,8 @@ function enableInboxPiggyback(
           invalidateAgentToken(asIdentity);
           trackMcpActionCall({
             toolName: name,
-            actionType,
+            actionType: actionMetadata.actionType,
+            actionCategory: actionMetadata.actionCategory,
             transport: telemetryTransport,
             startedAt,
             success: false,
@@ -1104,7 +1147,8 @@ function enableInboxPiggyback(
         }
         trackMcpActionCall({
           toolName: name,
-          actionType,
+          actionType: actionMetadata.actionType,
+          actionCategory: actionMetadata.actionCategory,
           transport: telemetryTransport,
           startedAt,
           success: false,
@@ -1118,7 +1162,8 @@ function enableInboxPiggyback(
         invalidateAgentToken(asIdentity);
         trackMcpActionCall({
           toolName: name,
-          actionType,
+          actionType: actionMetadata.actionType,
+          actionCategory: actionMetadata.actionCategory,
           transport: telemetryTransport,
           startedAt,
           success: false,
@@ -1150,7 +1195,8 @@ function enableInboxPiggyback(
       const resultIsError = isErrorToolResult(result);
       trackMcpActionCall({
         toolName: name,
-        actionType,
+        actionType: actionMetadata.actionType,
+        actionCategory: actionMetadata.actionCategory,
         transport: telemetryTransport,
         startedAt,
         success: !resultIsError,

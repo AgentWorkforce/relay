@@ -232,6 +232,13 @@ export interface CliUpdateEvent {
 }
 
 export type McpActionCallType =
+  | 'agent.create'
+  | 'agent.release'
+  | 'agent.attach'
+  | 'agent.status'
+  | (string & {});
+
+export type McpActionCallCategory =
   | 'spawn'
   | 'release'
   | 'action'
@@ -251,8 +258,10 @@ export type McpActionCallType =
 export interface McpActionCallEvent {
   /** MCP tool name, e.g. 'add_agent', 'remove_agent', 'invoke_action'. */
   tool_name: string;
-  /** Coarse action type used for grouping, e.g. 'spawn', 'release', 'action'. */
+  /** Action kind/name, e.g. 'agent.create', 'agent.release', or 'github.open_pr'. */
   action_type: McpActionCallType;
+  /** Coarse grouping for dashboards, e.g. 'spawn', 'release', 'action'. */
+  action_category: McpActionCallCategory;
   /** Transport surface that served the MCP call. */
   transport: 'stdio' | 'http' | 'unknown' | (string & {});
   /** True when the tool returned a non-error result. */
