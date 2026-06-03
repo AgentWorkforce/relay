@@ -507,11 +507,12 @@ describe('renderStatusLine', () => {
 
 describe('runDriveSession', () => {
   it('flips to manual_flush delivery mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
-    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'auto_inject' });
+    const { deps, sockets, fetchLog, stdin, logs } = createHarness({ initialMode: 'auto_inject' });
     const sessionPromise = runDriveSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
+    expect(logs.some((args) => String(args[0]).includes('driving Alice via'))).toBe(false);
 
     // PUT /delivery-mode body should be { mode: 'manual_flush' }.
     const flipCall = fetchLog.find((c) => c.method === 'PUT' && c.url.endsWith('/delivery-mode'));

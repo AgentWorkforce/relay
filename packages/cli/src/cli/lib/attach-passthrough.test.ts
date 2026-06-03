@@ -411,11 +411,12 @@ describe('renderStatusLine', () => {
 
 describe('runPassthroughSession', () => {
   it('ensures passthrough mode on attach, opens WS, then restores prior mode on detach', async () => {
-    const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'auto_inject' });
+    const { deps, sockets, fetchLog, stdin, logs } = createHarness({ initialMode: 'auto_inject' });
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     expect(socket.url).toBe('ws://localhost:3889/ws');
     expect(socket.headers['X-API-Key']).toBe('k');
+    expect(logs.some((args) => String(args[0]).includes('attached to'))).toBe(false);
 
     // After attach (before detach), exactly one PUT /delivery-mode should have fired:
     // the "ensure passthrough" call. The restore PUT only fires after detach.

@@ -249,7 +249,7 @@ describe('resolveViewBrokerConnection', () => {
 
 describe('runViewSession', () => {
   it('writes chunks for matching events and ignores others', async () => {
-    const { deps, writes, sockets } = createHarness({
+    const { deps, writes, sockets, logs } = createHarness({
       connectionFile: { url: 'http://localhost:3889', api_key: 'k' },
     });
 
@@ -262,6 +262,7 @@ describe('runViewSession', () => {
     expect(socket.headers['X-API-Key']).toBe('k');
 
     socket.emit('open');
+    expect(logs.some((args) => String(args[0]).includes('streaming Alice from'))).toBe(false);
     socket.emit(
       'message',
       Buffer.from(JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'hi' }))

@@ -677,7 +677,6 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     }
 
     socket.on('open', () => {
-      deps.log(`[drive] driving ${name} via ${connection.url} (Ctrl+B D to detach)`);
       // Now that the event WS is up, open the SDK input stream before
       // taking over stdin. A failed stream should not leave the user's
       // terminal in raw mode with nowhere to send bytes.
