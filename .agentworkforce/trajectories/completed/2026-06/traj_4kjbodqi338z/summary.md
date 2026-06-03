@@ -18,6 +18,7 @@ Reviewed PR 1032 docs default-version changes. Removed stale Next bare-doc redir
 ## Key Decisions
 
 ### Removed stale bare docs redirect table
+
 - **Chose:** Removed stale bare docs redirect table
 - **Reasoning:** Next redirects run before app routes and were redirecting new v8 bare docs pages such as /docs/cli-messaging to replacement pages, defeating the PR's v8 default routes and updated links.
 
@@ -26,6 +27,7 @@ Reviewed PR 1032 docs default-version changes. Removed stale Next bare-doc redir
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Removed stale bare docs redirect table: Removed stale bare docs redirect table
