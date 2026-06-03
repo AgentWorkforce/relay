@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import type React from 'react';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { evaluate } from '@mdx-js/mdx';
 import { Fragment } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
@@ -67,8 +67,19 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const version = getDefaultDocsVersionForSlug(slug);
-  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
+
+  // Legacy-only slugs live under /docs/7.1.1; point metadata there.
+  if (getDefaultDocsVersionForSlug(slug) === 'v7.1.1') {
+    const legacyDoc = getDoc(slug, 'v7.1.1');
+    const canonical = absoluteUrl(`/docs/7.1.1/${slug}`);
+    return {
+      title: legacyDoc?.frontmatter.title ?? 'Not Found',
+      description: legacyDoc?.frontmatter.description,
+      alternates: { canonical },
+    };
+  }
+
+  const doc = getDoc(slug, 'v8');
 
   if (!doc) {
     return { title: 'Not Found' };
@@ -91,8 +102,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function DocsPage({ params }: PageProps) {
   const { slug } = await params;
-  const version = getDefaultDocsVersionForSlug(slug);
-  const doc = getDoc(slug, version, { linkBasePath: '/docs' });
+
+  // Legacy-only slugs are served from the v7.1.1 archive, not the bare path.
+  if (getDefaultDocsVersionForSlug(slug) === 'v7.1.1') {
+    redirect(`/docs/7.1.1/${slug}`);
+  }
+
+  const doc = getDoc(slug, 'v8');
 
   if (!doc) {
     notFound();
@@ -108,7 +124,6 @@ export default async function DocsPage({ params }: PageProps) {
   const pageUrl = absoluteUrl(`/docs/${slug}`);
   const markdownPath = `/docs/markdown/${slug}.md`;
   const markdownUrl = getDocMarkdownUrl(slug);
-  const showPageActions = version === 'v8';
 
   return (
     <div className={styles.articleWrapper}>
@@ -117,14 +132,12 @@ export default async function DocsPage({ params }: PageProps) {
           <div className={styles.articleHeading}>
             <h1>{doc.frontmatter.title}</h1>
           </div>
-          {showPageActions && (
-            <DocsPageActions
-              title={doc.frontmatter.title}
-              pageUrl={pageUrl}
-              markdownPath={markdownPath}
-              markdownUrl={markdownUrl}
-            />
-          )}
+          <DocsPageActions
+            title={doc.frontmatter.title}
+            pageUrl={pageUrl}
+            markdownPath={markdownPath}
+            markdownUrl={markdownUrl}
+          />
         </div>
         {doc.frontmatter.description && (
           <p className={styles.articleDescription}>{doc.frontmatter.description}</p>
