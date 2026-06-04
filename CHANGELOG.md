@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/harnesses` is now published to npm, so external SDK consumers can install the prebuilt PTY harnesses (`claude`, `codex`, `gemini`, …) and the `definePtyHarness`/`defineHarness`/`createHuman` author helpers.
 - `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving a high-latency or remote agent, and stays invisible on fast local links.
 - `@agent-relay/harness-driver` exports a reusable `PredictiveEchoEngine` so other attach UIs (CLI, Electron, browser) can share one predictive-echo implementation.
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace client now receives all workspace-visible events: `events.connect()` opens the relaycast 2.5 workspace stream when no agent client is present, so the documented `relay.addListener('message.created', ...)` quickstart path streams without registering an agent.

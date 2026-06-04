@@ -964,6 +964,55 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+  # Publish @agent-relay/harnesses after the publish-packages matrix, which is
+  # where its exact-version workspace deps (@agent-relay/sdk and
+  # @agent-relay/harness-driver) land on the registry. Publishing harnesses
+  # before those exist would leave a window where
+  # `npm install @agent-relay/harnesses@<v>` cannot resolve its dependencies —
+  # the same install race the broker/sdk ordering above is built to avoid.
+  publish-harnesses:
+    name: Publish @agent-relay/harnesses
+    needs: [build, publish-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/harnesses
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/harnesses
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
   # bumped version. Publish those direct deps first so a main-only release
