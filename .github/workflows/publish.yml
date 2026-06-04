@@ -964,6 +964,55 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+  # Publish @agent-relay/harnesses after the publish-packages matrix, which is
+  # where its exact-version workspace deps (@agent-relay/sdk and
+  # @agent-relay/harness-driver) land on the registry. Publishing harnesses
+  # before those exist would leave a window where
+  # `npm install @agent-relay/harnesses@<v>` cannot resolve its dependencies —
+  # the same install race the broker/sdk ordering above is built to avoid.
+  publish-harnesses:
+    name: Publish @agent-relay/harnesses
+    needs: [build, publish-packages]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/harnesses
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/harnesses
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
   # bumped version. Publish those direct deps first so a main-only release
@@ -1528,13 +1577,18 @@ jobs:
   # Create git tag and release
   create-release:
     name: Create Release
-    needs: [build, build-broker, build-standalone, verify-binaries, publish-main]
+    needs: [build, build-broker, build-standalone, verify-binaries, publish-main, publish-harnesses]
     runs-on: ubuntu-latest
+    # publish-harnesses only runs for package=all; for a package=main release it
+    # is skipped, which must not block the tag. Gate on "not failed" rather than
+    # "succeeded" so a real harness publish failure stops the release but a
+    # skipped one does not.
     if: |
       always() &&
       github.event.inputs.package != 'cli-prerelease' &&
       github.event.inputs.dry_run != 'true' &&
       needs.publish-main.result == 'success' &&
+      (needs.publish-harnesses.result == 'success' || needs.publish-harnesses.result == 'skipped') &&
       needs.publish-main.outputs.published == 'true'
 
     steps:
@@ -2011,6 +2065,7 @@ jobs:
         publish-sdk-internal-deps,
         publish-broker-packages,
         publish-packages,
+        publish-harnesses,
         publish-brand-only,
         publish-sdk-py,
         publish-main,
@@ -2053,6 +2108,7 @@ jobs:
           echo "| Publish SDK Internal Deps | ${{ needs.publish-sdk-internal-deps.result == 'success' && '✅' || (needs.publish-sdk-internal-deps.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-internal-deps.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish Harnesses | ${{ needs.publish-harnesses.result == 'success' && '✅' || (needs.publish-harnesses.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-harnesses.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
