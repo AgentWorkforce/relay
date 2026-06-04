@@ -82,6 +82,10 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
    * a prior exit from broker history, so it is safe to call after the fact.
    */
   waitForExit(timeoutMs?: number): Promise<AgentExitInfo> {
+    // Ensure the broker event stream is live — `onEvent` only registers a
+    // listener; without an active connection no events ever arrive. Idempotent.
+    this.client.connectEvents();
+
     const already = this.exit;
     if (already) return Promise.resolve(already);
 
@@ -108,6 +112,9 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
    * if the agent exits first, or with `{ reason: 'timeout' }` after `timeoutMs`.
    */
   waitForIdle(timeoutMs?: number): Promise<AgentIdleInfo> {
+    // Ensure the broker event stream is live (see waitForExit). Idempotent.
+    this.client.connectEvents();
+
     const already = this.exit;
     if (already) return Promise.resolve({ reason: 'exited', exit: already });
 
