@@ -36,6 +36,11 @@
       "import": "./dist/harnesses.js",
       "default": "./dist/harnesses.js"
     },
+    "./predictive-echo": {
+      "types": "./dist/predictive-echo.d.ts",
+      "import": "./dist/predictive-echo.js",
+      "default": "./dist/predictive-echo.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
