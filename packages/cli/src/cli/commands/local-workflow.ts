@@ -420,25 +420,31 @@ async function readLocalRunLogs(
   record: LocalWorkflowRunRecord;
 }> {
   const record = await refreshRunRecord(await readRunRecord(deps.cwd(), runId), deps);
-  const stat = await fsp.stat(record.logPath).catch((error: unknown) => {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') {
-      return { size: 0 };
-    }
-    throw error;
-  });
-  const totalSize = stat.size;
-  const offset = Math.min(options.offset, totalSize);
-  const length = Math.max(0, totalSize - offset);
   const handle = await fsp.open(record.logPath, 'r').catch((error: unknown) => {
     const err = error as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') return null;
+    if (err.code === 'ENOENT') {
+      return null;
+    }
     throw error;
   });
 
   let content = '';
-  if (handle && length > 0) {
+  let totalSize = 0;
+  if (handle) {
     try {
+      const stat = await handle.stat();
+      totalSize = stat.size;
+      const offset = Math.min(options.offset, totalSize);
+      const length = Math.max(0, totalSize - offset);
+      if (length === 0) {
+        return {
+          content,
+          offset: totalSize,
+          totalSize,
+          done: TERMINAL_STATUSES.has(record.status),
+          record,
+        };
+      }
       const buffer = Buffer.alloc(length);
       const result = await handle.read(buffer, 0, length, offset);
       content = buffer.subarray(0, result.bytesRead).toString('utf-8');
