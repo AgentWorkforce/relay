@@ -115,14 +115,17 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = (info: AgentIdleInfo) => {
         if (timer) clearTimeout(timer);
-        unsubIdle();
-        unsubExit();
+        unsub();
         resolve(info);
       };
-      const unsubIdle = this.client.addListener('agentIdle', (payload) => {
-        if (payload.name === this.name) settle({ reason: 'idle', idleSecs: payload.idleSecs });
-      });
-      const unsubExit = this.client.onEvent((event: BrokerEvent) => {
+      // Idle and exit both arrive on the broker event stream. The named
+      // `agentIdle` event bus is only populated by call-site hooks (not broker
+      // events) in direct-client usage, so it must not be used here.
+      const unsub = this.client.onEvent((event: BrokerEvent) => {
+        if (event.kind === 'agent_idle' && event.name === this.name) {
+          settle({ reason: 'idle', idleSecs: event.idle_secs });
+          return;
+        }
         const exit = matchExit(event, this.name);
         if (exit) settle({ reason: 'exited', exit });
       });
