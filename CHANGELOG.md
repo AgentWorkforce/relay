@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
 - `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
 - `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape for laptop-hosted workflows.
+- `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
 
 ### Changed
 
@@ -58,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root builds now validate the simplified core package set: config, utils, SDK, harness-driver, harnesses, and CLI.
 - `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
 - `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
+- `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflows inside the Relay CLI.
 
 ### Deprecated
 

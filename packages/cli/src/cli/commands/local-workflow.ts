@@ -3,8 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { Command, InvalidArgumentError } from 'commander';
-import { build as esbuild } from 'esbuild';
 
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
@@ -46,7 +46,7 @@ export interface LocalWorkflowDependencies {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   spawnProcess: typeof spawnProcess;
-  buildTypeScriptEntrypoint: (entryPoint: string, outfile: string, cwd: string) => Promise<void>;
+  resolveRelayflowsCliEntrypoint: () => string;
   randomRunId: () => string;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
@@ -59,25 +59,14 @@ export interface LocalWorkflowDependencies {
 
 const RUN_ID_RE = /^local_[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
 const TERMINAL_STATUSES = new Set<LocalWorkflowRunStatus>(['completed', 'failed']);
+const nodeRequire = createRequire(import.meta.url);
 
 function withDefaults(overrides: Partial<LocalWorkflowDependencies> = {}): LocalWorkflowDependencies {
   return {
     cwd: () => process.cwd(),
     env: process.env,
     spawnProcess,
-    buildTypeScriptEntrypoint: async (entryPoint, outfile, cwd) => {
-      await esbuild({
-        entryPoints: [entryPoint],
-        outfile,
-        absWorkingDir: cwd,
-        bundle: true,
-        format: 'esm',
-        platform: 'node',
-        target: 'node20',
-        packages: 'external',
-        sourcemap: 'inline',
-      });
-    },
+    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
     randomRunId: () =>
       `local_${new Date().toISOString().replace(/[-:.TZ]/g, '')}_${randomBytes(4).toString('hex')}`,
     now: () => new Date(),
@@ -288,28 +277,14 @@ child.on('exit', (code, signal) => {
 async function resolveLocalWorkflowCommand(
   workflowPath: string,
   fileType: LocalWorkflowFileType,
-  runDir: string,
-  cwd: string,
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
-  if (fileType === 'yaml') {
-    throw new Error(
-      'Local YAML workflow execution is not available in this CLI package yet. Use `agent-relay cloud run <file>` for YAML workflows, or use an executable TypeScript, JavaScript, Python, or shell workflow file locally.'
-    );
-  }
-
-  if (fileType === 'ts') {
-    const outfile = path.join(runDir, 'workflow-entry.mjs');
-    await deps.buildTypeScriptEntrypoint(workflowPath, outfile, cwd);
-    return { command: process.execPath, args: [outfile] };
+  if (fileType === 'yaml' || fileType === 'ts' || fileType === 'py') {
+    return { command: process.execPath, args: [deps.resolveRelayflowsCliEntrypoint(), 'run', workflowPath] };
   }
 
   if (fileType === 'js') {
     return { command: process.execPath, args: [workflowPath] };
-  }
-
-  if (fileType === 'py') {
-    return { command: deps.env.PYTHON?.trim() || 'python3', args: [workflowPath] };
   }
 
   return { command: deps.env.SHELL?.trim() || '/bin/sh', args: [workflowPath] };
@@ -342,7 +317,7 @@ async function runLocalWorkflow(
   const runDir = runDirFor(cwd, runId);
   await fsp.mkdir(runDir, { recursive: true });
 
-  const { command, args } = await resolveLocalWorkflowCommand(workflowPath, fileType, runDir, cwd, deps);
+  const { command, args } = await resolveLocalWorkflowCommand(workflowPath, fileType, deps);
   const now = deps.now().toISOString();
   const logPath = path.join(runDir, 'workflow.log');
   const metadataPath = path.join(runDir, 'run.json');
@@ -486,8 +461,8 @@ export function registerLocalWorkflowCommands(
 
   program
     .command('run')
-    .description('Run an executable workflow file locally')
-    .argument('<workflow>', 'Workflow file path (.ts, .js, .py, or .sh)')
+    .description('Run a workflow file locally')
+    .argument('<workflow>', 'Workflow file path (.yaml, .yml, .ts, .tsx, .py, .js, or .sh)')
     .option('--file-type <type>', 'Workflow type: ts, js, py, sh, or yaml', parseLocalWorkflowFileType)
     .option('--json', 'Print raw JSON response', false)
     .action(async (workflow: string, options: { fileType?: LocalWorkflowFileType; json?: boolean }) => {

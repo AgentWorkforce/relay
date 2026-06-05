@@ -37,6 +37,8 @@ agent-relay local agent attach <name> --mode view
 agent-relay local agent release <name>
 ```
 
+Local workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
+
 Hosted equivalents live under `agent-relay cloud …`.
 
 ## Packages
