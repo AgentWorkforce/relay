@@ -47,6 +47,7 @@ export function inferHarnessFromCommand(command: string | undefined): string | u
   if (base === 'opencode' || lower.includes('opencode')) return 'opencode';
   if (base === 'goose' || lower.includes('goose')) return 'goose';
   if (base === 'droid' || lower.includes('droid')) return 'droid';
+  if (base === 'grok' || lower.includes('/grok')) return 'grok';
   if (base === 'amp' || normalized.includes('/amp')) return 'amp';
   if (lower.includes('copilot')) return 'github-copilot';
   if (base === 'zed' || lower.includes('zed')) return 'zed';

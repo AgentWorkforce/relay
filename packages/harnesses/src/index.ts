@@ -28,3 +28,5 @@ export const opencode: PtyHarness = definePtyHarness({ runtime: 'pty', command: 
 export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
 
 export const goose: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'goose' });
+
+export const grok: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'grok' });
