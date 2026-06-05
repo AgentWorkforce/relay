@@ -32,7 +32,7 @@
 .heroWrap {
   position: relative;
   isolation: isolate;
-  padding: 3.5rem 1.25rem 1rem;
+  padding: clamp(4.5rem, 9vw, 7rem) 1.25rem clamp(2.5rem, 5vw, 4rem);
 }
 
 .heroGlow {
@@ -57,6 +57,12 @@
   text-align: center;
 }
 
+.pearMark {
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 .eyebrowMark {
   width: 1.05rem;
   height: 1.05rem;
@@ -67,13 +73,14 @@
   align-items: center;
   justify-content: center;
   gap: clamp(0.75rem, 2vw, 1.4rem);
-  margin-bottom: 1.1rem;
+  margin-bottom: 1.6rem;
 }
 
 .heroMark {
-  width: clamp(3.4rem, 9vw, 6.5rem);
-  height: clamp(3.4rem, 9vw, 6.5rem);
+  width: clamp(4rem, 10.5vw, 7.8rem);
+  height: clamp(4rem, 10.5vw, 7.8rem);
   flex: 0 0 auto;
+  transform: rotate(-13deg);
 }
 
 .headline {
@@ -100,10 +107,14 @@
 
 .headline em {
   font-style: italic;
-  background: linear-gradient(105deg, var(--primary) 0%, var(--pear-deep) 100%);
+  background: linear-gradient(105deg, var(--primary) 0%, var(--primary-700) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+  /* Italic overhang gets clipped by the text-clipped gradient box; pad the
+     trailing edge and pull it back so spacing to the next word is unchanged. */
+  padding-right: 0.12em;
+  margin-right: -0.12em;
 }
 
 .lead {
@@ -139,18 +150,38 @@
 /* ── Product screenshot ── */
 
 .mockWrap {
-  max-width: 64rem;
-  margin: 3rem auto 0;
+  /* Full-bleed: break out of the padded hero column to span the viewport. */
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+  margin-top: 3rem;
 }
 
 .shot {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: 0.9rem;
-  box-shadow:
-    0 40px 80px -40px rgba(22, 40, 59, 0.55),
-    0 12px 32px -18px rgba(22, 40, 59, 0.4);
+  transform-origin: 50% 0%;
+  /* Start at the previous ~64rem column width (0.8 × full-bleed at desktop). */
+  transform: scale(0.8);
+}
+
+/* Start at the old column width, then zoom to full-bleed as the page scrolls. */
+@keyframes shotZoom {
+  from {
+    transform: scale(0.8);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .shot {
+    animation: shotZoom linear both;
+    animation-timeline: scroll(root block);
+    animation-range: 0 600px;
+  }
 }
 
 /* Traffic-light dots — shared with the feature visual cards */
@@ -429,50 +460,156 @@
 }
 
 /* graph visual */
-.graph {
-  position: relative;
-  height: 16rem;
-}
-
-.gLine {
-  position: absolute;
-  height: 1px;
-  transform-origin: left center;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 55%, transparent), transparent);
-}
-
-.node {
-  position: absolute;
-  transform: translate(-50%, -50%);
+/* local & remote visual */
+.runners {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 0.3rem;
+  gap: 0.7rem;
 }
 
-.nodeDot {
-  width: 2.6rem;
-  height: 2.6rem;
-  border-radius: 0.7rem;
+.runner {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 700;
-  font-family: var(--font-geist-mono), monospace;
-  box-shadow: 0 8px 20px -10px rgba(22, 40, 59, 0.5);
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.7rem;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
-.nodeLabel {
+.runnerDot {
+  width: 0.66rem;
+  height: 0.66rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.runnerInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.runnerName {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--fg);
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.runnerMeta {
   font-size: 0.68rem;
   color: var(--fg-muted);
-  font-weight: 600;
 }
 
-.nodeLead {
-  outline: 2px solid color-mix(in srgb, var(--pear) 70%, transparent);
-  outline-offset: 2px;
+.runnerTag {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+}
+
+.runnerLocal {
+  color: var(--status-green);
+  background: color-mix(in srgb, var(--status-green) 14%, transparent);
+}
+
+.runnerCloud {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.connectRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.connectLabel {
+  font-size: 0.68rem;
+  color: var(--fg-muted);
+  margin-right: 0.15rem;
+}
+
+.chip {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--fg);
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+/* cost & usage visual */
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.usageRow {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.usageName {
+  width: 3.2rem;
+  flex: 0 0 auto;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--fg);
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.usageTrack {
+  flex: 1;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  overflow: hidden;
+}
+
+.usageFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.usageVal {
+  width: 3rem;
+  flex: 0 0 auto;
+  text-align: right;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--fg);
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.usageTotal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+}
+
+.usageTotalVal {
+  font-weight: 600;
+  color: var(--fg);
+  font-family: var(--font-geist-mono), monospace;
 }
 
 /* diff visual */
