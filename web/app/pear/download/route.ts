@@ -1,15 +1,13 @@
 // Stable, public download link for the latest Pear build (macOS, Apple Silicon).
 //
-// Redirects to the newest published asset in the PUBLIC AgentWorkforce/pear-releases
-// repo, so we can hand out a single branded URL that always points at the current
-// release without exposing the private `pear` source repo:
+// Redirects to the newest published installer on the public AgentWorkforce/pear
+// repo. electron-builder publishes the DMG under a fixed filename
+// (`pear-arm64.dmg`), so GitHub's `releases/latest/download/<name>` URL — which
+// resolves "latest" server-side — is a constant target:
 //
 //   wget --content-disposition https://origin.agentrelay.net/pear/download
-//
-// The binary is mirrored into pear-releases by the pear repo's "mirror-release"
-// workflow whenever a GitHub Release is published. GitHub resolves `latest`
-// server-side, so this redirect target is constant.
-const LATEST_DMG = 'https://github.com/AgentWorkforce/pear-releases/releases/latest/download/Pear-arm64.dmg';
+const LATEST_DMG =
+  'https://github.com/AgentWorkforce/pear/releases/latest/download/pear-arm64.dmg';
 
 export function GET() {
   return new Response(null, {
