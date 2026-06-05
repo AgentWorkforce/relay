@@ -190,8 +190,12 @@
     margin-right: 0;
   }
 
+  /* Skip the scroll-zoom on phones: render the full 200vw statically so the
+     size is the same on every browser (not 0.8x on ones without scroll
+     timelines), and let it overflow off the right from the top-left. */
   .shot {
-    transform-origin: 0 0;
+    transform: none;
+    animation: none;
   }
 }
 
@@ -600,13 +604,8 @@
 }
 
 .triggerState {
+  composes: runnerTag;
   flex: 0 0 auto;
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 0.2rem 0.5rem;
-  border-radius: 999px;
 }
 
 /* cost & usage visual */

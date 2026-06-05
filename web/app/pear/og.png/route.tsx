@@ -10,35 +10,24 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-static';
 
 /**
- * Candidate paths for the Pear desktop-app screenshot. The card is generated at
- * build time, where the working directory is the `web/` package, but we probe a
- * couple of locations so the read also works when traced into a server bundle.
+ * Read a public/ asset as a base64 data URL for embedding into the
+ * satori-rendered card. Both assets are traced for this route via
+ * `outputFileTracingIncludes` in `next.config.mjs`, so they ship with the
+ * standalone/OpenNext bundle.
+ *
+ * We resolve against two roots because `outputFileTracingRoot` is the monorepo
+ * root: at build the cwd is the `web/` package (`public/...`), while the traced
+ * server runs from the monorepo root (`web/public/...`). The first hit wins.
  */
-const SHOT_CANDIDATES = [
-  path.resolve(process.cwd(), 'public/img/pear-app.png'),
-  path.resolve(process.cwd(), 'web/public/img/pear-app.png'),
-];
-
-/** Candidate paths for the brand-kit pear mark (transparent). */
-const MARK_CANDIDATES = [
-  path.resolve(process.cwd(), 'public/brand-kit/pear-icon-transparent.png'),
-  path.resolve(process.cwd(), 'web/public/brand-kit/pear-icon-transparent.png'),
-];
-
-/**
- * Read a PNG and return it as a base64 data URL for embedding into the
- * satori-rendered card. Fails soft: if no candidate can be read the caller
- * renders its fallback (the card never breaks).
- */
-function loadPng(candidates: string[]): string | undefined {
-  for (const candidate of candidates) {
+function loadAsset(publicPath: string): string | undefined {
+  for (const root of ['public', 'web/public']) {
+    const file = path.resolve(process.cwd(), root, publicPath);
     try {
-      if (fs.existsSync(candidate)) {
-        const data = fs.readFileSync(candidate);
-        return `data:image/png;base64,${data.toString('base64')}`;
+      if (fs.existsSync(file)) {
+        return `data:image/png;base64,${fs.readFileSync(file).toString('base64')}`;
       }
     } catch {
-      // Try the next candidate.
+      // Try the next root.
     }
   }
   return undefined;
@@ -53,8 +42,8 @@ function loadPng(candidates: string[]): string | undefined {
  */
 export async function GET() {
   const { fonts, headingFamily, bodyFamily } = await loadBrandFonts();
-  const screenshot = loadPng(SHOT_CANDIDATES);
-  const mark = loadPng(MARK_CANDIDATES);
+  const screenshot = loadAsset('img/pear-app.png');
+  const mark = loadAsset('brand-kit/pear-icon-transparent.png');
 
   return new ImageResponse(
     <PearVariant headingFamily={headingFamily} bodyFamily={bodyFamily} screenshot={screenshot} mark={mark} />,
