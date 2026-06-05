@@ -18,6 +18,7 @@ describe('orchestrator harness detection', () => {
   it('maps common process command names to harness identifiers', () => {
     expect(inferHarnessFromCommand('/usr/local/bin/claude')).toBe('claude-code');
     expect(inferHarnessFromCommand('/opt/homebrew/bin/codex')).toBe('codex');
+    expect(inferHarnessFromCommand('/Users/will/.grok/bin/grok')).toBe('grok');
     expect(inferHarnessFromCommand('/Applications/Cursor.app/Contents/MacOS/Cursor')).toBe('cursor');
     expect(inferHarnessFromCommand('/usr/local/bin/gemini-cli')).toBe('gemini-cli');
     expect(inferHarnessFromCommand(String.raw`C:\Users\will\AppData\Roaming\npm\gemini.cmd`)).toBe(

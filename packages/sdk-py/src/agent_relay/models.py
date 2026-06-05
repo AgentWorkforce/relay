@@ -15,6 +15,7 @@ class CLIVersions:
     CURSOR: Final[str] = "2026.02.27-e7d2ef6"  # Cursor
     DROID: Final[str] = "0.1.0"  # Droid
     OPENCODE: Final[str] = "1.2.24"  # OpenCode
+    GROK: Final[str] = "0.1.0"  # Grok
     AIDER: Final[str] = "0.72.1"  # Aider
     GOOSE: Final[str] = "1.0.16"  # Goose
 
@@ -27,6 +28,7 @@ class CLIs:
     CURSOR: Final[str] = "cursor"
     DROID: Final[str] = "droid"
     OPENCODE: Final[str] = "opencode"
+    GROK: Final[str] = "grok"
     AIDER: Final[str] = "aider"
     GOOSE: Final[str] = "goose"
 
@@ -218,6 +220,12 @@ class OpencodeModels:
     OPENAI_O4_MINI_DEEP_RESEARCH: Final[str] = "openai/o4-mini-deep-research"  # O4 Mini Deep Research
 
 
+class GrokModels:
+    """Grok model identifiers."""
+    GROK_BUILD: Final[str] = "grok-build"  # Grok Build (default)
+    GROK_COMPOSER_2_5_FAST: Final[str] = "grok-composer-2.5-fast"  # Grok Composer 2.5 Fast
+
+
 class ModelOption(TypedDict):
     """Model option for UI dropdowns."""
     value: str
@@ -405,6 +413,11 @@ OPENCODE_MODEL_OPTIONS: Final[List[ModelOption]] = [
     {"value": "openai/o4-mini-deep-research", "label": "O4 Mini Deep Research"},
 ]
 
+GROK_MODEL_OPTIONS: Final[List[ModelOption]] = [
+    {"value": "grok-build", "label": "Grok Build"},
+    {"value": "grok-composer-2.5-fast", "label": "Grok Composer 2.5 Fast"},
+]
+
 class Models:
     """All models grouped by CLI tool."""
     Claude = ClaudeModels
@@ -413,6 +426,7 @@ class Models:
     Cursor = CursorModels
     Droid = DroidModels
     Opencode = OpencodeModels
+    Grok = GrokModels
 
 
 class ModelOptions:
@@ -423,6 +437,7 @@ class ModelOptions:
     Cursor = CURSOR_MODEL_OPTIONS
     Droid = DROID_MODEL_OPTIONS
     Opencode = OPENCODE_MODEL_OPTIONS
+    Grok = GROK_MODEL_OPTIONS
 
 
 class SwarmPatterns:
@@ -446,6 +461,7 @@ DEFAULT_MODELS: Final[dict] = {
     "cursor": "composer-2-fast",
     "droid": "opus-4.6-fast",
     "opencode": "openai/gpt-5.2",
+    "grok": "grok-build",
 }
 
 CLI_REGISTRY: Final[dict] = {
@@ -484,6 +500,12 @@ CLI_REGISTRY: Final[dict] = {
         "package": "opencode-ai",
         "version": "1.2.24",
         "install": "npm install -g opencode-ai",
+    },
+    "grok": {
+        "name": "Grok",
+        "package": "grok",
+        "version": "0.1.0",
+        "install": "Install from x.ai (Grok CLI)",
     },
     "aider": {
         "name": "Aider",

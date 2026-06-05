@@ -280,6 +280,7 @@ impl WorkerRegistry {
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
+                let is_grok = cli_lower == "grok";
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -356,6 +357,8 @@ impl WorkerRegistry {
                     Some("--dangerously-bypass-approvals-and-sandbox")
                 } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
                     Some("--yolo")
+                } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
+                    Some("--always-approve")
                 } else {
                     None
                 };
@@ -481,6 +484,7 @@ impl WorkerRegistry {
                     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
+                    let is_grok = cli_lower == "grok";
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -559,6 +563,8 @@ impl WorkerRegistry {
                         && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
                     {
                         Some("--yolo")
+                    } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
+                        Some("--always-approve")
                     } else {
                         None
                     };
