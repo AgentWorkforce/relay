@@ -39,7 +39,12 @@ function PearMark({ className }: { className?: string }) {
     // Plain img: the SST/OpenNext image optimizer has no working sharp
     // runtime, so next/image's /_next/image endpoint 500s.
     // eslint-disable-next-line @next/next/no-img-element
-    <img className={`${s.pearMark} ${className ?? ''}`} src="/brand-kit/pear-icon-transparent.png" alt="" aria-hidden />
+    <img
+      className={`${s.pearMark} ${className ?? ''}`}
+      src="/brand-kit/pear-icon-transparent.png"
+      alt=""
+      aria-hidden
+    />
   );
 }
 
@@ -199,8 +204,8 @@ export default function PearPage() {
               <h3 className={s.featureName}>They coordinate with each other</h3>
               <p className={s.featureDesc}>
                 Pear gives every agent a real messaging rail — the same channels, DMs, threads, and reactions
-                you&apos;d expect from Slack, built on Agent Relay. Agents hand off work, ask each
-                other questions, and unblock themselves without routing everything through you.
+                you&apos;d expect from Slack, built on Agent Relay. Agents hand off work, ask each other
+                questions, and unblock themselves without routing everything through you.
               </p>
               <ul className={s.bullets}>
                 <li>
@@ -272,8 +277,8 @@ export default function PearPage() {
               <h3 className={s.featureName}>Run agents on your machine or in the cloud</h3>
               <p className={s.featureDesc}>
                 Spin up agents locally in their own terminals, or hand a workstream to a cloud agent and close
-                your laptop — it keeps running and reports back when it lands. Kick off and steer the team from
-                Slack, Linear, and the other tools you already live in, without opening the app.
+                your laptop — it keeps running and reports back when it lands. Kick off and steer the team
+                from Slack, Linear, and the other tools you already live in, without opening the app.
               </p>
               <ul className={s.bullets}>
                 <li>

@@ -33,24 +33,55 @@ export function sanitizeOrchestratorHarness(raw: string | undefined): string | u
   return trimmed.slice(0, HARNESS_MAX_LENGTH).toLowerCase();
 }
 
+interface HarnessCommandContext {
+  base: string;
+  lower: string;
+  normalized: string;
+}
+
+const HARNESS_COMMAND_MATCHERS: ReadonlyArray<{
+  harness: string;
+  matches: (ctx: HarnessCommandContext) => boolean;
+}> = [
+  {
+    harness: 'claude-code',
+    matches: ({ base, lower }) => base === 'claude' || lower.includes('claude-code'),
+  },
+  {
+    harness: 'codex',
+    matches: ({ base, normalized }) => base === 'codex' || normalized.includes('/codex'),
+  },
+  {
+    harness: 'cursor',
+    matches: ({ base, lower }) => base === 'cursor' || base === 'cursor-agent' || lower.includes('cursor'),
+  },
+  {
+    harness: 'gemini-cli',
+    matches: ({ base, lower }) => base === 'gemini' || base === 'gemini-cli' || lower.includes('gemini-cli'),
+  },
+  { harness: 'aider', matches: ({ base, lower }) => base === 'aider' || lower.includes('aider') },
+  {
+    harness: 'opencode',
+    matches: ({ base, lower }) => base === 'opencode' || lower.includes('opencode'),
+  },
+  { harness: 'goose', matches: ({ base, lower }) => base === 'goose' || lower.includes('goose') },
+  { harness: 'droid', matches: ({ base, lower }) => base === 'droid' || lower.includes('droid') },
+  { harness: 'grok', matches: ({ base }) => base === 'grok' },
+  { harness: 'amp', matches: ({ base, normalized }) => base === 'amp' || normalized.includes('/amp') },
+  { harness: 'github-copilot', matches: ({ lower }) => lower.includes('copilot') },
+  { harness: 'zed', matches: ({ base, lower }) => base === 'zed' || lower.includes('zed') },
+];
+
 export function inferHarnessFromCommand(command: string | undefined): string | undefined {
   if (!command) return undefined;
   const lower = command.toLowerCase();
   const normalized = lower.replace(/\\/g, '/');
   const base = path.basename(normalized).replace(/\.(exe|cmd|bat)$/i, '');
+  const ctx: HarnessCommandContext = { base, lower, normalized };
 
-  if (base === 'claude' || lower.includes('claude-code')) return 'claude-code';
-  if (base === 'codex' || normalized.includes('/codex')) return 'codex';
-  if (base === 'cursor' || base === 'cursor-agent' || lower.includes('cursor')) return 'cursor';
-  if (base === 'gemini' || base === 'gemini-cli' || lower.includes('gemini-cli')) return 'gemini-cli';
-  if (base === 'aider' || lower.includes('aider')) return 'aider';
-  if (base === 'opencode' || lower.includes('opencode')) return 'opencode';
-  if (base === 'goose' || lower.includes('goose')) return 'goose';
-  if (base === 'droid' || lower.includes('droid')) return 'droid';
-  if (base === 'grok') return 'grok';
-  if (base === 'amp' || normalized.includes('/amp')) return 'amp';
-  if (lower.includes('copilot')) return 'github-copilot';
-  if (base === 'zed' || lower.includes('zed')) return 'zed';
+  for (const matcher of HARNESS_COMMAND_MATCHERS) {
+    if (matcher.matches(ctx)) return matcher.harness;
+  }
 
   return undefined;
 }
