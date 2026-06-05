@@ -18,7 +18,7 @@ class ExitSignal extends Error {
 
 const tmpRoots: string[] = [];
 
-function createHarness() {
+function createHarness(overrides: Partial<LocalWorkflowDependencies> = {}) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-workflow-cli-'));
   tmpRoots.push(tmpRoot);
 
@@ -45,6 +45,8 @@ function createHarness() {
       errors.push(args.join(' '));
     },
     exit,
+    resolveRelayflowsCliEntrypoint: () => path.join(tmpRoot, 'relayflows-cli.js'),
+    ...overrides,
   };
 
   const program = new Command();
@@ -121,12 +123,35 @@ describe('registerLocalWorkflowCommands', () => {
     expect(logs).toContain('Local workflow ran in this checkout; no patch sync is required.');
   });
 
-  it('rejects local YAML workflows with cloud guidance', async () => {
-    const { program, tmpRoot } = createHarness();
-    fs.writeFileSync(path.join(tmpRoot, 'workflow.yaml'), 'version: "1.0"\n', 'utf-8');
+  it.each([
+    ['YAML', 'workflow.yaml', 'version: "1.0"\n'],
+    ['YML', 'workflow.yml', 'version: "1.0"\n'],
+    ['TypeScript', 'workflow.ts', 'console.log("workflow");\n'],
+    ['TSX', 'workflow.tsx', 'console.log("workflow");\n'],
+    ['Python', 'workflow.py', 'print("workflow")\n'],
+  ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents) => {
+    const spawnProcess = vi.fn(() => ({
+      pid: 4242,
+      unref: vi.fn(),
+    })) as unknown as LocalWorkflowDependencies['spawnProcess'];
+    const { program, tmpRoot } = createHarness({ spawnProcess });
+    const workflowPath = path.join(tmpRoot, fileName);
+    const relayflowsCliPath = path.join(tmpRoot, 'relayflows-cli.js');
+    fs.writeFileSync(workflowPath, contents, 'utf-8');
 
-    await expect(program.parseAsync(['run', 'workflow.yaml'], { from: 'user' })).rejects.toThrow(
-      'Local YAML workflow execution is not available'
+    await program.parseAsync(['run', fileName], { from: 'user' });
+
+    const metadataPath = path.join(
+      tmpRoot,
+      '.agentworkforce',
+      'relay',
+      'local-runs',
+      'local_test123',
+      'run.json'
     );
+    const record = JSON.parse(fs.readFileSync(metadataPath, 'utf-8')) as Record<string, unknown>;
+    expect(record.command).toBe(process.execPath);
+    expect(record.args).toEqual([relayflowsCliPath, 'run', workflowPath]);
+    expect(record.status).toBe('running');
   });
 });
