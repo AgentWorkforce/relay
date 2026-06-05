@@ -10,29 +10,24 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-static';
 
 /**
- * Candidate paths for the Pear desktop-app screenshot. The card is generated at
- * build time, where the working directory is the `web/` package, but we probe a
- * couple of locations so the read also works when traced into a server bundle.
+ * Read a public/ asset as a base64 data URL for embedding into the
+ * satori-rendered card. Both assets are traced for this route via
+ * `outputFileTracingIncludes` in `next.config.mjs`, so they ship with the
+ * standalone/OpenNext bundle.
+ *
+ * We resolve against two roots because `outputFileTracingRoot` is the monorepo
+ * root: at build the cwd is the `web/` package (`public/...`), while the traced
+ * server runs from the monorepo root (`web/public/...`). The first hit wins.
  */
-const SHOT_CANDIDATES = [
-  path.resolve(process.cwd(), 'public/img/pear-app.png'),
-  path.resolve(process.cwd(), 'web/public/img/pear-app.png'),
-];
-
-/**
- * Read the screenshot and return it as a base64 PNG data URL for embedding into
- * the satori-rendered card. Fails soft: if the file cannot be read the card
- * still renders its frame (just without the screenshot inside).
- */
-function loadScreenshot(): string | undefined {
-  for (const candidate of SHOT_CANDIDATES) {
+function loadAsset(publicPath: string): string | undefined {
+  for (const root of ['public', 'web/public']) {
+    const file = path.resolve(process.cwd(), root, publicPath);
     try {
-      if (fs.existsSync(candidate)) {
-        const data = fs.readFileSync(candidate);
-        return `data:image/png;base64,${data.toString('base64')}`;
+      if (fs.existsSync(file)) {
+        return `data:image/png;base64,${fs.readFileSync(file).toString('base64')}`;
       }
     } catch {
-      // Try the next candidate.
+      // Try the next root.
     }
   }
   return undefined;
@@ -47,10 +42,11 @@ function loadScreenshot(): string | undefined {
  */
 export async function GET() {
   const { fonts, headingFamily, bodyFamily } = await loadBrandFonts();
-  const screenshot = loadScreenshot();
+  const screenshot = loadAsset('img/pear-app.png');
+  const mark = loadAsset('brand-kit/pear-icon-transparent.png');
 
   return new ImageResponse(
-    <PearVariant headingFamily={headingFamily} bodyFamily={bodyFamily} screenshot={screenshot} />,
+    <PearVariant headingFamily={headingFamily} bodyFamily={bodyFamily} screenshot={screenshot} mark={mark} />,
     {
       ...OG_SIZE,
       ...(fonts.length > 0 ? { fonts } : {}),

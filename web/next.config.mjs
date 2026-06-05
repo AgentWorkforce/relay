@@ -10,8 +10,8 @@ const nextConfig = {
   outputFileTracingRoot: path.resolve(__dirname, '..'),
   outputFileTracingIncludes: {
     '/*': ['content/docs/**/*', 'content/blog/**/*'],
-    // The Pear OG card embeds this screenshot at render time.
-    '/pear/og.png': ['public/img/pear-app.png'],
+    // The Pear OG card embeds these at render time.
+    '/pear/og.png': ['public/img/pear-app.png', 'public/brand-kit/pear-icon-transparent.png'],
   },
   webpack(config) {
     config.module.rules.push({

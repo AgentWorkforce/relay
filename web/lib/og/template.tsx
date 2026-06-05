@@ -822,33 +822,9 @@ export function LandingVariant({
   );
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Pear mark — the ripe-pear glyph from app/pear/page.tsx (green body + brown
-// stem), inlined for satori. Used by the Pear OG card's lockup.
-// ───────────────────────────────────────────────────────────────────────────
-
-const PEAR_BODY_PATH =
-  'M7.681 9.097c1.587-3.151 7.698-1.916 11.958 2.171 2.697 2.586 8.056 1.498 11.498 4.804 3.493 3.354 3.259 9.361-3.053 15.767C23 37 16 37 11.835 33.384c-4.388-3.811-2.476-8.61-4.412-13.585S3.1 9.375 7.681 9.097Z';
-const PEAR_STEM_PATH =
-  'M8.178 9.534c-.43.448-1.114.489-1.527.093-3.208-3.079-3.918-7.544-3.946-7.776-.074-.586.348-1.157.939-1.278.592-.121 1.131.257 1.205.842.006.05.657 3.997 3.359 6.59.413.397.4 1.081-.03 1.529Z';
-
-const PEAR_GREEN = '#A6D388';
-
-function PearMark({ size = 46 }: { size?: number }): ReactElement {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 36 36"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{ display: 'flex' }}
-    >
-      <path fill={PEAR_GREEN} d={PEAR_BODY_PATH} />
-      <path fill="#662113" d={PEAR_STEM_PATH} />
-    </svg>
-  );
-}
+// Brand blue used for the "team" accent in the Pear OG headline, matching the
+// landing page's wordmark and the pear lockup.
+const PEAR_BLUE = '#75B8E2';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Variant: PEAR — left copy column + the Pear desktop-app screenshot pinned
@@ -938,10 +914,13 @@ export function PearVariant({
   headingFamily,
   bodyFamily,
   screenshot,
+  mark,
 }: {
   headingFamily: string;
   bodyFamily: string;
   screenshot?: string;
+  /** Data URL for the brand-kit pear mark. Falls back to the inline glyph. */
+  mark?: string;
 }): ReactElement {
   return (
     <Frame bodyFamily={bodyFamily}>
@@ -959,9 +938,12 @@ export function PearVariant({
           position: 'relative',
         }}
       >
-        {/* Lockup: pear mark + "Pear" wordmark + a muted "by Agent Relay". */}
+        {/* Lockup: brand-kit pear mark + "Pear" wordmark + a muted "by Agent Relay". */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 40 }}>
-          <PearMark size={48} />
+          {mark && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={mark} width={52} height={52} alt="" style={{ display: 'flex' }} />
+          )}
           <span
             style={{
               display: 'flex',
@@ -979,7 +961,7 @@ export function PearVariant({
           </span>
         </div>
 
-        {/* Hero headline, heavier Sora 800 with "team" in pear green. */}
+        {/* Hero headline, heavier Sora 800 with "team" in brand blue. */}
         <div
           style={{
             display: 'flex',
@@ -995,7 +977,7 @@ export function PearVariant({
           <span style={{ display: 'flex', fontWeight: 800 }}>Pair program</span>
           <span style={{ display: 'flex', flexWrap: 'wrap', fontWeight: 800 }}>
             <span style={{ display: 'flex', fontWeight: 800 }}>with a&nbsp;</span>
-            <span style={{ display: 'flex', fontWeight: 800, color: PEAR_GREEN }}>team</span>
+            <span style={{ display: 'flex', fontWeight: 800, color: PEAR_BLUE }}>team</span>
             <span style={{ display: 'flex', fontWeight: 800 }}>&nbsp;of agents</span>
           </span>
         </div>
