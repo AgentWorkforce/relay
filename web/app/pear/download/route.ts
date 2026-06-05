@@ -6,8 +6,7 @@
 // resolves "latest" server-side — is a constant target:
 //
 //   wget --content-disposition https://origin.agentrelay.net/pear/download
-const LATEST_DMG =
-  'https://github.com/AgentWorkforce/pear/releases/latest/download/pear-arm64.dmg';
+const LATEST_DMG = 'https://github.com/AgentWorkforce/pear/releases/latest/download/pear-arm64.dmg';
 
 export function GET() {
   return new Response(null, {
