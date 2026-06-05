@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/harness-driver",
-  "version": "8.1.0",
+  "version": "8.2.0",
   "description": "Managed harness driver for Agent Relay — attach, wrap, spawn, inject, and observe agent runtimes",
   "type": "module",
   "main": "dist/index.js",
@@ -36,6 +36,11 @@
       "import": "./dist/harnesses.js",
       "default": "./dist/harnesses.js"
     },
+    "./predictive-echo": {
+      "types": "./dist/predictive-echo.d.ts",
+      "import": "./dist/predictive-echo.js",
+      "default": "./dist/predictive-echo.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -48,16 +53,16 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/sdk": "8.1.0",
+    "@agent-relay/sdk": "8.2.0",
     "ws": "^8.18.3",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
-    "@agent-relay/broker-darwin-arm64": "8.1.0",
-    "@agent-relay/broker-darwin-x64": "8.1.0",
-    "@agent-relay/broker-linux-arm64": "8.1.0",
-    "@agent-relay/broker-linux-x64": "8.1.0",
-    "@agent-relay/broker-win32-x64": "8.1.0"
+    "@agent-relay/broker-darwin-arm64": "8.2.0",
+    "@agent-relay/broker-darwin-x64": "8.2.0",
+    "@agent-relay/broker-linux-arm64": "8.2.0",
+    "@agent-relay/broker-linux-x64": "8.2.0",
+    "@agent-relay/broker-win32-x64": "8.2.0"
   },
   "publishConfig": {
     "access": "public"

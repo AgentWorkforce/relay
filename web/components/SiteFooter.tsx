@@ -19,6 +19,9 @@ export function SiteFooter() {
         <div className={s.columns}>
           <div className={s.col}>
             <h4 className={s.colTitle}>Projects</h4>
+            <Link href="/pear" className={s.link}>
+              Pear
+            </Link>
             <a
               href="https://github.com/AgentWorkforce/relayfile"
               target="_blank"
@@ -59,14 +62,6 @@ export function SiteFooter() {
             >
               Relayflows
             </a>
-            <a
-              href="https://proactiveagents.dev"
-              target="_blank"
-              rel="noopener noreferrer"
-              className={s.link}
-            >
-              Proactive Agents
-            </a>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Documentation</h4>
@@ -94,15 +89,20 @@ export function SiteFooter() {
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Resources</h4>
-            <Link href="/docs/agent-relay-mcp" className={s.link}>
-              Agent Relay MCP
-            </Link>
             <Link href="/blog" className={s.link}>
               Blog
             </Link>
             <Link href="/brand" className={s.link}>
               Brand
             </Link>
+            <a
+              href="https://proactiveagents.dev"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={s.link}
+            >
+              Proactive Agents
+            </a>
           </div>
           <div className={s.col}>
             <h4 className={s.colTitle}>Company</h4>

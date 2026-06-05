@@ -43,6 +43,7 @@ import type {
   ListAgent,
 } from './types.js';
 import { EventBus } from './event-bus.js';
+import { SpawnedAgentHandle } from './agent-handle.js';
 import type {
   AfterAgentReleaseContext,
   AfterAgentSpawnContext,
@@ -621,7 +622,7 @@ export class HarnessDriverClient {
 
   // ── Agent lifecycle ────────────────────────────────────────────────
 
-  async spawnPty(input: SpawnPtyInput): Promise<SpawnAgentResult> {
+  async spawnPty(input: SpawnPtyInput): Promise<SpawnedAgentHandle> {
     const beforeCtx: BeforeAgentSpawnContext<SpawnPtyInput> = {
       kind: 'pty',
       input,
@@ -638,14 +639,14 @@ export class HarnessDriverClient {
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return result;
+      return new SpawnedAgentHandle(result, this);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;
     }
   }
 
-  async spawnCli(input: SpawnCliInput): Promise<SpawnAgentResult> {
+  async spawnCli(input: SpawnCliInput): Promise<SpawnedAgentHandle> {
     const beforeCtx: BeforeAgentSpawnContext<SpawnCliInput> = {
       kind: 'cli',
       input,
@@ -659,7 +660,7 @@ export class HarnessDriverClient {
   private async spawnCliWithContext(
     beforeCtx: BeforeAgentSpawnContext<SpawnCliInput>,
     input: SpawnCliInput
-  ): Promise<SpawnAgentResult> {
+  ): Promise<SpawnedAgentHandle> {
     const t0 = Date.now();
     const resolvedInput = await this.runBeforeSpawn(beforeCtx);
     const transport = resolveSpawnTransport(resolvedInput);
@@ -680,14 +681,14 @@ export class HarnessDriverClient {
       });
       const result = SpawnAgentResultSchema.parse(rawResult);
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, result, undefined);
-      return result;
+      return new SpawnedAgentHandle(result, this);
     } catch (err) {
       await this.emitAfterSpawn(beforeCtx, resolvedInput, t0, undefined, err);
       throw err;
     }
   }
 
-  async spawnHeadless(input: SpawnHeadlessInput): Promise<SpawnAgentResult> {
+  async spawnHeadless(input: SpawnHeadlessInput): Promise<SpawnedAgentHandle> {
     const cliInput: SpawnCliInput = { ...input, transport: 'headless' };
     const beforeCtx: BeforeAgentSpawnContext<SpawnCliInput> = {
       kind: 'headless',
@@ -699,11 +700,11 @@ export class HarnessDriverClient {
     return this.spawnCliWithContext(beforeCtx, cliInput);
   }
 
-  async spawnClaude(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnAgentResult> {
+  async spawnClaude(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnedAgentHandle> {
     return this.spawnCli({ ...input, cli: 'claude' });
   }
 
-  async spawnOpencode(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnAgentResult> {
+  async spawnOpencode(input: Omit<SpawnCliInput, 'cli'>): Promise<SpawnedAgentHandle> {
     return this.spawnCli({ ...input, cli: 'opencode' });
   }
 

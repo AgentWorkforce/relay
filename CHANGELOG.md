@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
+- `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
 - `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving a high-latency or remote agent, and stays invisible on fast local links.
 - `@agent-relay/harness-driver` exports a reusable `PredictiveEchoEngine` so other attach UIs (CLI, Electron, browser) can share one predictive-echo implementation.
 - `@agent-relay/sdk` `relay.addListener(...)` on a workspace client now receives all workspace-visible events: `events.connect()` opens the relaycast 2.5 workspace stream when no agent client is present, so the documented `relay.addListener('message.created', ...)` quickstart path streams without registering an agent.
@@ -134,6 +136,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [8.2.0] - 2026-06-04
+
+### Added
+
+- Add lifecycle-aware SpawnedAgentHandle
+
+### Changed
+
+- Publish @agent-relay/harnesses on release
+
+## [8.1.2] - 2026-06-04
+
+### Fixed
+
+- Export ./predictive-echo subpath
+
+## [8.1.1] - 2026-06-04
+
+### Changed
+
+- Predictive echo for remote attach + interactive latency fixes
 
 ## [8.1.0] - 2026-06-03
 

@@ -1,4 +1,5 @@
 export * from './driver-types.js';
+export * from './agent-handle.js';
 export * from './broker-driver.js';
 export * from './actions.js';
 export * from './client.js';

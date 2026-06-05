@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { claude, codex, definePtyHarness } from './index.js';
+import { claude, codex, definePtyHarness, grok } from './index.js';
 
 describe('harness factories (Phase C)', () => {
   it('exposes the static definition shape for the runtime', () => {
     expect(claude.runtime).toBe('pty');
     expect(claude.command).toBe('claude');
     expect(claude.name).toBe('claude');
+    expect(grok.runtime).toBe('pty');
+    expect(grok.command).toBe('grok');
+    expect(grok.name).toBe('grok');
   });
 
   it('create() returns a registerable agent handle with identity + model', async () => {

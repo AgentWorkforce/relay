@@ -687,7 +687,7 @@ pub fn ensure_cursor_mcp_config(
     Ok(changed)
 }
 
-/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "opencode", "cursor")
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
 /// - `base_url`: optional relay base URL (empty or `None` means omit)
@@ -765,6 +765,7 @@ pub async fn configure_agent_relay_mcp_with_result(
     let is_gemini = cli_lower == "gemini";
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
+    let is_grok = cli_lower == "grok";
     let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
     let api_key = api_key.map(str::trim).filter(|s| !s.is_empty());
@@ -918,6 +919,17 @@ pub async fn configure_agent_relay_mcp_with_result(
             workspaces_json,
             default_workspace,
             None,
+        )
+        .await?;
+    } else if is_grok {
+        configure_grok_mcp(
+            cli,
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
         )
         .await?;
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
@@ -1108,6 +1120,150 @@ fn gemini_droid_mcp_add_args_with_result(
     args.push(mcp_command.command);
     args.extend(mcp_command.args);
     args
+}
+
+fn grok_mcp_add_args(
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec!["mcp".to_string(), "add".to_string()];
+    if let Some(key) = api_key {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_API_KEY={key}"));
+    }
+    if let Some(url) = base_url {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_BASE_URL={url}"));
+    }
+    if let Some(name) = agent_name.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_AGENT_NAME={name}"));
+        args.push("--env".to_string());
+        args.push("RELAY_AGENT_TYPE=agent".to_string());
+        args.push("--env".to_string());
+        args.push("RELAY_STRICT_AGENT_NAME=1".to_string());
+    }
+    if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        args.push("--env".to_string());
+        args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
+    }
+    if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_WORKSPACES_JSON={wj}"));
+    }
+    if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--env".to_string());
+        args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
+    }
+    args.push(AGENT_RELAY_MCP_SERVER.to_string());
+    let mcp_command = agent_relay_mcp_command();
+    args.push("--command".to_string());
+    args.push(mcp_command.command);
+    for arg in mcp_command.args {
+        args.push("--args".to_string());
+        args.push(arg);
+    }
+    args
+}
+
+fn grok_manual_mcp_add_cmd(cli: &str) -> String {
+    let mcp_command = agent_relay_mcp_command();
+    let rendered_args = mcp_command
+        .args
+        .iter()
+        .map(|arg| format!("--args {arg}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{cli} mcp add --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url> {AGENT_RELAY_MCP_SERVER} --command {} {rendered_args}",
+        mcp_command.command
+    )
+}
+
+async fn remove_grok_mcp_servers(exe: &str) {
+    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
+        let mut cmd = Command::new(exe);
+        cmd.args(["mcp", "remove", server_name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Ok(mut child) = cmd.spawn() {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn configure_grok_mcp(
+    cli: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    agent_name: Option<&str>,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+) -> Result<()> {
+    let exe = shlex::split(cli)
+        .and_then(|parts| parts.first().cloned())
+        .unwrap_or_else(|| cli.trim().to_string());
+    let manual_cmd = grok_manual_mcp_add_cmd(&exe);
+
+    remove_grok_mcp_servers(&exe).await;
+
+    let mut mcp_cmd = Command::new(&exe);
+    mcp_cmd.args(grok_mcp_add_args(
+        api_key,
+        base_url,
+        agent_name,
+        agent_token,
+        workspaces_json,
+        default_workspace,
+    ));
+    mcp_cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    match mcp_cmd.spawn() {
+        Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+            Ok(Ok(status)) if !status.success() => {
+                anyhow::bail!(
+                    "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
+                     Please configure the Agent Relay MCP server manually:\n  {manual_cmd}",
+                    status.code()
+                );
+            }
+            Ok(Err(error)) => {
+                anyhow::bail!(
+                    "failed to configure Agent Relay MCP for {cli}: {error}. \
+                     Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+                );
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                anyhow::bail!(
+                    "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` timed out after 15s. \
+                     Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+                );
+            }
+            _ => {}
+        },
+        Err(error) => {
+            anyhow::bail!(
+                "failed to configure Agent Relay MCP for {cli}: {error}. \
+                 Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1582,6 +1738,36 @@ mod tests {
         .expect("configure claude with inline args");
 
         assert_eq!(args[0], "--mcp-config");
+    }
+
+    #[test]
+    fn grok_mcp_add_args_use_command_and_args_flags() {
+        let args = super::grok_mcp_add_args(
+            Some("rk_live_xyz"),
+            Some("https://api.relaycast.dev"),
+            Some("GrokWorker"),
+            Some("tok_grok_123"),
+            None,
+            None,
+        );
+
+        assert!(args.starts_with(&["mcp".to_string(), "add".to_string()]));
+        assert!(args.contains(&"--env".to_string()));
+        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_NAME=GrokWorker".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_grok_123".to_string()));
+        let server_idx = args
+            .iter()
+            .position(|arg| arg == "agent-relay")
+            .expect("agent-relay arg");
+        assert_eq!(args[server_idx + 1], "--command");
+        assert_eq!(args[server_idx + 2], "npx");
+        assert_eq!(args[server_idx + 3], "--args");
+        assert_eq!(args[server_idx + 4], "-y");
+        assert_eq!(args[server_idx + 5], "--args");
+        assert_eq!(args[server_idx + 6], "agent-relay");
+        assert_eq!(args[server_idx + 7], "--args");
+        assert_eq!(args[server_idx + 8], "mcp");
     }
 
     #[test]
