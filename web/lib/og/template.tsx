@@ -938,10 +938,13 @@ export function PearVariant({
   headingFamily,
   bodyFamily,
   screenshot,
+  mark,
 }: {
   headingFamily: string;
   bodyFamily: string;
   screenshot?: string;
+  /** Data URL for the brand-kit pear mark. Falls back to the inline glyph. */
+  mark?: string;
 }): ReactElement {
   return (
     <Frame bodyFamily={bodyFamily}>
@@ -961,7 +964,12 @@ export function PearVariant({
       >
         {/* Lockup: pear mark + "Pear" wordmark + a muted "by Agent Relay". */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 40 }}>
-          <PearMark size={48} />
+          {mark ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={mark} width={52} height={52} alt="" style={{ display: 'flex' }} />
+          ) : (
+            <PearMark size={48} />
+          )}
           <span
             style={{
               display: 'flex',

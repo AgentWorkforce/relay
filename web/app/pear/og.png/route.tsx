@@ -19,13 +19,19 @@ const SHOT_CANDIDATES = [
   path.resolve(process.cwd(), 'web/public/img/pear-app.png'),
 ];
 
+/** Candidate paths for the brand-kit pear mark (transparent). */
+const MARK_CANDIDATES = [
+  path.resolve(process.cwd(), 'public/brand-kit/pear-icon-transparent.png'),
+  path.resolve(process.cwd(), 'web/public/brand-kit/pear-icon-transparent.png'),
+];
+
 /**
- * Read the screenshot and return it as a base64 PNG data URL for embedding into
- * the satori-rendered card. Fails soft: if the file cannot be read the card
- * still renders its frame (just without the screenshot inside).
+ * Read a PNG and return it as a base64 data URL for embedding into the
+ * satori-rendered card. Fails soft: if no candidate can be read the caller
+ * renders its fallback (the card never breaks).
  */
-function loadScreenshot(): string | undefined {
-  for (const candidate of SHOT_CANDIDATES) {
+function loadPng(candidates: string[]): string | undefined {
+  for (const candidate of candidates) {
     try {
       if (fs.existsSync(candidate)) {
         const data = fs.readFileSync(candidate);
@@ -47,10 +53,11 @@ function loadScreenshot(): string | undefined {
  */
 export async function GET() {
   const { fonts, headingFamily, bodyFamily } = await loadBrandFonts();
-  const screenshot = loadScreenshot();
+  const screenshot = loadPng(SHOT_CANDIDATES);
+  const mark = loadPng(MARK_CANDIDATES);
 
   return new ImageResponse(
-    <PearVariant headingFamily={headingFamily} bodyFamily={bodyFamily} screenshot={screenshot} />,
+    <PearVariant headingFamily={headingFamily} bodyFamily={bodyFamily} screenshot={screenshot} mark={mark} />,
     {
       ...OG_SIZE,
       ...(fonts.length > 0 ? { fonts } : {}),

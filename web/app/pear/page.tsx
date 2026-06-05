@@ -150,8 +150,8 @@ export default function PearPage() {
               </h1>
             </div>
             <p className={s.lead}>
-              Run a team of AI coding agents in parallel. They split up the work and coordinate with each
-              other.
+              Run a team of AI coding agents in parallel. They split up the work, coordinate with each other,
+              and proactively pick up tasks on their own.
             </p>
             <div className={s.ctaRow}>
               <Link href="#waitlist" className={s.ctaPrimary}>
@@ -437,6 +437,60 @@ export default function PearPage() {
                   <div className={s.usageTotal}>
                     <span>Session total</span>
                     <span className={s.usageTotalVal}>1.84M tokens · $9.27</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <Wave />
+
+          <div className={s.featureRow}>
+            <div className={s.featureCopy}>
+              <span className={s.featureTag}>
+                <PearMark className={s.eyebrowMark} /> Proactive &amp; connected
+              </span>
+              <h3 className={s.featureName}>Agents that pick up work on their own</h3>
+              <p className={s.featureDesc}>
+                Connect Pear to Slack, Linear, GitHub, and the rest of your stack. Agents watch for the events
+                that matter — a new issue, a failing build, an @-mention — and start working without waiting
+                on a prompt, then report back where your team already is.
+              </p>
+              <ul className={s.bullets}>
+                <li>
+                  <Tick /> <span>A new Linear issue or GitHub PR spins up an agent</span>
+                </li>
+                <li>
+                  <Tick /> <span>@-mention in Slack to dispatch or steer a run</span>
+                </li>
+                <li>
+                  <Tick /> <span>Triggers and webhooks kick off work automatically</span>
+                </li>
+              </ul>
+            </div>
+            <div className={s.visual} aria-hidden>
+              <div className={s.visualBar}>
+                <span className={`${s.dot} ${s.dotR}`} />
+                <span className={`${s.dot} ${s.dotY}`} />
+                <span className={`${s.dot} ${s.dotG}`} />
+                <span className={s.visualTitle}>triggers</span>
+              </div>
+              <div className={s.visualBody}>
+                <div className={s.triggers}>
+                  <div className={s.trigger}>
+                    <span className={s.triggerSource}>Linear</span>
+                    <span className={s.triggerText}>New issue · ENG-412</span>
+                    <span className={`${s.triggerState} ${s.runnerLocal}`}>agent on it</span>
+                  </div>
+                  <div className={s.trigger}>
+                    <span className={s.triggerSource}>GitHub</span>
+                    <span className={s.triggerText}>CI failed · #1053</span>
+                    <span className={`${s.triggerState} ${s.runnerLocal}`}>investigating</span>
+                  </div>
+                  <div className={s.trigger}>
+                    <span className={s.triggerSource}>Slack</span>
+                    <span className={s.triggerText}>@pear ship the docs</span>
+                    <span className={`${s.triggerState} ${s.runnerLocal}`}>running</span>
                   </div>
                 </div>
               </div>
