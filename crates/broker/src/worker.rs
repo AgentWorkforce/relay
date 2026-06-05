@@ -357,9 +357,7 @@ impl WorkerRegistry {
                     Some("--dangerously-bypass-approvals-and-sandbox")
                 } else if is_gemini && !effective_args.iter().any(|a| a == "--yolo" || a == "-y") {
                     Some("--yolo")
-                } else if is_grok
-                    && !effective_args.iter().any(|a| a == "--always-approve")
-                {
+                } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
                     Some("--always-approve")
                 } else {
                     None
@@ -565,9 +563,7 @@ impl WorkerRegistry {
                         && !effective_args.iter().any(|a| a == "--yolo" || a == "-y")
                     {
                         Some("--yolo")
-                    } else if is_grok
-                        && !effective_args.iter().any(|a| a == "--always-approve")
-                    {
+                    } else if is_grok && !effective_args.iter().any(|a| a == "--always-approve") {
                         Some("--always-approve")
                     } else {
                         None
