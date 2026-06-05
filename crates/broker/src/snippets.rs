@@ -1186,6 +1186,19 @@ fn grok_manual_mcp_add_cmd(cli: &str) -> String {
     )
 }
 
+async fn remove_grok_mcp_servers(exe: &str) {
+    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
+        let mut cmd = Command::new(exe);
+        cmd.args(["mcp", "remove", server_name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Ok(mut child) = cmd.spawn() {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn configure_grok_mcp(
     cli: &str,
@@ -1201,15 +1214,7 @@ async fn configure_grok_mcp(
         .unwrap_or_else(|| cli.trim().to_string());
     let manual_cmd = grok_manual_mcp_add_cmd(&exe);
 
-    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let _ = std::process::Command::new(&exe)
-            .args(["mcp", "remove", server_name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .and_then(|mut c| c.wait());
-    }
+    remove_grok_mcp_servers(&exe).await;
 
     let mut mcp_cmd = Command::new(&exe);
     mcp_cmd.args(grok_mcp_add_args(
@@ -1223,7 +1228,7 @@ async fn configure_grok_mcp(
     mcp_cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::null());
 
     match mcp_cmd.spawn() {
         Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
