@@ -50,12 +50,15 @@
     "@agent-relay/utils": "8.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^2.5.1",
+    "@relayflows/cli": "^1.0.1",
     "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
-    "esbuild": "^0.27.2",
     "posthog-node": "^5.29.2",
     "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
   },
   "engines": {
     "node": ">=20.9.0"
