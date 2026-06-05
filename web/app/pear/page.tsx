@@ -36,16 +36,10 @@ export const metadata: Metadata = {
 
 function PearMark({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path
-        fill="#A6D388"
-        d="M7.681 9.097c1.587-3.151 7.698-1.916 11.958 2.171 2.697 2.586 8.056 1.498 11.498 4.804 3.493 3.354 3.259 9.361-3.053 15.767C23 37 16 37 11.835 33.384c-4.388-3.811-2.476-8.61-4.412-13.585S3.1 9.375 7.681 9.097Z"
-      />
-      <path
-        fill="#662113"
-        d="M8.178 9.534c-.43.448-1.114.489-1.527.093-3.208-3.079-3.918-7.544-3.946-7.776-.074-.586.348-1.157.939-1.278.592-.121 1.131.257 1.205.842.006.05.657 3.997 3.359 6.59.413.397.4 1.081-.03 1.529Z"
-      />
-    </svg>
+    // Plain img: the SST/OpenNext image optimizer has no working sharp
+    // runtime, so next/image's /_next/image endpoint 500s.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img className={`${s.pearMark} ${className ?? ''}`} src="/brand-kit/pear-icon-transparent.png" alt="" aria-hidden />
   );
 }
 
@@ -151,9 +145,8 @@ export default function PearPage() {
               </h1>
             </div>
             <p className={s.lead}>
-              Pear is a desktop workspace for working with many AI coding agents at once. Each runs in its own
-              terminal, they talk to each other, split up the work, and bring every diff back to you for
-              review.
+              Run a team of AI coding agents in parallel. They split up the work and coordinate with each
+              other.
             </p>
             <div className={s.ctaRow}>
               <Link href="#waitlist" className={s.ctaPrimary}>
@@ -163,7 +156,7 @@ export default function PearPage() {
                 Read the docs
               </Link>
             </div>
-            <p className={s.heroNote}>Desktop app for macOS · built on the Agent Relay broker</p>
+            <p className={s.heroNote}>Private Beta. MacOS Silicon only. Built on Agent Relay.</p>
           </div>
 
           {/* Product screenshot */}
@@ -206,7 +199,7 @@ export default function PearPage() {
               <h3 className={s.featureName}>They coordinate with each other</h3>
               <p className={s.featureDesc}>
                 Pear gives every agent a real messaging rail — the same channels, DMs, threads, and reactions
-                you&apos;d expect from Slack, built on the Agent Relay broker. Agents hand off work, ask each
+                you&apos;d expect from Slack, built on Agent Relay. Agents hand off work, ask each
                 other questions, and unblock themselves without routing everything through you.
               </p>
               <ul className={s.bullets}>
@@ -274,23 +267,23 @@ export default function PearPage() {
           <div className={`${s.featureRow} ${s.reverse}`}>
             <div className={s.featureCopy}>
               <span className={s.featureTag}>
-                <PearMark className={s.eyebrowMark} /> Workstreams
+                <PearMark className={s.eyebrowMark} /> Local &amp; remote
               </span>
-              <h3 className={s.featureName}>See the whole operation as a graph</h3>
+              <h3 className={s.featureName}>Run agents on your machine or in the cloud</h3>
               <p className={s.featureDesc}>
-                A lead agent breaks the goal into workstreams and delegates. Pear draws the live graph of who
-                spawned whom and who&apos;s messaging whom, so a team of agents stays legible instead of
-                turning into a wall of scrolling text.
+                Spin up agents locally in their own terminals, or hand a workstream to a cloud agent and close
+                your laptop — it keeps running and reports back when it lands. Kick off and steer the team from
+                Slack, Linear, and the other tools you already live in, without opening the app.
               </p>
               <ul className={s.bullets}>
                 <li>
-                  <Tick /> <span>Hierarchy edges show delegation</span>
+                  <Tick /> <span>Local and cloud agents in one workspace</span>
                 </li>
                 <li>
-                  <Tick /> <span>Message edges light up in real time</span>
+                  <Tick /> <span>Start and reply from Slack, Linear &amp; more</span>
                 </li>
                 <li>
-                  <Tick /> <span>Click any node to drop into its terminal</span>
+                  <Tick /> <span>Cloud agents keep working while you&apos;re offline</span>
                 </li>
               </ul>
             </div>
@@ -299,41 +292,31 @@ export default function PearPage() {
                 <span className={`${s.dot} ${s.dotR}`} />
                 <span className={`${s.dot} ${s.dotY}`} />
                 <span className={`${s.dot} ${s.dotG}`} />
-                <span className={s.visualTitle}>graph view</span>
+                <span className={s.visualTitle}>workspace</span>
               </div>
               <div className={s.visualBody}>
-                <div className={s.graph}>
-                  {/* edges */}
-                  <span
-                    className={s.gLine}
-                    style={{ left: '50%', top: '22%', width: '34%', transform: 'rotate(48deg)' }}
-                  />
-                  <span
-                    className={s.gLine}
-                    style={{ left: '50%', top: '22%', width: '34%', transform: 'rotate(132deg)' }}
-                  />
-                  <span
-                    className={s.gLine}
-                    style={{ left: '24%', top: '70%', width: '52%', transform: 'rotate(0deg)' }}
-                  />
-                  {/* nodes */}
-                  <div className={s.node} style={{ left: '50%', top: '20%' }}>
-                    <div className={`${s.nodeDot} ${s.nodeLead}`} style={{ background: '#4a90c2' }}>
-                      AT
+                <div className={s.runners}>
+                  <div className={s.runner}>
+                    <span className={s.runnerDot} style={{ background: '#6cb24a' }} />
+                    <div className={s.runnerInfo}>
+                      <span className={s.runnerName}>nova</span>
+                      <span className={s.runnerMeta}>local · your machine</span>
                     </div>
-                    <span className={s.nodeLabel}>atlas · lead</span>
+                    <span className={`${s.runnerTag} ${s.runnerLocal}`}>running</span>
                   </div>
-                  <div className={s.node} style={{ left: '22%', top: '72%' }}>
-                    <div className={s.nodeDot} style={{ background: '#6cb24a' }}>
-                      NV
+                  <div className={s.runner}>
+                    <span className={s.runnerDot} style={{ background: '#4a90c2' }} />
+                    <div className={s.runnerInfo}>
+                      <span className={s.runnerName}>orion</span>
+                      <span className={s.runnerMeta}>cloud · offline-safe</span>
                     </div>
-                    <span className={s.nodeLabel}>nova</span>
+                    <span className={`${s.runnerTag} ${s.runnerCloud}`}>running</span>
                   </div>
-                  <div className={s.node} style={{ left: '78%', top: '72%' }}>
-                    <div className={s.nodeDot} style={{ background: '#c1674b' }}>
-                      OR
-                    </div>
-                    <span className={s.nodeLabel}>orion</span>
+                  <div className={s.connectRow}>
+                    <span className={s.connectLabel}>Connect from</span>
+                    <span className={s.chip}>Slack</span>
+                    <span className={s.chip}>Linear</span>
+                    <span className={s.chip}>+ more</span>
                   </div>
                 </div>
               </div>
@@ -390,6 +373,70 @@ export default function PearPage() {
               </div>
             </div>
           </div>
+
+          <Wave />
+
+          <div className={`${s.featureRow} ${s.reverse}`}>
+            <div className={s.featureCopy}>
+              <span className={s.featureTag}>
+                <PearMark className={s.eyebrowMark} /> Cost &amp; usage
+              </span>
+              <h3 className={s.featureName}>See exactly what every agent is burning</h3>
+              <p className={s.featureDesc}>
+                Tokens and spend, broken out per agent and per session, updating live as the team works. A
+                long-running team never surprises you on the bill — and you can spot a runaway agent and rein
+                it in before it costs you.
+              </p>
+              <ul className={s.bullets}>
+                <li>
+                  <Tick /> <span>Tokens and dollars per agent and per session</span>
+                </li>
+                <li>
+                  <Tick /> <span>Live burn as the work happens</span>
+                </li>
+                <li>
+                  <Tick /> <span>Catch a runaway agent before it runs up the bill</span>
+                </li>
+              </ul>
+            </div>
+            <div className={s.visual} aria-hidden>
+              <div className={s.visualBar}>
+                <span className={`${s.dot} ${s.dotR}`} />
+                <span className={`${s.dot} ${s.dotY}`} />
+                <span className={`${s.dot} ${s.dotG}`} />
+                <span className={s.visualTitle}>usage</span>
+              </div>
+              <div className={s.visualBody}>
+                <div className={s.usage}>
+                  <div className={s.usageRow}>
+                    <span className={s.usageName}>nova</span>
+                    <span className={s.usageTrack}>
+                      <span className={s.usageFill} style={{ width: '74%', background: '#6cb24a' }} />
+                    </span>
+                    <span className={s.usageVal}>$4.10</span>
+                  </div>
+                  <div className={s.usageRow}>
+                    <span className={s.usageName}>atlas</span>
+                    <span className={s.usageTrack}>
+                      <span className={s.usageFill} style={{ width: '48%', background: '#4a90c2' }} />
+                    </span>
+                    <span className={s.usageVal}>$2.65</span>
+                  </div>
+                  <div className={s.usageRow}>
+                    <span className={s.usageName}>orion</span>
+                    <span className={s.usageTrack}>
+                      <span className={s.usageFill} style={{ width: '41%', background: '#c1674b' }} />
+                    </span>
+                    <span className={s.usageVal}>$2.52</span>
+                  </div>
+                  <div className={s.usageTotal}>
+                    <span>Session total</span>
+                    <span className={s.usageTotalVal}>1.84M tokens · $9.27</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
       </main>
 
@@ -434,7 +481,7 @@ export default function PearPage() {
             <article className={s.step}>
               <span className={s.stepNum}>1</span>
               <h3>Open your project</h3>
-              <p>Point Pear at a local repo. It spins up a broker and a shared workspace for the team.</p>
+              <p>Point Pear at a local repo. It spins up a shared workspace for the team.</p>
               <code>pear open ./checkout-service</code>
             </article>
             <article className={s.step}>
