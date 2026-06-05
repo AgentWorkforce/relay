@@ -1165,18 +1165,24 @@ fn grok_mcp_add_args(
     let mcp_command = agent_relay_mcp_command();
     args.push("--command".to_string());
     args.push(mcp_command.command);
-    args.push("--args".to_string());
-    args.extend(mcp_command.args);
+    for arg in mcp_command.args {
+        args.push("--args".to_string());
+        args.push(arg);
+    }
     args
 }
 
 fn grok_manual_mcp_add_cmd(cli: &str) -> String {
     let mcp_command = agent_relay_mcp_command();
-    let mut rendered_parts = vec![mcp_command.command];
-    rendered_parts.extend(mcp_command.args);
-    let rendered_mcp_command = rendered_parts.join(" ");
+    let rendered_args = mcp_command
+        .args
+        .iter()
+        .map(|arg| format!("--args {arg}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     format!(
-        "{cli} mcp add --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url> {AGENT_RELAY_MCP_SERVER} --command {rendered_mcp_command}"
+        "{cli} mcp add --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url> {AGENT_RELAY_MCP_SERVER} --command {} {rendered_args}",
+        mcp_command.command
     )
 }
 
@@ -1236,6 +1242,7 @@ async fn configure_grok_mcp(
             }
             Err(_) => {
                 let _ = child.kill().await;
+                let _ = child.wait().await;
                 anyhow::bail!(
                     "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` timed out after 15s. \
                      Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
@@ -1752,6 +1759,10 @@ mod tests {
         assert_eq!(args[server_idx + 2], "npx");
         assert_eq!(args[server_idx + 3], "--args");
         assert_eq!(args[server_idx + 4], "-y");
+        assert_eq!(args[server_idx + 5], "--args");
+        assert_eq!(args[server_idx + 6], "agent-relay");
+        assert_eq!(args[server_idx + 7], "--args");
+        assert_eq!(args[server_idx + 8], "mcp");
     }
 
     #[test]
