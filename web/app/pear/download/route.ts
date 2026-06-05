@@ -9,8 +9,7 @@
 // The binary is mirrored into pear-releases by the pear repo's "mirror-release"
 // workflow whenever a GitHub Release is published. GitHub resolves `latest`
 // server-side, so this redirect target is constant.
-const LATEST_DMG =
-  'https://github.com/AgentWorkforce/pear-releases/releases/latest/download/Pear-arm64.dmg';
+const LATEST_DMG = 'https://github.com/AgentWorkforce/pear-releases/releases/latest/download/Pear-arm64.dmg';
 
 export function GET() {
   return new Response(null, {
