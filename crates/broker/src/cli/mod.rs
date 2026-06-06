@@ -261,7 +261,6 @@ impl InitCommand {
     pub(crate) fn resolved_instance_name(&self, fallback: Option<&str>) -> String {
         self.instance_name
             .clone()
-            .or_else(|| std::env::var("AGENT_RELAY_BROKER_NAME").ok())
             .or_else(|| {
                 let name = self.name.trim();
                 if name.is_empty() {
@@ -270,6 +269,7 @@ impl InitCommand {
                     Some(name.to_string())
                 }
             })
+            .or_else(|| std::env::var("AGENT_RELAY_BROKER_NAME").ok())
             .or_else(|| fallback.map(ToOwned::to_owned))
             .unwrap_or_default()
             .trim()
@@ -282,6 +282,69 @@ impl InitCommand {
             .or_else(|| std::env::var("AGENT_RELAY_WORKSPACE_KEY").ok())
             .map(|key| key.trim().to_string())
             .filter(|key| !key.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn broker_name_env_guard() -> MutexGuard<'static, ()> {
+        let guard = BROKER_NAME_ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        guard
+    }
+
+    fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
+        InitCommand {
+            name: name.to_string(),
+            instance_name: instance_name.map(ToOwned::to_owned),
+            workspace_key: None,
+            channels: "general".to_string(),
+            api_port: 0,
+            api_bind: "127.0.0.1".to_string(),
+            persist: false,
+            state_dir: None,
+        }
+    }
+
+    #[test]
+    fn instance_name_flag_overrides_legacy_name_and_env() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", Some("instance-name"));
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "instance-name"
+        );
+    }
+
+    #[test]
+    fn legacy_name_flag_overrides_env_default() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", None);
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "legacy-name"
+        );
+    }
+
+    #[test]
+    fn env_broker_name_overrides_fallback_only() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("", None);
+
+        assert_eq!(command.resolved_instance_name(Some("fallback")), "env-name");
     }
 }
 
