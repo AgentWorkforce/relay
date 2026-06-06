@@ -288,14 +288,24 @@ impl InitCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::Mutex;
 
     static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-    fn broker_name_env_guard() -> MutexGuard<'static, ()> {
+    struct BrokerNameEnvGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for BrokerNameEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        }
+    }
+
+    fn broker_name_env_guard() -> BrokerNameEnvGuard {
         let guard = BROKER_NAME_ENV_MUTEX.lock().unwrap();
         std::env::remove_var("AGENT_RELAY_BROKER_NAME");
-        guard
+        BrokerNameEnvGuard { _guard: guard }
     }
 
     fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
