@@ -18,10 +18,12 @@ Reviewed PR 1055, removed accidental rust_out artifact, restored emptied traject
 ## Key Decisions
 
 ### Removed accidental binary artifact and restored emptied trajectory
+
 - **Chose:** Removed accidental binary artifact and restored emptied trajectory
 - **Reasoning:** PR diff added rust_out and emptied an active tracked trajectory; AGENTS.md requires trajectories to remain tracked, and generated binaries do not belong in the PR.
 
 ### Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop
+
 - **Chose:** Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop
 - **Reasoning:** The new tests cleared the shared env var before each test but leaked it after the final test, which can affect later tests in the same process.
 
@@ -30,7 +32,8 @@ Reviewed PR 1055, removed accidental rust_out artifact, restored emptied traject
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Removed accidental binary artifact and restored emptied trajectory: Removed accidental binary artifact and restored emptied trajectory
 - Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop: Made CLI env-var test guard clear AGENT_RELAY_BROKER_NAME on drop
