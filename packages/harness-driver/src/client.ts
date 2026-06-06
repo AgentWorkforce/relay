@@ -100,6 +100,8 @@ export interface RuntimeSpawnOptions {
   binaryPath?: string;
   /** Structured options mapped to the broker's Rust `init` CLI flags. */
   binaryArgs?: BrokerInitArgs;
+  /** Existing Relay workspace key to join. Defaults to env when omitted. */
+  workspaceKey?: string;
   /** Broker name. Defaults to cwd basename. */
   brokerName?: string;
   /** Default channels for spawned agents. */
@@ -275,6 +277,11 @@ function buildBrokerInitArgs(args?: BrokerInitArgs): string[] {
   return cliArgs;
 }
 
+function nonEmptyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 // ── Client ─────────────────────────────────────────────────────────────
 
 export class HarnessDriverClient {
@@ -441,7 +448,19 @@ export class HarnessDriverClient {
       binaryPath = resolved;
     }
     const cwd = options?.cwd ?? process.cwd();
-    const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
+    const brokerName =
+      nonEmptyString(options?.brokerName) ??
+      nonEmptyString(options?.env?.AGENT_RELAY_BROKER_NAME) ??
+      nonEmptyString(process.env.AGENT_RELAY_BROKER_NAME) ??
+      (path.basename(cwd) || 'project');
+    const workspaceKey =
+      nonEmptyString(options?.workspaceKey) ??
+      nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(options?.env?.RELAY_API_KEY) ??
+      nonEmptyString(process.env.AGENT_RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(process.env.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(process.env.RELAY_API_KEY);
     const channels = options?.channels ?? ['general'];
     const timeoutMs = options?.startupTimeoutMs ?? 45_000;
     const userArgs = buildBrokerInitArgs(options?.binaryArgs);
@@ -454,9 +473,25 @@ export class HarnessDriverClient {
       AGENT_RELAY_STARTUP_DEBUG:
         options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? process.env.AGENT_RELAY_STARTUP_DEBUG ?? '1',
       RELAY_BROKER_API_KEY: apiKey,
+      ...(workspaceKey
+        ? {
+            AGENT_RELAY_WORKSPACE_KEY: workspaceKey,
+            RELAY_WORKSPACE_KEY: workspaceKey,
+            RELAY_API_KEY: workspaceKey,
+          }
+        : {}),
+      AGENT_RELAY_BROKER_NAME: brokerName,
     };
 
-    const args = ['init', '--name', brokerName, '--channels', channels.join(','), ...userArgs];
+    const args = [
+      'init',
+      '--instance-name',
+      brokerName,
+      ...(workspaceKey ? ['--workspace-key', workspaceKey] : []),
+      '--channels',
+      channels.join(','),
+      ...userArgs,
+    ];
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 

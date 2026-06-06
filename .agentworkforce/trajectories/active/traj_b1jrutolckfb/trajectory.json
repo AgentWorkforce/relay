@@ -43,6 +43,18 @@
             "reasoning": "User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780750374621,
+          "type": "decision",
+          "content": "Use additive aliases for explicit workspace and broker instance contract: Use additive aliases for explicit workspace and broker instance contract",
+          "raw": {
+            "question": "Use additive aliases for explicit workspace and broker instance contract",
+            "chosen": "Use additive aliases for explicit workspace and broker instance contract",
+            "alternatives": [],
+            "reasoning": "The broker already supports legacy RELAY_API_KEY/--name flows; adding --workspace-key, --instance-name, and AGENT_RELAY_WORKSPACE_KEY while retaining old names lets cloud and pear use the locked contract without breaking existing CLI and SDK callers."
+          },
+          "significance": "high"
         }
       ]
     }

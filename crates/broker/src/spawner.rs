@@ -225,6 +225,8 @@ pub fn spawn_env_vars(
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("RELAY_AGENT_NAME".to_string(), name.to_string()),
+        ("AGENT_RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
+        ("RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
         ("RELAY_API_KEY".to_string(), api_key.to_string()),
         ("RELAY_BASE_URL".to_string(), base_url.to_string()),
         ("RELAY_CHANNELS".to_string(), channels.to_string()),

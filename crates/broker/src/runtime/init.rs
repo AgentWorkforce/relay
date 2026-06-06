@@ -8,16 +8,17 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     telemetry.track(TelemetryEvent::BrokerStart);
 
     let runtime_cwd = std::env::current_dir()?;
-    let resolved_name = if cmd.name.trim().is_empty() {
-        runtime_cwd
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("project")
-            .to_string()
-    } else {
-        cmd.name.trim().to_string()
-    };
+    let default_instance_name = runtime_cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("project");
+    let resolved_name = cmd.resolved_instance_name(Some(default_instance_name));
+    if let Some(workspace_key) = cmd.resolved_workspace_key() {
+        std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", &workspace_key);
+        std::env::set_var("RELAY_WORKSPACE_KEY", &workspace_key);
+        std::env::set_var("RELAY_API_KEY", &workspace_key);
+    }
     let custom_state_dir = cmd.state_dir.as_ref().map(PathBuf::from);
     log_startup_phase(
         startup_debug,
@@ -342,6 +343,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
         ("RELAY_BASE_URL".to_string(), http_base.clone()),
+        (
+            "AGENT_RELAY_WORKSPACE_KEY".to_string(),
+            relay_workspace_key.clone(),
+        ),
+        (
+            "RELAY_WORKSPACE_KEY".to_string(),
+            relay_workspace_key.clone(),
+        ),
         ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
         (
             "AGENT_RELAY_RESULT_URL".to_string(),
