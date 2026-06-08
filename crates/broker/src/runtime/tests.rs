@@ -1654,15 +1654,21 @@ async fn synthetic_delivery_read_ack_skips_mark_read() {
         &EventId::new("init_123"),
     );
 
-    for _ in 0..2 {
-        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("synthetic skip telemetry should arrive")
-            .expect("delivery_read_ack event emitted");
-        assert_eq!(frame.payload["kind"], "delivery_read_ack");
-        assert_eq!(frame.payload["status"], "skipped_synthetic");
-        assert_eq!(frame.payload["reason"], "initial_task_synthetic_event_id");
-    }
+    let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("synthetic skip telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(first.payload["kind"], "delivery_read_ack");
+    assert_eq!(first.payload["status"], "skipped_synthetic");
+    assert_eq!(first.payload["reason"], "initial_task_synthetic_event_id");
+
+    let duplicate = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("duplicate synthetic telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(duplicate.payload["kind"], "delivery_read_ack");
+    assert_eq!(duplicate.payload["status"], "suppressed_duplicate");
+    assert_eq!(duplicate.payload["reason"], "duplicate_delivery_read_ack");
     read_mock.assert_hits(0);
 }
 

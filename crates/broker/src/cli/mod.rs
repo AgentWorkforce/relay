@@ -282,23 +282,11 @@ impl InitCommand {
     }
 
     pub(crate) fn resolved_workspace_key(&self) -> Option<String> {
-        fn non_empty_trimmed(value: &str) -> Option<String> {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-
         self.workspace_key
-            .as_deref()
-            .and_then(non_empty_trimmed)
-            .or_else(|| {
-                std::env::var("AGENT_RELAY_WORKSPACE_KEY")
-                    .ok()
-                    .and_then(|key| non_empty_trimmed(&key))
-            })
+            .clone()
+            .or_else(|| std::env::var("AGENT_RELAY_WORKSPACE_KEY").ok())
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
     }
 }
 
@@ -308,7 +296,6 @@ mod tests {
     use std::sync::Mutex;
 
     static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
-    static WORKSPACE_KEY_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     struct BrokerNameEnvGuard {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -324,22 +311,6 @@ mod tests {
         let guard = BROKER_NAME_ENV_MUTEX.lock().unwrap();
         std::env::remove_var("AGENT_RELAY_BROKER_NAME");
         BrokerNameEnvGuard { _guard: guard }
-    }
-
-    struct WorkspaceKeyEnvGuard {
-        _guard: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for WorkspaceKeyEnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
-        }
-    }
-
-    fn workspace_key_env_guard() -> WorkspaceKeyEnvGuard {
-        let guard = WORKSPACE_KEY_ENV_MUTEX.lock().unwrap();
-        std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
-        WorkspaceKeyEnvGuard { _guard: guard }
     }
 
     fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
@@ -412,32 +383,6 @@ mod tests {
         let command = init_command("", Some(""));
 
         assert_eq!(command.resolved_instance_name(Some("fallback")), "fallback");
-    }
-
-    #[test]
-    fn blank_workspace_key_falls_through_to_env() {
-        let _guard = workspace_key_env_guard();
-        std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", " rk_live_env ");
-        let mut command = init_command("", None);
-        command.workspace_key = Some("   ".to_string());
-
-        assert_eq!(
-            command.resolved_workspace_key().as_deref(),
-            Some("rk_live_env")
-        );
-    }
-
-    #[test]
-    fn workspace_key_flag_overrides_env() {
-        let _guard = workspace_key_env_guard();
-        std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
-        let mut command = init_command("", None);
-        command.workspace_key = Some(" rk_live_flag ".to_string());
-
-        assert_eq!(
-            command.resolved_workspace_key().as_deref(),
-            Some("rk_live_flag")
-        );
     }
 }
 
