@@ -133,6 +133,9 @@ pub(crate) fn synthetic_delivery_read_ack_reason(event_id: &EventId) -> Option<&
     if event_id.starts_with("cont_load_") {
         return Some("continuity_synthetic_event_id");
     }
+    if event_id.starts_with("flush_") {
+        return Some("manual_flush_synthetic_event_id");
+    }
     None
 }
 
@@ -182,6 +185,20 @@ pub(crate) fn mark_delivery_read_ack_with_timeout(
     event_id: &EventId,
     timeout_window: Duration,
 ) {
+    if let Some(reason) = synthetic_delivery_read_ack_reason(event_id) {
+        emit_delivery_read_ack_telemetry(
+            sdk_out_tx.clone(),
+            BrokerEvent::DeliveryReadAck {
+                name: worker_name.clone(),
+                delivery_id: delivery_id.clone(),
+                event_id: event_id.clone(),
+                status: DeliveryReadAckStatus::SkippedSynthetic,
+                reason: Some(reason.to_string()),
+            },
+        );
+        return;
+    }
+
     let dedup_key = format!("delivery_read_ack:{worker_name}:{event_id}");
     if !dedup.insert_if_new(&dedup_key, Instant::now()) {
         emit_delivery_read_ack_telemetry(
@@ -192,20 +209,6 @@ pub(crate) fn mark_delivery_read_ack_with_timeout(
                 event_id: event_id.clone(),
                 status: DeliveryReadAckStatus::SuppressedDuplicate,
                 reason: Some("duplicate_delivery_read_ack".to_string()),
-            },
-        );
-        return;
-    }
-
-    if let Some(reason) = synthetic_delivery_read_ack_reason(event_id) {
-        emit_delivery_read_ack_telemetry(
-            sdk_out_tx.clone(),
-            BrokerEvent::DeliveryReadAck {
-                name: worker_name.clone(),
-                delivery_id: delivery_id.clone(),
-                event_id: event_id.clone(),
-                status: DeliveryReadAckStatus::SkippedSynthetic,
-                reason: Some(reason.to_string()),
             },
         );
         return;

@@ -1382,6 +1382,7 @@ fn delivery_read_ack_classification_skips_synthetic_event_ids() {
         ("http_123", Some("http_api_synthetic_event_id")),
         ("init_123", Some("initial_task_synthetic_event_id")),
         ("cont_load_123", Some("continuity_synthetic_event_id")),
+        ("flush_123", Some("manual_flush_synthetic_event_id")),
         ("msg_123", None),
         ("1780911342_317109", None),
     ];
@@ -1643,14 +1644,25 @@ async fn synthetic_delivery_read_ack_skips_mark_read() {
         &DeliveryId::new("del_init"),
         &EventId::new("init_123"),
     );
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_init_duplicate"),
+        &EventId::new("init_123"),
+    );
 
-    let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-        .await
-        .expect("synthetic skip telemetry should arrive")
-        .expect("delivery_read_ack event emitted");
-    assert_eq!(frame.payload["kind"], "delivery_read_ack");
-    assert_eq!(frame.payload["status"], "skipped_synthetic");
-    assert_eq!(frame.payload["reason"], "initial_task_synthetic_event_id");
+    for _ in 0..2 {
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("synthetic skip telemetry should arrive")
+            .expect("delivery_read_ack event emitted");
+        assert_eq!(frame.payload["kind"], "delivery_read_ack");
+        assert_eq!(frame.payload["status"], "skipped_synthetic");
+        assert_eq!(frame.payload["reason"], "initial_task_synthetic_event_id");
+    }
     read_mock.assert_hits(0);
 }
 
