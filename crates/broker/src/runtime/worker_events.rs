@@ -6,8 +6,10 @@ impl BrokerRuntime {
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
+        let relaycast_http = self.relaycast_http.clone();
         let ws_control_tx = &self.ws_control_tx;
         let workers = &mut self.workers;
+        let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
@@ -65,6 +67,13 @@ impl BrokerRuntime {
                             )
                             .await;
                             if let Some(pending) = pending_for_confirmation {
+                                let read_ack_delivery_id = pending.delivery.delivery_id.clone();
+                                let read_ack_event_id = pending.delivery.event_id.clone();
+                                let cli_hint = workers
+                                    .workers
+                                    .get(&name)
+                                    .and_then(|handle| handle.spec.cli.as_deref())
+                                    .map(str::to_string);
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();
                                     handle.state = AgentWorkState::Working;
@@ -80,6 +89,15 @@ impl BrokerRuntime {
                                     },
                                 )
                                 .await;
+                                mark_delivery_read_ack(
+                                    &relaycast_http,
+                                    sdk_out_tx,
+                                    dedup,
+                                    &name,
+                                    cli_hint.as_deref(),
+                                    &read_ack_delivery_id,
+                                    &read_ack_event_id,
+                                );
                             }
                         }
                     } else if msg_type == "delivery_queued" || msg_type == "delivery_injected" {

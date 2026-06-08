@@ -31,9 +31,9 @@ use crate::{
         WorkspaceAlias, WorkspaceId,
     },
     protocol::{
-        AgentRuntime, AgentSpec, BrokerEvent, HeadlessProvider as ProtocolHeadlessProvider,
-        MessageInjectionMode, ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig,
-        PROTOCOL_VERSION,
+        AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
+        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, ProtocolEnvelope,
+        RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
         agent_name_eq, format_worker_preregistration_error, is_self_name, map_ws_event,

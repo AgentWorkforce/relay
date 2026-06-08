@@ -10,8 +10,8 @@ use crate::ids::{
     ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias, WorkspaceId,
 };
 use crate::protocol::{
-    AgentSpec, HarnessReleasePolicy, HeadlessHarnessConfig, HeadlessHarnessDriver,
-    MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
+    AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
+    HeadlessHarnessDriver, MessageInjectionMode, RelayDelivery, ResolvedHarnessConfig,
 };
 use crate::worker::{AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{
@@ -30,20 +30,24 @@ use tokio::sync::mpsc;
 use super::{
     build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
     channels_from_csv, clear_pending_delivery_if_event_matches, continuity_dir,
-    delivery_retry_interval, derive_ws_base_url_from_http, display_target_for_dashboard,
-    drop_pending_for_worker, emit_delivery_attempt_outcome, emit_dropped_delivery_failures,
-    ensure_ephemeral_paths, extract_mcp_message_ids, http_api_event_emit_timeout,
-    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
-    is_relaycast_self_control_target, is_unknown_worker_error_message, normalize_channel,
-    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
-    relaycast_ws_spawn_token, retry_pending_delivery, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
+    delivery_read_ack_is_relaycast_message, delivery_retry_interval, derive_ws_base_url_from_http,
+    display_target_for_dashboard, drop_pending_for_worker, emit_delivery_attempt_outcome,
+    emit_dropped_delivery_failures, ensure_ephemeral_paths, extract_mcp_message_ids,
+    http_api_event_emit_timeout, http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
+    is_relaycast_self_control_target, is_unknown_worker_error_message, mark_delivery_read_ack,
+    mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
+    normalize_sender, parse_sort_key_from_raw_timestamp, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
+    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
+    retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
     InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
-use crate::relaycast::{format_worker_preregistration_error, RelaycastRegistrationError};
+use crate::relaycast::{
+    format_worker_preregistration_error, RelaycastHttpClient, RelaycastRegistrationError,
+};
 use crate::types::{InboundDeliveryMode, InboundDeliveryState};
 
 fn env_test_lock() -> &'static Mutex<()> {
@@ -118,6 +122,28 @@ fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
         priority: 1,
         mode: MessageInjectionMode::Steer,
         event_id: Some(event_id),
+    }
+}
+
+fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> PendingDelivery {
+    PendingDelivery {
+        worker_name: WorkerName::from(worker_name),
+        delivery: RelayDelivery {
+            delivery_id: DeliveryId::new(delivery_id),
+            event_id: EventId::new(event_id),
+            workspace_id: Some(WorkspaceId::new("ws_test")),
+            workspace_alias: Some(WorkspaceAlias::new("test")),
+            from: "sender".to_string(),
+            target: MessageTarget::new(worker_name),
+            body: "hello".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: MessageInjectionMode::Wait,
+        },
+        attempts: 1,
+        next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
     }
 }
 
@@ -1346,6 +1372,372 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
 
     assert!(removed.is_none());
     assert!(pending.contains_key("del_1"));
+}
+
+#[test]
+fn delivery_read_ack_classification_skips_synthetic_event_ids() {
+    let cases = [
+        ("", Some("blank_event_id")),
+        ("   ", Some("blank_event_id")),
+        ("http_123", Some("http_api_synthetic_event_id")),
+        ("init_123", Some("initial_task_synthetic_event_id")),
+        ("cont_load_123", Some("continuity_synthetic_event_id")),
+        ("msg_123", None),
+        ("1780911342_317109", None),
+    ];
+
+    for (event_id, expected) in cases {
+        let event_id = EventId::new(event_id);
+        assert_eq!(synthetic_delivery_read_ack_reason(&event_id), expected);
+        assert_eq!(
+            delivery_read_ack_is_relaycast_message(&event_id),
+            expected.is_none()
+        );
+    }
+}
+
+#[test]
+fn delivery_read_ack_event_shape_is_stable() {
+    let event = BrokerEvent::DeliveryReadAck {
+        name: WorkerName::new("Worker1"),
+        delivery_id: DeliveryId::new("del_1"),
+        event_id: EventId::new("msg_1"),
+        status: DeliveryReadAckStatus::SkippedSynthetic,
+        reason: Some("initial_task_synthetic_event_id".to_string()),
+    };
+
+    let encoded = serde_json::to_value(&event).expect("event serializes");
+    assert_eq!(encoded["kind"], "delivery_read_ack");
+    assert_eq!(encoded["name"], "Worker1");
+    assert_eq!(encoded["delivery_id"], "del_1");
+    assert_eq!(encoded["event_id"], "msg_1");
+    assert_eq!(encoded["status"], "skipped_synthetic");
+    assert_eq!(encoded["reason"], "initial_task_synthetic_event_id");
+}
+
+#[tokio::test]
+async fn confirmed_delivery_read_ack_marks_relaycast_exactly_once() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_1/read")
+            .header("authorization", "Bearer at_live_supplied_recipient");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "message_id": "msg_1",
+                "agent_id": "agent_supplied_recipient",
+                "read_at": "2026-06-08T10:00:00.000Z"
+            }
+        }));
+    });
+    let spawn_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/spawn");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "agent": {
+                    "id": "agent_fresh_wrong",
+                    "name": "recipient",
+                    "type": "agent",
+                    "status": "online",
+                    "created_at": "2026-06-08T10:00:00.000Z",
+                    "last_seen": "2026-06-08T10:00:00.000Z",
+                    "metadata": {}
+                },
+                "token": "at_live_fresh_wrong"
+            }
+        }));
+    });
+    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_supplied_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_1"),
+        pending_delivery("recipient", "del_1", "msg_1"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_1",
+        Some("msg_1"),
+        "recipient",
+        "delivery_ack",
+    )
+    .expect("matching delivery_ack confirms the pending delivery");
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &confirmed.delivery.delivery_id,
+        &confirmed.delivery.event_id,
+    );
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("delivery_read_ack telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(frame.msg_type, "event");
+    assert_eq!(frame.payload["kind"], "delivery_read_ack");
+    assert_eq!(frame.payload["name"], "recipient");
+    assert_eq!(frame.payload["delivery_id"], "del_1");
+    assert_eq!(frame.payload["event_id"], "msg_1");
+    assert_eq!(frame.payload["status"], "marked");
+    assert!(frame.payload.get("reason").is_none());
+    read_mock.assert_hits(1);
+    spawn_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn duplicate_delivery_read_ack_suppresses_repeat_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_dup/read")
+            .header("authorization", "Bearer at_live_recipient_dup");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "message_id": "msg_dup",
+                "agent_id": "agent_recipient_dup",
+                "read_at": "2026-06-08T10:00:00.000Z"
+            }
+        }));
+    });
+    let spawn_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/spawn");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "agent": {
+                    "id": "agent_fresh_wrong",
+                    "name": "recipient",
+                    "type": "agent",
+                    "status": "online",
+                    "created_at": "2026-06-08T10:00:00.000Z",
+                    "last_seen": "2026-06-08T10:00:00.000Z",
+                    "metadata": {}
+                },
+                "token": "at_live_fresh_wrong"
+            }
+        }));
+    });
+    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_recipient_dup");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_dup_1"),
+        &EventId::new("msg_dup"),
+    );
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_dup_2"),
+        &EventId::new("msg_dup"),
+    );
+
+    let mut statuses = Vec::new();
+    for _ in 0..2 {
+        let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("delivery_read_ack telemetry should arrive")
+            .expect("delivery_read_ack event emitted");
+        assert_eq!(frame.payload["kind"], "delivery_read_ack");
+        statuses.push(
+            frame.payload["status"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+    }
+
+    assert!(statuses.iter().any(|status| status == "marked"));
+    assert!(statuses
+        .iter()
+        .any(|status| status == "suppressed_duplicate"));
+    read_mock.assert_hits(1);
+    spawn_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn stale_delivery_ack_event_id_does_not_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages/msg_current/read");
+        then.status(200).json_body(json!({"ok": true, "data": {}}));
+    });
+    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_stale"),
+        pending_delivery("recipient", "del_stale", "msg_current"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_stale",
+        Some("msg_stale"),
+        "recipient",
+        "delivery_ack",
+    );
+    if let Some(confirmed) = confirmed {
+        mark_delivery_read_ack(
+            &client,
+            &tx,
+            &mut dedup,
+            &WorkerName::new("recipient"),
+            Some("codex"),
+            &confirmed.delivery.delivery_id,
+            &confirmed.delivery.event_id,
+        );
+    }
+
+    assert!(pending.contains_key("del_stale"));
+    read_mock.assert_hits(0);
+    assert!(tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn synthetic_delivery_read_ack_skips_mark_read() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages/init_123/read");
+        then.status(200).json_body(json!({"ok": true, "data": {}}));
+    });
+    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+
+    mark_delivery_read_ack(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &DeliveryId::new("del_init"),
+        &EventId::new("init_123"),
+    );
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("synthetic skip telemetry should arrive")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(frame.payload["kind"], "delivery_read_ack");
+    assert_eq!(frame.payload["status"], "skipped_synthetic");
+    assert_eq!(frame.payload["reason"], "initial_task_synthetic_event_id");
+    read_mock.assert_hits(0);
+}
+
+#[tokio::test]
+async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let read_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages/msg_slow/read")
+            .header("authorization", "Bearer at_live_slow_recipient");
+        then.status(200)
+            .delay(Duration::from_millis(200))
+            .json_body(json!({
+                "ok": true,
+                "data": {
+                    "message_id": "msg_slow",
+                    "agent_id": "agent_slow_recipient",
+                    "read_at": "2026-06-08T10:00:00.000Z"
+                }
+            }));
+    });
+    let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+    seed_supplied_agent_token(&client, "recipient", "at_live_slow_recipient");
+    let mut dedup = DedupCache::new(Duration::from_secs(300), 16);
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut pending = HashMap::from([(
+        DeliveryId::new("del_slow"),
+        pending_delivery("recipient", "del_slow", "msg_slow"),
+    )]);
+
+    let confirmed = clear_pending_delivery_if_event_matches(
+        &mut pending,
+        "del_slow",
+        Some("msg_slow"),
+        "recipient",
+        "delivery_ack",
+    )
+    .expect("matching delivery_ack confirms the pending delivery");
+    send_broker_event(
+        &tx,
+        BrokerEvent::MessageDeliveryConfirmed {
+            name: WorkerName::new("recipient"),
+            delivery_id: confirmed.delivery.delivery_id.clone(),
+            event_id: confirmed.delivery.event_id.clone(),
+            from: confirmed.delivery.from.clone(),
+            to: confirmed.delivery.target.clone(),
+        },
+    )
+    .await
+    .expect("confirmation event should enqueue before read-ack scheduling");
+
+    let start = Instant::now();
+    mark_delivery_read_ack_with_timeout(
+        &client,
+        &tx,
+        &mut dedup,
+        &WorkerName::new("recipient"),
+        Some("codex"),
+        &confirmed.delivery.delivery_id,
+        &confirmed.delivery.event_id,
+        Duration::from_millis(20),
+    );
+    assert!(
+        start.elapsed() < Duration::from_millis(50),
+        "read-ack scheduling must not wait for slow Relaycast mark_read"
+    );
+
+    let confirmation = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .expect("delivery confirmation must not wait on mark_read")
+        .expect("confirmation event emitted");
+    assert_eq!(confirmation.payload["kind"], "message_delivery_confirmed");
+    assert_eq!(confirmation.payload["delivery_id"], "del_slow");
+
+    let read_ack = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("read-ack failure telemetry should arrive after timeout")
+        .expect("delivery_read_ack event emitted");
+    assert_eq!(read_ack.payload["kind"], "delivery_read_ack");
+    assert_eq!(read_ack.payload["status"], "failed");
+    assert!(read_ack.payload["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("timed out"));
+    read_mock.assert_hits(1);
 }
 
 #[test]

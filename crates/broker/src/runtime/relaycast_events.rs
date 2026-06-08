@@ -268,9 +268,9 @@ impl BrokerRuntime {
                     // short timeout keeps spawn latency bounded while still
                     // giving the registration call a real chance.
                     let worker_relay_key = {
-                        let ws_token = relaycast_ws_spawn_token(&ws_value);
-                        if ws_token.is_some() {
-                            ws_token
+                        if let Some(token) = relaycast_ws_spawn_token(&ws_value) {
+                            seed_supplied_agent_token(&workspace_http, &name, &token);
+                            Some(token)
                         } else {
                             const REG_TIMEOUT: Duration = Duration::from_secs(3);
                             match tokio::time::timeout(
@@ -498,9 +498,9 @@ impl BrokerRuntime {
 
                         // Pre-register (same logic as primary WS spawn path).
                         let worker_relay_key = {
-                            let ws_token = relaycast_ws_spawn_token(&ws_value);
-                            if ws_token.is_some() {
-                                ws_token
+                            if let Some(token) = relaycast_ws_spawn_token(&ws_value) {
+                                seed_supplied_agent_token(&workspace_http, &name, &token);
+                                Some(token)
                             } else {
                                 const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                 match tokio::time::timeout(
