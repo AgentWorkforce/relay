@@ -259,21 +259,26 @@ pub(crate) struct InitCommand {
 
 impl InitCommand {
     pub(crate) fn resolved_instance_name(&self, fallback: Option<&str>) -> String {
+        fn non_empty_trimmed(value: &str) -> Option<String> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+
         self.instance_name
-            .clone()
+            .as_deref()
+            .and_then(non_empty_trimmed)
+            .or_else(|| non_empty_trimmed(&self.name))
             .or_else(|| {
-                let name = self.name.trim();
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(name.to_string())
-                }
+                std::env::var("AGENT_RELAY_BROKER_NAME")
+                    .ok()
+                    .and_then(|name| non_empty_trimmed(&name))
             })
-            .or_else(|| std::env::var("AGENT_RELAY_BROKER_NAME").ok())
-            .or_else(|| fallback.map(ToOwned::to_owned))
+            .or_else(|| fallback.and_then(non_empty_trimmed))
             .unwrap_or_default()
-            .trim()
-            .to_string()
     }
 
     pub(crate) fn resolved_workspace_key(&self) -> Option<String> {
@@ -355,6 +360,29 @@ mod tests {
         let command = init_command("", None);
 
         assert_eq!(command.resolved_instance_name(Some("fallback")), "env-name");
+    }
+
+    #[test]
+    fn blank_instance_name_falls_through_to_legacy_name() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", Some("   "));
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "legacy-name"
+        );
+    }
+
+    #[test]
+    fn empty_instance_name_and_blank_env_fall_through_to_fallback() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "   ");
+
+        let command = init_command("", Some(""));
+
+        assert_eq!(command.resolved_instance_name(Some("fallback")), "fallback");
     }
 }
 

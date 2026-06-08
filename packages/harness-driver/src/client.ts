@@ -282,6 +282,68 @@ function nonEmptyString(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/** @internal */
+export interface BrokerSpawnConfig {
+  cwd: string;
+  brokerName: string;
+  workspaceKey?: string;
+  channels: string[];
+  timeoutMs: number;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** @internal */
+export function buildBrokerSpawnConfig(
+  options: RuntimeSpawnOptions | undefined,
+  apiKey: string,
+  parentEnv: NodeJS.ProcessEnv = process.env
+): BrokerSpawnConfig {
+  const cwd = options?.cwd ?? process.cwd();
+  const brokerName =
+    nonEmptyString(options?.brokerName) ??
+    nonEmptyString(options?.env?.AGENT_RELAY_BROKER_NAME) ??
+    nonEmptyString(parentEnv.AGENT_RELAY_BROKER_NAME) ??
+    (path.basename(cwd) || 'project');
+  const workspaceKey =
+    nonEmptyString(options?.workspaceKey) ??
+    nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(parentEnv.AGENT_RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(parentEnv.RELAY_WORKSPACE_KEY);
+  const channels = options?.channels ?? ['general'];
+  const timeoutMs = options?.startupTimeoutMs ?? 45_000;
+  const userArgs = buildBrokerInitArgs(options?.binaryArgs);
+
+  const env = {
+    ...parentEnv,
+    ...options?.env,
+    AGENT_RELAY_STARTUP_DEBUG:
+      options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? parentEnv.AGENT_RELAY_STARTUP_DEBUG ?? '1',
+    RELAY_BROKER_API_KEY: apiKey,
+    ...(workspaceKey
+      ? {
+          AGENT_RELAY_WORKSPACE_KEY: workspaceKey,
+          RELAY_WORKSPACE_KEY: workspaceKey,
+          RELAY_API_KEY: workspaceKey,
+        }
+      : {}),
+    AGENT_RELAY_BROKER_NAME: brokerName,
+  };
+
+  const args = [
+    'init',
+    '--instance-name',
+    brokerName,
+    ...(workspaceKey ? ['--workspace-key', workspaceKey] : []),
+    '--channels',
+    channels.join(','),
+    ...userArgs,
+  ];
+
+  return { cwd, brokerName, workspaceKey, channels, timeoutMs, args, env };
+}
+
 // ── Client ─────────────────────────────────────────────────────────────
 
 export class HarnessDriverClient {
@@ -447,51 +509,8 @@ export class HarnessDriverClient {
       }
       binaryPath = resolved;
     }
-    const cwd = options?.cwd ?? process.cwd();
-    const brokerName =
-      nonEmptyString(options?.brokerName) ??
-      nonEmptyString(options?.env?.AGENT_RELAY_BROKER_NAME) ??
-      nonEmptyString(process.env.AGENT_RELAY_BROKER_NAME) ??
-      (path.basename(cwd) || 'project');
-    const workspaceKey =
-      nonEmptyString(options?.workspaceKey) ??
-      nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
-      nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
-      nonEmptyString(options?.env?.RELAY_API_KEY) ??
-      nonEmptyString(process.env.AGENT_RELAY_WORKSPACE_KEY) ??
-      nonEmptyString(process.env.RELAY_WORKSPACE_KEY) ??
-      nonEmptyString(process.env.RELAY_API_KEY);
-    const channels = options?.channels ?? ['general'];
-    const timeoutMs = options?.startupTimeoutMs ?? 45_000;
-    const userArgs = buildBrokerInitArgs(options?.binaryArgs);
-
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
-
-    const env = {
-      ...process.env,
-      ...options?.env,
-      AGENT_RELAY_STARTUP_DEBUG:
-        options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? process.env.AGENT_RELAY_STARTUP_DEBUG ?? '1',
-      RELAY_BROKER_API_KEY: apiKey,
-      ...(workspaceKey
-        ? {
-            AGENT_RELAY_WORKSPACE_KEY: workspaceKey,
-            RELAY_WORKSPACE_KEY: workspaceKey,
-            RELAY_API_KEY: workspaceKey,
-          }
-        : {}),
-      AGENT_RELAY_BROKER_NAME: brokerName,
-    };
-
-    const args = [
-      'init',
-      '--instance-name',
-      brokerName,
-      ...(workspaceKey ? ['--workspace-key', workspaceKey] : []),
-      '--channels',
-      channels.join(','),
-      ...userArgs,
-    ];
+    const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey);
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 
