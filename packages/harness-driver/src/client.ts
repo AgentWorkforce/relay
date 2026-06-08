@@ -53,6 +53,8 @@ import type {
   BeforeAgentSpawnHandler,
   SpawnPatch,
 } from './lifecycle-hooks.js';
+import { buildBrokerSpawnConfig, type RuntimeSpawnOptions } from './spawn-config.js';
+export type { BrokerInitArgs, BrokerSpawnConfig, RuntimeSpawnOptions } from './spawn-config.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -82,40 +84,6 @@ export interface BrokerExitInfo {
   pid: number | undefined;
   /** Recent stderr lines captured from the managed broker process. */
   recentStderr: string[];
-}
-
-export interface BrokerInitArgs {
-  /** Optional HTTP API port for dashboard proxy (0 = disabled). */
-  apiPort?: number;
-  /** Bind address for the HTTP API. Defaults to 127.0.0.1 in the broker. */
-  apiBind?: string;
-  /** Enable persistence for broker state under the working directory. */
-  persist?: boolean;
-  /** Override the directory used for broker state files. */
-  stateDir?: string;
-}
-
-export interface RuntimeSpawnOptions {
-  /** Path to the agent-relay-broker binary. Auto-resolved if omitted. */
-  binaryPath?: string;
-  /** Structured options mapped to the broker's Rust `init` CLI flags. */
-  binaryArgs?: BrokerInitArgs;
-  /** Broker name. Defaults to cwd basename. */
-  brokerName?: string;
-  /** Default channels for spawned agents. */
-  channels?: string[];
-  /** Working directory for the broker process. */
-  cwd?: string;
-  /** Environment variables for the broker process. */
-  env?: NodeJS.ProcessEnv;
-  /** Forward broker stderr to this callback. */
-  onStderr?: (line: string) => void;
-  /** Timeout in ms to wait for broker to become ready. Default: 45000. */
-  startupTimeoutMs?: number;
-  /** Timeout in ms for HTTP requests to the broker. Default: 30000. */
-  requestTimeoutMs?: number;
-  /** Optional shared event bus — see {@link HarnessDriverClientOptions.eventBus}. */
-  eventBus?: EventBus<HarnessDriverEvents>;
 }
 
 const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional());
@@ -250,29 +218,6 @@ function isProcessRunning(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
-}
-
-function buildBrokerInitArgs(args?: BrokerInitArgs): string[] {
-  if (!args) {
-    return [];
-  }
-
-  const cliArgs: string[] = [];
-
-  if (args.persist) {
-    cliArgs.push('--persist');
-  }
-  if (args.apiPort !== undefined) {
-    cliArgs.push('--api-port', String(args.apiPort));
-  }
-  if (args.apiBind !== undefined) {
-    cliArgs.push('--api-bind', args.apiBind);
-  }
-  if (args.stateDir !== undefined) {
-    cliArgs.push('--state-dir', args.stateDir);
-  }
-
-  return cliArgs;
 }
 
 // ── Client ─────────────────────────────────────────────────────────────
@@ -440,23 +385,8 @@ export class HarnessDriverClient {
       }
       binaryPath = resolved;
     }
-    const cwd = options?.cwd ?? process.cwd();
-    const brokerName = options?.brokerName ?? (path.basename(cwd) || 'project');
-    const channels = options?.channels ?? ['general'];
-    const timeoutMs = options?.startupTimeoutMs ?? 45_000;
-    const userArgs = buildBrokerInitArgs(options?.binaryArgs);
-
     const apiKey = `br_${randomBytes(16).toString('hex')}`;
-
-    const env = {
-      ...process.env,
-      ...options?.env,
-      AGENT_RELAY_STARTUP_DEBUG:
-        options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? process.env.AGENT_RELAY_STARTUP_DEBUG ?? '1',
-      RELAY_BROKER_API_KEY: apiKey,
-    };
-
-    const args = ['init', '--name', brokerName, '--channels', channels.join(','), ...userArgs];
+    const { cwd, timeoutMs, args, env } = buildBrokerSpawnConfig(options, apiKey);
     const stderrLines: string[] = [];
     const stdoutLines: string[] = [];
 

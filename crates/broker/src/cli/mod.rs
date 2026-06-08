@@ -72,9 +72,9 @@ impl Commands {
         let pid = std::process::id();
         match self {
             Commands::Init(cmd) => {
-                let name = cmd.name.trim();
+                let name = cmd.resolved_instance_name(None);
                 if !name.is_empty() {
-                    return name.to_string();
+                    return name;
                 }
                 std::env::current_dir()
                     .ok()
@@ -215,8 +215,17 @@ pub(crate) struct McpArgsCommand {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct InitCommand {
-    #[arg(long, default_value = "")]
+    /// Legacy broker instance name flag. Prefer --instance-name.
+    #[arg(long, default_value = "", alias = "broker-name")]
     pub(crate) name: String,
+
+    /// Stable broker instance name within the Relay workspace.
+    #[arg(long = "instance-name")]
+    pub(crate) instance_name: Option<String>,
+
+    /// Join an existing Relay workspace instead of creating a fresh one.
+    #[arg(long = "workspace-key")]
+    pub(crate) workspace_key: Option<String>,
 
     #[arg(long, default_value = "general")]
     pub(crate) channels: String,
@@ -246,6 +255,135 @@ pub(crate) struct InitCommand {
     /// working directory when `--persist` is set, or a temp directory otherwise.
     #[arg(long)]
     pub(crate) state_dir: Option<String>,
+}
+
+impl InitCommand {
+    pub(crate) fn resolved_instance_name(&self, fallback: Option<&str>) -> String {
+        fn non_empty_trimmed(value: &str) -> Option<String> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+
+        self.instance_name
+            .as_deref()
+            .and_then(non_empty_trimmed)
+            .or_else(|| non_empty_trimmed(&self.name))
+            .or_else(|| {
+                std::env::var("AGENT_RELAY_BROKER_NAME")
+                    .ok()
+                    .and_then(|name| non_empty_trimmed(&name))
+            })
+            .or_else(|| fallback.and_then(non_empty_trimmed))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn resolved_workspace_key(&self) -> Option<String> {
+        self.workspace_key
+            .clone()
+            .or_else(|| std::env::var("AGENT_RELAY_WORKSPACE_KEY").ok())
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static BROKER_NAME_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct BrokerNameEnvGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for BrokerNameEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        }
+    }
+
+    fn broker_name_env_guard() -> BrokerNameEnvGuard {
+        let guard = BROKER_NAME_ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("AGENT_RELAY_BROKER_NAME");
+        BrokerNameEnvGuard { _guard: guard }
+    }
+
+    fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
+        InitCommand {
+            name: name.to_string(),
+            instance_name: instance_name.map(ToOwned::to_owned),
+            workspace_key: None,
+            channels: "general".to_string(),
+            api_port: 0,
+            api_bind: "127.0.0.1".to_string(),
+            persist: false,
+            state_dir: None,
+        }
+    }
+
+    #[test]
+    fn instance_name_flag_overrides_legacy_name_and_env() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", Some("instance-name"));
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "instance-name"
+        );
+    }
+
+    #[test]
+    fn legacy_name_flag_overrides_env_default() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", None);
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "legacy-name"
+        );
+    }
+
+    #[test]
+    fn env_broker_name_overrides_fallback_only() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("", None);
+
+        assert_eq!(command.resolved_instance_name(Some("fallback")), "env-name");
+    }
+
+    #[test]
+    fn blank_instance_name_falls_through_to_legacy_name() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "env-name");
+
+        let command = init_command("legacy-name", Some("   "));
+
+        assert_eq!(
+            command.resolved_instance_name(Some("fallback")),
+            "legacy-name"
+        );
+    }
+
+    #[test]
+    fn empty_instance_name_and_blank_env_fall_through_to_fallback() {
+        let _guard = broker_name_env_guard();
+        std::env::set_var("AGENT_RELAY_BROKER_NAME", "   ");
+
+        let command = init_command("", Some(""));
+
+        assert_eq!(command.resolved_instance_name(Some("fallback")), "fallback");
+    }
 }
 
 #[derive(Debug, clap::Args, Clone)]
