@@ -18,19 +18,22 @@ Reviewed PR #1062, fixed validated read-ack and workspace-key review findings, a
 ## Key Decisions
 
 ### Port PR 888 telemetry lessons to current split
+
 - **Chose:** Port PR 888 telemetry lessons to current split
 - **Reasoning:** User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values.
 
 ### Fixed validated PR #1062 review findings
+
 - **Chose:** Fixed validated PR #1062 review findings
-- **Reasoning:** Current checkout still let blank workspace_key suppress env fallback and deduped synthetic delivery read-acks before classification; added flush_ synthetic classification and narrow regression tests.
+- **Reasoning:** Current checkout still let blank workspace*key suppress env fallback and deduped synthetic delivery read-acks before classification; added flush* synthetic classification and narrow regression tests.
 
 ---
 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).: events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).
 - Port PR 888 telemetry lessons to current split: Port PR 888 telemetry lessons to current split
