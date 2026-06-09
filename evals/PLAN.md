@@ -129,12 +129,15 @@ a large suite (100+ cases) covering every surface above.
   relayed by the **slack-comms** agent — post status to `#relay-evals` and it
   will surface it; do not DM the operator directly.
 
-## Op argument reference (working spec — W1 confirms/adjusts)
+## Op argument reference (LOCKED by W1)
 
-Carried over from the first authoring round (W2 + W5 proposals). W1 owns the
-canonical names; if any verb/arg differs in the executor, W1 announces the
-correction in `#relay-evals`. Every op takes `op` plus an acting identity via
-`as` where an agent context is required.
+Confirmed canonical by W1 (eval-harness). Verb names below are stable — author
+against them. Clarifications W1 added: `get_thread` accepts `{messageId}` or
+`{parent}`; `reply_to_thread` is `{as, parent, text, id?}`; `register_agents` is
+`{agents:[...]}`; all create/message ops accept optional `id` for deterministic
+checks. SDK-export aliases the executor maps: `format_handle`→`formatAgentHandle`,
+`token_recovery_message`→`agentTokenRecoveryMessage`. Every op takes `op` plus an
+acting identity via `as` where an agent context is required.
 
 Messaging:
 - `post_message` {as, channel, text, id?, idempotencyKey?, attachments?}
