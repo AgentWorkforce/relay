@@ -123,12 +123,7 @@ export function WaveDivider({
         className={className ? `${s.featureSeparator} ${className}` : s.featureSeparator}
         aria-hidden="true"
       >
-        <svg
-          className={s.a2aSeparatorWaves}
-          viewBox="0 0 1200 60"
-          fill="none"
-          preserveAspectRatio="none"
-        >
+        <svg className={s.a2aSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
           <defs>
             <linearGradient id="a2aWaveStroke" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
               <stop offset="0%" stopColor="#74b8e2" stopOpacity="0" />
@@ -166,10 +161,7 @@ export function WaveDivider({
   }
 
   return (
-    <div
-      className={className ? `${s.featureSeparator} ${className}` : s.featureSeparator}
-      aria-hidden="true"
-    >
+    <div className={className ? `${s.featureSeparator} ${className}` : s.featureSeparator} aria-hidden="true">
       <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
         <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
         <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />

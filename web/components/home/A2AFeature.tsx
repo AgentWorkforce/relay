@@ -80,8 +80,12 @@ export function A2AFeature() {
         <h3 className={s.featureTitle}>Speaks A2A out of the box</h3>
         <ul className={s.featureList}>
           <li>Every Relay agent publishes an A2A Agent Card, so any A2A client can discover and call it.</li>
-          <li>Bridge agents built on other frameworks over the open Agent2Agent protocol — no custom glue.</li>
-          <li>A2A tasks, messages, and streaming updates map onto Relay channels and threads automatically.</li>
+          <li>
+            Bridge agents built on other frameworks over the open Agent2Agent protocol — no custom glue.
+          </li>
+          <li>
+            A2A tasks, messages, and streaming updates map onto Relay channels and threads automatically.
+          </li>
           <li>Standard endpoints in, durable Relay delivery out, with the full chat history preserved.</li>
         </ul>
       </div>
