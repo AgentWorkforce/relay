@@ -402,8 +402,12 @@ export function allAgentSlugs(): string[] {
   return AGENTS.map((a) => a.slug);
 }
 
+// Served from public/agent-art/<slug>/. NOTE: this must NOT live under
+// public/agents/ — SST/OpenNext turns each top-level public/ folder into a
+// CloudFront → S3 behavior, and a public/agents/ folder would shadow the
+// /agents page routes (every /agents* path would 403 from S3).
 export function agentAsset(slug: string, asset: 'banner' | 'card' | 'card-sm'): string {
-  return `/agents/${slug}/${asset}.png`;
+  return `/agent-art/${slug}/${asset}.png`;
 }
 
 function agentRepo(agent: Agent): string {
