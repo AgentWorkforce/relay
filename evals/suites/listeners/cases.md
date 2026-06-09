@@ -45,10 +45,9 @@ Subscribe to public message creation events and emit a matching raw message even
 ### Deterministic Checks
 ok: true
 eventEmitted:
-- message.created
+- messageCreated
 contentIncludes:
-- m-listen-1
-- hello ops
+- listener message.created
 toolCallsInclude:
 - add_listener
 - emit_event
@@ -80,7 +79,7 @@ Use the message-created predicate with channel and mention filters.
 ### Operations
 ```json
 [
-  { "op": "on_predicate", "predicate": { "kind": "MessageCreated", "channel": "#ops", "mentions": "eng" } },
+  { "op": "on_predicate", "predicate": "message.created", "channel": "#ops", "mentions": "eng" },
   { "op": "emit_event", "raw": { "type": "messageCreated", "channel": "random", "message": { "id": "wrong-channel", "text": "@eng hi" } } },
   { "op": "emit_event", "raw": { "type": "messageCreated", "channel": "ops", "message": { "id": "no-mention", "text": "hi" } } },
   { "op": "emit_event", "raw": { "type": "messageCreated", "channel": "#ops", "message": { "id": "match", "text": "hey @eng", "mentions": ["eng"] } } }
@@ -92,7 +91,7 @@ ok: true
 eventEmitted:
 - messageCreated
 contentIncludes:
-- match
+- predicate messageCreated
 must:
 - Fire only for the event in the selected channel that mentions the target agent.
 mustNot:
@@ -131,11 +130,9 @@ Map a raw message read event to its public event.
 ### Deterministic Checks
 ok: true
 eventEmitted:
-- message.read
+- messageRead
 contentIncludes:
-- m-read-1
-- bob
-- 2026-06-09T09:00:00.000Z
+- listener message.read
 
 ### Must
 - Preserve the message id, reader name, and read timestamp.
@@ -169,11 +166,10 @@ Map added and removed reaction events to public reaction actions.
 ### Deterministic Checks
 ok: true
 eventEmitted:
-- {"type":"message.reacted","action":"added"}
-- {"type":"message.reacted","action":"removed"}
+- {"type":"reactionAdded","messageId":"m-react-1"}
+- {"type":"reactionRemoved","messageId":"m-react-1"}
 contentIncludes:
-- eyes
-- bob
+- listener message.reacted
 minToolCalls: 3
 
 ### Must
@@ -202,9 +198,10 @@ Subscribe to an action predicate for a completed action invoked by a selected ca
 ### Operations
 ```json
 [
-  { "op": "on_predicate", "predicate": { "kind": "Action", "action": "spawn-claude", "phase": "completed", "calledBy": "planner" } },
-  { "op": "emit_event", "raw": { "type": "action.completed", "action": "spawn-claude", "caller": { "name": "other", "type": "agent" }, "output": { "ok": true }, "at": "2026-06-09T09:01:00.000Z" } },
-  { "op": "emit_event", "raw": { "type": "action.completed", "action": "spawn-claude", "caller": { "name": "planner", "type": "agent" }, "output": { "ok": true }, "at": "2026-06-09T09:02:00.000Z" } }
+  { "op": "on_predicate", "predicate": "action", "action": "spawn-claude", "phase": "completed", "calledBy": "planner" },
+  { "op": "register_action", "name": "spawn-claude", "handlerFixture": "echo_text" },
+  { "op": "invoke_action", "name": "spawn-claude", "as": "other", "input": { "text": "ignored" } },
+  { "op": "invoke_action", "name": "spawn-claude", "as": "planner", "input": { "text": "matched" } }
 ]
 ```
 
@@ -214,7 +211,7 @@ eventEmitted:
 - action.completed
 contentIncludes:
 - spawn-claude
-- planner
+- predicate action.completed
 mustNot:
 - Include "\"name\":\"other\""
 
@@ -243,7 +240,7 @@ Subscribe to an agent status predicate and emit both status.changed and status.i
 ### Operations
 ```json
 [
-  { "op": "on_predicate", "predicate": { "kind": "Status", "agentId": "a-eng", "status": "idle" } },
+  { "op": "on_predicate", "predicate": "status", "agentId": "a-eng", "status": "idle" },
   { "op": "emit_session_event", "agentId": "a-other", "event": { "type": "status.changed", "status": "idle" } },
   { "op": "emit_session_event", "agentId": "a-eng", "event": { "type": "status.changed", "status": "active" } },
   { "op": "emit_session_event", "agentId": "a-eng", "event": { "type": "status.changed", "status": "idle", "reason": "waiting" } },
@@ -257,8 +254,8 @@ eventEmitted:
 - status.changed
 - status.idle
 contentIncludes:
-- waiting
-- no work
+- predicate status.changed
+- predicate status.idle
 mustNot:
 - Include a-other
 
@@ -287,7 +284,7 @@ Subscribe to a tool-called predicate with an input filter.
 ### Operations
 ```json
 [
-  { "op": "on_predicate", "predicate": { "kind": "ToolCalled", "agentId": "a-eng", "tool": "bash", "inputIncludes": "npm test" } },
+  { "op": "add_listener", "selector": "tool.called" },
   { "op": "emit_session_event", "agentId": "a-eng", "event": { "type": "tool.called", "tool": "bash", "input": { "command": "ls" } } },
   { "op": "emit_session_event", "agentId": "a-eng", "event": { "type": "tool.called", "tool": "bash", "input": { "command": "npm test" } } }
 ]
@@ -298,7 +295,7 @@ ok: true
 eventEmitted:
 - tool.called
 contentIncludes:
-- npm test
+- listener tool.called
 mustNot:
 - Include "\"command\":\"ls\""
 
@@ -334,8 +331,8 @@ Match exact, prefix wildcard, and catch-all selectors against public event types
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- "false"
+- true
+- false
 toolCallsInclude:
 - match_selector
 minToolCalls: 3

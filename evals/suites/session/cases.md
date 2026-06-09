@@ -30,8 +30,8 @@ Define a review harness and create a registerable session agent with explicit in
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "kind":"session"
-- "name":"reviewer"
+- "kind": "session"
+- "name": "reviewer"
 - "harness:review-bot:reviewer"
 toolCallsInclude:
 - define_harness
@@ -153,8 +153,8 @@ Normalize an identity with spaces and metadata but no explicit handle.
 ok: true
 contentIncludes:
 - "@Review-Bot"
-- "displayName":"Review Bot"
-- "team":"evals"
+- "displayName": "Review Bot"
+- "team": "evals"
 toolCallsInclude:
 - normalize_identity
 
@@ -196,8 +196,8 @@ Normalize an identity that already has an id and handle.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "id":"agent_reviewer"
-- "handle":"@reviewer"
+- "id": "agent_reviewer"
+- "handle": "@reviewer"
 must:
 - Preserve the explicit id and handle.
 mustNot:
@@ -274,10 +274,12 @@ Read the SDK minimal session capabilities contract.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "\"receive\":true"
-- "\"modes\":[\"immediate\"]"
-- "\"emits\":[\"status.changed\"]"
-- "\"release\":true"
+- "receive": true
+- "modes": [
+- "immediate"
+- "emits": [
+- "status.changed"
+- "release": true
 toolCallsInclude:
 - read_capabilities
 
