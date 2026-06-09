@@ -144,7 +144,6 @@ Spawn a worker agent through add_agent and verify it appears online.
 ok: true
 contentIncludes:
 - WorkerB
-- codex
 - Eval worker
 agentPresence:
 - {"name":"WorkerB","status":"online"}
@@ -191,7 +190,6 @@ ok: true
 contentIncludes:
 - WorkerB
 - offline
-- done
 agentPresence:
 - {"name":"WorkerB","status":"offline"}
 

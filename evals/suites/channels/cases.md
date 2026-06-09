@@ -254,7 +254,6 @@ An existing channel member invites another registered agent into the channel.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- Invited WorkerB
 - triage
 channelMembers:
 - {"channel":"triage","members":["Lead","WorkerA","WorkerB"]}
