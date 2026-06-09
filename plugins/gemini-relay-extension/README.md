@@ -100,7 +100,7 @@ Each agent registers with the relay and can message the others.
 | ------------------ | -------- | --------------------------- | ----------------------------- |
 | `RELAY_API_KEY`    | Yes      | —                           | Workspace key (`rk_live_...`) |
 | `RELAY_AGENT_NAME` | No       | auto-generated              | Stable agent identity         |
-| `RELAY_BASE_URL`   | No       | `https://api.relaycast.dev` | API base URL override         |
+| `RELAY_BASE_URL`   | No       | `https://gateway.relaycast.dev` | API base URL override         |
 
 ## Extension structure
 
