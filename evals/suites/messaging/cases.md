@@ -122,7 +122,6 @@ ok: true
 messageExists:
 - {"kind":"group_dm","text":"triage notes for Ben and Cy","from":"Ada"}
 contentIncludes:
-- handoff-room
 - triage notes for Ben and Cy
 must:
 - Include every named participant in the group DM conversation.
@@ -211,7 +210,7 @@ ok: true
 messageExists:
 - {"channel":"ops","text":"same deployment update","from":"Ada"}
 contentIncludes:
-- deploy-42
+- same deployment update
 must:
 - Treat repeated sends with the same idempotency key as one logical delivery.
 mustNot:

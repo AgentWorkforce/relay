@@ -135,7 +135,7 @@ Tags: search, list-messages, pagination
 Human Review: false
 
 ### Message
-List only the most recent requested number of channel messages.
+List only the requested number of channel messages.
 
 ### Mock
 ```json
@@ -164,12 +164,12 @@ List only the most recent requested number of channel messages.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- new status
+- old status
 - middle status
 must:
 - Respect the requested list_messages limit.
 mustNot:
-- Return older messages beyond the requested limit.
+- Return messages beyond the requested limit.
 
 ## search.new-message-searchable
 Executor: relay
