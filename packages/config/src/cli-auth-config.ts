@@ -65,6 +65,17 @@ export interface CLIAuthConfig {
 }
 
 /**
+ * Pinned `@openai/codex` version installed into the auth sandbox.
+ *
+ * The sandbox installs codex fresh per session (`npm install -g
+ * @openai/codex@<version>`). Codex ships multiple releases per day and has
+ * changed its login flow before, so we pin a known version instead of tracking
+ * `latest` to keep `cloud connect codex` reproducible. Bump this deliberately
+ * after verifying a real login still completes via the loopback callback.
+ */
+export const CODEX_PINNED_VERSION = '0.138.0';
+
+/**
  * CLI commands and URL patterns for each provider
  *
  * Each CLI tool outputs an OAuth URL when run without credentials.
@@ -195,7 +206,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.codex/auth.json',
     displayName: 'Codex',
-    installCommand: 'npm install -g @openai/codex',
+    installCommand: `npm install -g @openai/codex@${CODEX_PINNED_VERSION}`,
     waitTimeout: 30000,
     prompts: [
       {
