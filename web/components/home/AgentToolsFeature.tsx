@@ -19,25 +19,43 @@ const TOKEN_CLASS: Record<TokenKind, string> = {
  * The orchestrator.ts snippet, expressed as ordered tokens. Plain segments
  * (including whitespace/newlines) carry no kind; highlighted segments name the
  * span color. Rendered into a `pre` whose `white-space: pre-wrap` preserves the
- * literal spacing here.
+ * literal spacing here. Mirrors the SDK's `registerAction` API from the README.
  */
 const EDITOR_TOKENS: ReadonlyArray<{ text: string; kind?: TokenKind }> = [
-  { text: '// Define callbacks from agent actions ', kind: 'muted' },
+  { text: '// Expose a tool to agents via MCP + CLI ', kind: 'muted' },
   { text: '\nrelay.' },
-  { text: 'on', kind: 'fn' },
-  { text: '(\n engineer.' },
-  { text: 'status', kind: 'var' },
-  { text: '.' },
-  { text: 'becomes', kind: 'fn' },
-  { text: '(' },
-  { text: '"idle"', kind: 'str' },
-  { text: '),\n ' },
+  { text: 'registerAction', kind: 'fn' },
+  { text: '({\n  name: ' },
+  { text: '"submit-vote"', kind: 'str' },
+  { text: ',\n  input: z.' },
+  { text: 'object', kind: 'fn' },
+  { text: '({ vote: z.' },
+  { text: 'enum', kind: 'fn' },
+  { text: '([' },
+  { text: '"yes"', kind: 'str' },
+  { text: ', ' },
+  { text: '"no"', kind: 'str' },
+  { text: ']) }),\n  handler: ' },
   { text: 'async', kind: 'kw' },
-  { text: ' () =>\n relay.' },
-  { text: 'sendMessage', kind: 'fn' },
-  { text: '({\n to: taskManager,\n msg: ' },
-  { text: '`${engineer.handle} is idle. Send the next task.`', kind: 'str' },
-  { text: ',\n }),\n);' },
+  { text: ' ({ agent, input }) => {\n    ' },
+  { text: 'await', kind: 'kw' },
+  { text: ' ' },
+  { text: 'recordVote', kind: 'fn' },
+  { text: '(agent.' },
+  { text: 'name', kind: 'var' },
+  { text: ', input.' },
+  { text: 'vote', kind: 'var' },
+  { text: ');\n  },\n});\n\n' },
+  { text: '// Run a callback when it completes ', kind: 'muted' },
+  { text: '\nrelay.' },
+  { text: 'addListener', kind: 'fn' },
+  { text: '(relay.' },
+  { text: 'action', kind: 'fn' },
+  { text: '(' },
+  { text: '"submit-vote"', kind: 'str' },
+  { text: ').' },
+  { text: 'completed', kind: 'fn' },
+  { text: '(), tally);' },
 ];
 
 export function AgentToolsFeature() {

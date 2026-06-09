@@ -105,7 +105,49 @@ export function ScribbleUnderline() {
  * `feature` is the thin two-stroke rule between feature blocks; `capability`
  * is the taller three-stroke band that opens the context-capabilities group.
  */
-export function WaveDivider({ variant }: { variant: 'feature' | 'capability' }) {
+export function WaveDivider({
+  variant,
+  className,
+}: {
+  variant: 'feature' | 'capability' | 'a2a';
+  /** Extra class merged onto the wrapper — used to reposition via grid `order`. */
+  className?: string;
+}) {
+  if (variant === 'a2a') {
+    // A livelier take on the feature wave: a gradient strand that runs blue →
+    // pear-green → light-blue, a soft glow, an extra ghost strand, and a gentle
+    // drift (see `.a2aSeparatorWaves` in landing.module.css). Tilts the opposite
+    // way from the plain separators so it reads as deliberately different.
+    return (
+      <div
+        className={className ? `${s.featureSeparator} ${className}` : s.featureSeparator}
+        aria-hidden="true"
+      >
+        <svg
+          className={s.a2aSeparatorWaves}
+          viewBox="0 0 1200 60"
+          fill="none"
+          preserveAspectRatio="none"
+        >
+          <defs>
+            <linearGradient id="a2aWaveStroke" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#74b8e2" stopOpacity="0" />
+              <stop offset="22%" stopColor="#9ccfff" />
+              <stop offset="52%" stopColor="#a6d388" />
+              <stop offset="80%" stopColor="#74b8e2" />
+              <stop offset="100%" stopColor="#74b8e2" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <g className={s.a2aWaveFlow}>
+            <path className={s.a2aWaveLead} d="M-120 30 C150 12 360 14 600 30 S1040 50 1320 28" />
+            <path className={s.a2aWaveTrail} d="M-120 38 C168 22 372 24 620 39 S1066 58 1320 36" />
+            <path className={s.a2aWaveGhost} d="M-120 22 C140 6 348 8 580 22 S1012 42 1320 18" />
+          </g>
+        </svg>
+      </div>
+    );
+  }
+
   if (variant === 'capability') {
     return (
       <div className={s.capabilityDivider} aria-hidden="true">
@@ -124,7 +166,10 @@ export function WaveDivider({ variant }: { variant: 'feature' | 'capability' }) 
   }
 
   return (
-    <div className={s.featureSeparator} aria-hidden="true">
+    <div
+      className={className ? `${s.featureSeparator} ${className}` : s.featureSeparator}
+      aria-hidden="true"
+    >
       <svg className={s.featureSeparatorWaves} viewBox="0 0 1200 60" fill="none" preserveAspectRatio="none">
         <path d="M-120 26 C160 42 360 40 600 30 S1040 16 1320 34" />
         <path d="M-120 34 C176 50 376 48 620 38 S1060 24 1320 42" />
