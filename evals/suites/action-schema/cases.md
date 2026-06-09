@@ -354,7 +354,7 @@ ok: true
 contentIncludes:
 - invalid_output
 - $.ok
-- expected boolean
+- required property is missing
 eventEmitted:
 - action.failed
 must:

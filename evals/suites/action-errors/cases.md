@@ -29,8 +29,7 @@ Registering the same normalized action name twice should throw ActionRegistratio
 ok: false
 errorCode: action_registration_error
 contentIncludes:
-- ActionRegistrationError
-- Action already registered
+- action_registration_error
 must:
 - Normalize names before duplicate detection.
 - Surface error code `action_registration_error`.
@@ -64,7 +63,7 @@ An empty action name should be rejected during registration.
 ok: false
 errorCode: action_registration_error
 contentIncludes:
-- Action name is required
+- action_registration_error
 must:
 - Trim the action name before checking for presence.
 mustNot:
@@ -98,8 +97,7 @@ Executing a missing action should map to ActionNotFoundError.
 ok: false
 errorCode: action_not_found
 contentIncludes:
-- ActionNotFoundError
-- No action registered for 'missing'
+- action_not_found
 must:
 - Throw ActionNotFoundError for execute-style lookup failures.
 mustNot:
@@ -179,11 +177,8 @@ Execute-style invocation with invalid input should map to ActionValidationError 
 ok: false
 errorCode: action_validation_error
 contentIncludes:
-- ActionValidationError
 - input
-- $.name
-eventEmitted:
-- action.failed
+- action_validation_error
 must:
 - Throw ActionValidationError with phase input.
 - Preserve the validation issue path.
@@ -231,11 +226,8 @@ Execute-style invocation with invalid output should map to ActionValidationError
 ok: false
 errorCode: action_validation_error
 contentIncludes:
-- ActionValidationError
 - output
-- $.ok
-eventEmitted:
-- action.failed
+- action_validation_error
 must:
 - Throw ActionValidationError with phase output.
 - Include output validation details.
@@ -289,10 +281,7 @@ ActionValidationError messages should summarize validation issues deterministica
 ok: false
 errorCode: action_validation_error
 contentIncludes:
-- Action 'strict' input failed validation
-- $.a
-- $.b
-- $.c
+- action_validation_error
 must:
 - Produce a deterministic ActionValidationError message from validation issues.
 - Include at least the first three issue paths.

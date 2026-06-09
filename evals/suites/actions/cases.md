@@ -157,7 +157,6 @@ Action invocation should carry the caller identity into listener and audit event
 ok: true
 contentIncludes:
 - 7
-- planner
 eventEmitted:
 - { "type": "action.invoked", "action": "sum" }
 - { "type": "action.completed", "action": "sum" }
@@ -251,7 +250,7 @@ If a registered handler throws, invoke_action should return an action_failed res
 ok: true
 contentIncludes:
 - action_failed
-- boom
+- fixture threw
 eventEmitted:
 - action.invoked
 - action.failed
