@@ -18,22 +18,27 @@ Fixed four broker delivery-durability defects: unverified timeout-fallback acks 
 ## Key Decisions
 
 ### Port PR 888 telemetry lessons to current split
+
 - **Chose:** Port PR 888 telemetry lessons to current split
 - **Reasoning:** User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values.
 
 ### Added DeliveryOutcome::Unverified for timeout-fallback acks
+
 - **Chose:** Added DeliveryOutcome::Unverified for timeout-fallback acks
 - **Reasoning:** Fallback ack must stay (re-injection deliberately disabled to avoid duplicates) but unverified deliveries must not feed the throttle's success streak; a neutral variant breaks the streak without backing off
 
 ### PendingDeliveryStore wrapper with DerefMut dirty tracking
+
 - **Chose:** PendingDeliveryStore wrapper with DerefMut dirty tracking
 - **Reasoning:** Free delivery helpers take &mut HashMap across many call sites; a Deref/DerefMut wrapper marks dirty on any mutable coercion so the event loop persists after every mutating event with zero call-site churn
 
 ### Kept --persist flag default-off
+
 - **Chose:** Kept --persist flag default-off
 - **Reasoning:** The flag also gates state files, lock/PID files, MCP config injection mode, and lease-based ephemeral shutdown; flipping it would change far more than delivery durability and break ephemeral one-shot SDK sessions
 
 ### Skipped dedup-cache persistence
+
 - **Chose:** Skipped dedup-cache persistence
 - **Reasoning:** Optional per task; would add restart-replay dedup but bloats the diff beyond delivery semantics
 
@@ -42,7 +47,8 @@ Fixed four broker delivery-durability defects: unverified timeout-fallback acks 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).: events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).
 - Port PR 888 telemetry lessons to current split: Port PR 888 telemetry lessons to current split
