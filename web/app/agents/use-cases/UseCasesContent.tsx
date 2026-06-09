@@ -3,7 +3,7 @@
 import Link from 'next/link';
 
 import { FadeIn } from '../../../components/FadeIn';
-import { agentAsset, getAgent, NON_PUBLIC_AGENT_LABELS, USE_CASE_GROUPS } from '../../../lib/agents';
+import { getAgent, NON_PUBLIC_AGENT_LABELS, USE_CASE_GROUPS } from '../../../lib/agents';
 import s from '../agents.module.css';
 
 function slugifyTheme(theme: string): string {
@@ -18,9 +18,7 @@ function AgentRef({ slug }: { slug: string }) {
   if (agent) {
     return (
       <Link href={`/agents/${agent.slug}`} className={s.agentRef}>
-        {agent.hasCustomArt && (
-          <img className={s.agentRefAvatar} src={agentAsset(agent.slug, 'avatar')} alt="" />
-        )}
+        <span className={s.agentRefDot} style={{ background: agent.accent }} aria-hidden="true" />
         {agent.name}
       </Link>
     );

@@ -43,7 +43,7 @@ export interface Agent {
   inputs: string[];
   /** Accent color used for card glow + art fallback. */
   accent: string;
-  /** Whether committed avatar/banner/card PNGs exist under public/agents/<slug>. */
+  /** Whether committed banner/card PNGs exist under public/agents/<slug>. */
   hasCustomArt: boolean;
 }
 
@@ -402,7 +402,7 @@ export function allAgentSlugs(): string[] {
   return AGENTS.map((a) => a.slug);
 }
 
-export function agentAsset(slug: string, asset: 'avatar' | 'banner' | 'card' | 'card-sm'): string {
+export function agentAsset(slug: string, asset: 'banner' | 'card' | 'card-sm'): string {
   return `/agents/${slug}/${asset}.png`;
 }
 

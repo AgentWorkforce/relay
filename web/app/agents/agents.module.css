@@ -667,12 +667,11 @@ a.agentRef:hover {
   color: var(--primary);
 }
 
-.agentRefAvatar {
-  width: 18px;
-  height: 18px;
+.agentRefDot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  object-fit: cover;
-  display: block;
+  flex-shrink: 0;
 }
 
 /* ── Build your own ── */

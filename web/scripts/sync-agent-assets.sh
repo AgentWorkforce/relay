@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Sync the AgentWorkforce agents' graphics (avatar/banner/card/card-sm PNGs)
+# Sync the AgentWorkforce agents' graphics (banner/card/card-sm PNGs)
 # from the agents repo into public/agents/<slug>/ so the /agents gallery can
 # serve them as static assets.
 #
@@ -27,7 +27,7 @@ AGENTS=(
   "vendor-monitor:vendor-monitor"
 )
 
-ASSETS=(avatar banner card card-sm)
+ASSETS=(banner card card-sm)
 
 echo "Syncing agent assets from $AGENTS_REPO -> $DEST_ROOT"
 for entry in "${AGENTS[@]}"; do
