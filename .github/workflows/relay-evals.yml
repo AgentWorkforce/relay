@@ -1,0 +1,75 @@
+name: Relay Evals
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/relay-evals.yml"
+      - "AGENTS.md"
+      - "README.md"
+      - "evals/**"
+      - "packages/**"
+      - "scripts/evals/**"
+      - "package.json"
+      - "package-lock.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/relay-evals.yml"
+      - "AGENTS.md"
+      - "README.md"
+      - "evals/**"
+      - "packages/**"
+      - "scripts/evals/**"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch:
+
+concurrency:
+  group: relay-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  NPM_CONFIG_FUND: "false"
+
+jobs:
+  evals:
+    name: Offline evals
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build SDK
+        run: npm run build:sdk
+
+      - name: Run offline evals
+        run: npm run evals:offline
+
+      - name: Summarize evals
+        if: always()
+        run: node scripts/evals/ci-summary.mjs
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-eval-run
+          path: .relay/evals/runs/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -177,6 +177,10 @@ So pure-function and event ops are checkable, the executor populates per run:
 - `observed.events[]` — emitted events (drives `eventEmitted`)
 - `observed.error.code` — error code when an op throws (drives `errorCode`)
 - `observed.toolCalls[]` — op/verb trace (drives `toolCallsInclude`/`minToolCalls`)
+- `register_action` uses JSON-safe `handlerFixture` names instead of inline
+  functions. Supported fixtures: `echo_text`, `sum_numbers`, `throw_error`,
+  `invalid_output`, and `policy_deny`. The executor also accepts `fixture` as
+  an alias for `handlerFixture`.
 
 Relay-specific check keys (bullet arrays of objects):
 - `messageExists`: {channel?|kind?, text, from?} — an observed msg matches all fields
