@@ -117,13 +117,10 @@ String selectors deliver normalized, dotted events: `message.created`, `message.
 Predicate builders narrow subscriptions without manual filtering:
 
 ```ts
-relay.addListener(
-  relay.events.message.created().in('#reviews').mentions(reviewer),
-  async (event) => {
-    // predicates deliver the raw event: { type: 'messageCreated', channel, message }
-    await reviewer.reply({ messageId: event.message.messageId, text: 'On it.' });
-  }
-);
+relay.addListener(relay.events.message.created().in('#reviews').mentions(reviewer), async (event) => {
+  // predicates deliver the raw event: { type: 'messageCreated', channel, message }
+  await reviewer.reply({ messageId: event.message.messageId, text: 'On it.' });
+});
 
 relay.addListener(relay.action('review.submit_vote').completed(), (event) => {
   console.log(event.output);
@@ -201,8 +198,8 @@ Until durable delivery ships server-side, drive delivery from messaging events (
 
 The package root re-exports everything; focused entry points are also available:
 
-| Import path                     | Contents                                                                  |
-| ------------------------------- | ------------------------------------------------------------------------- |
+| Import path                     | Contents                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------- |
 | `@agent-relay/sdk`              | `AgentRelay` plus all of the below.                                        |
 | `@agent-relay/sdk/messaging`    | Messaging client, message/channel/inbox/event types.                       |
 | `@agent-relay/sdk/delivery`     | `DeliveryRunner`, `AgentDeliveryAdapter`, delivery modes and results.      |
@@ -222,14 +219,14 @@ npm install @agent-relay/harness-driver @agent-relay/harnesses
 
 Version 8 replaces the token-handoff API with register-returns-client:
 
-| v7 surface                                        | v8 replacement                                                                  |
-| ------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `relay.agents.register(...)` + `relay.as(token)`  | `relay.workspace.register(...)` returns a live client; `relay.workspace.reconnect({ apiToken })` rehydrates one. |
-| `agent.events.on('message.created', ...)`         | `relay.addListener('message.created', ...)` (dotted names); `events.on(...)` keeps camelCase keys like `'messageCreated'`. |
-| `relay.actions.register(...)`                     | `relay.registerAction({ ..., handler: ({ input, agent, ctx }) => ... })`.         |
-| `relay.actions.invoke(...)`                       | Fire-and-forget invocation through the relay; observe results with `relay.addListener(relay.action(name).completed(), ...)`. |
-| `agent.messages.send({ channel, text })`          | Still works, or use sigil routing: `client.sendMessage({ to: '#channel', text })`. |
-| Spawn/PTY/workflow helpers on `AgentRelay`        | `@agent-relay/harness-driver` and `@agent-relay/harnesses`.                       |
+| v7 surface                                       | v8 replacement                                                                                                               |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `relay.agents.register(...)` + `relay.as(token)` | `relay.workspace.register(...)` returns a live client; `relay.workspace.reconnect({ apiToken })` rehydrates one.             |
+| `agent.events.on('message.created', ...)`        | `relay.addListener('message.created', ...)` (dotted names); `events.on(...)` keeps camelCase keys like `'messageCreated'`.   |
+| `relay.actions.register(...)`                    | `relay.registerAction({ ..., handler: ({ input, agent, ctx }) => ... })`.                                                    |
+| `relay.actions.invoke(...)`                      | Fire-and-forget invocation through the relay; observe results with `relay.addListener(relay.action(name).completed(), ...)`. |
+| `agent.messages.send({ channel, text })`         | Still works, or use sigil routing: `client.sendMessage({ to: '#channel', text })`.                                           |
+| Spawn/PTY/workflow helpers on `AgentRelay`       | `@agent-relay/harness-driver` and `@agent-relay/harnesses`.                                                                  |
 
 ## Development
 
