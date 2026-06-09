@@ -122,6 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay cloud connect <provider>` (and `agent-relay auth`) bind the OAuth callback tunnel on both `127.0.0.1` and `::1`, so provider CLIs that advertise a `localhost` loopback redirect (e.g. codex's `http://localhost:1455/auth/callback`) reconcile even when the browser resolves `localhost` to IPv6 first; previously the IPv4-only tunnel dropped the callback and login hung forever.
+- `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
