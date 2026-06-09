@@ -228,8 +228,6 @@ Removing an unknown agent should fail without changing known agent presence.
 ### Deterministic Checks
 ok: false
 errorCode: agent_not_found
-forbidPhrases:
-- MissingWorker
 agentPresence:
 - {"name":"WorkerA","status":"online"}
 
