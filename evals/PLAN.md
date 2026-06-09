@@ -128,3 +128,59 @@ a large suite (100+ cases) covering every surface above.
 - Coordinate format/op questions in `#relay-evals`. Progress to the operator is
   relayed by the **slack-comms** agent — post status to `#relay-evals` and it
   will surface it; do not DM the operator directly.
+
+## Op argument reference (working spec — W1 confirms/adjusts)
+
+Carried over from the first authoring round (W2 + W5 proposals). W1 owns the
+canonical names; if any verb/arg differs in the executor, W1 announces the
+correction in `#relay-evals`. Every op takes `op` plus an acting identity via
+`as` where an agent context is required.
+
+Messaging:
+- `post_message` {as, channel, text, id?, idempotencyKey?, attachments?}
+- `send_dm` {as, to, text, id?}
+- `send_group_dm` {as, participants:[], name?, text, id?}
+- `reply_to_thread` {as, parent:<msgId>, text, id?}
+- `get_thread` {messageId}
+- `add_reaction` / `remove_reaction` {as, messageId, emoji}
+- `mark_read` {as, messageId}; `get_readers` {messageId}; `check_inbox` {as}
+- `list_messages` {channel, limit?}; `search_messages` {query, channel?}
+
+Session/listeners/facade/errors (thin wrappers over exported SDK fns):
+- session: `define_harness`{name,version?,input?}, `next_harness_name`{base,explicit?},
+  `normalize_identity`{input}, `format_handle`{name}, `read_capabilities`{},
+  `resume_session`{...}
+- listeners: `add_listener`{selector}, `on_predicate`{predicate}, `emit_event`{raw},
+  `emit_session_event`{agentId,event}, `match_selector`{selector,type}, `to_public_event`{raw}
+- facade: `register_agent`/`register_agents`{[...]}, `reconnect`{apiToken},
+  `notify`{target,options}, `workspace_info`{}
+- auth-errors: `is_invalid_token_error`{error}, `is_invalid_token_tool_result`{result},
+  `token_recovery_message`{}
+
+**Create ops accept optional `id`** to pin the created message's id so later ops
+and checks reference it deterministically; otherwise only seeded ids are stable.
+
+Mock seed shape:
+```json
+{ "agents": [{"name":"...","type":"agent"}],
+  "channels": [{"name":"...","members":["..."]}],
+  "messages": [{"id":"...","channel":"...","from":"...","text":"...","threadParent":"?"}] }
+```
+
+## Executor observed-result contract (W1 implements)
+
+So pure-function and event ops are checkable, the executor populates per run:
+- `observed.content` — stringified return value of each op (drives `contentIncludes`)
+- `observed.events[]` — emitted events (drives `eventEmitted`)
+- `observed.error.code` — error code when an op throws (drives `errorCode`)
+- `observed.toolCalls[]` — op/verb trace (drives `toolCallsInclude`/`minToolCalls`)
+
+Relay-specific check keys (bullet arrays of objects):
+- `messageExists`: {channel?|kind?, text, from?} — an observed msg matches all fields
+- `threadReplyCount`: {parent:<id>, count}
+- `reactionCount`: {messageId, emoji, count}
+- `channelMembers`: {channel, members:[...]}
+- `agentPresence`: {name, status}
+- `errorCode`: string | string[]
+- `eventEmitted`: string | {type, ...}
+Plus shared `ok`, `contentIncludes`, `must`, `mustNot`, `toolCallsInclude`, `minToolCalls`.
