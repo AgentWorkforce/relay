@@ -428,34 +428,6 @@
   composes: btn btn-secondary from global;
 }
 
-.iconBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 100px;
-  border: 1.5px solid var(--line);
-  background: var(--secondary-surface);
-  color: var(--fg);
-  cursor: pointer;
-  transition:
-    border-color 0.2s,
-    color 0.2s,
-    transform 0.15s;
-}
-
-.iconBtn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-  transform: translateY(-1px);
-}
-
-.iconBtn svg {
-  width: 20px;
-  height: 20px;
-}
-
 .detailBody {
   display: grid;
   grid-template-columns: 1.6fr 1fr;

@@ -1,4 +1,4 @@
-import { forkUrl, launchUrl, sourceUrl, type Agent } from '../../lib/agents';
+import { forkUrl, launchUrl, type Agent } from '../../lib/agents';
 
 const GitHubMark = () => (
   <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -8,22 +8,19 @@ const GitHubMark = () => (
 
 /**
  * CTA row for an agent: primary "Launch agent" (one-click deploy on Agent Relay
- * Cloud via https://agentrelay.com/cloud/deploy?persona=…), a secondary "Fork on
- * GitHub" link (https://github.com/<repo>/fork), and — when iconClassName is
- * provided — an icon-only "View on GitHub" link to the agent source. Uses the
- * global .btn classes via the className props the caller passes.
+ * Cloud via https://agentrelay.com/cloud/deploy?persona=…) and a secondary
+ * "Fork on GitHub" link (https://github.com/<repo>/fork). Uses the global .btn
+ * classes via the className props the caller passes.
  */
 export function ForkAgentButton({
   agent,
   primaryClassName,
   secondaryClassName,
-  iconClassName,
   primaryLabel = 'Launch agent',
 }: {
   agent: Agent;
   primaryClassName: string;
   secondaryClassName: string;
-  iconClassName?: string;
   primaryLabel?: string;
 }) {
   return (
@@ -48,18 +45,6 @@ export function ForkAgentButton({
         <GitHubMark />
         Fork on GitHub
       </a>
-      {iconClassName && (
-        <a
-          href={sourceUrl(agent)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={iconClassName}
-          aria-label={`View ${agent.name} source on GitHub`}
-          title="View on GitHub"
-        >
-          <GitHubMark />
-        </a>
-      )}
     </>
   );
 }
