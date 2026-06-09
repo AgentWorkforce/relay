@@ -4,6 +4,7 @@ import { GitHubStarsBadge } from '../components/GitHubStars';
 import { SiteFooter } from '../components/SiteFooter';
 import { SiteNav } from '../components/SiteNav';
 import {
+  A2AFeature,
   AgentToolsFeature,
   Deploy,
   DeliveryFeature,
@@ -56,6 +57,8 @@ export default function HomePage() {
           <DeliveryFeature />
           <WaveDivider variant="feature" />
           <AgentToolsFeature />
+          <WaveDivider variant="a2a" className={s.a2aSeparator} />
+          <A2AFeature />
         </section>
       </div>
 

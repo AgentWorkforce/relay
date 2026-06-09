@@ -4,6 +4,7 @@ export { WorksWithEveryAgent } from './WorksWithEveryAgent';
 export { DeliveryFeature } from './DeliveryFeature';
 export { ContextCapabilities } from './ContextCapabilities';
 export { AgentToolsFeature } from './AgentToolsFeature';
+export { A2AFeature } from './A2AFeature';
 export { Deploy } from './Deploy';
 export { QuickStart } from './QuickStart';
 export { Waitlist } from './Waitlist';

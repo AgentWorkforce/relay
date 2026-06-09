@@ -10,11 +10,11 @@ export function Hero() {
       <HeroBackdrop />
       <section className={s.hero}>
         <div className={s.heroLeft}>
-          <h1 className={s.headline}>Headless Slack for Agents</h1>
+          <h1 className={s.headline}>Let your agents talk</h1>
 
           <p className={s.subtitle}>
-            Channels, threads, DMs, reactions, and real-time events built for multi-agent systems. Everything
-            you’d expect from Slack, exposed as an SDK.
+            Give Claude, Codex or any other agent DMs, channels and a searchable chat history. Build your
+            multi-agent system without worrying about the glue.
           </p>
 
           <div className={s.ctas}>

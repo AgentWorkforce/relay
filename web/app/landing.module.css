@@ -115,7 +115,7 @@
 
 .headline {
   font-family: var(--font-heading), sans-serif;
-  font-size: clamp(2.2rem, 7vw, 4.5rem);
+  font-size: clamp(3.2rem, 7vw, 5.5rem);
   font-weight: 500;
   line-height: 1.05;
   letter-spacing: -0.03em;
@@ -748,6 +748,32 @@
   max-width: 620px;
 }
 
+/* Sits below the order-6 wave that follows the commands feature. The compound
+   selector outranks the base `.featureSeparator { order: 4 }` regardless of
+   source order, so the divider lands between the commands and A2A features. */
+.featureSeparator.a2aSeparator {
+  order: 6;
+}
+
+.a2aFeature {
+  order: 7;
+  --feature-band-bg: #0b1c2a;
+  padding-top: 36px;
+}
+
+.a2aFeature::before {
+  border-top: 0;
+}
+
+.a2aFeature .featurePreview {
+  order: 1;
+}
+
+.a2aFeature .featureCopy {
+  order: 2;
+  max-width: 620px;
+}
+
 .featureSeparator {
   position: relative;
   order: 4;
@@ -802,6 +828,65 @@
 
 .featureSeparatorWaves path:nth-child(2) {
   opacity: 0.5;
+}
+
+/* A2A separator: a livelier sibling of the plain feature wave. A gradient
+   strand (blue → pear-green → blue) with a soft glow, an extra ghost strand,
+   an opposite tilt, and a gentle horizontal drift. */
+.a2aSeparatorWaves {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: 132vw;
+  height: 96px;
+  overflow: visible;
+  opacity: 0.5;
+  transform: translate(-50%, -50%) rotate(-2.4deg);
+  transform-origin: center;
+  filter: drop-shadow(0 0 4px rgba(116, 184, 226, 0.15));
+}
+
+.a2aSeparatorWaves path {
+  stroke: url(#a2aWaveStroke);
+  stroke-linecap: round;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.a2aWaveLead {
+  stroke-width: 1.2;
+  opacity: 0.6;
+}
+
+.a2aWaveTrail {
+  stroke-width: 1;
+  opacity: 0.32;
+}
+
+.a2aWaveGhost {
+  stroke-width: 0.9;
+  opacity: 0.18;
+}
+
+.a2aWaveFlow {
+  animation: a2aWaveDrift 9s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes a2aWaveDrift {
+  from {
+    transform: translateX(-14px);
+  }
+  to {
+    transform: translateX(14px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a2aWaveFlow {
+    animation: none;
+  }
 }
 
 .messagingFeature .featurePreview {
