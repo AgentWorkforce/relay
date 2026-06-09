@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`/`inbox.subscribe` replay and stream the per-recipient delivery ledger, `inbox.ack/fail/defer` and `deliveries.ack/fail/defer` apply real server transitions, capabilities report `serverDeliveryState: true` for agent-scoped clients, and `DeliveryRunner` now works against the hosted backend.
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
 - `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
 - `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.

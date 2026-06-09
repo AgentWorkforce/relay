@@ -10,8 +10,10 @@ import {
   normalizeChannelMember,
   normalizeChannelName,
   normalizeChannelReadStatus,
+  normalizeDeliveryTransition,
   normalizeGroupDirectConversation,
   normalizeInbox,
+  normalizeInboxItem,
   normalizeMessage,
   normalizeMessagingEvent,
   normalizeReaction,
@@ -35,6 +37,7 @@ import type {
   RelayCreateInboundWebhookInput,
   RelayCreateSubscriptionInput,
   RelayCreateWebhookInput,
+  RelayDeliveryResult,
   RelayDeliveryUnsupportedResult,
   RelayEventSubscription,
   RelayInboundWebhook,
@@ -272,6 +275,13 @@ type RelaycastWorkspaceLike = {
   on?: { any(handler: (event: unknown) => void): () => void };
 };
 
+type RelaycastDeliveryStatus = 'accepted' | 'delivered' | 'deferred' | 'failed';
+
+/** The durable delivery methods an agent client must expose for server-backed inbox state. */
+type RelaycastAgentDeliverySurface = Required<
+  Pick<RelaycastAgentLike, 'deliveries' | 'ackDelivery' | 'failDelivery' | 'deferDelivery'>
+>;
+
 type RelaycastAgentLike = {
   me(): Promise<unknown>;
   connect(): void;
@@ -336,6 +346,12 @@ type RelaycastAgentLike = {
     unmute(name: string): Promise<void>;
   };
   inbox(options?: { limit?: number }): Promise<unknown>;
+  // Durable delivery ledger (relaycast 2.5+): per-recipient delivery rows with
+  // FIFO replay of non-terminal items and idempotent ack/fail/defer transitions.
+  deliveries?(options?: { status?: RelaycastDeliveryStatus; limit?: number }): Promise<unknown[]>;
+  ackDelivery?(deliveryId: string): Promise<unknown>;
+  failDelivery?(deliveryId: string, options?: { error?: string; retryable?: boolean }): Promise<unknown>;
+  deferDelivery?(deliveryId: string, options: { availableAt: string; reason?: string }): Promise<unknown>;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
   readStatus(channel: string): Promise<unknown[]>;
@@ -411,13 +427,7 @@ function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWor
 }
 
 export class RelaycastMessagingClient implements RelayMessagingClient {
-  readonly capabilities: RelayMessagingCapabilities = {
-    serverDeliveryState: false,
-    durableDelivery: false,
-    durableAck: false,
-    durableFail: false,
-    durableDefer: false,
-  };
+  readonly capabilities: RelayMessagingCapabilities;
 
   private readonly relaycast: RelaycastWorkspaceLike;
   private readonly agentClient?: RelaycastAgentLike;
@@ -432,6 +442,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.agentClient =
       options.agentClient ??
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
+    // Durable delivery state is agent-scoped: it requires an agent client that
+    // exposes the relaycast delivery ledger (deliveries list + transitions).
+    const durable = this.deliverySurface() !== undefined;
+    this.capabilities = {
+      serverDeliveryState: durable,
+      durableDelivery: durable,
+      durableAck: durable,
+      durableFail: durable,
+      durableDefer: durable,
+    };
   }
 
   readonly agents = {
@@ -639,19 +659,66 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       normalizeInbox(
         await this.requireAgentClient('inbox.get').inbox(definedOptions({ limit: options?.limit }))
       ),
-    list: async (_input?: InboxListInput): Promise<InboxListResult> => ({ items: [] }),
-    subscribe: (_input?: InboxSubscribeInput): AsyncIterable<InboxItem> => this.emptyInboxSubscription(),
-    ack: async (input: InboxAckInput): Promise<RelayDeliveryUnsupportedResult> =>
-      this.unsupportedInboxDelivery('ack', input.inboxItemId),
-    fail: async (input: InboxFailInput): Promise<RelayDeliveryUnsupportedResult> =>
-      this.unsupportedInboxDelivery('fail', input.inboxItemId, input.error),
-    defer: async (input: InboxDeferInput): Promise<RelayDeliveryUnsupportedResult> =>
-      this.unsupportedInboxDelivery('defer', input.inboxItemId, input.reason, input.availableAt),
-    markRead: async (input: InboxMarkReadInput): Promise<RelayDeliveryUnsupportedResult> =>
+    /**
+     * List durable deliveries queued for the authenticated agent. The
+     * relaycast ledger replays non-terminal items (accepted + deferred) in
+     * FIFO order with the message payload embedded. The underlying API has no
+     * cursor, so `nextCursor` is never set and `before`/`after` are ignored.
+     */
+    list: async (input?: InboxListInput): Promise<InboxListResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return { items: [] };
+      const deliveries = await surface.deliveries(definedOptions({ limit: input?.limit }));
+      return {
+        items: deliveries.map((delivery) =>
+          normalizeInboxItem(delivery, definedOptions({ recipientName: input?.agentName }))
+        ),
+      };
+    },
+    /**
+     * Stream durable deliveries: seed from the non-terminal queue, then push
+     * items announced by `delivery.accepted` WebSocket events, deduplicated by
+     * delivery id. Falls back to an empty stream without an agent client.
+     */
+    subscribe: (input?: InboxSubscribeInput): AsyncIterable<InboxItem> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.emptyInboxSubscription();
+      return this.createInboxSubscription(surface, input);
+    },
+    ack: async (input: InboxAckInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('ack', input.inboxItemId);
+      return normalizeDeliveryTransition('ack', await surface.ackDelivery(input.inboxItemId));
+    },
+    fail: async (input: InboxFailInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('fail', input.inboxItemId, input.error);
+      return normalizeDeliveryTransition(
+        'fail',
+        await surface.failDelivery(
+          input.inboxItemId,
+          definedOptions({ error: input.error, retryable: input.retry })
+        )
+      );
+    },
+    defer: async (input: InboxDeferInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) {
+        return this.unsupportedInboxDelivery('defer', input.inboxItemId, input.reason, input.availableAt);
+      }
+      return normalizeDeliveryTransition(
+        'defer',
+        await surface.deferDelivery(input.inboxItemId, {
+          availableAt: input.availableAt,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+        })
+      );
+    },
+    markRead: async (input: InboxMarkReadInput): Promise<RelayDeliveryResult> =>
       this.unsupportedInboxDelivery(
         'ack',
         input.inboxItemId,
-        'Inbox read state updates require server delivery state.'
+        'The Relaycast delivery ledger has no read state; use inbox.ack to mark a delivery handled.'
       ),
   };
 
@@ -696,28 +763,37 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     ): (() => void) => this.addEventListener(event, handler),
   };
 
+  /**
+   * Durable delivery transitions keyed by the relaycast delivery id (the
+   * `InboxItem.id` returned by `inbox.list`/`inbox.subscribe`). Transitions
+   * are idempotent on the server.
+   */
   readonly deliveries = {
-    ack: async (messageId: string): Promise<RelayDeliveryUnsupportedResult> => ({
-      supported: false,
-      action: 'ack',
-      messageId,
-      reason: 'Durable acknowledgements are not supported by the Relaycast messaging backend yet.',
-    }),
-    fail: async (messageId: string, reason?: string): Promise<RelayDeliveryUnsupportedResult> => ({
-      supported: false,
-      action: 'fail',
-      messageId,
-      ...(reason
-        ? { reason }
-        : { reason: 'Durable failure reporting is not supported by the Relaycast messaging backend yet.' }),
-    }),
-    defer: async (messageId: string, deferUntil?: string): Promise<RelayDeliveryUnsupportedResult> => ({
-      supported: false,
-      action: 'defer',
-      messageId,
-      ...(deferUntil ? { deferUntil } : {}),
-      reason: 'Durable deferral is not supported by the Relaycast messaging backend yet.',
-    }),
+    ack: async (deliveryId: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('ack', deliveryId);
+      return normalizeDeliveryTransition('ack', await surface.ackDelivery(deliveryId));
+    },
+    fail: async (deliveryId: string, reason?: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('fail', deliveryId, reason);
+      return normalizeDeliveryTransition(
+        'fail',
+        await surface.failDelivery(deliveryId, definedOptions({ error: reason }))
+      );
+    },
+    defer: async (deliveryId: string, deferUntil?: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('defer', deliveryId, undefined, deferUntil);
+      return normalizeDeliveryTransition(
+        'defer',
+        await surface.deferDelivery(deliveryId, {
+          // The relaycast defer transition requires an explicit availability
+          // time; default to a short retry window when none is given.
+          availableAt: deferUntil ?? new Date(Date.now() + 30_000).toISOString(),
+        })
+      );
+    },
   };
 
   readonly integrations = {
@@ -862,6 +938,103 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     return this.relaycast.dmMessages;
   }
 
+  /**
+   * The durable delivery API of the agent client, when present. Requires an
+   * agent-scoped client built from `@relaycast/sdk` 2.5+ (or a compatible
+   * injected `agentClient`).
+   */
+  private deliverySurface(): (RelaycastAgentLike & RelaycastAgentDeliverySurface) | undefined {
+    const agent = this.agentClient;
+    if (
+      !agent ||
+      typeof agent.deliveries !== 'function' ||
+      typeof agent.ackDelivery !== 'function' ||
+      typeof agent.failDelivery !== 'function' ||
+      typeof agent.deferDelivery !== 'function'
+    ) {
+      return undefined;
+    }
+    return agent as RelaycastAgentLike & RelaycastAgentDeliverySurface;
+  }
+
+  private async *createInboxSubscription(
+    agent: RelaycastAgentLike & RelaycastAgentDeliverySurface,
+    input?: InboxSubscribeInput
+  ): AsyncGenerator<InboxItem, void, undefined> {
+    const signal = input?.signal;
+    if (signal?.aborted) return;
+    const recipient = definedOptions({ recipientName: input?.agentName });
+
+    const seen = new Set<string>();
+    const queue: InboxItem[] = [];
+    let stopped = false;
+    let notify: (() => void) | undefined;
+
+    const wake = (): void => {
+      const resolve = notify;
+      notify = undefined;
+      resolve?.();
+    };
+    const push = (item: InboxItem): void => {
+      if (!item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      queue.push(item);
+      wake();
+    };
+    const stop = (): void => {
+      stopped = true;
+      wake();
+    };
+
+    // Register the event listener before seeding so accepted deliveries that
+    // land mid-seed are not missed; `seen` deduplicates the overlap.
+    const inFlight = new Set<string>();
+    agent.connect();
+    const unsubscribe = agent.on.any((event) => {
+      const record = asRecord(event);
+      if (record.type !== 'delivery.accepted') return;
+      const deliveryId = readStr(record, 'deliveryId', 'delivery_id');
+      if (!deliveryId || seen.has(deliveryId) || inFlight.has(deliveryId)) return;
+      inFlight.add(deliveryId);
+      // The accepted event carries ids only; re-list the non-terminal queue
+      // to pick up the delivery row with its embedded message payload.
+      void agent
+        .deliveries()
+        .then((deliveries) => {
+          const match = deliveries.find((raw) => readStr(asRecord(raw), 'id') === deliveryId);
+          if (match) push(normalizeInboxItem(match, recipient));
+        })
+        .catch(() => {
+          // The delivery already transitioned or the list failed transiently;
+          // it will be replayed by the next non-terminal listing.
+        })
+        .finally(() => {
+          inFlight.delete(deliveryId);
+        });
+    });
+    signal?.addEventListener('abort', stop, { once: true });
+
+    try {
+      for (const raw of await agent.deliveries()) {
+        push(normalizeInboxItem(raw, recipient));
+      }
+      while (!stopped) {
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+        });
+      }
+    } finally {
+      stopped = true;
+      unsubscribe();
+      signal?.removeEventListener('abort', stop);
+    }
+  }
+
   private async *emptyInboxSubscription(): AsyncIterable<InboxItem> {
     return;
   }
@@ -880,7 +1053,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         ? { reason }
         : {
             reason:
-              'Relaycast messaging does not expose durable inbox delivery state in this SDK surface yet.',
+              'Durable delivery transitions require an agent-scoped client with the Relaycast delivery API.',
           }),
       ...(deferUntil ? { deferUntil } : {}),
     };

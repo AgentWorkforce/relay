@@ -398,6 +398,231 @@ describe('RelaycastMessagingClient', () => {
       action: 'ack',
       messageId: 'm-1',
     });
+    await expect(client.inbox.list()).resolves.toEqual({ items: [] });
+  });
+});
+
+function makeDeliveryRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'del_1',
+    messageId: 'm-100',
+    channelId: 'ch-1',
+    agentId: 'agent-1',
+    status: 'accepted',
+    mode: 'wait',
+    reason: 'dm',
+    priority: 'normal',
+    retryable: null,
+    error: null,
+    availableAt: null,
+    deadline: null,
+    createdAt: '2026-06-09T10:00:00.000Z',
+    updatedAt: null,
+    message: {
+      id: 'm-100',
+      channelId: 'ch-1',
+      agentId: 'agent-9',
+      agentName: 'Lead',
+      text: 'hello worker',
+      threadId: null,
+      createdAt: '2026-06-09T10:00:00.000Z',
+    },
+    ...overrides,
+  };
+}
+
+function createDeliveryAgentClient() {
+  const { client, anyHandlers } = createAgentClient();
+  const agent = {
+    ...client,
+    deliveries: vi.fn(async () => [makeDeliveryRow()]),
+    ackDelivery: vi.fn(async (id: string) => makeDeliveryRow({ id, status: 'delivered' })),
+    failDelivery: vi.fn(async (id: string, options?: { error?: string; retryable?: boolean }) =>
+      makeDeliveryRow({
+        id,
+        status: 'failed',
+        error: options?.error ?? null,
+        retryable: options?.retryable ?? null,
+      })
+    ),
+    deferDelivery: vi.fn(async (id: string, options: { availableAt: string; reason?: string }) =>
+      makeDeliveryRow({
+        id,
+        status: 'deferred',
+        availableAt: options.availableAt,
+        reason: options.reason ?? null,
+      })
+    ),
+  };
+  return { agent, anyHandlers };
+}
+
+describe('RelaycastMessagingClient durable deliveries', () => {
+  it('reports durable delivery capabilities when the agent client exposes the ledger', () => {
+    const { agent } = createDeliveryAgentClient();
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+
+    expect(client.capabilities).toEqual({
+      serverDeliveryState: true,
+      durableDelivery: true,
+      durableAck: true,
+      durableFail: true,
+      durableDefer: true,
+    });
+  });
+
+  it('inbox.list maps delivery ledger rows onto inbox items', async () => {
+    const { agent } = createDeliveryAgentClient();
+    agent.deliveries.mockResolvedValueOnce([
+      makeDeliveryRow(),
+      makeDeliveryRow({
+        id: 'del_2',
+        messageId: 'm-200',
+        status: 'deferred',
+        availableAt: '2026-06-09T11:00:00.000Z',
+        reason: 'busy',
+        message: null,
+      }),
+    ]);
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+
+    const result = await client.inbox.list({ agentName: 'WorkerA', limit: 25 });
+
+    expect(agent.deliveries).toHaveBeenCalledWith({ limit: 25 });
+    expect(result.nextCursor).toBeUndefined();
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toMatchObject({
+      id: 'del_1',
+      state: 'queued',
+      attempts: 0,
+      recipient: { name: 'WorkerA', id: 'agent-1' },
+      message: {
+        id: 'm-100',
+        text: 'hello worker',
+        from: { id: 'agent-9', name: 'Lead' },
+      },
+      metadata: { mode: 'wait', reason: 'dm', priority: 'normal' },
+    });
+    expect(result.items[0].availableAt).toBeUndefined();
+    // A deferred row without an embedded message still yields a usable item.
+    expect(result.items[1]).toMatchObject({
+      id: 'del_2',
+      state: 'deferred',
+      availableAt: '2026-06-09T11:00:00.000Z',
+      message: { id: 'm-200' },
+      metadata: { reason: 'busy' },
+    });
+  });
+
+  it('passes ack/fail/defer transitions through to the delivery ledger', async () => {
+    const { agent } = createDeliveryAgentClient();
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+
+    await expect(client.inbox.ack({ inboxItemId: 'del_1' })).resolves.toEqual({
+      supported: true,
+      action: 'ack',
+      deliveryId: 'del_1',
+      messageId: 'm-100',
+      state: 'delivered',
+    });
+    expect(agent.ackDelivery).toHaveBeenCalledWith('del_1');
+
+    await expect(
+      client.inbox.fail({ inboxItemId: 'del_1', error: 'boom', retry: true })
+    ).resolves.toMatchObject({ supported: true, action: 'fail', state: 'failed' });
+    expect(agent.failDelivery).toHaveBeenCalledWith('del_1', { error: 'boom', retryable: true });
+
+    await expect(
+      client.inbox.defer({ inboxItemId: 'del_1', availableAt: '2026-06-09T12:00:00.000Z', reason: 'busy' })
+    ).resolves.toMatchObject({
+      supported: true,
+      action: 'defer',
+      state: 'deferred',
+      deferUntil: '2026-06-09T12:00:00.000Z',
+    });
+    expect(agent.deferDelivery).toHaveBeenCalledWith('del_1', {
+      availableAt: '2026-06-09T12:00:00.000Z',
+      reason: 'busy',
+    });
+
+    await expect(client.deliveries.ack('del_1')).resolves.toMatchObject({
+      supported: true,
+      action: 'ack',
+      deliveryId: 'del_1',
+    });
+    await expect(client.deliveries.fail('del_1', 'broke')).resolves.toMatchObject({
+      supported: true,
+      action: 'fail',
+    });
+    expect(agent.failDelivery).toHaveBeenLastCalledWith('del_1', { error: 'broke' });
+    await expect(client.deliveries.defer('del_1', '2026-06-09T13:00:00.000Z')).resolves.toMatchObject({
+      supported: true,
+      action: 'defer',
+      deferUntil: '2026-06-09T13:00:00.000Z',
+    });
+    expect(agent.deferDelivery).toHaveBeenLastCalledWith('del_1', {
+      availableAt: '2026-06-09T13:00:00.000Z',
+    });
+
+    // The ledger has no read state; markRead stays an explicit stub.
+    await expect(client.inbox.markRead({ inboxItemId: 'del_1' })).resolves.toMatchObject({
+      supported: false,
+    });
+  });
+
+  it('propagates delivery transition errors from the underlying client', async () => {
+    const { agent } = createDeliveryAgentClient();
+    agent.ackDelivery.mockRejectedValueOnce(new Error('delivery not found'));
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+
+    await expect(client.inbox.ack({ inboxItemId: 'del_missing' })).rejects.toThrow('delivery not found');
+  });
+
+  it('inbox.subscribe seeds from the queue, pushes delivery.accepted events, and dedupes', async () => {
+    const { agent, anyHandlers } = createDeliveryAgentClient();
+    agent.deliveries
+      .mockResolvedValueOnce([makeDeliveryRow()])
+      .mockResolvedValue([
+        makeDeliveryRow(),
+        makeDeliveryRow({ id: 'del_2', messageId: 'm-200', message: null }),
+      ]);
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+
+    const iterator = client.inbox.subscribe({ agentName: 'WorkerA' })[Symbol.asyncIterator]();
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value).toMatchObject({ id: 'del_1', recipient: { name: 'WorkerA' } });
+    expect(agent.connect).toHaveBeenCalled();
+
+    for (const handler of anyHandlers) {
+      // Duplicate of the seeded item: skipped before any re-listing.
+      handler({ type: 'delivery.accepted', deliveryId: 'del_1', messageId: 'm-100' });
+      handler({ type: 'delivery.accepted', deliveryId: 'del_2', messageId: 'm-200' });
+      // Repeat announcement of the same delivery: deduped.
+      handler({ type: 'delivery.accepted', deliveryId: 'del_2', messageId: 'm-200' });
+    }
+
+    const second = await iterator.next();
+    expect(second.done).toBe(false);
+    expect(second.value).toMatchObject({ id: 'del_2', state: 'queued' });
+    // One seed list plus exactly one re-list for the new delivery id.
+    expect(agent.deliveries).toHaveBeenCalledTimes(2);
+
+    await iterator.return?.(undefined);
+  });
+
+  it('inbox.subscribe ends when the abort signal fires', async () => {
+    const { agent } = createDeliveryAgentClient();
+    agent.deliveries.mockResolvedValue([]);
+    const client = new RelaycastMessagingClient({ relaycast: createWorkspace(), agentClient: agent });
+    const controller = new AbortController();
+
+    const iterator = client.inbox.subscribe({ signal: controller.signal })[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
   });
 });
 

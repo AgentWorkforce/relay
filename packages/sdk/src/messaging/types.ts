@@ -332,12 +332,30 @@ export interface RelayDeliveryUnsupportedResult {
   deferUntil?: string;
 }
 
+/** A durable delivery transition (ack/fail/defer) applied by the server. */
+export interface RelayDeliverySupportedResult {
+  supported: true;
+  action: 'ack' | 'fail' | 'defer';
+  /** Durable delivery ledger row the transition applied to. */
+  deliveryId: string;
+  /** Message the delivery carries. */
+  messageId: string;
+  /** Inbox state after the transition. */
+  state: InboxItemState;
+  /** When the delivery becomes available again (defer transitions). */
+  deferUntil?: string;
+}
+
+export type RelayDeliveryResult = RelayDeliverySupportedResult | RelayDeliveryUnsupportedResult;
+
 export interface RelayMessagingCapabilities {
+  /** Server tracks per-recipient delivery state with ack/fail/defer transitions. */
   serverDeliveryState: boolean;
-  durableDelivery: false;
-  durableAck: false;
-  durableFail: false;
-  durableDefer: false;
+  /** Per-recipient delivery ledger with replay of non-terminal items. */
+  durableDelivery: boolean;
+  durableAck: boolean;
+  durableFail: boolean;
+  durableDefer: boolean;
 }
 
 // ── Integrations (webhooks + event subscriptions) ───────────────────────────
@@ -712,16 +730,16 @@ export interface RelayMessagingClient {
     get(options?: { limit?: number }): Promise<RelayInbox>;
     list(input?: InboxListInput): Promise<InboxListResult>;
     subscribe(input?: InboxSubscribeInput): AsyncIterable<InboxItem>;
-    ack(input: InboxAckInput): Promise<RelayDeliveryUnsupportedResult>;
-    fail(input: InboxFailInput): Promise<RelayDeliveryUnsupportedResult>;
-    defer(input: InboxDeferInput): Promise<RelayDeliveryUnsupportedResult>;
-    markRead(input: InboxMarkReadInput): Promise<RelayDeliveryUnsupportedResult>;
+    ack(input: InboxAckInput): Promise<RelayDeliveryResult>;
+    fail(input: InboxFailInput): Promise<RelayDeliveryResult>;
+    defer(input: InboxDeferInput): Promise<RelayDeliveryResult>;
+    markRead(input: InboxMarkReadInput): Promise<RelayDeliveryResult>;
   };
   readonly events: RelayMessagingEventsSurface;
   readonly deliveries: {
-    ack(messageId: string): Promise<RelayDeliveryUnsupportedResult>;
-    fail(messageId: string, reason?: string): Promise<RelayDeliveryUnsupportedResult>;
-    defer(messageId: string, deferUntil?: string): Promise<RelayDeliveryUnsupportedResult>;
+    ack(messageId: string): Promise<RelayDeliveryResult>;
+    fail(messageId: string, reason?: string): Promise<RelayDeliveryResult>;
+    defer(messageId: string, deferUntil?: string): Promise<RelayDeliveryResult>;
   };
   readonly integrations: {
     webhooks: {
