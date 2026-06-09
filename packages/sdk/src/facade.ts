@@ -9,6 +9,7 @@ import type {
   RelayMessageMode,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
+  RelayWorkspaceStreamConfig,
 } from './messaging/index.js';
 import {
   actionSchemaToJsonSchema,
@@ -175,6 +176,16 @@ export interface RelayWorkspace {
   ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
+  /**
+   * Workspace-wide realtime fanout — **off by default**. A workspace-key client
+   * receives realtime events only after `set(true)`; agent-scoped clients don't
+   * need it. See https://agentrelay.com/docs/events#realtime-fanout
+   */
+  readonly stream: {
+    get(): Promise<RelayWorkspaceStreamConfig>;
+    set(enabled: boolean): Promise<RelayWorkspaceStreamConfig>;
+    inherit(): Promise<RelayWorkspaceStreamConfig>;
+  };
 }
 
 export interface NotifyOptions {
@@ -324,6 +335,12 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
 
   return {
     info: () => messaging.workspace.info(),
+    // Lazy (like `info`) so partial mocks needn't implement stream.
+    stream: {
+      get: () => messaging.workspace.stream.get(),
+      set: (enabled: boolean) => messaging.workspace.stream.set(enabled),
+      inherit: () => messaging.workspace.stream.inherit(),
+    },
     register: register as RelayWorkspace['register'],
     reconnect: async ({ apiToken }) => {
       if (!deps) {

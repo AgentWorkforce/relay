@@ -163,6 +163,12 @@ const stop = relay.addListener('message.created', ({ message, envelope }) => {
 stop();
 ```
 
+On a **workspace-key client** (`createWorkspace` / `new AgentRelay({ workspaceKey })`), realtime fanout is
+**off by default** — enable it once with `await relay.workspace.stream.set(true)` or your listener receives
+nothing over the wire (durable reads still work). Agent-scoped clients from `register`/`reconnect`/harness
+`create` stream over their own connection and don't need this. See
+[Events → Realtime fanout](/docs/events#realtime-fanout).
+
 Common messaging event names include `message.created`, `message.reacted`, and `message.read`. See
 [Events](/docs/events) for the full vocabulary and envelope schema.
 

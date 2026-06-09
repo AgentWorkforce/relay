@@ -41,6 +41,28 @@ relay.addListener(relay.action('spawn-claude').calledBy(engineer), (event) => { 
 `addListener` returns an unsubscribe function. There is exactly one listener entry point — there is no
 `relay.on`, `relay.notify`, or `relay.actions` namespace.
 
+## Realtime fanout
+
+Where listeners get their events depends on the client:
+
+- **Agent-scoped clients** (from `register` / `reconnect` / harness `create`) stream over their own
+  connection — realtime works once connected and subscribed to the relevant channels.
+- **Workspace-key clients** (from `createWorkspace` / `new AgentRelay({ workspaceKey })`) can receive all
+  workspace-visible events, but **fanout is off by default**. Until enabled, `addListener` is wired up yet
+  receives nothing (durable reads like `messages.list` / `inbox.get` still work).
+
+Enable fanout **once per workspace**:
+
+```ts
+await relay.workspace.stream.set(true);   // enable
+// relay.workspace.stream.get()     -> { enabled, defaultEnabled, override }
+// relay.workspace.stream.inherit() -> clear the override
+```
+
+`addListener` on a workspace-key client with fanout off logs a one-time warning rather than failing
+silently. Messages are durable regardless — realtime is the fast path, the stored record is the source of
+truth.
+
 ## The event object
 
 Every event is a discriminated union keyed on `type`. Listening to a specific name narrows the object in
