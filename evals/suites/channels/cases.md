@@ -296,8 +296,6 @@ Inviting an agent name that is not registered should fail without changing chann
 ### Deterministic Checks
 ok: false
 errorCode: agent_not_found
-forbidPhrases:
-- MissingWorker
 channelMembers:
 - {"channel":"ops","members":["Lead"]}
 

@@ -61,7 +61,11 @@
     "codegen:models:ts": "node packages/utils/codegen-ts.mjs",
     "codegen:models:py": "node packages/utils/codegen-py.mjs",
     "dev:web": "cd web && ../node_modules/.bin/sst dev",
-    "web": "cd web && npm run dev"
+    "web": "cd web && npm run dev",
+    "evals:compile": "node scripts/evals/compile-cases.mjs",
+    "evals": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
+    "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
+    "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
@@ -74,6 +78,7 @@
   },
   "homepage": "https://github.com/AgentWorkforce/relay#readme",
   "devDependencies": {
+    "@agent-assistant/telemetry": "^0.4.35",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",
