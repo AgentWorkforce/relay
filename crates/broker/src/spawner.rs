@@ -222,6 +222,7 @@ pub fn spawn_env_vars(
     channels: &str,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
+    harness: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("RELAY_AGENT_NAME".to_string(), name.to_string()),
@@ -232,6 +233,12 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
+    // Forward the detected harness so spawned agents using the JS SDK
+    // (`@relaycast/sdk`, which resolves harness from env and has no
+    // process-tree fallback) report it to the backend instead of "unknown".
+    if let Some(harness) = harness {
+        env.push(("AGENT_RELAY_HARNESS".to_string(), harness.to_string()));
+    }
     if let Some(workspaces_json) = workspaces_json
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -270,7 +277,31 @@ mod tests {
     use nix::unistd::{getsid, Pid};
     use tokio::process::Command;
 
-    use super::{terminate_child, Spawner};
+    use super::{spawn_env_vars, terminate_child, Spawner};
+
+    #[test]
+    fn spawn_env_vars_forwards_harness_when_present() {
+        let env = spawn_env_vars(
+            "a",
+            "rk_live_x",
+            "https://gw",
+            "#c",
+            None,
+            None,
+            Some("codex"),
+        );
+        let harness = env
+            .iter()
+            .find(|(k, _)| k == "AGENT_RELAY_HARNESS")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(harness, Some("codex"));
+    }
+
+    #[test]
+    fn spawn_env_vars_omits_harness_when_absent() {
+        let env = spawn_env_vars("a", "rk_live_x", "https://gw", "#c", None, None, None);
+        assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_HARNESS"));
+    }
 
     #[tokio::test]
     async fn release_terminates_child_process() {
