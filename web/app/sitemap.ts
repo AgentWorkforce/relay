@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 
+import { allAgentSlugs } from '../lib/agents';
 import { getAllPosts } from '../lib/blog';
 import { getAllDocSlugs } from '../lib/docs-nav';
 import { absoluteUrl } from '../lib/site';
@@ -45,6 +46,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.9,
     },
     {
+      url: absoluteUrl('/agents'),
+      lastModified: now,
+      changeFrequency: 'weekly',
+      priority: 0.9,
+    },
+    {
+      url: absoluteUrl('/agents/use-cases'),
+      lastModified: now,
+      changeFrequency: 'weekly',
+      priority: 0.8,
+    },
+    {
       url: absoluteUrl('/brand'),
       lastModified: now,
       changeFrequency: 'monthly',
@@ -77,6 +90,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: slug === 'introduction' ? 0.9 : 0.8,
   }));
 
+  const agentRoutes: MetadataRoute.Sitemap = allAgentSlugs().map((slug) => ({
+    url: absoluteUrl(`/agents/${slug}`),
+    lastModified: now,
+    changeFrequency: 'weekly',
+    priority: 0.7,
+  }));
+
   const blogRoutes: MetadataRoute.Sitemap = getAllPosts().map((post) => ({
     url: absoluteUrl(`/blog/${post.slug}`),
     lastModified: post.frontmatter.updatedAt
@@ -88,5 +108,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...staticRoutes, ...docsRoutes, ...blogRoutes];
+  return [...staticRoutes, ...agentRoutes, ...docsRoutes, ...blogRoutes];
 }

@@ -19,6 +19,9 @@ export function SiteFooter() {
         <div className={s.columns}>
           <div className={s.col}>
             <h4 className={s.colTitle}>Projects</h4>
+            <Link href="/agents" className={s.link}>
+              Agents
+            </Link>
             <Link href="/pear" className={s.link}>
               Pear
             </Link>
