@@ -438,7 +438,7 @@ A zod-like fixture should parse input before the handler sees it.
     "handlerFixture": "sum_numbers",
     "inputSchemaFixture": "coerce_string_count"
   },
-  { "op": "invoke_action", "as": "planner", "name": "coerce-count", "input": { "a": "20", "b": "22" } }
+  { "op": "invoke_action", "as": "planner", "name": "coerce-count", "input": { "count": "21" } }
 ]
 ```
 

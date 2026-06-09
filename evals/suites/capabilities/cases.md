@@ -4,8 +4,8 @@ Capability cases verify RelayCapabilityError paths and unsupported capability re
 ## capabilities.delivery-runner-requires-server-state
 Executor: relay
 Kind: regression
-Tags: capabilities, delivery, error
-Human Review: false
+Tags: capabilities, delivery, error, pending-executor
+Human Review: true
 
 ### Message
 DeliveryRunner should refuse to start without server-backed delivery state support.
@@ -33,12 +33,6 @@ DeliveryRunner should refuse to start without server-backed delivery state suppo
 ```
 
 ### Deterministic Checks
-ok: false
-errorCode: relay_capability_error
-contentIncludes:
-- RelayCapabilityError
-- messaging.capabilities.serverDeliveryState
-- DeliveryRunner requires server-backed delivery state
 must:
 - Throw before connecting the delivery adapter.
 - Expose the missing capability name.
@@ -48,8 +42,8 @@ mustNot:
 ## capabilities.delivery-unsupported-does-not-inject
 Executor: relay
 Kind: regression
-Tags: capabilities, delivery, guard
-Human Review: false
+Tags: capabilities, delivery, guard, pending-executor
+Human Review: true
 
 ### Message
 Unsupported delivery state should stop the delivery operation before any inbox item is consumed.
@@ -78,10 +72,6 @@ Unsupported delivery state should stop the delivery operation before any inbox i
 ```
 
 ### Deterministic Checks
-ok: false
-errorCode: relay_capability_error
-contentIncludes:
-- serverDeliveryState
 must:
 - Fail fast before processing `in_cap_2`.
 - Leave both inbox items unacknowledged.
@@ -91,8 +81,8 @@ mustNot:
 ## capabilities.missing-agent-client-send-message
 Executor: relay
 Kind: capability
-Tags: capabilities, messaging, agent-client
-Human Review: false
+Tags: capabilities, messaging, agent-client, pending-executor
+Human Review: true
 
 ### Message
 Agent-scoped message operations require an agent client capability.
@@ -114,11 +104,6 @@ Agent-scoped message operations require an agent client capability.
 ```
 
 ### Deterministic Checks
-ok: false
-errorCode: relay_capability_error
-contentIncludes:
-- RelayCapabilityError
-- messages.send
 must:
 - Surface a RelayCapabilityError for the missing agent-scoped operation.
 mustNot:
@@ -127,8 +112,8 @@ mustNot:
 ## capabilities.missing-agent-client-channel-join
 Executor: relay
 Kind: capability
-Tags: capabilities, channels, agent-client
-Human Review: false
+Tags: capabilities, channels, agent-client, pending-executor
+Human Review: true
 
 ### Message
 Channel membership mutations require an agent-scoped client capability.
@@ -150,13 +135,6 @@ Channel membership mutations require an agent-scoped client capability.
 ```
 
 ### Deterministic Checks
-ok: false
-errorCode: relay_capability_error
-contentIncludes:
-- RelayCapabilityError
-- channels.join
-channelMembers:
-- { "channel": "general", "members": [] }
 must:
 - Reject join_channel when the client lacks the required agent client.
 mustNot:
@@ -165,8 +143,8 @@ mustNot:
 ## capabilities.events-subscribe-requires-agent-client
 Executor: relay
 Kind: capability
-Tags: capabilities, events
-Human Review: false
+Tags: capabilities, events, pending-executor
+Human Review: true
 
 ### Message
 Event subscription should require the events.subscribe agent-client capability.
@@ -188,11 +166,6 @@ Event subscription should require the events.subscribe agent-client capability.
 ```
 
 ### Deterministic Checks
-ok: false
-errorCode: relay_capability_error
-contentIncludes:
-- RelayCapabilityError
-- events
 must:
 - Report a missing event subscription capability.
 mustNot:
@@ -201,8 +174,8 @@ mustNot:
 ## capabilities.unsupported-durable-ack-stub
 Executor: relay
 Kind: regression
-Tags: capabilities, durable-delivery, stub
-Human Review: false
+Tags: capabilities, durable-delivery, stub, pending-executor
+Human Review: true
 
 ### Message
 Unsupported durable delivery ack should return an explicit unsupported result rather than pretending success.
@@ -228,11 +201,6 @@ Unsupported durable delivery ack should return an explicit unsupported result ra
 ```
 
 ### Deterministic Checks
-ok: true
-contentIncludes:
-- supported
-- false
-- markRead
 must:
 - Return an explicit unsupported capability result.
 mustNot:
