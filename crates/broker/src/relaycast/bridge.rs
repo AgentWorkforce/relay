@@ -361,8 +361,11 @@ mod tests {
 
     #[test]
     fn maps_presence_top_level() {
+        // v8 contract: presence transitions are `agent.status.active` /
+        // `agent.status.offline` (the gateway's engine), not the pre-v8
+        // `agent.online`. See engine presence adapter.
         let event = map_event(&json!({
-            "type": "agent.online",
+            "type": "agent.status.active",
             "agent": { "name": "alice" }
         }))
         .unwrap();
@@ -418,14 +421,18 @@ mod tests {
 
     #[test]
     fn maps_reaction_added() {
+        // v8 contract: reactions arrive as a single `message.reacted` event
+        // (with an `action` of "added"/"removed"), not the pre-v8
+        // `reaction.added`/`reaction.removed`. See engine reaction route.
         let event = map_event(&json!({
-            "type": "reaction.added",
+            "type": "message.reacted",
+            "action": "added",
             "message_id": "msg_42",
             "emoji": "thumbsup",
             "agent_name": "alice",
             "channel_name": "general"
         }))
-        .expect("should map reaction.added");
+        .expect("should map message.reacted");
 
         assert_eq!(event.kind, InboundKind::ReactionReceived);
         assert_eq!(event.from, "alice");
@@ -439,14 +446,17 @@ mod tests {
 
     #[test]
     fn maps_reaction_removed() {
+        // A reaction removal is the same `message.reacted` event with
+        // `action: "removed"`; the broker surfaces both as ReactionReceived.
         let event = map_event(&json!({
-            "type": "reaction.removed",
+            "type": "message.reacted",
+            "action": "removed",
             "message_id": "msg_42",
             "emoji": "thumbsup",
             "agent_name": "bob",
             "channel_name": "dev"
         }))
-        .expect("should map reaction.removed");
+        .expect("should map message.reacted");
 
         assert_eq!(event.kind, InboundKind::ReactionReceived);
         assert_eq!(event.from, "bob");
@@ -458,7 +468,8 @@ mod tests {
         // Reactions without a channel (e.g. DM reactions) are dropped from PTY
         // injection — they're surfaced via the inbox API / piggyback instead.
         assert!(map_event(&json!({
-            "type": "reaction.added",
+            "type": "message.reacted",
+            "action": "added",
             "message_id": "msg_99",
             "emoji": "rocket",
             "agent_name": "carol"

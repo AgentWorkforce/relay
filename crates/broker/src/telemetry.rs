@@ -437,6 +437,25 @@ fn detect_orchestrator_harness() -> String {
         .unwrap_or_else(|| UNKNOWN_ORCHESTRATOR_HARNESS.to_string())
 }
 
+/// Process-wide cached orchestrator harness: explicit env override, else
+/// process-tree detection (claude-code / codex / cursor / …). Detection walks
+/// the parent-process chain, so we resolve it once and reuse the result for
+/// both our own PostHog events and the harness we forward to the relaycast
+/// backend. Returns the [`UNKNOWN_ORCHESTRATOR_HARNESS`] sentinel when
+/// undetectable.
+pub(crate) fn orchestrator_harness() -> &'static str {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(detect_orchestrator_harness)
+}
+
+/// Like [`orchestrator_harness`] but `None` instead of the `"unknown"`
+/// sentinel, so callers can skip forwarding a non-informative value (the
+/// relaycast backend already defaults a missing harness to `"unknown"`).
+pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
+    let harness = orchestrator_harness();
+    (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
+}
+
 /// Best-effort OS release string for telemetry tagging. Shells out to
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.
@@ -562,7 +581,7 @@ impl TelemetryClient {
             cli_version: env_nonempty("AGENT_RELAY_CLI_VERSION"),
             sdk_version: env_nonempty("AGENT_RELAY_SDK_VERSION"),
             os_version: detect_os_version(),
-            orchestrator_harness: detect_orchestrator_harness(),
+            orchestrator_harness: orchestrator_harness().to_string(),
         }
     }
 
