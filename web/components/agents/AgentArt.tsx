@@ -2,11 +2,19 @@ import type { CSSProperties } from 'react';
 
 import { agentAsset, type Agent } from '../../lib/agents';
 
-type Variant = 'card' | 'banner' | 'avatar';
+type Variant = 'card' | 'card-sm' | 'banner' | 'avatar';
+
+const ASSET_FOR: Record<Variant, 'card' | 'card-sm' | 'banner' | 'avatar'> = {
+  card: 'card',
+  'card-sm': 'card-sm',
+  banner: 'banner',
+  avatar: 'avatar',
+};
 
 const FALLBACK_FONT_SIZE: Record<Variant, string> = {
   banner: 'clamp(3rem, 9vw, 6rem)',
   card: 'clamp(2.4rem, 12vw, 4rem)',
+  'card-sm': 'clamp(2.4rem, 12vw, 4rem)',
   avatar: '1.8rem',
 };
 
@@ -35,8 +43,13 @@ export function AgentArt({
   loading?: 'lazy' | 'eager';
 }) {
   if (agent.hasCustomArt) {
-    const asset = variant === 'banner' ? 'banner' : variant === 'avatar' ? 'avatar' : 'card';
-    return <img src={agentAsset(agent.slug, asset)} alt={alt ?? `${agent.name} artwork`} loading={loading} />;
+    return (
+      <img
+        src={agentAsset(agent.slug, ASSET_FOR[variant])}
+        alt={alt ?? `${agent.name} artwork`}
+        loading={loading}
+      />
+    );
   }
 
   const style: CSSProperties = {

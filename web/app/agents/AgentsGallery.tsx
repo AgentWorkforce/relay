@@ -94,7 +94,7 @@ export function AgentsGallery() {
             <FadeIn key={agent.slug} direction="up" delay={(i % 3) * 60} className={s.col}>
               <Link href={`/agents/${agent.slug}`} className={s.card}>
                 <div className={s.cardMedia}>
-                  <AgentArt agent={agent} variant="card" alt={`${agent.name} card`} />
+                  <AgentArt agent={agent} variant="card-sm" alt={`${agent.name} card`} />
                 </div>
                 <div className={s.cardBody}>
                   <h2 className={s.cardName}>{agent.name}</h2>
