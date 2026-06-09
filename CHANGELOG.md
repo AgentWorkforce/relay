@@ -122,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` README documents the current v8 API (`workspace.register`, sigil-routed `sendMessage`, `addListener`, `registerAction`, subpath exports) instead of the removed v7 surface (`relay.as`, `events.on('message.created')`, `relay.actions.register`).
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
