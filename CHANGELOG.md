@@ -122,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-broker` no longer discards pending deliveries on graceful shutdown: a non-empty pending map is persisted for redelivery on the next start, and the pending file is only removed when nothing is pending.
+- `agent-relay-broker` persists pending deliveries on every change (enqueue, ack, retry) instead of only on the 500ms maintenance tick, so a crash between ticks cannot lose queued messages.
+- `agent-relay-broker` timeout-fallback delivery acks are now observable: `delivery_verified` events carry `verification: "timeout_fallback"` plus a reason, and unverified deliveries no longer count as successes in the injection throttle.
+- `agent-relay-broker` emits a `delivery_dropped` event when the per-worker pending queue cap (256) evicts the oldest message, instead of only logging a warning.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.

@@ -121,13 +121,32 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            tracing::debug!(
-                                target = "agent_relay::broker",
-                                worker = %name,
-                                delivery_id = %delivery_id,
-                                event_id = %event_id,
-                                "delivery verified by echo detection"
-                            );
+                            // "echo" when the injection was confirmed in PTY
+                            // output; "timeout_fallback" when the worker acked
+                            // without ever seeing the echo.
+                            let verification = payload
+                                .get("verification")
+                                .and_then(Value::as_str)
+                                .unwrap_or("echo");
+                            let reason = payload.get("reason").and_then(Value::as_str);
+                            if verification == "timeout_fallback" {
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    reason = reason.unwrap_or(""),
+                                    "delivery acked via timeout fallback — echo never verified"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    "delivery verified by echo detection"
+                                );
+                            }
                             let pending_for_confirmation = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
@@ -135,16 +154,19 @@ impl BrokerRuntime {
                                 &name,
                                 "delivery_verified",
                             );
-                            let _ = send_event(
-                                sdk_out_tx,
-                                json!({
-                                    "kind": "delivery_verified",
-                                    "name": name,
-                                    "delivery_id": delivery_id,
-                                    "event_id": event_id,
-                                }),
-                            )
-                            .await;
+                            let mut verified_event = json!({
+                                "kind": "delivery_verified",
+                                "name": name,
+                                "delivery_id": delivery_id,
+                                "event_id": event_id,
+                                "verification": verification,
+                            });
+                            if let (Some(reason), Some(map)) =
+                                (reason, verified_event.as_object_mut())
+                            {
+                                map.insert("reason".to_string(), Value::String(reason.to_string()));
+                            }
+                            let _ = send_event(sdk_out_tx, verified_event).await;
                             if let Some(pending) = pending_for_confirmation {
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();

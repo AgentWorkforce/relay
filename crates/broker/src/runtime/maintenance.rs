@@ -381,11 +381,8 @@ impl BrokerRuntime {
             }
         }
 
-        // Persist pending deliveries for crash recovery
-        if paths.persist {
-            if let Err(error) = save_pending_deliveries(&paths.pending, pending_deliveries) {
-                tracing::warn!(path = %paths.pending.display(), error = %error, "failed to persist pending deliveries");
-            }
-        }
+        // Pending deliveries are persisted by the event loop whenever the
+        // map is mutated (see `BrokerRuntime::flush_pending_deliveries`),
+        // so no tick-time snapshot is needed here.
     }
 }
