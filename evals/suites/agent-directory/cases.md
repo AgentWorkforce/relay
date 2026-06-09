@@ -104,7 +104,7 @@ Registering an agent name that already exists should fail deterministically.
 
 ### Deterministic Checks
 ok: false
-errorCode: agent_already_exists
+errorCode: agent_exists
 agentPresence:
 - {"name":"WorkerA","status":"online"}
 
