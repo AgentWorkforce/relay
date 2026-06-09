@@ -37,7 +37,7 @@ import {
 import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 
-const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
+const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
