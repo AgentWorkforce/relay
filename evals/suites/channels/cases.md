@@ -75,7 +75,7 @@ Creating a channel with an existing name should fail without changing existing m
 
 ### Deterministic Checks
 ok: false
-errorCode: channel_already_exists
+errorCode: channel_exists
 channelMembers:
 - {"channel":"general","members":["Lead","WorkerA"]}
 must:
