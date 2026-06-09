@@ -36,9 +36,7 @@ export function AgentArt({
 }) {
   if (agent.hasCustomArt) {
     const asset = variant === 'banner' ? 'banner' : variant === 'avatar' ? 'avatar' : 'card';
-    return (
-      <img src={agentAsset(agent.slug, asset)} alt={alt ?? `${agent.name} artwork`} loading={loading} />
-    );
+    return <img src={agentAsset(agent.slug, asset)} alt={alt ?? `${agent.name} artwork`} loading={loading} />;
   }
 
   const style: CSSProperties = {

@@ -3,12 +3,7 @@
 import Link from 'next/link';
 
 import { FadeIn } from '../../../components/FadeIn';
-import {
-  agentAsset,
-  getAgent,
-  NON_PUBLIC_AGENT_LABELS,
-  USE_CASE_GROUPS,
-} from '../../../lib/agents';
+import { agentAsset, getAgent, NON_PUBLIC_AGENT_LABELS, USE_CASE_GROUPS } from '../../../lib/agents';
 import s from '../agents.module.css';
 
 function slugifyTheme(theme: string): string {

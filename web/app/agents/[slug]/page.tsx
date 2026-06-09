@@ -33,9 +33,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       title,
       description,
       url: canonical,
-      ...(agent.hasCustomArt
-        ? { images: [{ url: absoluteUrl(agentAsset(agent.slug, 'card')) }] }
-        : {}),
+      ...(agent.hasCustomArt ? { images: [{ url: absoluteUrl(agentAsset(agent.slug, 'card')) }] } : {}),
     },
   };
 }
