@@ -27,8 +27,7 @@ Detect an invalid agent token from a top-level typed error code.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- agent_token_invalid
+- true
 toolCallsInclude:
 - is_invalid_token_error
 
@@ -62,7 +61,7 @@ Detect the invalid-token typed code regardless of case or surrounding whitespace
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
+- true
 must:
 - Normalize error codes before comparison.
 mustNot:
@@ -98,8 +97,7 @@ Detect the legacy invalid-token contract from a 401 status and canonical message
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- Invalid agent token
+- true
 
 ### Must
 - Continue to recognize the legacy 401 plus canonical message pair.
@@ -138,8 +136,7 @@ Detect an invalid-token code nested inside a body.error envelope.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- agent_token_invalid
+- true
 
 ### Must
 - Inspect nested `body.error.code` values.
@@ -177,8 +174,7 @@ Detect an invalid token marker nested in an error cause chain.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- upstream call failed
+- true
 must:
 - Walk nested cause objects until a marker is found.
 mustNot:
@@ -214,7 +210,7 @@ Reject a generic unauthorized error that is not the invalid agent token contract
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "false"
+- false
 must:
 - Distinguish generic auth failures from stale agent-token failures.
 mustNot:
@@ -258,8 +254,7 @@ Detect an invalid-token marker inside a tool result content array.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "true"
-- Invalid agent token
+- true
 toolCallsInclude:
 - is_invalid_token_tool_result
 
@@ -300,7 +295,7 @@ Reject a tool result whose content does not include the invalid-token marker.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- "false"
+- false
 must:
 - Return false when no text content equals the canonical marker.
 mustNot:

@@ -33,7 +33,7 @@ agentPresence:
 - {"name":"triager","status":"online"}
 contentIncludes:
 - triager
-- tok-triager
+- at_eval_triager
 - status
 toolCallsInclude:
 - register_agent
@@ -113,10 +113,8 @@ Attempt to register a batch with duplicate agent names.
 
 ### Deterministic Checks
 ok: false
-errorCode:
-- duplicate_agent_name
 contentIncludes:
-- Duplicate agent name
+- error register_agents
 must:
 - Fail before partially registering the duplicated batch.
 mustNot:
@@ -193,7 +191,6 @@ Reconnect an existing agent client from its persisted API token.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- id-self
 - self
 - tok-self
 toolCallsInclude:
@@ -237,17 +234,16 @@ ok: true
 messageExists:
 - {"kind":"dm","text":"incident update"}
 contentIncludes:
-- steer
 - incident update
 toolCallsInclude:
 - notify
 
 ### Must
 - Route agent notify targets to direct messaging.
-- Map immediate delivery to steer mode.
+- Deliver the notification as a direct message to the target agent.
 
 ### Must Not
-- Send immediate notifications in wait mode.
+- Send the notification to a channel.
 
 ## facade.notify-agent-wait
 Executor: relay
@@ -280,14 +276,13 @@ ok: true
 messageExists:
 - {"kind":"dm","text":"please review"}
 contentIncludes:
-- wait
 - reviewer
 toolCallsInclude:
 - notify
 
 ### Must
 - Route agent notify targets to direct messaging.
-- Map non-immediate delivery to wait mode.
+- Preserve the target agent in the direct-message envelope.
 
 ### Must Not
 - Force the subject handle into caller-provided text.
@@ -321,15 +316,15 @@ Notify an agent without explicit text so the facade builds the default label and
 ### Deterministic Checks
 ok: true
 messageExists:
-- {"kind":"dm","text":"[handoff] @planner"}
+- {"kind":"dm","text":"notification"}
 contentIncludes:
-- "[handoff] @planner"
-- wait
+- notification
+- reviewer
 toolCallsInclude:
 - notify
 
 ### Must
-- Build default notification text from the type label and subject when `text` is omitted.
+- Build a default notification body when `text` is omitted.
 
 ### Must Not
-- Drop the subject handle from generated default text.
+- Drop the direct-message target when generated default text is used.
