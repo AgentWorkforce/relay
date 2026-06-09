@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent messaging eval suite (`npm run eval`, `eval:matrix`, `eval:unit`, `eval:selftest`, `eval:toolcheck`) spawns real agent CLIs and scores, from broker events, whether agents actually used the MCP/CLI to message — reporting message-sent rate, phantom-message rate (intent stated in prose but no send), ACK/DONE protocol adherence, and wrong-channel replies. Includes a `realistic` tier (natural-language tasks where the protocol must come from the injected onboarding) and a `smoke` tier (leading prompts as a plumbing canary), a negative-control self-test, and a deterministic wrong-tool-name trap that flags onboarding referencing tools the MCP server doesn't register. Each run emits a self-contained HTML viewer (overview, per-scenario prompts, full message transcript, phantom call-outs) alongside JSON reports with baseline regression diffing.
 - `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
 - `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
 - `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving a high-latency or remote agent, and stays invisible on fast local links.

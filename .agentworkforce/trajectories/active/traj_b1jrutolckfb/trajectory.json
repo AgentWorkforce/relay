@@ -43,6 +43,18 @@
             "reasoning": "User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1780761935387,
+          "type": "decision",
+          "content": "Repaired broker-harness.ts to current SDK/harness-driver API and built eval suite on it: Repaired broker-harness.ts to current SDK/harness-driver API and built eval suite on it",
+          "raw": {
+            "question": "Repaired broker-harness.ts to current SDK/harness-driver API and built eval suite on it",
+            "chosen": "Repaired broker-harness.ts to current SDK/harness-driver API and built eval suite on it",
+            "alternatives": [],
+            "reasoning": "Broker integration suite was pre-existingly broken: SDK narrowing moved BrokerEvent/HarnessDriverClient/SendMessageInput to @agent-relay/harness-driver and RelayCast to @relaycast/sdk; AgentRelay facade no longer does broker lifecycle. Fixed imports + removed the unused AgentRelay facade from BrokerHarness; added a dedicated evals/tsconfig.json compiling only evals/ + utils/ so eval:build is green without rewriting the still-broken sibling test files."
+          },
+          "significance": "high"
         }
       ]
     }

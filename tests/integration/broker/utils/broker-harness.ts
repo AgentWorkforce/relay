@@ -15,9 +15,8 @@ import {
   type ListAgent,
   type SendMessageInput,
   type BrokerEvent,
-  AgentRelay,
-  RelayCast,
-} from '@agent-relay/sdk';
+} from '@agent-relay/harness-driver';
+import { RelayCast } from '@relaycast/sdk';
 
 // ── Dynamic API key provisioning ─────────────────────────────────────────────
 
@@ -75,9 +74,7 @@ export interface EventWaiter {
 // ── Harness ──────────────────────────────────────────────────────────────────
 
 export class BrokerHarness {
-  /** High-level facade — use for spawning agents, sending messages. */
-  relay!: AgentRelay;
-  /** Low-level client — use for protocol-level tests. */
+  /** Low-level driver client — spawns the broker and drives agents. */
   client!: HarnessDriverClient;
 
   private readonly opts: Required<BrokerHarnessOptions>;
@@ -134,17 +131,6 @@ export class BrokerHarness {
       }
     });
 
-    // Create a high-level facade sharing the same binary/options
-    this.relay = new AgentRelay({
-      binaryPath: this.opts.binaryPath,
-      binaryArgs: this.opts.binaryArgs,
-      brokerName: this.opts.brokerName,
-      channels: this.opts.channels,
-      cwd: this.opts.cwd,
-      requestTimeoutMs: this.opts.requestTimeoutMs,
-      env: this.opts.env,
-    });
-
     this.started = true;
   }
 
@@ -158,14 +144,7 @@ export class BrokerHarness {
     this.unsubEvent = undefined;
     this.eventListeners = [];
 
-    // Shut down the facade first (it has its own client)
-    try {
-      await this.relay.shutdown();
-    } catch {
-      // Ignore — may already be down
-    }
-
-    // Shut down the low-level client
+    // Shut down the broker process.
     try {
       await this.client.shutdown();
     } catch {
