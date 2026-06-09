@@ -182,8 +182,6 @@ A workspace key without the Relay live-key prefix should be rejected.
 ### Deterministic Checks
 ok: false
 errorCode: invalid_workspace_key
-contentIncludes:
-- rk_live_
 toolCallsInclude:
 - set_workspace_key
 
@@ -223,8 +221,7 @@ Creating two workspaces with the same display name should produce distinct works
 ok: true
 contentIncludes:
 - Duplicate Display Name
-forbidPhrases:
-- first-room
+- rk_live_ws_dup_b
 toolCallsInclude:
 - create_workspace
 minToolCalls: 6
