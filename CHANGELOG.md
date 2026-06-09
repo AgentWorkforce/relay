@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
 - `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape for laptop-hosted workflows.
 - `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
+- `@agent-relay/sdk` re-exports `RelayError` and `RelayErrorCode` from the package root, so consumers can match coded relay errors (with `retryable`) without depending on `@relaycast/sdk` directly.
+- `@agent-relay/sdk` adds `relay.once(selector, handler)`, which auto-unsubscribes after the first matching event.
+- `@agent-relay/sdk` adds an `onError` hook (`new AgentRelay({ onError })` or `relay.onError(cb)`) that receives listener and action handler errors with a context identifying the listener selector or action name.
 
 ### Changed
 
@@ -52,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
 - Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
 - `agent-relay` and `@agent-relay/sdk` now consume `@relaycast/sdk` 2.5.x, which carries the v8 service contract (reconnect/resolve-by-token, inbound webhooks with bearer tokens, outbound subscription headers + HMAC, the canonical dotted event vocabulary, and the fire-and-forget action invoke/complete endpoints) plus a workspace-scoped realtime stream.
+- `@agent-relay/sdk` `relay.workspace.register(...)` is idempotent by default: re-registering an existing agent name adopts the identity and rotates its token (invalidating previously-issued tokens for that agent) instead of throwing `name_conflict`; pass `{ strict: true }` to fail on conflicts.
+- `@agent-relay/sdk` `relay.addListener(...)` and `relay.once(...)` narrow the handler's event parameter type for exact dotted selectors such as `'message.created'`; wildcards and predicates keep their existing types.
 - `@agent-relay/sdk` `AgentSession.release` is now optional and `capabilities.lifecycle.release` is a boolean: provide `release()` only when the capability is `true`.
 - `@agent-relay/openclaw` consumes relaycast's unified `message.reacted` event (replacing the separate reaction-added/removed events).
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
@@ -132,6 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sdk-swift`: broker client now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
 - `agent-relay start dashboard.js [cli]` remains available for local dashboard harness workflows.
 - `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
+- `@agent-relay/sdk` listener handler errors are no longer silently swallowed: without an `onError` hook they log a console warning naming the listener.
 
 ### Security
 

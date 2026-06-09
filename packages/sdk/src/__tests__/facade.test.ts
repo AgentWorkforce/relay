@@ -160,3 +160,63 @@ describe('AgentRelay facade (Phase A)', () => {
     );
   });
 });
+
+describe('workspace.register idempotency', () => {
+  function createRotatingMessagingMock() {
+    const base = createMessagingMock();
+    const registerOrRotate = vi.fn(async (input: { name: string }) => ({
+      id: `id-${input.name}`,
+      name: input.name,
+      token: `rotated-${input.name}`,
+      status: 'online',
+    }));
+    (base.messaging.agents as { registerOrRotate?: typeof registerOrRotate }).registerOrRotate =
+      registerOrRotate;
+    return { ...base, registerOrRotate };
+  }
+
+  it('uses registerOrRotate by default so re-registering a name succeeds', async () => {
+    const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const first = await relay.workspace.register({ name: 'triager' });
+    const second = await relay.workspace.register({ name: 'triager' });
+
+    expect(registerOrRotate).toHaveBeenCalledTimes(2);
+    expect(agents.register).not.toHaveBeenCalled();
+    expect(first.id).toBe('id-triager');
+    expect(second.id).toBe('id-triager');
+    expect(second.token).toBe('rotated-triager');
+  });
+
+  it('register({ strict: true }) bypasses rotation and uses plain register', async () => {
+    const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await relay.workspace.register({ name: 'triager' }, { strict: true });
+
+    expect(agents.register).toHaveBeenCalledTimes(1);
+    expect(registerOrRotate).not.toHaveBeenCalled();
+  });
+
+  it('falls back to plain register when the backend lacks registerOrRotate', async () => {
+    const { messaging, agents } = createMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    const client = await relay.workspace.register({ name: 'triager' });
+
+    expect(agents.register).toHaveBeenCalledTimes(1);
+    expect(client.token).toBe('tok-triager');
+  });
+
+  it('rejects in-batch duplicate names with a typed name_conflict error', async () => {
+    const { messaging } = createRotatingMessagingMock();
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await expect(relay.workspace.register(['triager', 'triager'])).rejects.toMatchObject({
+      name: 'RelayError',
+      code: 'name_conflict',
+      retryable: false,
+    });
+  });
+});

@@ -665,6 +665,12 @@ export interface RelayMessagingClient {
     list(options?: RelayListAgentsOptions): Promise<RelayAgent[]>;
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
+    /**
+     * Register an agent, adopting the existing identity (with a rotated
+     * token) when the name is already taken. Optional: backends without
+     * rotation support fall back to plain `register`.
+     */
+    registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */
     me(): Promise<RelayAgent>;
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;

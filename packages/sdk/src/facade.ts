@@ -1,3 +1,5 @@
+import { RelayError } from '@relaycast/sdk';
+
 import type {
   RelayMessaging,
   RelayMessage,
@@ -19,7 +21,7 @@ import {
   type ActionSchema,
 } from './actions/index.js';
 import type { DeliveryMode } from './delivery/index.js';
-import type { RelayAgentHandle } from './listeners.js';
+import type { RelayAgentHandle, RelayErrorHook } from './listeners.js';
 
 /**
  * A reference to an agent accepted by the high-level facade APIs. Agents may be
@@ -169,9 +171,24 @@ export interface WorkspaceFacadeDeps {
   reconnectAgent(apiToken: string): Promise<RelayAgentClient>;
 }
 
+export interface RelayRegisterOptions {
+  /**
+   * Throw a `name_conflict` error when an agent with the same name already
+   * exists, instead of adopting the existing identity with a rotated token.
+   */
+  strict?: boolean;
+}
+
 export interface RelayWorkspace {
+  /**
+   * Register one or more agents. Idempotent by default: when an agent with
+   * the same name already exists, the existing identity is adopted and its
+   * token rotated. Pass `{ strict: true }` to fail on name conflicts instead.
+   * Token rotation invalidates any previously-issued token for that agent.
+   */
   register<T extends AgentLike | AgentLike[]>(
-    agents: T
+    agents: T,
+    options?: RelayRegisterOptions
   ): Promise<T extends AgentLike[] ? RelayAgentClient[] : RelayAgentClient>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
@@ -288,7 +305,8 @@ export function createEnrichedMessages(
 
 export function createWorkspaceFacade(messaging: RelayMessaging, deps?: WorkspaceFacadeDeps): RelayWorkspace {
   const register = async (
-    agents: AgentLike | AgentLike[]
+    agents: AgentLike | AgentLike[],
+    options?: RelayRegisterOptions
   ): Promise<RelayAgentClient | RelayAgentClient[]> => {
     if (!deps) {
       throw new Error('register() is only available on the workspace client.');
@@ -310,14 +328,21 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
     const seen = new Set<string>();
     for (const { name } of inputs) {
       if (seen.has(name)) {
-        throw new Error(`Duplicate agent name in register(): "${name}".`);
+        throw new RelayError('name_conflict', `Duplicate agent name in register(): "${name}".`);
       }
       seen.add(name);
     }
 
+    // Idempotent by default: adopt an existing agent (rotating its token)
+    // when the backend supports it. `strict` restores fail-on-conflict.
+    const registerOne =
+      !options?.strict && messaging.agents.registerOrRotate
+        ? messaging.agents.registerOrRotate.bind(messaging.agents)
+        : messaging.agents.register.bind(messaging.agents);
+
     const clients: RelayAgentClient[] = [];
     for (const input of inputs) {
-      clients.push(deps.buildAgentClient(await messaging.agents.register(input)));
+      clients.push(deps.buildAgentClient(await registerOne(input)));
     }
     return Array.isArray(agents) ? clients : clients[0];
   };
@@ -344,6 +369,27 @@ export interface ActionRelayWiring {
   messaging: RelayMessaging;
   /** The agent that owns and runs the handler (descriptor `handler_agent`). */
   handlerAgent?: string;
+  /** Receives action wiring errors; defaults to console.error when unset. */
+  onError?: RelayErrorHook;
+}
+
+/** Route an action wiring failure through the hook, or console.error by default. */
+function reportActionError(
+  wiring: ActionRelayWiring,
+  action: string,
+  operation: string,
+  message: string,
+  error: unknown
+): void {
+  if (wiring.onError) {
+    try {
+      wiring.onError(error, { source: 'action', action, operation });
+    } catch {
+      // Error hooks must not throw into action wiring.
+    }
+    return;
+  }
+  console.error(`[agent-relay] ${message}`, error);
 }
 
 export function registerFacadeAction<TInput, TOutput>(
@@ -413,8 +459,8 @@ function wireRelayAction<TInput, TOutput>(
     return undefined;
   }
 
-  // Register the descriptor on the relay (fire-and-forget; failures are logged
-  // but do not break local registration).
+  // Register the descriptor on the relay (fire-and-forget; failures are
+  // reported but do not break local registration).
   void commands
     .register({
       command: def.name,
@@ -425,7 +471,13 @@ function wireRelayAction<TInput, TOutput>(
       ...(allowed ? { availableTo: allowed } : {}),
     })
     .catch((error) => {
-      console.error(`[agent-relay] failed to register action descriptor "${def.name}":`, error);
+      reportActionError(
+        wiring,
+        def.name,
+        'register',
+        `failed to register action descriptor "${def.name}":`,
+        error
+      );
     });
 
   // Subscribe to invocations routed to this handler agent, then open the event
@@ -435,12 +487,18 @@ function wireRelayAction<TInput, TOutput>(
     if (event.actionName !== def.name) {
       return;
     }
-    await handleActionInvoked(actions, commands, def.name, event);
+    await handleActionInvoked(actions, commands, def.name, event, wiring);
   });
   try {
     wiring.messaging.events.connect();
   } catch (error) {
-    console.error(`[agent-relay] failed to open the event stream for action "${def.name}":`, error);
+    reportActionError(
+      wiring,
+      def.name,
+      'connect',
+      `failed to open the event stream for action "${def.name}":`,
+      error
+    );
   }
   return unsubscribe;
 }
@@ -449,14 +507,21 @@ async function handleActionInvoked(
   actions: AgentRelayActions,
   commands: RelayMessaging['commands'],
   actionName: string,
-  event: { invocationId: string; actionName: string; callerName: string }
+  event: { invocationId: string; actionName: string; callerName: string },
+  wiring: ActionRelayWiring
 ): Promise<void> {
   let input: unknown = {};
   try {
     const invocation = await commands.getInvocation(actionName, event.invocationId);
     input = invocation.input ?? {};
   } catch (error) {
-    console.error(`[agent-relay] failed to load invocation "${event.invocationId}":`, error);
+    reportActionError(
+      wiring,
+      actionName,
+      'load_invocation',
+      `failed to load invocation "${event.invocationId}":`,
+      error
+    );
   }
 
   const result = await actions.invoke({
@@ -474,7 +539,13 @@ async function handleActionInvoked(
         : { error: result.error?.message ?? 'handler failed' }
     );
   } catch (error) {
-    console.error(`[agent-relay] failed to complete invocation "${event.invocationId}":`, error);
+    reportActionError(
+      wiring,
+      actionName,
+      'complete_invocation',
+      `failed to complete invocation "${event.invocationId}":`,
+      error
+    );
   }
 }
 
