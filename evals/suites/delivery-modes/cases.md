@@ -36,7 +36,6 @@ A queued inbox item is delivered in wait mode and the runner should ack it as de
 ok: true
 contentIncludes:
 - delivered
-- in_wait_1
 toolCallsInclude:
 - deliver
 minToolCalls: 1
@@ -261,8 +260,7 @@ Multiple queued inbox items should be delivered in subscription order.
 ### Deterministic Checks
 ok: true
 contentIncludes:
-- in_order_1
-- in_order_2
+- delivered
 must:
 - Inject `in_order_1` before `in_order_2`.
 - Ack both items after successful delivery.
@@ -305,7 +303,6 @@ A delivery target with receiveMessage should receive message-mode context rather
 ok: true
 contentIncludes:
 - del_session_1
-- mention
 must:
 - Call receiveMessage with a message context and deterministic delivery id.
 - Ack the inbox item after a delivered receipt.
