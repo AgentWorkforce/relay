@@ -207,10 +207,7 @@ impl BrokerRuntime {
                     // Carry the requested model through so the launched CLI is
                     // started with `--model` (see worker.rs). An empty/blank
                     // model is treated as unset.
-                    let model = event
-                        .agent
-                        .model
-                        .filter(|value| !value.trim().is_empty());
+                    let model = event.agent.model.filter(|value| !value.trim().is_empty());
                     let harness_config = match relaycast_harness_config(&ws_value) {
                         Ok(config) => config,
                         Err(error) => {
