@@ -172,8 +172,13 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
     // Ensure the broker event stream is live (see waitForExit). Idempotent.
     this.client.connectEvents();
 
-    const replayed = this.client.getLastEvent('agent_result', this.name);
-    if (replayed && replayed.kind === 'agent_result') {
+    const replayed = this.client
+      .queryEvents({ kind: 'agent_result', name: this.name })
+      .find(
+        (event): event is Extract<BrokerEvent, { kind: 'agent_result' }> =>
+          event.kind === 'agent_result' && event.name === this.name
+      );
+    if (replayed) {
       return Promise.resolve(toResultInfo<T>(replayed));
     }
     const already = this.exit;

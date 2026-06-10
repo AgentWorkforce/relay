@@ -13,6 +13,25 @@ function createStubClient(history: BrokerEvent[] = []) {
   const listeners = new Set<EventListener>();
   const stub = {
     connectEvents: vi.fn(),
+    queryEvents: (filter?: { kind?: string; name?: string; since?: number; limit?: number }) => {
+      let events = [...history];
+      if (filter?.kind) {
+        events = events.filter((event) => event.kind === filter.kind);
+      }
+      if (filter?.name) {
+        events = events.filter((event) => 'name' in event && event.name === filter.name);
+      }
+      if (filter?.since !== undefined) {
+        const since = filter.since;
+        events = events.filter(
+          (event) => 'timestamp' in event && typeof event.timestamp === 'number' && event.timestamp >= since
+        );
+      }
+      if (filter?.limit !== undefined) {
+        events = events.slice(-filter.limit);
+      }
+      return events;
+    },
     getLastEvent: (kind: string, name?: string) =>
       [...history].reverse().find((event) => event.kind === kind && (!name || event.name === name)),
     onEvent: (listener: EventListener) => {
@@ -51,12 +70,16 @@ describe('SpawnedAgentHandle.waitForResult', () => {
     expect(stub.connectEvents).toHaveBeenCalled();
   });
 
-  it('replays a result already in broker event history', async () => {
-    const stub = createStubClient([resultEvent('worker', { done: true })]);
+  it('replays the first result already in broker event history', async () => {
+    const stub = createStubClient([
+      resultEvent('worker', { done: true }, false),
+      resultEvent('someone-else', { done: false }),
+      resultEvent('worker', { done: false }),
+    ]);
     const handle = createHandle(stub);
 
     const info = await handle.waitForResult();
-    expect(info).toMatchObject({ reason: 'result', data: { done: true } });
+    expect(info).toMatchObject({ reason: 'result', data: { done: true }, final: false });
   });
 
   it('resolves with reason "exited" when the agent exits without a result', async () => {

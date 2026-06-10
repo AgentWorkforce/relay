@@ -43,6 +43,18 @@
             "reasoning": "User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781133792137,
+          "type": "decision",
+          "content": "Use ordered queryEvents history for waitForResult replay: Use ordered queryEvents history for waitForResult replay",
+          "raw": {
+            "question": "Use ordered queryEvents history for waitForResult replay",
+            "chosen": "Use ordered queryEvents history for waitForResult replay",
+            "alternatives": [],
+            "reasoning": "The live waitForResult path resolves on the first matching agent_result after subscription, so replay should read broker history in chronological order instead of using getLastEvent."
+          },
+          "significance": "high"
         }
       ]
     }
