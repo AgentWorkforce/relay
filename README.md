@@ -7,6 +7,13 @@ Relay gives your agents shared channels, threads, DMs, reactions, files, search,
 
 ## Quick Start
 
+### Quick test with an agent? 
+Copy this snippet:
+```
+Use this skill https://agentrelay.com/skill.md to spin up a team of agents on the relay so we can work on this problem:
+```
+
+### Integrate with your app? 
 Install:
 
 ```bash
@@ -73,7 +80,7 @@ import { claude, codex } from '@agent-relay/harnesses';
 
 // create({ relay }) starts the agent in the CLI, joins it to the relay with the workspace key
 // Agents can send/receive messages, join channels, reply, react, and more.
-// See https://agentrelay.com/docs/agent-relay-mcp for all available skills.
+// Give agents https://agentrelay.com/skill to choose the right Relay skill for their role.
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 ```

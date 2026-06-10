@@ -465,6 +465,50 @@
   margin: 0 auto;
 }
 
+.skillCallout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  max-width: 720px;
+  margin: -4px auto 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(156, 207, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(7, 17, 31, 0.36);
+  color: var(--fg-muted);
+}
+
+.skillCalloutText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.skillCalloutText strong {
+  color: var(--fg);
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.skillCalloutLink {
+  flex-shrink: 0;
+  color: rgba(180, 220, 255, 0.9);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.skillCalloutLink:hover {
+  color: var(--fg);
+}
+
 .agentPromptCopy {
   position: relative;
   min-height: 64px;
@@ -3720,6 +3764,11 @@
     grid-template-columns: 1fr;
   }
 
+  .skillCallout {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .installCommand,
   .agentPromptCopy {
     width: 100%;
@@ -3814,6 +3863,10 @@
 
   .agentPromptText {
     padding-right: 8px;
+  }
+
+  .skillCallout {
+    padding: 14px;
   }
 
   .selfManageCard {
