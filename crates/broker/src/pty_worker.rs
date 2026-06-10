@@ -25,7 +25,7 @@ use crate::broker::{
         ThrottleState, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         VERIFICATION_WINDOW,
     },
-    injection_format::format_injection_for_worker_with_workspace,
+    injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
@@ -314,8 +314,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    const MCP_REMINDER_COOLDOWN: Duration = Duration::from_secs(300);
-    let mut last_mcp_reminder_at: Option<Instant> = None;
+    let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
     let wait_for_agent_relay_boot = codex_agent_relay_boot_expected(&resolved_cli, &effective_args);
@@ -625,6 +624,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     Some(chunk) => {
                         last_pty_output_time = Instant::now();
                         reported_idle = false;
+                        mcp_reminder_throttle.note_output_bytes(chunk.len());
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
@@ -994,13 +994,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                     }
 
-                    let include_mcp_reminder = if suppress_multiline_mcp_reminder {
-                        false
-                    } else {
-                        last_mcp_reminder_at
-                            .map(|timestamp| timestamp.elapsed() >= MCP_REMINDER_COOLDOWN)
-                            .unwrap_or(true)
-                    };
+                    let include_mcp_reminder = !suppress_multiline_mcp_reminder
+                        && mcp_reminder_throttle.should_include(Instant::now());
                     let injection = format_injection_for_worker_with_workspace(
                         &pending.delivery.from,
                         &pending.delivery.event_id,
@@ -1013,7 +1008,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pending.delivery.workspace_alias.as_deref(),
                     );
                     if include_mcp_reminder {
-                        last_mcp_reminder_at = Some(Instant::now());
+                        mcp_reminder_throttle.note_sent(Instant::now());
                     }
                     if let Err(e) = pty.write_all(injection.as_bytes()) {
                         tracing::warn!(
