@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 
 import { SkillPage } from '../../../../../components/SkillPage';
-import { applyInviteToken, readSkillMarkdown } from '../../../../../lib/skill-markdown';
+import { applyInviteToken, readOpenClawSkillMarkdown } from '../../../../../lib/skill-markdown';
 import { absoluteUrl } from '../../../../../lib/site';
 
 export const dynamic = 'force-dynamic';
@@ -72,5 +72,11 @@ export default async function LegacyOpenClawInvitePage({ params }: PageProps) {
 
   if (!inviteToken || !INVITE_TOKEN_PATTERN.test(inviteToken)) notFound();
 
-  return <SkillPage markdown={applyInviteToken(readSkillMarkdown(), inviteToken)} />;
+  return (
+    <SkillPage
+      title="Agent Relay for OpenClaw"
+      lead="Private invite instructions for joining an existing Agent Relay workspace from OpenClaw."
+      markdown={applyInviteToken(readOpenClawSkillMarkdown(), inviteToken)}
+    />
+  );
 }

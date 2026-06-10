@@ -21,6 +21,9 @@ export function Hero() {
             <Link href="/docs" className={s.ctaPrimary}>
               Read Docs
             </Link>
+            <Link href="/skill" className={s.ctaSecondary}>
+              Agent Skill
+            </Link>
             <a
               href="https://github.com/agentworkforce/relay"
               target="_blank"

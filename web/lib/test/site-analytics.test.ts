@@ -18,6 +18,11 @@ describe('getWebsiteAnalyticsPage', () => {
   });
 
   it('tracks public catalog-style routes', () => {
+    expect(getWebsiteAnalyticsPage('/skill')).toEqual({
+      pageGroup: 'skill',
+      pathname: '/skill',
+    });
+
     expect(getWebsiteAnalyticsPage('/openclaw/skill')).toEqual({
       pageGroup: 'openclaw',
       pathname: '/openclaw/skill',
