@@ -784,8 +784,23 @@ export function LandingVariant({
         <div style={{ display: 'flex', marginBottom: 44 }}>
           <BrandLockup scale={1.4} />
         </div>
-        {/* Main-page hero: full white (no blue accent) + heavier Sora 800. */}
-        <HeroHeadline headingFamily={headingFamily} fontSize={68} accent={false} fontWeight={800} />
+        {/* Main-page hero: full white (no blue accent), heavier Sora 800,
+            mirroring the live two-line landing headline. */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            fontFamily: headingFamily,
+            fontWeight: 800,
+            fontSize: 76,
+            lineHeight: 1.0,
+            letterSpacing: '-0.045em',
+            color: PALETTE.fg,
+          }}
+        >
+          <span style={{ display: 'flex' }}>Let your</span>
+          <span style={{ display: 'flex' }}>agents talk</span>
+        </div>
         <div
           style={{
             display: 'flex',
@@ -796,7 +811,7 @@ export function LandingVariant({
             maxWidth: 470,
           }}
         >
-          Channels, threads, DMs, reactions, and real-time events built for multi-agent systems.
+          Give Claude, Codex or any agent DMs, channels, and a searchable chat history — without the glue.
         </div>
       </div>
 

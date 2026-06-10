@@ -122,6 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay cloud connect <provider>` (and `agent-relay auth`) bind the OAuth callback tunnel on both `127.0.0.1` and `::1`, so provider CLIs that advertise a `localhost` loopback redirect (e.g. codex's `http://localhost:1455/auth/callback`) reconcile even when the browser resolves `localhost` to IPv6 first; previously the IPv4-only tunnel dropped the callback and login hung forever.
+- `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
@@ -139,6 +141,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [8.3.3] - 2026-06-09
+
+### Fixed
+
+- Bind OAuth callback tunnel dual-stack + pin codex
+
+## [8.3.2] - 2026-06-09
+
+### Fixed
+
+- Forward harness to relaycast backend (SDK 2.3.0)
+
+## [8.3.1] - 2026-06-09
+
+### Changed
+
+- Add explicit broker workspace join options
+
+### Fixed
+
+- Default backend to gateway.relaycast.dev
 
 ## [8.3.0] - 2026-06-05
 
