@@ -96,8 +96,15 @@ impl BrokerRuntime {
                     }
                 };
 
-                // Caller-supplied agent_token overrides auto-registration
-                let worker_relay_key = agent_token.or(worker_relay_key);
+                // Caller-supplied agent_token overrides auto-registration.
+                // Seed it so broker-side read-acks later act as this exact
+                // recipient identity instead of minting a replacement token.
+                let worker_relay_key = if let Some(token) = agent_token {
+                    seed_supplied_agent_token(relaycast_http, &name, &token);
+                    Some(token)
+                } else {
+                    worker_relay_key
+                };
 
                 let mut effective_task = normalize_initial_task(task);
                 if let Some(ref continue_from) = continue_from {

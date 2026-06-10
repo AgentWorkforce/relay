@@ -422,6 +422,37 @@ impl RelaycastHttpClient {
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 
+    async fn registered_agent_client_as(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+    ) -> Result<AgentClient> {
+        let registration = self
+            .registration
+            .as_ref()
+            .as_ref()
+            .context("SDK relay client not initialized")?;
+        registration
+            .registered_agent_client(agent_name, cli_hint.or(Some(self.default_cli.as_str())))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Impersonation by design: delivery read-acks must be attributed to the
+    /// recipient worker's agent identity, not the broker identity.
+    pub async fn mark_read_as_agent(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        message_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.registered_agent_client_as(agent_name, cli_hint)
+            .await?
+            .mark_read(message_id)
+            .await
+            .map_err(|error| anyhow::anyhow!("relaycast mark_read failed: {error}"))
+    }
+
     /// Register an action whose handler is this broker's agent. Spawn/release
     /// are exposed as relaycast actions so other agents can invoke them as
     /// structured agent-to-agent RPC.
@@ -841,6 +872,54 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    #[tokio::test]
+    async fn mark_read_as_agent_uses_seeded_recipient_token_without_respawn() {
+        let server = MockServer::start();
+        let read_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages/msg_1/read")
+                .header("authorization", "Bearer at_live_existing_recipient");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "message_id": "msg_1",
+                    "agent_id": "agent_existing_recipient",
+                    "read_at": "2026-06-08T10:00:00.000Z"
+                }
+            }));
+        });
+        let spawn_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/spawn");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "agent": {
+                        "id": "agent_fresh_wrong",
+                        "name": "recipient",
+                        "type": "agent",
+                        "status": "online",
+                        "created_at": "2026-06-08T10:00:00.000Z",
+                        "last_seen": "2026-06-08T10:00:00.000Z",
+                        "metadata": {}
+                    },
+                    "token": "at_live_fresh_wrong"
+                }
+            }));
+        });
+
+        let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("recipient", "at_live_existing_recipient");
+
+        let result = client
+            .mark_read_as_agent("recipient", Some("codex"), "msg_1")
+            .await
+            .expect("seeded recipient should mark read");
+
+        assert_eq!(result["agent_id"], "agent_existing_recipient");
+        read_mock.assert_hits(1);
+        spawn_mock.assert_hits(0);
     }
 
     #[tokio::test]
