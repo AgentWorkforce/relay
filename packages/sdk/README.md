@@ -232,13 +232,13 @@ Keep application-level messaging code on `@agent-relay/sdk`; add the harness pac
 
 ## Migration from the pre-v8 SDK
 
-| Previous SDK surface                                                                  | Version 8 replacement                                                          |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `relay.agents.register(...)` + `relay.as(agent)` token handoff                        | `relay.workspace.register(...)` returns the live client directly.              |
-| `relay.sendMessage(...)`, `relay.system()`                                            | Send from a registered participant: `agent.sendMessage(...)`.                  |
-| `agent.events.on(...)`, `relay.on(...)`                                               | `relay.addListener(selector, handler)` — the single listener entry point.      |
-| `relay.actions.register(...)` / `relay.actions.invoke(...)` returning inline results  | `relay.registerAction(...)`; results reach listeners via `action.completed`.   |
-| Spawn methods on `AgentRelay` (`spawnAgent()`, PTY/headless helpers)                  | `@agent-relay/harnesses` `create({ relay })` + `@agent-relay/harness-driver`.  |
+| Previous SDK surface                                                                 | Version 8 replacement                                                         |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `relay.agents.register(...)` + `relay.as(agent)` token handoff                       | `relay.workspace.register(...)` returns the live client directly.             |
+| `relay.sendMessage(...)`, `relay.system()`                                           | Send from a registered participant: `agent.sendMessage(...)`.                 |
+| `agent.events.on(...)`, `relay.on(...)`                                              | `relay.addListener(selector, handler)` — the single listener entry point.     |
+| `relay.actions.register(...)` / `relay.actions.invoke(...)` returning inline results | `relay.registerAction(...)`; results reach listeners via `action.completed`.  |
+| Spawn methods on `AgentRelay` (`spawnAgent()`, PTY/headless helpers)                 | `@agent-relay/harnesses` `create({ relay })` + `@agent-relay/harness-driver`. |
 
 See the [migration guide](https://agentrelay.com/docs/migration) for details.
 
