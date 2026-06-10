@@ -970,11 +970,11 @@ A workflow whose final artifact is "a clean working tree on a sandbox you'll thr
 
 Current `@relayflows/core` does not provide `createGitHubStep`. Use one of these current surfaces:
 
-| Where the workflow runs | Current PR surface | What you provide |
-| --- | --- | --- |
-| Local (`agent-relay local run`) | Deterministic `git` and `gh` steps | `gh auth status` works |
-| Adapter-based script | `GitHubClient` from `@relayflows/github-primitive` | Runtime config or environment credentials |
-| Cloud (`agent-relay cloud run`) | Cloud push-back for declared `paths[]`, when configured | Allowlisted repo paths |
+| Where the workflow runs         | Current PR surface                                      | What you provide                          |
+| ------------------------------- | ------------------------------------------------------- | ----------------------------------------- |
+| Local (`agent-relay local run`) | Deterministic `git` and `gh` steps                      | `gh auth status` works                    |
+| Adapter-based script            | `GitHubClient` from `@relayflows/github-primitive`      | Runtime config or environment credentials |
+| Cloud (`agent-relay cloud run`) | Cloud push-back for declared `paths[]`, when configured | Allowlisted repo paths                    |
 
 ### The minimal local "open a PR" recipe
 
@@ -1978,9 +1978,9 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | Raw top-level `await` in workflow files                                                                                            | Executor paths may compile as CJS. Wrap `.run()` in `async function runWorkflow()` for both ESM and CJS files                                                                                                                            |
 | Using `createWorkflowRenderer`                                                                                                     | Does not exist. Use `.run({ cwd: process.cwd() })`                                                                                                                                                                                       |
 | `export default workflow(...)...build()`                                                                                           | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config                                                                                                                                            |
-| Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@relayflows/core'`                                                                                                                                                                                       |
+| Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@relayflows/core'`                                                                                                                                                                                        |
 | Hardcoded model strings (`model: 'opus'`)                                                                                          | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`                                                                                                                                         |
-| Thinking `agent-relay local run` inspects exports                                                                                        | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
+| Thinking `agent-relay local run` inspects exports                                                                                  | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
 | `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                                |
 | `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                              |
 | Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                                   |

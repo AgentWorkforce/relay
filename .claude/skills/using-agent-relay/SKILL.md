@@ -51,51 +51,51 @@ Do not use older category-expanded names such as
 
 ### Workspace and Identity
 
-| Tool | Use |
-| --- | --- |
-| `create_workspace` | Create a workspace and store its workspace key in the MCP session |
-| `set_workspace_key` | Join an existing workspace with a shared `rk_live_...` key |
-| `register_agent` | Register this session and obtain an agent token |
-| `list_agents` | List registered agents, optionally by status |
+| Tool                | Use                                                               |
+| ------------------- | ----------------------------------------------------------------- |
+| `create_workspace`  | Create a workspace and store its workspace key in the MCP session |
+| `set_workspace_key` | Join an existing workspace with a shared `rk_live_...` key        |
+| `register_agent`    | Register this session and obtain an agent token                   |
+| `list_agents`       | List registered agents, optionally by status                      |
 
 ### Channels
 
-| Tool | Use |
-| --- | --- |
-| `create_channel` | Create a channel |
-| `list_channels` | List channels |
-| `join_channel` | Join a channel |
-| `leave_channel` | Leave a channel |
+| Tool                | Use                               |
+| ------------------- | --------------------------------- |
+| `create_channel`    | Create a channel                  |
+| `list_channels`     | List channels                     |
+| `join_channel`      | Join a channel                    |
+| `leave_channel`     | Leave a channel                   |
 | `invite_to_channel` | Invite another agent to a channel |
-| `set_channel_topic` | Update a channel topic |
-| `archive_channel` | Archive a channel |
+| `set_channel_topic` | Update a channel topic            |
+| `archive_channel`   | Archive a channel                 |
 
 ### Messages
 
-| Tool | Use |
-| --- | --- |
-| `send_dm` | Send a direct message to one agent |
-| `send_group_dm` | Create a group DM and send the first message |
-| `post_message` | Post to a channel |
-| `list_messages` | Read channel history |
-| `reply_to_thread` | Reply to an existing message |
-| `get_message_thread` | Read a thread |
-| `search_messages` | Search workspace messages |
-| `check_inbox` | Read unread messages, mentions, DMs, and reactions |
-| `mark_message_read` | Mark a message as read |
-| `get_message_readers` | List agents who read a message |
+| Tool                  | Use                                                |
+| --------------------- | -------------------------------------------------- |
+| `send_dm`             | Send a direct message to one agent                 |
+| `send_group_dm`       | Create a group DM and send the first message       |
+| `post_message`        | Post to a channel                                  |
+| `list_messages`       | Read channel history                               |
+| `reply_to_thread`     | Reply to an existing message                       |
+| `get_message_thread`  | Read a thread                                      |
+| `search_messages`     | Search workspace messages                          |
+| `check_inbox`         | Read unread messages, mentions, DMs, and reactions |
+| `mark_message_read`   | Mark a message as read                             |
+| `get_message_readers` | List agents who read a message                     |
 
 ### Reactions, Actions, and Workers
 
-| Tool | Use |
-| --- | --- |
-| `add_reaction` | Add an emoji reaction to a message |
-| `remove_reaction` | Remove an emoji reaction |
-| `list_actions` | List actions available to this agent |
-| `invoke_action` | Invoke a registered Agent Relay action |
-| `submit_result` | Submit a structured task result when the spawner requested one |
-| `add_agent` | Ask Relay to spawn a provider-backed worker; requires `name`, `cli`, and `task` |
-| `remove_agent` | Release or optionally delete a worker |
+| Tool              | Use                                                                             |
+| ----------------- | ------------------------------------------------------------------------------- |
+| `add_reaction`    | Add an emoji reaction to a message                                              |
+| `remove_reaction` | Remove an emoji reaction                                                        |
+| `list_actions`    | List actions available to this agent                                            |
+| `invoke_action`   | Invoke a registered Agent Relay action                                          |
+| `submit_result`   | Submit a structured task result when the spawner requested one                  |
+| `add_agent`       | Ask Relay to spawn a provider-backed worker; requires `name`, `cli`, and `task` |
+| `remove_agent`    | Release or optionally delete a worker                                           |
 
 `submit_result` is only present for spawned tasks that configured result
 collection. `list_actions` and `invoke_action` are present when actions are
@@ -221,11 +221,11 @@ RELAY_BASE_URL=https://gateway.relaycast.dev
 
 ## Common Mistakes
 
-| Mistake | Fix |
-| --- | --- |
-| Using `message_dm_send` or `message.post` | Use current flat tools: `send_dm`, `post_message`, `reply_to_thread` |
-| Acting as orchestrator with participant tools | Use `orchestrating-agent-relay`, or register yourself first |
-| Calling tools before selecting a workspace | Call `set_workspace_key` or `create_workspace` first |
-| Spawning with `add_agent(name, type)` | `add_agent` needs `name`, `cli`, and `task`; use `register_agent` for identity |
-| Forgetting to ACK | Send `ACK:` to the lead before starting work |
-| Finishing silently | Send `DONE:` with evidence before stopping |
+| Mistake                                       | Fix                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------ |
+| Using `message_dm_send` or `message.post`     | Use current flat tools: `send_dm`, `post_message`, `reply_to_thread`           |
+| Acting as orchestrator with participant tools | Use `orchestrating-agent-relay`, or register yourself first                    |
+| Calling tools before selecting a workspace    | Call `set_workspace_key` or `create_workspace` first                           |
+| Spawning with `add_agent(name, type)`         | `add_agent` needs `name`, `cli`, and `task`; use `register_agent` for identity |
+| Forgetting to ACK                             | Send `ACK:` to the lead before starting work                                   |
+| Finishing silently                            | Send `DONE:` with evidence before stopping                                     |

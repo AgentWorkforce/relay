@@ -367,15 +367,15 @@ flat names. In a client that decorates MCP tools, the prefix comes from the
 configured server key; workflow prompts commonly show `mcp__relaycast__send_dm`,
 while an `agent-relay` server key may expose `mcp__agent_relay__send_dm`.
 
-| Purpose | Canonical tool | Common workflow-prefixed form |
-| --- | --- | --- |
-| Send DM to another agent | `send_dm` | `mcp__relaycast__send_dm` |
-| Check inbox | `check_inbox` | `mcp__relaycast__check_inbox` |
-| List agents | `list_agents` | `mcp__relaycast__list_agents` |
-| Post to a channel | `post_message` | `mcp__relaycast__post_message` |
-| Reply in a thread | `reply_to_thread` | `mcp__relaycast__reply_to_thread` |
-| Spawn sub-agent | `add_agent` | `mcp__relaycast__add_agent` |
-| Remove sub-agent | `remove_agent` | `mcp__relaycast__remove_agent` |
+| Purpose                  | Canonical tool    | Common workflow-prefixed form     |
+| ------------------------ | ----------------- | --------------------------------- |
+| Send DM to another agent | `send_dm`         | `mcp__relaycast__send_dm`         |
+| Check inbox              | `check_inbox`     | `mcp__relaycast__check_inbox`     |
+| List agents              | `list_agents`     | `mcp__relaycast__list_agents`     |
+| Post to a channel        | `post_message`    | `mcp__relaycast__post_message`    |
+| Reply in a thread        | `reply_to_thread` | `mcp__relaycast__reply_to_thread` |
+| Spawn sub-agent          | `add_agent`       | `mcp__relaycast__add_agent`       |
+| Remove sub-agent         | `remove_agent`    | `mcp__relaycast__remove_agent`    |
 
 > `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 
@@ -414,7 +414,7 @@ For a first-class critic loop, use the `reflection` **pattern** (agents with `ro
 | Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops |
 | `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                    |
 | Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                    |
-| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__relaycast__post_message` or `send_dm` / `mcp__relaycast__send_dm` |
+| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__relaycast__post_message` or `send_dm` / `mcp__relaycast__send_dm`  |
 
 ## Resume & Re-run
 
@@ -489,15 +489,15 @@ Built-in templates live in `@relayflows/core/dist/builtin-templates/` (feature-d
 
 ## Source of Truth
 
-| Claim                                                             | File                                                                         |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Pattern enum (24 patterns)                                        | `@relayflows/core/dist/schema.d.ts` (`SwarmPattern`)                         |
-| Topology resolution per pattern                                   | `@relayflows/core/dist/coordinator.js`                                       |
-| Interactive-only topology edges                                   | `@relayflows/core/dist/coordinator.js` filters `interactive: false` agents   |
-| Pattern auto-selection heuristics                                 | `@relayflows/core/dist/coordinator.js`                                       |
-| `WorkflowBuilder` fluent API                                      | `@relayflows/core/dist/builder.d.ts`                                         |
-| `runWorkflow(yamlPath, options)`                                  | `@relayflows/core/dist/run.d.ts`                                             |
-| YAML validation requires `version` + `name` + `swarm.pattern`     | `@relayflows/core/dist/runner.js`                                            |
+| Claim                                                             | File                                                                                    |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Pattern enum (24 patterns)                                        | `@relayflows/core/dist/schema.d.ts` (`SwarmPattern`)                                    |
+| Topology resolution per pattern                                   | `@relayflows/core/dist/coordinator.js`                                                  |
+| Interactive-only topology edges                                   | `@relayflows/core/dist/coordinator.js` filters `interactive: false` agents              |
+| Pattern auto-selection heuristics                                 | `@relayflows/core/dist/coordinator.js`                                                  |
+| `WorkflowBuilder` fluent API                                      | `@relayflows/core/dist/builder.d.ts`                                                    |
+| `runWorkflow(yamlPath, options)`                                  | `@relayflows/core/dist/run.d.ts`                                                        |
+| YAML validation requires `version` + `name` + `swarm.pattern`     | `@relayflows/core/dist/runner.js`                                                       |
 | MCP tool names                                                    | `packages/cli/src/cli/agent-relay-mcp.ts`, `@relayflows/core/dist/channel-messenger.js` |
-| Completion modes (verification / evidence / owner / process-exit) | `@relayflows/core/dist/runner.js`, `@relayflows/core/dist/step-executor.js`  |
-| Trajectory reflection                                             | `@relayflows/core/dist/trajectory.js`, `@relayflows/core/dist/runner.js`     |
+| Completion modes (verification / evidence / owner / process-exit) | `@relayflows/core/dist/runner.js`, `@relayflows/core/dist/step-executor.js`             |
+| Trajectory reflection                                             | `@relayflows/core/dist/trajectory.js`, `@relayflows/core/dist/runner.js`                |

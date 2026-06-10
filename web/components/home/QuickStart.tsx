@@ -52,8 +52,8 @@ export function QuickStart() {
           <span className={s.skillCalloutText}>
             <strong>Hand this to an agent</strong>
             <span>
-              The hosted skill explains how to start a workspace, choose orchestrator or participant mode,
-              and get workers communicating on Relay.
+              The hosted skill explains how to start a workspace, choose orchestrator or participant mode, and
+              get workers communicating on Relay.
             </span>
           </span>
           <Link href="/skill" className={s.skillCalloutLink}>
