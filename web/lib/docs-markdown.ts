@@ -4,13 +4,11 @@ import path from 'node:path';
 import matter from 'gray-matter';
 
 import { resolveContentDir } from './content-paths';
-import { docsNav, getAllDocSlugs, getAllLegacyDocSlugs, legacyDocsNav } from './docs-nav';
-import { type DocsVersionId, legacyDocsBasePath } from './docs-versions';
+import { docsNav, getAllDocSlugs } from './docs-nav';
 import { absoluteUrl } from './site';
 
 const DOCS_DIR = resolveContentDir('docs');
 const DOCS_BASE_URL = absoluteUrl('/docs');
-const LEGACY_DOCS_DIR = path.join(DOCS_DIR, '7.1.1');
 
 export function getDocMarkdownUrl(slug: string): string {
   return `${DOCS_BASE_URL}/markdown/${slug}.md`;
@@ -27,19 +25,8 @@ type MarkdownDoc = {
   markdown: string;
 };
 
-function getDocsDir(version: DocsVersionId): string {
-  return version === 'v7.1.1' ? LEGACY_DOCS_DIR : DOCS_DIR;
-}
-
-function getDocCanonicalUrl(slug: string, version: DocsVersionId): string {
-  return absoluteUrl(version === 'v7.1.1' ? `${legacyDocsBasePath}/${slug}` : `/docs/${slug}`);
-}
-
-function readDocSource(
-  slug: string,
-  version: DocsVersionId = 'v8'
-): { title: string; description: string; content: string } | null {
-  const filePath = path.join(getDocsDir(version), `${slug}.mdx`);
+function readDocSource(slug: string): { title: string; description: string; content: string } | null {
+  const filePath = path.join(DOCS_DIR, `${slug}.mdx`);
   if (!fs.existsSync(filePath)) {
     return null;
   }
@@ -132,19 +119,19 @@ function renderMarkdownBody(content: string): string {
   return output.trim();
 }
 
-export function getDocMarkdown(slug: string, version: DocsVersionId = 'v8'): MarkdownDoc | null {
-  const doc = readDocSource(slug, version);
+export function getDocMarkdown(slug: string): MarkdownDoc | null {
+  const doc = readDocSource(slug);
   if (!doc) {
     return null;
   }
 
-  const canonicalUrl = getDocCanonicalUrl(slug, version);
-  const markdownUrl = version === 'v8' ? getDocMarkdownUrl(slug) : undefined;
+  const canonicalUrl = `${DOCS_BASE_URL}/${slug}`;
+  const markdownUrl = getDocMarkdownUrl(slug);
   const header = [
     `# ${doc.title}`,
     doc.description ? `\n${doc.description}` : '',
     `\nRendered page: ${canonicalUrl}`,
-    markdownUrl ? `Markdown endpoint: ${markdownUrl}` : '',
+    `Markdown endpoint: ${markdownUrl}`,
     '\n---\n',
   ]
     .filter(Boolean)
@@ -203,24 +190,6 @@ function getCurrentDocsLinks(): DocsLink[] {
   );
 }
 
-function getLegacyDocsLinks(): DocsLink[] {
-  return legacyDocsNav.flatMap((group) =>
-    group.items.flatMap((item) => {
-      const doc = getDocMarkdown(item.slug, 'v7.1.1');
-      if (!doc) {
-        return [];
-      }
-      return [
-        {
-          title: `${doc.title} (v7.1.1)`,
-          url: getDocCanonicalUrl(item.slug, 'v7.1.1'),
-          description: doc.description,
-        },
-      ];
-    })
-  );
-}
-
 function formatLink({ title, url, description }: DocsLink): string {
   return `- [${title}](${url})${description ? `: ${description}` : ''}`;
 }
@@ -238,7 +207,7 @@ export function getLlmsText(): string {
     formatLink({
       title: 'Full documentation content',
       url: absoluteUrl('/llms-full.txt'),
-      description: 'Single Markdown bundle generated from current and archived docs.',
+      description: 'Single Markdown bundle generated from current docs.',
     }),
     formatLink({
       title: 'Markdown docs index',
@@ -250,12 +219,6 @@ export function getLlmsText(): string {
     '## Optional',
     '',
     formatLink({
-      title: 'Archived v7.1.1 docs',
-      url: absoluteUrl('/docs/7.1.1/introduction'),
-      description: 'Previous-generation documentation retained for older installs.',
-    }),
-    ...getLegacyDocsLinks().map(formatLink),
-    formatLink({
       title: 'GitHub repository',
       url: 'https://github.com/AgentWorkforce/relay',
       description: 'Source code, issues, and releases.',
@@ -266,30 +229,25 @@ export function getLlmsText(): string {
   return `${lines.join('\n')}`;
 }
 
-function getMarkdownBundle(slugs: string[], version: DocsVersionId): string[] {
+function getMarkdownBundle(slugs: string[]): string[] {
   return slugs
-    .map((slug) => getDocMarkdown(slug, version))
+    .map((slug) => getDocMarkdown(slug))
     .filter((doc): doc is MarkdownDoc => doc !== null)
     .map((doc) => doc.markdown.trim());
 }
 
 export function getLlmsFullText(): string {
-  const currentDocs = getMarkdownBundle(getAllDocSlugs(), 'v8');
-  const legacyDocs = getMarkdownBundle(getAllLegacyDocSlugs(), 'v7.1.1');
+  const currentDocs = getMarkdownBundle(getAllDocSlugs());
   const sections = [
     '# Agent Relay Full Documentation',
     '',
     '> Combined Markdown documentation for Agent Relay.',
     '',
-    'Generated from `web/content/docs/*.mdx` and `web/content/docs/7.1.1/*.mdx`.',
+    'Generated from `web/content/docs/*.mdx`.',
     '',
-    '## Current Documentation',
+    '## Documentation',
     '',
     currentDocs.join('\n\n---\n\n'),
-    '',
-    '## Archived Documentation: v7.1.1',
-    '',
-    legacyDocs.join('\n\n---\n\n'),
     '',
   ];
 

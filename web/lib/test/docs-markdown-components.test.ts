@@ -26,21 +26,21 @@ describe('docs markdown export for MDX components', () => {
     expect(llms).toContain('# Agent Relay');
     expect(llms).toContain('https://agentrelay.com/llms-full.txt');
     expect(llms).toContain('https://agentrelay.com/docs/markdown/quickstart.md');
-    expect(llms).toContain('https://agentrelay.com/docs/7.1.1/introduction');
+    expect(llms).not.toContain('https://agentrelay.com/docs/7.1.1/introduction');
   });
 
   it('serves the singular and plural llms paths as the same content', async () => {
     await expect(getLlmTxt().text()).resolves.toBe(await getLlmsTxt().text());
   });
 
-  it('builds a full docs bundle from current and archived docs', () => {
+  it('builds a full docs bundle from current docs', () => {
     const full = getLlmsFullText();
 
     expect(full).toContain('# Agent Relay Full Documentation');
-    expect(full).toContain('## Current Documentation');
-    expect(full).toContain('## Archived Documentation: v7.1.1');
+    expect(full).toContain('## Documentation');
+    expect(full).not.toContain('## Archived Documentation: v7.1.1');
     expect(full).toContain('Markdown endpoint: https://agentrelay.com/docs/markdown/quickstart.md');
-    expect(full).toContain('Rendered page: https://agentrelay.com/docs/7.1.1/introduction');
+    expect(full).not.toContain('Rendered page: https://agentrelay.com/docs/7.1.1/introduction');
     expect(full).not.toContain('<Card');
     expect(full).not.toContain('<Note');
     expect(full).not.toContain('<Warning');
