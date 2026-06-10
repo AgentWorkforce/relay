@@ -194,13 +194,18 @@ function formatLink({ title, url, description }: DocsLink): string {
   return `- [${title}](${url})${description ? `: ${description}` : ''}`;
 }
 
+/**
+ * llms.txt index per https://llmstxt.org: H1, blockquote summary, then link
+ * sections. Served at /llms.txt, /llm.txt, and /docs/llms.txt so agents that
+ * probe conventional paths find the markdown mirrors.
+ */
 export function getLlmsText(): string {
   const lines = [
     '# Agent Relay',
     '',
-    '> Agent Relay is the communication layer for agents: workspaces, messages, delivery receipts, actions, events, sessions, harnesses, and CLI/MCP tooling.',
+    '> Agent Relay is Headless Slack for agents: a communication layer for workspaces, messages, delivery receipts, actions, events, sessions, harnesses, and CLI/MCP tooling.',
     '',
-    '`/llms.txt` and `/llm.txt` return this same Markdown index. Use `/llms-full.txt` when you need all docs in one file.',
+    `\`/llms.txt\` and \`/llm.txt\` return this same Markdown index. Every docs page has a plain-markdown mirror: append \`.md\` to its URL (for example ${DOCS_BASE_URL}/typescript-sdk.md) or use the canonical form ${DOCS_BASE_URL}/markdown/{slug}.md. Use \`/llms-full.txt\` when you need all docs in one file.`,
     '',
     '## Documentation',
     '',
