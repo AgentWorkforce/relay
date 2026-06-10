@@ -316,7 +316,10 @@ fn sanitize_orchestrator_harness(raw: &str) -> Option<String> {
     Some(trimmed.chars().take(120).collect::<String>().to_lowercase())
 }
 
-fn infer_harness_from_command(command: &str) -> Option<&'static str> {
+/// Map a CLI command (e.g. `claude`, `codex`, `gemini`) to its canonical
+/// harness id. Used both for orchestrator detection (walking the process tree)
+/// and for per-worker attribution (the broker knows the CLI it spawns).
+pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> {
     let lower = command.to_lowercase();
     let normalized = lower.replace('\\', "/");
     let base = normalized
@@ -883,6 +886,16 @@ mod tests {
             Some("gemini-cli")
         );
         assert_eq!(infer_harness_from_command("/usr/bin/zsh"), None);
+
+        // Bare CLI names as the broker passes them from a spawn's `cli` field
+        // (per-worker harness attribution depends on this mapping).
+        assert_eq!(infer_harness_from_command("claude"), Some("claude-code"));
+        assert_eq!(infer_harness_from_command("codex"), Some("codex"));
+        assert_eq!(infer_harness_from_command("cursor"), Some("cursor"));
+        assert_eq!(infer_harness_from_command("gemini"), Some("gemini-cli"));
+        // An unrecognized CLI yields no harness, so the worker falls back to the
+        // inherited orchestrator value rather than a wrong attribution.
+        assert_eq!(infer_harness_from_command("my-custom-agent"), None);
     }
 
     #[test]

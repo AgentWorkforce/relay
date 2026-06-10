@@ -697,6 +697,20 @@ impl WorkerRegistry {
             }
             command.env(key, value);
         }
+        // Per-worker harness attribution: tag this agent's relaycast telemetry
+        // with the CLI it runs (codex / claude-code / …) rather than the session
+        // orchestrator the broker inherited. The agent's MCP/SDK reads
+        // AGENT_RELAY_HARNESS (highest-priority key). Don't override an explicit
+        // value supplied via harness_config env.
+        if !harness_env.iter().any(|(k, _)| k == "AGENT_RELAY_HARNESS") {
+            if let Some(harness) = spec
+                .cli
+                .as_deref()
+                .and_then(crate::telemetry::infer_harness_from_command)
+            {
+                command.env("AGENT_RELAY_HARNESS", harness);
+            }
+        }
         for (key, value) in &harness_env {
             command.env(key, value);
         }

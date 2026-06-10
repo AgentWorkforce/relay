@@ -233,9 +233,10 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
-    // Forward the detected harness so spawned agents using the JS SDK
-    // (`@relaycast/sdk`, which resolves harness from env and has no
-    // process-tree fallback) report it to the backend instead of "unknown".
+    // The agent's own harness (the CLI it runs), so its JS SDK
+    // (`@relaycast/sdk`, which resolves harness from env, AGENT_RELAY_HARNESS
+    // first) attributes its relaycast telemetry to that harness rather than the
+    // inherited session orchestrator.
     if let Some(harness) = harness {
         env.push(("AGENT_RELAY_HARNESS".to_string(), harness.to_string()));
     }

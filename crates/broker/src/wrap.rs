@@ -1061,7 +1061,10 @@ pub(crate) async fn run_wrap(
                                         &channels,
                                         Some(&child_workspaces_json),
                                         default_workspace_id.as_deref(),
-                                        crate::telemetry::orchestrator_harness_opt(),
+                                        // Per-worker attribution: tag this agent's
+                                        // telemetry with the harness it runs, not the
+                                        // session orchestrator.
+                                        crate::telemetry::infer_harness_from_command(&params.cli),
                                     );
                                     // Pre-register the child agent so its MCP server
                                     // starts with a valid token (avoiding "Not registered"
