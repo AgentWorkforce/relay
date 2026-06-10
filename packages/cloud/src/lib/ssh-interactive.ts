@@ -167,17 +167,27 @@ export async function runInteractiveSession(
     // port locally and forward each connection over SSH into the sandbox, so
     // the browser's callback reaches the provider CLI and login completes.
     //
-    // We bind BOTH loopback families. macOS resolves `localhost` to ::1 *and*
-    // 127.0.0.1, and browsers frequently try ::1 first. Binding IPv4 only let
-    // the callback hit a closed ::1 port and get dropped, leaving the provider
-    // CLI waiting on a callback that never arrives ("never reconciles"). Bind
-    // 127.0.0.1 as the primary (its listen/EADDRINUSE result gates readiness)
-    // and ::1 best-effort.
+    // Two loopback-family mismatches have to be handled, on opposite ends:
+    //
+    //  1. LOCAL listener — bind BOTH families. macOS resolves `localhost` to
+    //     ::1 *and* 127.0.0.1 and browsers frequently try ::1 first; binding
+    //     IPv4 only let the callback hit a closed ::1 port locally. Bind
+    //     127.0.0.1 as the primary (its listen/EADDRINUSE result gates
+    //     readiness) and ::1 best-effort.
+    //
+    //  2. REMOTE forward target — forward to `127.0.0.1` explicitly, NOT the
+    //     hostname `localhost`. codex binds its callback server on
+    //     `127.0.0.1:1455` (IPv4 loopback only — verified via `ss -tlnp`), but
+    //     the Daytona sandbox resolves `localhost` to `::1` first (its
+    //     /etc/hosts lists the IPv6 entry and getent returns ::1). Forwarding
+    //     to `localhost` therefore dialed `::1:1455` inside the sandbox, where
+    //     nothing listens, so every callback was refused and login hung
+    //     forever. Dialing the IPv4 address directly always lands on codex.
     const tunnel: { servers: Array<ReturnType<typeof createServer>> } = { servers: [] };
 
     const makeTunnelServer = () =>
       runtime.createServer((localSocket) => {
-        sshClient.forwardOut('127.0.0.1', tunnelPort, 'localhost', tunnelPort, (err, stream) => {
+        sshClient.forwardOut('127.0.0.1', tunnelPort, '127.0.0.1', tunnelPort, (err, stream) => {
           if (err) {
             localSocket.end();
             return;
