@@ -122,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` npm README now documents the version 8 API (`relay.workspace.register(...)` live clients, `relay.registerAction(...)`, `relay.addListener(...)`); it previously showed the removed pre-v8 surfaces (`relay.as(...)`, `agent.events.on(...)`, `relay.actions.register(...)`).
 - `agent-relay cloud connect <provider>` (and `agent-relay auth`) forward the OAuth callback to the sandbox's `127.0.0.1` explicitly instead of the hostname `localhost`, and bind the local listener on both `127.0.0.1` and `::1`. codex serves its `http://localhost:1455/auth/callback` on IPv4 loopback only, but the Daytona sandbox resolves `localhost` to `::1` first — so the previous forward dialed a dead `::1:1455` inside the sandbox and login hung forever. Both ends of the tunnel are now IPv4-correct.
 - `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.

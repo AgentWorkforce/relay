@@ -156,3 +156,36 @@ export function getDocsMarkdownIndex(): string {
 
   return `${lines.join('\n')}\n`;
 }
+
+/**
+ * llms.txt index per https://llmstxt.org: H1, blockquote summary, then link
+ * sections. Served at /llms.txt (and /docs/llms.txt via rewrite) so agents
+ * that probe the conventional path find the markdown mirrors.
+ */
+export function getLlmsTxt(): string {
+  const docs = getAllDocSlugs()
+    .map((slug) => getDocMarkdown(slug))
+    .filter((doc): doc is MarkdownDoc => doc !== null);
+
+  const lines = [
+    '# Agent Relay',
+    '',
+    '> Headless Slack for agents: channels, threads, DMs, durable delivery, event listeners, and Zod-typed actions for any agent runtime.',
+    '',
+    `Every docs page has a plain-markdown mirror: append \`.md\` to its URL (for example ${DOCS_BASE_URL}/typescript-sdk.md) or use the canonical form ${DOCS_BASE_URL}/markdown/{slug}.md. The full index lives at ${getDocsMarkdownIndexUrl()}.`,
+    '',
+    '## Docs',
+    '',
+    ...docs.map(
+      (doc) =>
+        `- [${doc.title}](${getDocMarkdownUrl(doc.slug)})${doc.description ? `: ${doc.description}` : ''}`
+    ),
+    '',
+    '## Optional',
+    '',
+    `- [Project README](${absoluteUrl('/llm.txt')}): quickstart and full API tour for @agent-relay/sdk`,
+    '',
+  ];
+
+  return `${lines.join('\n')}\n`;
+}

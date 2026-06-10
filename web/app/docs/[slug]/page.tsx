@@ -91,6 +91,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     description: doc.frontmatter.description,
     alternates: {
       canonical: absoluteUrl(`/docs/${slug}`),
+      types: { 'text/markdown': getDocMarkdownUrl(slug) },
     },
     openGraph: {
       title: doc.frontmatter.title,
