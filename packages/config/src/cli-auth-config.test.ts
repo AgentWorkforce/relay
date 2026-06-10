@@ -6,6 +6,14 @@ describe('CLI auth config', () => {
     expect(validateAllProviderConfigs()).toEqual([]);
   });
 
+  it('configures grok (xai) with a device-code flow and the grok auth file', () => {
+    const xai = CLI_AUTH_CONFIG.xai;
+    expect(xai.command).toBe('grok');
+    expect(xai.supportsDeviceFlow).toBe(true);
+    expect(xai.deviceFlowArgs).toEqual(['login', '--device-auth']);
+    expect(xai.credentialPath).toBe('~/.grok/auth.json');
+  });
+
   it('recognizes OpenCode API-key completion output', () => {
     const transcript = [
       'Add credential',
