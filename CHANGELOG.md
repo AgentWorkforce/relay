@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
+
 ### Added
 
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
