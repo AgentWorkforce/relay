@@ -66,7 +66,9 @@ export interface AgentRelayAgent {
   readonly webhooks: RelayMessaging['webhooks'];
   readonly capabilities: RelayMessaging['commands'];
   readonly workspace: RelayWorkspace;
-  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): TypedActionHandle<TInput, TOutput>;
+  registerAction<TInput, TOutput>(
+    def: RegisterActionInput<TInput, TOutput>
+  ): TypedActionHandle<TInput, TOutput>;
   /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
   addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */

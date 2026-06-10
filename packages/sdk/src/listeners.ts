@@ -173,8 +173,10 @@ export interface ActionInvokedEvent<TInput = unknown> extends TypedActionEventBa
   type: 'action.invoked';
 }
 
-export interface ActionCompletedEvent<TInput = unknown, TOutput = unknown>
-  extends TypedActionEventBase<TInput> {
+export interface ActionCompletedEvent<
+  TInput = unknown,
+  TOutput = unknown,
+> extends TypedActionEventBase<TInput> {
   type: 'action.completed';
   /** The handler's return value, typed from the `output` schema (or the handler's return type). */
   output: TOutput;
@@ -196,9 +198,7 @@ export interface ActionDeniedEvent<TInput = unknown> extends TypedActionEventBas
  * `relay.registerAction(...)`; behaves like {@link ActionPredicate} at runtime
  * but delivers a typed event, so handlers read `event.output` without casts.
  */
-export class TypedActionPredicate<TEvent extends TypedActionEventBase>
-  implements ListenerPredicate<TEvent>
-{
+export class TypedActionPredicate<TEvent extends TypedActionEventBase> implements ListenerPredicate<TEvent> {
   private caller?: string;
 
   constructor(
