@@ -1807,7 +1807,9 @@ function registerAgentRelayTools(
           task,
           channel,
           persona,
-          metadata: model ? { model } : undefined,
+          // Pass model as a first-class spawn field so it reaches the broker and
+          // the launched CLI (--model), not just the agent's display metadata.
+          model: model ?? undefined,
         })
       )
   );

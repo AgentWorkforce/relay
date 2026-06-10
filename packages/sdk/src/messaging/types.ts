@@ -560,6 +560,7 @@ export interface RelayAgentSpawnRequestedEvent {
     cli?: string;
     task?: string;
     channel?: string;
+    model?: string;
     alreadyExisted: boolean;
   };
 }
