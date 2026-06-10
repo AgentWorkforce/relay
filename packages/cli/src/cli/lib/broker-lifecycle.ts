@@ -1286,7 +1286,7 @@ async function shutdownUpResources(
  */
 export function ensureOrchestratorHarnessEnv(
   env: NodeJS.ProcessEnv,
-  detect: typeof detectOrchestratorHarness = detectOrchestratorHarness,
+  detect: typeof detectOrchestratorHarness = detectOrchestratorHarness
 ): void {
   if (env[ORCHESTRATOR_HARNESS_ENV]) return;
   const harness = detect({ env });
