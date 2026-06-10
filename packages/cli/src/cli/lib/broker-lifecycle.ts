@@ -5,6 +5,11 @@ import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import { track } from '../telemetry/index.js';
+import {
+  detectOrchestratorHarness,
+  ORCHESTRATOR_HARNESS_ENV,
+  UNKNOWN_ORCHESTRATOR_HARNESS,
+} from '../telemetry/orchestrator-harness.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 
@@ -1262,6 +1267,34 @@ async function shutdownUpResources(
   }
 }
 
+/**
+ * Capture the orchestrator harness (claude-code / codex / cursor / …) into
+ * `env` so the broker can report it to the relaycast backend.
+ *
+ * The broker is launched detached (its own session), so by the time it runs
+ * its own detection its parent is the init process and the process-tree walk
+ * finds nothing. The `agent-relay` CLI, however, still runs in-process under
+ * the harness when `up` is invoked — detect here and stamp
+ * `AGENT_RELAY_ORCHESTRATOR_HARNESS`, which the detached broker reads (env is
+ * checked before the process walk) and forwards as the `X-Relaycast-Harness`
+ * header / `?harness=` query, and which spawned agents inherit too. A value
+ * already present in `env` (explicit override, or the re-invoked detached
+ * `up` inheriting ours) wins.
+ *
+ * Exported for testing; `detect` is injectable so tests don't depend on the
+ * real process tree.
+ */
+export function ensureOrchestratorHarnessEnv(
+  env: NodeJS.ProcessEnv,
+  detect: typeof detectOrchestratorHarness = detectOrchestratorHarness,
+): void {
+  if (env[ORCHESTRATOR_HARNESS_ENV]) return;
+  const harness = detect({ env });
+  if (harness !== UNKNOWN_ORCHESTRATOR_HARNESS) {
+    env[ORCHESTRATOR_HARNESS_ENV] = harness;
+  }
+}
+
 // eslint-disable-next-line complexity
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   ensureBundledAgentRelayMcpCommand(deps);
@@ -1279,6 +1312,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     paths.dataDir = resolved;
     deps.env.AGENT_RELAY_STATE_DIR = resolved;
   }
+
+  // The broker is launched detached (its own session), so it can't walk the
+  // process tree to identify the orchestrator harness — capture it here while
+  // we're still in-process under it. See `ensureOrchestratorHarnessEnv`.
+  ensureOrchestratorHarnessEnv(deps.env);
 
   if (options.background || (options.dashboard === false && !options.foreground)) {
     const preflight = await recoverHalfStartedBroker(paths, deps);

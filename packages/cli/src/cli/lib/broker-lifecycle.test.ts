@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyBrokerStartError, classifyBrokerStartStage, describeError } from './broker-lifecycle.js';
+import {
+  classifyBrokerStartError,
+  classifyBrokerStartStage,
+  describeError,
+  ensureOrchestratorHarnessEnv,
+} from './broker-lifecycle.js';
+import { ORCHESTRATOR_HARNESS_ENV } from '../telemetry/orchestrator-harness.js';
 
 describe('describeError', () => {
   it('returns plain message for a bare Error', () => {
@@ -90,5 +96,32 @@ describe('classifyBrokerStartStage', () => {
 
   it('falls back to startup for everything else', () => {
     expect(classifyBrokerStartStage(new Error('???'), '???', false)).toBe('startup');
+  });
+});
+
+describe('ensureOrchestratorHarnessEnv', () => {
+  it('stamps the detected harness so the detached broker can forward it', () => {
+    const env: NodeJS.ProcessEnv = {};
+    ensureOrchestratorHarnessEnv(env, () => 'claude-code');
+    expect(env[ORCHESTRATOR_HARNESS_ENV]).toBe('claude-code');
+  });
+
+  it('leaves env untouched when detection is unknown', () => {
+    const env: NodeJS.ProcessEnv = {};
+    ensureOrchestratorHarnessEnv(env, () => 'unknown');
+    expect(env[ORCHESTRATOR_HARNESS_ENV]).toBeUndefined();
+  });
+
+  it('does not overwrite an explicit value (e.g. inherited by the detached re-invoke)', () => {
+    const env: NodeJS.ProcessEnv = { [ORCHESTRATOR_HARNESS_ENV]: 'codex' };
+    ensureOrchestratorHarnessEnv(env, () => 'claude-code');
+    expect(env[ORCHESTRATOR_HARNESS_ENV]).toBe('codex');
+  });
+
+  it('passes env through to the detector (reads explicit harness env keys)', () => {
+    const env: NodeJS.ProcessEnv = { RELAYCAST_HARNESS: 'cursor' };
+    // Real detector: reads RELAYCAST_HARNESS from the passed env.
+    ensureOrchestratorHarnessEnv(env);
+    expect(env[ORCHESTRATOR_HARNESS_ENV]).toBe('cursor');
   });
 });
