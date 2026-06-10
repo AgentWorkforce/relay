@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "8.3.3",
+  "version": "8.3.4",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
