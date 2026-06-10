@@ -5,12 +5,15 @@
 
 Relay gives your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
 
-> **Starting an agent team?** Give the lead or human driver <https://agentrelay.com/skill>. It is the default Agent Relay skill handoff: use `orchestrating-agent-relay` to start the workspace and spawn/monitor workers, then tell spawned/registered workers to use `using-agent-relay` for Agent Relay messaging.
->
-> Source skills: [`orchestrating-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md) and [`using-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/using-agent-relay/SKILL.md).
-
 ## Quick Start
 
+### Quick test with an agent? 
+Copy this snippet:
+```
+Use this skill https://agentrelay.com/skill.md to spin up a team of agents on the relay so we can work on this problem:
+```
+
+### Integrate with your app? 
 Install:
 
 ```bash
