@@ -175,6 +175,7 @@ pub(crate) fn mark_delivery_read_ack(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mark_delivery_read_ack_with_timeout(
     relaycast_http: &RelaycastHttpClient,
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
