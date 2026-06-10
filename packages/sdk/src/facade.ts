@@ -14,12 +14,11 @@ import {
   actionSchemaToJsonSchema,
   type AgentRelayActions,
   type ActionContext,
-  type ActionHandle,
   type ActionPolicy,
   type ActionSchema,
 } from './actions/index.js';
 import type { DeliveryMode } from './delivery/index.js';
-import type { RelayAgentHandle } from './listeners.js';
+import { createTypedActionHandle, type RelayAgentHandle, type TypedActionHandle } from './listeners.js';
 
 /**
  * A reference to an agent accepted by the high-level facade APIs. Agents may be
@@ -350,7 +349,7 @@ export function registerFacadeAction<TInput, TOutput>(
   actions: AgentRelayActions,
   def: RegisterActionInput<TInput, TOutput>,
   wiring?: ActionRelayWiring
-): ActionHandle {
+): TypedActionHandle<TInput, TOutput> {
   const allowed = def.availableTo?.map(resolveAgentName);
   const policy: ActionPolicy | undefined =
     allowed || def.policy
@@ -379,16 +378,10 @@ export function registerFacadeAction<TInput, TOutput>(
 
   const relayUnsubscribe = wireRelayAction(actions, def, wiring, allowed);
 
-  if (!relayUnsubscribe) {
-    return localHandle;
-  }
-
-  return {
-    unregister: () => {
-      relayUnsubscribe();
-      localHandle.unregister();
-    },
-  };
+  return createTypedActionHandle<TInput, TOutput>(def.name, () => {
+    relayUnsubscribe?.();
+    localHandle.unregister();
+  });
 }
 
 /**

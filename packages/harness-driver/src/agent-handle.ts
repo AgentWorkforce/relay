@@ -10,6 +10,8 @@
  *
  *   - `waitForExit()` — resolve when the agent exits, with `code` / `signal`.
  *   - `waitForIdle()` — resolve on the next idle signal (or on exit).
+ *   - `waitForResult()` — resolve when the agent submits a structured result
+ *     via the `submit_result` MCP tool (or exits without one).
  *   - `exit` / `exitCode` / `exitSignal` — synchronous view of a prior exit.
  *   - `release()` — release the agent via the broker.
  *
@@ -35,6 +37,21 @@ export interface AgentIdleInfo {
   reason: 'idle' | 'exited' | 'timeout';
   /** Seconds the agent has been idle, when `reason === 'idle'`. */
   idleSecs?: number;
+  /** Exit details, when `reason === 'exited'`. */
+  exit?: AgentExitInfo;
+}
+
+export interface AgentResultInfo<T = unknown> {
+  /** `'result'` on a submitted result, `'exited'` if the agent exited first, `'timeout'` otherwise. */
+  reason: 'result' | 'exited' | 'timeout';
+  /** Broker-assigned id of the submitted result, when `reason === 'result'`. */
+  resultId?: string;
+  /** The JSON payload the agent passed to `submit_result`, when `reason === 'result'`. */
+  data?: T;
+  /** Whether the agent marked this result as final (defaults to `true` in the tool). */
+  final?: boolean;
+  /** Optional diagnostic metadata the agent attached to the result. */
+  metadata?: unknown;
   /** Exit details, when `reason === 'exited'`. */
   exit?: AgentExitInfo;
 }
@@ -142,10 +159,62 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
     });
   }
 
+  /**
+   * Resolve when the agent submits a structured result through the
+   * `submit_result` MCP tool (pair with `agentResultSchema` on spawn to tell
+   * the agent what shape to produce). Resolves with `{ reason: 'exited' }` if
+   * the agent exits without submitting one, or `{ reason: 'timeout' }` after
+   * `timeoutMs`. Replays a prior result from broker event history, so it is
+   * safe to call after the fact. Resolves on the first submitted result —
+   * check `final` if the agent streams interim results.
+   */
+  waitForResult<T = unknown>(timeoutMs?: number): Promise<AgentResultInfo<T>> {
+    // Ensure the broker event stream is live (see waitForExit). Idempotent.
+    this.client.connectEvents();
+
+    const replayed = this.client.getLastEvent('agent_result', this.name);
+    if (replayed && replayed.kind === 'agent_result') {
+      return Promise.resolve(toResultInfo<T>(replayed));
+    }
+    const already = this.exit;
+    if (already) return Promise.resolve({ reason: 'exited', exit: already });
+
+    return new Promise<AgentResultInfo<T>>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (info: AgentResultInfo<T>) => {
+        if (timer) clearTimeout(timer);
+        unsub();
+        resolve(info);
+      };
+      const unsub = this.client.onEvent((event: BrokerEvent) => {
+        if (event.kind === 'agent_result' && event.name === this.name) {
+          settle(toResultInfo<T>(event));
+          return;
+        }
+        const exit = matchExit(event, this.name);
+        if (exit) settle({ reason: 'exited', exit });
+      });
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => settle({ reason: 'timeout' }), timeoutMs);
+      }
+    });
+  }
+
   /** Release the agent via the broker. */
   release(reason?: string): Promise<{ name: string }> {
     return this.client.release(this.name, reason);
   }
+}
+
+/** Map an `agent_result` broker event to the public result info shape. */
+function toResultInfo<T>(event: Extract<BrokerEvent, { kind: 'agent_result' }>): AgentResultInfo<T> {
+  return {
+    reason: 'result',
+    resultId: event.result_id,
+    data: event.data as T,
+    final: event.final,
+    ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+  };
 }
 
 /** Match an exit `BrokerEvent` for `name`, normalising the two exit kinds. */

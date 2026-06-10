@@ -153,6 +153,125 @@ export class ActionPredicate implements ListenerPredicate<ActionListenerEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Typed action events + handle predicates
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared shape of the typed action events delivered by the predicates on a
+ * {@link TypedActionHandle}. Mirrors the public {@link RelayActionEvent} (the
+ * caller surfaces as `agent`), with `input`/`output` carrying the generics
+ * captured at `registerAction(...)` time instead of `unknown`.
+ */
+export interface TypedActionEventBase<TInput = unknown> {
+  action: string;
+  agent: ActionListenerEvent['caller'];
+  input?: TInput;
+  at: string;
+}
+
+export interface ActionInvokedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.invoked';
+}
+
+export interface ActionCompletedEvent<TInput = unknown, TOutput = unknown>
+  extends TypedActionEventBase<TInput> {
+  type: 'action.completed';
+  /** The handler's return value, typed from the `output` schema (or the handler's return type). */
+  output: TOutput;
+}
+
+export interface ActionFailedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.failed';
+  error: string;
+}
+
+export interface ActionDeniedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.denied';
+  reason?: string;
+}
+
+/**
+ * A phase-bound action predicate carrying the event type captured at
+ * registration. Built by the {@link TypedActionHandle} returned from
+ * `relay.registerAction(...)`; behaves like {@link ActionPredicate} at runtime
+ * but delivers a typed event, so handlers read `event.output` without casts.
+ */
+export class TypedActionPredicate<TEvent extends TypedActionEventBase>
+  implements ListenerPredicate<TEvent>
+{
+  private caller?: string;
+
+  constructor(
+    private readonly action: string,
+    private readonly phase: ActionListenerEvent['type']
+  ) {}
+
+  calledBy(agent: AgentLike): this {
+    this.caller = resolveAgentName(agent);
+    return this;
+  }
+
+  subscribe(context: ListenerContext, handler: ListenerHandler<TEvent>): () => void {
+    return context.onActionEvent((event) => {
+      if (event.action !== this.action) return;
+      if (event.type !== this.phase) return;
+      if (this.caller && event.caller.name !== this.caller) return;
+      runHandler(handler, toTypedActionEvent(event) as unknown as TEvent);
+    });
+  }
+}
+
+/** Map a registry-level action event to the public shape (`caller` → `agent`). */
+function toTypedActionEvent(raw: ActionListenerEvent): TypedActionEventBase & { type: string } {
+  return {
+    type: raw.type,
+    action: raw.action,
+    agent: raw.caller,
+    ...(raw.input !== undefined ? { input: raw.input } : {}),
+    ...(raw.output !== undefined ? { output: raw.output } : {}),
+    ...(raw.error !== undefined ? { error: raw.error } : {}),
+    ...(raw.reason !== undefined ? { reason: raw.reason } : {}),
+    at: raw.at,
+  };
+}
+
+/**
+ * Handle returned by `relay.registerAction(...)`. Alongside `unregister()` it
+ * exposes typed predicate builders bound to the registered action, so result
+ * subscriptions keep the registration's `input`/`output` types:
+ *
+ * ```ts
+ * const handle = relay.registerAction({ name: 'score', input, output, handler });
+ * relay.addListener(handle.completed(), (event) => event.output); // typed, no cast
+ * relay.addListener(handle.failed(), (event) => event.error);
+ * ```
+ */
+export interface TypedActionHandle<TInput = unknown, TOutput = unknown> {
+  /** The registered action name. */
+  readonly name: string;
+  unregister(): void;
+  invoked(): TypedActionPredicate<ActionInvokedEvent<TInput>>;
+  completed(): TypedActionPredicate<ActionCompletedEvent<TInput, TOutput>>;
+  failed(): TypedActionPredicate<ActionFailedEvent<TInput>>;
+  denied(): TypedActionPredicate<ActionDeniedEvent<TInput>>;
+}
+
+export function createTypedActionHandle<TInput, TOutput>(
+  name: string,
+  unregister: () => void
+): TypedActionHandle<TInput, TOutput> {
+  return {
+    name,
+    unregister,
+    invoked: () => new TypedActionPredicate<ActionInvokedEvent<TInput>>(name, 'action.invoked'),
+    completed: () =>
+      new TypedActionPredicate<ActionCompletedEvent<TInput, TOutput>>(name, 'action.completed'),
+    failed: () => new TypedActionPredicate<ActionFailedEvent<TInput>>(name, 'action.failed'),
+    denied: () => new TypedActionPredicate<ActionDeniedEvent<TInput>>(name, 'action.denied'),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Agent session predicates (status + tools)
 // ---------------------------------------------------------------------------
 
@@ -386,6 +505,8 @@ export interface ActionEventSource {
 export interface ListenerHub {
   readonly events: EnrichedEvents;
   on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
