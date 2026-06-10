@@ -142,5 +142,6 @@ You are probably acting as the outside orchestrator. Use `agent-relay` CLI comma
 ## Canonical Links
 
 - Default hosted handoff: `https://agentrelay.com/skill`
+- Raw markdown handoff: `https://agentrelay.com/skill.md`
 - Orchestrator skill: `https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md`
 - Participant skill: `https://github.com/AgentWorkforce/skills/blob/main/skills/using-agent-relay/SKILL.md`
