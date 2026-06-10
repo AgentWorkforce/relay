@@ -466,7 +466,13 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Generic enter prompt',
       },
     ],
-    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /signed\s*in/i, /you.*(?:are|now).*logged/i],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+      /signed\s*in/i,
+      /you.*(?:are|now).*logged/i,
+    ],
     errorPatterns: [
       {
         pattern: /auth.*failed|authentication\s*error|invalid.*code|code\s*expired/i,
