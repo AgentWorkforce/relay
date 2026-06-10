@@ -5,6 +5,10 @@
 
 Relay gives your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
 
+> **Starting an agent team?** Give the lead or human driver <https://agentrelay.com/skill>. It is the default Agent Relay skill handoff: use `orchestrating-agent-relay` to start the workspace and spawn/monitor workers, then tell spawned/registered workers to use `using-agent-relay` for Agent Relay messaging.
+>
+> Source skills: [`orchestrating-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md) and [`using-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/using-agent-relay/SKILL.md).
+
 ## Quick Start
 
 Install:
@@ -73,7 +77,7 @@ import { claude, codex } from '@agent-relay/harnesses';
 
 // create({ relay }) starts the agent in the CLI, joins it to the relay with the workspace key
 // Agents can send/receive messages, join channels, reply, react, and more.
-// See https://agentrelay.com/docs/agent-relay-mcp for all available skills.
+// Give agents https://agentrelay.com/skill to choose the right Relay skill for their role.
 const taskManager = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 ```

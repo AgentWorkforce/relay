@@ -1,13 +1,13 @@
 ---
 name: writing-agent-relay-workflows
-description: Use when building multi-agent workflows with relay broker-sdk. Covers conversation vs pipeline coordination, WorkflowBuilder/DAG steps, agents, {{steps.X.output}} chaining, repairable verification gates, evidence-based completion, mandatory Claude-then-Codex fresh-eyes review/fix loops with test hardening, channels, chat-native recipes, error handling, event listeners, step sizing, lead+workers teams, and parallel waves.
+description: Use when building multi-agent workflows with @relayflows/core. Covers conversation vs pipeline coordination, WorkflowBuilder/DAG steps, agents, {{steps.X.output}} chaining, repairable verification gates, evidence-based completion, mandatory Claude-then-Codex fresh-eyes review/fix loops with test hardening, channels, chat-native recipes, error handling, event listeners, step sizing, lead+workers teams, and parallel waves.
 ---
 
 # Writing Agent Relay Workflows
 
 ## Overview
 
-The relay broker-sdk workflow system orchestrates multiple AI agents (Claude, Codex, Gemini, Aider, Goose) through typed DAG-based workflows. Workflows can be written in **TypeScript** (preferred), **Python**, or **YAML**.
+The `@relayflows/core` workflow system orchestrates multiple AI agents (Claude, Codex, Gemini, Aider, Goose) through typed DAG-based workflows. Workflows can be written in **TypeScript** (preferred), **Python**, or **YAML**.
 
 **Language preference:** TypeScript > Python > YAML. Use TypeScript unless the project is Python-only or a simple config-driven workflow suits YAML.
 
@@ -105,7 +105,7 @@ The two shapes can mix within one workflow: pipeline-style deterministic preflig
 > **Note:** examples use ESM `import` syntax, but workflow execution is always wrapped in an async function. See **Failure Prevention → Do not use raw top-level `await`** before copy-pasting into CJS or executor-generated files.
 
 ```typescript
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 
 async function runWorkflow() {
   const result = await workflow('my-workflow')
@@ -239,7 +239,7 @@ runWorkflow().catch((error) => {
 > Use this for any non-trivial work — peer review, multi-file edits, cross-agent feedback, dynamic re-planning. Lead and workers spawn **in parallel** on a shared channel and self-organize via messages. The relay primitive does the coordinating; verification gates downstream of the lead close the workflow.
 
 ```typescript
-import { workflow } from '@agent-relay/sdk/workflows';
+import { workflow } from '@relayflows/core';
 import { ClaudeModels, CodexModels } from '@agent-relay/config';
 
 async function runWorkflow() {
@@ -507,9 +507,9 @@ For small doc/spec workflows, a lead + author + the mandatory Claude-then-Codex 
 **Critical TypeScript rules:**
 
 1. Check the project's `package.json` for `"type": "module"` — if ESM, use `import`; if CJS, use `require()`. In both cases, wrap execution in an async function instead of raw top-level `await`.
-2. `agent-relay run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
+2. `agent-relay local run <file.ts>` executes the file as a standalone subprocess — it does NOT inspect exports. The file MUST call `.run()`.
 3. Use `.run({ cwd: process.cwd() })` — `createWorkflowRenderer` does not exist
-4. Validate with `--dry-run` before running: `agent-relay run --dry-run workflow.ts`
+4. For dry-run validation, call `.run({ dryRun: true, cwd: process.cwd() })` or `runWorkflow(path, { dryRun: true })` from TypeScript. Use `agent-relay local run <file>` for execution.
 
 ## ⚡ Parallelism — Design for Speed
 
@@ -521,24 +521,24 @@ When a project has multiple workflows, group independent ones into parallel wave
 
 ```bash
 # BAD — sequential (14 hours for 27 workflows at ~30 min each)
-agent-relay run workflows/34-sst-wiring.ts
-agent-relay run workflows/35-env-config.ts
-agent-relay run workflows/36-loading-states.ts
+agent-relay local run workflows/34-sst-wiring.ts
+agent-relay local run workflows/35-env-config.ts
+agent-relay local run workflows/36-loading-states.ts
 # ... one at a time
 
 # GOOD — parallel waves (3-4 hours for 27 workflows)
 # Wave 1: independent infra (parallel)
-agent-relay run workflows/34-sst-wiring.ts &
-agent-relay run workflows/35-env-config.ts &
-agent-relay run workflows/36-loading-states.ts &
-agent-relay run workflows/37-responsive.ts &
+agent-relay local run workflows/34-sst-wiring.ts &
+agent-relay local run workflows/35-env-config.ts &
+agent-relay local run workflows/36-loading-states.ts &
+agent-relay local run workflows/37-responsive.ts &
 wait
 git add -A && git commit -m "Wave 1"
 
 # Wave 2: testing (parallel — independent test suites)
-agent-relay run workflows/40-unit-tests.ts &
-agent-relay run workflows/41-integration-tests.ts &
-agent-relay run workflows/42-e2e-tests.ts &
+agent-relay local run workflows/40-unit-tests.ts &
+agent-relay local run workflows/41-integration-tests.ts &
+agent-relay local run workflows/42-e2e-tests.ts &
 wait
 git add -A && git commit -m "Wave 2"
 ```
@@ -632,10 +632,10 @@ Use this pattern only when the workflow is supposed to own repository delivery:
 4. Stage only the declared target files and review/signoff artifacts.
 5. Commit with a deterministic message.
 6. Push the branch.
-7. Use `createGitHubStep({ action: 'createPR', ... })` from `@agent-relay/sdk` to open the PR.
+7. Open the PR from a deterministic step, either with `git`/`gh` locally or a script that uses `GitHubClient` from `@relayflows/github-primitive`.
 8. Verify the PR URL/state deterministically and write it into the final signoff artifact.
 
-Do not hide commit/PR work in agent prose. Model it as deterministic steps whenever possible. For PR creation, issue updates, file reads, or any GitHub operation, prefer `createGitHubStep` over shelling out to `gh`; import it from the SDK root (`import { createGitHubStep } from '@agent-relay/sdk'`) on SDK versions that include AgentWorkforce/relay#823, or from the legacy subpath only when pinned to an older SDK. The downstream acceptance gate must still verify the PR exists before signoff, and any PR creation failure should route to a repair step before the workflow stops.
+Do not hide commit/PR work in agent prose. Model it as deterministic steps whenever possible. For local workflows, use `git` and `gh` after a preflight that proves `gh auth status` works. For adapter-based GitHub operations, use a deterministic script that imports `GitHubClient` from `@relayflows/github-primitive`. The downstream acceptance gate must still verify the PR exists before signoff, and any PR creation failure should route to a repair step before the workflow stops.
 
 If commit or PR creation is intentionally outside the workflow, say that directly in the workflow description and signoff so the operator knows to do it after completion.
 
@@ -747,7 +747,7 @@ command: [
 ].join(' && '),
 ```
 
-This pattern is specifically recommended over `git commit -m "$(cat <<'EOF' ... EOF)"` and raw `gh pr create --body "$(cat <<'BODY' ... BODY)"`. Nesting a heredoc inside `$(...)` forces the shell to match a closing paren across many lines of unparsed body text, and any stray parenthesis in the body text can silently break the match. `--body-file` + `mktemp` + `printf` is immune to that entire class of bug. For workflow-owned PR creation, prefer `createGitHubStep` over raw `gh`; this shell pattern is for raw CLI fallback cases.
+This pattern is specifically recommended over `git commit -m "$(cat <<'EOF' ... EOF)"` and raw `gh pr create --body "$(cat <<'BODY' ... BODY)"`. Nesting a heredoc inside `$(...)` forces the shell to match a closing paren across many lines of unparsed body text, and any stray parenthesis in the body text can silently break the match. `--body-file` + `mktemp` + `printf` is immune to that entire class of bug when a workflow uses raw `gh` commands.
 
 ### 2d. Template-literal escape sequences are processed once before the string is rendered
 
@@ -939,8 +939,8 @@ For bug-fix or reliability workflows, do **not** stop at unit or integration tes
 8. **Record residual risks**
    - Call out what was not covered
 9. **Ship the result as a PR**
-   - Open the pull request from the workflow itself with `createGitHubStep`
-   - See [Shipping the Result — Open a PR via `createGitHubStep`](#shipping-the-result--open-a-pr-via-creategithubstep) below
+   - Open the pull request from the workflow itself with deterministic git/GitHub steps
+   - See [Shipping the Result - Open a PR](#shipping-the-result---open-a-pr) below
    - A workflow that fixes a bug and stops short of the PR has only done half the loop
 
 ### Clean-environment validation guidance
@@ -964,31 +964,23 @@ If the right proving environment is unclear, first write a **meta-workflow** tha
 
 This is often better than jumping straight to implementation.
 
-## Shipping the Result — Open a PR via `createGitHubStep`
+## Shipping the Result - Open a PR
 
-A workflow whose final artifact is "a clean working tree on a sandbox you'll throw away" has not shipped anything. **End every code-changing workflow by opening a pull request, and do it from inside the workflow** using `createGitHubStep` from `@agent-relay/sdk`. Don't tell the operator to follow up with `gh pr create` — make the workflow's own last step the PR.
+A workflow whose final artifact is "a clean working tree on a sandbox you'll throw away" has not shipped anything. **End every code-changing workflow by opening a pull request, and do it from inside the workflow.** Don't tell the operator to follow up with `gh pr create`; make the workflow's own last step the PR when the workflow owns shipping.
 
-### Why `createGitHubStep` (and not raw `gh` / `octokit`)
+Current `@relayflows/core` does not provide `createGitHubStep`. Use one of these current surfaces:
 
-The primitive picks the right transport at runtime:
+| Where the workflow runs | Current PR surface | What you provide |
+| --- | --- | --- |
+| Local (`agent-relay local run`) | Deterministic `git` and `gh` steps | `gh auth status` works |
+| Adapter-based script | `GitHubClient` from `@relayflows/github-primitive` | Runtime config or environment credentials |
+| Cloud (`agent-relay cloud run`) | Cloud push-back for declared `paths[]`, when configured | Allowlisted repo paths |
 
-| Where the workflow runs                         | Transport `createGitHubStep` uses           | What you provide                    |
-| ----------------------------------------------- | ------------------------------------------- | ----------------------------------- |
-| Local (`agent-relay run`)                       | `gh` CLI                                    | `gh auth status` works              |
-| Cloud (`agent-relay cloud run`) — tenant-scoped | Nango → workspace's GitHub App installation | Nothing — cloud injects credentials |
-| Cloud — fallback                                | Relay-cloud GitHub proxy                    | Nothing — cloud injects credentials |
-
-You write **one** workflow. The same `createPR` step opens a PR via your local `gh` when you iterate on it on a laptop, and via the workspace's GitHub App when the same file runs in `agent-relay cloud run`. No branching by environment, no env-var sniffing in your task strings, no "this part only works in cloud" caveats. That's the whole point of the adapter.
-
-> **Phase C interaction (cloud only):** `agent-relay cloud run` already auto-pushes per-`paths[]` diffs as separate PRs after the workflow callback when the repos are allowlisted (see `pushedTo` in the run record). Phase C is the _catch-all_ — if your workflow does nothing else, you still get one PR per declared path. Use `createGitHubStep` **on top of** that when you need PRs the catch-all can't produce: cross-cutting issues, follow-up tracking issues, opening one PR that spans multiple paths, draft PRs you want labeled/assigned in specific ways, or PRs against a repo you didn't `paths[]` in.
-
-### The minimal "open a PR" recipe
+### The minimal local "open a PR" recipe
 
 ```typescript
-import { workflow } from '@agent-relay/sdk/workflows';
-import { createGitHubStep } from '@agent-relay/sdk';
+import { workflow } from '@relayflows/core';
 
-const REPO = 'AgentWorkforce/cloud';
 const BRANCH = `agent-relay/run-${Date.now()}`;
 
 async function runWorkflow() {
@@ -998,52 +990,27 @@ async function runWorkflow() {
       type: 'deterministic',
       command: `echo "fix landed at $(date -u)" >> CHANGELOG.md`,
     })
-
-    // Branch off main on the remote.
-    .step(
-      'create-branch',
-      createGitHubStep({
-        dependsOn: ['write-marker'],
-        action: 'createBranch',
-        repo: REPO,
-        params: { branch: BRANCH, source: 'main' },
-      })
-    )
-
-    // Commit the change to the branch via Contents API.
-    .step(
-      'commit-change',
-      createGitHubStep({
-        dependsOn: ['create-branch'],
-        action: 'createFile',
-        repo: REPO,
-        params: {
-          path: 'CHANGELOG.md',
-          branch: BRANCH,
-          content: '<file body here>',
-          message: 'chore: changelog entry',
-        },
-      })
-    )
-
-    // Open the PR. This is the load-bearing step.
-    .step(
-      'open-pr',
-      createGitHubStep({
-        dependsOn: ['commit-change'],
-        action: 'createPR',
-        repo: REPO,
-        params: {
-          title: 'feat: ship feature X',
-          head: BRANCH,
-          base: 'main',
-          body: '## Summary\n\n- ...\n\n## Test plan\n\n- [x] ...',
-          draft: false,
-        },
-        output: { mode: 'data', format: 'json', path: 'html_url' },
-      })
-    )
-
+    .step('create-branch', {
+      type: 'deterministic',
+      dependsOn: ['write-marker'],
+      command: `git switch -c ${BRANCH}`,
+    })
+    .step('commit-change', {
+      type: 'deterministic',
+      dependsOn: ['create-branch'],
+      command: 'git add CHANGELOG.md && git commit -m "chore: changelog entry"',
+    })
+    .step('push-branch', {
+      type: 'deterministic',
+      dependsOn: ['commit-change'],
+      command: `git push -u origin ${BRANCH}`,
+    })
+    .step('open-pr', {
+      type: 'deterministic',
+      dependsOn: ['push-branch'],
+      command: `gh pr create --base main --head ${BRANCH} --title "feat: ship feature X" --body-file .workflow-artifacts/feature-x/pr-body.md`,
+      verification: { type: 'pr_url', value: 'AgentWorkforce/cloud' },
+    })
     .run({ cwd: process.cwd() });
 }
 
@@ -1053,7 +1020,7 @@ runWorkflow().catch((error) => {
 });
 ```
 
-`createGitHubStep` is bundled with `@agent-relay/sdk`; do not add a separate install. Its actions are stable across runtimes: `getRepo`, `createBranch`, `createFile`, `updateFile`, `createPR`, `updatePR`, `getPR`, `listPRs`, `mergePR`, `createIssue`, etc. See the SDK GitHub primitive docs for the full enum.
+For non-local GitHub operations, create a deterministic script that imports `GitHubClient` from `@relayflows/github-primitive` and calls the client methods for `createBranch`, `createFile` or `updateFile`, `createPR`, and `getPR`.
 
 ### Authoring rules for PR-shipping workflows
 
@@ -1062,12 +1029,12 @@ runWorkflow().catch((error) => {
 3. **Branch name encodes the run.** `agent-relay/run-${runId}` or `agent-relay/${workflow-name}-${timestamp}` so reviewers can tell the PR apart from other automation, and so reruns don't clash.
 4. **`draft: true` while iterating.** Once the workflow is stable end-to-end, flip to `draft: false`.
 5. **Body is a real PR description.** Summary + Test plan, generated from the workflow's own evidence (verification step output, diff stats, test run output). If you find yourself writing a placeholder body, the workflow isn't done — capture the real evidence in an earlier step and template it in.
-6. **Don't use `createGitHubStep` to substitute for `paths[]` push-back in cloud.** If the diff lives in a tarballed `paths[]` mount, let cloud's Phase C push-back open that PR (it handles the patch generation, branch lifecycle, and per-repo allowlist). Use `createGitHubStep` when you need a PR against a repo or branch outside the `paths[]` set, or when you want to add an extra PR (e.g. a tracking issue, a follow-up against a sibling repo, a docs-only PR).
-7. **PR creation failures route to repair.** If `createPR` errors (auth, permissions, branch conflict), capture the output and give a repair owner a chance to fix auth, branch state, labels, or body generation before stopping. A "successful" workflow that silently failed to open the PR is the worst-case outcome — the human thinks the work shipped.
+6. **Don't duplicate cloud `paths[]` push-back.** If the diff lives in a tarballed `paths[]` mount and cloud push-back is configured, let cloud open that PR. Use explicit GitHub steps when you need a PR against a repo or branch outside the `paths[]` set, or when you want to add an extra PR.
+7. **PR creation failures route to repair.** If PR creation errors (auth, permissions, branch conflict), capture the output and give a repair owner a chance to fix auth, branch state, labels, or body generation before stopping. A "successful" workflow that silently failed to open the PR is the worst-case outcome — the human thinks the work shipped.
 
 ### Where this fits in the bug-fix phases
 
-[End-to-End Bug Fix Workflows](#end-to-end-bug-fix-workflows) lists "Ship the result as a PR" as phase 9. Concretely that means: after phase 7 (compare before/after evidence) succeeds, the workflow's next step is `createPR` with that evidence templated into the body. The PR opening **is** the ship — there is no further manual step.
+[End-to-End Bug Fix Workflows](#end-to-end-bug-fix-workflows) lists "Ship the result as a PR" as phase 9. Concretely that means: after phase 7 (compare before/after evidence) succeeds, the workflow's next step opens a PR with that evidence templated into the body. The PR opening **is** the ship — there is no further manual step.
 
 ## Key Concepts
 
@@ -1095,7 +1062,7 @@ verification: { type: 'pr_url', value: 'owner/repo' }      // step must leave be
 
 Only these five types are valid: `exit_code`, `output_contains`, `file_exists`, `custom`, `pr_url`. Invalid types are silently ignored and fall through to process-exit auto-pass.
 
-**Use `pr_url` for any step whose deliverable is a published change** — opening a PR, merging a branch, publishing a package. It blocks the common failure mode where a worker produces green tests and posts `OWNER_DECISION: COMPLETE` but never actually opened a PR. Pair it with `createGitHubStep({ action: 'createPR' })` (see [Shipping the Result — Open a PR via `createGitHubStep`](#shipping-the-result--open-a-pr-via-creategithubstep) above) — that primitive's output naturally contains the PR URL, so the verification gate trips cleanly when the create step is missing or fails. Pass `<owner>/<repo>` to require the URL belongs to a specific repository, or leave `value: ''` to accept any GitHub PR URL in the step output. **Workers should never shell out to `gh pr create` directly** when `createGitHubStep` is available; raw `gh` bypasses the local/cloud runtime detection and the workflow loses its `local-iteration → cloud-run` portability.
+**Use `pr_url` for any step whose deliverable is a published change** — opening a PR, merging a branch, publishing a package. It blocks the common failure mode where a worker produces green tests and posts `OWNER_DECISION: COMPLETE` but never actually opened a PR. Pair it with a deterministic PR step that prints the PR URL, or with an adapter script that uses `GitHubClient` from `@relayflows/github-primitive`. Pass `<owner>/<repo>` to require the URL belongs to a specific repository, or leave `value: ''` to accept any GitHub PR URL in the step output.
 
 **Verification token gotcha:** If the token appears in the task text, the runner requires it **twice** in output (once from task echo, once from agent). Prefer `exit_code` for code-editing steps to avoid this.
 
@@ -2011,9 +1978,9 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | Raw top-level `await` in workflow files                                                                                            | Executor paths may compile as CJS. Wrap `.run()` in `async function runWorkflow()` for both ESM and CJS files                                                                                                                            |
 | Using `createWorkflowRenderer`                                                                                                     | Does not exist. Use `.run({ cwd: process.cwd() })`                                                                                                                                                                                       |
 | `export default workflow(...)...build()`                                                                                           | No `.build()`. Chain ends with `.run()` — the file must call `.run()`, not just export config                                                                                                                                            |
-| Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@agent-relay/sdk/workflows'`                                                                                                                                                                              |
+| Relative import `'../workflows/builder.js'`                                                                                        | Use `import { workflow } from '@relayflows/core'`                                                                                                                                                                                       |
 | Hardcoded model strings (`model: 'opus'`)                                                                                          | Use constants: `import { ClaudeModels } from '@agent-relay/config'` → `model: ClaudeModels.OPUS`                                                                                                                                         |
-| Thinking `agent-relay run` inspects exports                                                                                        | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
+| Thinking `agent-relay local run` inspects exports                                                                                        | It executes the file as a subprocess. Only `.run()` invocations trigger steps                                                                                                                                                            |
 | `pattern('single')` on cloud runner                                                                                                | Not supported — use `dag`                                                                                                                                                                                                                |
 | `pattern('supervisor')` with one agent                                                                                             | Same agent is owner + specialist. Use `dag`                                                                                                                                                                                              |
 | Invalid verification type (`type: 'deterministic'`)                                                                                | Only `exit_code`, `output_contains`, `file_exists`, `custom` are valid                                                                                                                                                                   |
@@ -2033,7 +2000,7 @@ When you set `.pattern('supervisor')` (or `hub-spoke`, `fan-out`), the runner au
 | Hardcoding all channels at spawn time                                                                                              | Use `agent.subscribe()` / `agent.unsubscribe()` for dynamic channel membership post-spawn                                                                                                                                                |
 | Using `preset: 'worker'` for Codex in _interactive team_ patterns when coordination is needed                                      | Codex interactive mode works fine with PTY channel injection. Drop the preset for interactive team patterns (keep it for one-shot DAG workers where clean stdout matters)                                                                |
 | Treating the lead's informal review as final signoff                                                                               | The lead may review during implementation, but final signoff still requires the mandatory Claude-then-Codex fresh-eyes review/fix loops                                                                                                  |
-| Not printing PR URL after `createGitHubStep({ action: 'createPR' })`                                                               | Capture `html_url` with `output: { mode: 'data', format: 'json', path: 'html_url' }` and echo or write it in a final deterministic step                                                                                                  |
+| Not printing a PR URL after the PR step                                                                                            | Make the PR-opening command print the URL and verify it with `verification: { type: 'pr_url', value: '<owner>/<repo>' }`                                                                                                                 |
 | Workflow ending without worktree + PR for cross-repo changes                                                                       | Add `setup-worktree` at start and `push-and-pr` + `cleanup-worktree` at end                                                                                                                                                              |
 
 ## YAML Alternative
@@ -2117,7 +2084,7 @@ workflows:
         failOnError: true
 ```
 
-Run with: `agent-relay run path/to/workflow.yaml`
+Run with: `agent-relay local run path/to/workflow.yaml`
 
 ## Available Swarm Patterns
 

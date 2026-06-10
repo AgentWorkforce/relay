@@ -3,7 +3,7 @@ const TRACKED_ROUTE_PREFIXES = [
   { prefix: '/blog', pageGroup: 'blog' },
   { prefix: '/primitives', pageGroup: 'primitives' },
   { prefix: '/openclaw', pageGroup: 'openclaw' },
-  { prefix: '/skill', pageGroup: 'openclaw' },
+  { prefix: '/skill', pageGroup: 'skill' },
 ] as const;
 
 const EXCLUDED_ROUTE_PREFIXES = ['/openclaw/skill/invite/'] as const;
