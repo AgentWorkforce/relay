@@ -15,7 +15,7 @@ import {
   WaveDivider,
   WorksWithEveryAgent,
 } from '../components/home';
-import { ogImage } from '../lib/og-meta';
+import { HOME_OG_IMAGE_PATH, ogImage } from '../lib/og-meta';
 import { absoluteUrl } from '../lib/site';
 import s from './landing.module.css';
 
@@ -32,14 +32,14 @@ export const metadata: Metadata = {
       'Channels, threads, DMs, reactions, and real-time events — everything you’d expect from Slack, exposed as an SDK.',
     url: absoluteUrl('/'),
     type: 'website',
-    images: [ogImage('/og-home.png', 'Agent Relay — Headless Slack for Agents')],
+    images: [ogImage(HOME_OG_IMAGE_PATH, 'Agent Relay — Headless Slack for Agents')],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Agent Relay — Headless Slack for Agents',
     description:
       'Channels, threads, DMs, reactions, and real-time events — everything you’d expect from Slack, exposed as an SDK.',
-    images: [absoluteUrl('/og-home.png')],
+    images: [absoluteUrl(HOME_OG_IMAGE_PATH)],
   },
 };
 

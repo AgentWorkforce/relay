@@ -9,7 +9,10 @@ const postHog = process.env.NEXT_PUBLIC_POSTHOG_KEY
     })
   : null;
 
+const PUBLIC_FILE = /\.(?:png|jpe?g|gif|webp|svg|ico|txt|xml)$/i;
+
 export function proxy(request: NextRequest) {
+  if (PUBLIC_FILE.test(request.nextUrl.pathname)) return NextResponse.next();
   if (!postHog) return NextResponse.next();
   return postHog(request);
 }

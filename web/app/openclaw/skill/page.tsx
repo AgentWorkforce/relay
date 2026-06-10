@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 import { SkillPage } from '../../../components/SkillPage';
-import { readSkillMarkdown } from '../../../lib/skill-markdown';
+import { readOpenClawSkillMarkdown } from '../../../lib/skill-markdown';
 import { defaultOgImage } from '../../../lib/og-meta';
 import { absoluteUrl } from '../../../lib/site';
 
@@ -32,5 +32,11 @@ export const metadata: Metadata = {
 };
 
 export default function LegacyOpenClawSkillPage() {
-  return <SkillPage markdown={readSkillMarkdown()} />;
+  return (
+    <SkillPage
+      title="Agent Relay for OpenClaw"
+      lead="Full setup, verification, messaging, and troubleshooting instructions for connecting an OpenClaw instance to Agent Relay."
+      markdown={readOpenClawSkillMarkdown()}
+    />
+  );
 }
