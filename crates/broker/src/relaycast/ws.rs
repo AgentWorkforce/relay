@@ -72,14 +72,12 @@ impl RelaycastWsClient {
                 );
             }
 
-            let mut ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
-                .with_base_url(self.ws_base_url.clone());
-            // Forward the detected harness as the `harness` query param (WS
-            // upgrades can't set custom headers) so the backend can attribute
-            // server events to claude-code / codex / etc. instead of "unknown".
-            if let Some(harness) = crate::telemetry::orchestrator_harness_opt() {
-                ws_opts = ws_opts.with_harness(harness);
-            }
+            // Attribute the broker's own relaycast traffic (the workspace
+            // stream) to the agent-relay CLI as the origin actor — forwarded as
+            // the `origin_actor` query param (WS upgrades can't set headers).
+            let ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
+                .with_base_url(self.ws_base_url.clone())
+                .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
             let mut ws = WsClient::new(ws_opts);
 
             match ws.connect().await {
@@ -805,10 +803,9 @@ impl RelaycastHttpClient {
 
 /// Build a `RelayCast` workspace client from an API key and base URL.
 fn build_relay_client(api_key: &str, base_url: &str) -> Option<RelayCast> {
-    let mut opts = RelayCastOptions::new(api_key).with_base_url(base_url);
-    if let Some(harness) = crate::telemetry::orchestrator_harness_opt() {
-        opts = opts.with_harness(harness);
-    }
+    let opts = RelayCastOptions::new(api_key)
+        .with_base_url(base_url)
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
     RelayCast::new(opts).ok()
 }
 

@@ -867,10 +867,9 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 
 /// Build a `RelayCast` workspace client from an API key and base URL.
 fn build_relay_client(api_key: &str, base_url: &str) -> Result<RelayCast> {
-    let mut opts = RelayCastOptions::new(api_key).with_base_url(base_url);
-    if let Some(harness) = crate::telemetry::orchestrator_harness_opt() {
-        opts = opts.with_harness(harness);
-    }
+    let opts = RelayCastOptions::new(api_key)
+        .with_base_url(base_url)
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
     RelayCast::new(opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 

@@ -459,6 +459,12 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
     (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
 }
 
+/// `origin_actor` path for the broker's own relaycast traffic (the workspace
+/// stream + agent registration the broker performs on behalf of the CLI). The
+/// agent-relay CLI is the actor; spawned agents are attributed separately as
+/// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
+pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
+
 /// Best-effort OS release string for telemetry tagging. Shells out to
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.

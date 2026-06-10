@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
+
 ### Added
 
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
@@ -122,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` npm README now documents the version 8 API (`relay.workspace.register(...)` live clients, `relay.registerAction(...)`, `relay.addListener(...)`); it previously showed the removed pre-v8 surfaces (`relay.as(...)`, `agent.events.on(...)`, `relay.actions.register(...)`).
 - `agent-relay cloud connect <provider>` (and `agent-relay auth`) forward the OAuth callback to the sandbox's `127.0.0.1` explicitly instead of the hostname `localhost`, and bind the local listener on both `127.0.0.1` and `::1`. codex serves its `http://localhost:1455/auth/callback` on IPv4 loopback only, but the Daytona sandbox resolves `localhost` to `::1` first — so the previous forward dialed a dead `::1:1455` inside the sandbox and login hung forever. Both ends of the tunnel are now IPv4-correct.
 - `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
@@ -141,6 +146,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [8.3.6] - 2026-06-10
+
+### Added
+
+- Origin_actor — bump relaycast crate 3.0.0, emit CLI path
+
+### Changed
+
+- Refresh Agent Relay skill handoff
+- Bump relaycast deps to the published model-aware versions
+- Pass spawn `model` through MCP, SDK, and broker to the launched CLI
 
 ## [8.3.5] - 2026-06-10
 

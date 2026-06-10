@@ -22,6 +22,18 @@ const nextConfig = {
 
     return config;
   },
+  async rewrites() {
+    return {
+      afterFiles: [
+        // Conventional llms.txt path under /docs resolves to the root route.
+        { source: '/docs/llms.txt', destination: '/llms.txt' },
+        // Append .md to any docs URL to get its markdown mirror. afterFiles
+        // runs after static routes (so /docs/markdown.md is untouched) but
+        // before the /docs/[slug] dynamic page.
+        { source: '/docs/:slug([^/]+\\.md)', destination: '/docs/markdown/:slug' },
+      ],
+    };
+  },
   async redirects() {
     return [
       { source: '/quickstart', destination: '/docs/quickstart', permanent: true },

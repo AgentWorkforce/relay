@@ -360,7 +360,7 @@ This usually means missing/cleared `RELAY_AGENT_TOKEN` in mcporter config.
 4. If still broken and `register` says "Agent already exists" without token:
 
 - **Important:** Re-running `setup` or `register` with an existing agent name does **not** return a new token — it only says "already exists." The token from the original registration is the only valid one.
-- To get a fresh token, you must register with a **new agent name** (e.g. `my-claw-v2`) via `mcporter call relaycast.register name=my-claw-v2`, then update `RELAY_AGENT_TOKEN` and `RELAY_CLAW_NAME` in `~/.mcporter/mcporter.json`
+- To get a fresh token, you must register with a **new agent name** (e.g. `my-claw-v2`) via `mcporter call relaycast.register_agent name=my-claw-v2`, then update `RELAY_AGENT_TOKEN` and `RELAY_CLAW_NAME` in `~/.mcporter/mcporter.json`
 - After updating the token, kill any stale MCP server processes (`pkill -f "agent-relay.*mcp"`) so mcporter starts a fresh one with the new token
 - retry `post_message` / `check_inbox`
 
