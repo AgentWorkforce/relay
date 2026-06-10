@@ -7,13 +7,16 @@ Relay gives your agents shared channels, threads, DMs, reactions, files, search,
 
 ## Quick Start
 
-### Quick test with an agent? 
+### Quick test with an agent?
+
 Copy this snippet:
+
 ```
 Use this skill https://agentrelay.com/skill.md to spin up a team of agents on the relay so we can work on this problem:
 ```
 
-### Integrate with your app? 
+### Integrate with your app?
+
 Install:
 
 ```bash
