@@ -867,7 +867,9 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 
 /// Build a `RelayCast` workspace client from an API key and base URL.
 fn build_relay_client(api_key: &str, base_url: &str) -> Result<RelayCast> {
-    let opts = RelayCastOptions::new(api_key).with_base_url(base_url);
+    let opts = RelayCastOptions::new(api_key)
+        .with_base_url(base_url)
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
     RelayCast::new(opts).map_err(|e| anyhow::anyhow!("{e}"))
 }
 

@@ -24,7 +24,7 @@ use crate::broker::{
         ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
-    injection_format::format_injection_for_worker_with_workspace,
+    injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::runtime::{
@@ -781,6 +781,7 @@ pub(crate) async fn run_wrap(
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
+    let mut mcp_reminder_throttle = McpReminderThrottle::new();
 
     // Echo verification state
     let mut pending_verifications: VecDeque<PendingVerification> = VecDeque::new();
@@ -859,6 +860,7 @@ pub(crate) async fn run_wrap(
                         let text = String::from_utf8_lossy(&chunk).to_string();
                         let clean_text = strip_ansi(&text);
                         pty_auto.last_output_time = Instant::now();
+                        mcp_reminder_throttle.note_output_bytes(chunk.len());
 
                         pty_auto.update_auto_suggestion(&text);
                         pty_auto.update_editor_buffer(&text);
@@ -1061,6 +1063,8 @@ pub(crate) async fn run_wrap(
                                         &channels,
                                         Some(&child_workspaces_json),
                                         default_workspace_id.as_deref(),
+                                        // Per-worker: the harness this agent runs.
+                                        crate::telemetry::infer_harness_from_command(&params.cli),
                                     );
                                     // Pre-register the child agent so its MCP server
                                     // starts with a valid token (avoiding "Not registered"
@@ -1345,14 +1349,16 @@ pub(crate) async fn run_wrap(
                         pty_auto.auto_suggestion_visible = false;
                     }
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
+                    let include_reminder = !skip_prompt
+                        && mcp_reminder_throttle.should_include(Instant::now());
                     let injection = format_injection_for_worker_with_workspace(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
-                        !skip_prompt, // include_reminder
-                        true,         // pre_registered
-                        None,         // assigned_name
+                        include_reminder,
+                        true, // pre_registered
+                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
@@ -1372,6 +1378,9 @@ pub(crate) async fn run_wrap(
                             queued_at: pending.queued_at,
                         });
                         continue;
+                    }
+                    if include_reminder {
+                        mcp_reminder_throttle.note_sent(Instant::now());
                     }
                     telemetry.track(TelemetryEvent::MessageSend {
                         is_broadcast: pending.target.starts_with('#'),
@@ -1447,12 +1456,17 @@ pub(crate) async fn run_wrap(
                 // Re-inject retries
                 for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
+                    // Retries consult the throttle like first injections: the
+                    // failed attempt usually already echoed the full block, so
+                    // a fresh one within the cooldown is redundant.
+                    let include_reminder = !skip_prompt
+                        && mcp_reminder_throttle.should_include(Instant::now());
                     let injection = format_injection_for_worker_with_workspace(
                         &pv.from,
                         &pv.event_id,
                         &pv.body,
                         &pv.target,
-                        !skip_prompt,
+                        include_reminder,
                         true,
                         None,
                         pv.workspace_id.as_deref(),
@@ -1465,6 +1479,9 @@ pub(crate) async fn run_wrap(
                             "wrap: retry PTY injection write failed"
                         );
                     } else {
+                        if include_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
+                        }
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         let _ = pty.write_all(b"\r");
                         tracing::debug!(

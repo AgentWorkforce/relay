@@ -604,6 +604,7 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
           ...(normalizeOptionalChannelName(readNullableString(agent, 'channel') ?? undefined)
             ? { channel: normalizeOptionalChannelName(readNullableString(agent, 'channel') ?? undefined) }
             : {}),
+          ...(readString(agent, 'model') ? { model: readString(agent, 'model') } : {}),
           alreadyExisted: readBoolean(agent, 'alreadyExisted', 'already_existed') ?? false,
         },
       };

@@ -222,6 +222,7 @@ pub fn spawn_env_vars(
     channels: &str,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
+    harness: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("RELAY_AGENT_NAME".to_string(), name.to_string()),
@@ -232,6 +233,16 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
+    // Per-worker attribution: tell the spawned agent's JS SDK its origin_actor
+    // path (`agent-relay-cli/agent/<harness>`) via env, so its relaycast
+    // telemetry is attributed to the harness it runs rather than "unknown".
+    // See cloud/plans/origin-actor.md.
+    if let Some(harness) = harness {
+        env.push((
+            "AGENT_RELAY_ORIGIN_ACTOR".to_string(),
+            crate::telemetry::agent_origin_actor(harness, None),
+        ));
+    }
     if let Some(workspaces_json) = workspaces_json
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -270,7 +281,31 @@ mod tests {
     use nix::unistd::{getsid, Pid};
     use tokio::process::Command;
 
-    use super::{terminate_child, Spawner};
+    use super::{spawn_env_vars, terminate_child, Spawner};
+
+    #[test]
+    fn spawn_env_vars_sets_origin_actor_path_when_harness_present() {
+        let env = spawn_env_vars(
+            "a",
+            "rk_live_x",
+            "https://gw",
+            "#c",
+            None,
+            None,
+            Some("codex"),
+        );
+        let origin_actor = env
+            .iter()
+            .find(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(origin_actor, Some("agent-relay-cli/agent/codex"));
+    }
+
+    #[test]
+    fn spawn_env_vars_omits_origin_actor_when_absent() {
+        let env = spawn_env_vars("a", "rk_live_x", "https://gw", "#c", None, None, None);
+        assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
+    }
 
     #[tokio::test]
     async fn release_terminates_child_process() {

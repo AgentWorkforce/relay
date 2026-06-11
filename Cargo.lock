@@ -1999,9 +1999,9 @@ checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
 name = "relaycast"
-version = "2.0.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0524afca2339fa727779b1f914ff47272f62873ac3119d76d198062ac509c6e"
+checksum = "4f9e462ae4dde5c008f65303cc0c9ee3816d0af19591fa50ae58216a25c29e29"
 dependencies = [
  "futures-util",
  "reqwest",
