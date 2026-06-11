@@ -248,54 +248,50 @@ test(
 
 // ── Graceful shutdown persistence ───────────────────────────────────────────
 
-test(
-  'infra: graceful shutdown persists undelivered pending deliveries',
-  { timeout: 120_000 },
-  async (t) => {
-    if (skipIfMissing(t)) return;
+test('infra: graceful shutdown persists undelivered pending deliveries', { timeout: 120_000 }, async (t) => {
+  if (skipIfMissing(t)) return;
 
-    const { cwd, stateDir } = makeTempDirs('relay-infra-shutdown-');
-    const suffix = uniqueSuffix();
-    const brokerName = `infra-shutdown-${suffix}`;
-    const pendingPath = pendingFilePath(stateDir, brokerName);
-    const sink = `sink-${suffix}`;
+  const { cwd, stateDir } = makeTempDirs('relay-infra-shutdown-');
+  const suffix = uniqueSuffix();
+  const brokerName = `infra-shutdown-${suffix}`;
+  const pendingPath = pendingFilePath(stateDir, brokerName);
+  const sink = `sink-${suffix}`;
 
-    const harness = new BrokerHarness({ cwd, brokerName, binaryArgs: { persist: true, stateDir } });
+  const harness = new BrokerHarness({ cwd, brokerName, binaryArgs: { persist: true, stateDir } });
 
-    try {
-      await harness.start();
-      await spawnSink(harness, sink);
+  try {
+    await harness.start();
+    await spawnSink(harness, sink);
 
-      const msg1 = await harness.sendMessage({ to: sink, from: 'infra-test', text: 'undelivered 1' });
-      const msg2 = await harness.sendMessage({ to: sink, from: 'infra-test', text: 'undelivered 2' });
-      const eventIds = [msg1.event_id, msg2.event_id];
-      for (const eventId of eventIds) {
-        await harness.waitForEvent(
-          'delivery_injected',
-          10_000,
-          (e) => e.kind === 'delivery_injected' && e.name === sink && e.event_id === eventId
-        ).promise;
-      }
-
-      // Clean shutdown while both deliveries are still awaiting verification.
-      // Regression test for the old behavior where shutdown cleared the
-      // pending map before persisting, losing undelivered messages.
-      await harness.stop();
-
-      const persisted = readPendingFile(pendingPath);
-      assert.ok(persisted, 'pending-deliveries file must survive a graceful shutdown with entries');
-      const persistedIds = persisted.map((p) => p.delivery.event_id).sort();
-      assert.deepEqual(
-        persistedIds,
-        [...eventIds].sort(),
-        'graceful shutdown should persist exactly the undelivered entries'
-      );
-    } finally {
-      await harness.stop();
-      fs.rmSync(cwd, { recursive: true, force: true });
+    const msg1 = await harness.sendMessage({ to: sink, from: 'infra-test', text: 'undelivered 1' });
+    const msg2 = await harness.sendMessage({ to: sink, from: 'infra-test', text: 'undelivered 2' });
+    const eventIds = [msg1.event_id, msg2.event_id];
+    for (const eventId of eventIds) {
+      await harness.waitForEvent(
+        'delivery_injected',
+        10_000,
+        (e) => e.kind === 'delivery_injected' && e.name === sink && e.event_id === eventId
+      ).promise;
     }
+
+    // Clean shutdown while both deliveries are still awaiting verification.
+    // Regression test for the old behavior where shutdown cleared the
+    // pending map before persisting, losing undelivered messages.
+    await harness.stop();
+
+    const persisted = readPendingFile(pendingPath);
+    assert.ok(persisted, 'pending-deliveries file must survive a graceful shutdown with entries');
+    const persistedIds = persisted.map((p) => p.delivery.event_id).sort();
+    assert.deepEqual(
+      persistedIds,
+      [...eventIds].sort(),
+      'graceful shutdown should persist exactly the undelivered entries'
+    );
+  } finally {
+    await harness.stop();
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
-);
+});
 
 // ── Queue overflow observability ────────────────────────────────────────────
 
@@ -476,7 +472,9 @@ test(
 
 test(
   'infra: behavior across an upstream Relaycast connection gap',
-  { skip: 'suite runs against the hosted Relaycast backend; no fake/local endpoint exists to drop and restore' },
+  {
+    skip: 'suite runs against the hosted Relaycast backend; no fake/local endpoint exists to drop and restore',
+  },
   () => {
     // Intentionally skipped. The broker harness provisions a real workspace on
     // the hosted engine (see ensureApiKey) and the broker dials it directly,
