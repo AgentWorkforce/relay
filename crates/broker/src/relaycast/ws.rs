@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use relaycast::{
     agent::DmOptions, format_registration_error,
@@ -25,6 +26,9 @@ pub enum WsControl {
     Unsubscribe(Vec<crate::ids::ChannelName>),
 }
 
+/// Maximum messages fetched per channel / DM conversation during reconnect backfill.
+const BACKFILL_FETCH_LIMIT: usize = 50;
+
 #[derive(Clone)]
 pub struct RelaycastWsClient {
     ws_base_url: String,
@@ -32,6 +36,9 @@ pub struct RelaycastWsClient {
     /// Reference-counted channel subscriptions: channel_name -> number of agents subscribed.
     /// The WS only unsubscribes when the count drops to zero.
     subscriptions: Arc<Mutex<HashMap<crate::ids::ChannelName, usize>>>,
+    /// Newest server-side `created_at` observed on message-bearing frames;
+    /// bounds the reconnect backfill window.
+    cursor: Arc<BackfillCursor>,
 }
 
 impl RelaycastWsClient {
@@ -48,6 +55,7 @@ impl RelaycastWsClient {
             ws_base_url: ws_base_url.into(),
             workspace_http,
             subscriptions: Arc::new(Mutex::new(subs)),
+            cursor: Arc::new(BackfillCursor::default()),
         }
     }
 
@@ -135,6 +143,15 @@ impl RelaycastWsClient {
                                 }))
                                 .await;
                         }
+                    }
+
+                    // Seed the cursor at connect time so the first backfill
+                    // window starts at "now" instead of replaying history.
+                    self.cursor.initialize(Utc::now());
+                    if status == "reconnected" {
+                        // The workspace stream has no server-side resync, so
+                        // recover the disconnect window from message history.
+                        self.replay_missed_messages(&inbound_tx, &events).await;
                     }
 
                     // Raw events keep Relay's broker bridge on the exact wire
@@ -237,6 +254,7 @@ impl RelaycastWsClient {
                             event = raw_event_rx.recv() => {
                                 match event {
                                     Ok(value) => {
+                                        self.cursor.observe_event(&value);
                                         let _ = inbound_tx.send(value).await;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -274,6 +292,12 @@ impl RelaycastWsClient {
                                                 "payload":{"status":"reconnected"}
                                             }))
                                             .await;
+                                        // The SDK reconnected internally and
+                                        // re-subscribed channels; recover the
+                                        // disconnect window from history. If
+                                        // this is the initial open, the cursor
+                                        // was just seeded and nothing replays.
+                                        self.replay_missed_messages(&inbound_tx, &events).await;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -309,6 +333,199 @@ impl RelaycastWsClient {
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }
+
+    /// Replay messages created after the backfill cursor through the normal
+    /// inbound delivery path (bridge -> routing -> pending delivery). The
+    /// runtime dedup cache (keyed `{workspace_id}:{event_id}`) suppresses
+    /// events that were already delivered before the disconnect.
+    async fn replay_missed_messages(
+        &self,
+        inbound_tx: &mpsc::Sender<Value>,
+        events: &EventEmitter,
+    ) {
+        let Some(cursor) = self.cursor.snapshot() else {
+            return;
+        };
+        let backfill = self.collect_backfill_events(cursor).await;
+        let replayed = backfill.len();
+        let gap_detected = replayed > 0;
+        for event in backfill {
+            // Advance the cursor past replayed messages so a subsequent
+            // reconnect does not replay the same window again.
+            self.cursor.observe_event(&event);
+            let _ = inbound_tx.send(event).await;
+        }
+        tracing::info!(
+            target = "broker::ws",
+            replayed,
+            gap_detected,
+            cursor = %cursor.to_rfc3339(),
+            "websocket reconnect backfill complete"
+        );
+        events.emit(
+            "resync",
+            json!({"replayed": replayed, "gap_detected": gap_detected}),
+        );
+        let _ = inbound_tx
+            .send(json!({
+                "type": "broker.resync",
+                "payload": {"replayed": replayed, "gap_detected": gap_detected}
+            }))
+            .await;
+    }
+
+    /// Fetch channel and DM history and convert messages created strictly
+    /// after `cursor` into synthetic `message.created` events, oldest-first.
+    async fn collect_backfill_events(&self, cursor: DateTime<Utc>) -> Vec<Value> {
+        let mut backfill = Vec::new();
+
+        for channel in self.active_subscriptions() {
+            match self
+                .workspace_http
+                .get_channel_messages(channel.as_str(), BACKFILL_FETCH_LIMIT)
+                .await
+            {
+                Ok(messages) => {
+                    for message in messages {
+                        if message_created_after(&message, cursor) {
+                            backfill.push(synthetic_channel_event(channel.as_str(), message));
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target = "relay_broker::ws",
+                        channel = %channel,
+                        error = %error,
+                        "failed to fetch channel history for reconnect backfill"
+                    );
+                }
+            }
+        }
+
+        match self.workspace_http.get_all_dms(BACKFILL_FETCH_LIMIT).await {
+            Ok(messages) => {
+                for message in messages {
+                    if message_created_after(&message, cursor) {
+                        if let Some(event) = synthetic_dm_event(message) {
+                            backfill.push(event);
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target = "relay_broker::ws",
+                    error = %error,
+                    "failed to fetch DM history for reconnect backfill"
+                );
+            }
+        }
+
+        backfill.sort_by_key(|event| {
+            event
+                .get("message")
+                .and_then(message_created_at)
+                .unwrap_or(cursor)
+        });
+        backfill
+    }
+}
+
+/// Tracks the newest server-side `created_at` seen on message-bearing
+/// websocket frames so the reconnect backfill can bound its replay window.
+#[derive(Debug, Default)]
+pub(crate) struct BackfillCursor {
+    inner: Mutex<Option<DateTime<Utc>>>,
+}
+
+impl BackfillCursor {
+    /// Advance the cursor from a raw websocket frame. Frames without a
+    /// parseable timestamp are ignored; older timestamps never regress it.
+    pub(crate) fn observe_event(&self, value: &Value) {
+        if let Some(ts) = event_created_at(value) {
+            let mut guard = self.inner.lock();
+            if guard.is_none_or(|current| ts > current) {
+                *guard = Some(ts);
+            }
+        }
+    }
+
+    /// Seed the cursor when unset so a backfill before any traffic replays
+    /// nothing.
+    pub(crate) fn initialize(&self, ts: DateTime<Utc>) {
+        let mut guard = self.inner.lock();
+        if guard.is_none() {
+            *guard = Some(ts);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<DateTime<Utc>> {
+        *self.inner.lock()
+    }
+}
+
+/// Extract the server `created_at` from a raw websocket frame, tolerating
+/// top-level and payload-wrapped shapes.
+fn event_created_at(value: &Value) -> Option<DateTime<Utc>> {
+    const CANDIDATES: [&str; 4] = [
+        "/message/created_at",
+        "/payload/message/created_at",
+        "/created_at",
+        "/payload/created_at",
+    ];
+    CANDIDATES.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339)
+    })
+}
+
+fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc))
+}
+
+fn message_created_at(message: &Value) -> Option<DateTime<Utc>> {
+    message
+        .get("created_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339)
+}
+
+/// True when the message carries a parseable `created_at` strictly newer
+/// than the cursor. Messages without a timestamp are excluded so a reconnect
+/// never replays unbounded history.
+fn message_created_after(message: &Value, cursor: DateTime<Utc>) -> bool {
+    message_created_at(message).is_some_and(|ts| ts > cursor)
+}
+
+/// Wrap a fetched channel message in the wire shape the inbound bridge maps.
+fn synthetic_channel_event(channel: &str, message: Value) -> Value {
+    json!({
+        "type": "message.created",
+        "channel": channel,
+        "replayed": true,
+        "message": message,
+    })
+}
+
+/// Wrap a fetched DM message (tagged with `conversation_id` by
+/// `get_all_dms`) in the conversation-shaped wire event the bridge maps to a
+/// DM. Returns `None` when the conversation id is missing.
+fn synthetic_dm_event(message: Value) -> Option<Value> {
+    let conversation_id = message
+        .get("conversation_id")
+        .and_then(Value::as_str)?
+        .to_string();
+    Some(json!({
+        "type": "message.created",
+        "conversation_id": conversation_id,
+        "replayed": true,
+        "message": message,
+    }))
 }
 
 /// HTTP client for publishing messages to the Relaycast REST API.
@@ -833,13 +1050,20 @@ pub async fn retry_agent_registration(
 
 #[cfg(test)]
 mod tests {
-    use httpmock::{Method::POST, MockServer};
+    use chrono::{DateTime, Utc};
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
     use relaycast::AgentRegistrationError;
     use serde_json::json;
 
+    use crate::events::EventEmitter;
+
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, MessageInjectionMode, RelaycastHttpClient,
+        registration_retry_after_secs, synthetic_channel_event, BackfillCursor,
+        MessageInjectionMode, RelaycastHttpClient, RelaycastWsClient,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -847,6 +1071,230 @@ mod tests {
             RelaycastHttpClient::new(base_url.to_string(), "rk_live_test", "broker", "codex");
         client.seed_agent_token("broker", "at_live_test");
         client
+    }
+
+    fn ts(raw: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(raw)
+            .expect("test timestamp should parse")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn backfill_cursor_tracks_newest_timestamp_tolerantly() {
+        let cursor = BackfillCursor::default();
+        assert!(cursor.snapshot().is_none());
+
+        // Absent or malformed timestamps are ignored without breaking.
+        cursor.observe_event(&json!({"type":"message.created","message":{"id":"m1"}}));
+        cursor.observe_event(&json!({
+            "type":"message.created",
+            "message":{"id":"m1","created_at":"not-a-date"}
+        }));
+        assert!(cursor.snapshot().is_none());
+
+        cursor.observe_event(&json!({
+            "type":"message.created",
+            "channel":"general",
+            "message":{"id":"m2","created_at":"2026-06-09T10:00:00Z"}
+        }));
+        assert_eq!(cursor.snapshot(), Some(ts("2026-06-09T10:00:00Z")));
+
+        // Payload-wrapped shapes also advance the cursor.
+        cursor.observe_event(&json!({
+            "type":"dm.received",
+            "payload":{"message":{"id":"m3","created_at":"2026-06-09T10:05:00Z"}}
+        }));
+        assert_eq!(cursor.snapshot(), Some(ts("2026-06-09T10:05:00Z")));
+
+        // Older frames never regress the cursor.
+        cursor.observe_event(&json!({"created_at":"2026-06-09T09:00:00Z"}));
+        assert_eq!(cursor.snapshot(), Some(ts("2026-06-09T10:05:00Z")));
+
+        // Initialize only seeds an unset cursor.
+        cursor.initialize(ts("2026-06-09T00:00:00Z"));
+        assert_eq!(cursor.snapshot(), Some(ts("2026-06-09T10:05:00Z")));
+    }
+
+    #[test]
+    fn replayed_backfill_event_dedupes_against_live_delivery() {
+        use std::time::{Duration, Instant};
+
+        let live = json!({
+            "type": "message.created",
+            "channel": "general",
+            "message": {
+                "id": "msg_7",
+                "agent_name": "alice",
+                "text": "hello",
+                "created_at": "2026-06-09T10:00:00.000Z"
+            }
+        });
+        let replayed = synthetic_channel_event(
+            "general",
+            json!({
+                "id": "msg_7",
+                "agent_id": "a1",
+                "agent_name": "alice",
+                "text": "hello",
+                "created_at": "2026-06-09T10:00:00.000Z"
+            }),
+        );
+
+        let live_mapped = crate::relaycast::bridge::map_ws_event(&live, "ws_1", None)
+            .expect("live event should map");
+        let replay_mapped = crate::relaycast::bridge::map_ws_event(&replayed, "ws_1", None)
+            .expect("replayed event should map");
+        assert_eq!(live_mapped.event_id, replay_mapped.event_id);
+
+        let mut dedup = crate::dedup::DedupCache::new(Duration::from_secs(300), 128);
+        let live_key = format!("{}:{}", live_mapped.workspace_id, live_mapped.event_id);
+        assert!(dedup.insert_if_new(&live_key, Instant::now()));
+        let replay_key = format!("{}:{}", replay_mapped.workspace_id, replay_mapped.event_id);
+        assert!(
+            !dedup.insert_if_new(&replay_key, Instant::now()),
+            "replayed event must be suppressed by the runtime dedup cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_backfill_events_filters_by_cursor_and_orders_oldest_first() {
+        let server = MockServer::start();
+        let _channel_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/channels/general/messages");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [
+                    {
+                        "id": "msg_new",
+                        "agent_id": "a2",
+                        "agent_name": "alice",
+                        "text": "after gap",
+                        "created_at": "2026-06-09T10:01:00.000Z"
+                    },
+                    {
+                        "id": "msg_old",
+                        "agent_id": "a1",
+                        "agent_name": "alice",
+                        "text": "before gap",
+                        "created_at": "2026-06-09T09:00:00.000Z"
+                    }
+                ]
+            }));
+        });
+        let _conversations_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/dm/conversations/all");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [{
+                    "id": "conv_1",
+                    "type": "dm",
+                    "participants": ["broker", "worker-a"],
+                    "last_message": null,
+                    "message_count": 2
+                }]
+            }));
+        });
+        let _dm_messages_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/dm/conversations/conv_1/messages");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [
+                    {
+                        "id": "dm_new",
+                        "agent_id": "a3",
+                        "agent_name": "bob",
+                        "text": "dm after gap",
+                        "created_at": "2026-06-09T10:00:30.000Z"
+                    },
+                    {
+                        "id": "dm_old",
+                        "agent_id": "a3",
+                        "agent_name": "bob",
+                        "text": "dm before gap",
+                        "created_at": "2026-06-09T08:00:00.000Z"
+                    }
+                ]
+            }));
+        });
+
+        let http = seeded_http_client(&server.base_url());
+        let ws = RelaycastWsClient::new(server.base_url(), http, vec!["general".to_string()]);
+
+        let events = ws.collect_backfill_events(ts("2026-06-09T10:00:00Z")).await;
+
+        assert_eq!(events.len(), 2, "only messages after the cursor replay");
+        // Oldest-first: the DM at 10:00:30 precedes the channel msg at 10:01:00.
+        assert_eq!(events[0]["type"], "message.created");
+        assert_eq!(events[0]["conversation_id"], "conv_1");
+        assert_eq!(events[0]["replayed"], true);
+        assert_eq!(events[0]["message"]["id"], "dm_new");
+        assert_eq!(events[1]["channel"], "general");
+        assert_eq!(events[1]["replayed"], true);
+        assert_eq!(events[1]["message"]["id"], "msg_new");
+    }
+
+    #[tokio::test]
+    async fn replay_missed_messages_replays_gap_and_emits_resync_frame() {
+        let server = MockServer::start();
+        let _channel_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/channels/general/messages");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": [{
+                    "id": "msg_gap",
+                    "agent_id": "a2",
+                    "agent_name": "alice",
+                    "text": "missed during disconnect",
+                    "created_at": "2026-06-09T10:02:00.000Z"
+                }]
+            }));
+        });
+        let _conversations_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/dm/conversations/all");
+            then.status(200).json_body(json!({"ok": true, "data": []}));
+        });
+
+        let http = seeded_http_client(&server.base_url());
+        let ws = RelaycastWsClient::new(server.base_url(), http, vec!["general".to_string()]);
+        // Simulate pre-disconnect traffic that positioned the cursor.
+        ws.cursor.observe_event(&json!({
+            "type": "message.created",
+            "channel": "general",
+            "message": {"id": "msg_seen", "created_at": "2026-06-09T10:00:00.000Z"}
+        }));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        ws.replay_missed_messages(&tx, &EventEmitter::new(false))
+            .await;
+
+        let first = rx.recv().await.expect("replayed event should arrive");
+        assert_eq!(first["type"], "message.created");
+        assert_eq!(first["message"]["id"], "msg_gap");
+        let resync = rx.recv().await.expect("resync frame should follow");
+        assert_eq!(resync["type"], "broker.resync");
+        assert_eq!(resync["payload"]["replayed"], 1);
+        assert_eq!(resync["payload"]["gap_detected"], true);
+
+        // Cursor advanced past the replayed message so the next reconnect
+        // does not replay the same window again.
+        assert_eq!(ws.cursor.snapshot(), Some(ts("2026-06-09T10:02:00Z")));
+    }
+
+    #[tokio::test]
+    async fn replay_missed_messages_is_noop_without_cursor() {
+        let server = MockServer::start();
+        let http = seeded_http_client(&server.base_url());
+        let ws = RelaycastWsClient::new(server.base_url(), http, vec!["general".to_string()]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        ws.replay_missed_messages(&tx, &EventEmitter::new(false))
+            .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no frames should be sent before the cursor is seeded"
+        );
     }
 
     #[test]

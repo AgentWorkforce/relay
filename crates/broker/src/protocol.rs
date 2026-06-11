@@ -522,6 +522,11 @@ pub enum BrokerEvent {
         name: WorkerName,
         channels: Vec<ChannelName>,
     },
+    RelayResync {
+        workspace_id: WorkspaceId,
+        replayed: usize,
+        gap_detected: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

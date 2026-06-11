@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay-broker` recovers messages missed during Relaycast WebSocket disconnects: on reconnect it backfills channel and DM history past the last seen message and routes the gap through normal delivery with dedup, emitting a `relay_resync` broker event (`{replayed, gap_detected}`) mirrored in `@agent-relay/harness-driver` protocol types.
 - `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`/`inbox.subscribe` replay and stream the per-recipient delivery ledger, `inbox.ack/fail/defer` and `deliveries.ack/fail/defer` apply real server transitions, capabilities report `serverDeliveryState: true` for agent-scoped clients, and `DeliveryRunner` now works against the hosted backend.
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
 - `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.

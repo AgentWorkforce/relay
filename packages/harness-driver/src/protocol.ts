@@ -475,6 +475,12 @@ export type BrokerEvent =
       kind: 'agent_permanently_dead';
       name: string;
       reason: string;
+    }
+  | {
+      kind: 'relay_resync';
+      workspace_id: string;
+      replayed: number;
+      gap_detected: boolean;
     };
 
 export type BrokerToSdk =

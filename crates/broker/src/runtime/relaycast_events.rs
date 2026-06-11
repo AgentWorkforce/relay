@@ -42,6 +42,36 @@ impl BrokerRuntime {
             "received relaycast ws event"
         );
 
+        // Reconnect backfill summary from the WS task: surface it as a
+        // BrokerEvent so resync activity is observable by SDK consumers.
+        if ws_type == "broker.resync" {
+            let replayed = ws_value
+                .pointer("/payload/replayed")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let gap_detected = ws_value
+                .pointer("/payload/gap_detected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            tracing::info!(
+                target = "agent_relay::broker",
+                workspace_id = %workspace_id,
+                replayed,
+                gap_detected,
+                "relaycast websocket reconnect backfill"
+            );
+            let _ = send_broker_event(
+                sdk_out_tx,
+                BrokerEvent::RelayResync {
+                    workspace_id: workspace_id.clone(),
+                    replayed,
+                    gap_detected,
+                },
+            )
+            .await;
+            return;
+        }
+
         let control_dedup_key =
             if matches!(ws_type, "agent.spawn_requested" | "agent.release_requested") {
                 relaycast_ws_control_dedup_key(&workspace_id, ws_type, &ws_value)
