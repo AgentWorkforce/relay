@@ -7,158 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
-
 ### Added
 
-- `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`/`inbox.subscribe` replay and stream the per-recipient delivery ledger, `inbox.ack/fail/defer` and `deliveries.ack/fail/defer` apply real server transitions, capabilities report `serverDeliveryState: true` for agent-scoped clients, and `DeliveryRunner` now works against the hosted backend.
-- `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
-- `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
-- `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
-- `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving a high-latency or remote agent, and stays invisible on fast local links.
-- `@agent-relay/harness-driver` exports a reusable `PredictiveEchoEngine` so other attach UIs (CLI, Electron, browser) can share one predictive-echo implementation.
-- `@agent-relay/sdk` `relay.addListener(...)` on a workspace client now receives all workspace-visible events: `events.connect()` opens the relaycast 2.5 workspace stream when no agent client is present, so the documented `relay.addListener('message.created', ...)` quickstart path streams without registering an agent.
-- `CORE_SIMPLIFICATION_SCOPE.md` documents the SemVer-major Agent Relay package boundary: core SDK communication, delivery, actions, and optional managed harnesses in `@agent-relay/harness-driver`.
-- `@agent-relay/sdk` adds normalized messaging, delivery, and action APIs: agents, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, and `ActionRegistry`.
-- `@agent-relay/sdk` adds the public session/harness contract: `HarnessConfig`, `AgentSession`, session identity, capabilities, delivery modes, message receipts, and session event types.
-- `agent-relay agent message hold|flush|auto <name>` controls local broker message delivery without relying on interactive attach key chords, with `--broker-url`, `--api-key`, and `--state-dir` broker selection.
-- `@agent-relay/harness-driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and runtime-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach` when supported.
-- `@agent-relay/harnesses` PTY harnesses (`claude`, `codex`, …) accept `create({ relay })` to spawn a live PTY session into the relay's workspace through `@agent-relay/harness-driver` and return a handle to the running, already-registered agent. One broker is started per relay and shared across agents; `create()` without `relay` still builds a descriptor for externally-run agents.
-- `agent-relay mcp` can expose registered SDK actions as explicit MCP tools plus `list_actions` and `invoke_action`.
-- `agent-relay mcp` recovers from stale agent tokens mid-session: a 401 carrying `agent_token_invalid` (or the legacy `Invalid agent token` message) now clears the dead token from the MCP session, returns recovery guidance pointing at `register_agent`, and lets strict-named sessions re-register without a process restart.
-- `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
-- `agent-relay-broker` adds `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`, and `is_agent_token_invalid_code` on `crates/broker/src/relaycast/auth.rs`, and preserves the upstream `RelayError::Api` code through `relay_error_to_anyhow` so the same recovery signal is available to Rust callers.
-- GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
-- Broker and TypeScript SDK structured result contracts: spawn inputs accept an `agentResultSchema` (raw JSON Schema or a zod-style validator, converted before reaching the broker), spawned agents submit typed JSON outcomes through the `submit_result` MCP tool, and the spawn handle's `waitForResult()` resolves with the submitted result (or the agent's exit or a timeout).
-- `@agent-relay/sdk` `relay.registerAction(...)` now returns a typed handle: `handle.completed()` / `handle.failed()` / `handle.invoked()` / `handle.denied()` build `addListener` predicates whose events carry the registration's input/output types, so orchestrators consume their own action results without string keys or casts.
-- `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, so custom CLIs can be configured without Rust changes while spawn requests remain self-contained.
-- `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
-- `@agent-relay/sdk` exposes `AgentRelay.spawnAgent({ runtime, cli, ... })` as the single high-level spawn facade for both PTY and headless agents.
-- `@agent-relay/sdk` adds `AgentRelay.getPersonaSpawnPlan(id)` and a `getPersonaSpawnPlan` export for dry-run inspection of a persona's resolved harness argv, skill installs, mount policy, sidecars, and inputs.
-- `agent-relay view`, `agent-relay drive`, and `agent-relay passthrough` remain available as top-level attach commands alongside `agent-relay runtime agent attach --mode`.
-- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client (identity, `status.becomes(...)`/`tools.called(...)` predicates, and an agent-scoped messaging surface); a single agent in returns one client, an array returns an array.
-- `@agent-relay/sdk` adds `relay.workspace.reconnect({ apiToken })` to rehydrate a live agent client from a persisted token.
-- `@agent-relay/sdk` adds `relay.addListener(selector, handler)` as the single listener entry point — `selector` is a dotted event name, a `*`/prefix wildcard, or a predicate — delivering one discriminated event object; message events carry a rich `envelope` (`from`/`to`/`channel`/`parent`).
-- `@agent-relay/sdk` actions are fire-and-forget over the relay: `relay.registerAction(...)` registers a descriptor and runs the handler on `action.invoked`, reporting the result; outcomes surface as `action.completed` events to `addListener`.
-- `@agent-relay/sdk` adds the `relay.webhooks` namespace: `createInbound({ channel })` returns `{ url, token }` for posting `{ message, author }` into a channel, and `subscribe({ url, events, secret, headers })` for outbound HMAC-signed event delivery.
-- `@agent-relay/sdk` agent clients send via `sendMessage({ to })` (`#channel`, `@handle`, or an array of `@handle`s for a group DM), `reply({ messageId })`, and `react({ messageId, emoji })`; every message exposes `messageId`.
-- `@agent-relay/harnesses` adds `createHuman({ relay, name })` (self-registers a human, returns the live client) and re-exports `defineHarness` plus the harness contract types.
-- `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
-- `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape for laptop-hosted workflows.
-- `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
-- `@agent-relay/sdk` re-exports `RelayError` and `RelayErrorCode` from the package root, so consumers can match coded relay errors (with `retryable`) without depending on `@relaycast/sdk` directly.
-- `@agent-relay/sdk` adds `relay.once(selector, handler)`, which auto-unsubscribes after the first matching event.
-- `@agent-relay/sdk` adds an `onError` hook (`new AgentRelay({ onError })` or `relay.onError(cb)`) that receives listener and action handler errors with a context identifying the listener selector or action name.
+- `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`, `inbox.subscribe`, `inbox.ack/fail/defer`, and `deliveries.ack/fail/defer` now use the hosted delivery ledger, agent-scoped capabilities report `serverDeliveryState: true`, and `DeliveryRunner` works against Relaycast-backed inbox items.
 
 ### Changed
 
-- `agent-relay-broker` streams interactive PTY output more smoothly, so keystroke echo and live output feel responsive instead of arriving in batches.
-- `@agent-relay/harness-driver` reduces PTY input latency when driving a remote agent.
-- Relay stores per-project runtime state in `.agentworkforce/relay/` (was `.agent-relay/`), and the global data/log home moves from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`. The `~/.config/agent-relay` config directory is unchanged.
-- `agent-relay` drive and passthrough attach sessions now forward `Ctrl+B` and `Ctrl+G` to the agent; use `agent message hold`, `agent message flush`, and `agent message auto` for delivery control.
-- `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
-- Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
-- `agent-relay` and `@agent-relay/sdk` now consume `@relaycast/sdk` 2.5.x, which carries the v8 service contract (reconnect/resolve-by-token, inbound webhooks with bearer tokens, outbound subscription headers + HMAC, the canonical dotted event vocabulary, and the fire-and-forget action invoke/complete endpoints) plus a workspace-scoped realtime stream.
-- `@agent-relay/sdk` `relay.workspace.register(...)` is idempotent by default: re-registering an existing agent name adopts the identity and rotates its token (invalidating previously-issued tokens for that agent) instead of throwing `name_conflict`; pass `{ strict: true }` to fail on conflicts.
-- `@agent-relay/sdk` `relay.addListener(...)` and `relay.once(...)` narrow the handler's event parameter type for exact dotted selectors such as `'message.created'`; wildcards and predicates keep their existing types.
-- `@agent-relay/sdk` `AgentSession.release` is now optional and `capabilities.lifecycle.release` is a boolean: provide `release()` only when the capability is `true`.
-- `@agent-relay/openclaw` consumes relaycast's unified `message.reacted` event (replacing the separate reaction-added/removed events).
-- `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
-- `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
-- `agent-relay` keeps default commands focused on messaging, MCP, diagnostics, setup, and telemetry; managed harness lifecycle now lives under `agent-relay driver ...`.
-- Root builds now validate the simplified core package set: config, utils, SDK, harness-driver, harnesses, and CLI.
-- `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
-- `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
-- `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflows inside the Relay CLI.
-- The `codex-relay-skill` and `gemini-relay-extension` plugins now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK; set `RELAY_BASE_URL` to keep using the legacy `https://api.relaycast.dev` host.
-
-### Deprecated
-
-- `@agent-relay/telemetry` is deprecated as a public npm package; telemetry implementation is now internal to the `agent-relay` CLI.
-- `agent-relay mcp`: Agent Relay now ships its own MCP stdio server with underscore tool names such as `post_message` and `add_reaction`, and generated MCP configs use `npx -y agent-relay mcp`.
-- `agent-relay mcp`: renamed the bundled implementation and command override to Agent Relay MCP (`AGENT_RELAY_MCP_COMMAND`).
-- `agent-relay up`: broker startup no longer writes external MCP entries to project `.mcp.json`; spawned agents receive the MCP server through launch-time configuration.
-- Release workflow changelog generation now writes concise Keep a Changelog sections and skips web-only, release-only, trajectory, PR-review, placeholder, and withdrawn-tag entries.
-- `@agent-relay/openclaw` remains available as an optional OpenClaw adapter package, with managed spawn internals moved to `@agent-relay/harness-driver` instead of the core SDK.
-- Workspace setup now leads with creating an Agent Relay workspace through the SDK, MCP, or OpenClaw setup instead of requiring a pre-provisioned Agent Relay API key; existing workspace keys are treated as join secrets.
-- `@agent-relay/sdk` `spawnPersona` now runs the full `@agentworkforce/persona-kit` lifecycle (skill installs, mount policy, `CLAUDE.md` / `AGENTS.md` sidecars, persona inputs) before launching the harness, and reverses every side effect when the agent exits. Previously it only translated the harness argv and silently dropped the rest of the schema.
-
-### Breaking Changes
-
-- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client instead of a `{ token }` registration record, and rejects duplicate agent names.
-- `@agent-relay/sdk` removes `AgentRelay.as()` / `asAgent()`; act as a registered agent through the client returned by `workspace.register(...)` / `workspace.reconnect({ apiToken })`.
-- `@agent-relay/sdk` removes the top-level `relay.sendMessage(...)` (no system sender); send from a registered agent or human client.
-- `@agent-relay/sdk` removes `relay.on(...)` and `relay.notify(...)`; use `relay.addListener(...)` (the fluent predicate builders are still accepted as selectors).
-- `@agent-relay/sdk` removes the public `relay.actions` register/invoke namespace; use `relay.registerAction(...)` and react to `action.completed` via `addListener`.
-- Relay's on-disk state directory is renamed from `.agent-relay/` to `.agentworkforce/relay/`, and the global `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, platform data dirs, and broker log dirs move under `agentworkforce/relay`. Existing brokers and state under the old paths are not migrated.
-- `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless harness spawning, workflow supervision, and harness lifecycle helpers move to optional `@agent-relay/harness-driver`.
-- `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, and GitHub/Slack primitive adapters.
-- `agent-relay` removes spawn-first, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
-- `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` + `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`. The persona tier system, the `tier` option on `spawnPersona`, the legacy relay-side `PersonaFile` / `PersonaTier` / `PersonaTierSpec` / `ResolvedPersona` / `PersonaSpawnSpec` / `MaterializedConfigFile` types, and the `buildPersonaSpawnSpec` / `materializePersonaConfigFiles` / `restorePersonaConfigFiles` helpers are removed. `loadPersona` now returns the canonical `PersonaSpec`, and `spawnPersona({ persona })` takes a `PersonaSpec` instead of a resolved persona.
-- `@agent-relay/sdk` removes persona support from the SDK surface: the `./personas` subpath, persona helper/type exports, `AgentRelay.spawnPersona()`, `AgentRelay.getPersonaSpawnPlan()`, and `AgentRelayOptions.personaDirs` are gone. The SDK no longer depends on `@agentworkforce/persona-kit`.
-- `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `HarnessDriverClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
-- `@agent-relay/sdk` removes the high-level `AgentRelay.spawnPty()`, `AgentRelay.spawnHeadless()`, positional `AgentRelay.spawn()`, `AgentRelay.spawnAndWait()`, and shorthand CLI spawners such as `relay.claude.spawn()`. Use `AgentRelay.spawnAgent({ cli, ... })`; `runtime` defaults to `"pty"` and `name` defaults from `cli`.
-- `agent-relay-broker`'s public Rust protocol types now require typed ID newtypes (`WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `WorkspaceAlias`, `ThreadId`, `AgentId`, `RequestId`, `ChannelName`, `MessageTarget`) on every protocol struct and enum variant in `protocol.rs`, `types.rs`, and `listen_api.rs::ListenApiRequest`. The new wrappers live in `crates/broker/src/lib.rs` under `pub mod ids`. JSON wire format is unchanged because every wrapper is `#[serde(transparent)]`, so the broker ↔ SDK channel and on-disk persisted state remain byte-compatible.
-- `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
-- `sdk-swift`: renamed the broker client class `RelayCast` → `AgentRelayClient`.
-- `@agent-relay/harness-driver` renames the managed broker client and its companion exports: `AgentRelayClient` → `HarnessDriverClient`, `AgentRelayClientOptions` → `HarnessDriverClientOptions`, `AgentRelaySpawnOptions` → `RuntimeSpawnOptions`, `AgentRelayBrokerInitArgs` → `BrokerInitArgs`, `AgentRelayEvents` → `HarnessDriverEvents`, and `AgentRelayProtocolError` → `HarnessDriverProtocolError`.
-
-### Migration Guidance
-
-- Bind to the live client `register(...)` returns instead of a token: `const alice = await relay.workspace.register({ name, type })`, then call `alice.sendMessage(...)` / `alice.channels.join(...)`. Persist `alice.token` to reconnect later with `relay.workspace.reconnect({ apiToken })`; replace `relay.as(token)` with that.
-- Replace `relay.sendMessage(...)` with a send from a registered participant (`alice.sendMessage(...)` or a `createHuman(...)` client). The workspace no longer sends as a system identity.
-- Replace `relay.on(predicate, handler)` with `relay.addListener(predicate, handler)`, and prefer dotted event names (`relay.addListener('message.created', ...)`); replace `relay.notify(...)` with an inline handler that sends from a participant.
-- Replace `relay.actions.register(...)` / `relay.actions.invoke(...)` with `relay.registerAction(...)`; read outcomes from `action.completed` events (the invoking agent gets an ack, not the return value — message it from the handler if it needs the result).
-- Read a message id as `message.messageId` (not `message.id`); reply with `reply({ messageId })` and react with `react({ messageId, emoji })`.
-- Stop any running broker before upgrading, then remove the stale `.agent-relay/` directory (and `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay` if present) and restart with `agent-relay up`; state is recreated under `.agentworkforce/relay/`. The broker re-adds `.agentworkforce/relay/` to `.git/info/exclude`, leaving any tracked `.agentworkforce/trajectories/` untouched.
-- Install `@agent-relay/harness-driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
-- Replace `agent-relay up/status/down` with `agent-relay driver up/status/down` when you want Agent Relay to manage the local harness boundary.
-- Replace SDK spawn calls with driver actions (`agent.create`, `agent.release`, `agent.status`) when agents need to request managed harness work through MCP.
-- Personas relying on `tiers.*` need to be flattened to a single top-level `harness` / `model` / `systemPrompt`. The shape that persona-kit (and the `agentworkforce` CLI) consumes is now the only supported shape.
-- Callers that previously used `spawnPersona` to "just launch the harness" — without persona-kit's skill / mount / sidecar side effects — should use `AgentRelay.getPersonaSpawnPlan(id)` to inspect the plan and call `spawnAgent({ cli, args })` themselves.
-- Launch personas through the owning CLI or package and pass the resulting command to `relay.spawnAgent({ cli, ... })` or `relay.spawnAgent({ runtime: "headless", cli, ... })`; for AgentWorkforce personas, use `npx agentworkforce persona run <id>` once available so persona side effects remain CLI-owned.
-- Replace high-level `relay.spawnPty(...)`, `relay.spawnHeadless(...)`, `relay.spawn(...)`, `relay.spawnAndWait(...)`, and `relay.<cli>.spawn(...)` calls with `relay.spawnAgent({ cli, ... })`; add `runtime: "headless"` only for headless app-server sessions, and wait explicitly with the returned agent handle when needed.
-- Replace `client.spawnProvider({ provider, ... })` with `client.spawnCli({ cli, ... })`; replace `client.spawnHeadless({ provider, ... })` with `client.spawnHeadless({ cli, ... })`.
-- Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, …}` instead of `String`. Each newtype impls `From<String>` / `From<&str>` and `Deref<Target = str>`, so most string-handling code keeps compiling; only construction sites (`HashMap` keys, struct literals, channel sends) need updates.
-- Replace ad-hoc target discrimination (`target.starts_with('#')`, `target == "thread"`) with `MessageTarget::kind()` and match on `MessageTargetKind::{Channel, Thread, DirectMessage, Conversation, Worker}`.
-- `sdk-swift`: replace `RelayCast(apiKey:baseURL:)` with `AgentRelayClient(apiKey:baseURL:)`. The public API surface is otherwise unchanged.
-- Import `HarnessDriverClient` (was `AgentRelayClient`) from `@agent-relay/harness-driver`; the `connect()`/`spawn()` API is unchanged. Update companion type names (`HarnessDriverClientOptions`, `RuntimeSpawnOptions`, `BrokerInitArgs`, `HarnessDriverEvents`, `HarnessDriverProtocolError`) at import sites.
-
-### Removed
-
-- `@agent-relay/config` removes the unused `getGlobalPaths()` and `listProjects()` exports (legacy global-storage helpers) and drops the `.agent-relay.json` project-root config fallback; shadow config now loads only from `.agentworkforce/relay/config.json`.
-- `@agent-relay/config` removes the legacy `/tmp/relay-outbox` symlink: `RelayFileWriter` no longer creates it on `ensureDirectories()`, and the `getLegacyOutboxPath()` method and `RelayPaths.legacyOutboxDir` field are gone.
-- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup. (Uninstall still purges legacy install dirs.)
+- `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
 
 ### Fixed
 
-- `@agent-relay/sdk` npm README now documents the version 8 API (`relay.workspace.register(...)` live clients, `relay.registerAction(...)`, `relay.addListener(...)`); it previously showed the removed pre-v8 surfaces (`relay.as(...)`, `agent.events.on(...)`, `relay.actions.register(...)`).
-- `agent-relay cloud connect <provider>` (and `agent-relay auth`) forward the OAuth callback to the sandbox's `127.0.0.1` explicitly instead of the hostname `localhost`, and bind the local listener on both `127.0.0.1` and `::1`. codex serves its `http://localhost:1455/auth/callback` on IPv4 loopback only, but the Daytona sandbox resolves `localhost` to `::1` first — so the previous forward dialed a dead `::1:1455` inside the sandbox and login hung forever. Both ends of the tunnel are now IPv4-correct.
-- `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
-- `agent-relay-broker` no longer discards pending deliveries on graceful shutdown: a non-empty pending map is persisted for redelivery on the next start, and the pending file is only removed when nothing is pending.
-- `agent-relay-broker` persists pending deliveries on every change (enqueue, ack, retry) instead of only on the 500ms maintenance tick, so a crash between ticks cannot lose queued messages.
-- `agent-relay-broker` timeout-fallback delivery acks are now observable: `delivery_verified` events carry `verification: "timeout_fallback"` plus a reason, and unverified deliveries no longer count as successes in the injection throttle.
-- `agent-relay-broker` emits a `delivery_dropped` event when the per-worker pending queue cap (256) evicts the oldest message, instead of only logging a warning.
-- `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
-- `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
-- `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
-- Root package builds now compile `@agent-relay/cloud` before SDK and CLI packages that consume its generated declarations, without rewriting a tracked broker binary.
-- `agent-relay-broker` harness configs now report harness PIDs instead of wrapper worker PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.
-- `@agent-relay/sdk` normalizes broker `pid: null` spawn responses to `undefined` while PTY harness PIDs are reported asynchronously.
-- `web`: PR preview SST deploys use and comment the generated CloudFront URL and AWS's managed disabled cache policy instead of creating per-preview Cloudflare DNS records, ACM certificates, and custom CloudFront cache policies.
-- `sdk-swift`: broker client now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
-- `agent-relay start dashboard.js [cli]` remains available for local dashboard harness workflows.
-- `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
-- `@agent-relay/sdk` listener handler errors are no longer silently swallowed: without an `onError` hook they log a console warning naming the listener.
-
-### Security
-
-- `@agent-relay/slack-primitive` bumps `@slack/web-api` to `^7.16.0`, which raises its transitive `axios` floor to `^1.16.0` and clears GHSA-q8qp-cvcw-x6jj (prototype pollution gadgets in HTTP adapter allowing credential injection) and GHSA-3w6x-2g7m-8v23 (invisible JSON response tampering via `parseReviver`).
-- `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
-- `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
-- `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+- `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
 ## [8.5.0] - 2026-06-11
 
@@ -175,320 +34,242 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Idempotent registration, typed errors, onError hook, listener narrowing
-- Append spawn model to spawned-agent origin_actor
+- `@agent-relay/sdk` re-exports `RelayError` and `RelayErrorCode`, adds `relay.once(selector, handler)`, and exposes an `onError` hook for listener and action-handler failures.
+- `@agent-relay/sdk` typed action handles now provide `completed()`, `failed()`, `invoked()`, and `denied()` listener predicates, and spawn result schemas accept JSON Schema or Zod-compatible validators.
 
 ### Changed
 
-- Stop sending origin_surface from the CLI/cloud client
-- Sdk: typed action result predicates, zod agentResultSchema, orchestration docs
+- `@agent-relay/sdk` `relay.workspace.register(...)` is idempotent by default: re-registering an existing agent adopts the identity and rotates its token; pass `{ strict: true }` to keep conflict failures.
+- `@agent-relay/sdk` `relay.addListener(...)` and `relay.once(...)` narrow handler event types for exact dotted selectors such as `message.created`.
+- `agent-relay` and cloud clients stop sending `origin_surface`; spawned-agent Relaycast attribution includes the selected model in `origin_actor`.
+
+### Fixed
+
+- `@agent-relay/sdk` listener and action-handler errors are no longer silently swallowed; without an `onError` hook they log a warning naming the failing selector or action.
 
 ## [8.3.7] - 2026-06-11
 
 ### Added
 
-- Emit origin_actor from spawned agents (JS SDK + per-worker)
+- Spawned agents emit `origin_actor` metadata from the JavaScript SDK and per-worker broker path.
 
 ### Changed
 
-- Make LLM markdown mirrors discoverable; update sdk README to v8 API
-- Throttle MCP reminder injection by agent activity, not just elapsed time
-- Serve raw Agent Relay skill markdown
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after roughly 64KB of agent output since the last reminder, in addition to the five-minute cooldown; `agent-relay wrap` uses the same throttle and otherwise sends the short reminder hint.
+- LLM markdown mirrors and raw Agent Relay skill markdown are discoverable from the docs surface.
+
+### Fixed
+
+- `packages/sdk/README.md` now documents the v8 API surface instead of removed pre-v8 calls such as `relay.as(...)`, `agent.events.on(...)`, and `relay.actions.register(...)`.
 
 ## [8.3.6] - 2026-06-10
 
 ### Added
 
-- Origin_actor — bump relaycast crate 3.0.0, emit CLI path
+- `agent-relay-broker` emits Relaycast `origin_actor` metadata with the launched CLI path.
+- Spawn `model` values flow through MCP, the TypeScript SDK, and the broker to the launched CLI.
 
 ### Changed
 
-- Refresh Agent Relay skill handoff
-- Bump relaycast deps to the published model-aware versions
-- Pass spawn `model` through MCP, SDK, and broker to the launched CLI
+- Relaycast dependencies were bumped to the published model-aware versions.
+- Agent Relay skill handoff docs were refreshed for the current MCP and spawn flows.
 
 ## [8.3.5] - 2026-06-10
 
 ### Fixed
 
-- Forward OAuth callback to sandbox 127.0.0.1, not localhost
+- `agent-relay cloud connect <provider>` forwards the OAuth callback to the sandbox's `127.0.0.1` endpoint instead of `localhost`, avoiding failed `::1` dials in Daytona sandboxes.
 
 ## [8.3.4] - 2026-06-10
 
-### Changed
+### Added
 
-- Clean read ack PR head
-- Apply pr-reviewer fixes for
-- Add broker delivery read ack bridge
+- `agent-relay-broker` bridges delivery read acknowledgements to the Relaycast backend.
 
 ### Fixed
 
-- Suppress clippy too_many_arguments on mark_delivery_read_ack_with_timeout
+- `agent-relay-broker` suppresses the intentional `too_many_arguments` lint on the read-ack timeout helper.
 
 ## [8.3.3] - 2026-06-09
 
 ### Fixed
 
-- Bind OAuth callback tunnel dual-stack + pin codex
+- `agent-relay cloud connect codex` binds the OAuth callback tunnel on both `127.0.0.1` and `::1` and pins the sandbox Codex CLI to `@openai/codex@0.138.0`.
 
 ## [8.3.2] - 2026-06-09
 
 ### Fixed
 
-- Forward harness to relaycast backend (SDK 2.3.0)
+- `agent-relay-broker` forwards harness metadata to the Relaycast backend while consuming `@relaycast/sdk` 2.3.0.
 
 ## [8.3.1] - 2026-06-09
 
-### Changed
+### Added
 
-- Add explicit broker workspace join options
+- `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
 
 ### Fixed
 
-- Default backend to gateway.relaycast.dev
+- `agent-relay` defaults hosted traffic to `https://gateway.relaycast.dev`.
 
 ## [8.3.0] - 2026-06-05
 
 ### Added
 
-- Add Grok CLI harness
+- `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
+- `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape.
+- `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
 
 ### Changed
 
-- Add local workflow run commands
+- `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflow execution inside the Relay CLI.
 
 ## [8.2.0] - 2026-06-04
 
 ### Added
 
-- Add lifecycle-aware SpawnedAgentHandle
-
-### Changed
-
-- Publish @agent-relay/harnesses on release
+- `@agent-relay/harness-driver` adds lifecycle-aware `SpawnedAgentHandle` state for managed agent sessions.
+- `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
 
 ## [8.1.2] - 2026-06-04
 
 ### Fixed
 
-- Export ./predictive-echo subpath
+- `@agent-relay/harness-driver` exports the `./predictive-echo` subpath.
 
 ## [8.1.1] - 2026-06-04
 
+### Added
+
+- `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving high-latency or remote agents, and stays invisible on fast local links.
+- `@agent-relay/harness-driver` exports a reusable `PredictiveEchoEngine` for other attach UIs.
+
 ### Changed
 
-- Predictive echo for remote attach + interactive latency fixes
+- `agent-relay-broker` streams interactive PTY output more smoothly, and `@agent-relay/harness-driver` reduces PTY input latency when driving remote agents.
 
 ## [8.1.0] - 2026-06-03
 
+### Added
+
+- `agent-relay agent message hold|flush|auto <name>` controls local broker message delivery without relying on interactive attach key chords.
+
 ### Changed
 
-- Fix CLI attach control output and drive message controls
+- `agent-relay drive` and `agent-relay passthrough` now forward `Ctrl+B` and `Ctrl+G` to the agent; use `agent message hold`, `agent message flush`, and `agent message auto` for delivery control.
+
+### Fixed
+
+- `agent-relay` attach sessions no longer write successful `view`, `drive`, or `passthrough` banners into the interactive terminal buffer.
 
 ## [8.0.5] - 2026-06-03
 
-### Changed
+### Fixed
 
-- Preserve legacy Codex MCP opt-out
+- Legacy Codex MCP opt-out behavior is preserved after the v8 MCP rename.
 
 ## [8.0.4] - 2026-06-03
 
-### Changed
+### Added
 
-- Fix local agent list hang
+- `agent-relay` forwards Relaycast attribution and Agent Relay MCP tool events to hosted Relaycast.
+
+### Fixed
+
+- `agent-relay local agent list` and `agent-relay local metrics` connect only to an existing broker, so read-only commands no longer start an empty broker and hang after printing results.
+- OpenClaw skill markdown imports build correctly.
 
 ## [8.0.3] - 2026-06-03
 
-### Changed
+### Fixed
 
-- Fix post-publish SDK export smoke
+- SDK package export validation passes after publish.
 
 ## [8.0.2] - 2026-06-03
 
-### Changed
+### Fixed
 
-- Web: add /pear Open Graph card with zoomed product screenshot
-- Fix publish checks for harness-driver broker path
+- Publish checks resolve the `@agent-relay/harness-driver` broker path correctly.
 
 ## [8.0.0] - 2026-06-03
 
 ### Added
 
-- Composite status, telemetry-only setup, drop dead modules
-- Add SDK-backed workspace/agent/channel/message/integration/capabilities groups + runtime agent subtree
-- Restore cloud command group, add runtime alias + top-level lifecycle verbs
-- Add create()/new() factories returning registerable agents
-- Add listener/predicate DSL (relay.on, event/action/agent predicates)
-- Add README facade surface (workspace, sendMessage, registerAction, notify, message overloads)
-- Default spawnAgent name and runtime
-- Expose provider spawn facade methods
+- `@agent-relay/sdk` adds the v8 messaging, delivery, and action surface: live workspace/agent clients, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, `ActionRegistry`, `relay.addListener(...)`, fire-and-forget actions, and webhooks.
+- `@agent-relay/sdk` adds the public session/harness contract, `AgentRelay.spawnAgent({ runtime, cli, ... })`, and agent-client send/reply/react helpers that expose stable `messageId` values.
+- `@agent-relay/harness-driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and runtime-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach`.
+- `@agent-relay/harnesses` PTY harnesses accept `create({ relay })` to spawn live sessions into a relay workspace, and add `createHuman({ relay, name })`, `defineHarness`, and the harness contract types.
+- `agent-relay` adds SDK-backed workspace, agent, channel, message, integration, and capabilities command groups, restores the cloud command group, and keeps `view`, `drive`, and `passthrough` as top-level attach commands.
+- `agent-relay mcp` ships the Agent Relay MCP stdio server with underscore tool names, can expose registered SDK actions as MCP tools, and recovers stale agent tokens mid-session with re-registration guidance.
 
 ### Changed
 
-- Route telemetry context through CLI, SDK, and cloud
-- SDK: workspace-level event stream via relaycast 2.5 (closes)
-- Remove vendored openclaw package and orchestrating skill; align MCP name to agent-relay
-- Make v8 the default docs version
-- Fix npm audit: upgrade vitest to 4.x (resolves critical advisory)
-- Move dashboard UI assets under the install dir
-- V8 SDK redesign: live agent clients, addListener, fire-and-forget actions, webhooks
-- Rename relay state directory to .agentworkforce/relay
-- Add Pear by Agent Relay landing page at /pear
-- Fix OpenClaw skill route build
-- Enhance README with project details and badges
-- Complete trajectory and update packages
-- Add v8 docs pages and blog UI tweaks
-- Harnesses: add create({ relay }) live PTY spawn
-- Fix Tailwind oxide lockfile entries
-- Update README.md
-- Update SDK examples for driver & events
-- Remove core simplification scope doc
-- Rename runtime package to harness-driver
-- Remove in-repo ACP bridge package
-- Apply prettier formatting
-- Fix package build and security checks
-- Upgrade relaycast to 2.0 and support actions
-- Update sdk.md to reflect post-split SDK surface
-- Rename runtime-agent module to local-agent; drop stray .mcp.json
-- Remove stray self-hosting placeholder doc
-- Move attach session logic to lib/
-- Rename driver namespace to local, restructure agent ops
-- Apply pr-reviewer fixes for
-- Remove dead bridge plumbing from CoreDependencies
-- Drop start/bridge from runtime group; version/update/uninstall are root-only
-- Nudge preview-web redeploy (path filter blind past 300-file cap)
-- Route interactive attach through RuntimeClient's real WS PTY input
-- Add trajectory traces and update runtime/CLI
-- Compile-time contract for the full README API + accept real zod schemas
-- Use driver subcommand in package-validation CLI smoke
-- Drop SDK agent-spawn lifecycle from E2E and export check
-- Match E2E command surface and build peripheral packages
-- Format pullfrog.yml to satisfy prettier check
-- Align CI with simplified core surface
-- Update AGENTS.md
-- Add `pullfrog.yml` workflow
-- Trigger checks after auto-format
-- Clean stale package references
-- Remove migrated packages from CI workflows
-- Remove migrated packages and consolidate shared into utils
-- Make workspace setup first-class
-- Keep OpenClaw adapter
-- Keep ACP bridge adapter
-- Align SDK with session contract
-- Human writing
-- Move delivery policy into harness docs
-- Clarify CLI harness message path
-- Document message send paths
-- Show harness contract as interface
-- Flesh out target harness contract
-- Document target messaging and delivery contracts
-- Adding ideas
-- Humans be writing like humans
-- More human writing
-- Use Zod schemas in action docs
-- Clarify Agent Relay README examples
-- Simplify Agent Relay core surfaces
-- Relocate root configs/assets and add trajectories
-- Update spawnAgent examples
-- Move MCP tools reference into docs
-- Simplify high-level spawn facade
-- Remove stale MCP compatibility aliases
-- Rename bundled MCP server to Agent Relay MCP
-- Remove skills/ directory
-- Rename spawn provider api to cli
-- Make headless facade cli-based
-- Restore persona changelog history
-- Remove personas from SDK
-- Apply prettier to packages/sdk/src/relaycast-errors.ts
-- Mcp: recover from invalid Relaycast agent tokens mid-session
-- Clean up after workflow extraction: tests, exports, CI
-- Fix CLI imports after cloud-sdk teardown
-- Merge @agent-relay/cloud-sdk into @agent-relay/cloud; relayfile bits → @relayfile/sdk
-- Extract @agent-relay/cloud-sdk from @agent-relay/sdk
-- Break relay → relayflows dep; relay has zero workflow code
-- Decouple SDK from workflow knowledge
-- Remove workflow code; depend on @relayflows/core via compat shims
-- Move doctor repro docs into web
-- Move harness runtime docs into web
-- Clarify headless app-server worker naming
-- Move trajectories under agentworkforce
-- Revert "Move trajectories into .agentworkforce"
-- Track GitHub traffic in PostHog
-- Move trajectories into .agentworkforce
-- Collapse /test/ dir into root vitest.setup.ts
-- Remove stale openapi.yaml
-- Add Prettier auto-format workflow
-- Format merge trajectory files
-- Fix stale src/cli refs in cli-modules rule and watch script
-- Delete unused scripts/build-release.sh
-- Remove unused inbox-check hook, tighten descriptions
-- Add Swift SDK test job on macOS
-- Drop 'not the cloud service' framing
-- Skip Node/Rust jobs when only sdk-swift changes
-- Move CLI to packages/cli, root becomes workspace orchestrator
-- Drop comments narrating removed v6 behavior
-- Drop RelayCast deprecated typealias
-- Rename RelayCast to AgentRelayClient
-- Delete deprecated src/ re-export shims
-- Remove unused dev release-plan scaffolding
-- Apply prettier across the repo
-- Fix SDK spawn pid null handling
-- Remove husky, enforce formatting in CI
-- Document MCP tool overview
-- Use underscore MCP tool names
-- Remove harness registry state
-- Add broker harness registry
-- Fix bootstrap command snapshot
-- Default headless harness driver
-- Fix harness clippy warnings
-- Stop pack:validate from poisoning the node_modules cache
-- Clarify harness config naming docs
-- Rename harness plans to configs
-- Fix harness runtime review issues
-- Retrigger CI
-- Refine harness adapter docs
-- Clarify headless app-server harnesses
-- Implement harness runtime plans
-- Use workspace tsc instead of network-fetched typescript
-- Document harness runtime plan
-- Replace stringly-typed protocol IDs with newtypes
-- Remove external MCP dependency
-- Cache workspace node_modules too
-- Return harness session IDs from spawns
-- Sdk: forward-compat persona-kit ≥3.0.20 (optional harness/model)
-- Sdk: migrate persona spawn to @agentworkforce/persona-kit
-- Address CodeRabbit follow-up review on Codex adapter
-- Address remaining cubic review comments on Codex adapter
-- Address Codex adapter review comments
-- Add Codex communicate adapter
+- Relay stores per-project runtime state in `.agentworkforce/relay/` instead of `.agent-relay/`, and global data/log homes move from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`.
+- `agent-relay` installs dashboard UI assets under `~/.agentworkforce/relay/dashboard` instead of `~/.relay/dashboard`.
+- `agent-relay` and `@agent-relay/sdk` upgrade to Relaycast 2.x/2.5.x: spawn/release run as Relaycast actions, action events replace the old command protocol, and the workspace-scoped realtime stream backs listener APIs.
+- `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless spawning, workflow supervision, and harness lifecycle helpers move to `@agent-relay/harness-driver`.
+- `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
+- `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata and CLI telemetry posts through `https://i.agentrelay.com` by default.
+- `@agent-relay/openclaw` consumes Relaycast's unified `message.reacted` event and remains available as an optional adapter with managed spawn internals moved to `@agent-relay/harness-driver`.
+
+### Deprecated
+
+- `@agent-relay/telemetry` is deprecated as a public npm package; telemetry implementation is now internal to the `agent-relay` CLI.
+- External MCP setup through `agent-relay up` is deprecated: spawned agents receive the bundled Agent Relay MCP server through launch-time configuration.
+- Workspace setup now leads with creating an Agent Relay workspace through the SDK, MCP, or OpenClaw setup; existing workspace keys are treated as join secrets.
+
+### Breaking Changes
+
+- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client instead of a `{ token }` registration record, and rejects duplicate agent names.
+- `@agent-relay/sdk` removes `AgentRelay.as()` / `asAgent()`; act as a registered agent through the client returned by `workspace.register(...)` / `workspace.reconnect({ apiToken })`.
+- `@agent-relay/sdk` removes the top-level `relay.sendMessage(...)`; send from a registered agent or human client.
+- `@agent-relay/sdk` removes `relay.on(...)`, `relay.notify(...)`, and the public `relay.actions` register/invoke namespace; use `relay.addListener(...)` and `relay.registerAction(...)`.
+- `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, GitHub/Slack primitive adapters, and persona support.
+- `agent-relay` removes spawn-first, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
+- `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` and `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`, removes the persona tier system, and makes `loadPersona` return the canonical `PersonaSpec`.
+- `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `HarnessDriverClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
+- `@agent-relay/sdk` removes high-level `spawnPty`, `spawnHeadless`, positional `spawn`, `spawnAndWait`, and shorthand CLI spawners such as `relay.claude.spawn()`; use `AgentRelay.spawnAgent({ cli, ... })`.
+- `agent-relay-broker` public Rust protocol types now require typed ID newtypes such as `WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `ChannelName`, and `MessageTarget`; JSON wire format is unchanged because wrappers are `#[serde(transparent)]`.
+- `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
+- `sdk-swift` renames `RelayCast` to `AgentRelayClient`.
+- `@agent-relay/harness-driver` renames the managed broker client and companion exports from `AgentRelayClient` names to `HarnessDriverClient` names.
+
+### Migration Guidance
+
+- Bind to the live client `register(...)` returns instead of a token, persist `client.token`, and reconnect later with `relay.workspace.reconnect({ apiToken })`.
+- Replace `relay.sendMessage(...)` with a send from a registered participant such as `alice.sendMessage(...)` or a `createHuman(...)` client.
+- Replace `relay.on(predicate, handler)` with `relay.addListener(predicate, handler)`, prefer dotted event names, and replace `relay.notify(...)` with an inline handler that sends from a participant.
+- Replace `relay.actions.register(...)` / `relay.actions.invoke(...)` with `relay.registerAction(...)`; read outcomes from `action.completed` events.
+- Read message IDs as `message.messageId`, reply with `reply({ messageId })`, and react with `react({ messageId, emoji })`.
+- Stop running brokers before upgrading, remove stale `.agent-relay/` and `~/.agent-relay` state if present, and restart with `agent-relay local up`; new runtime state is created under `.agentworkforce/relay/`.
+- Use `agent-relay local up/status/down` for local broker lifecycle commands.
+- Install `@agent-relay/harness-driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
+- Replace SDK spawn calls with driver actions such as `agent.create`, `agent.release`, and `agent.status` when agents need to request managed harness work through MCP.
+- Flatten personas that relied on `tiers.*` to a single top-level `harness`, `model`, and `systemPrompt`, then launch them through the owning CLI/package and pass the resulting command to `relay.spawnAgent({ cli, ... })`.
+- Replace `client.spawnProvider({ provider, ... })` with `client.spawnCli({ cli, ... })`; replace `client.spawnHeadless({ provider, ... })` with `client.spawnHeadless({ cli, ... })`.
+- Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, ...}` instead of raw `String` values.
+- `sdk-swift`: replace `RelayCast(apiKey:baseURL:)` with `AgentRelayClient(apiKey:baseURL:)`.
+- Import `HarnessDriverClient` from `@agent-relay/harness-driver` and update companion type names such as `HarnessDriverClientOptions`, `RuntimeSpawnOptions`, `BrokerInitArgs`, `HarnessDriverEvents`, and `HarnessDriverProtocolError`.
+
+### Removed
+
+- `@agent-relay/config` removes unused legacy global-storage helpers, the `.agent-relay.json` project-root config fallback, and the legacy `/tmp/relay-outbox` symlink support.
+- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup; uninstall still purges legacy install directories.
 
 ### Fixed
 
-- Use local broker commands in smoke tests
-- Avoid logging tainted auth data
-- Address review — kill, broker flags, tail signal, stale refs
-- Pin zod for fresh installs
-- Limit turbo concurrency in cold build to prevent OOM
-- Use node:crypto randomUUID instead of global crypto
-- Remove stale tsconfig paths for deleted packages; increase build memory
-- Remove @agent-relay/hooks from package-validation import test
-- Correct trailing comma in sdk/package.json exports and regenerate lockfile
-- Tolerate stray CLI login callbacks
-- Use AgentRelay.spawnAgent instead of removed spawnPty
-- Type spawn patch merging
-- Avoid headless result contract clobber
-- Cd into packages/cli before npm link, not --prefix
-- Npm link from packages/cli, not from monorepo root
-- Avoid overlapping access on URLComponents query filter
-- Revert @relayfile/local-mount to ^0.2.2
-- Repair lockfile platform variants + remaining test paths
-- Restore install.sh at root, bump local-mount, format script
-- Make bundledDependencies work from packages/cli
-- Correct URL building and reconnect on register
-- Honor model override and harden persona shadow-path test
-- Align RelayCast with v7 broker contract
-- Bump sdk-py and gemini extension to clear Dependabot alerts
-- Restore delivery_id keying for terminal_failed_deliveries
+- `@agent-relay/sdk`, `agent-relay mcp`, and `agent-relay-broker` share the same invalid-agent-token recovery signal for stale Relaycast agent tokens.
+- `@agent-relay/cloud` ignores stray localhost callbacks with invalid OAuth state parameters.
+- `agent-relay-broker` harness configs report harness PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.
+- `@agent-relay/sdk` normalizes broker `pid: null` spawn responses to `undefined` while PTY harness PIDs are reported asynchronously.
+- `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
+- `sdk-swift` connects to the v7 broker `/ws` event stream and routes spawn, release, channel post, and direct message calls through the broker HTTP API.
+
+### Security
+
+- `agent-relay` upgrades Vitest to 4.x to resolve the critical npm audit advisory.
+- `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear transitive CVEs across urllib3, gitpython, pillow, python-multipart, cryptography, authlib, idna, python-dotenv, pytest, and uv.
+- `gemini-relay-extension` refreshes its lockfile to clear fast-uri, path-to-regexp, hono, qs, ip-address, express-rate-limit, and `@hono/node-server` advisories.
 
 ## [7.1.1] - 2026-05-25
 
