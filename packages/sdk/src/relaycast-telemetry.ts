@@ -34,8 +34,8 @@ function nonEmpty(value: string | undefined): string | undefined {
 function resolveOriginActor(env: Env): string | undefined {
   const explicit = nonEmpty(env[ORIGIN_ACTOR_ENV]);
   if (explicit) return explicit;
-  const harness = HARNESS_ENV_KEYS.map((key) => nonEmpty(env[key])).find(
-    (value): value is string => Boolean(value)
+  const harness = HARNESS_ENV_KEYS.map((key) => nonEmpty(env[key])).find((value): value is string =>
+    Boolean(value)
   );
   return harness ? `agent-relay-cli/agent/${harness}` : undefined;
 }
