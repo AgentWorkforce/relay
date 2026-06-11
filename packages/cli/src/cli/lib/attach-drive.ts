@@ -4,7 +4,8 @@
  * Attaches to a running agent, flips it into `manual_flush` inbound delivery mode so the
  * broker parks new relay messages in a per-worker queue, and forwards your
  * keystrokes to the worker's PTY. Message queue control is deliberately out of
- * band: use `agent message flush`, `agent message hold`, and `agent message auto`
+ * band: use `local agent message flush`, `local agent message hold`, and
+ * `local agent message auto`
  * from another terminal instead of terminal control chords that agent TUIs may
  * intercept. `Ctrl+C` detaches, restores the worker's previous inbound delivery
  * mode, and leaves the agent running under the broker — `drive` never kills the

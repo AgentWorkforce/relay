@@ -2,6 +2,13 @@ import type { Command } from 'commander';
 
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
+import { createBrokerClient } from '../lib/attach-broker.js';
+import {
+  defaultStateDir,
+  readConnectionFileFromDisk,
+  resolveBrokerConnection,
+  type BrokerConnectionOptions,
+} from '../lib/broker-connection.js';
 import { defaultExit } from '../lib/exit.js';
 import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { attachDrive } from '../lib/attach-drive.js';
@@ -9,6 +16,7 @@ import { attachView } from '../lib/attach-view.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
 
 export type AttachMode = 'drive' | 'view' | 'passthrough';
+export type LocalAgentMessageBrokerOptions = BrokerConnectionOptions;
 
 /** Dispatch `local agent attach --mode` to the drive/view/passthrough session runners. */
 export function runAttach(
@@ -31,27 +39,51 @@ type ExitFn = (code: number) => never;
 
 export interface LocalAgentDependencies {
   connect: (cwd: string) => Promise<HarnessDriverClient>;
+  connectLocal: (cwd: string, options: LocalAgentMessageBrokerOptions) => Promise<HarnessDriverClient>;
   attach: (
     name: string,
     mode: AttachMode,
     options: { brokerUrl?: string; apiKey?: string; stateDir?: string }
   ) => Promise<number>;
   cwd: () => string;
+  readConnectionFile: (stateDir: string) => unknown;
+  getDefaultStateDir: () => string;
+  env: NodeJS.ProcessEnv;
+  fetch: typeof globalThis.fetch;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: ExitFn;
 }
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
-  return {
+  const deps = {
     connect: async (cwd: string) => HarnessDriverClient.connect({ cwd }),
-    attach: runAttach,
     cwd: () => process.cwd(),
+    readConnectionFile: readConnectionFileFromDisk,
+    getDefaultStateDir: defaultStateDir,
+    env: process.env,
+    fetch: globalThis.fetch,
+    attach: runAttach,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
     ...overrides,
+  } as LocalAgentDependencies;
+  deps.connectLocal ??= async (_cwd: string, options: LocalAgentMessageBrokerOptions) => {
+    const connection = resolveBrokerConnection(options, {
+      readConnectionFile: deps.readConnectionFile,
+      getDefaultStateDir: deps.getDefaultStateDir,
+      env: deps.env,
+    });
+    if (!connection) {
+      throw new Error(
+        'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
+          'or run from a directory containing .agentworkforce/relay/connection.json.'
+      );
+    }
+    return createBrokerClient(connection, deps.fetch);
   };
+  return deps;
 }
 
 async function run(
@@ -68,6 +100,34 @@ async function run(
   } finally {
     client?.disconnect?.();
   }
+}
+
+async function runLocalBroker(
+  deps: LocalAgentDependencies,
+  options: LocalAgentMessageBrokerOptions,
+  fn: (client: HarnessDriverClient) => Promise<void>
+): Promise<void> {
+  try {
+    await fn(await deps.connectLocal(deps.cwd(), options));
+  } catch (err) {
+    deps.error(err instanceof Error ? err.message : String(err));
+    deps.exit(1);
+  }
+}
+
+function addBrokerOptions(command: Command): Command {
+  return command
+    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
+    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
+    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agentworkforce/relay/)');
+}
+
+function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessageBrokerOptions {
+  return {
+    brokerUrl: opts.brokerUrl as string | undefined,
+    apiKey: opts.apiKey as string | undefined,
+    stateDir: opts.stateDir as string | undefined,
+  };
 }
 
 /**
@@ -195,6 +255,45 @@ export function registerLocalAgentCommands(
         deps.exit(code);
       }
     });
+
+  const message = agent.command('message').description('Control local broker message delivery for an agent');
+
+  addBrokerOptions(
+    message
+      .command('flush')
+      .description('Flush queued relay messages into a held local agent')
+      .argument('<name>', 'Agent name')
+  ).action(async (name: string, opts: Record<string, unknown>) => {
+    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
+      deps.log(JSON.stringify({ name, ...(await client.flushPending(name)) }, null, 2));
+    });
+  });
+
+  addBrokerOptions(
+    message
+      .command('hold')
+      .description('Hold new relay messages for a local agent until flushed')
+      .argument('<name>', 'Agent name')
+  ).action(async (name: string, opts: Record<string, unknown>) => {
+    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
+      deps.log(
+        JSON.stringify({ name, ...(await client.setInboundDeliveryMode(name, 'manual_flush')) }, null, 2)
+      );
+    });
+  });
+
+  addBrokerOptions(
+    message
+      .command('auto')
+      .description('Resume automatic relay message injection for a local agent')
+      .argument('<name>', 'Agent name')
+  ).action(async (name: string, opts: Record<string, unknown>) => {
+    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
+      deps.log(
+        JSON.stringify({ name, ...(await client.setInboundDeliveryMode(name, 'auto_inject')) }, null, 2)
+      );
+    });
+  });
 
   group
     .command('tail')
