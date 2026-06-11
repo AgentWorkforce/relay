@@ -5,6 +5,11 @@ pub(crate) struct RuntimePaths {
     pub(super) persist: bool,
     pub(super) state: PathBuf,
     pub(super) pending: PathBuf,
+    /// Terminally-failed deliveries retained for `redeliver`.
+    pub(super) dead_letters: PathBuf,
+    /// Inbound-event dedup cache snapshot, so a restart that replays the
+    /// persisted pending file cannot re-inject duplicates.
+    pub(super) dedup: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     pub(super) _lock: Option<std::fs::File>,
@@ -63,6 +68,8 @@ pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<R
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
+        dead_letters: root.join("dead-letters.json"),
+        dedup: root.join("dedup.json"),
         _lock: None,
     })
 }
@@ -139,6 +146,8 @@ pub(crate) fn ensure_runtime_paths(
                         persist: true,
                         state: root.join(format!("state-{safe_name}.json")),
                         pending: root.join(format!("pending-{safe_name}.json")),
+                        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                        dedup: root.join(format!("dedup-{safe_name}.json")),
                         _lock: Some(lock_file),
                     });
                 } else {
@@ -175,6 +184,8 @@ pub(crate) fn ensure_runtime_paths(
                 persist: true,
                 state: root.join(format!("state-{safe_name}.json")),
                 pending: root.join(format!("pending-{safe_name}.json")),
+                dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                dedup: root.join(format!("dedup-{safe_name}.json")),
                 _lock: Some(lock_file),
             });
         }
@@ -186,6 +197,8 @@ pub(crate) fn ensure_runtime_paths(
         persist: true,
         state: root.join(format!("state-{safe_name}.json")),
         pending: root.join(format!("pending-{safe_name}.json")),
+        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+        dedup: root.join(format!("dedup-{safe_name}.json")),
         _lock: Some(lock_file),
     })
 }

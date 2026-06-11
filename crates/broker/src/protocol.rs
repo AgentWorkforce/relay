@@ -426,6 +426,20 @@ pub enum BrokerEvent {
     // `runtime/fleet.rs` (and the TS shapes in
     // `packages/harness-driver/src/protocol.ts`) — field names/presence
     // must match what's really on the wire, not just what reads nicely here.
+    DeadLetterAdded {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        from: String,
+        to: MessageTarget,
+        attempts: u32,
+        reason: String,
+    },
+    DeadLetterRedelivered {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+    },
     DeliveryQueued {
         name: WorkerName,
         delivery_id: DeliveryId,

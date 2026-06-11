@@ -1,0 +1,62 @@
+{
+  "id": "traj_x8zkow3qwfpw",
+  "version": 1,
+  "task": {
+    "title": "Rebase PR #1098 (broker DLQ + redeliver + persisted dedup) onto current main; resolve conflicts",
+    "source": {
+      "system": "plain",
+      "id": "PR-1098"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-07-14T15:25:05.936Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-14T15:25:13.243Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_x4f5yutrc14h",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-14T15:25:13.243Z",
+      "events": [
+        {
+          "ts": 1784042713244,
+          "type": "decision",
+          "content": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename): Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+          "raw": {
+            "question": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+            "chosen": "Kept current-main 'node' CLI group; added node deadletters/redeliver (PR predated local->node rename)",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784042714531,
+          "type": "decision",
+          "content": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature: Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+          "raw": {
+            "question": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+            "chosen": "Dropped PR edits to relaycast_events firehose handler (delivery is now node-only); threaded dead_letters into release_worker_locally to match new emit_dropped_delivery_failures signature",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cadc2dcef04b85ae813e0db5b10bd898c1ced5fe",
+    "endRef": "cadc2dcef04b85ae813e0db5b10bd898c1ced5fe"
+  }
+}

@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `AgentRelaySDK` (Swift) gains rich relay facades over the relaycast engine SDK, mirroring the TypeScript `@agent-relay/sdk`: `AgentClient.threads` (get/reply), `inbox` and `deliveries` (list/ack/fail/defer), `channels` (list/get/create/update/archive/join/leave/invite/members/mute/unmute), `agents` (list/get/me/update/delete/presence), `nodes`, `triggers`, `integrations` (webhooks + subscriptions), `files` (upload), and `workspace` admin. `post`/`dm` accept `attachments`, and a typed listener hub adds `addListener`/`once`/`onError` alongside the existing event streams. `AgentRelay.createWorkspace(name:)` and `AgentRelay.workspace` consolidate workspace bootstrap and participant registration. Depends on relaycast `6.0.5+`.
+- `agent-relay-broker` retains terminally-failed deliveries (retry cap exhausted or recipient gone) in a persisted, capped dead-letter queue instead of discarding them, emitting `dead_letter_added`/`dead_letter_redelivered` broker events and exposing `GET /api/dead-letters` and `POST /api/dead-letters/redeliver`.
+- `agent-relay node deadletters` lists dead-letter deliveries and `agent-relay node redeliver <id|--all>` requeues them through the normal delivery path with a reset retry count; `@agent-relay/harness-driver` adds matching `getDeadLetters()`/`redeliverDeadLetters()` client methods.
+- `agent-relay-broker` persists the inbound-event dedup cache alongside pending deliveries and reloads it on startup (dropping expired entries), so a crash + restart no longer re-injects duplicates when the persisted pending file replays.
 
 ### Changed
 

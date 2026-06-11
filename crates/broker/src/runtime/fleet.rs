@@ -467,6 +467,7 @@ impl BrokerRuntime {
             &self.telemetry,
             &self.sdk_out_tx,
             &mut self.pending_deliveries,
+            &mut self.dead_letters,
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
