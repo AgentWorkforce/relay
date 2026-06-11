@@ -236,8 +236,9 @@ describe('RelaycastMessagingClient', () => {
       token: 'at_live_rotated',
       status: 'online',
     }));
-    (workspace.agents as typeof workspace.agents & { registerOrRotate: typeof registerOrRotate })
-      .registerOrRotate = registerOrRotate;
+    (
+      workspace.agents as typeof workspace.agents & { registerOrRotate: typeof registerOrRotate }
+    ).registerOrRotate = registerOrRotate;
     const client = new RelaycastMessagingClient({
       relaycast: workspace,
     });
