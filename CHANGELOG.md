@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
+## [8.6.0] - 2026-06-11
+
+### Added
+
+- Add xai (Grok CLI) provider to CLI_AUTH_CONFIG
+
+### Changed
+
+- Move local message controls under local agent
+- [codex] Fix changelog release attribution
+
 ## [8.5.0] - 2026-06-11
 
 ### Added
