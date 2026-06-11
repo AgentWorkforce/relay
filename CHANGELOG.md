@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay-broker` retains terminally-failed deliveries (retry cap exhausted or recipient gone) in a persisted, capped dead-letter queue instead of discarding them, emitting `dead_letter_added`/`dead_letter_redelivered` broker events and exposing `GET /api/dead-letters` and `POST /api/dead-letters/redeliver`.
+- `agent-relay local deadletters` lists dead-letter deliveries and `agent-relay local redeliver <id|--all>` requeues them through the normal delivery path with a reset retry count; `@agent-relay/harness-driver` adds matching `getDeadLetters()`/`redeliverDeadLetters()` client methods.
+- `agent-relay-broker` persists the inbound-event dedup cache alongside pending deliveries and reloads it on startup (dropping expired entries), so a crash + restart no longer re-injects duplicates when the persisted pending file replays.
 - `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`, `inbox.subscribe`, `inbox.ack/fail/defer`, and `deliveries.ack/fail/defer` now use the hosted delivery ledger, agent-scoped capabilities report `serverDeliveryState: true`, and `DeliveryRunner` works against Relaycast-backed inbox items.
 
 ### Changed

@@ -9,6 +9,8 @@ const expectedLeafCommands = [
   'local down',
   'local status',
   'local metrics',
+  'local deadletters',
+  'local redeliver',
   'local run',
   'local logs',
   'local sync',

@@ -180,7 +180,32 @@ export interface BrokerStatus {
   }>;
   pending_delivery_count: number;
   pending_deliveries: PendingDeliveryInfo[];
+  dead_letter_count?: number;
   auth?: BrokerAuthStatus;
+}
+
+/** A terminally-failed delivery retained in the broker's dead-letter queue. */
+export interface DeadLetterInfo {
+  delivery_id: string;
+  worker_name: string;
+  event_id: string;
+  from: string;
+  to: string;
+  attempts: number;
+  reason: string;
+  queued_at_ms: number;
+  failed_at_ms: number;
+  age_ms: number;
+}
+
+export interface DeadLettersResponse {
+  count: number;
+  dead_letters: DeadLetterInfo[];
+}
+
+export interface RedeliverDeadLettersResponse {
+  redelivered: Array<{ delivery_id: string; worker_name: string; event_id: string }>;
+  skipped: Array<{ delivery_id: string; worker_name: string; reason: string }>;
 }
 
 export type AgentCurrentState = 'working' | 'idle' | 'blocked_on_send';
@@ -381,6 +406,22 @@ export type BrokerEvent =
       to: string;
       attempts: number;
       lastError: string;
+    }
+  | {
+      kind: 'dead_letter_added';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      from: string;
+      to: string;
+      attempts: number;
+      reason: string;
+    }
+  | {
+      kind: 'dead_letter_redelivered';
+      name: string;
+      delivery_id: string;
+      event_id: string;
     }
   | {
       kind: 'delivery_active';

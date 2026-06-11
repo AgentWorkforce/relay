@@ -447,6 +447,20 @@ pub enum BrokerEvent {
         #[serde(rename = "lastError")]
         last_error: String,
     },
+    DeadLetterAdded {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        from: String,
+        to: MessageTarget,
+        attempts: u32,
+        reason: String,
+    },
+    DeadLetterRedelivered {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+    },
     DeliveryQueued {
         delivery_id: DeliveryId,
         agent: WorkerName,

@@ -29,6 +29,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
+    pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
@@ -114,26 +115,52 @@ impl BrokerRuntime {
                 }
             }
 
-            self.flush_pending_deliveries();
+            self.flush_persisted_stores();
         }
 
         self.shutdown_runtime().await
     }
 
-    /// Persist pending deliveries whenever the map was mutated by the event
-    /// just handled. Keeps the on-disk snapshot in lockstep with the
-    /// in-memory map so a crash between maintenance ticks cannot lose
-    /// queued deliveries.
-    fn flush_pending_deliveries(&mut self) {
-        if !self.pending_deliveries.take_dirty() || !self.paths.persist {
+    /// Persist pending deliveries, dead letters, and the dedup cache whenever
+    /// they were mutated by the event just handled. Keeps the on-disk
+    /// snapshots in lockstep with the in-memory state so a crash between
+    /// maintenance ticks cannot lose queued deliveries, dead letters, or
+    /// already-seen event ids.
+    fn flush_persisted_stores(&mut self) {
+        let pending_dirty = self.pending_deliveries.take_dirty();
+        let dead_letters_dirty = self.dead_letters.take_dirty();
+        let dedup_dirty = self.dedup.take_dirty();
+        if !self.paths.persist {
             return;
         }
-        if let Err(error) = save_pending_deliveries(&self.paths.pending, &self.pending_deliveries) {
-            tracing::warn!(
-                path = %self.paths.pending.display(),
-                error = %error,
-                "failed to persist pending deliveries"
-            );
+        if pending_dirty {
+            if let Err(error) =
+                save_pending_deliveries(&self.paths.pending, &self.pending_deliveries)
+            {
+                tracing::warn!(
+                    path = %self.paths.pending.display(),
+                    error = %error,
+                    "failed to persist pending deliveries"
+                );
+            }
+        }
+        if dead_letters_dirty {
+            if let Err(error) = save_dead_letters(&self.paths.dead_letters, &self.dead_letters) {
+                tracing::warn!(
+                    path = %self.paths.dead_letters.display(),
+                    error = %error,
+                    "failed to persist dead letters"
+                );
+            }
+        }
+        if dedup_dirty {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache"
+                );
+            }
         }
     }
 
@@ -190,6 +217,20 @@ impl BrokerRuntime {
             self.paths.persist,
             &self.pending_deliveries,
         );
+        persist_dead_letters_on_shutdown(
+            &self.paths.dead_letters,
+            self.paths.persist,
+            &self.dead_letters,
+        );
+        if self.paths.persist {
+            if let Err(error) = crate::dedup::save_dedup_cache(&self.paths.dedup, &self.dedup) {
+                tracing::warn!(
+                    path = %self.paths.dedup.display(),
+                    error = %error,
+                    "failed to persist dedup cache during shutdown"
+                );
+            }
+        }
         self.workers.shutdown_all().await?;
 
         // Clean up state and connection files on graceful shutdown

@@ -399,6 +399,79 @@ export function registerCoreCommands(program: Command, overrides: Partial<CoreDe
         client?.disconnect();
       }
     });
+
+  program
+    .command('deadletters')
+    .description('List terminally-failed deliveries retained in the broker dead-letter queue')
+    .option('--json', 'Output raw JSON')
+    .action(async (options: { json?: boolean }) => {
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.getDeadLetters();
+        if (options.json) {
+          deps.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.count === 0) {
+          deps.log('No dead-letter deliveries.');
+          return;
+        }
+        for (const entry of result.dead_letters) {
+          deps.log(
+            `${entry.delivery_id}  recipient=${entry.worker_name}  from=${entry.from}  ` +
+              `age=${formatAgeMs(entry.age_ms)}  attempts=${entry.attempts}  reason=${entry.reason}`
+          );
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+
+  program
+    .command('redeliver [id]')
+    .description('Requeue dead-letter deliveries through the normal delivery path')
+    .option('--all', 'Redeliver every dead-letter entry')
+    .action(async (id: string | undefined, options: { all?: boolean }) => {
+      if (Boolean(id) === Boolean(options.all)) {
+        deps.error('Provide exactly one of <id> or --all.');
+        deps.exit(1);
+      }
+      let client: HarnessDriverClient | undefined;
+      try {
+        client = HarnessDriverClient.connect({ cwd: process.cwd() });
+        const result = await client.redeliverDeadLetters(id ? { id } : { all: true });
+        for (const entry of result.redelivered) {
+          deps.log(`Redelivered ${entry.delivery_id} to ${entry.worker_name}`);
+        }
+        for (const entry of result.skipped) {
+          deps.warn(`Skipped ${entry.delivery_id} (${entry.worker_name}): ${entry.reason}`);
+        }
+        if (result.redelivered.length === 0 && result.skipped.length === 0) {
+          deps.log('No dead-letter deliveries to redeliver.');
+        }
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+      } finally {
+        client?.disconnect();
+      }
+    });
+}
+
+/** Render a millisecond age as a compact human-readable duration. */
+function formatAgeMs(ageMs: number): string {
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `${days}d${hours % 24 ? `${hours % 24}h` : ''}`;
 }
 
 /**

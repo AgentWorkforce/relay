@@ -416,9 +416,27 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let stdin_open = true;
     let mut reap_tick = tokio::time::interval(Duration::from_millis(500));
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let dedup = DedupCache::new(Duration::from_secs(300), 8192);
+    // Reload the dedup cache persisted by the previous session so the
+    // pending-delivery replay below cannot re-inject events the workers
+    // already saw before a crash/restart. Expired entries drop on load.
+    let dedup = crate::dedup::load_dedup_cache(&paths.dedup, Duration::from_secs(300), 8192);
+    if !dedup.is_empty() {
+        tracing::info!(
+            count = dedup.len(),
+            "loaded {} dedup entries from previous session",
+            dedup.len()
+        );
+    }
     let delivery_retry_interval = delivery_retry_interval();
     let pending_deliveries = PendingDeliveryStore::new(load_pending_deliveries(&paths.pending));
+    let dead_letters = DeadLetterStore::new(load_dead_letters(&paths.dead_letters));
+    if !dead_letters.is_empty() {
+        tracing::info!(
+            count = dead_letters.len(),
+            "loaded {} dead-letter deliveries from previous session",
+            dead_letters.len()
+        );
+    }
     let terminal_failed_deliveries: HashSet<DeliveryId> = HashSet::new();
     // Outstanding worker-bound RPC requests waiting on a `*_response`
     // frame from the wrapped worker. Keyed by the `request_id` we put on
@@ -499,6 +517,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         dedup,
         delivery_retry_interval,
         pending_deliveries,
+        dead_letters,
         terminal_failed_deliveries,
         pending_requests,
         delivery_states,

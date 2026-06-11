@@ -11,6 +11,7 @@ impl BrokerRuntime {
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
@@ -59,9 +60,14 @@ impl BrokerRuntime {
             .await
             {
                 Ok(outcome) => {
-                    let _ =
-                        emit_delivery_attempt_outcome(sdk_out_tx, &delivery_id, was_retry, outcome)
-                            .await;
+                    let _ = emit_delivery_attempt_outcome(
+                        sdk_out_tx,
+                        dead_letters,
+                        &delivery_id,
+                        was_retry,
+                        outcome,
+                    )
+                    .await;
                 }
                 Err(error) => {
                     let _ = send_error(
@@ -159,6 +165,7 @@ impl BrokerRuntime {
                         .await;
                         let _ = emit_dropped_delivery_failures(
                             sdk_out_tx,
+                            dead_letters,
                             &dropped,
                             "worker_permanently_dead",
                         )
@@ -211,9 +218,13 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        let _ =
-                            emit_dropped_delivery_failures(sdk_out_tx, &dropped, "worker_exited")
-                                .await;
+                        let _ = emit_dropped_delivery_failures(
+                            sdk_out_tx,
+                            dead_letters,
+                            &dropped,
+                            "worker_exited",
+                        )
+                        .await;
                     }
                     fail_pending_requests_for_worker(pending_requests, name, "worker_exited");
                     delivery_states.remove(name);
