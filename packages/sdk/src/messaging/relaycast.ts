@@ -1,5 +1,6 @@
 import { RelayCast } from '@relaycast/sdk';
 import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
+import type { DeliveryStatus } from '@relaycast/types';
 
 import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
 import {
@@ -277,7 +278,7 @@ type RelaycastWorkspaceLike = {
   on?: { any(handler: (event: unknown) => void): () => void };
 };
 
-type RelaycastDeliveryStatus = 'accepted' | 'delivered' | 'deferred' | 'failed';
+type RelaycastDeliveryStatus = DeliveryStatus;
 
 /** The durable delivery methods an agent client must expose for server-backed inbox state. */
 type RelaycastAgentDeliverySurface = Required<

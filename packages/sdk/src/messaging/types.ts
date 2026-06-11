@@ -1,68 +1,85 @@
-export type RelayAgentType = 'agent' | 'human' | 'system';
-export type RelayAgentStatus = 'online' | 'offline' | 'away' | 'unknown';
-export type RelayChannelMemberRole = 'owner' | 'member';
-export type RelayMessageMode = 'wait' | 'steer';
+import type * as wire from '@relaycast/types';
+
+// The `Relay*` types below are derived from the canonical wire contract in
+// `@relaycast/types` (snake_case zod schemas shared with the Relaycast
+// engine). Where the relay surface deliberately reshapes a wire type
+// (camelCase fields, renames, optional-instead-of-null, enrichment), the
+// reshaped fields still index into the canonical type so a wire-contract
+// change surfaces as a compile error here instead of silent drift.
+
+type WireAgentChannel = NonNullable<wire.Agent['channels']>[number];
+type WireInboxChannelSummary = wire.InboxResponse['unread_channels'][number];
+type WireInboxDirectSummary = wire.InboxResponse['unread_dms'][number];
+type WireInboxLastMessage = NonNullable<WireInboxDirectSummary['last_message']>;
+type WireInboxReactionSummary = wire.InboxResponse['recent_reactions'][number];
+
+export type RelayAgentType = wire.AgentType;
+/** Canonical agent statuses plus the relay-only `unknown` fallback. */
+export type RelayAgentStatus = wire.AgentStatus | 'unknown';
+export type RelayChannelMemberRole = wire.ChannelMemberInfo['role'];
+export type RelayMessageMode = wire.MessageInjectionMode;
 export type RelayMessageKind = 'channel' | 'dm' | 'group_dm' | 'thread_reply' | 'unknown';
 
 export interface RelayAgentChannel {
-  id: string;
-  name: string;
-  role: RelayChannelMemberRole;
-  joinedAt?: string;
+  id: WireAgentChannel['id'];
+  name: WireAgentChannel['name'];
+  role: WireAgentChannel['role'];
+  joinedAt?: WireAgentChannel['joined_at'];
 }
 
 export interface RelayAgent {
-  id: string;
-  name: string;
+  id: wire.Agent['id'];
+  name: wire.Agent['name'];
   type: RelayAgentType;
   status: RelayAgentStatus;
-  persona?: string;
-  metadata: Record<string, unknown>;
-  lastSeenAt?: string;
-  createdAt?: string;
+  persona?: NonNullable<wire.Agent['persona']>;
+  metadata: wire.Agent['metadata'];
+  lastSeenAt?: wire.Agent['last_seen'];
+  createdAt?: NonNullable<wire.Agent['created_at']>;
   channels: RelayAgentChannel[];
 }
 
 export interface RelayAgentRegistration {
-  id: string;
-  name: string;
-  token: string;
+  id: wire.CreateAgentResponse['id'];
+  name: wire.CreateAgentResponse['name'];
+  token: wire.CreateAgentResponse['token'];
   status: RelayAgentStatus;
-  createdAt?: string;
+  createdAt?: wire.CreateAgentResponse['created_at'];
 }
 
 export interface RelayAgentPresence {
-  agentId: string;
-  agentName: string;
-  status: Extract<RelayAgentStatus, 'online' | 'offline'>;
+  agentId: wire.AgentPresenceInfo['agent_id'];
+  agentName: wire.AgentPresenceInfo['agent_name'];
+  status: wire.AgentPresenceInfo['status'];
 }
 
 export interface RelayChannelMember {
-  agentId: string;
-  agentName: string;
-  role: RelayChannelMemberRole;
-  joinedAt?: string;
-  muted: boolean;
+  agentId: wire.ChannelMemberInfo['agent_id'];
+  agentName: wire.ChannelMemberInfo['agent_name'];
+  role: wire.ChannelMemberInfo['role'];
+  joinedAt?: wire.ChannelMemberInfo['joined_at'];
+  muted: NonNullable<wire.ChannelMemberInfo['is_muted']>;
 }
 
 export interface RelayChannel {
-  id: string;
-  name: string;
-  topic?: string;
-  metadata: Record<string, unknown>;
-  createdBy?: string;
-  createdAt?: string;
-  archived: boolean;
-  memberCount?: number;
+  id: wire.Channel['id'];
+  name: wire.Channel['name'];
+  topic?: NonNullable<wire.Channel['topic']>;
+  metadata: NonNullable<wire.Channel['metadata']>;
+  createdBy?: NonNullable<wire.Channel['created_by']>;
+  createdAt?: wire.Channel['created_at'];
+  archived: NonNullable<wire.Channel['is_archived']>;
+  memberCount?: wire.Channel['member_count'];
   members: RelayChannelMember[];
 }
 
+/** A stored file attachment; mirrors the canonical `FileAttachment` with `file_id` exposed as `id`. */
 export interface RelayStoredAttachment {
-  id: string;
+  id: wire.FileAttachment['file_id'];
   type?: 'stored';
-  filename?: string;
-  contentType?: string;
-  sizeBytes?: number;
+  filename?: wire.FileAttachment['filename'];
+  contentType?: wire.FileAttachment['content_type'];
+  sizeBytes?: wire.FileAttachment['size_bytes'];
 }
 
 export interface RelayTextAttachment {
@@ -127,11 +144,7 @@ export type RelayMessageAttachmentInput = string | RelayMessageAttachment;
 
 export type RelayMessageBlock = Record<string, unknown>;
 
-export interface RelayMessageReaction {
-  emoji: string;
-  count: number;
-  agents: string[];
-}
+export type RelayMessageReaction = wire.ReactionGroup;
 
 export interface RelayMessageSender {
   id?: string;
@@ -151,27 +164,27 @@ export type RelayMessageTarget =
   | { kind: string; [key: string]: unknown };
 
 export interface RelayMessage {
-  id: string;
+  id: wire.MessageWithMeta['id'];
   /** Public identifier for the message; mirrors `id`. */
-  messageId: string;
+  messageId: wire.MessageWithMeta['id'];
   kind?: RelayMessageKind;
-  text: string;
+  text: wire.MessageWithMeta['text'];
   from: RelayMessageSender;
   target?: RelayMessageTarget;
   channel?: RelayMessageChannelRef;
   conversationId?: string;
-  threadId?: string;
+  threadId?: NonNullable<wire.MessageWithMeta['thread_id']>;
   parentId?: string;
   mode?: RelayMessageMode;
-  createdAt?: string;
-  updatedAt?: string;
-  metadata?: Record<string, unknown>;
+  createdAt?: wire.MessageWithMeta['created_at'];
+  updatedAt?: NonNullable<wire.Message['updated_at']>;
+  metadata?: NonNullable<wire.MessageWithMeta['metadata']>;
   blocks?: RelayMessageBlock[];
   attachments?: RelayMessageAttachment[];
-  replyCount?: number;
+  replyCount?: wire.MessageWithMeta['reply_count'];
   reactions?: RelayMessageReaction[];
-  readByCount?: number;
-  mentions?: string[];
+  readByCount?: wire.MessageWithMeta['read_by_count'];
+  mentions?: NonNullable<wire.MessageWithMeta['mentions']>;
 }
 
 export interface RelayThread {
@@ -180,29 +193,29 @@ export interface RelayThread {
 }
 
 export interface RelayInboxChannelSummary {
-  channelName: string;
-  unreadCount: number;
+  channelName: WireInboxChannelSummary['channel_name'];
+  unreadCount: WireInboxChannelSummary['unread_count'];
 }
 
 export interface RelayInboxLastMessage {
-  id: string;
-  text: string;
-  createdAt?: string;
+  id: WireInboxLastMessage['id'];
+  text: WireInboxLastMessage['text'];
+  createdAt?: WireInboxLastMessage['created_at'];
 }
 
 export interface RelayInboxDirectSummary {
-  conversationId: string;
-  from: string;
-  unreadCount: number;
+  conversationId: WireInboxDirectSummary['conversation_id'];
+  from: WireInboxDirectSummary['from'];
+  unreadCount: WireInboxDirectSummary['unread_count'];
   lastMessage?: RelayInboxLastMessage;
 }
 
 export interface RelayInboxReactionSummary {
-  messageId: string;
-  channelName: string;
-  emoji: string;
-  agentName: string;
-  createdAt?: string;
+  messageId: WireInboxReactionSummary['message_id'];
+  channelName: WireInboxReactionSummary['channel_name'];
+  emoji: WireInboxReactionSummary['emoji'];
+  agentName: WireInboxReactionSummary['agent_name'];
+  createdAt?: WireInboxReactionSummary['created_at'];
 }
 
 export interface RelayInbox {
@@ -213,42 +226,42 @@ export interface RelayInbox {
 }
 
 export interface RelayReadReceipt {
-  messageId: string;
-  agentId?: string;
-  agentName?: string;
-  readAt?: string;
+  messageId: wire.ReadReceipt['message_id'];
+  agentId?: wire.ReadReceipt['agent_id'];
+  agentName?: wire.ReaderInfo['agent_name'];
+  readAt?: wire.ReadReceipt['read_at'];
 }
 
 export interface RelayChannelReadStatus {
-  agentName: string;
-  lastReadId?: string;
-  lastReadAt?: string;
+  agentName: wire.ChannelReadStatus['agent_name'];
+  lastReadId?: NonNullable<wire.ChannelReadStatus['last_read_id']>;
+  lastReadAt?: NonNullable<wire.ChannelReadStatus['last_read_at']>;
 }
 
 export interface RelaySearchResult {
-  id: string;
-  channelName: string;
-  agentName: string;
-  text: string;
-  createdAt?: string;
-  relevanceScore: number;
+  id: wire.SearchMessageResult['id'];
+  channelName: wire.SearchMessageResult['channel_name'];
+  agentName: wire.SearchMessageResult['agent_name'];
+  text: wire.SearchMessageResult['text'];
+  createdAt?: wire.SearchMessageResult['created_at'];
+  relevanceScore: wire.SearchMessageResult['relevance_score'];
 }
 
 export interface RelayListAgentsOptions {
-  status?: Exclude<RelayAgentStatus, 'unknown'> | 'all';
+  status?: NonNullable<wire.AgentListQuery['status']>;
 }
 
 export interface RelayRegisterAgentInput {
-  name: string;
+  name: wire.CreateAgentRequest['name'];
   type?: RelayAgentType;
-  persona?: string;
-  metadata?: Record<string, unknown>;
+  persona?: NonNullable<wire.CreateAgentRequest['persona']>;
+  metadata?: wire.CreateAgentRequest['metadata'];
 }
 
 export interface RelayUpdateAgentInput {
-  status?: Exclude<RelayAgentStatus, 'unknown'>;
-  persona?: string | null;
-  metadata?: Record<string, unknown>;
+  status?: wire.UpdateAgentRequest['status'];
+  persona?: wire.UpdateAgentRequest['persona'];
+  metadata?: wire.UpdateAgentRequest['metadata'];
 }
 
 export interface RelayListChannelsOptions {
@@ -256,14 +269,14 @@ export interface RelayListChannelsOptions {
 }
 
 export interface RelayCreateChannelInput {
-  name: string;
-  topic?: string | null;
-  metadata?: Record<string, unknown>;
+  name: wire.CreateChannelRequest['name'];
+  topic?: wire.CreateChannelRequest['topic'];
+  metadata?: wire.CreateChannelRequest['metadata'];
 }
 
 export interface RelayUpdateChannelInput {
-  topic?: string | null;
-  metadata?: Record<string, unknown>;
+  topic?: wire.UpdateChannelRequest['topic'];
+  metadata?: wire.UpdateChannelRequest['metadata'];
 }
 
 export interface RelayMessageListOptions {
@@ -317,11 +330,12 @@ export interface RelayCreateGroupDirectMessageInput {
 }
 
 export interface RelayGroupDirectConversation {
-  id: string;
-  channelId?: string;
-  name?: string;
-  participants: string[];
-  createdAt?: string;
+  id: wire.CreateGroupDmResponse['id'];
+  channelId?: wire.CreateGroupDmResponse['channel_id'];
+  name?: NonNullable<wire.CreateGroupDmResponse['name']>;
+  /** Participant agent ids, flattened from the canonical `{ agent_id }` rows. */
+  participants: Array<wire.CreateGroupDmResponse['participants'][number]['agent_id']>;
+  createdAt?: wire.CreateGroupDmResponse['created_at'];
 }
 
 export interface RelayDeliveryUnsupportedResult {
@@ -483,7 +497,12 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
-export type InboxItemState = 'queued' | 'delivered' | 'failed' | 'deferred' | 'read';
+/**
+ * Relay inbox states built on the canonical delivery-status lifecycle:
+ * the ledger's `accepted` surfaces as `queued`, and `read` is a relay-only
+ * extension (the ledger itself has no read state).
+ */
+export type InboxItemState = Exclude<wire.DeliveryStatus, 'accepted'> | 'queued' | 'read';
 
 export interface InboxItem {
   id: string;
@@ -574,20 +593,20 @@ export interface RelayAgentPresenceEvent {
 export interface RelayAgentSpawnRequestedEvent {
   type: 'agentSpawnRequested';
   agent: {
-    name: string;
-    cli?: string;
-    task?: string;
-    channel?: string;
-    model?: string;
-    alreadyExisted: boolean;
+    name: wire.AgentSpawnRequestedEvent['agent']['name'];
+    cli?: wire.AgentSpawnRequestedEvent['agent']['cli'];
+    task?: wire.AgentSpawnRequestedEvent['agent']['task'];
+    channel?: NonNullable<wire.AgentSpawnRequestedEvent['agent']['channel']>;
+    model?: NonNullable<wire.AgentSpawnRequestedEvent['agent']['model']>;
+    alreadyExisted: wire.AgentSpawnRequestedEvent['agent']['already_existed'];
   };
 }
 
 export interface RelayAgentReleaseRequestedEvent {
   type: 'agentReleaseRequested';
-  agent: { name: string };
-  reason?: string;
-  deleted: boolean;
+  agent: { name: wire.AgentReleaseRequestedEvent['agent']['name'] };
+  reason?: NonNullable<wire.AgentReleaseRequestedEvent['reason']>;
+  deleted: wire.AgentReleaseRequestedEvent['deleted'];
 }
 
 export interface RelayChannelChangedEvent {
@@ -608,24 +627,24 @@ export interface RelayChannelMembershipEvent {
 
 export interface RelayMessageReadEvent {
   type: 'messageRead';
-  messageId: string;
-  agentName: string;
-  readAt?: string;
+  messageId: wire.MessageReadEvent['message_id'];
+  agentName: wire.MessageReadEvent['agent_name'];
+  readAt?: wire.MessageReadEvent['read_at'];
 }
 
 export interface RelayReactionEvent {
   type: 'reactionAdded' | 'reactionRemoved';
-  messageId: string;
-  emoji: string;
-  agentName: string;
+  messageId: wire.MessageReactedEvent['message_id'];
+  emoji: wire.MessageReactedEvent['emoji'];
+  agentName: wire.MessageReactedEvent['agent_name'];
 }
 
 export interface RelayActionInvokedEvent {
   type: 'actionInvoked';
-  invocationId: string;
-  actionName: string;
-  callerName: string;
-  handlerAgentId: string;
+  invocationId: wire.ActionInvokedEvent['invocation_id'];
+  actionName: wire.ActionInvokedEvent['action_name'];
+  callerName: wire.ActionInvokedEvent['caller_name'];
+  handlerAgentId: wire.ActionInvokedEvent['handler_agent_id'];
 }
 
 export interface RelayConnectionEvent {
