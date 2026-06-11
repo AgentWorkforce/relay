@@ -1,12 +1,10 @@
 export const AGENT_RELAY_DISTINCT_ID_HEADER = 'X-Agent-Relay-Distinct-Id';
 export const RELAYCAST_HARNESS_HEADER = 'X-Relaycast-Harness';
-export const RELAYCAST_ORIGIN_SURFACE_HEADER = 'X-Relaycast-Origin-Surface';
 export const RELAYCAST_ORIGIN_CLIENT_HEADER = 'X-Relaycast-Origin-Client';
 export const RELAYCAST_ORIGIN_VERSION_HEADER = 'X-Relaycast-Origin-Version';
 
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const ORCHESTRATOR_HARNESS_ENV = 'AGENT_RELAY_ORCHESTRATOR_HARNESS';
-const TELEMETRY_SURFACE_ENV = 'AGENT_RELAY_TELEMETRY_SURFACE';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
 const DISTINCT_ID_ALLOWED = /^[a-z0-9._:-]+$/i;
@@ -47,10 +45,6 @@ export function buildAgentRelayTelemetryHeaders(
     maxLength: 120,
     pattern: HEADER_VALUE_ALLOWED,
   });
-  const surface = sanitizeHeaderValue(env[TELEMETRY_SURFACE_ENV], {
-    maxLength: 32,
-    pattern: HEADER_VALUE_ALLOWED,
-  });
   const client = sanitizeHeaderValue(env[TELEMETRY_CLIENT_ENV], {
     maxLength: 80,
     pattern: HEADER_VALUE_ALLOWED,
@@ -61,7 +55,6 @@ export function buildAgentRelayTelemetryHeaders(
   });
 
   if (harness) headers[RELAYCAST_HARNESS_HEADER] = harness;
-  if (surface) headers[RELAYCAST_ORIGIN_SURFACE_HEADER] = surface;
   if (client) headers[RELAYCAST_ORIGIN_CLIENT_HEADER] = client;
   if (version) headers[RELAYCAST_ORIGIN_VERSION_HEADER] = version;
 

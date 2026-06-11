@@ -285,7 +285,6 @@ describe('authorizedApiFetch telemetry headers', () => {
   const telemetryEnvKeys = [
     'AGENT_RELAY_DISTINCT_ID',
     'AGENT_RELAY_ORCHESTRATOR_HARNESS',
-    'AGENT_RELAY_TELEMETRY_SURFACE',
     'AGENT_RELAY_TELEMETRY_CLIENT',
     'AGENT_RELAY_CLI_VERSION',
     'AGENT_RELAY_SDK_VERSION',
@@ -307,7 +306,6 @@ describe('authorizedApiFetch telemetry headers', () => {
     clearTelemetryEnv();
     process.env.AGENT_RELAY_DISTINCT_ID = 'abc123def4567890';
     process.env.AGENT_RELAY_ORCHESTRATOR_HARNESS = 'Codex';
-    process.env.AGENT_RELAY_TELEMETRY_SURFACE = 'cli';
     process.env.AGENT_RELAY_TELEMETRY_CLIENT = 'agent-relay';
     process.env.AGENT_RELAY_CLI_VERSION = '7.1.1';
 
@@ -336,7 +334,6 @@ describe('authorizedApiFetch telemetry headers', () => {
     expect(headers.get('authorization')).toBe('Bearer access-token');
     expect(headers.get('x-agent-relay-distinct-id')).toBe('abc123def4567890');
     expect(headers.get('x-relaycast-harness')).toBe('Codex');
-    expect(headers.get('x-relaycast-origin-surface')).toBe('cli');
     expect(headers.get('x-relaycast-origin-client')).toBe('agent-relay');
     expect(headers.get('x-relaycast-origin-version')).toBe('7.1.1');
   });
