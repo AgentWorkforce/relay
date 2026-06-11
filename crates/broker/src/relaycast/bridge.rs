@@ -1,18 +1,46 @@
+use serde::Deserialize;
 use serde_json::Value;
 
+use super::wire::{self, TypedInbound};
 use crate::ids::{AgentId, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
 use crate::types::{
     BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest, RelayPriority,
     ReleaseParams, SenderKind, SpawnParams,
 };
 
+fn ws_event_type(value: &Value) -> &str {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
 /// Map a Relaycast ServerEvent (received over WebSocket) to an InboundRelayEvent.
+///
+/// Events are first parsed against the typed v3 wire contract
+/// ([`wire::parse_typed_inbound`]); shapes that do not match fall back to
+/// the tolerant `relaycast::normalize_inbound_event` field probing with a
+/// structured warning, so contract drift is observable without dropping
+/// traffic.
 pub fn map_ws_event(
     value: &Value,
     workspace_id: &str,
     workspace_alias: Option<&str>,
 ) -> Option<InboundRelayEvent> {
-    let event = relaycast::normalize_inbound_event(value)?;
+    let event = match wire::parse_typed_inbound(value) {
+        Some(TypedInbound::Event(event)) => event,
+        Some(TypedInbound::Ignored) => return None,
+        None => {
+            let event = relaycast::normalize_inbound_event(value)?;
+            tracing::warn!(
+                target = "broker::bridge",
+                event_type = %ws_event_type(value),
+                event_id = %event.event_id,
+                "WS event did not match the typed v3 wire contract; mapped via tolerant fallback"
+            );
+            event
+        }
+    };
     let kind = map_sdk_event_kind(event.kind);
     tracing::debug!(
         target = "broker::bridge",
@@ -55,10 +83,24 @@ pub struct ActionInvokedRef {
     pub handler_agent_id: Option<String>,
 }
 
-/// Parse a raw `action.invoked` WebSocket event (top-level or payload-wrapped).
+/// Parse a raw `action.invoked` WebSocket event.
+///
+/// The typed v3 contract shape (`relaycast::ActionInvokedEvent`, all
+/// fields required) is tried first; legacy top-level or payload-wrapped
+/// shapes fall back to field probing with a structured warning.
 pub fn parse_ws_action_invoked(value: &Value) -> Option<ActionInvokedRef> {
+    if ws_event_type(value) == "action.invoked" {
+        if let Ok(event) = relaycast::ActionInvokedEvent::deserialize(value) {
+            return Some(ActionInvokedRef {
+                action: event.action_name,
+                invocation_id: event.invocation_id,
+                invoked_by: event.caller_name,
+                handler_agent_id: Some(event.handler_agent_id),
+            });
+        }
+    }
     let event = action_invoked_object(value)?;
-    Some(ActionInvokedRef {
+    let parsed = ActionInvokedRef {
         action: event.get("action_name")?.as_str()?.to_string(),
         invocation_id: event.get("invocation_id")?.as_str()?.to_string(),
         invoked_by: event
@@ -70,7 +112,14 @@ pub fn parse_ws_action_invoked(value: &Value) -> Option<ActionInvokedRef> {
             .get("handler_agent_id")
             .and_then(|v| v.as_str())
             .map(str::to_string),
-    })
+    };
+    tracing::warn!(
+        target = "broker::bridge",
+        invocation_id = %parsed.invocation_id,
+        action = %parsed.action,
+        "action.invoked event did not match the typed v3 wire contract; parsed via tolerant fallback"
+    );
+    Some(parsed)
 }
 
 /// Locate the object carrying the `action.invoked` fields, accepting both
@@ -177,6 +226,156 @@ mod tests {
         let payload = broker_payload_from_action(&action_ref.action, input_map)?;
         Some((action_ref, payload))
     }
+    #[test]
+    fn contract_fixture_events_parse_via_typed_wire_contract() {
+        use serde::Deserialize as _;
+
+        use crate::relaycast::wire::{parse_typed_inbound, TypedInbound};
+        use crate::types::RelayPriority;
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../packages/contracts/fixtures/relaycast-ws-event-fixtures.json"
+        ))
+        .expect("ws event fixture should be valid JSON");
+
+        let inbound_cases = fixture
+            .get("typed_inbound")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_inbound cases");
+        assert!(!inbound_cases.is_empty());
+
+        for case in inbound_cases {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            let expect = case.get("expect").expect("case must include expect");
+
+            // The canonical engine shape must parse on the typed path, not
+            // the tolerant fallback.
+            let typed = parse_typed_inbound(event);
+            assert!(
+                matches!(typed, Some(TypedInbound::Event(_))),
+                "fixture case {name:?} must parse via the typed wire contract"
+            );
+
+            // And the typed result must be identical to what the tolerant
+            // parser (the behavior oracle) produces.
+            if let Some(TypedInbound::Event(typed_event)) = typed {
+                let tolerant = relaycast::normalize_inbound_event(event)
+                    .expect("tolerant parser should map fixture case");
+                assert_eq!(
+                    typed_event, tolerant,
+                    "typed and tolerant parse diverged for fixture case {name:?}"
+                );
+            }
+
+            let mapped = map_event(event)
+                .unwrap_or_else(|| panic!("fixture case {name:?} should map to an inbound event"));
+
+            let expected_kind = match expect.get("kind").and_then(Value::as_str) {
+                Some("message_created") => InboundKind::MessageCreated,
+                Some("dm_received") => InboundKind::DmReceived,
+                Some("group_dm_received") => InboundKind::GroupDmReceived,
+                Some("thread_reply") => InboundKind::ThreadReply,
+                Some("presence") => InboundKind::Presence,
+                Some("reaction_received") => InboundKind::ReactionReceived,
+                other => panic!("fixture case {name:?} has unknown expected kind {other:?}"),
+            };
+            assert_eq!(mapped.kind, expected_kind, "kind mismatch for {name:?}");
+
+            let expect_str = |key: &str| expect.get(key).and_then(Value::as_str);
+            assert_eq!(
+                mapped.event_id.as_str(),
+                expect_str("event_id").unwrap(),
+                "event_id mismatch for {name:?}"
+            );
+            assert_eq!(
+                mapped.from,
+                expect_str("from").unwrap(),
+                "from mismatch for {name:?}"
+            );
+            assert_eq!(
+                mapped.target.as_str(),
+                expect_str("target").unwrap(),
+                "target mismatch for {name:?}"
+            );
+            if let Some(text) = expect_str("text") {
+                assert_eq!(mapped.text, text, "text mismatch for {name:?}");
+            }
+            assert_eq!(
+                mapped.thread_id.as_deref(),
+                expect_str("thread_id"),
+                "thread_id mismatch for {name:?}"
+            );
+            let expected_priority = match expect_str("priority") {
+                Some("P2") => RelayPriority::P2,
+                Some("P3") => RelayPriority::P3,
+                Some("P4") => RelayPriority::P4,
+                other => panic!("fixture case {name:?} has unknown expected priority {other:?}"),
+            };
+            assert_eq!(
+                mapped.priority, expected_priority,
+                "priority mismatch for {name:?}"
+            );
+
+            let injectable = expect
+                .get("injectable")
+                .and_then(Value::as_bool)
+                .expect("fixture case must declare injectable");
+            assert_eq!(
+                to_inject_request(mapped).is_some(),
+                injectable,
+                "injectability mismatch for {name:?}"
+            );
+        }
+
+        for case in fixture
+            .get("typed_ignored")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_ignored cases")
+        {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            assert_eq!(
+                parse_typed_inbound(event),
+                Some(TypedInbound::Ignored),
+                "fixture case {name:?} must be typed-ignored"
+            );
+            assert!(
+                map_event(event).is_none(),
+                "fixture case {name:?} must not map to an inbound event"
+            );
+        }
+
+        for case in fixture
+            .get("typed_action")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_action cases")
+        {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            let expect = case.get("expect").expect("case must include expect");
+            assert!(
+                relaycast::ActionInvokedEvent::deserialize(event).is_ok(),
+                "fixture case {name:?} must parse via the typed action contract"
+            );
+            let parsed = super::parse_ws_action_invoked(event)
+                .unwrap_or_else(|| panic!("fixture case {name:?} should parse"));
+            assert_eq!(
+                parsed,
+                ActionInvokedRef {
+                    action: expect["action"].as_str().unwrap().to_string(),
+                    invocation_id: expect["invocation_id"].as_str().unwrap().to_string(),
+                    invoked_by: expect["invoked_by"].as_str().unwrap().to_string(),
+                    handler_agent_id: expect
+                        .get("handler_agent_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                },
+                "action mapping mismatch for {name:?}"
+            );
+        }
+    }
+
     #[test]
     fn maps_message_created_top_level() {
         let event = map_event(&json!({

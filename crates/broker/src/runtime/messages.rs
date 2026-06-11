@@ -188,7 +188,118 @@ pub(crate) fn is_relaycast_self_control_target(
         || workspace_self_names.contains(&normalized)
 }
 
+/// Typed view of the two message shapes that feed the dashboard thread
+/// list: events the broker itself records into the in-memory thread
+/// history, and DM history fetched from the Relaycast REST API
+/// (`relaycast::MessageWithMeta` plus the `conversation_id` /
+/// `participants` fields injected by `get_all_dms`).
+///
+/// The `message_*` accessors below try this typed view first and only
+/// fall back to JSON-pointer field probing for shapes that match neither;
+/// [`build_thread_infos`] logs a structured warning when the fallback is
+/// the path that grouped a message, so contract drift stays observable.
+#[derive(Debug, Clone)]
+pub(crate) enum TypedThreadMessage {
+    Recorded(RecordedThreadMessage),
+    DmHistory(DmHistoryMessage),
+}
+
+/// The shape recorded by `record_thread_history_event` callers
+/// (`runtime/relaycast_events.rs`, `runtime/api.rs`).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RecordedThreadMessage {
+    #[allow(dead_code)]
+    pub(crate) event_id: String,
+    pub(crate) from: String,
+    pub(crate) target: String,
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) thread_id: Option<String>,
+    pub(crate) timestamp: String,
+}
+
+/// A REST DM history message: `relaycast::MessageWithMeta` serialized to
+/// JSON with `conversation_id` (and `participants`) injected by
+/// `RelaycastHttpClient::get_all_dms`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DmHistoryMessage {
+    #[allow(dead_code)]
+    pub(crate) id: String,
+    pub(crate) conversation_id: String,
+    #[allow(dead_code)]
+    pub(crate) agent_id: String,
+    pub(crate) agent_name: String,
+    pub(crate) text: String,
+    pub(crate) created_at: String,
+    #[serde(default)]
+    pub(crate) thread_id: Option<String>,
+}
+
+impl TypedThreadMessage {
+    pub(crate) fn parse(value: &Value) -> Option<Self> {
+        if let Ok(recorded) = RecordedThreadMessage::deserialize(value) {
+            return Some(Self::Recorded(recorded));
+        }
+        if let Ok(message) = DmHistoryMessage::deserialize(value) {
+            return Some(Self::DmHistory(message));
+        }
+        None
+    }
+
+    fn sender(&self) -> Option<String> {
+        match self {
+            Self::Recorded(event) => trimmed_non_empty(&event.from),
+            Self::DmHistory(message) => trimmed_non_empty(&message.agent_name),
+        }
+    }
+
+    fn target(&self) -> Option<String> {
+        match self {
+            Self::Recorded(event) => trimmed_non_empty(&event.target),
+            Self::DmHistory(message) => trimmed_non_empty(&message.conversation_id),
+        }
+    }
+
+    fn text(&self) -> Option<String> {
+        match self {
+            Self::Recorded(event) => trimmed_non_empty(&event.text),
+            Self::DmHistory(message) => trimmed_non_empty(&message.text),
+        }
+    }
+
+    fn timestamp(&self) -> Option<String> {
+        match self {
+            Self::Recorded(event) => trimmed_non_empty(&event.timestamp),
+            Self::DmHistory(message) => trimmed_non_empty(&message.created_at),
+        }
+    }
+
+    fn explicit_thread_id(&self) -> Option<String> {
+        match self {
+            Self::Recorded(event) => event.thread_id.as_deref().and_then(trimmed_non_empty),
+            Self::DmHistory(message) => message
+                .thread_id
+                .as_deref()
+                .and_then(trimmed_non_empty)
+                .or_else(|| trimmed_non_empty(&message.conversation_id)),
+        }
+    }
+}
+
+/// Match the trim-and-reject-empty semantics of [`json_scalar_to_string`].
+fn trimmed_non_empty(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub(crate) fn message_sender(value: &Value) -> Option<String> {
+    if let Some(typed) = TypedThreadMessage::parse(value) {
+        return typed.sender();
+    }
     first_string(
         value,
         &[
@@ -210,6 +321,9 @@ pub(crate) fn message_sender(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn message_target(value: &Value) -> Option<String> {
+    if let Some(typed) = TypedThreadMessage::parse(value) {
+        return typed.target();
+    }
     first_string(
         value,
         &[
@@ -242,6 +356,9 @@ pub(crate) fn message_target(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn message_preview(value: &Value) -> Option<String> {
+    if let Some(typed) = TypedThreadMessage::parse(value) {
+        return Some(truncate_thread_preview(&typed.text()?, 200));
+    }
     let text = first_string(
         value,
         &[
@@ -297,6 +414,9 @@ pub(crate) fn parse_sort_key_from_raw_timestamp(raw: &str) -> Option<i64> {
 }
 
 pub(crate) fn message_timestamp_string(value: &Value) -> Option<String> {
+    if let Some(typed) = TypedThreadMessage::parse(value) {
+        return typed.timestamp();
+    }
     first_string(
         value,
         &[
@@ -347,7 +467,52 @@ pub(crate) fn message_sort_key(value: &Value, index: usize) -> i64 {
     .unwrap_or(index as i64)
 }
 
+/// `true` when `target` is a DM / group-DM conversation identifier rather
+/// than a worker name or channel: the `dm_` / `conv_` prefixes classified
+/// by [`crate::ids::MessageTargetKind`], plus the bare numeric ids used by
+/// workspace DM history.
+fn target_is_conversation_id(target: &str) -> bool {
+    use crate::ids::MessageTargetKind;
+    !target.is_empty()
+        && (matches!(
+            MessageTarget::new(target).kind(),
+            MessageTargetKind::DirectMessage(_) | MessageTargetKind::Conversation(_)
+        ) || target.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+/// Derive a thread id from a message's routing target when no explicit
+/// thread / conversation id is present: channels group by normalized
+/// channel name, conversation ids group by themselves, and anything else
+/// is treated as a direct exchange keyed by the sorted sender/target pair.
+fn derive_thread_id_from_target(target: String, sender: Option<String>) -> Option<String> {
+    if target.starts_with('#') {
+        return Some(normalize_channel(&target));
+    }
+    if target_is_conversation_id(&target) {
+        return Some(target);
+    }
+
+    let sender = normalize_identity_for_thread(&sender?);
+    let target = normalize_identity_for_thread(&target);
+    if sender.is_empty() || target.is_empty() {
+        return None;
+    }
+    let (first, second) = if sender <= target {
+        (sender, target)
+    } else {
+        (target, sender)
+    };
+    Some(format!("direct:{first}:{second}"))
+}
+
 pub(crate) fn message_thread_id(value: &Value) -> Option<String> {
+    if let Some(typed) = TypedThreadMessage::parse(value) {
+        if let Some(explicit) = typed.explicit_thread_id() {
+            return Some(explicit);
+        }
+        return derive_thread_id_from_target(typed.target()?, typed.sender());
+    }
+
     if let Some(explicit) = first_string(
         value,
         &[
@@ -377,28 +542,7 @@ pub(crate) fn message_thread_id(value: &Value) -> Option<String> {
     }
 
     let target = message_target(value)?;
-    if target.starts_with('#') {
-        return Some(normalize_channel(&target));
-    }
-    if target.starts_with("conv_")
-        || target.starts_with("dm_")
-        || target.chars().all(|ch| ch.is_ascii_digit())
-    {
-        return Some(target);
-    }
-
-    let sender = message_sender(value)?;
-    let sender = normalize_identity_for_thread(&sender);
-    let target = normalize_identity_for_thread(&target);
-    if sender.is_empty() || target.is_empty() {
-        return None;
-    }
-    let (first, second) = if sender <= target {
-        (sender, target)
-    } else {
-        (target, sender)
-    };
-    Some(format!("direct:{first}:{second}"))
+    derive_thread_id_from_target(target, message_sender(value))
 }
 
 pub(crate) fn is_self_identity(value: &str, self_names: &HashSet<String>) -> bool {
@@ -461,9 +605,7 @@ pub(crate) fn derive_thread_name(
         if !trimmed.is_empty()
             && !trimmed.eq_ignore_ascii_case(thread_id)
             && !is_self_identity(trimmed, self_names)
-            && !trimmed.starts_with("conv_")
-            && !trimmed.starts_with("dm_")
-            && !trimmed.chars().all(|ch| ch.is_ascii_digit())
+            && !target_is_conversation_id(trimmed)
         {
             return trimmed.to_string();
         }
@@ -506,9 +648,18 @@ pub(crate) fn build_thread_infos(
     let mut by_thread: HashMap<String, ThreadAccumulator> = HashMap::new();
 
     for (index, message) in messages.iter().enumerate() {
+        let matched_typed = TypedThreadMessage::parse(message).is_some();
         let Some(thread_id) = message_thread_id(message) else {
             continue;
         };
+        if !matched_typed {
+            tracing::warn!(
+                target = "broker::threads",
+                index,
+                thread_id = %thread_id,
+                "thread history message did not match a typed broker message shape; grouped via tolerant field probing"
+            );
+        }
 
         let name = derive_thread_name(message, &thread_id, self_names);
         let sort_key = message_sort_key(message, index);

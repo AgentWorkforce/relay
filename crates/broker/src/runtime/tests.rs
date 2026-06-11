@@ -44,7 +44,7 @@ use super::{
     sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
     InboundQueueOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
-    MAX_DELIVERY_RETRIES,
+    TypedThreadMessage, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -1199,6 +1199,130 @@ fn parse_sort_key_normalizes_numeric_seconds_to_millis() {
         parse_sort_key_from_raw_timestamp("2026-02-23T10:00:00Z"),
         Some(1_771_840_800_000)
     );
+}
+
+#[test]
+fn parse_sort_key_handles_edge_inputs() {
+    // The seconds/millis pivot: values below 4_102_444_800 (2100-01-01 in
+    // seconds) are treated as seconds, values at or above it as millis.
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("4102444799"),
+        Some(4_102_444_799_000)
+    );
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("4102444800"),
+        Some(4_102_444_800)
+    );
+    // Negative epochs are still scaled as seconds.
+    assert_eq!(parse_sort_key_from_raw_timestamp("-5"), Some(-5_000));
+    // RFC3339 with an offset normalizes to UTC millis.
+    assert_eq!(
+        parse_sort_key_from_raw_timestamp("2026-02-23T12:00:00+02:00"),
+        Some(1_771_840_800_000)
+    );
+    // Whitespace-only and unparseable inputs yield no sort key.
+    assert_eq!(parse_sort_key_from_raw_timestamp("   "), None);
+    assert_eq!(parse_sort_key_from_raw_timestamp("soon"), None);
+    assert_eq!(parse_sort_key_from_raw_timestamp("1.5e9"), None);
+}
+
+#[test]
+fn typed_thread_message_parses_broker_recorded_shape() {
+    let recorded = json!({
+        "event_id": "evt_recorded_1",
+        "from": "Lead",
+        "target": "#general",
+        "text": "typed lane",
+        "thread_id": null,
+        "workspace_id": "ws_1",
+        "workspace_alias": "main",
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    assert!(
+        matches!(
+            TypedThreadMessage::parse(&recorded),
+            Some(TypedThreadMessage::Recorded(_))
+        ),
+        "broker-recorded thread history events must parse typed"
+    );
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let threads = build_thread_infos(std::slice::from_ref(&recorded), &self_names);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "#general");
+    assert_eq!(threads[0].last_message.as_deref(), Some("typed lane"));
+    assert_eq!(
+        threads[0].last_message_at.as_deref(),
+        Some("2026-02-23T10:00:00Z")
+    );
+}
+
+#[test]
+fn typed_thread_message_parses_dm_history_shape() {
+    // `relaycast::MessageWithMeta` serialized to JSON with conversation_id
+    // and participants injected by `get_all_dms`.
+    let dm_history = json!({
+        "id": "184467440737095530",
+        "agent_name": "WorkerA",
+        "agent_id": "147298826957365248",
+        "text": "dm history payload",
+        "blocks": null,
+        "metadata": {},
+        "attachments": [],
+        "created_at": "2026-02-23T10:05:00Z",
+        "reply_count": 0,
+        "reactions": [],
+        "read_by_count": 0,
+        "injection_mode": null,
+        "conversation_id": "dm_456",
+        "participants": ["WorkerA", "WorkerB"],
+    });
+    assert!(
+        matches!(
+            TypedThreadMessage::parse(&dm_history),
+            Some(TypedThreadMessage::DmHistory(_))
+        ),
+        "REST DM history messages must parse typed"
+    );
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let threads = build_thread_infos(std::slice::from_ref(&dm_history), &self_names);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].thread_id, "dm_456");
+    assert_eq!(threads[0].name, "WorkerA ↔ WorkerB");
+    assert_eq!(
+        threads[0].last_message.as_deref(),
+        Some("dm history payload")
+    );
+    assert_eq!(threads[0].unread_count, 1);
+}
+
+#[test]
+fn typed_and_tolerant_thread_grouping_agree_for_recorded_events() {
+    // The typed lane must group a broker-recorded event exactly like the
+    // tolerant probing lane groups its untyped equivalent (an event
+    // missing `event_id` falls back to field probing).
+    let typed_event = json!({
+        "event_id": "evt_recorded_2",
+        "from": "WorkerA",
+        "target": "broker",
+        "text": "status update",
+        "thread_id": null,
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    let untyped_event = json!({
+        "from": "WorkerA",
+        "target": "broker",
+        "text": "status update",
+        "timestamp": "2026-02-23T10:00:00Z",
+    });
+    assert!(TypedThreadMessage::parse(&typed_event).is_some());
+    assert!(TypedThreadMessage::parse(&untyped_event).is_none());
+
+    let self_names = HashSet::from(["broker".to_string()]);
+    let typed_threads = build_thread_infos(std::slice::from_ref(&typed_event), &self_names);
+    let tolerant_threads = build_thread_infos(std::slice::from_ref(&untyped_event), &self_names);
+    assert_eq!(typed_threads, tolerant_threads);
 }
 
 #[test]

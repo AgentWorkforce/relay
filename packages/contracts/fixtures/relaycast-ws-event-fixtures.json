@@ -1,0 +1,284 @@
+{
+  "description": "Canonical Relaycast v3 engine WebSocket event shapes for the events the broker routes. Shapes follow the @relaycast/types zod schemas (events.ts, message.ts) as emitted by the engine's wsTransform. Each typed_inbound case must parse via the broker's typed wire contract (crates/broker/src/relaycast/wire.rs), not the tolerant fallback, and must map to the expected inbound event. typed_ignored cases must match the typed contract but be intentionally dropped. typed_action cases must parse via the typed relaycast::ActionInvokedEvent struct.",
+  "typed_inbound": [
+    {
+      "name": "message.created",
+      "event": {
+        "id": "9bd16ebe-3a55-5c2d-8f41-7e0a92c6b1d4",
+        "type": "message.created",
+        "channel": "general",
+        "message": {
+          "id": "184467440737095516",
+          "agent_id": "147298826957365248",
+          "agent_name": "alice",
+          "text": "hello team",
+          "attachments": []
+        }
+      },
+      "expect": {
+        "kind": "message_created",
+        "event_id": "9bd16ebe-3a55-5c2d-8f41-7e0a92c6b1d4",
+        "from": "alice",
+        "target": "#general",
+        "text": "hello team",
+        "thread_id": null,
+        "priority": "P3",
+        "injectable": true
+      }
+    },
+    {
+      "name": "message.created with attachment",
+      "event": {
+        "id": "7c2e91af-6d04-5b3e-9a82-04f6c1d27e85",
+        "type": "message.created",
+        "channel": "ops",
+        "message": {
+          "id": "184467440737095530",
+          "agent_id": "147298826957365260",
+          "agent_name": "build-bot",
+          "text": "build log attached",
+          "attachments": [
+            {
+              "file_id": "file_184467440737095531",
+              "filename": "build.log",
+              "content_type": "text/plain",
+              "size_bytes": 2048
+            }
+          ]
+        }
+      },
+      "expect": {
+        "kind": "message_created",
+        "event_id": "7c2e91af-6d04-5b3e-9a82-04f6c1d27e85",
+        "from": "build-bot",
+        "target": "#ops",
+        "text": "build log attached",
+        "thread_id": null,
+        "priority": "P3",
+        "injectable": true
+      }
+    },
+    {
+      "name": "dm.received",
+      "event": {
+        "id": "0c1d2e3f-4a5b-5c6d-8e7f-9a0b1c2d3e4f",
+        "type": "dm.received",
+        "conversation_id": "dm_184467440737095517",
+        "message": {
+          "id": "184467440737095518",
+          "agent_id": "147298826957365248",
+          "agent_name": "bob",
+          "text": "direct ping",
+          "injection_mode": "wait"
+        }
+      },
+      "expect": {
+        "kind": "dm_received",
+        "event_id": "0c1d2e3f-4a5b-5c6d-8e7f-9a0b1c2d3e4f",
+        "from": "bob",
+        "target": "dm_184467440737095517",
+        "text": "direct ping",
+        "thread_id": null,
+        "priority": "P2",
+        "injectable": true
+      }
+    },
+    {
+      "name": "dm.received from infrastructure sender",
+      "event": {
+        "id": "3c4d5e6f-7a8b-5c9d-8e0f-1a2b3c4d5e6f",
+        "type": "dm.received",
+        "conversation_id": "dm_184467440737095527",
+        "message": {
+          "id": "184467440737095528",
+          "agent_id": "147298826957365253",
+          "agent_name": "broker-abc123",
+          "text": "infra ping"
+        }
+      },
+      "expect": {
+        "kind": "dm_received",
+        "event_id": "3c4d5e6f-7a8b-5c9d-8e0f-1a2b3c4d5e6f",
+        "from": "Dashboard",
+        "target": "dm_184467440737095527",
+        "text": "infra ping",
+        "thread_id": null,
+        "priority": "P2",
+        "injectable": true
+      }
+    },
+    {
+      "name": "group_dm.received",
+      "event": {
+        "id": "1a2b3c4d-5e6f-5a7b-8c8d-9e0f1a2b3c4d",
+        "type": "group_dm.received",
+        "conversation_id": "conv_184467440737095519",
+        "message": {
+          "id": "184467440737095520",
+          "agent_id": "147298826957365249",
+          "agent_name": "carol",
+          "text": "group update"
+        }
+      },
+      "expect": {
+        "kind": "group_dm_received",
+        "event_id": "1a2b3c4d-5e6f-5a7b-8c8d-9e0f1a2b3c4d",
+        "from": "carol",
+        "target": "conv_184467440737095519",
+        "text": "group update",
+        "thread_id": null,
+        "priority": "P3",
+        "injectable": true
+      }
+    },
+    {
+      "name": "thread.reply",
+      "event": {
+        "id": "2b3c4d5e-6f7a-5b8c-8d9e-0f1a2b3c4d5e",
+        "type": "thread.reply",
+        "channel": "general",
+        "parent_id": "184467440737095521",
+        "message": {
+          "id": "184467440737095522",
+          "agent_id": "147298826957365250",
+          "agent_name": "dave",
+          "text": "threaded answer"
+        }
+      },
+      "expect": {
+        "kind": "thread_reply",
+        "event_id": "2b3c4d5e-6f7a-5b8c-8d9e-0f1a2b3c4d5e",
+        "from": "dave",
+        "target": "#general",
+        "text": "threaded answer",
+        "thread_id": "184467440737095521",
+        "priority": "P3",
+        "injectable": true
+      }
+    },
+    {
+      "name": "message.reacted added in channel",
+      "event": {
+        "type": "message.reacted",
+        "message_id": "184467440737095523",
+        "emoji": "thumbsup",
+        "agent_name": "alice",
+        "action": "added",
+        "channel_name": "general"
+      },
+      "expect": {
+        "kind": "reaction_received",
+        "event_id": "reaction-184467440737095523-alice-thumbsup",
+        "from": "alice",
+        "target": "#general",
+        "thread_id": null,
+        "priority": "P4",
+        "injectable": true
+      }
+    },
+    {
+      "name": "message.reacted removed in channel",
+      "event": {
+        "type": "message.reacted",
+        "message_id": "184467440737095523",
+        "emoji": "thumbsup",
+        "agent_name": "bob",
+        "action": "removed",
+        "channel_name": "dev"
+      },
+      "expect": {
+        "kind": "reaction_received",
+        "event_id": "reaction-184467440737095523-bob-thumbsup",
+        "from": "bob",
+        "target": "#dev",
+        "thread_id": null,
+        "priority": "P4",
+        "injectable": true
+      }
+    },
+    {
+      "name": "agent.status.active",
+      "event": {
+        "type": "agent.status.active",
+        "agent": { "name": "alice" },
+        "status": "active"
+      },
+      "expect": {
+        "kind": "presence",
+        "event_id": "presence-agent.status.active-alice",
+        "from": "alice",
+        "target": "",
+        "text": "",
+        "thread_id": null,
+        "priority": "P4",
+        "injectable": false
+      }
+    },
+    {
+      "name": "agent.status.offline",
+      "event": {
+        "type": "agent.status.offline",
+        "agent": { "name": "bob" },
+        "status": "offline"
+      },
+      "expect": {
+        "kind": "presence",
+        "event_id": "presence-agent.status.offline-bob",
+        "from": "bob",
+        "target": "",
+        "text": "",
+        "thread_id": null,
+        "priority": "P4",
+        "injectable": false
+      }
+    },
+    {
+      "name": "agent.status.changed",
+      "event": {
+        "type": "agent.status.changed",
+        "agent": { "name": "carol" },
+        "status": "idle"
+      },
+      "expect": {
+        "kind": "presence",
+        "event_id": "presence-agent.status.changed-carol",
+        "from": "carol",
+        "target": "",
+        "text": "",
+        "thread_id": null,
+        "priority": "P4",
+        "injectable": false
+      }
+    }
+  ],
+  "typed_ignored": [
+    {
+      "name": "message.reacted without channel context (DM reaction)",
+      "event": {
+        "type": "message.reacted",
+        "message_id": "184467440737095525",
+        "emoji": "rocket",
+        "agent_name": "carol",
+        "action": "added"
+      }
+    }
+  ],
+  "typed_action": [
+    {
+      "name": "action.invoked",
+      "event": {
+        "type": "action.invoked",
+        "invocation_id": "inv_184467440737095529",
+        "action_name": "spawn",
+        "caller_name": "147298826957365248",
+        "handler_agent_id": "147305428879515648"
+      },
+      "expect": {
+        "action": "spawn",
+        "invocation_id": "inv_184467440737095529",
+        "invoked_by": "147298826957365248",
+        "handler_agent_id": "147305428879515648"
+      }
+    }
+  ]
+}

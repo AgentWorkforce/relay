@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent-relay-broker` now parses inbound Relaycast WebSocket events (channel messages, DMs, group DMs, thread replies, reactions, presence, `action.invoked`) against the typed v3 wire contract first; events that do not match the published schema still route through the previous tolerant field probing, with a structured warning so contract drift is observable in broker logs.
 - PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
 
 ### Added
