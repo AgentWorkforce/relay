@@ -240,7 +240,7 @@ pub fn spawn_env_vars(
     if let Some(harness) = harness {
         env.push((
             "AGENT_RELAY_ORIGIN_ACTOR".to_string(),
-            format!("agent-relay-cli/agent/{harness}"),
+            crate::telemetry::agent_origin_actor(harness, None),
         ));
     }
     if let Some(workspaces_json) = workspaces_json
