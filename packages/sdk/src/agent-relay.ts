@@ -1,6 +1,6 @@
 import { RelayCast } from '@relaycast/sdk';
 
-import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './actions/index.js';
+import { ActionRegistry, type AgentRelayActions } from './actions/index.js';
 import {
   relaycastTelemetryOptions,
   relaycastWorkspaceTelemetryOptions,
@@ -35,6 +35,7 @@ import {
   type ListenerPredicate,
   type RelayAgentHandle,
   type RelayEvent,
+  type TypedActionHandle,
 } from './listeners.js';
 import type { AgentSessionEvent } from './session/index.js';
 
@@ -65,7 +66,12 @@ export interface AgentRelayAgent {
   readonly webhooks: RelayMessaging['webhooks'];
   readonly capabilities: RelayMessaging['commands'];
   readonly workspace: RelayWorkspace;
-  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
+  registerAction<TInput, TOutput>(
+    def: RegisterActionInput<TInput, TOutput>
+  ): TypedActionHandle<TInput, TOutput>;
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
@@ -198,7 +204,9 @@ export class AgentRelay implements AgentRelayAgent {
     });
   }
 
-  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
+  registerAction<TInput, TOutput>(
+    def: RegisterActionInput<TInput, TOutput>
+  ): TypedActionHandle<TInput, TOutput> {
     // The workspace-scoped client has no single handler-agent identity or
     // agent connection, so relay wiring is skipped and the action stays
     // in-process. Use an agent client (workspace.register / reconnect) to
@@ -206,7 +214,10 @@ export class AgentRelay implements AgentRelayAgent {
     return registerFacadeAction(this.actions, def, { messaging: this.messaging });
   }
 
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
+  addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void {
     return this.listenerHub.addListener(selector, handler);
   }
@@ -279,7 +290,8 @@ export function agentRelayAgent(
     capabilities: messaging.commands,
     workspace: createWorkspaceFacade(messaging),
     registerAction: (def) => registerFacadeAction(actions, def, { messaging, handlerAgent }),
-    addListener: (selector, handler) => hub.addListener(selector, handler),
+    addListener: ((selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>) =>
+      hub.addListener(selector, handler)) as AgentRelayAgent['addListener'],
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
     emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),
