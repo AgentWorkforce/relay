@@ -436,6 +436,58 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
     ],
   },
+  xai: {
+    command: 'grok',
+    args: ['login'],
+    // Device-code flow for headless/remote environments — `grok login` defaults
+    // to a loopback OAuth callback that cannot be reached through gateways
+    // which don't forward TCP (same limitation codex hit on Daytona SSH).
+    deviceFlowArgs: ['login', '--device-auth'],
+    supportsDeviceFlow: true,
+    urlPattern: /(https:\/\/[^\s]+)/,
+    // Scope-keyed OIDC credential: { "https://auth.x.ai::<client_id>":
+    //   { key, refresh_token, expires_at, oidc_client_id, ... } }.
+    // Access tokens live 6h; refresh tokens are SINGLE-USE (rotated on every
+    // refresh against https://auth.x.ai/oauth2/token), so stored copies must
+    // be refresh-and-persisted server-side, never refreshed only in-sandbox.
+    credentialPath: '~/.grok/auth.json',
+    displayName: 'Grok',
+    // Official installer; GROK_BIN_DIR keeps the binary on the PATH the auth
+    // sandbox exports (~/.local/bin). Stable-channel downloads need no auth.
+    installCommand: 'curl -fsSL https://x.ai/cli/install.sh | GROK_BIN_DIR=$HOME/.local/bin bash',
+    waitTimeout: 30000,
+    prompts: [
+      {
+        // Generic enter prompt (fallback) — device-auth prints a URL + code
+        // and polls; no interactive menus observed in grok 0.2.x.
+        pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)/i,
+        response: '\r',
+        delay: 300,
+        description: 'Generic enter prompt',
+      },
+    ],
+    successPatterns: [
+      /success/i,
+      /authenticated/i,
+      /logged\s*in/i,
+      /signed\s*in/i,
+      /you.*(?:are|now).*logged/i,
+    ],
+    errorPatterns: [
+      {
+        pattern: /auth.*failed|authentication\s*error|invalid.*code|code\s*expired/i,
+        message: 'Grok authentication failed',
+        recoverable: true,
+        hint: 'Device codes expire quickly — please try again and enter the code promptly.',
+      },
+      {
+        pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
+        message: 'Network error during authentication',
+        recoverable: true,
+        hint: 'Please check your internet connection and try again.',
+      },
+    ],
+  },
 };
 
 /**
