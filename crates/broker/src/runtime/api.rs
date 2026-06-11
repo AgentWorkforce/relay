@@ -16,6 +16,7 @@ impl BrokerRuntime {
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
@@ -425,6 +426,7 @@ impl BrokerRuntime {
                                         ).await;
                             let _ = emit_dropped_delivery_failures(
                                 sdk_out_tx,
+                                dead_letters,
                                 &dropped,
                                 "agent_released",
                             )
@@ -1182,6 +1184,7 @@ impl BrokerRuntime {
                     "agents": workers.list(),
                     "pending_delivery_count": pending.len(),
                     "pending_deliveries": pending,
+                    "dead_letter_count": dead_letters.len(),
                     "auth": {
                         "authenticated": !auth_workspaces.is_empty(),
                         "workspace_count": auth_workspaces.len(),
@@ -1192,6 +1195,85 @@ impl BrokerRuntime {
             }
             ListenApiRequest::GetCrashInsights { reply } => {
                 let _ = reply.send(Ok(crash_insights.to_json()));
+            }
+            ListenApiRequest::GetDeadLetters { reply } => {
+                let now_ms = unix_timestamp_millis();
+                let entries: Vec<Value> = dead_letters
+                    .iter()
+                    .map(|entry| {
+                        json!({
+                            "delivery_id": entry.delivery.delivery_id,
+                            "worker_name": entry.worker_name,
+                            "event_id": entry.delivery.event_id,
+                            "from": entry.delivery.from,
+                            "to": entry.delivery.target,
+                            "attempts": entry.attempts,
+                            "reason": entry.reason,
+                            "queued_at_ms": entry.queued_at_ms,
+                            "failed_at_ms": entry.failed_at_ms,
+                            "age_ms": now_ms.saturating_sub(entry.failed_at_ms),
+                        })
+                    })
+                    .collect();
+                let _ = reply.send(Ok(json!({
+                    "count": entries.len(),
+                    "dead_letters": entries,
+                })));
+            }
+            ListenApiRequest::RedeliverDeadLetters { id, reply } => {
+                let candidate_ids: Vec<DeliveryId> = match id {
+                    Some(id) => {
+                        if dead_letters.get(&id).is_none() {
+                            let _ =
+                                reply.send(Err(format!("no dead-letter delivery with id '{id}'")));
+                            return;
+                        }
+                        vec![id]
+                    }
+                    None => dead_letters.delivery_ids(),
+                };
+
+                let mut redelivered: Vec<Value> = Vec::new();
+                let mut skipped: Vec<Value> = Vec::new();
+                for delivery_id in candidate_ids {
+                    let Some(entry) = dead_letters.get(&delivery_id) else {
+                        continue;
+                    };
+                    // Leave entries for absent recipients in the queue —
+                    // requeueing them would only bounce straight back here
+                    // with `recipient gone` on the next maintenance tick.
+                    if !workers.has_worker(&entry.worker_name) {
+                        skipped.push(json!({
+                            "delivery_id": delivery_id,
+                            "worker_name": entry.worker_name,
+                            "reason": "recipient not running",
+                        }));
+                        continue;
+                    }
+                    let Some(pending) =
+                        requeue_dead_letter(dead_letters, pending_deliveries, &delivery_id)
+                    else {
+                        continue;
+                    };
+                    let _ = send_broker_event(
+                        sdk_out_tx,
+                        BrokerEvent::DeadLetterRedelivered {
+                            name: pending.worker_name.clone(),
+                            delivery_id: pending.delivery.delivery_id.clone(),
+                            event_id: pending.delivery.event_id.clone(),
+                        },
+                    )
+                    .await;
+                    redelivered.push(json!({
+                        "delivery_id": pending.delivery.delivery_id,
+                        "worker_name": pending.worker_name,
+                        "event_id": pending.delivery.event_id,
+                    }));
+                }
+                let _ = reply.send(Ok(json!({
+                    "redelivered": redelivered,
+                    "skipped": skipped,
+                })));
             }
             ListenApiRequest::Preflight { agents, reply } => {
                 let count = agents.len();

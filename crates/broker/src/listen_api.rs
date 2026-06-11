@@ -11,7 +11,9 @@ use std::{
 };
 
 use crate::{
-    ids::{ChannelName, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId},
+    ids::{
+        ChannelName, DeliveryId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+    },
     protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
@@ -128,6 +130,18 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     GetCrashInsights {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    /// `GET /api/dead-letters` — list terminally-failed deliveries retained
+    /// in the dead-letter queue.
+    GetDeadLetters {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    /// `POST /api/dead-letters/redeliver` — requeue dead-letter entries
+    /// through the normal delivery path with a reset retry count. `id: None`
+    /// redelivers every entry whose recipient is currently running.
+    RedeliverDeadLetters {
+        id: Option<DeliveryId>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Preflight {
@@ -400,6 +414,11 @@ fn listen_api_router_with_auth(
         .route(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
+        )
+        .route("/api/dead-letters", routing::get(listen_api_dead_letters))
+        .route(
+            "/api/dead-letters/redeliver",
+            routing::post(listen_api_redeliver_dead_letters),
         )
         .route("/api/preflight", routing::post(listen_api_preflight))
         .route("/api/shutdown", routing::post(listen_api_shutdown))
@@ -1884,6 +1903,72 @@ async fn listen_api_crash_insights(
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
         Err(_) => internal_error(),
         Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
+    }
+}
+
+async fn listen_api_dead_letters(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetDeadLetters { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct RedeliverBody {
+    /// Dead-letter delivery id to requeue; omit (with `all: true`) to
+    /// requeue everything.
+    id: Option<String>,
+    #[serde(default)]
+    all: bool,
+}
+
+async fn listen_api_redeliver_dead_letters(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(body): axum::Json<RedeliverBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let id = match (&body.id, body.all) {
+        (Some(id), false) => Some(DeliveryId::from(id.as_str())),
+        (None, true) => None,
+        _ => {
+            return api_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "provide exactly one of 'id' or 'all: true'".to_string(),
+            );
+        }
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::RedeliverDeadLetters {
+            id,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "dead_letter_not_found",
+            err,
+        ),
+        Err(_) => internal_error(),
     }
 }
 

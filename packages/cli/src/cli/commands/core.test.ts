@@ -8,10 +8,15 @@ const sdkStatusClient = {
   disconnect: vi.fn(() => undefined),
 };
 
+const harnessConnectMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@agent-relay/harness-driver', () => ({
-  HarnessDriverClient: vi.fn(function () {
-    return sdkStatusClient;
-  }),
+  HarnessDriverClient: Object.assign(
+    vi.fn(function () {
+      return sdkStatusClient;
+    }),
+    { connect: harnessConnectMock }
+  ),
 }));
 
 const telemetryMocks = vi.hoisted(() => ({
@@ -28,6 +33,7 @@ beforeEach(() => {
   sdkStatusClient.getSession.mockReset();
   sdkStatusClient.getSession.mockResolvedValue({ workspace_key: '' });
   sdkStatusClient.disconnect.mockClear();
+  harnessConnectMock.mockReset();
   telemetryMocks.track.mockClear();
 });
 
@@ -203,7 +209,9 @@ describe('registerCoreCommands', () => {
     const { program } = createHarness();
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining(['up', 'down', 'status', 'metrics']));
+    expect(commandNames).toEqual(
+      expect.arrayContaining(['up', 'down', 'status', 'metrics', 'deadletters', 'redeliver'])
+    );
     expect(commandNames).not.toEqual(expect.arrayContaining(['bridge', 'uninstall', 'version', 'update']));
   });
 
@@ -1423,5 +1431,115 @@ describe('registerCoreCommands', () => {
     expect(env.RELAY_WORKSPACE_KEY).toBe('rk_live_new');
     expect(env.RELAY_API_KEY).toBe('rk_live_new');
     expect(deps.log).toHaveBeenCalledWith('Workspace Key: rk_live_new');
+  });
+});
+
+describe('dead-letter commands', () => {
+  function deadLetterEntry(overrides: Record<string, unknown> = {}) {
+    return {
+      delivery_id: 'del_1',
+      worker_name: 'Worker',
+      event_id: 'evt_1',
+      from: 'Lead',
+      to: 'Worker',
+      attempts: 10,
+      reason: 'max delivery retries exceeded',
+      queued_at_ms: 1,
+      failed_at_ms: 2,
+      age_ms: 65_000,
+      ...overrides,
+    };
+  }
+
+  it('deadletters lists entries from the broker', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 1, dead_letters: [deadLetterEntry()] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['deadletters']);
+
+    expect(exitCode).toBeUndefined();
+    expect(client.getDeadLetters).toHaveBeenCalled();
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('del_1'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('recipient=Worker'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('reason=max delivery retries exceeded'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('age=1m'));
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('deadletters reports an empty queue', async () => {
+    const client = {
+      getDeadLetters: vi.fn(async () => ({ count: 0, dead_letters: [] })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters']);
+
+    expect(deps.log).toHaveBeenCalledWith('No dead-letter deliveries.');
+  });
+
+  it('deadletters --json prints the raw response', async () => {
+    const response = { count: 1, dead_letters: [deadLetterEntry()] };
+    const client = {
+      getDeadLetters: vi.fn(async () => response),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['deadletters', '--json']);
+
+    expect(deps.log).toHaveBeenCalledWith(JSON.stringify(response, null, 2));
+  });
+
+  it('redeliver requeues a single entry by id', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    const exitCode = await runCommand(program, ['redeliver', 'del_1']);
+
+    expect(exitCode).toBeUndefined();
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ id: 'del_1' });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it('redeliver --all requeues everything and reports skips', async () => {
+    const client = {
+      redeliverDeadLetters: vi.fn(async () => ({
+        redelivered: [{ delivery_id: 'del_1', worker_name: 'Worker', event_id: 'evt_1' }],
+        skipped: [{ delivery_id: 'del_2', worker_name: 'Ghost', reason: 'recipient not running' }],
+      })),
+      disconnect: vi.fn(),
+    };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const { program, deps } = createHarness();
+
+    await runCommand(program, ['redeliver', '--all']);
+
+    expect(client.redeliverDeadLetters).toHaveBeenCalledWith({ all: true });
+    expect(deps.log).toHaveBeenCalledWith('Redelivered del_1 to Worker');
+    expect(deps.warn).toHaveBeenCalledWith('Skipped del_2 (Ghost): recipient not running');
+  });
+
+  it('redeliver requires exactly one of id or --all', async () => {
+    const { program, deps } = createHarness();
+
+    expect(await runCommand(program, ['redeliver'])).toBe(1);
+    expect(await runCommand(program, ['redeliver', 'del_1', '--all'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Provide exactly one of <id> or --all.');
+    expect(harnessConnectMock).not.toHaveBeenCalled();
   });
 });

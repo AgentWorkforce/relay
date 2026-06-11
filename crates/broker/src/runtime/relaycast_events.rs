@@ -12,6 +12,7 @@ impl BrokerRuntime {
         let agent_spawn_count = &mut self.agent_spawn_count;
         let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
@@ -97,6 +98,7 @@ impl BrokerRuntime {
                                             ).await;
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
+                                    dead_letters,
                                     &dropped,
                                     "agent_released",
                                 )

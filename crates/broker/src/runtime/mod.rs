@@ -67,6 +67,7 @@ static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = On
 mod api;
 mod app_server;
 mod connection;
+mod dead_letter;
 mod delivery;
 mod event_loop;
 mod headless;
@@ -86,6 +87,7 @@ mod worker_events;
 
 pub(crate) use app_server::*;
 pub(crate) use connection::*;
+pub(crate) use dead_letter::*;
 pub(crate) use delivery::*;
 pub(crate) use event_loop::*;
 pub(crate) use headless::*;

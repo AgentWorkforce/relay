@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PendingDelivery {
     pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
@@ -22,20 +22,18 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DeliveryAttemptOutcome {
     Attempted {
         worker_name: WorkerName,
         attempts: u32,
         event_id: EventId,
     },
+    /// Terminal failure: the entry was removed from the pending map. The full
+    /// [`PendingDelivery`] rides along so the caller can move it into the
+    /// dead-letter store instead of discarding the message.
     Failed {
-        worker_name: WorkerName,
-        delivery_id: DeliveryId,
-        event_id: EventId,
-        from: String,
-        to: MessageTarget,
-        attempts: u32,
+        pending: Box<PendingDelivery>,
         last_error: String,
     },
     Noop,
@@ -130,14 +128,7 @@ pub(crate) fn save_pending_deliveries(
             last_error: pd.last_error.clone(),
         })
         .collect();
-    let json = serde_json::to_string_pretty(&persisted)?;
-    let dir = path.parent().unwrap_or(path);
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed creating temp file in {}", dir.display()))?;
-    std::io::Write::write_all(&mut tmp, json.as_bytes())?;
-    tmp.persist(path)
-        .with_context(|| format!("failed persisting pending deliveries to {}", path.display()))?;
-    Ok(())
+    crate::util::fs::write_json_atomic(path, &persisted)
 }
 
 pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, PendingDelivery> {
@@ -686,28 +677,20 @@ pub(crate) async fn retry_pending_delivery(
 
     if pending.attempts >= MAX_DELIVERY_RETRIES {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        let last_error = removed
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "max delivery retries exceeded".to_string());
         return Ok(DeliveryAttemptOutcome::Failed {
-            worker_name: removed.worker_name,
-            delivery_id: removed.delivery.delivery_id,
-            event_id: removed.delivery.event_id,
-            from: removed.delivery.from,
-            to: removed.delivery.target,
-            attempts: removed.attempts,
-            last_error: removed
-                .last_error
-                .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+            pending: Box::new(removed),
+            last_error,
         });
     }
 
     if !workers.has_worker(&pending.worker_name) {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         return Ok(DeliveryAttemptOutcome::Failed {
-            worker_name: removed.worker_name,
-            delivery_id: removed.delivery.delivery_id,
-            event_id: removed.delivery.event_id,
-            from: removed.delivery.from,
-            to: removed.delivery.target,
-            attempts: removed.attempts,
+            pending: Box::new(removed),
             last_error: "recipient gone".to_string(),
         });
     }
@@ -741,16 +724,13 @@ pub(crate) async fn retry_pending_delivery(
 
             if should_fail {
                 if let Some(removed) = pending_deliveries.remove(delivery_id) {
+                    let last_error = removed
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "max delivery retries exceeded".to_string());
                     return Ok(DeliveryAttemptOutcome::Failed {
-                        worker_name: removed.worker_name,
-                        delivery_id: removed.delivery.delivery_id,
-                        event_id: removed.delivery.event_id,
-                        from: removed.delivery.from,
-                        to: removed.delivery.target,
-                        attempts: removed.attempts,
-                        last_error: removed
-                            .last_error
-                            .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+                        pending: Box::new(removed),
+                        last_error,
                     });
                 }
                 return Ok(DeliveryAttemptOutcome::Noop);
@@ -762,6 +742,7 @@ pub(crate) async fn retry_pending_delivery(
 
 pub(crate) async fn emit_delivery_attempt_outcome(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
     delivery_id: &DeliveryId,
     was_retry: bool,
     outcome: DeliveryAttemptOutcome,
@@ -786,27 +767,23 @@ pub(crate) async fn emit_delivery_attempt_outcome(
             }
         }
         DeliveryAttemptOutcome::Failed {
-            worker_name,
-            delivery_id,
-            event_id,
-            from,
-            to,
-            attempts,
+            pending,
             last_error,
         } => {
             send_broker_event(
                 sdk_out_tx,
                 BrokerEvent::MessageDeliveryFailed {
-                    name: worker_name,
-                    delivery_id: Some(delivery_id),
-                    event_id: Some(event_id),
-                    from,
-                    to,
-                    attempts,
-                    last_error,
+                    name: pending.worker_name.clone(),
+                    delivery_id: Some(pending.delivery.delivery_id.clone()),
+                    event_id: Some(pending.delivery.event_id.clone()),
+                    from: pending.delivery.from.clone(),
+                    to: pending.delivery.target.clone(),
+                    attempts: pending.attempts,
+                    last_error: last_error.clone(),
                 },
             )
             .await?;
+            dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &last_error).await;
         }
         DeliveryAttemptOutcome::Noop => {}
     }
@@ -839,6 +816,7 @@ pub(crate) fn take_pending_for_worker(
 
 pub(crate) async fn emit_dropped_delivery_failures(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
     dropped: &[PendingDelivery],
     reason: &str,
 ) -> Result<()> {
@@ -856,6 +834,7 @@ pub(crate) async fn emit_dropped_delivery_failures(
             },
         )
         .await?;
+        dead_letter_pending_delivery(sdk_out_tx, dead_letters, pending, reason).await;
     }
     Ok(())
 }
