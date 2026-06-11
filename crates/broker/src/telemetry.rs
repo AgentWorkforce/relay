@@ -316,7 +316,10 @@ fn sanitize_orchestrator_harness(raw: &str) -> Option<String> {
     Some(trimmed.chars().take(120).collect::<String>().to_lowercase())
 }
 
-fn infer_harness_from_command(command: &str) -> Option<&'static str> {
+/// Map a CLI command (e.g. `claude`, `codex`, `gemini`) to its canonical
+/// harness id. Used for orchestrator detection and for per-worker origin_actor
+/// attribution (the broker knows the CLI it spawns).
+pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> {
     let lower = command.to_lowercase();
     let normalized = lower.replace('\\', "/");
     let base = normalized

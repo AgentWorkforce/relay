@@ -403,7 +403,7 @@ function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWor
       baseUrl: options.baseUrl,
       retryPolicy: options.retryPolicy,
       ...relaycastTelemetryOptions({
-        harness: options.harness,
+        originActor: options.originActor,
         agentRelayDistinctId: options.agentRelayDistinctId,
       }),
     }) as RelayCastOptions
