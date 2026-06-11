@@ -233,11 +233,15 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
-    // Forward the detected harness so spawned agents using the JS SDK
-    // (`@relaycast/sdk`, which resolves harness from env and has no
-    // process-tree fallback) report it to the backend instead of "unknown".
+    // Per-worker attribution: tell the spawned agent's JS SDK its origin_actor
+    // path (`agent-relay-cli/agent/<harness>`) via env, so its relaycast
+    // telemetry is attributed to the harness it runs rather than "unknown".
+    // See cloud/plans/origin-actor.md.
     if let Some(harness) = harness {
-        env.push(("AGENT_RELAY_HARNESS".to_string(), harness.to_string()));
+        env.push((
+            "AGENT_RELAY_ORIGIN_ACTOR".to_string(),
+            format!("agent-relay-cli/agent/{harness}"),
+        ));
     }
     if let Some(workspaces_json) = workspaces_json
         .map(str::trim)
@@ -280,7 +284,7 @@ mod tests {
     use super::{spawn_env_vars, terminate_child, Spawner};
 
     #[test]
-    fn spawn_env_vars_forwards_harness_when_present() {
+    fn spawn_env_vars_sets_origin_actor_path_when_harness_present() {
         let env = spawn_env_vars(
             "a",
             "rk_live_x",
@@ -290,17 +294,17 @@ mod tests {
             None,
             Some("codex"),
         );
-        let harness = env
+        let origin_actor = env
             .iter()
-            .find(|(k, _)| k == "AGENT_RELAY_HARNESS")
+            .find(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
             .map(|(_, v)| v.as_str());
-        assert_eq!(harness, Some("codex"));
+        assert_eq!(origin_actor, Some("agent-relay-cli/agent/codex"));
     }
 
     #[test]
-    fn spawn_env_vars_omits_harness_when_absent() {
+    fn spawn_env_vars_omits_origin_actor_when_absent() {
         let env = spawn_env_vars("a", "rk_live_x", "https://gw", "#c", None, None, None);
-        assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_HARNESS"));
+        assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
     }
 
     #[tokio::test]
