@@ -19,6 +19,9 @@ const expectedLeafCommands = [
   'local agent release',
   'local agent set-model',
   'local agent attach',
+  'local agent message flush',
+  'local agent message hold',
+  'local agent message auto',
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -44,14 +47,11 @@ const expectedLeafCommands = [
   'workspace set_key',
   'workspace join',
   'workspace switch',
-  // agent (messaging directory)
+  // workspace agents
   'agent register',
   'agent list',
   'agent add',
   'agent remove',
-  'agent message flush',
-  'agent message hold',
-  'agent message auto',
   // channel
   'channel create',
   'channel list',

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
+- `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message ...` path was removed.
 
 ### Fixed
 

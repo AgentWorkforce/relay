@@ -81,9 +81,9 @@ Attach modes:
 Drive mode uses out-of-band message controls so terminal control keys can pass through to the agent TUI:
 
 ```bash
-agent-relay agent message hold reviewer
-agent-relay agent message flush reviewer
-agent-relay agent message auto reviewer
+agent-relay local agent message hold reviewer
+agent-relay local agent message flush reviewer
+agent-relay local agent message auto reviewer
 ```
 
 `hold` switches the local agent to manual delivery, `flush` drains pending relay messages into the agent, and `auto` resumes automatic injection. Each command accepts `--broker-url`, `--api-key`, and `--state-dir` when the broker is not discoverable from the current directory. Attach sessions use `Ctrl+C` to detach locally.
