@@ -38,6 +38,7 @@ function createStubClient(history: BrokerEvent[] = []) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    release: vi.fn(async (name: string) => ({ name })),
     emit: (event: BrokerEvent) => {
       history.push(event);
       for (const listener of listeners) listener(event);
@@ -100,6 +101,56 @@ describe('SpawnedAgentHandle.waitForResult', () => {
 
     const info = await handle.waitForResult(5);
     expect(info).toEqual({ reason: 'timeout' });
+  });
+});
+
+// ── lifecycle helpers ──────────────────────────────────────────────────────
+
+describe('SpawnedAgentHandle lifecycle helpers', () => {
+  it('exposes prior exit info and replays it for waitForExit', async () => {
+    const stub = createStubClient([
+      { kind: 'agent_exited', name: 'worker', code: 7, signal: 'SIGTERM' } as BrokerEvent,
+    ]);
+    const handle = createHandle(stub);
+
+    expect(handle.exitCode).toBe(7);
+    expect(handle.exitSignal).toBe('SIGTERM');
+
+    await expect(handle.waitForExit()).resolves.toEqual({
+      reason: 'exited',
+      code: 7,
+      signal: 'SIGTERM',
+    });
+    expect(stub.connectEvents).toHaveBeenCalled();
+  });
+
+  it('resolves waitForIdle on the next idle event for this agent', async () => {
+    const stub = createStubClient();
+    const handle = createHandle(stub);
+
+    const pending = handle.waitForIdle();
+    stub.emit({ kind: 'agent_idle', name: 'someone-else', idle_secs: 12 } as BrokerEvent);
+    stub.emit({ kind: 'agent_idle', name: 'worker', idle_secs: 3 } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'idle', idleSecs: 3 });
+  });
+
+  it('resolves waitForIdle when the agent exits first', async () => {
+    const stub = createStubClient();
+    const handle = createHandle(stub);
+
+    const pending = handle.waitForIdle();
+    stub.emit({ kind: 'agent_exit', name: 'worker' } as BrokerEvent);
+
+    await expect(pending).resolves.toEqual({ reason: 'exited', exit: { reason: 'exited' } });
+  });
+
+  it('forwards release requests to the client', async () => {
+    const stub = createStubClient();
+    const handle = createHandle(stub);
+
+    await expect(handle.release('done')).resolves.toEqual({ name: 'worker' });
+    expect(stub.release).toHaveBeenCalledWith('worker', 'done');
   });
 });
 
