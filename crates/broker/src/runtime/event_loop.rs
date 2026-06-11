@@ -28,7 +28,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) reap_tick: tokio::time::Interval,
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
-    pub(super) pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
+    pub(super) pending_deliveries: PendingDeliveryStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
@@ -113,9 +113,28 @@ impl BrokerRuntime {
                     self.handle_maintenance_tick().await;
                 }
             }
+
+            self.flush_pending_deliveries();
         }
 
         self.shutdown_runtime().await
+    }
+
+    /// Persist pending deliveries whenever the map was mutated by the event
+    /// just handled. Keeps the on-disk snapshot in lockstep with the
+    /// in-memory map so a crash between maintenance ticks cannot lose
+    /// queued deliveries.
+    fn flush_pending_deliveries(&mut self) {
+        if !self.pending_deliveries.take_dirty() || !self.paths.persist {
+            return;
+        }
+        if let Err(error) = save_pending_deliveries(&self.paths.pending, &self.pending_deliveries) {
+            tracing::warn!(
+                path = %self.paths.pending.display(),
+                error = %error,
+                "failed to persist pending deliveries"
+            );
+        }
     }
 
     fn handle_lease_tick(&mut self) {
@@ -164,11 +183,13 @@ impl BrokerRuntime {
         if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {
             tracing::warn!(error = %error, "failed to send ws shutdown signal");
         }
-        self.pending_deliveries.clear();
-        // Clean shutdown — remove pending file since nothing is pending
-        if self.paths.persist {
-            let _ = std::fs::remove_file(&self.paths.pending);
-        }
+        // Persist any still-pending deliveries so the next start can
+        // redeliver them; only remove the file when nothing is pending.
+        persist_pending_on_shutdown(
+            &self.paths.pending,
+            self.paths.persist,
+            &self.pending_deliveries,
+        );
         self.workers.shutdown_all().await?;
 
         // Clean up state and connection files on graceful shutdown

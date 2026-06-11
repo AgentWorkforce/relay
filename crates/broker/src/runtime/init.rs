@@ -418,7 +418,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     reap_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let dedup = DedupCache::new(Duration::from_secs(300), 8192);
     let delivery_retry_interval = delivery_retry_interval();
-    let pending_deliveries = load_pending_deliveries(&paths.pending);
+    let pending_deliveries = PendingDeliveryStore::new(load_pending_deliveries(&paths.pending));
     let terminal_failed_deliveries: HashSet<DeliveryId> = HashSet::new();
     // Outstanding worker-bound RPC requests waiting on a `*_response`
     // frame from the wrapped worker. Keyed by the `request_id` we put on

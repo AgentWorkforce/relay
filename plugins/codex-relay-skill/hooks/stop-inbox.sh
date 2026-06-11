@@ -16,7 +16,7 @@ else
 fi
 TOKEN_FILE="${RELAY_DIR}/token"
 STATE_FILE="${RELAY_DIR}/codex-session.json"
-DEFAULT_BASE_URL="https://api.relaycast.dev"
+DEFAULT_BASE_URL="https://gateway.relaycast.dev"
 EMPTY_OUTPUT='{}'
 MAX_RENDERED_MESSAGES=20
 

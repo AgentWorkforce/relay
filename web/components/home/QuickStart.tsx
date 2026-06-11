@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 import { AGENT_TOOL_LABELS, AGENT_TOOLS, AgentToolLogo } from '../AgentToolLogos';
 import { AgentSetupPrompt, InstallCommand } from '../InstallCommand';
 import s from '../../app/landing.module.css';
@@ -44,6 +46,19 @@ export function QuickStart() {
         <div className={s.installActions}>
           <InstallCommand />
           <AgentSetupPrompt />
+        </div>
+
+        <div className={s.skillCallout}>
+          <span className={s.skillCalloutText}>
+            <strong>Hand this to an agent</strong>
+            <span>
+              The hosted skill explains how to start a workspace, choose orchestrator or participant mode, and
+              get workers communicating on Relay.
+            </span>
+          </span>
+          <Link href="/skill" className={s.skillCalloutLink}>
+            Open skill
+          </Link>
         </div>
       </div>
     </section>

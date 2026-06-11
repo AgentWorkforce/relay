@@ -24,6 +24,8 @@ export interface ListenerContext {
   events: RelayMessagingEventsSurface;
   onActionEvent(handler: (event: ActionListenerEvent) => void): () => void;
   onSessionEvent(handler: (envelope: SessionListenerEnvelope) => void): () => void;
+  /** Receives handler errors; defaults to a console warning when unset. */
+  onError?: RelayErrorHook;
 }
 
 export type ListenerHandler<TEvent = unknown> = (event: TEvent) => void | Promise<void>;
@@ -32,14 +34,57 @@ export interface ListenerPredicate<TEvent = unknown> {
   subscribe(context: ListenerContext, handler: ListenerHandler<TEvent>): () => void;
 }
 
+/** Identifies the listener or action that produced a handler error. */
+export interface RelayErrorContext {
+  source: 'listener' | 'action';
+  /** Selector string or predicate event name for listener errors. */
+  selector?: string;
+  /** Action name for action-related errors. */
+  action?: string;
+  /** The action wiring operation that failed (e.g. `register`, `complete_invocation`). */
+  operation?: string;
+}
+
+/** Hook invoked when a listener or action handler throws. */
+export type RelayErrorHook = (error: unknown, context: RelayErrorContext) => void;
+
+/** Default reporting for handler errors when no `onError` hook is registered. */
+export function logRelayHandlerError(error: unknown, context: RelayErrorContext): void {
+  const where = context.action ? `action "${context.action}"` : `"${context.selector ?? 'unknown'}"`;
+  console.warn(`[agent-relay] ${context.source} handler for ${where} threw:`, error);
+}
+
 function stripSigil(value: string): string {
   return value.startsWith('@') || value.startsWith('#') ? value.slice(1) : value;
 }
 
-function runHandler<TEvent>(handler: ListenerHandler<TEvent>, event: TEvent): void {
-  void Promise.resolve(handler(event)).catch(() => {
-    // Listener handler errors are isolated from the event source.
-  });
+function runHandler<TEvent>(
+  handler: ListenerHandler<TEvent>,
+  event: TEvent,
+  report: (error: unknown) => void
+): void {
+  // Handler errors are isolated from the event source and surfaced through
+  // the `onError` hook (or a console warning when no hook is registered).
+  try {
+    void Promise.resolve(handler(event)).catch(report);
+  } catch (error) {
+    report(error);
+  }
+}
+
+/** Build an error reporter that routes through the context hook or the default log. */
+function makeReporter(context: ListenerContext, info: RelayErrorContext): (error: unknown) => void {
+  return (error) => {
+    if (!context.onError) {
+      logRelayHandlerError(error, info);
+      return;
+    }
+    try {
+      context.onError(error, info);
+    } catch {
+      // Error hooks must not throw into the event source.
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -61,10 +106,11 @@ export class MessageCreatedPredicate implements ListenerPredicate<RelayMessageCr
   }
 
   subscribe(context: ListenerContext, handler: ListenerHandler<RelayMessageCreatedEvent>): () => void {
+    const report = makeReporter(context, { source: 'listener', selector: 'message.created' });
     return context.events.on('messageCreated', (event) => {
       if (this.channel && stripSigil(event.channel) !== this.channel) return;
       if (this.mentioned && !messageMentions(event, this.mentioned)) return;
-      runHandler(handler, event);
+      runHandler(handler, event, report);
     });
   }
 }
@@ -77,14 +123,16 @@ function messageMentions(event: RelayMessageCreatedEvent, name: string): boolean
 
 export class MessageReadPredicate implements ListenerPredicate<RelayMessageReadEvent> {
   subscribe(context: ListenerContext, handler: ListenerHandler<RelayMessageReadEvent>): () => void {
-    return context.events.on('messageRead', (event) => runHandler(handler, event));
+    const report = makeReporter(context, { source: 'listener', selector: 'message.read' });
+    return context.events.on('messageRead', (event) => runHandler(handler, event, report));
   }
 }
 
 export class MessageReactedPredicate implements ListenerPredicate<RelayReactionEvent> {
   subscribe(context: ListenerContext, handler: ListenerHandler<RelayReactionEvent>): () => void {
-    const off1 = context.events.on('reactionAdded', (event) => runHandler(handler, event));
-    const off2 = context.events.on('reactionRemoved', (event) => runHandler(handler, event));
+    const report = makeReporter(context, { source: 'listener', selector: 'message.reacted' });
+    const off1 = context.events.on('reactionAdded', (event) => runHandler(handler, event, report));
+    const off2 = context.events.on('reactionRemoved', (event) => runHandler(handler, event, report));
     return () => {
       off1();
       off2();
@@ -143,13 +191,142 @@ export class ActionPredicate implements ListenerPredicate<ActionListenerEvent> {
   }
 
   subscribe(context: ListenerContext, handler: ListenerHandler<ActionListenerEvent>): () => void {
+    const report = makeReporter(context, {
+      source: 'listener',
+      selector: this.phase,
+      action: this.action,
+    });
     return context.onActionEvent((event) => {
       if (event.action !== this.action) return;
       if (event.type !== this.phase) return;
       if (this.caller && event.caller.name !== this.caller) return;
-      runHandler(handler, event);
+      runHandler(handler, event, report);
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Typed action events + handle predicates
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared shape of the typed action events delivered by the predicates on a
+ * {@link TypedActionHandle}. Mirrors the public {@link RelayActionEvent} (the
+ * caller surfaces as `agent`), with `input`/`output` carrying the generics
+ * captured at `registerAction(...)` time instead of `unknown`.
+ */
+export interface TypedActionEventBase<TInput = unknown> {
+  action: string;
+  agent: ActionListenerEvent['caller'];
+  input?: TInput;
+  at: string;
+}
+
+export interface ActionInvokedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.invoked';
+}
+
+export interface ActionCompletedEvent<
+  TInput = unknown,
+  TOutput = unknown,
+> extends TypedActionEventBase<TInput> {
+  type: 'action.completed';
+  /** The handler's return value, typed from the `output` schema (or the handler's return type). */
+  output: TOutput;
+}
+
+export interface ActionFailedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.failed';
+  error: string;
+}
+
+export interface ActionDeniedEvent<TInput = unknown> extends TypedActionEventBase<TInput> {
+  type: 'action.denied';
+  reason?: string;
+}
+
+/**
+ * A phase-bound action predicate carrying the event type captured at
+ * registration. Built by the {@link TypedActionHandle} returned from
+ * `relay.registerAction(...)`; behaves like {@link ActionPredicate} at runtime
+ * but delivers a typed event, so handlers read `event.output` without casts.
+ */
+export class TypedActionPredicate<TEvent extends TypedActionEventBase> implements ListenerPredicate<TEvent> {
+  private caller?: string;
+
+  constructor(
+    private readonly action: string,
+    private readonly phase: ActionListenerEvent['type']
+  ) {}
+
+  calledBy(agent: AgentLike): this {
+    this.caller = resolveAgentName(agent);
+    return this;
+  }
+
+  subscribe(context: ListenerContext, handler: ListenerHandler<TEvent>): () => void {
+    const report = makeReporter(context, {
+      source: 'listener',
+      selector: this.phase,
+      action: this.action,
+    });
+    return context.onActionEvent((event) => {
+      if (event.action !== this.action) return;
+      if (event.type !== this.phase) return;
+      if (this.caller && event.caller.name !== this.caller) return;
+      runHandler(handler, toTypedActionEvent(event) as unknown as TEvent, report);
+    });
+  }
+}
+
+/** Map a registry-level action event to the public shape (`caller` → `agent`). */
+function toTypedActionEvent(raw: ActionListenerEvent): TypedActionEventBase & { type: string } {
+  return {
+    type: raw.type,
+    action: raw.action,
+    agent: raw.caller,
+    ...(raw.input !== undefined ? { input: raw.input } : {}),
+    ...(raw.output !== undefined ? { output: raw.output } : {}),
+    ...(raw.error !== undefined ? { error: raw.error } : {}),
+    ...(raw.reason !== undefined ? { reason: raw.reason } : {}),
+    at: raw.at,
+  };
+}
+
+/**
+ * Handle returned by `relay.registerAction(...)`. Alongside `unregister()` it
+ * exposes typed predicate builders bound to the registered action, so result
+ * subscriptions keep the registration's `input`/`output` types:
+ *
+ * ```ts
+ * const handle = relay.registerAction({ name: 'score', input, output, handler });
+ * relay.addListener(handle.completed(), (event) => event.output); // typed, no cast
+ * relay.addListener(handle.failed(), (event) => event.error);
+ * ```
+ */
+export interface TypedActionHandle<TInput = unknown, TOutput = unknown> {
+  /** The registered action name. */
+  readonly name: string;
+  unregister(): void;
+  invoked(): TypedActionPredicate<ActionInvokedEvent<TInput>>;
+  completed(): TypedActionPredicate<ActionCompletedEvent<TInput, TOutput>>;
+  failed(): TypedActionPredicate<ActionFailedEvent<TInput>>;
+  denied(): TypedActionPredicate<ActionDeniedEvent<TInput>>;
+}
+
+export function createTypedActionHandle<TInput, TOutput>(
+  name: string,
+  unregister: () => void
+): TypedActionHandle<TInput, TOutput> {
+  return {
+    name,
+    unregister,
+    invoked: () => new TypedActionPredicate<ActionInvokedEvent<TInput>>(name, 'action.invoked'),
+    completed: () =>
+      new TypedActionPredicate<ActionCompletedEvent<TInput, TOutput>>(name, 'action.completed'),
+    failed: () => new TypedActionPredicate<ActionFailedEvent<TInput>>(name, 'action.failed'),
+    denied: () => new TypedActionPredicate<ActionDeniedEvent<TInput>>(name, 'action.denied'),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,12 +340,16 @@ export class StatusPredicate implements ListenerPredicate<AgentSessionEvent> {
   ) {}
 
   subscribe(context: ListenerContext, handler: ListenerHandler<AgentSessionEvent>): () => void {
+    const report = makeReporter(context, {
+      source: 'listener',
+      selector: `agent.status.${this.status}`,
+    });
     return context.onSessionEvent(({ agentId, event }) => {
       if (agentId !== this.agentId) return;
       const matches =
         (event.type === 'status.changed' && event.status === this.status) ||
         event.type === `status.${this.status}`;
-      if (matches) runHandler(handler, event);
+      if (matches) runHandler(handler, event, report);
     });
   }
 }
@@ -189,11 +370,12 @@ export class ToolCalledPredicate implements ListenerPredicate<ToolCalledEvent> {
   }
 
   subscribe(context: ListenerContext, handler: ListenerHandler<ToolCalledEvent>): () => void {
+    const report = makeReporter(context, { source: 'listener', selector: `tool.called:${this.tool}` });
     return context.onSessionEvent(({ agentId, event }) => {
       if (agentId !== this.agentId) return;
       if (event.type !== 'tool.called' || event.tool !== this.tool) return;
       if (this.filter && !this.filter(event)) return;
-      runHandler(handler, event);
+      runHandler(handler, event, report);
     });
   }
 }
@@ -238,8 +420,15 @@ export interface RelayEventEnvelope {
   parent?: string;
 }
 
-export interface RelayMessageEvent {
-  type: 'message.created' | 'message.updated' | 'thread.reply' | 'dm.received' | 'group_dm.received';
+export type RelayMessageEventType =
+  | 'message.created'
+  | 'message.updated'
+  | 'thread.reply'
+  | 'dm.received'
+  | 'group_dm.received';
+
+export interface RelayMessageEvent<TType extends RelayMessageEventType = RelayMessageEventType> {
+  type: TType;
   message: RelayMessage;
   envelope: RelayEventEnvelope;
 }
@@ -259,8 +448,10 @@ export interface RelayMessageReactedEvent {
   action: 'added' | 'removed';
 }
 
-export interface RelayActionEvent {
-  type: 'action.invoked' | 'action.completed' | 'action.failed' | 'action.denied';
+export type RelayActionEventType = 'action.invoked' | 'action.completed' | 'action.failed' | 'action.denied';
+
+export interface RelayActionEvent<TType extends RelayActionEventType = RelayActionEventType> {
+  type: TType;
   action: string;
   agent: ActionListenerEvent['caller'];
   input?: unknown;
@@ -297,6 +488,31 @@ export type RelayEvent =
   | RelayActionEvent
   | RelayAgentStatusEvent
   | RelaySessionEvent;
+
+/**
+ * Maps exact dotted selectors to the event type their handlers receive.
+ * Wildcard selectors (`'*'`, `'message.*'`) and arbitrary strings keep the
+ * full {@link RelayEvent} union.
+ */
+export interface RelayEventMap {
+  'message.created': RelayMessageEvent<'message.created'>;
+  'message.updated': RelayMessageEvent<'message.updated'>;
+  'thread.reply': RelayMessageEvent<'thread.reply'>;
+  'dm.received': RelayMessageEvent<'dm.received'>;
+  'group_dm.received': RelayMessageEvent<'group_dm.received'>;
+  'message.read': RelayMessageReadEventPublic;
+  'message.reacted': RelayMessageReactedEvent;
+  'action.invoked': RelayActionEvent<'action.invoked'>;
+  'action.completed': RelayActionEvent<'action.completed'>;
+  'action.failed': RelayActionEvent<'action.failed'>;
+  'action.denied': RelayActionEvent<'action.denied'>;
+  'agent.status.changed': RelayAgentStatusEvent;
+  'agent.status.idle': RelayAgentStatusEvent;
+  'agent.status.active': RelayAgentStatusEvent;
+  'agent.status.blocked': RelayAgentStatusEvent;
+  'agent.status.waiting': RelayAgentStatusEvent;
+  'agent.status.offline': RelayAgentStatusEvent;
+}
 
 const PUBLIC_MESSAGE_TYPE: Partial<Record<RelayMessagingEvent['type'], RelayMessageEvent['type']>> = {
   messageCreated: 'message.created',
@@ -383,11 +599,25 @@ export interface ActionEventSource {
   onEvent?(handler: (event: ActionListenerEvent) => void): () => void;
 }
 
+export interface ListenerHubOptions {
+  /** Receives listener handler errors; defaults to a console warning when unset. */
+  onError?: RelayErrorHook;
+}
+
 export interface ListenerHub {
   readonly events: EnrichedEvents;
   on<TEvent>(predicate: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
+  addListener<K extends keyof RelayEventMap>(
+    selector: K,
+    handler: ListenerHandler<RelayEventMap[K]>
+  ): () => void;
   addListener(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
+  /** Like `addListener`, but auto-unsubscribes after the first matching event. */
+  once<K extends keyof RelayEventMap>(selector: K, handler: ListenerHandler<RelayEventMap[K]>): () => void;
+  once(selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): () => void;
   action(name: string): ActionPredicate;
   agent(input: AgentHandleInput): RelayAgentHandle;
   /** Feed a harness session event into the hub so agent predicates can fire. */
@@ -396,7 +626,8 @@ export interface ListenerHub {
 
 export function createListenerHub(
   baseEvents: RelayMessagingEventsSurface,
-  actions: ActionEventSource
+  actions: ActionEventSource,
+  options?: ListenerHubOptions
 ): ListenerHub {
   const sessionHandlers = new Set<(envelope: SessionListenerEnvelope) => void>();
   const events = createEnrichedEvents(baseEvents);
@@ -408,6 +639,7 @@ export function createListenerHub(
       sessionHandlers.add(handler);
       return () => sessionHandlers.delete(handler);
     },
+    ...(options?.onError ? { onError: options.onError } : {}),
   };
 
   const addListener = (
@@ -426,27 +658,46 @@ export function createListenerHub(
     if (typeof selector !== 'string') {
       return selector.subscribe(context, handler as ListenerHandler);
     }
+    const report = makeReporter(context, { source: 'listener', selector });
     const offs = [
       context.events.on('any', (raw) => {
         const evt = toPublicMessagingEvent(raw);
-        if (evt && matchesSelector(selector, evt.type)) runHandler(handler, evt);
+        if (evt && matchesSelector(selector, evt.type)) runHandler(handler, evt, report);
       }),
       context.onActionEvent((raw) => {
         const evt = toPublicActionEvent(raw);
-        if (matchesSelector(selector, evt.type)) runHandler(handler, evt);
+        if (matchesSelector(selector, evt.type)) runHandler(handler, evt, report);
       }),
       context.onSessionEvent(({ agentId, event }) => {
         const evt = toPublicSessionEvent(agentId, event);
-        if (matchesSelector(selector, evt.type)) runHandler(handler, evt);
+        if (matchesSelector(selector, evt.type)) runHandler(handler, evt, report);
       }),
     ];
     return () => offs.forEach((off) => off());
+  };
+
+  const once = (selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>): (() => void) => {
+    let done = false;
+    let off: (() => void) | undefined;
+    const wrapped: ListenerHandler<RelayEvent> = (event) => {
+      if (done) return;
+      done = true;
+      off?.();
+      return handler(event);
+    };
+    off = addListener(selector, wrapped);
+    if (done) off();
+    return () => {
+      done = true;
+      off?.();
+    };
   };
 
   return {
     events,
     on: (predicate, handler) => predicate.subscribe(context, handler),
     addListener,
+    once,
     action: (name) => new ActionPredicate(name),
     agent: (input) => createAgentHandle(input),
     emitSessionEvent: (agentId, event) => {

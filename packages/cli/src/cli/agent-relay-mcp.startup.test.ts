@@ -405,7 +405,7 @@ describe('createAgentRelayMcpServer', () => {
   });
 
   it('passes telemetry context through Agent Relay MCP clients', async () => {
-    vi.stubEnv('AGENT_RELAY_ORCHESTRATOR_HARNESS', 'claude/opus-48');
+    vi.stubEnv('AGENT_RELAY_ORIGIN_ACTOR', 'agent-relay-cli/agent/claude-code');
     vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'distinct_test');
 
     const { mod, mocks } = await loadAgentRelayMcpModule();
@@ -421,7 +421,7 @@ describe('createAgentRelayMcpServer', () => {
     expect(mocks.wsClientInstances[0]?.config).toMatchObject({
       token: 'at_live_existing',
       baseUrl: 'https://api.relaycast.dev/',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -430,7 +430,7 @@ describe('createAgentRelayMcpServer', () => {
     expect(agentRelay?.config).toMatchObject({
       apiKey: 'at_live_existing',
       baseUrl: 'https://api.relaycast.dev/',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -445,7 +445,7 @@ describe('createAgentRelayMcpServer', () => {
     expect(workspaceRelay?.config).toMatchObject({
       apiKey: 'rk_live_existing',
       baseUrl: 'https://api.relaycast.dev/',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -467,7 +467,7 @@ describe('createAgentRelayMcpServer', () => {
     expect(bootstrapRelay?.config).toMatchObject({
       apiKey: 'rk_live_bootstrap',
       baseUrl: 'https://api.relaycast.dev/',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
   });

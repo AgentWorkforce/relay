@@ -13,7 +13,7 @@ import {
   type AgentDeliveryAdapter,
   type InjectionResult,
 } from '../delivery/index.js';
-import type { InboxItem, RelayMessaging } from '../messaging/index.js';
+import { RelaycastMessagingClient, type InboxItem, type RelayMessaging } from '../messaging/index.js';
 import {
   MINIMAL_AGENT_SESSION_CAPABILITIES,
   defineHarness,
@@ -378,6 +378,79 @@ describe('DeliveryRunner', () => {
       state: 'delivered',
       metadata: undefined,
     });
+  });
+
+  it('runs against RelaycastMessagingClient with a durable delivery agent client', async () => {
+    const anyHandlers = new Set<(event: unknown) => void>();
+    const deliveryRow = (id: string, messageId: string) => ({
+      id,
+      messageId,
+      channelId: 'ch-1',
+      agentId: 'agent-1',
+      status: 'accepted',
+      mode: 'wait',
+      reason: 'dm',
+      priority: 'normal',
+      availableAt: null,
+      message: {
+        id: messageId,
+        channelId: 'ch-1',
+        agentId: 'agent-9',
+        agentName: 'Lead',
+        text: `payload ${id}`,
+        threadId: null,
+        createdAt: '2026-06-09T10:00:00.000Z',
+      },
+    });
+    const agent = {
+      connect: vi.fn(),
+      disconnect: vi.fn(async () => {}),
+      on: {
+        any: vi.fn((handler: (event: unknown) => void) => {
+          anyHandlers.add(handler);
+          return () => anyHandlers.delete(handler);
+        }),
+      },
+      deliveries: vi.fn(async () => [deliveryRow('del_1', 'm-100')]),
+      ackDelivery: vi.fn(async (id: string) => ({ ...deliveryRow(id, 'm-100'), status: 'delivered' })),
+      failDelivery: vi.fn(async (id: string) => ({ ...deliveryRow(id, 'm-100'), status: 'failed' })),
+      deferDelivery: vi.fn(async (id: string) => ({ ...deliveryRow(id, 'm-100'), status: 'deferred' })),
+    };
+    const messaging = new RelaycastMessagingClient({
+      relaycast: {} as never,
+      agentClient: agent as never,
+    });
+    const delivery = makeDeliveryAdapter({ status: 'delivered' });
+
+    let resolveFirstResult!: () => void;
+    const firstResult = new Promise<void>((resolve) => {
+      resolveFirstResult = resolve;
+    });
+    const runner = new DeliveryRunner({
+      messaging,
+      delivery,
+      agentName: 'WorkerA',
+      onResult: () => resolveFirstResult(),
+    });
+
+    const running = runner.start();
+    await firstResult;
+    runner.stop();
+    // Yield one more item so the subscription loop observes the stop flag.
+    agent.deliveries.mockResolvedValue([deliveryRow('del_2', 'm-200')]);
+    for (const handler of anyHandlers) {
+      handler({ type: 'delivery.accepted', deliveryId: 'del_2', messageId: 'm-200' });
+    }
+    await running;
+
+    expect(delivery.inject).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(delivery.inject).mock.calls[0][0]).toMatchObject({
+      id: 'm-100',
+      text: 'payload del_1',
+    });
+    expect(agent.ackDelivery).toHaveBeenCalledWith('del_1');
+    expect(agent.failDelivery).not.toHaveBeenCalled();
+    expect(agent.deferDelivery).not.toHaveBeenCalled();
   });
 });
 

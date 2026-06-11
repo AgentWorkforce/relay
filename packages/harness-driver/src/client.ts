@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { actionSchemaToJsonSchema, type ActionSchema } from '@agent-relay/sdk/actions';
 import {
   BrokerTransport,
   HarnessDriverProtocolError,
@@ -144,6 +145,18 @@ function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
 }
 
 /**
+ * Coerce an `agentResultSchema` into the plain JSON Schema the broker accepts.
+ * Raw JSON Schema (object or boolean) passes through unchanged; zod-style
+ * validators are converted via the SDK's actions coercion helper.
+ */
+function resolveAgentResultSchema(
+  schema: SpawnPtyInput['agentResultSchema']
+): Record<string, unknown> | boolean | undefined {
+  if (schema === undefined || typeof schema === 'boolean') return schema;
+  return actionSchemaToJsonSchema(schema as ActionSchema);
+}
+
+/**
  * Serialize a {@link SpawnPtyInput} for the broker `/api/spawn` endpoint.
  * Factored out of {@link HarnessDriverClient.spawnPty} so the same shape can
  * be applied to the post-`beforeAgentSpawn` resolved input.
@@ -166,7 +179,9 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
+    ...(input.agentResultSchema !== undefined
+      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
+      : {}),
   };
 }
 
@@ -188,7 +203,9 @@ function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Rec
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
-    ...(input.agentResultSchema !== undefined ? { agentResultSchema: input.agentResultSchema } : {}),
+    ...(input.agentResultSchema !== undefined
+      ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
+      : {}),
     transport,
   };
 }

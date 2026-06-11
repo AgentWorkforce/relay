@@ -407,6 +407,12 @@ pub enum BrokerEvent {
         name: WorkerName,
         delivery_id: DeliveryId,
         event_id: EventId,
+        /// "echo" when confirmed in PTY output, "timeout_fallback" when the
+        /// delivery was acked without echo verification.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        verification: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     DeliveryFailed {
         name: WorkerName,
@@ -704,6 +710,26 @@ mod tests {
             name: "Worker1".into(),
             delivery_id: "del_v2".into(),
             event_id: "evt_v2".into(),
+            verification: None,
+            reason: None,
+        });
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(
+            !encoded.contains("verification"),
+            "absent verification must not appear on the wire"
+        );
+        let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn broker_event_delivery_verified_timeout_fallback_round_trip() {
+        let event = BrokerToSdk::Event(BrokerEvent::DeliveryVerified {
+            name: "Worker1".into(),
+            delivery_id: "del_v3".into(),
+            event_id: "evt_v3".into(),
+            verification: Some("timeout_fallback".into()),
+            reason: Some("echo not detected within 5s window".into()),
         });
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: BrokerToSdk = serde_json::from_str(&encoded).unwrap();
