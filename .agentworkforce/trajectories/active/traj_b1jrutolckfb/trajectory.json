@@ -115,6 +115,18 @@
             "reasoning": "main added a later waitForResult decision after PR 1073 completed the same trajectory; keeping active plus removing stale completed artifacts preserves both histories without duplicate active/completed records for the same id"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781197437546,
+          "type": "decision",
+          "content": "Clean CHANGELOG by tag range: Clean CHANGELOG by tag range",
+          "raw": {
+            "question": "Clean CHANGELOG by tag range",
+            "chosen": "Clean CHANGELOG by tag range",
+            "alternatives": [],
+            "reasoning": "Only commits after v8.4.0 should remain in [Unreleased]; recent released sections should be curated from the commits between adjacent release tags."
+          },
+          "significance": "high"
         }
       ]
     }
