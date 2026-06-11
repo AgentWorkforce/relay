@@ -465,6 +465,18 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
 /// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
 pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
 
+/// Build the `origin_actor` path for a spawned agent:
+/// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
+/// it from the spawn request) is appended so server telemetry can segment by
+/// model; cloud parses a digit-less `@`-suffix as a model. See
+/// cloud/plans/origin-actor.md.
+pub(crate) fn agent_origin_actor(harness: &str, model: Option<&str>) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => format!("agent-relay-cli/agent/{harness}@{model}"),
+        None => format!("agent-relay-cli/agent/{harness}"),
+    }
+}
+
 /// Best-effort OS release string for telemetry tagging. Shells out to
 /// `uname -r` on unix (broker is unix-only anyway); returns `None` on
 /// failure so we just omit the property rather than risking a crash.
@@ -875,6 +887,23 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn agent_origin_actor_appends_model_when_present() {
+        assert_eq!(
+            agent_origin_actor("codex", Some("gpt-5")),
+            "agent-relay-cli/agent/codex@gpt-5"
+        );
+        assert_eq!(
+            agent_origin_actor("claude-code", None),
+            "agent-relay-cli/agent/claude-code"
+        );
+        // blank/whitespace model is treated as absent
+        assert_eq!(
+            agent_origin_actor("claude-code", Some("  ")),
+            "agent-relay-cli/agent/claude-code"
+        );
     }
 
     #[test]
