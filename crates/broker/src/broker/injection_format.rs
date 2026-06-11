@@ -1,3 +1,60 @@
+use std::time::{Duration, Instant};
+
+/// Minimum wall-clock gap between full MCP reminder blocks.
+pub(crate) const MCP_REMINDER_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Minimum PTY output produced since the last full reminder before another
+/// one is allowed. Output volume is the proxy for "the agent actually worked
+/// and may have compacted the earlier reminder out of its context". An agent
+/// that only sat at the prompt receiving messages still has the previous
+/// reminder verbatim in context, so repeating it only burns tokens.
+pub(crate) const MCP_REMINDER_ACTIVITY_BYTES: usize = 64 * 1024;
+
+/// Decides when an injected delivery should carry the full multi-line MCP
+/// reminder block versus the one-line short hint.
+///
+/// The first delivery always gets the full block (the agent has never seen
+/// the reply instructions). After that, both gates must pass: the cooldown
+/// has elapsed AND the worker emitted enough PTY output since the last block
+/// that the earlier copy may have drifted out of context.
+pub(crate) struct McpReminderThrottle {
+    last_sent_at: Option<Instant>,
+    output_bytes_since_sent: usize,
+}
+
+impl McpReminderThrottle {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_sent_at: None,
+            output_bytes_since_sent: 0,
+        }
+    }
+
+    /// Record PTY output produced by the worker. Counting is skipped until
+    /// the first reminder is sent — the volume only matters relative to it.
+    pub(crate) fn note_output_bytes(&mut self, bytes: usize) {
+        if self.last_sent_at.is_some() && self.output_bytes_since_sent < MCP_REMINDER_ACTIVITY_BYTES
+        {
+            self.output_bytes_since_sent = self.output_bytes_since_sent.saturating_add(bytes);
+        }
+    }
+
+    pub(crate) fn should_include(&self, now: Instant) -> bool {
+        match self.last_sent_at {
+            None => true,
+            Some(sent_at) => {
+                now.duration_since(sent_at) >= MCP_REMINDER_COOLDOWN
+                    && self.output_bytes_since_sent >= MCP_REMINDER_ACTIVITY_BYTES
+            }
+        }
+    }
+
+    pub(crate) fn note_sent(&mut self, now: Instant) {
+        self.last_sent_at = Some(now);
+        self.output_bytes_since_sent = 0;
+    }
+}
+
 fn workspace_context_label(
     workspace_id: Option<&str>,
     workspace_alias: Option<&str>,
@@ -335,5 +392,47 @@ mod tests {
         assert!(result.contains("mcp__agent-relay__send_dm"));
         assert!(result.contains("mcp__agent-relay__post_message"));
         assert!(result.contains("Relay message from alice [evt_9]: retry body"));
+    }
+
+    #[test]
+    fn reminder_throttle_includes_on_first_delivery() {
+        let throttle = McpReminderThrottle::new();
+        assert!(throttle.should_include(Instant::now()));
+    }
+
+    #[test]
+    fn reminder_throttle_suppresses_within_cooldown() {
+        let mut throttle = McpReminderThrottle::new();
+        let start = Instant::now();
+        throttle.note_sent(start);
+        throttle.note_output_bytes(MCP_REMINDER_ACTIVITY_BYTES);
+        assert!(!throttle.should_include(start + MCP_REMINDER_COOLDOWN - Duration::from_secs(1)));
+        assert!(throttle.should_include(start + MCP_REMINDER_COOLDOWN));
+    }
+
+    #[test]
+    fn reminder_throttle_suppresses_idle_worker_past_cooldown() {
+        let mut throttle = McpReminderThrottle::new();
+        let start = Instant::now();
+        throttle.note_sent(start);
+        // No output since the last reminder: the previous block is still in
+        // the agent's context no matter how much time has passed.
+        assert!(!throttle.should_include(start + MCP_REMINDER_COOLDOWN * 10));
+        throttle.note_output_bytes(MCP_REMINDER_ACTIVITY_BYTES - 1);
+        assert!(!throttle.should_include(start + MCP_REMINDER_COOLDOWN * 10));
+        throttle.note_output_bytes(1);
+        assert!(throttle.should_include(start + MCP_REMINDER_COOLDOWN * 10));
+    }
+
+    #[test]
+    fn reminder_throttle_resets_output_counter_on_send() {
+        let mut throttle = McpReminderThrottle::new();
+        let start = Instant::now();
+        throttle.note_sent(start);
+        throttle.note_output_bytes(MCP_REMINDER_ACTIVITY_BYTES);
+        let later = start + MCP_REMINDER_COOLDOWN;
+        assert!(throttle.should_include(later));
+        throttle.note_sent(later);
+        assert!(!throttle.should_include(later + MCP_REMINDER_COOLDOWN));
     }
 }

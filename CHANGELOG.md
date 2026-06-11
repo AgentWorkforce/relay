@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
+
 ### Added
 
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
@@ -26,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
 - `agent-relay-broker` adds `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`, and `is_agent_token_invalid_code` on `crates/broker/src/relaycast/auth.rs`, and preserves the upstream `RelayError::Api` code through `relay_error_to_anyhow` so the same recovery signal is available to Rust callers.
 - GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
-- Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
+- Broker and TypeScript SDK structured result contracts: spawn inputs accept an `agentResultSchema` (raw JSON Schema or a zod-style validator, converted before reaching the broker), spawned agents submit typed JSON outcomes through the `submit_result` MCP tool, and the spawn handle's `waitForResult()` resolves with the submitted result (or the agent's exit or a timeout).
+- `@agent-relay/sdk` `relay.registerAction(...)` now returns a typed handle: `handle.completed()` / `handle.failed()` / `handle.invoked()` / `handle.denied()` build `addListener` predicates whose events carry the registration's input/output types, so orchestrators consume their own action results without string keys or casts.
 - `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, so custom CLIs can be configured without Rust changes while spawn requests remain self-contained.
 - `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
 - `@agent-relay/sdk` exposes `AgentRelay.spawnAgent({ runtime, cli, ... })` as the single high-level spawn facade for both PTY and headless agents.
@@ -127,6 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` npm README now documents the version 8 API (`relay.workspace.register(...)` live clients, `relay.registerAction(...)`, `relay.addListener(...)`); it previously showed the removed pre-v8 surfaces (`relay.as(...)`, `agent.events.on(...)`, `relay.actions.register(...)`).
+- `agent-relay cloud connect <provider>` (and `agent-relay auth`) forward the OAuth callback to the sandbox's `127.0.0.1` explicitly instead of the hostname `localhost`, and bind the local listener on both `127.0.0.1` and `::1`. codex serves its `http://localhost:1455/auth/callback` on IPv4 loopback only, but the Daytona sandbox resolves `localhost` to `::1` first — so the previous forward dialed a dead `::1:1455` inside the sandbox and login hung forever. Both ends of the tunnel are now IPv4-correct.
+- `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay local agent list` and `local metrics` now connect only to an existing local broker, so read-only commands no longer start an empty broker and hang after printing results.
 - `agent-relay` CLI attach sessions no longer write successful `view`, `drive`, or `passthrough` attach banners into the interactive terminal buffer.
 - `@agent-relay/cloud`: CLI browser login ignores stray localhost callbacks with an invalid state parameter, so first-time sign-ins are not shown a false hosted error or aborted before the real OAuth callback returns.
@@ -145,6 +153,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [8.3.7] - 2026-06-11
+
+### Added
+
+- Emit origin_actor from spawned agents (JS SDK + per-worker)
+
+### Changed
+
+- Make LLM markdown mirrors discoverable; update sdk README to v8 API
+- Throttle MCP reminder injection by agent activity, not just elapsed time
+- Serve raw Agent Relay skill markdown
+
+## [8.3.6] - 2026-06-10
+
+### Added
+
+- Origin_actor — bump relaycast crate 3.0.0, emit CLI path
+
+### Changed
+
+- Refresh Agent Relay skill handoff
+- Bump relaycast deps to the published model-aware versions
+- Pass spawn `model` through MCP, SDK, and broker to the launched CLI
+
+## [8.3.5] - 2026-06-10
+
+### Fixed
+
+- Forward OAuth callback to sandbox 127.0.0.1, not localhost
+
+## [8.3.4] - 2026-06-10
+
+### Changed
+
+- Clean read ack PR head
+- Apply pr-reviewer fixes for
+- Add broker delivery read ack bridge
+
+### Fixed
+
+- Suppress clippy too_many_arguments on mark_delivery_read_ack_with_timeout
+
+## [8.3.3] - 2026-06-09
+
+### Fixed
+
+- Bind OAuth callback tunnel dual-stack + pin codex
+
+## [8.3.2] - 2026-06-09
+
+### Fixed
+
+- Forward harness to relaycast backend (SDK 2.3.0)
 
 ## [8.3.1] - 2026-06-09
 

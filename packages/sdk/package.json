@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "8.3.1",
+  "version": "8.3.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -51,7 +51,7 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npx tsc -p tsconfig.build.json",
     "build:full": "npm run build",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src/__tests__/agent-relay.test.ts src/__tests__/facade.test.ts src/__tests__/listeners.test.ts src/__tests__/integrations.test.ts src/__tests__/messaging.test.ts src/__tests__/delivery-actions.test.ts src/__tests__/relaycast-errors.test.ts src/__tests__/register-action-relay.test.ts src/__tests__/webhooks.test.ts",
+    "test": "vitest run src/__tests__/agent-relay.test.ts src/__tests__/facade.test.ts src/__tests__/listeners.test.ts src/__tests__/integrations.test.ts src/__tests__/messaging.test.ts src/__tests__/delivery-actions.test.ts src/__tests__/relaycast-errors.test.ts src/__tests__/register-action-relay.test.ts src/__tests__/typed-action-handle.test.ts src/__tests__/webhooks.test.ts",
     "test:types": "vitest run --typecheck.only --typecheck.tsconfig tsconfig.typetest.json",
     "prepack": "npm run build"
   },
@@ -59,6 +59,6 @@
     "@types/node": "^22.13.10"
   },
   "dependencies": {
-    "@relaycast/sdk": "^2.5.1"
+    "@relaycast/sdk": "^3.1.1"
   }
 }

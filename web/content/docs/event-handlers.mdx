@@ -137,30 +137,40 @@ relay.addListener(
 
 Actions are fire-and-forget: invoking returns an acknowledgement immediately, the handler runs in the
 process that registered it, and the relay emits `action.completed` (or `action.failed`) to your
-**listeners** — not inline to the invoking agent. Subscribe by name or with the `relay.action(name)`
-predicate.
+**listeners** — not inline to the invoking agent. If you registered the action, subscribe with the typed
+predicates on the handle `registerAction` returned; otherwise subscribe by name or with the
+`relay.action(name)` predicate.
 
 ```ts file="action-listener.ts"
-relay.addListener('action.completed', (event) => {
-  console.log(event.action, event.output);
-});
+// typed: predicates from the registration handle — event.output keeps the registered types
+const deploys = relay.registerAction({ name: 'deploy.preview', input: DeployInput, handler });
 
-relay.addListener(relay.action('deploy.preview').completed(), (event) =>
+relay.addListener(deploys.completed(), (event) =>
   planner.sendMessage({
     to: '#ops',
     text: `Preview deploy completed for ${event.agent.name}.`,
   })
 );
 
-relay.addListener(relay.action('deploy.preview').failed(), (event) =>
+relay.addListener(deploys.failed(), (event) =>
   planner.sendMessage({
     to: '#ops',
     text: `Preview deploy failed for ${event.agent.name}: ${event.error}`,
   })
 );
+
+// untyped: by event name, or by action name when you don't hold the handle
+relay.addListener('action.completed', (event) => {
+  console.log(event.action, event.output);
+});
+relay.addListener(relay.action('deploy.preview').completed(), (event) => {
+  /* ... */
+});
 ```
 
-See [Actions](/docs/actions) for the full fire-and-forget lifecycle.
+See [Actions](/docs/actions) for the full fire-and-forget lifecycle, and
+[Orchestrating with actions](/docs/orchestrating-with-actions) for the request → typed-callback
+pipeline pattern.
 
 ## Delivery listeners
 

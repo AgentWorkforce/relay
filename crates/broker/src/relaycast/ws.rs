@@ -72,14 +72,12 @@ impl RelaycastWsClient {
                 );
             }
 
-            let mut ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
-                .with_base_url(self.ws_base_url.clone());
-            // Forward the detected harness as the `harness` query param (WS
-            // upgrades can't set custom headers) so the backend can attribute
-            // server events to claude-code / codex / etc. instead of "unknown".
-            if let Some(harness) = crate::telemetry::orchestrator_harness_opt() {
-                ws_opts = ws_opts.with_harness(harness);
-            }
+            // Attribute the broker's own relaycast traffic (the workspace
+            // stream) to the agent-relay CLI as the origin actor — forwarded as
+            // the `origin_actor` query param (WS upgrades can't set headers).
+            let ws_opts = WsClientOptions::new(self.workspace_http.api_key.clone())
+                .with_base_url(self.ws_base_url.clone())
+                .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
             let mut ws = WsClient::new(ws_opts);
 
             match ws.connect().await {
@@ -420,6 +418,37 @@ impl RelaycastHttpClient {
             .registered_agent_client(&self.agent_name, Some(&self.default_cli))
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    async fn registered_agent_client_as(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+    ) -> Result<AgentClient> {
+        let registration = self
+            .registration
+            .as_ref()
+            .as_ref()
+            .context("SDK relay client not initialized")?;
+        registration
+            .registered_agent_client(agent_name, cli_hint.or(Some(self.default_cli.as_str())))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Impersonation by design: delivery read-acks must be attributed to the
+    /// recipient worker's agent identity, not the broker identity.
+    pub async fn mark_read_as_agent(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        message_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.registered_agent_client_as(agent_name, cli_hint)
+            .await?
+            .mark_read(message_id)
+            .await
+            .map_err(|error| anyhow::anyhow!("relaycast mark_read failed: {error}"))
     }
 
     /// Register an action whose handler is this broker's agent. Spawn/release
@@ -774,10 +803,9 @@ impl RelaycastHttpClient {
 
 /// Build a `RelayCast` workspace client from an API key and base URL.
 fn build_relay_client(api_key: &str, base_url: &str) -> Option<RelayCast> {
-    let mut opts = RelayCastOptions::new(api_key).with_base_url(base_url);
-    if let Some(harness) = crate::telemetry::orchestrator_harness_opt() {
-        opts = opts.with_harness(harness);
-    }
+    let opts = RelayCastOptions::new(api_key)
+        .with_base_url(base_url)
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
     RelayCast::new(opts).ok()
 }
 
@@ -841,6 +869,54 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    #[tokio::test]
+    async fn mark_read_as_agent_uses_seeded_recipient_token_without_respawn() {
+        let server = MockServer::start();
+        let read_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/messages/msg_1/read")
+                .header("authorization", "Bearer at_live_existing_recipient");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "message_id": "msg_1",
+                    "agent_id": "agent_existing_recipient",
+                    "read_at": "2026-06-08T10:00:00.000Z"
+                }
+            }));
+        });
+        let spawn_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/spawn");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "agent": {
+                        "id": "agent_fresh_wrong",
+                        "name": "recipient",
+                        "type": "agent",
+                        "status": "online",
+                        "created_at": "2026-06-08T10:00:00.000Z",
+                        "last_seen": "2026-06-08T10:00:00.000Z",
+                        "metadata": {}
+                    },
+                    "token": "at_live_fresh_wrong"
+                }
+            }));
+        });
+
+        let client = RelaycastHttpClient::new(server.base_url(), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("recipient", "at_live_existing_recipient");
+
+        let result = client
+            .mark_read_as_agent("recipient", Some("codex"), "msg_1")
+            .await
+            .expect("seeded recipient should mark read");
+
+        assert_eq!(result["agent_id"], "agent_existing_recipient");
+        read_mock.assert_hits(1);
+        spawn_mock.assert_hits(0);
     }
 
     #[tokio::test]

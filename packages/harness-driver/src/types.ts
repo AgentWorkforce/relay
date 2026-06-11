@@ -2,6 +2,7 @@
  * Shared input/output types for the broker SDK.
  */
 
+import type { SafeParseSchema, ZodLikeSchema } from '@agent-relay/sdk/actions';
 import type {
   AgentCurrentState,
   AgentRuntime,
@@ -12,6 +13,14 @@ import type {
 import type { ResolvedHarnessConfig } from './harness.js';
 
 export type JsonSchema = Record<string, unknown> | boolean;
+
+/**
+ * Schema for the structured result a spawned agent submits via the
+ * `submit_result` MCP tool. Accepts raw JSON Schema or a zod-style validator
+ * (anything with `safeParse`) — validators are converted to JSON Schema before
+ * the spawn request reaches the broker, matching the actions surface.
+ */
+export type AgentResultSchema = JsonSchema | ZodLikeSchema<unknown> | SafeParseSchema;
 
 export interface SpawnPtyInput {
   name: string;
@@ -29,7 +38,7 @@ export interface SpawnPtyInput {
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
-  agentResultSchema?: JsonSchema;
+  agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP
@@ -56,7 +65,7 @@ export interface SpawnHeadlessInput {
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
-  agentResultSchema?: JsonSchema;
+  agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP
@@ -93,7 +102,7 @@ export interface SpawnCliInput {
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
   skipRelayPrompt?: boolean;
-  agentResultSchema?: JsonSchema;
+  agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
    *  Relaycast agent registration). The
    *  broker plumbs this as `RELAY_AGENT_TOKEN`, which the Agent Relay MCP

@@ -362,6 +362,14 @@ export type BrokerEvent =
       to: string;
     }
   | {
+      kind: 'delivery_read_ack';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      status: 'marked' | 'failed' | 'skipped_synthetic' | 'suppressed_duplicate';
+      reason?: string;
+    }
+  | {
       kind: 'message_delivery_failed';
       name: string;
       delivery_id?: string;

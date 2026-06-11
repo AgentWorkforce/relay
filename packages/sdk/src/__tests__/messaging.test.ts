@@ -228,7 +228,7 @@ describe('RelaycastMessagingClient', () => {
     await expect(relay.agents.list()).resolves.toHaveLength(1);
   });
 
-  it('agents.registerOrRotate delegates to the relaycast registerOrRotate API', async () => {
+  it('agents.registerOrRotate delegates to the relaycast agents.registerOrRotate API', async () => {
     const workspace = createWorkspace();
     const registerOrRotate = vi.fn(async (input: unknown) => ({
       id: 'agent-2',
@@ -236,8 +236,10 @@ describe('RelaycastMessagingClient', () => {
       token: 'at_live_rotated',
       status: 'online',
     }));
+    (workspace.agents as typeof workspace.agents & { registerOrRotate: typeof registerOrRotate })
+      .registerOrRotate = registerOrRotate;
     const client = new RelaycastMessagingClient({
-      relaycast: { ...workspace, registerOrRotate },
+      relaycast: workspace,
     });
 
     const registration = await client.agents.registerOrRotate?.({ name: 'WorkerB' });

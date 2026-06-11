@@ -1,6 +1,6 @@
 import { RelayCast, RelayError } from '@relaycast/sdk';
 
-import { ActionRegistry, type AgentRelayActions, type ActionHandle } from './actions/index.js';
+import { ActionRegistry, type AgentRelayActions } from './actions/index.js';
 import {
   relaycastTelemetryOptions,
   relaycastWorkspaceTelemetryOptions,
@@ -39,6 +39,7 @@ import {
   type RelayErrorHook,
   type RelayEvent,
   type RelayEventMap,
+  type TypedActionHandle,
 } from './listeners.js';
 import type { AgentSessionEvent } from './session/index.js';
 
@@ -75,7 +76,12 @@ export interface AgentRelayAgent {
   readonly webhooks: RelayMessaging['webhooks'];
   readonly capabilities: RelayMessaging['commands'];
   readonly workspace: RelayWorkspace;
-  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle;
+  registerAction<TInput, TOutput>(
+    def: RegisterActionInput<TInput, TOutput>
+  ): TypedActionHandle<TInput, TOutput>;
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
+  /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
   addListener<K extends keyof RelayEventMap>(
     selector: K,
     handler: ListenerHandler<RelayEventMap[K]>
@@ -234,7 +240,9 @@ export class AgentRelay implements AgentRelayAgent {
     );
   }
 
-  registerAction<TInput, TOutput>(def: RegisterActionInput<TInput, TOutput>): ActionHandle {
+  registerAction<TInput, TOutput>(
+    def: RegisterActionInput<TInput, TOutput>
+  ): TypedActionHandle<TInput, TOutput> {
     // The workspace-scoped client has no single handler-agent identity or
     // agent connection, so relay wiring is skipped and the action stays
     // in-process. Use an agent client (workspace.register / reconnect) to
@@ -245,6 +253,8 @@ export class AgentRelay implements AgentRelayAgent {
     });
   }
 
+  /** Subscribe with a typed predicate — the handler receives the predicate's event type. */
+  addListener<TEvent>(selector: ListenerPredicate<TEvent>, handler: ListenerHandler<TEvent>): () => void;
   /** Subscribe by dotted event name, `'*'`/prefix wildcard, or a predicate. */
   addListener<K extends keyof RelayEventMap>(
     selector: K,
@@ -363,10 +373,10 @@ export function agentRelayAgent(
     workspace: createWorkspaceFacade(messaging),
     registerAction: (def) =>
       registerFacadeAction(actions, def, { messaging, handlerAgent, onError: options?.onError }),
-    addListener: (selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>) =>
-      hub.addListener(selector, handler),
-    once: (selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>) =>
-      hub.once(selector, handler),
+    addListener: ((selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>) =>
+      hub.addListener(selector, handler)) as AgentRelayAgent['addListener'],
+    once: ((selector: string | ListenerPredicate, handler: ListenerHandler<RelayEvent>) =>
+      hub.once(selector, handler)) as AgentRelayAgent['once'],
     action: (name) => hub.action(name),
     agent: (input) => hub.agent(input),
     emitSessionEvent: (agentId, event) => hub.emitSessionEvent(agentId, event),

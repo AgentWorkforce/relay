@@ -1,4 +1,5 @@
-import skillMarkdown from '../content/openclaw/SKILL.md?raw';
+import agentRelaySkillMarkdown from '../content/agent-relay/SKILL.md?raw';
+import openClawSkillMarkdown from '../content/openclaw/SKILL.md?raw';
 
 const JOIN_WORKSPACE_LINE =
   'Use a shared workspace key (`rk_live_...`) so all claws join the same workspace:';
@@ -7,8 +8,12 @@ const OBSERVER_AUTH_LINE = 'Authenticate with workspace key (`rk_live_...`).';
 const TOKEN_PLACEHOLDER = 'rk_live_YOUR_WORKSPACE_KEY';
 const SETUP_SKIP_NOTE = 'Since you already have a workspace key, skip Step 1 and continue with Step 2 below.';
 
-export function readSkillMarkdown(): string {
-  return skillMarkdown;
+export function readAgentRelaySkillMarkdown(): string {
+  return agentRelaySkillMarkdown;
+}
+
+export function readOpenClawSkillMarkdown(): string {
+  return openClawSkillMarkdown;
 }
 
 export function applyInviteToken(markdown: string, inviteToken: string): string {
