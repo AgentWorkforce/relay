@@ -11,12 +11,19 @@ import {
   SubscribeRequestSchema,
   UnsubscribeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { RelayCast, SDK_VERSION, WsClient, type AgentClient } from '@relaycast/sdk';
 import {
   INVALID_AGENT_TOKEN_CODE,
+  RELAYCAST_SDK_VERSION,
   agentTokenRecoveryMessage,
+  createAgentClient,
+  createRealtimeClient,
+  createWorkspace as createRelayWorkspace,
+  createWorkspaceClient,
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
+  type RelayAgentThinClient,
+  type RelayRealtimeThinClient,
+  type RelayWorkspaceThinClient,
 } from '@agent-relay/sdk';
 import type {
   ActionAuditEvent,
@@ -34,11 +41,11 @@ import {
   type AgentRelayToolCallCategory,
   type AgentRelayToolCallType,
 } from './telemetry/index.js';
-import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 
 const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
-export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
+export const AGENT_RELAY_MCP_VERSION =
+  process.env.AGENT_RELAY_CLI_VERSION ?? RELAYCAST_SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
@@ -76,8 +83,8 @@ const identityOverrideInputShape = {
 };
 
 type AgentType = 'agent' | 'human';
-type RelayCastLike = Pick<RelayCast, 'agents'>;
-type AgentClientLike = AgentClient;
+type RelayCastLike = Pick<RelayWorkspaceThinClient, 'agents'>;
+type AgentClientLike = RelayAgentThinClient;
 
 export interface AgentRelayMcpServerOptions {
   workspaceKey?: string;
@@ -319,10 +326,7 @@ function createInitialSession(options: {
 }
 
 async function createWorkspace(name: string, baseUrl?: string): Promise<Record<string, unknown>> {
-  return (await RelayCast.createWorkspace(name, {
-    baseUrl,
-    ...relaycastWorkspaceTelemetryOptions(),
-  })) as Record<string, unknown>;
+  return createRelayWorkspace(name, { baseUrl });
 }
 
 function extractWorkspaceKey(payload: Record<string, unknown>): string | undefined {
@@ -801,7 +805,7 @@ class RealtimeResourceBridge {
   private unsubscribeFn: (() => void) | null = null;
 
   constructor(
-    private readonly wsClient: WsClient,
+    private readonly wsClient: RelayRealtimeThinClient,
     private readonly subscriptions: SubscriptionManager,
     private readonly notifyCallback: (uri: string) => void
   ) {}
@@ -838,7 +842,7 @@ class RealtimeResourceBridge {
 function registerResourceDefinitions(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
-  getRelay: () => RelayCast
+  getRelay: () => RelayCastLike
 ): void {
   server.registerResource(
     'inbox',
@@ -1227,7 +1231,7 @@ function resolveEmoji(input: string): string {
 
 function registerAgentRelayTools(
   server: McpServer,
-  getRelay: () => RelayCast,
+  getRelay: () => RelayCastLike,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
   getSession: () => SessionState,
   setSession: SessionSetter,
@@ -1864,7 +1868,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
   );
 
   const getSession = (): SessionState => session;
-  const getRelay = (): RelayCast => {
+  const getRelay = (): RelayCastLike => {
     const workspaceKey = session.workspaceKey;
     if (!workspaceKey) {
       throw new Error(
@@ -1872,12 +1876,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
       );
     }
 
-    return new RelayCast(
-      withRelaycastTelemetry({
-        apiKey: workspaceKey,
-        baseUrl: options.baseUrl,
-      })
-    );
+    return createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
   };
 
   const notifySubscribers = () => {
@@ -1906,12 +1905,10 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     if (session.agentToken && !session.wsBridge && !session.wsInitAttempted) {
       try {
         const subscriptions = new SubscriptionManager();
-        const wsClient = new WsClient(
-          withRelaycastTelemetry({
-            token: session.agentToken,
-            baseUrl: options.baseUrl,
-          })
-        );
+        const wsClient = createRealtimeClient({
+          agentToken: session.agentToken,
+          baseUrl: options.baseUrl,
+        });
         const wsBridge = new RealtimeResourceBridge(wsClient, subscriptions, (uri) => {
           mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
         });
@@ -1972,12 +1969,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return new RelayCast(
-      withRelaycastTelemetry({
-        apiKey: agentToken,
-        baseUrl: options.baseUrl,
-      })
-    ).as(agentToken, { autoHeartbeatMs: false });
+    return createAgentClient({ agentToken, baseUrl: options.baseUrl });
   };
 
   enableInboxPiggyback(
@@ -2089,12 +2081,7 @@ export async function resolveStdioBootstrapOptions(
     return options;
   }
 
-  const relay = new RelayCast(
-    withRelaycastTelemetry({
-      apiKey: workspaceKey,
-      baseUrl: options.baseUrl,
-    })
-  );
+  const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
   const registered = await relay.agents.registerOrRotate({
     name: options.agentName,

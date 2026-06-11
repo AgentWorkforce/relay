@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent-relay mcp` now talks to the hosted engine exclusively through `@agent-relay/sdk` thin clients instead of constructing raw `@relaycast/sdk` clients; `@relaycast/sdk` is no longer a runtime dependency of the `agent-relay` CLI package. Tool schemas, payloads, and error behavior are unchanged.
 - PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
 
 ### Added
 
+- `@agent-relay/sdk` adds thin Relaycast client factories — `createWorkspaceClient`, `createAgentClient`, `createRealtimeClient`, and `createWorkspace` — typed raw pass-throughs for workspace-key and agent-token operations (registration, spawn/release, messaging, channels, reactions, inbox, actions, realtime events) that keep upstream payloads and errors untouched.
 - `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`/`inbox.subscribe` replay and stream the per-recipient delivery ledger, `inbox.ack/fail/defer` and `deliveries.ack/fail/defer` apply real server transitions, capabilities report `serverDeliveryState: true` for agent-scoped clients, and `DeliveryRunner` now works against the hosted backend.
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
 - `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
