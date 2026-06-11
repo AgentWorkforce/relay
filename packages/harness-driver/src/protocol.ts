@@ -345,6 +345,9 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
+      /** 'echo' when confirmed in PTY output, 'timeout_fallback' when acked unverified. */
+      verification?: string;
+      reason?: string;
     }
   | {
       kind: 'delivery_failed';

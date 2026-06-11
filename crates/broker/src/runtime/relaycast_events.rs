@@ -757,7 +757,7 @@ impl BrokerRuntime {
                 // messages parked until flush. The same full-context
                 // capture makes drains reproduce the original
                 // delivery (channel/thread/workspace).
-                match queue_inbound_for_delivery_mode(
+                let queue_result = queue_inbound_for_delivery_mode(
                     delivery_states,
                     workers,
                     &worker_name,
@@ -772,7 +772,15 @@ impl BrokerRuntime {
                         mode: MessageInjectionMode::Wait,
                         event_id: Some(&mapped.event_id),
                     },
-                ) {
+                );
+                if let Some(dropped_from) = &queue_result.evicted_from {
+                    let _ = send_broker_event(
+                        sdk_out_tx,
+                        delivery_dropped_event_for_eviction(&worker_name, dropped_from),
+                    )
+                    .await;
+                }
+                match queue_result.outcome {
                     InboundQueueOutcome::Queued => {
                         tracing::info!(
                             target = "agent_relay::broker",

@@ -831,7 +831,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 None,
                                 json!({
                                     "delivery_id": delivery_id,
-                                    "event_id": event_id
+                                    "event_id": event_id,
+                                    "verification": "echo"
                                 }),
                             )
                             .await;
@@ -1084,10 +1085,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let event_id = pv.event_id.clone();
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
-                        tracing::debug!(
+                        tracing::info!(
                             delivery_id = %delivery_id,
                             attempts = pv.attempts,
-                            "delivery echo not detected within verification window; acknowledging via timeout fallback"
+                            "delivery echo not detected within verification window; acknowledging via timeout fallback (unverified)"
                         );
                         let _ = send_frame(
                             &out_tx,
@@ -1111,7 +1112,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }),
                         )
                         .await;
-                        throttle.record(DeliveryOutcome::Success);
+                        // Timeout-fallback acks are not verified deliveries:
+                        // keep them out of the throttle's success signal.
+                        throttle.record(DeliveryOutcome::Unverified);
                         pending_worker_delivery_ids.remove(&delivery_id);
                     } else {
                         i += 1;

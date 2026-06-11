@@ -34,15 +34,17 @@ use super::{
     display_target_for_dashboard, drop_pending_for_worker, emit_delivery_attempt_outcome,
     emit_dropped_delivery_failures, ensure_ephemeral_paths, extract_mcp_message_ids,
     http_api_event_emit_timeout, http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
-    is_relaycast_self_control_target, is_unknown_worker_error_message, mark_delivery_read_ack,
-    mark_delivery_read_ack_with_timeout, normalize_channel, normalize_initial_task,
-    normalize_sender, parse_sort_key_from_raw_timestamp, queue_inbound_for_delivery_mode,
+    is_relaycast_self_control_target, is_unknown_worker_error_message, load_pending_deliveries,
+    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, normalize_channel,
+    normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
     relaycast_spawn_control_dedup_key, relaycast_ws_control_dedup_key,
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
     retry_pending_delivery, seed_supplied_agent_token, send_broker_event,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, AgentRuntime, DeliveryAttemptOutcome, InboundContext,
-    InboundQueueOutcome, PendingDelivery, ProtocolHeadlessProvider, MAX_DELIVERY_RETRIES,
+    InboundQueueOutcome, PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider,
+    MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -153,14 +155,15 @@ async fn inbound_queue_auto_inject_drains_immediately_with_full_context() {
     let workers = make_worker_registry_with_worker(worker_name).await;
     let mut delivery_states = HashMap::new();
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         worker_name,
         inbound_ctx("evt_auto"),
     );
 
-    match outcome {
+    assert_eq!(result.evicted_from, None);
+    match result.outcome {
         InboundQueueOutcome::DrainNow(messages) => {
             assert_eq!(messages.len(), 1);
             let msg = &messages[0];
@@ -197,14 +200,15 @@ async fn inbound_queue_manual_flush_holds_until_explicit_drain() {
         InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
     )]);
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         worker_name,
         inbound_ctx("evt_manual"),
     );
 
-    assert_eq!(outcome, InboundQueueOutcome::Queued);
+    assert_eq!(result.outcome, InboundQueueOutcome::Queued);
+    assert_eq!(result.evicted_from, None);
     let snapshot = delivery_states
         .get(worker_name)
         .expect("manual state should remain present")
@@ -227,15 +231,159 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
     );
     let mut delivery_states = HashMap::new();
 
-    let outcome = queue_inbound_for_delivery_mode(
+    let result = queue_inbound_for_delivery_mode(
         &mut delivery_states,
         &workers,
         "ghost",
         inbound_ctx("evt_missing"),
     );
 
-    assert_eq!(outcome, InboundQueueOutcome::WorkerMissing);
+    assert_eq!(result.outcome, InboundQueueOutcome::WorkerMissing);
+    assert_eq!(result.evicted_from, None);
     assert!(delivery_states.is_empty());
+}
+
+#[tokio::test]
+async fn inbound_queue_eviction_surfaces_dropped_message() {
+    let worker_name = "worker-a";
+    let workers = make_worker_registry_with_worker(worker_name).await;
+    let mut delivery_states = HashMap::from([(
+        WorkerName::from(worker_name),
+        InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
+    )]);
+
+    for _ in 0..crate::types::MAX_PENDING_PER_WORKER {
+        let result = queue_inbound_for_delivery_mode(
+            &mut delivery_states,
+            &workers,
+            worker_name,
+            inbound_ctx("evt_fill"),
+        );
+        assert_eq!(result.evicted_from, None);
+    }
+
+    let result = queue_inbound_for_delivery_mode(
+        &mut delivery_states,
+        &workers,
+        worker_name,
+        inbound_ctx("evt_overflow"),
+    );
+
+    assert_eq!(result.outcome, InboundQueueOutcome::Queued);
+    assert_eq!(
+        result.evicted_from.as_deref(),
+        Some("Alice"),
+        "hitting the per-worker cap must surface the evicted sender so callers can emit delivery_dropped"
+    );
+    assert_eq!(
+        delivery_states
+            .get(worker_name)
+            .expect("state should exist")
+            .pending_snapshot()
+            .len(),
+        crate::types::MAX_PENDING_PER_WORKER,
+        "queue stays at the cap after eviction"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
+    PendingDelivery {
+        worker_name: WorkerName::from(worker),
+        delivery: RelayDelivery {
+            delivery_id: DeliveryId::new(delivery_id),
+            event_id: EventId::new(format!("evt_{delivery_id}")),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            target: MessageTarget::new("Worker"),
+            body: "hello".to_string(),
+            thread_id: None,
+            priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
+        },
+        attempts: 1,
+        next_retry_at: Instant::now(),
+        queued_at_ms: super::unix_timestamp_millis(),
+        last_error: None,
+    }
+}
+
+#[test]
+fn shutdown_persists_nonempty_pending_deliveries() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let deliveries = HashMap::from([(
+        DeliveryId::new("del_keep"),
+        make_pending_delivery("del_keep", "worker-a"),
+    )]);
+
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    let reloaded = load_pending_deliveries(&path);
+    assert_eq!(reloaded.len(), 1, "pending delivery survives shutdown");
+    let pending = reloaded
+        .get("del_keep")
+        .expect("persisted delivery should reload by id");
+    assert_eq!(pending.worker_name, WorkerName::from("worker-a"));
+    assert_eq!(pending.delivery.event_id, EventId::new("evt_del_keep"));
+    assert_eq!(pending.attempts, 1);
+}
+
+#[test]
+fn shutdown_removes_pending_file_only_when_empty() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    std::fs::write(&path, "[]").expect("seed file should write");
+    let deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    assert!(
+        !path.exists(),
+        "clean shutdown with nothing pending removes the file"
+    );
+}
+
+#[test]
+fn shutdown_without_persist_writes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let deliveries = HashMap::from([(
+        DeliveryId::new("del_lost"),
+        make_pending_delivery("del_lost", "worker-a"),
+    )]);
+
+    persist_pending_on_shutdown(&path, false, &deliveries);
+
+    assert!(
+        !path.exists(),
+        "persistence disabled — shutdown must not write state files"
+    );
+}
+
+#[test]
+fn pending_delivery_store_tracks_mutations() {
+    let mut store = PendingDeliveryStore::new(HashMap::new());
+    assert!(!store.take_dirty(), "fresh store starts clean");
+
+    // Read-only access goes through `Deref` and stays clean.
+    assert!(store.is_empty());
+    assert!(!store.take_dirty());
+
+    store.insert(
+        DeliveryId::new("del_1"),
+        make_pending_delivery("del_1", "worker-a"),
+    );
+    assert!(store.take_dirty(), "insert marks the store dirty");
+    assert!(!store.take_dirty(), "take_dirty clears the flag");
+
+    // `&mut HashMap` coercion — the path used by the free delivery
+    // helpers — must also mark the store dirty.
+    let map: &mut HashMap<DeliveryId, PendingDelivery> = &mut store;
+    map.remove("del_1");
+    assert!(store.take_dirty(), "mutation via DerefMut marks dirty");
 }
 
 #[tokio::test]

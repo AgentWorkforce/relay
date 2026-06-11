@@ -45,6 +45,77 @@ pub(crate) fn unix_timestamp_millis() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+/// Pending-delivery map with dirty tracking. Any mutable access (insert,
+/// remove, retry bookkeeping) marks the store dirty via `DerefMut`, letting
+/// the event loop persist the snapshot immediately after the mutating event
+/// instead of waiting for the next maintenance tick.
+#[derive(Debug, Default)]
+pub(crate) struct PendingDeliveryStore {
+    map: HashMap<DeliveryId, PendingDelivery>,
+    dirty: bool,
+}
+
+impl PendingDeliveryStore {
+    pub(crate) fn new(map: HashMap<DeliveryId, PendingDelivery>) -> Self {
+        Self { map, dirty: false }
+    }
+
+    /// Return whether the map was mutated since the last call, clearing the flag.
+    pub(crate) fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+}
+
+impl std::ops::Deref for PendingDeliveryStore {
+    type Target = HashMap<DeliveryId, PendingDelivery>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::DerefMut for PendingDeliveryStore {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.dirty = true;
+        &mut self.map
+    }
+}
+
+/// Persist or remove the pending-deliveries file during graceful shutdown.
+/// A non-empty map is written back to disk so the next broker start can
+/// redeliver; the file is only removed when nothing is actually pending.
+pub(crate) fn persist_pending_on_shutdown(
+    path: &Path,
+    persist: bool,
+    deliveries: &HashMap<DeliveryId, PendingDelivery>,
+) {
+    if deliveries.is_empty() {
+        if persist {
+            let _ = std::fs::remove_file(path);
+        }
+        return;
+    }
+    if !persist {
+        tracing::warn!(
+            count = deliveries.len(),
+            "shutting down with pending deliveries — they will be lost because persistence is disabled"
+        );
+        return;
+    }
+    tracing::warn!(
+        count = deliveries.len(),
+        path = %path.display(),
+        "shutting down with pending deliveries — persisting for redelivery on restart"
+    );
+    if let Err(error) = save_pending_deliveries(path, deliveries) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %error,
+            "failed to persist pending deliveries during shutdown"
+        );
+    }
+}
+
 pub(crate) fn save_pending_deliveries(
     path: &Path,
     deliveries: &HashMap<DeliveryId, PendingDelivery>,
@@ -318,6 +389,34 @@ pub(crate) enum InboundQueueOutcome {
     WorkerMissing,
 }
 
+/// Result of [`queue_inbound_for_delivery_mode`]: the routing outcome plus
+/// eviction info when the per-worker pending cap forced the oldest queued
+/// message out. Callers must surface evictions as a `delivery_dropped`
+/// broker event — a capped queue silently losing messages is a delivery
+/// failure, not a debug detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InboundQueueResult {
+    pub(crate) outcome: InboundQueueOutcome,
+    /// `from` of the oldest message evicted to make room, if any.
+    pub(crate) evicted_from: Option<String>,
+}
+
+/// Build the `delivery_dropped` broker event for a queue-cap eviction.
+pub(crate) fn delivery_dropped_event_for_eviction(
+    worker_name: &str,
+    dropped_from: &str,
+) -> BrokerEvent {
+    BrokerEvent::DeliveryDropped {
+        name: WorkerName::from(worker_name),
+        count: 1,
+        reason: format!(
+            "pending queue full (max {}); evicted oldest message from {}",
+            crate::types::MAX_PENDING_PER_WORKER,
+            dropped_from
+        ),
+    }
+}
+
 /// Bundle of routing context captured into the pending queue. Mirrors the
 /// args `queue_and_try_delivery_raw`
 /// expects so a drain reproduces the original delivery exactly — same
@@ -352,9 +451,12 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     workers: &WorkerRegistry,
     worker_name: &str,
     ctx: InboundContext<'_>,
-) -> InboundQueueOutcome {
+) -> InboundQueueResult {
     if !workers.has_worker(worker_name) {
-        return InboundQueueOutcome::WorkerMissing;
+        return InboundQueueResult {
+            outcome: InboundQueueOutcome::WorkerMissing,
+            evicted_from: None,
+        };
     }
     let state = delivery_states
         .entry(WorkerName::from(worker_name))
@@ -373,7 +475,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
         queued_at_ms,
         event_id: ctx.event_id.map(EventId::from),
     };
-    match state.accept_inbound(msg) {
+    let evicted_from = match state.accept_inbound(msg) {
         InboundDeliveryDispatch::Queued { queue_len } => {
             tracing::debug!(
                 target = "agent_relay::broker",
@@ -383,6 +485,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
                 queue_len,
                 "queued inbound relay message"
             );
+            None
         }
         InboundDeliveryDispatch::QueuedEvicted {
             queue_len,
@@ -398,9 +501,10 @@ pub(crate) fn queue_inbound_for_delivery_mode(
                 max_pending = crate::types::MAX_PENDING_PER_WORKER,
                 "pending queue full — evicting oldest message"
             );
+            Some(dropped_from)
         }
-    }
-    if should_drain {
+    };
+    let outcome = if should_drain {
         let to_drain = state.drain_pending();
         tracing::debug!(
             target = "agent_relay::broker",
@@ -411,6 +515,10 @@ pub(crate) fn queue_inbound_for_delivery_mode(
         InboundQueueOutcome::DrainNow(to_drain)
     } else {
         InboundQueueOutcome::Queued
+    };
+    InboundQueueResult {
+        outcome,
+        evicted_from,
     }
 }
 
