@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import path from "node:path";
-import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 import {
   assertHumanEvalExpected,
@@ -17,25 +17,27 @@ import {
   printHumanEvalRunSummary,
   validateHumanEvalCase,
   writeHumanEvalRunArtifacts,
-} from "@agent-assistant/telemetry/evals";
+} from '@agent-assistant/telemetry/evals';
 
-import { assertRelayExpected } from "./relay-checks.mjs";
-import { createRelayExecutor } from "./relay-executor.mjs";
+import { assertRelayExpected } from './relay-checks.mjs';
+import { createRelayExecutor } from './relay-executor.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const SUITES_DIR = path.join(ROOT, "evals", "suites");
-const RUNS_DIR = path.join(ROOT, ".relay", "evals", "runs");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const SUITES_DIR = path.join(ROOT, 'evals', 'suites');
+const RUNS_DIR = path.join(ROOT, '.relay', 'evals', 'runs');
 
-loadDotenv(path.join(ROOT, ".env"));
+loadDotenv(path.join(ROOT, '.env'));
 
 const args = parseArgs(process.argv.slice(2));
-const mode = args.mode ?? "offline";
+const mode = args.mode ?? 'offline';
 const allCases = loadHumanEvalCasesFromSuitesDir(SUITES_DIR, { rootDir: ROOT });
-const selectedCases = allCases.filter((testCase) => matchesHumanEvalFilters(testCase, {
-  suite: args.suite,
-  caseId: args.caseId,
-  tags: args.tags,
-}));
+const selectedCases = allCases.filter((testCase) =>
+  matchesHumanEvalFilters(testCase, {
+    suite: args.suite,
+    caseId: args.caseId,
+    tags: args.tags.size > 0 ? args.tags : undefined,
+  })
+);
 
 if (args.list) {
   listCases(selectedCases);
@@ -43,9 +45,11 @@ if (args.list) {
 }
 
 if (selectedCases.length === 0) {
-  console.log("No eval cases selected.");
-  console.log("Add human-authored markdown cases under evals/suites/*/cases.md and run npm run evals:compile.");
-  console.log("Try: npm run evals:list");
+  console.log('No eval cases selected.');
+  console.log(
+    'Add human-authored markdown cases under evals/suites/*/cases.md and run npm run evals:compile.'
+  );
+  console.log('Try: npm run evals:list');
   process.exit(0);
 }
 
@@ -59,15 +63,15 @@ for (const testCase of selectedCases) {
   const trials = readPositiveInt(args.trials ?? testCase.trials, 1);
   for (let trialIndex = 0; trialIndex < trials; trialIndex += 1) {
     const startedAt = Date.now();
-    const executorName = args.executor ?? testCase.executor ?? "relay";
+    const executorName = args.executor ?? testCase.executor ?? 'relay';
     const trial = {
       id: testCase.id,
       suite: testCase.suite,
-      kind: testCase.kind ?? "capability",
+      kind: testCase.kind ?? 'capability',
       executor: executorName,
       trial: trialIndex + 1,
       tags: testCase.tags ?? [],
-      status: "failed",
+      status: 'failed',
       duration_ms: 0,
       checks: [],
       input: testCase.input,
@@ -86,7 +90,7 @@ for (const testCase of selectedCases) {
 
       run.tests.push({
         ...trial,
-        status: deterministicPassed ? (needsHuman ? "needs-human" : "passed") : "failed",
+        status: deterministicPassed ? (needsHuman ? 'needs-human' : 'passed') : 'failed',
         actual: redactRelayActual(actual),
         checks,
         duration_ms: Date.now() - startedAt,
@@ -94,7 +98,7 @@ for (const testCase of selectedCases) {
     } catch (error) {
       run.tests.push({
         ...trial,
-        status: isSkippedError(error) ? "skipped" : "failed",
+        status: isSkippedError(error) ? 'skipped' : 'failed',
         error: error instanceof Error ? error.message : String(error),
         duration_ms: Date.now() - startedAt,
       });
@@ -105,25 +109,29 @@ for (const testCase of selectedCases) {
 }
 
 writeHumanEvalRunArtifacts(run, { final: true });
-printHumanEvalRunSummary(run, { productName: "Relay Evals", rootDir: ROOT });
-process.exitCode = run.tests.some((test) => test.status === "failed" || (shouldFailOnSkipped(args) && test.status === "skipped")) ? 1 : 0;
+printHumanEvalRunSummary(run, { productName: 'Relay Evals', rootDir: ROOT });
+process.exitCode = run.tests.some(
+  (test) => test.status === 'failed' || (shouldFailOnSkipped(args) && test.status === 'skipped')
+)
+  ? 1
+  : 0;
 
 function parseArgs(argv) {
   const parsed = { tags: new Set() };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--list") parsed.list = true;
-    else if (arg === "--suite") parsed.suite = readOptionValue(argv, ++index, "--suite");
-    else if (arg === "--case") parsed.caseId = readOptionValue(argv, ++index, "--case");
-    else if (arg === "--executor") parsed.executor = readOptionValue(argv, ++index, "--executor");
-    else if (arg === "--tag" || arg === "--tags") {
-      for (const tag of readOptionValue(argv, ++index, arg).split(",")) {
+    if (arg === '--list') parsed.list = true;
+    else if (arg === '--suite') parsed.suite = readOptionValue(argv, ++index, '--suite');
+    else if (arg === '--case') parsed.caseId = readOptionValue(argv, ++index, '--case');
+    else if (arg === '--executor') parsed.executor = readOptionValue(argv, ++index, '--executor');
+    else if (arg === '--tag' || arg === '--tags') {
+      for (const tag of readOptionValue(argv, ++index, arg).split(',')) {
         if (tag.trim()) parsed.tags.add(tag.trim());
       }
-    } else if (arg === "--trials") parsed.trials = Number(readOptionValue(argv, ++index, "--trials"));
-    else if (arg === "--mode") parsed.mode = readOptionValue(argv, ++index, "--mode");
-    else if (arg === "--fail-on-skipped") parsed.failOnSkipped = true;
-    else if (arg === "--help" || arg === "-h") {
+    } else if (arg === '--trials') parsed.trials = Number(readOptionValue(argv, ++index, '--trials'));
+    else if (arg === '--mode') parsed.mode = readOptionValue(argv, ++index, '--mode');
+    else if (arg === '--fail-on-skipped') parsed.failOnSkipped = true;
+    else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
     } else {
@@ -135,7 +143,7 @@ function parseArgs(argv) {
 
 function readOptionValue(argv, index, option) {
   const value = argv[index];
-  if (value === undefined || value.startsWith("--")) throw new Error(`${option} requires a value`);
+  if (value === undefined || value.startsWith('--')) throw new Error(`${option} requires a value`);
   return value;
 }
 
@@ -156,17 +164,18 @@ Options:
 
 function listCases(cases) {
   if (cases.length === 0) {
-    console.log("No eval cases found.");
+    console.log('No eval cases found.');
     return;
   }
   for (const testCase of cases) {
-    const tags = Array.isArray(testCase.tags) && testCase.tags.length > 0 ? ` [${testCase.tags.join(",")}]` : "";
-    console.log(`${testCase.id} (${testCase.suite}/${testCase.executor ?? "relay"})${tags}`);
+    const tags =
+      Array.isArray(testCase.tags) && testCase.tags.length > 0 ? ` [${testCase.tags.join(',')}]` : '';
+    console.log(`${testCase.id} (${testCase.suite}/${testCase.executor ?? 'relay'})${tags}`);
   }
 }
 
 function createRunRecord({ selectedCases, mode }) {
-  const timestampForName = new Date().toISOString().replace(/[:.]/g, "-");
+  const timestampForName = new Date().toISOString().replace(/[:.]/g, '-');
   const git = getGitInfo(ROOT);
   const runName = `${timestampForName}-${sanitize(git.branch)}-${sanitize(mode)}`;
   return createHumanEvalRunRecord({
@@ -180,24 +189,28 @@ function createRunRecord({ selectedCases, mode }) {
 }
 
 function getGitInfo(rootDir) {
-  const branch = runGitInfoCommand(rootDir, ["rev-parse", "--abbrev-ref", "HEAD"], "branch");
-  const sha = runGitInfoCommand(rootDir, ["rev-parse", "--short", "HEAD"], "sha");
+  const branch = runGitInfoCommand(rootDir, ['rev-parse', '--abbrev-ref', 'HEAD'], 'branch');
+  const sha = runGitInfoCommand(rootDir, ['rev-parse', '--short', 'HEAD'], 'sha');
   return { branch, sha };
 }
 
 function runGitInfoCommand(rootDir, gitArgs, label) {
-  const result = spawnSync("git", gitArgs, { cwd: rootDir, encoding: "utf8" });
+  const result = spawnSync('git', gitArgs, { cwd: rootDir, encoding: 'utf8' });
   const value = result.stdout?.trim();
   if (result.status !== 0 || !value) {
-    const detail = result.error?.message || result.stderr?.trim() || `status=${result.status ?? "unknown"}`;
-    console.warn(`getGitInfo: failed to read ${label} with git ${gitArgs.join(" ")}: ${detail}`);
-    return "unknown";
+    const detail = result.error?.message || result.stderr?.trim() || `status=${result.status ?? 'unknown'}`;
+    console.warn(`getGitInfo: failed to read ${label} with git ${gitArgs.join(' ')}: ${detail}`);
+    return 'unknown';
   }
   return value;
 }
 
 function shouldFailOnSkipped(args) {
-  return args.failOnSkipped || process.env.RELAY_EVAL_FAIL_ON_SKIPPED === "1" || process.env.HUMAN_EVAL_FAIL_ON_SKIPPED === "1";
+  return (
+    args.failOnSkipped ||
+    process.env.RELAY_EVAL_FAIL_ON_SKIPPED === '1' ||
+    process.env.HUMAN_EVAL_FAIL_ON_SKIPPED === '1'
+  );
 }
 
 function readPositiveInt(raw, fallback) {
@@ -206,12 +219,14 @@ function readPositiveInt(raw, fallback) {
 }
 
 function sanitize(value) {
-  return String(value).replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80);
+  return String(value)
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .slice(0, 80);
 }
 
 function redactRelayActual(actual) {
   const redacted = defaultRedactActual(actual);
-  if (!actual || typeof actual !== "object") return redacted;
+  if (!actual || typeof actual !== 'object') return redacted;
   return {
     ...redacted,
     observed: actual.observed,
@@ -224,7 +239,10 @@ function redactRelayActual(actual) {
 }
 
 function isSkippedError(error) {
-  return Boolean(error && typeof error === "object" && "code" in error && (
-    error.code === "HUMAN_EVAL_SKIPPED" || error.code === "SAGE_EVAL_SKIPPED"
-  ));
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error.code === 'HUMAN_EVAL_SKIPPED' || error.code === 'SAGE_EVAL_SKIPPED')
+  );
 }
