@@ -1,3 +1,5 @@
+import type { DeliveryStatus } from '@relaycast/types';
+
 import type { RelayMessage } from '../messaging/index.js';
 import type { Unsubscribe } from '../capabilities.js';
 import type {
@@ -27,7 +29,8 @@ export interface InjectionContext {
 }
 
 export interface InjectionResult {
-  status: 'accepted' | 'delivered' | 'deferred' | 'failed';
+  /** Canonical durable-delivery status reported by the adapter. */
+  status: DeliveryStatus;
   injectionId?: string;
   availableAt?: string;
   reason?: string;
