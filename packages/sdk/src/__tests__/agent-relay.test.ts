@@ -29,9 +29,10 @@ const relaycastMocks = vi.hoisted(() => {
   return { createWorkspace, relayCast };
 });
 
-vi.mock('@relaycast/sdk', () => {
+vi.mock('@relaycast/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@relaycast/sdk')>();
   relaycastMocks.relayCast.createWorkspace = relaycastMocks.createWorkspace;
-  return { RelayCast: relaycastMocks.relayCast };
+  return { ...actual, RelayCast: relaycastMocks.relayCast };
 });
 
 import { AgentRelay } from '../index.js';
@@ -71,6 +72,16 @@ describe('AgentRelay workspace setup', () => {
     expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
       apiKey: 'rk_live_created',
       baseUrl: 'https://api.example.test',
+    });
+  });
+
+  it('throws a typed transport_error when the response lacks a workspace key', async () => {
+    relaycastMocks.createWorkspace.mockResolvedValue({ workspaceName: 'Ops' });
+
+    await expect(AgentRelay.createWorkspace({ name: 'Ops' })).rejects.toMatchObject({
+      name: 'RelayError',
+      code: 'transport_error',
+      retryable: false,
     });
   });
 

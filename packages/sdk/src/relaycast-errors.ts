@@ -1,16 +1,16 @@
 /**
  * Detectors for relaycast `agent_token_invalid` responses.
  *
- * Mirrors the recovery contract introduced in upstream PR #137. The Agent Relay
- * MCP server (and any SDK consumer) uses these helpers to recognise when a
- * Relaycast agent token has been invalidated mid-session so the stale
- * credential can be cleared and the caller pointed at a fresh
+ * The Agent Relay MCP server (and any SDK consumer) uses these helpers to
+ * recognise when a Relaycast agent token has been invalidated mid-session so
+ * the stale credential can be cleared and the caller pointed at a fresh
  * `register_agent` call.
  *
- * Detection is intentionally structural: the upstream `@relaycast/sdk`
- * RelayError surfaces a `code` field once PR #137 ships, but until then
- * (and as a defensive fallback) the status + message pair is enough to
- * identify an invalid agent token.
+ * The primary signal is the typed `code` field on the upstream
+ * `@relaycast/sdk` `RelayError` (re-exported from this package). Structural
+ * detection of the status + message pair and serialized error bodies remains
+ * as a fallback for errors that crossed an HTTP or MCP serialization boundary
+ * and lost their `RelayError` shape.
  */
 
 export const INVALID_AGENT_TOKEN_CODE = 'agent_token_invalid';

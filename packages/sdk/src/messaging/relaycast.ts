@@ -223,6 +223,8 @@ type RelaycastWorkspaceLike = {
     list(query?: Record<string, unknown>): Promise<unknown[]>;
     get(name: string): Promise<unknown>;
     register(input: unknown): Promise<unknown>;
+    /** Register an agent, rotating its token when the name already exists. */
+    registerOrRotate?: (data: unknown) => Promise<unknown>;
     update(name: string, input: unknown): Promise<unknown>;
     delete(name: string): Promise<void>;
     presence(): Promise<unknown[]>;
@@ -442,6 +444,12 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     get: async (name: string): Promise<RelayAgent> => normalizeAgent(await this.relaycast.agents.get(name)),
     register: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
       normalizeAgentRegistration(await this.relaycast.agents.register(input)),
+    registerOrRotate: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
+      normalizeAgentRegistration(
+        this.relaycast.agents.registerOrRotate
+          ? await this.relaycast.agents.registerOrRotate(input)
+          : await this.relaycast.agents.register(input)
+      ),
     me: async (): Promise<RelayAgent> => normalizeAgent(await this.requireAgentClient('agents.me').me()),
     update: async (name: string, input: RelayUpdateAgentInput): Promise<RelayAgent> =>
       normalizeAgent(await this.relaycast.agents.update(name, input)),

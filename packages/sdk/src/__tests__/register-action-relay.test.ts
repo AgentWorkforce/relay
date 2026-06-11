@@ -225,6 +225,29 @@ describe('registerFacadeAction relay wiring', () => {
     expect(actions.has('local-only')).toBe(false);
   });
 
+  it('routes descriptor registration failures to the wiring onError hook', async () => {
+    const { messaging } = createRelayMessagingMock();
+    const failure = new Error('relay rejected the descriptor');
+    (
+      messaging.commands.register as unknown as { mockRejectedValueOnce: (e: Error) => void }
+    ).mockRejectedValueOnce(failure);
+    const onError = vi.fn();
+    const actions = new ActionRegistry();
+
+    registerFacadeAction(
+      actions,
+      { name: 'spawn-claude', handler: async () => ({ ok: true }) },
+      { messaging, handlerAgent: 'orchestrator', onError }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onError).toHaveBeenCalledWith(failure, {
+      source: 'action',
+      action: 'spawn-claude',
+      operation: 'register',
+    });
+  });
+
   it('registers locally with no wiring at all (legacy behavior)', async () => {
     const actions = new ActionRegistry();
     const handler = vi.fn(async () => ({ ok: true }));

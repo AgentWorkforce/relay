@@ -183,3 +183,121 @@ describe('Listener DSL (Phase B)', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('onError hook', () => {
+  async function flush() {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it('invokes the constructor onError hook with the listener selector', async () => {
+    const bus = createEventBus();
+    const messaging = {
+      events: { on: bus.on, connect: vi.fn() },
+    } as unknown as RelayMessaging;
+    const onError = vi.fn();
+    const relay = new AgentRelay({ messaging, actions: new ActionRegistry(), onError });
+    const failure = new Error('handler exploded');
+    relay.addListener('message.read', () => {
+      throw failure;
+    });
+
+    bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(failure, { source: 'listener', selector: 'message.read' });
+  });
+
+  it('catches async handler rejections and isolates throwing hooks', async () => {
+    const { relay, bus } = createRelay();
+    const onError = vi.fn(() => {
+      throw new Error('hook exploded');
+    });
+    relay.onError(onError);
+    const failure = new Error('async failure');
+    relay.addListener('message.read', async () => {
+      throw failure;
+    });
+
+    bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+    await flush();
+
+    expect(onError).toHaveBeenCalledWith(failure, { source: 'listener', selector: 'message.read' });
+  });
+
+  it('relay.onError returns an unsubscribe that restores the default warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { relay, bus } = createRelay();
+      const onError = vi.fn();
+      const off = relay.onError(onError);
+      off();
+      relay.addListener('message.read', () => {
+        throw new Error('boom');
+      });
+
+      bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+      await flush();
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('message.read');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns instead of staying silent when a predicate handler throws and no hook is set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { relay, bus } = createRelay();
+      relay.addListener(relay.events.message.created(), () => {
+        throw new Error('boom');
+      });
+
+      bus.emit('messageCreated', { type: 'messageCreated', channel: 'ops', message: { text: 'hi' } });
+      await flush();
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('message.created');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('once', () => {
+  it('fires at most once for a string selector and then unsubscribes', () => {
+    const { relay, bus } = createRelay();
+    const handler = vi.fn();
+    relay.once('message.read', handler);
+
+    bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+    bus.emit('any', { type: 'messageRead', messageId: 'm2', agentName: 'bob' });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0]).toMatchObject({ type: 'message.read', messageId: 'm1' });
+  });
+
+  it('fires at most once for a predicate', () => {
+    const { relay } = createRelay();
+    const engineer = relay.agent({ id: 'a-eng', name: 'engineer' });
+    const handler = vi.fn();
+    relay.once(engineer.status.becomes('idle'), handler);
+
+    relay.emitSessionEvent('a-eng', { type: 'status.idle' });
+    relay.emitSessionEvent('a-eng', { type: 'status.idle' });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('can be unsubscribed before the first event', () => {
+    const { relay, bus } = createRelay();
+    const handler = vi.fn();
+    const off = relay.once('message.read', handler);
+    off();
+
+    bus.emit('any', { type: 'messageRead', messageId: 'm1', agentName: 'bob' });
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
