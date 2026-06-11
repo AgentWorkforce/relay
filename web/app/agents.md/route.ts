@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Markdown endpoint for /agents, relocated from app/agents/route.ts so that
+// app/agents/page.tsx can serve the HTML gallery. Preserves the original
+// Content-Type and Cache-Control so any external LLM tooling that fetched the
+// markdown keeps working at /agents.md.
+
 export const dynamic = 'force-static';
 
 const README_CANDIDATES = [

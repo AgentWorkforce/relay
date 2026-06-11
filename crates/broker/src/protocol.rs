@@ -337,6 +337,15 @@ pub struct ProtocolError {
     pub data: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryReadAckStatus {
+    Marked,
+    Failed,
+    SkippedSynthetic,
+    SuppressedDuplicate,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerEvent {
@@ -417,6 +426,14 @@ pub enum BrokerEvent {
         event_id: EventId,
         from: String,
         to: MessageTarget,
+    },
+    DeliveryReadAck {
+        name: WorkerName,
+        delivery_id: DeliveryId,
+        event_id: EventId,
+        status: DeliveryReadAckStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     MessageDeliveryFailed {
         name: WorkerName,

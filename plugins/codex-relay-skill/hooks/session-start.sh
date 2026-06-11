@@ -17,7 +17,7 @@ fi
 KEY_FILE="${RELAY_DIR}/workspace-key"
 TOKEN_FILE="${RELAY_DIR}/token"
 STATE_FILE="${RELAY_DIR}/codex-session.json"
-DEFAULT_BASE_URL="https://api.relaycast.dev"
+DEFAULT_BASE_URL="https://gateway.relaycast.dev"
 
 load_env() {
   if [ -f "$ENV_FILE" ]; then

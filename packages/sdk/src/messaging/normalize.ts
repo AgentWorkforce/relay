@@ -1,4 +1,6 @@
 import type {
+  InboxItem,
+  InboxItemState,
   RelayAgent,
   RelayAgentChannel,
   RelayAgentPresence,
@@ -9,6 +11,7 @@ import type {
   RelayChannelMember,
   RelayChannelMemberRole,
   RelayChannelReadStatus,
+  RelayDeliverySupportedResult,
   RelayGroupDirectConversation,
   RelayInbox,
   RelayInboxDirectSummary,
@@ -479,6 +482,89 @@ export function normalizeChannelReadStatus(input: unknown): RelayChannelReadStat
   };
 }
 
+// Relaycast durable delivery ledger statuses mapped onto relay inbox states.
+// `accepted` means queued for the recipient; the ledger has no `read` state.
+const INBOX_STATE_BY_DELIVERY_STATUS: Record<string, InboxItemState> = {
+  accepted: 'queued',
+  delivered: 'delivered',
+  deferred: 'deferred',
+  failed: 'failed',
+};
+
+export function normalizeInboxItemState(value: string | undefined): InboxItemState {
+  return (value !== undefined ? INBOX_STATE_BY_DELIVERY_STATUS[value] : undefined) ?? 'queued';
+}
+
+function normalizeDeliveryMetadata(record: UnknownRecord): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {};
+  const mode = readString(record, 'mode');
+  const reason = readNullableString(record, 'reason');
+  const priority = readString(record, 'priority');
+  const retryable = readBoolean(record, 'retryable');
+  const error = readNullableString(record, 'error');
+  const deadline = readNullableString(record, 'deadline');
+  if (mode) metadata.mode = mode;
+  if (reason) metadata.reason = reason;
+  if (priority) metadata.priority = priority;
+  if (retryable !== undefined) metadata.retryable = retryable;
+  if (error) metadata.error = error;
+  if (deadline) metadata.deadline = deadline;
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+/**
+ * Normalize a relaycast durable delivery item (a `deliveries` ledger row with
+ * its embedded message payload) into a relay `InboxItem`.
+ */
+export function normalizeInboxItem(input: unknown, context: { recipientName?: string } = {}): InboxItem {
+  const record = isRecord(input) ? input : {};
+  const messageId = readString(record, 'messageId', 'message_id');
+  const channelId = readString(record, 'channelId', 'channel_id');
+  const agentId = readString(record, 'agentId', 'agent_id');
+  const availableAt = readNullableString(record, 'availableAt', 'available_at');
+  const messageRecord = readRecord(record, 'message');
+  const metadata = normalizeDeliveryMetadata(record);
+
+  return {
+    id: readString(record, 'id', 'deliveryId', 'delivery_id') ?? '',
+    recipient: {
+      name: context.recipientName ?? agentId ?? '',
+      ...(agentId ? { id: agentId } : {}),
+    },
+    state: normalizeInboxItemState(readString(record, 'status')),
+    // The relaycast ledger does not expose attempt counts.
+    attempts: 0,
+    ...(availableAt ? { availableAt } : {}),
+    message: normalizeMessage(
+      messageRecord ?? {
+        ...(messageId ? { id: messageId } : {}),
+        ...(channelId ? { channel_id: channelId } : {}),
+      }
+    ),
+    ...(metadata ? { metadata } : {}),
+  };
+}
+
+/**
+ * Normalize the delivery row returned by a relaycast ack/fail/defer transition
+ * into the relay delivery result contract.
+ */
+export function normalizeDeliveryTransition(
+  action: RelayDeliverySupportedResult['action'],
+  input: unknown
+): RelayDeliverySupportedResult {
+  const record = isRecord(input) ? input : {};
+  const availableAt = readNullableString(record, 'availableAt', 'available_at');
+  return {
+    supported: true,
+    action,
+    deliveryId: readString(record, 'id', 'deliveryId', 'delivery_id') ?? '',
+    messageId: readString(record, 'messageId', 'message_id') ?? '',
+    state: normalizeInboxItemState(readString(record, 'status')),
+    ...(action === 'defer' && availableAt ? { deferUntil: availableAt } : {}),
+  };
+}
+
 export function normalizeSearchResult(input: unknown): RelaySearchResult {
   const record = isRecord(input) ? input : {};
   const createdAt = readString(record, 'createdAt', 'created_at');
@@ -604,6 +690,7 @@ export function normalizeMessagingEvent(input: unknown): RelayMessagingEvent {
           ...(normalizeOptionalChannelName(readNullableString(agent, 'channel') ?? undefined)
             ? { channel: normalizeOptionalChannelName(readNullableString(agent, 'channel') ?? undefined) }
             : {}),
+          ...(readString(agent, 'model') ? { model: readString(agent, 'model') } : {}),
           alreadyExisted: readBoolean(agent, 'alreadyExisted', 'already_existed') ?? false,
         },
       };

@@ -697,6 +697,26 @@ impl WorkerRegistry {
             }
             command.env(key, value);
         }
+        // Per-worker origin_actor: tag this agent's relaycast telemetry with the
+        // CLI it runs and the model it was spawned with
+        // (`agent-relay-cli/agent/<harness>[@<model>]`). The agent's JS SDK reads
+        // AGENT_RELAY_ORIGIN_ACTOR. Don't override an explicit value set via
+        // harness_config env.
+        if !harness_env
+            .iter()
+            .any(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
+        {
+            if let Some(harness) = spec
+                .cli
+                .as_deref()
+                .and_then(crate::telemetry::infer_harness_from_command)
+            {
+                command.env(
+                    "AGENT_RELAY_ORIGIN_ACTOR",
+                    crate::telemetry::agent_origin_actor(harness, spec.model.as_deref()),
+                );
+            }
+        }
         for (key, value) in &harness_env {
             command.env(key, value);
         }

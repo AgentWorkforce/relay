@@ -204,6 +204,10 @@ impl BrokerRuntime {
                     let cli = event.agent.cli;
                     let task = Some(event.agent.task).filter(|value| !value.trim().is_empty());
                     let channel = event.agent.channel;
+                    // Carry the requested model through so the launched CLI is
+                    // started with `--model` (see worker.rs). An empty/blank
+                    // model is treated as unset.
+                    let model = event.agent.model.filter(|value| !value.trim().is_empty());
                     let harness_config = match relaycast_harness_config(&ws_value) {
                         Ok(config) => config,
                         Err(error) => {
@@ -247,7 +251,7 @@ impl BrokerRuntime {
                         cli: Some(cli.clone()),
                         session_id,
                         harness_config,
-                        model: None,
+                        model,
                         cwd: None,
                         team: None,
                         shadow_of: None,
@@ -268,9 +272,9 @@ impl BrokerRuntime {
                     // short timeout keeps spawn latency bounded while still
                     // giving the registration call a real chance.
                     let worker_relay_key = {
-                        let ws_token = relaycast_ws_spawn_token(&ws_value);
-                        if ws_token.is_some() {
-                            ws_token
+                        if let Some(token) = relaycast_ws_spawn_token(&ws_value) {
+                            seed_supplied_agent_token(&workspace_http, &name, &token);
+                            Some(token)
                         } else {
                             const REG_TIMEOUT: Duration = Duration::from_secs(3);
                             match tokio::time::timeout(
@@ -498,9 +502,9 @@ impl BrokerRuntime {
 
                         // Pre-register (same logic as primary WS spawn path).
                         let worker_relay_key = {
-                            let ws_token = relaycast_ws_spawn_token(&ws_value);
-                            if ws_token.is_some() {
-                                ws_token
+                            if let Some(token) = relaycast_ws_spawn_token(&ws_value) {
+                                seed_supplied_agent_token(&workspace_http, &name, &token);
+                                Some(token)
                             } else {
                                 const REG_TIMEOUT: Duration = Duration::from_secs(3);
                                 match tokio::time::timeout(

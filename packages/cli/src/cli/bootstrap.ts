@@ -90,7 +90,6 @@ function resolveSdkVersion(): string | undefined {
 export const SDK_VERSION = resolveSdkVersion();
 
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
-const TELEMETRY_SURFACE_ENV = 'AGENT_RELAY_TELEMETRY_SURFACE';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
 function hasConfiguredTelemetryKey(): boolean {
@@ -127,9 +126,6 @@ function propagateTelemetryContextToChildren(): string {
   }
   if (!process.env[ORCHESTRATOR_HARNESS_ENV]) {
     process.env[ORCHESTRATOR_HARNESS_ENV] = orchestratorHarness;
-  }
-  if (!process.env[TELEMETRY_SURFACE_ENV]) {
-    process.env[TELEMETRY_SURFACE_ENV] = 'cli';
   }
   if (!process.env[TELEMETRY_CLIENT_ENV]) {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';

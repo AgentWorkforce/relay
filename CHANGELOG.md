@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after the agent has produced ~64KB of output since the last one (in addition to the 5-minute cooldown), and `agent-relay wrap` now applies the same throttle instead of attaching the block to every delivery — idle agents receiving channel chatter no longer burn tokens on repeated identical reminders; subsequent deliveries carry the one-line hint instead.
+
 ### Added
 
+- `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`/`inbox.subscribe` replay and stream the per-recipient delivery ledger, `inbox.ack/fail/defer` and `deliveries.ack/fail/defer` apply real server transitions, capabilities report `serverDeliveryState: true` for agent-scoped clients, and `DeliveryRunner` now works against the hosted backend.
 - `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
 - `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
 - `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
@@ -26,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` exports `isInvalidAgentTokenError`, `isInvalidAgentTokenToolResult`, and `agentTokenRecoveryMessage` for consumers that need the same detection contract outside the bundled MCP server.
 - `agent-relay-broker` adds `is_agent_token_invalid`, `is_agent_token_invalid_anyhow`, and `is_agent_token_invalid_code` on `crates/broker/src/relaycast/auth.rs`, and preserves the upstream `RelayError::Api` code through `relay_error_to_anyhow` so the same recovery signal is available to Rust callers.
 - GitHub Actions can sync repository traffic views, clones, popular paths, and referrers into PostHog with daily backfill across GitHub's available traffic window.
-- Broker and TypeScript SDK structured result contracts add the `submit_result` MCP tool, `agent.waitForResult()`, per-spawn `result.onResult`, and `relay.addListener('agentResult', ...)` for typed JSON worker outcomes.
+- Broker and TypeScript SDK structured result contracts: spawn inputs accept an `agentResultSchema` (raw JSON Schema or a zod-style validator, converted before reaching the broker), spawned agents submit typed JSON outcomes through the `submit_result` MCP tool, and the spawn handle's `waitForResult()` resolves with the submitted result (or the agent's exit or a timeout).
+- `@agent-relay/sdk` `relay.registerAction(...)` now returns a typed handle: `handle.completed()` / `handle.failed()` / `handle.invoked()` / `handle.denied()` build `addListener` predicates whose events carry the registration's input/output types, so orchestrators consume their own action results without string keys or casts.
 - `@agent-relay/sdk` and `agent-relay-broker` add broker-executable `pty` and `headless` harness configs, so custom CLIs can be configured without Rust changes while spawn requests remain self-contained.
 - `agent-relay-broker` accepts resolved harness configs on spawn and adds a headless app-server driver for delivering Relay messages to existing OpenCode server sessions.
 - `@agent-relay/sdk` exposes `AgentRelay.spawnAgent({ runtime, cli, ... })` as the single high-level spawn facade for both PTY and headless agents.
@@ -42,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` forwards CLI origin, orchestrator harness, and distinct client identity context to hosted Relaycast so backend telemetry can distinguish CLI/SDK traffic from raw API calls.
 - `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape for laptop-hosted workflows.
 - `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
+- `@agent-relay/sdk` re-exports `RelayError` and `RelayErrorCode` from the package root, so consumers can match coded relay errors (with `retryable`) without depending on `@relaycast/sdk` directly.
+- `@agent-relay/sdk` adds `relay.once(selector, handler)`, which auto-unsubscribes after the first matching event.
+- `@agent-relay/sdk` adds an `onError` hook (`new AgentRelay({ onError })` or `relay.onError(cb)`) that receives listener and action handler errors with a context identifying the listener selector or action name.
 
 ### Changed
 
@@ -52,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay` installs and resolves dashboard UI assets under the install dir (`~/.agentworkforce/relay/dashboard`) instead of `~/.relay/dashboard`, unifying the on-disk footprint. The broker still reads `~/.relay/dashboard` as a fallback and re-downloads assets to the new location on version mismatch.
 - Upgraded relaycast to 2.x (`@relaycast/sdk` and the `relaycast` Rust crate): spawn/release now run as relaycast actions. The broker registers `spawn`/`release` actions on startup and handles `action.invoked` (reading input via the actions API and reporting completion) in place of the removed `command.invoked` protocol; `@agent-relay/openclaw` surfaces `action.invoked` instead of channel slash-commands.
 - `agent-relay` and `@agent-relay/sdk` now consume `@relaycast/sdk` 2.5.x, which carries the v8 service contract (reconnect/resolve-by-token, inbound webhooks with bearer tokens, outbound subscription headers + HMAC, the canonical dotted event vocabulary, and the fire-and-forget action invoke/complete endpoints) plus a workspace-scoped realtime stream.
+- `@agent-relay/sdk` `relay.workspace.register(...)` is idempotent by default: re-registering an existing agent name adopts the identity and rotates its token (invalidating previously-issued tokens for that agent) instead of throwing `name_conflict`; pass `{ strict: true }` to fail on conflicts.
+- `@agent-relay/sdk` `relay.addListener(...)` and `relay.once(...)` narrow the handler's event parameter type for exact dotted selectors such as `'message.created'`; wildcards and predicates keep their existing types.
 - `@agent-relay/sdk` `AgentSession.release` is now optional and `capabilities.lifecycle.release` is a boolean: provide `release()` only when the capability is `true`.
 - `@agent-relay/openclaw` consumes relaycast's unified `message.reacted` event (replacing the separate reaction-added/removed events).
 - `README.md` and `packages/sdk/README.md` now present Agent Relay around three public SDK categories: messaging, delivery, and actions.
@@ -61,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
 - `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
 - `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflows inside the Relay CLI.
+- The `codex-relay-skill` and `gemini-relay-extension` plugins now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK; set `RELAY_BASE_URL` to keep using the legacy `https://api.relaycast.dev` host.
 
 ### Deprecated
 
@@ -122,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `@agent-relay/sdk` npm README now documents the version 8 API (`relay.workspace.register(...)` live clients, `relay.registerAction(...)`, `relay.addListener(...)`); it previously showed the removed pre-v8 surfaces (`relay.as(...)`, `agent.events.on(...)`, `relay.actions.register(...)`).
+- `agent-relay cloud connect <provider>` (and `agent-relay auth`) forward the OAuth callback to the sandbox's `127.0.0.1` explicitly instead of the hostname `localhost`, and bind the local listener on both `127.0.0.1` and `::1`. codex serves its `http://localhost:1455/auth/callback` on IPv4 loopback only, but the Daytona sandbox resolves `localhost` to `::1` first — so the previous forward dialed a dead `::1:1455` inside the sandbox and login hung forever. Both ends of the tunnel are now IPv4-correct.
+- `@agent-relay/cloud` pins the codex CLI installed into the auth sandbox (`@openai/codex@0.138.0`) instead of tracking `latest`, keeping `cloud connect codex` reproducible against codex's frequent releases.
 - `agent-relay-broker` no longer discards pending deliveries on graceful shutdown: a non-empty pending map is persisted for redelivery on the next start, and the pending file is only removed when nothing is pending.
 - `agent-relay-broker` persists pending deliveries on every change (enqueue, ack, retry) instead of only on the 500ms maintenance tick, so a crash between ticks cannot lose queued messages.
 - `agent-relay-broker` timeout-fallback delivery acks are now observable: `delivery_verified` events carry `verification: "timeout_fallback"` plus a reason, and unverified deliveries no longer count as successes in the injection throttle.
@@ -136,6 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sdk-swift`: broker client now connects to the v7 broker's `/ws` event stream without a legacy `hello`/`hello_ack` handshake and routes `spawnAgent`, `releaseAgent`, channel `post`, and agent `dm` through the broker's HTTP API (`/api/spawn`, `/api/spawned/{name}`, `/api/send`).
 - `agent-relay start dashboard.js [cli]` remains available for local dashboard harness workflows.
 - `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
+- `@agent-relay/sdk` listener handler errors are no longer silently swallowed: without an `onError` hook they log a console warning naming the listener.
 
 ### Security
 
@@ -143,6 +159,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-sdk` drops the `[swarms]` optional extra so `swarms` (and its pinned `litellm==1.76.1`) is no longer a transitive dependency, clearing the LiteLLM Dependabot alerts. The Swarms adapter still works for users who `pip install swarms` themselves.
 - `agent-relay-sdk` refreshes `packages/sdk-py/uv.lock` to clear 20 transitive CVEs across `urllib3` (2.6.3→2.7.0), `gitpython` (3.1.46→3.1.50), `pillow` (12.1.1→12.2.0), `python-multipart` (0.0.22→0.0.29), `cryptography` (46.0.6→48.0.0), `authlib` (1.6.9→1.7.2), `idna` (3.11→3.16), `python-dotenv` (1.1.1→1.2.2), `pytest` (9.0.2→9.0.3), and `uv` (0.9.30→0.11.16). Only `starlette` PYSEC-2026-161 remains pending an upstream `google-adk` upper-bound bump.
 - `gemini-relay-extension` refreshes its `package-lock.json` to clear `fast-uri` (GHSA path-traversal via percent-encoded dots) and `path-to-regexp` (GHSA sequential-optional-groups DoS), plus moderate alerts on `hono`, `qs`, `ip-address`, `express-rate-limit`, and `@hono/node-server`.
+
+## [8.4.0] - 2026-06-11
+
+### Added
+
+- Idempotent registration, typed errors, onError hook, listener narrowing
+- Append spawn model to spawned-agent origin_actor
+
+### Changed
+
+- Stop sending origin_surface from the CLI/cloud client
+- Sdk: typed action result predicates, zod agentResultSchema, orchestration docs
+
+## [8.3.7] - 2026-06-11
+
+### Added
+
+- Emit origin_actor from spawned agents (JS SDK + per-worker)
+
+### Changed
+
+- Make LLM markdown mirrors discoverable; update sdk README to v8 API
+- Throttle MCP reminder injection by agent activity, not just elapsed time
+- Serve raw Agent Relay skill markdown
+
+## [8.3.6] - 2026-06-10
+
+### Added
+
+- Origin_actor — bump relaycast crate 3.0.0, emit CLI path
+
+### Changed
+
+- Refresh Agent Relay skill handoff
+- Bump relaycast deps to the published model-aware versions
+- Pass spawn `model` through MCP, SDK, and broker to the launched CLI
+
+## [8.3.5] - 2026-06-10
+
+### Fixed
+
+- Forward OAuth callback to sandbox 127.0.0.1, not localhost
+
+## [8.3.4] - 2026-06-10
+
+### Changed
+
+- Clean read ack PR head
+- Apply pr-reviewer fixes for
+- Add broker delivery read ack bridge
+
+### Fixed
+
+- Suppress clippy too_many_arguments on mark_delivery_read_ack_with_timeout
+
+## [8.3.3] - 2026-06-09
+
+### Fixed
+
+- Bind OAuth callback tunnel dual-stack + pin codex
+
+## [8.3.2] - 2026-06-09
+
+### Fixed
+
+- Forward harness to relaycast backend (SDK 2.3.0)
 
 ## [8.3.1] - 2026-06-09
 

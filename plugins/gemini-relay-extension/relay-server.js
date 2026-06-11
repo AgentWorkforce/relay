@@ -12,7 +12,7 @@ const RELAY_DIR = path.join(os.homedir(), '.relay');
 const KEY_FILE = path.join(RELAY_DIR, 'workspace-key');
 const TOKEN_FILE = path.join(RELAY_DIR, 'token');
 const STATE_FILE = path.join(RELAY_DIR, 'gemini-session.json');
-const DEFAULT_BASE_URL = 'https://api.relaycast.dev';
+const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 
 loadDotEnv(ENV_FILE);
 fs.mkdirSync(RELAY_DIR, { recursive: true });

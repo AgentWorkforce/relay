@@ -1,0 +1,130 @@
+{
+  "id": "traj_b1jrutolckfb",
+  "version": 1,
+  "task": {
+    "title": "Workspace-level event stream via relaycast 2.5.1"
+  },
+  "status": "active",
+  "startedAt": "2026-06-03T12:27:30.309Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-03T12:27:31.502Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pqsnp3o2mvga",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-03T12:27:31.502Z",
+      "events": [
+        {
+          "ts": 1780489651503,
+          "type": "decision",
+          "content": "events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).: events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).",
+          "raw": {
+            "question": "events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).",
+            "chosen": "events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1780504388616,
+          "type": "decision",
+          "content": "Port PR 888 telemetry lessons to current split: Port PR 888 telemetry lessons to current split",
+          "raw": {
+            "question": "Port PR 888 telemetry lessons to current split",
+            "chosen": "Port PR 888 telemetry lessons to current split",
+            "alternatives": [],
+            "reasoning": "User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781035463245,
+          "type": "decision",
+          "content": "Added DeliveryOutcome::Unverified for timeout-fallback acks: Added DeliveryOutcome::Unverified for timeout-fallback acks",
+          "raw": {
+            "question": "Added DeliveryOutcome::Unverified for timeout-fallback acks",
+            "chosen": "Added DeliveryOutcome::Unverified for timeout-fallback acks",
+            "alternatives": [],
+            "reasoning": "Fallback ack must stay (re-injection deliberately disabled to avoid duplicates) but unverified deliveries must not feed the throttle's success streak; a neutral variant breaks the streak without backing off"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781035463831,
+          "type": "decision",
+          "content": "PendingDeliveryStore wrapper with DerefMut dirty tracking: PendingDeliveryStore wrapper with DerefMut dirty tracking",
+          "raw": {
+            "question": "PendingDeliveryStore wrapper with DerefMut dirty tracking",
+            "chosen": "PendingDeliveryStore wrapper with DerefMut dirty tracking",
+            "alternatives": [],
+            "reasoning": "Free delivery helpers take &mut HashMap across many call sites; a Deref/DerefMut wrapper marks dirty on any mutable coercion so the event loop persists after every mutating event with zero call-site churn"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781035464384,
+          "type": "decision",
+          "content": "Kept --persist flag default-off: Kept --persist flag default-off",
+          "raw": {
+            "question": "Kept --persist flag default-off",
+            "chosen": "Kept --persist flag default-off",
+            "alternatives": [],
+            "reasoning": "The flag also gates state files, lock/PID files, MCP config injection mode, and lease-based ephemeral shutdown; flipping it would change far more than delivery durability and break ephemeral one-shot SDK sessions"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781035464943,
+          "type": "decision",
+          "content": "Skipped dedup-cache persistence: Skipped dedup-cache persistence",
+          "raw": {
+            "question": "Skipped dedup-cache persistence",
+            "chosen": "Skipped dedup-cache persistence",
+            "alternatives": [],
+            "reasoning": "Optional per task; would add restart-replay dedup but bloats the diff beyond delivery semantics"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781133792137,
+          "type": "decision",
+          "content": "Use ordered queryEvents history for waitForResult replay: Use ordered queryEvents history for waitForResult replay",
+          "raw": {
+            "question": "Use ordered queryEvents history for waitForResult replay",
+            "chosen": "Use ordered queryEvents history for waitForResult replay",
+            "alternatives": [],
+            "reasoning": "The live waitForResult path resolves on the first matching agent_result after subscription, so replay should read broker history in chronological order instead of using getLastEvent."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781196038922,
+          "type": "decision",
+          "content": "Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it: Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it",
+          "raw": {
+            "question": "Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it",
+            "chosen": "Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it",
+            "alternatives": [],
+            "reasoning": "main added a later waitForResult decision after PR 1073 completed the same trajectory; keeping active plus removing stale completed artifacts preserves both histories without duplicate active/completed records for the same id"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bd42f4f84f41821e33879618d114941d6eabe835",
+    "endRef": "bd42f4f84f41821e33879618d114941d6eabe835"
+  }
+}

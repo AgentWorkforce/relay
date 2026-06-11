@@ -316,7 +316,10 @@ fn sanitize_orchestrator_harness(raw: &str) -> Option<String> {
     Some(trimmed.chars().take(120).collect::<String>().to_lowercase())
 }
 
-fn infer_harness_from_command(command: &str) -> Option<&'static str> {
+/// Map a CLI command (e.g. `claude`, `codex`, `gemini`) to its canonical
+/// harness id. Used for orchestrator detection and for per-worker origin_actor
+/// attribution (the broker knows the CLI it spawns).
+pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> {
     let lower = command.to_lowercase();
     let normalized = lower.replace('\\', "/");
     let base = normalized
@@ -454,6 +457,24 @@ pub(crate) fn orchestrator_harness() -> &'static str {
 pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
     let harness = orchestrator_harness();
     (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
+}
+
+/// `origin_actor` path for the broker's own relaycast traffic (the workspace
+/// stream + agent registration the broker performs on behalf of the CLI). The
+/// agent-relay CLI is the actor; spawned agents are attributed separately as
+/// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
+pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
+
+/// Build the `origin_actor` path for a spawned agent:
+/// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
+/// it from the spawn request) is appended so server telemetry can segment by
+/// model; cloud parses a digit-less `@`-suffix as a model. See
+/// cloud/plans/origin-actor.md.
+pub(crate) fn agent_origin_actor(harness: &str, model: Option<&str>) -> String {
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => format!("agent-relay-cli/agent/{harness}@{model}"),
+        None => format!("agent-relay-cli/agent/{harness}"),
+    }
 }
 
 /// Best-effort OS release string for telemetry tagging. Shells out to
@@ -866,6 +887,23 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn agent_origin_actor_appends_model_when_present() {
+        assert_eq!(
+            agent_origin_actor("codex", Some("gpt-5")),
+            "agent-relay-cli/agent/codex@gpt-5"
+        );
+        assert_eq!(
+            agent_origin_actor("claude-code", None),
+            "agent-relay-cli/agent/claude-code"
+        );
+        // blank/whitespace model is treated as absent
+        assert_eq!(
+            agent_origin_actor("claude-code", Some("  ")),
+            "agent-relay-cli/agent/claude-code"
+        );
     }
 
     #[test]

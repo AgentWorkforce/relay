@@ -4,7 +4,7 @@ set -eu
 
 ALLOW_OUTPUT='{"decision":"allow"}'
 TOKEN_FILE="${HOME}/.relay/token"
-BASE_URL="${RELAY_BASE_URL:-https://api.relaycast.dev}"
+BASE_URL="${RELAY_BASE_URL:-https://gateway.relaycast.dev}"
 INBOX_URL="${BASE_URL}/v1/inbox/check"
 GUARD_DIR="${TMPDIR:-/tmp}/relay-afteragent"
 

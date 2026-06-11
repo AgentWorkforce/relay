@@ -187,6 +187,197 @@ pub(crate) struct DeliveryAckPayload {
     pub(super) event_id: EventId,
 }
 
+/// Classify delivery ids that are meaningful Relaycast message ids for
+/// read-ack purposes. A read-ack means "delivered to the recipient location",
+/// not proof that a model turn cognitively processed the message.
+pub(crate) fn synthetic_delivery_read_ack_reason(event_id: &EventId) -> Option<&'static str> {
+    let event_id = event_id.as_str().trim();
+    if event_id.is_empty() {
+        return Some("blank_event_id");
+    }
+    if event_id.starts_with("http_") {
+        return Some("http_api_synthetic_event_id");
+    }
+    if event_id.starts_with("init_") {
+        return Some("initial_task_synthetic_event_id");
+    }
+    if event_id.starts_with("cont_load_") {
+        return Some("continuity_synthetic_event_id");
+    }
+    if event_id.starts_with("flush_") {
+        return Some("manual_flush_synthetic_event_id");
+    }
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn delivery_read_ack_is_relaycast_message(event_id: &EventId) -> bool {
+    synthetic_delivery_read_ack_reason(event_id).is_none()
+}
+
+pub(crate) fn seed_supplied_agent_token(
+    relaycast_http: &RelaycastHttpClient,
+    agent_name: &str,
+    token: &str,
+) {
+    relaycast_http.seed_agent_token(agent_name, token);
+}
+
+const DELIVERY_READ_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub(crate) fn mark_delivery_read_ack(
+    relaycast_http: &RelaycastHttpClient,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dedup: &mut DedupCache,
+    worker_name: &WorkerName,
+    cli_hint: Option<&str>,
+    delivery_id: &DeliveryId,
+    event_id: &EventId,
+) {
+    mark_delivery_read_ack_with_timeout(
+        relaycast_http,
+        sdk_out_tx,
+        dedup,
+        worker_name,
+        cli_hint,
+        delivery_id,
+        event_id,
+        DELIVERY_READ_ACK_TIMEOUT,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mark_delivery_read_ack_with_timeout(
+    relaycast_http: &RelaycastHttpClient,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dedup: &mut DedupCache,
+    worker_name: &WorkerName,
+    cli_hint: Option<&str>,
+    delivery_id: &DeliveryId,
+    event_id: &EventId,
+    timeout_window: Duration,
+) {
+    let dedup_key = format!("delivery_read_ack:{worker_name}:{event_id}");
+    if !dedup.insert_if_new(&dedup_key, Instant::now()) {
+        emit_delivery_read_ack_telemetry(
+            sdk_out_tx.clone(),
+            BrokerEvent::DeliveryReadAck {
+                name: worker_name.clone(),
+                delivery_id: delivery_id.clone(),
+                event_id: event_id.clone(),
+                status: DeliveryReadAckStatus::SuppressedDuplicate,
+                reason: Some("duplicate_delivery_read_ack".to_string()),
+            },
+        );
+        return;
+    }
+
+    if let Some(reason) = synthetic_delivery_read_ack_reason(event_id) {
+        emit_delivery_read_ack_telemetry(
+            sdk_out_tx.clone(),
+            BrokerEvent::DeliveryReadAck {
+                name: worker_name.clone(),
+                delivery_id: delivery_id.clone(),
+                event_id: event_id.clone(),
+                status: DeliveryReadAckStatus::SkippedSynthetic,
+                reason: Some(reason.to_string()),
+            },
+        );
+        return;
+    }
+
+    let relaycast_http = relaycast_http.clone();
+    let sdk_out_tx = sdk_out_tx.clone();
+    let worker_name = worker_name.clone();
+    let cli_hint = cli_hint.map(str::to_string);
+    let delivery_id = delivery_id.clone();
+    let event_id = event_id.clone();
+
+    tokio::spawn(async move {
+        let result = timeout(
+            timeout_window,
+            relaycast_http.mark_read_as_agent(
+                worker_name.as_str(),
+                cli_hint.as_deref(),
+                event_id.as_str(),
+            ),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(_)) => {
+                let _ = send_broker_event(
+                    &sdk_out_tx,
+                    BrokerEvent::DeliveryReadAck {
+                        name: worker_name,
+                        delivery_id,
+                        event_id,
+                        status: DeliveryReadAckStatus::Marked,
+                        reason: None,
+                    },
+                )
+                .await;
+            }
+            Ok(Err(error)) => {
+                let reason = error.to_string();
+                tracing::warn!(
+                    target = "agent_relay::broker",
+                    worker = %worker_name,
+                    delivery_id = %delivery_id,
+                    event_id = %event_id,
+                    error = %reason,
+                    "failed to mark relaycast message read after delivery_ack"
+                );
+                let _ = send_broker_event(
+                    &sdk_out_tx,
+                    BrokerEvent::DeliveryReadAck {
+                        name: worker_name,
+                        delivery_id,
+                        event_id,
+                        status: DeliveryReadAckStatus::Failed,
+                        reason: Some(reason),
+                    },
+                )
+                .await;
+            }
+            Err(_) => {
+                let reason = format!(
+                    "relaycast mark_read timed out after {}ms",
+                    timeout_window.as_millis()
+                );
+                tracing::warn!(
+                    target = "agent_relay::broker",
+                    worker = %worker_name,
+                    delivery_id = %delivery_id,
+                    event_id = %event_id,
+                    timeout_ms = %timeout_window.as_millis(),
+                    "timed out marking relaycast message read after delivery_ack"
+                );
+                let _ = send_broker_event(
+                    &sdk_out_tx,
+                    BrokerEvent::DeliveryReadAck {
+                        name: worker_name,
+                        delivery_id,
+                        event_id,
+                        status: DeliveryReadAckStatus::Failed,
+                        reason: Some(reason),
+                    },
+                )
+                .await;
+            }
+        }
+    });
+}
+
+fn emit_delivery_read_ack_telemetry(
+    sdk_out_tx: mpsc::Sender<ProtocolEnvelope<Value>>,
+    event: BrokerEvent,
+) {
+    tokio::spawn(async move {
+        let _ = send_broker_event(&sdk_out_tx, event).await;
+    });
+}
+
 /// Outcome of [`queue_inbound_for_delivery_mode`]. Distinguishes the
 /// three cases broker call sites care about: the message is queued and
 /// should wait for an explicit flush, the queue should be drained now,

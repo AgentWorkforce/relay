@@ -159,6 +159,7 @@ export type DriverAgentActivityReason =
   | 'delivery_injected'
   | 'delivery_active'
   | 'delivery_ack'
+  | 'delivery_read_ack'
   | 'delivery_failed'
   | 'message_delivery_confirmed'
   | 'message_delivery_failed'

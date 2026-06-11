@@ -6,6 +6,7 @@ export * from './messaging/index.js';
 export * from './delivery/index.js';
 export * from './actions/index.js';
 export * from './session/index.js';
+export { RelayError, type RelayErrorCode } from '@relaycast/sdk';
 export {
   INVALID_AGENT_TOKEN_CODE,
   INVALID_AGENT_TOKEN_MESSAGE,

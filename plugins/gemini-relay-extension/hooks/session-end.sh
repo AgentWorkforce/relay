@@ -10,7 +10,7 @@ KEY_FILE="${HOME}/.relay/workspace-key"
 TOKEN_FILE="${HOME}/.relay/token"
 STATE_FILE="${HOME}/.relay/gemini-session.json"
 WORKERS_FILE="${HOME}/.relay/gemini-workers.json"
-BASE_URL="https://api.relaycast.dev"
+BASE_URL="https://gateway.relaycast.dev"
 AFTER_AGENT_DIR="${TMPDIR:-/tmp}/relay-afteragent"
 BEFORE_MODEL_DIR="${TMPDIR:-/tmp}/relay-beforemodel"
 

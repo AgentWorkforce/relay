@@ -7,7 +7,17 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: '*',
-        allow: ['/', '/openclaw', '/openclaw/skill', '/docs/', '/blog/'],
+        allow: [
+          '/',
+          '/skill',
+          '/skill.md',
+          '/openclaw',
+          '/openclaw/skill',
+          '/agents',
+          '/agents/',
+          '/docs/',
+          '/blog/',
+        ],
         disallow: ['/openclaw/skill/invite/'],
       },
     ],

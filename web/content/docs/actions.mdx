@@ -79,24 +79,33 @@ Names should be stable and namespaced by the system that owns the behavior:
 
 ## React to completion
 
-Because the result does not return inline, subscribe to the outcome with a listener — either by event name
-or with the `relay.action(name)` predicate.
+Because the result does not return inline, subscribe to the outcome with a listener. The handle returned
+by `registerAction` carries typed predicates — `completed()`, `failed()`, `invoked()`, `denied()` — whose
+events keep the registration's `input`/`output` types, so handlers read `event.output` without casts.
 
 ```ts file="action-listener.ts"
+// the typed form: predicates built from the registration handle
+relay.addListener(handle.completed(), (event) =>
+  planner.sendMessage({ to: '#ops', text: `PR opened: ${event.output.url}` })
+);
+
+relay.addListener(handle.failed(), (event) =>
+  planner.sendMessage({ to: '#ops', text: `Failed for ${event.agent.name}: ${event.error}` })
+);
+
 // react after any action completes…
 relay.addListener('action.completed', (event) => {
   console.log(event.action, event.output);
 });
 
-// …or just this one
-relay.addListener(relay.action('github.open_pr').completed(), (event) =>
-  planner.sendMessage({ to: '#ops', text: `PR opened: ${event.output.url}` })
-);
-
-relay.addListener(relay.action('deploy.preview').failed(), (event) =>
-  planner.sendMessage({ to: '#ops', text: `Deploy failed for ${event.agent.name}: ${event.error}` })
-);
+// …or subscribe by name when you don't hold the handle
+relay.addListener(relay.action('github.open_pr').completed(), (event) => {
+  /* event.output is unknown here — prefer the typed handle */
+});
 ```
+
+For the end-to-end task → typed-callback pattern, see
+[Orchestrating with actions](/docs/orchestrating-with-actions).
 
 ## Spawning agents with actions
 

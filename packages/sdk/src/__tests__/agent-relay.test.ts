@@ -29,9 +29,10 @@ const relaycastMocks = vi.hoisted(() => {
   return { createWorkspace, relayCast };
 });
 
-vi.mock('@relaycast/sdk', () => {
+vi.mock('@relaycast/sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@relaycast/sdk')>();
   relaycastMocks.relayCast.createWorkspace = relaycastMocks.createWorkspace;
-  return { RelayCast: relaycastMocks.relayCast };
+  return { ...actual, RelayCast: relaycastMocks.relayCast };
 });
 
 import { AgentRelay } from '../index.js';
@@ -74,6 +75,16 @@ describe('AgentRelay workspace setup', () => {
     });
   });
 
+  it('throws a typed transport_error when the response lacks a workspace key', async () => {
+    relaycastMocks.createWorkspace.mockResolvedValue({ workspaceName: 'Ops' });
+
+    await expect(AgentRelay.createWorkspace({ name: 'Ops' })).rejects.toMatchObject({
+      name: 'RelayError',
+      code: 'transport_error',
+      retryable: false,
+    });
+  });
+
   it('accepts workspaceKey without requiring an apiKey option', async () => {
     const relay = new AgentRelay({
       workspaceKey: 'rk_live_existing',
@@ -91,7 +102,7 @@ describe('AgentRelay workspace setup', () => {
     const relay = new AgentRelay({
       workspaceKey: 'rk_live_existing',
       baseUrl: 'https://api.example.test',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -99,7 +110,7 @@ describe('AgentRelay workspace setup', () => {
     expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
       apiKey: 'rk_live_existing',
       baseUrl: 'https://api.example.test',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
   });
@@ -113,7 +124,7 @@ describe('AgentRelay workspace setup', () => {
     const relay = await AgentRelay.createWorkspace({
       name: 'Ops',
       baseUrl: 'https://api.example.test',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
 
@@ -125,13 +136,13 @@ describe('AgentRelay workspace setup', () => {
     expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
       apiKey: 'rk_live_created',
       baseUrl: 'https://api.example.test',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
   });
 
   it('uses Relaycast telemetry from environment variables when options omit it', () => {
-    vi.stubEnv('AGENT_RELAY_HARNESS', 'claude/opus-48');
+    vi.stubEnv('AGENT_RELAY_ORIGIN_ACTOR', 'agent-relay-cli/agent/claude-code');
     vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'distinct_test');
 
     const relay = new AgentRelay({
@@ -143,7 +154,7 @@ describe('AgentRelay workspace setup', () => {
     expect(relaycastMocks.relayCast).toHaveBeenCalledWith({
       apiKey: 'rk_live_existing',
       baseUrl: 'https://api.example.test',
-      harness: 'claude/opus-48',
+      originActor: 'agent-relay-cli/agent/claude-code',
       agentRelayDistinctId: 'distinct_test',
     });
   });
