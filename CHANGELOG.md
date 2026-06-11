@@ -71,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata instead.
 - `agent-relay` CLI telemetry now posts through the hosted ingestion proxy at `https://i.agentrelay.com` by default.
 - `agent-relay local run` delegates YAML, TypeScript, and Python workflow execution to `@relayflows/cli` instead of bundling TypeScript workflows inside the Relay CLI.
+- The `codex-relay-skill` and `gemini-relay-extension` plugins now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK; set `RELAY_BASE_URL` to keep using the legacy `https://api.relaycast.dev` host.
 
 ### Deprecated
 
