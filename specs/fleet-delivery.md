@@ -185,7 +185,7 @@ The per-agent mailbox **subsumes** any per-node replay buffer: node-disconnect r
 
 A node's broker holds one control connection to Relaycast, serving two roles: **compute provider** (advertises capabilities, receives spawn/release action invocations, reports results) and **delivery relay** (receives inbound for the PTY agents located on it, injects, acks).
 
-- **Register** (on connect): node name, stable node id, capabilities, version, `max_agents`, tags, and a resume cursor for replay.
+- **Register** (on connect): node name, stable node id, capabilities, version, `max_agents`, tags, and an optional resume cursor for replay. An absent `resume_cursor` is equivalent to `null`.
 - **Heartbeat** (~10–15s): `load`, `active_agents`, and `handlers_live`. Relaycast TTL marks offline → stop placing there; mark its located agents unreachable. A live node with `handlers_live: false` stays eligible for delivery to existing located agents but is ineligible for action dispatch and placement.
 - **Reconnect inventory sync:** after register, the broker re-announces its full live agent inventory (`agent_id`, name, `invocation_id`, `session_ref`). Relaycast reconciles **locations** and open **invocations** (§7) from it.
 - **Deregister:** graceful on shutdown; else liveness TTL.
@@ -203,7 +203,7 @@ There is no `payload` wrapper on the Relaycast ↔ broker control WebSocket. The
 
 - `node.register`
   ```
-  { v: 1, type: "node.register", name: string, node_id: string, capabilities: string[], max_agents: number, tags: string[], version: string, resume_cursor: string | null }
+  { v: 1, type: "node.register", name: string, node_id: string, capabilities: string[], max_agents: number, tags: string[], version: string, resume_cursor?: string | null }
   ```
 - `node.heartbeat`
   ```
@@ -267,13 +267,14 @@ Local `payload` fields are also snake_case. The fleet extension adds:
   ```
   {
     manifest: {
-      name?: string,
-      capabilities: Array<{ name: string, metadata?: Record<string, JsonValue> }>,
+      name: string,
+      node_id?: string,
+      capabilities: Array<{ name: string, kind?: string, metadata?: Record<string, JsonValue> }>,
       max_agents?: number,
       tags?: string[],
       version?: string
     },
-    supervision?: { argv: string[], cwd?: string, env?: Record<string, string> }
+    supervision?: { argv: string[], cwd: string, env?: Record<string, string> }
   }
   ```
 - **Sidecar → Broker:** `register_handlers`
