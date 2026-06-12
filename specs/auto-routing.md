@@ -38,7 +38,7 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 - **Skill text heuristic fix: partial improvement** — sonnet s01:skill improved 0%→33% after removing "do it yourself for quick lookups" heuristic. Not fully fixed: root cause is the task uses "worker agent" neutral vocabulary. s05 phrasing eval confirms: neutral-agent=20%, relay-worker=60%. Fix in production: use relay-anchored vocabulary ("relay worker") in Director meta-prompts (already done).
 - **Phrasing matters for Claude**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
 
-### Non-Claude harness lifecycle results (s01–s03 — evals still running for later scenarios)
+### Non-Claude harness lifecycle results (s01–s04 — all complete)
 
 All onboarding variants × 5 runs each. Percentages = pass rate.
 
@@ -59,7 +59,7 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 |---------|------|-----------|-------|-------|
 | codex | 100% | 100% | 100% | 100% |
 | gemini | 20% | 60% | 80% | 100% |
-| droid | 20% | 20% | 0% | (running) |
+| droid | 20% | 20% | 0% | 0% |
 | opencode:mimo | 80% | 100% | 60% | 80% |
 | grok | 0% | 0% | 0% | 0% |
 | cursor | 0% | 0% | 0% | 0% |
@@ -70,13 +70,24 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 |---------|------|-----------|-------|-------|
 | codex | 80% | **100%** | **100%** | **100%** |
 | opencode:mimo | **100%** | 80% | 60% | **100%** |
-| droid | **100%** | **100%** | **100%** | (running) |
+| droid | **100%** | **100%** | **100%** | 0% |
 | gemini | 60% | **100%** | **100%** | **100%** |
 | grok | 0% | 0% | 0% | 0% |
 | cursor | 0% | 0% | 0% | 0% |
 
+#### s04 — no native subagents (spawn must use relay, not built-in Task tool)
+
+| harness | bare | one-liner | brief | skill |
+|---------|------|-----------|-------|-------|
+| codex | **100%** | **100%** | **100%** | **100%** |
+| opencode:mimo | 80% | **100%** | **100%** | 80% |
+| droid | (running) | — | — | — |
+| gemini | 80% | (running) | — | — |
+| grok | 0% | 0% | 0% | 0% |
+| cursor | 0% | 0% | 0% | 0% |
+
 **Key lifecycle findings:**
-- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner/brief/skill=100%. Most reliable non-Claude harness — any onboarding except bare reliably achieves full lifecycle.
+- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner/brief/skill=100%; s04=100% all variants. Most reliable non-Claude harness — any onboarding except bare reliably achieves full lifecycle.
 - **OpenCode**: s03 bare=100% (best s03 bare!); one-liner=80%, brief=60%, skill=100%. Directive task prompts outperform — brief's conditional guidance hurts more than bare.
 - **Droid**: s03 bare/one-liner/brief all 100% — exceptional result. Despite s02 bare=20%, the full s03 task description ("report DONE when complete with a concise summary") drives reliable release even with bare onboarding. Skill onboarding still running (1 fail seen).
 - **Gemini**: s03 bare=60%, one-liner/brief/skill all 100%. The bare gap (release failure without onboarding) closes completely with any explicit context. Most consistent non-Claude lifecycle performance once prompted.
@@ -295,7 +306,7 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 | Does relay-anchored phrasing ("relay worker") improve bare spawn? | ✅ done | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are largely vocabulary-agnostic (codex 100% on all tested variants) |
 | Do non-Claude harnesses need relay-anchored vocabulary? | ✅ done | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific. Note: "relay-agent" specifically hurts gemini (40%) |
 | What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ running in Claude phrasing batch |
-| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (re-running with parallel-spawn fix) | 0% with sequential-spawn prompt; re-running with explicit "spawn all back-to-back" instruction |
+| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (in progress) | 0% without scaffolding. Root cause: models make ONE add_agent call then stop/wait — no prompt instruction reliably chains two consecutive add_agent calls. External Orchestrator nudge after first spawn required to trigger second. Production Director prompt needs redesign. |
 | Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
 | Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
 | Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
@@ -305,7 +316,9 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 ## 6. Open questions
 
-1. **Classifier model cost trade-off**: haiku classifier call adds latency and cost. Is there a heuristic (task word count, presence of "and", number of domains) that can route without an LLM call for simple cases?
+1. **Multi-spawn Director behavior**: s06 eval confirms models make ONE add_agent call then stop/wait, even with "spawn all back-to-back" CRITICAL instructions. This is a fundamental PTY-mode behavior — models need external stimulus between tool calls. Production Director prompt needs either: (a) an orchestration layer that nudges the Director after each spawn, (b) pre-wiring all workers before the Director starts (so it just coordinates rather than spawns), or (c) a task structure where spawning each worker is triggered by a message (sequential hand-off pattern). This is a Phase 5 concern but should inform Phase 3 prompt design.
+
+2. **Classifier model cost trade-off**: haiku classifier call adds latency and cost. Is there a heuristic (task word count, presence of "and", number of domains) that can route without an LLM call for simple cases?
 
 2. **Worker specialisation**: today workers get a task description. Should the team composer also inject domain-specific skill text (e.g. "you are a security auditor" for a security subtask)?
 
