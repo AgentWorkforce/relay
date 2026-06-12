@@ -139,6 +139,18 @@
             "reasoning": "Current connect-daytona-local.ts falls back from a stale activeProfile to profiles[0] and accepts any non-empty expiresAt, so both can upload the wrong or malformed Daytona credential."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781270705057,
+          "type": "decision",
+          "content": "Restore Grok provider and harden Daytona config parsing: Restore Grok provider and harden Daytona config parsing",
+          "raw": {
+            "question": "Restore Grok provider and harden Daytona config parsing",
+            "chosen": "Restore Grok provider and harden Daytona config parsing",
+            "alternatives": [],
+            "reasoning": "Current checkout still removes xai auth config/test from the shared provider registry and parsed arbitrary JSON can throw TypeError before the Daytona-specific validation path."
+          },
+          "significance": "high"
         }
       ]
     }

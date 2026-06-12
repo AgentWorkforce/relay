@@ -32,7 +32,7 @@ describe('daytonaConfigPath', () => {
 
   it('resolves the Windows APPDATA path', () => {
     expect(daytonaConfigPath({ APPDATA: 'C:\\AppData' }, 'win32', homedir)).toBe(
-      'C:\\AppData/daytona/config.json'
+      'C:\\AppData\\daytona\\config.json'
     );
   });
 
@@ -85,6 +85,10 @@ describe('extractDaytonaCredential', () => {
 
   it('throws when there are no profiles', () => {
     expect(() => extractDaytonaCredential({ profiles: [] })).toThrow(/No Daytona profiles/);
+  });
+
+  it('throws a Daytona error when parsed config is not an object', () => {
+    expect(() => extractDaytonaCredential(null)).toThrow(/No Daytona profiles/);
   });
 
   it('throws on an incomplete token (api-key login has no refresh token)', () => {

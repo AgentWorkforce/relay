@@ -62,27 +62,43 @@ export function daytonaConfigPath(
   platform: NodeJS.Platform = process.platform,
   homedir: () => string = os.homedir
 ): string {
+  const pathApi = platform === 'win32' ? path.win32 : path;
   const override = env.DAYTONA_CONFIG_DIR;
-  if (override) return path.join(override, 'config.json');
+  if (override) return pathApi.join(override, 'config.json');
   switch (platform) {
     case 'darwin':
-      return path.join(homedir(), 'Library', 'Application Support', 'daytona', 'config.json');
+      return pathApi.join(homedir(), 'Library', 'Application Support', 'daytona', 'config.json');
     case 'win32':
-      return path.join(env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'daytona', 'config.json');
+      return pathApi.join(
+        env.APPDATA || pathApi.join(homedir(), 'AppData', 'Roaming'),
+        'daytona',
+        'config.json'
+      );
     default:
-      return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), '.config'), 'daytona', 'config.json');
+      return pathApi.join(
+        env.XDG_CONFIG_HOME || pathApi.join(homedir(), '.config'),
+        'daytona',
+        'config.json'
+      );
   }
 }
 
 const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+function asDaytonaConfig(config: unknown): DaytonaConfig {
+  if (!config || typeof config !== 'object') {
+    return {};
+  }
+  return config as DaytonaConfig;
+}
+
 /** Pick the active profile (by `activeProfile` id), falling back to the first. */
 function selectActiveProfile(config: DaytonaConfig): DaytonaProfile {
-  const profiles = config.profiles ?? [];
+  const profiles = Array.isArray(config.profiles) ? config.profiles : [];
   if (profiles.length === 0) {
     throw new Error('No Daytona profiles found in config.json. Run `daytona login` to authenticate.');
   }
-  if (config.activeProfile) {
+  if (typeof config.activeProfile === 'string' && config.activeProfile.length > 0) {
     const byActive = profiles.find((p) => p.id === config.activeProfile);
     if (!byActive) {
       throw new Error(
@@ -105,8 +121,8 @@ function validateExpiresAt(expiresAt: string): void {
  * Extract + normalize the daytona credential from a parsed config.json into the
  * stored contract. Throws a clear error if the token is missing/incomplete.
  */
-export function extractDaytonaCredential(config: DaytonaConfig): DaytonaCredential {
-  const profile = selectActiveProfile(config);
+export function extractDaytonaCredential(config: unknown): DaytonaCredential {
+  const profile = selectActiveProfile(asDaytonaConfig(config));
   const token = profile.api?.token;
   if (!token?.accessToken || !token.refreshToken || !token.expiresAt) {
     throw new Error(
