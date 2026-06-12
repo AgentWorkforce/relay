@@ -49,18 +49,18 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 | grok | 0% | 0% | — | — | **not supported** — behavioral, not config |
 | cursor | 0% | 0% | 0% | 0% | **not supported** — behavioral, not config |
 
-### Non-Claude phrasing results (s05 — early data, bare onboarding only)
+### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each)
 
 | harness | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
 |---------|----------------|---------------|--------------|-------------|------------|-----------|
-| codex | 100% | 100% | 100% | 80% | 100% | (running) |
-| opencode:mimo | 100% | 80% | (running) | — | — | — |
-| droid | 80% | 100% | (running) | — | — | — |
-| gemini | 60% | 100% | (running) | — | — | — |
-| grok | 0% | 0% | (running) | — | — | — |
-| cursor | 0% | — | — | — | — | — |
-| claude haiku | 0% | 0% | 100% | 0% | 100% | 0% |
-| claude sonnet | 0% | 0% | 0% | 0% | 0% | 0% |
+| codex | **100%** | **100%** | **100%** | **80%** | **100%** | **100%** |
+| opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | (running) |
+| droid | 80% | **100%** | **100%** | **100%** | (running) | — |
+| gemini | 60% | **100%** | 67% | (running) | — | — |
+| grok | 0% | 0% | 0% | — | — | — |
+| cursor | 0% | 0% | (running) | — | — | — |
+| claude haiku | 0% | 20% | 60% | 20% | 60% | 40% |
+| claude sonnet | 0% | 0% | 0% | 0% | 40% | 40% |
 
 **Key cross-harness insight**: Codex, Gemini, Droid, and OpenCode natively understand relay tools with neutral vocabulary (no relay-anchored phrasing needed). Vocabulary effects are primarily a Claude-model concern. Grok and Cursor fail at the harness level regardless of vocabulary — they are not supported relay worker targets. This means Director prompts built for Claude leads should use relay-anchored nouns; non-Claude leads can use neutral vocabulary.
 
