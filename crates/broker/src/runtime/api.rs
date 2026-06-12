@@ -225,6 +225,19 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        // Prepend relay skill text for small-tier models (haiku/mini/flash) that
+                        // need explicit tool guidance to reliably call add_agent / remove_agent.
+                        if let Some(prefix) = model_skill_prefix(effective_spec.model.as_deref()) {
+                            effective_task = Some(match effective_task {
+                                Some(task) => format!("{prefix}\n\n{task}"),
+                                None => prefix.to_string(),
+                            });
+                            tracing::debug!(
+                                agent = %name,
+                                model = ?effective_spec.model,
+                                "injected relay skill prefix for small-tier model"
+                            );
+                        }
                         if let Some(ref task_text) = effective_task {
                             workers
                                 .initial_tasks
@@ -1551,6 +1564,79 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
     channels
         .iter()
         .any(|existing| existing.as_str().eq_ignore_ascii_case(channel))
+}
+
+/// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
+/// explicit tool guidance to reliably call mcp__agent-relay__add_agent.
+/// Eval data: haiku achieves 0/5 spawn reliability without guidance, 5/5 with this text.
+/// Sonnet/Opus pass bare (0-shot), so they receive no prefix.
+const SMALL_MODEL_RELAY_SKILL: &str = "\
+## Agent Relay — Worker Management
+
+### Spawn a worker
+To delegate a task to a dedicated worker agent, call:
+  mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
+Required: name (unique string), cli (\"claude\" or other CLI), task (complete instructions for the worker).
+The worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
+
+### Release a worker
+When a worker reports DONE, immediately release them:
+  mcp__agent-relay__remove_agent(name: \"WorkerName\")
+Always release workers — unreleased agents waste resources.
+
+### When to spawn vs do it yourself
+Spawn when: the task is large, needs specialised focus, or would block your own progress.
+Do it yourself for: quick lookups, single-step actions.";
+
+/// Returns true for small/fast model tiers that need explicit relay skill injection.
+/// Matches haiku (Claude), mini (GPT), flash (Gemini), and generic small-tier names.
+fn is_small_model_tier(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("haiku") || m.contains("-mini") || m.contains("-flash") || m.contains("small")
+}
+
+/// Returns the skill prefix to prepend to the initial task, if any.
+/// Only small-tier models receive the prefix; larger models are self-sufficient.
+fn model_skill_prefix(model: Option<&str>) -> Option<&'static str> {
+    model
+        .filter(|m| is_small_model_tier(m))
+        .map(|_| SMALL_MODEL_RELAY_SKILL)
+}
+
+#[cfg(test)]
+mod skill_injection_tests {
+    use super::{is_small_model_tier, model_skill_prefix, SMALL_MODEL_RELAY_SKILL};
+
+    #[test]
+    fn small_tier_models_receive_prefix() {
+        assert!(is_small_model_tier("claude-haiku-4-5-20251001"));
+        assert!(is_small_model_tier("claude-haiku-4-5"));
+        assert!(is_small_model_tier("gpt-4o-mini"));
+        assert!(is_small_model_tier("gemini-2.0-flash"));
+        assert!(is_small_model_tier("gemini-1.5-flash-latest"));
+    }
+
+    #[test]
+    fn large_tier_models_receive_no_prefix() {
+        assert!(!is_small_model_tier("claude-sonnet-4-6"));
+        assert!(!is_small_model_tier("claude-opus-4-8"));
+        assert!(!is_small_model_tier("gpt-4o"));
+        assert!(!is_small_model_tier("gemini-1.5-pro"));
+    }
+
+    #[test]
+    fn none_model_receives_no_prefix() {
+        assert!(model_skill_prefix(None).is_none());
+    }
+
+    #[test]
+    fn haiku_model_receives_skill_prefix() {
+        let prefix = model_skill_prefix(Some("claude-haiku-4-5-20251001"));
+        assert_eq!(prefix, Some(SMALL_MODEL_RELAY_SKILL));
+        let text = prefix.unwrap();
+        assert!(text.contains("mcp__agent-relay__add_agent"));
+        assert!(text.contains("mcp__agent-relay__remove_agent"));
+    }
 }
 
 fn persist_agent_channels(
