@@ -38,15 +38,29 @@ import type { EvalReport, EvalScenario, EvalTier, MatrixReport, MetricSet, Scena
 
 const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'grok'];
 
+/** Shorthand aliases for Claude model ids. */
+const CLAUDE_MODEL_ALIASES: Record<string, string> = {
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-8',
+};
+
 /**
- * Parse a harness specifier: "claude" → {cli: "claude", model: undefined},
- * "opencode:mimo-v2-flash-free" → {cli: "opencode", model: "opencode/mimo-v2-flash-free"}.
+ * Parse a harness specifier:
+ *   "claude"                    → {cli: "claude"}
+ *   "claude:haiku"              → {cli: "claude", model: "claude-haiku-4-5-20251001"}
+ *   "claude:sonnet"             → {cli: "claude", model: "claude-sonnet-4-6"}
+ *   "opencode:mimo-v2-flash-free" → {cli: "opencode", model: "opencode/mimo-v2-flash-free"}
  */
 function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   const colon = spec.indexOf(':');
   if (colon === -1) return { cli: spec };
   const cli = spec.slice(0, colon);
   const modelSuffix = spec.slice(colon + 1);
+  if (cli === 'claude') {
+    const model = CLAUDE_MODEL_ALIASES[modelSuffix] ?? modelSuffix;
+    return { cli, model };
+  }
   // Qualify bare model names with their provider prefix (opencode → opencode/…).
   const model = modelSuffix.includes('/') ? modelSuffix : `${cli}/${modelSuffix}`;
   return { cli, model };
@@ -131,13 +145,14 @@ function mergeRepeats(results: ScenarioResult[]): ScenarioResult {
 /** Run one scenario once against a fresh broker. */
 async function runOnce(scenario: EvalScenario, spec: { cli: string; model?: string }): Promise<ScenarioResult> {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // Pass model override for opencode via environment variable.
-  if (spec.model) env['OPENCODE_MODEL'] = spec.model;
+  // opencode reads its model from an env var; pass it through to the broker process.
+  if (spec.model && spec.cli === 'opencode') env['OPENCODE_MODEL'] = spec.model;
 
   const harness = new BrokerHarness({ channels: scenario.channels, env });
   await harness.start();
   try {
-    return await scenario.run({ harness, cli: spec.cli, suffix: uniqueSuffix(), sleep });
+    // Pass model in context so scenarios can forward it to spawnAgent (e.g. claude:haiku).
+    return await scenario.run({ harness, cli: spec.cli, model: spec.model, suffix: uniqueSuffix(), sleep });
   } finally {
     await harness.stop().catch(() => {});
   }

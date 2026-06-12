@@ -23,11 +23,11 @@ export const scenario: EvalScenario = {
   channels: ['general'],
   timeoutMs: 120_000,
   run: async (ctx): Promise<ScenarioResult> => {
-    const { harness, cli, suffix, sleep } = ctx;
+    const { harness, cli, model, suffix, sleep } = ctx;
     const bob = `bob-${suffix}`;
     const alice = 'Alice';
 
-    await harness.spawnAgent(bob, cli, ['general'], { task: TASK });
+    await harness.spawnAgent(bob, cli, ['general'], { task: TASK, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
 

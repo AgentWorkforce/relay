@@ -38,11 +38,11 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
     timeoutMs: 150_000,
     onboardingVariant: onboarding,
     run: async (ctx): Promise<ScenarioResult> => {
-      const { harness, cli, suffix, sleep } = ctx;
+      const { harness, cli, model, suffix, sleep } = ctx;
       const lead = `lead-${suffix}`;
 
       const task = `${ROLE}${onboardingText(onboarding)}\n\n---\n${TASK}`;
-      await harness.spawnAgent(lead, cli, ['general'], { task });
+      await harness.spawnAgent(lead, cli, ['general'], { task, model });
       await sleep(STARTUP_MS);
       harness.clearEvents();
 
@@ -53,11 +53,8 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
       });
 
       // Wait for either a spawn event or the response window to close.
-      const spawnWaiter = harness.waitForEvent(
-        'agent_spawned',
-        RESPONSE_MS,
-        (e) => (e as { parent?: string }).parent === lead
-      );
+      // broker doesn't emit parent in agent_spawned for HTTP-API spawns; any spawn = lead acted
+      const spawnWaiter = harness.waitForEvent('agent_spawned', RESPONSE_MS);
       await spawnWaiter.promise.catch(() => {});
 
       const events = harness.getEvents();

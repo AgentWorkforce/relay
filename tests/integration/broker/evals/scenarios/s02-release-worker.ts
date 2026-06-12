@@ -28,12 +28,12 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
     timeoutMs: 120_000,
     onboardingVariant: onboarding,
     run: async (ctx): Promise<ScenarioResult> => {
-      const { harness, cli, suffix, sleep } = ctx;
+      const { harness, cli, model, suffix, sleep } = ctx;
       const lead = `lead-${suffix}`;
       const worker = `analyst-${suffix}`;
 
       const task = `${ROLE}${onboardingText(onboarding)}`;
-      await harness.spawnAgent(lead, cli, ['general'], { task });
+      await harness.spawnAgent(lead, cli, ['general'], { task, model });
 
       // Pre-spawn the worker with a cat shim so it's registered but silent.
       await harness.spawnAgent(worker, 'cat', ['general']);

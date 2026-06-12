@@ -17,7 +17,7 @@ import { cleanStreamOutput } from './stream-clean.js';
 // ── Spawn scoring ─────────────────────────────────────────────────────────────
 
 export interface SpawnScore {
-  /** At least one `agent_spawned` event with parent === leadAgent. */
+  /** At least one `agent_spawned` event (broker does not emit caller identity on HTTP-API spawns). */
   spawnConfirmed: boolean;
   /** Names of workers spawned by this lead (from agent_spawned events). */
   spawnedNames: string[];
@@ -43,9 +43,11 @@ function detectSpawnIntent(events: BrokerEvent[], agent: string): boolean {
 }
 
 export function scoreSpawn(events: BrokerEvent[], leadAgent: string): SpawnScore {
+  // Broker doesn't propagate caller identity in agent_spawned events emitted via the HTTP API
+  // path (which is what add_agent MCP uses). In eval scenarios there is exactly one lead agent
+  // so any agent_spawned event is definitionally caused by that lead calling add_agent.
   const spawnEvents = events.filter(
-    (e): e is Extract<BrokerEvent, { kind: 'agent_spawned' }> =>
-      e.kind === 'agent_spawned' && (e as { parent?: string }).parent === leadAgent
+    (e): e is Extract<BrokerEvent, { kind: 'agent_spawned' }> => e.kind === 'agent_spawned'
   );
 
   const spawnCount = spawnEvents.length;

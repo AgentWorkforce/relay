@@ -18,7 +18,7 @@ export const scenario: EvalScenario = {
   channels: ['general'],
   timeoutMs: 150_000,
   run: async (ctx): Promise<ScenarioResult> => {
-    const { harness, cli, suffix, sleep } = ctx;
+    const { harness, cli, model, suffix, sleep } = ctx;
     const worker = `teammate-${suffix}`;
     const channel = `standup-${suffix}`;
 
@@ -26,7 +26,7 @@ export const scenario: EvalScenario = {
       `You are ${worker}, a member of the #${channel} channel where the team coordinates. ` +
       `Participate in the channel's discussion as a normal team member would.`;
 
-    await harness.spawnAgent(worker, cli, [channel], { task: role });
+    await harness.spawnAgent(worker, cli, [channel], { task: role, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
 

@@ -18,7 +18,7 @@ export const scenario: EvalScenario = {
   channels: ['general'],
   timeoutMs: 240_000,
   run: async (ctx): Promise<ScenarioResult> => {
-    const { harness, cli, suffix, sleep } = ctx;
+    const { harness, cli, model, suffix, sleep } = ctx;
     const a = `relay-a-${suffix}`;
     const b = `relay-b-${suffix}`;
     const c = `relay-c-${suffix}`;
@@ -28,9 +28,9 @@ export const scenario: EvalScenario = {
     const promptB = `You are ${b}. When you receive a code from ${a}, DM it verbatim to ${c} using mcp__agent-relay__send_dm. Actually call the tool.`;
     const promptC = `You are ${c}. When you receive a code, post "FINAL: <code>" to #general using mcp__agent-relay__post_message. Actually call the tool.`;
 
-    await harness.spawnAgent(a, cli, ['general'], { task: promptA });
-    await harness.spawnAgent(b, cli, ['general'], { task: promptB });
-    await harness.spawnAgent(c, cli, ['general'], { task: promptC });
+    await harness.spawnAgent(a, cli, ['general'], { task: promptA, model });
+    await harness.spawnAgent(b, cli, ['general'], { task: promptB, model });
+    await harness.spawnAgent(c, cli, ['general'], { task: promptC, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
 

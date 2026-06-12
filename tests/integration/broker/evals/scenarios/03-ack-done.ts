@@ -17,7 +17,7 @@ export const scenario: EvalScenario = {
   channels: ['general'],
   timeoutMs: 150_000,
   run: async (ctx): Promise<ScenarioResult> => {
-    const { harness, cli, suffix, sleep } = ctx;
+    const { harness, cli, model, suffix, sleep } = ctx;
     const worker = `worker-${suffix}`;
     const lead = 'Lead';
 
@@ -28,7 +28,7 @@ export const scenario: EvalScenario = {
       'status to the Lead via the tool — do not post to a channel and do not just write ' +
       'the text without sending it.';
 
-    await harness.spawnAgent(worker, cli, ['general'], { task });
+    await harness.spawnAgent(worker, cli, ['general'], { task, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
 

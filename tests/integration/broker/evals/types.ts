@@ -14,6 +14,8 @@ export interface ScenarioContext {
   harness: BrokerHarness;
   /** The CLI/harness under test (e.g. "claude", "codex", "opencode"). */
   cli: string;
+  /** Optional model override to pass to the agent CLI (e.g. "claude-haiku-4-5-20251001"). */
+  model?: string;
   /** Unique suffix for isolating agent/channel names across runs. */
   suffix: string;
   /** Sleep helper. */

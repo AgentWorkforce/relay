@@ -1,0 +1,50 @@
+{
+  "id": "traj_gcn2gqbj96ya",
+  "version": 1,
+  "task": {
+    "title": "Investigate intermittent authentication failures from customer report",
+    "source": {
+      "system": "plain",
+      "id": "customer-auth-failures-24h"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-06-12T10:00:23.754Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-12T10:12:31.002Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_coevf2fm7135",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-12T10:12:31.002Z",
+      "events": [
+        {
+          "ts": 1781259151003,
+          "type": "decision",
+          "content": "Spawn dedicated worker for auth failure analysis: Spawn dedicated worker for auth failure analysis",
+          "raw": {
+            "question": "Spawn dedicated worker for auth failure analysis",
+            "chosen": "Spawn dedicated worker for auth failure analysis",
+            "alternatives": [],
+            "reasoning": "Large logs require focused investigation; worker can analyze patterns without blocking lead"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9",
+    "endRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9"
+  }
+}

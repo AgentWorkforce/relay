@@ -15,6 +15,10 @@ import { scenario as incidentalReport } from './r01-incidental-report.js';
 import { scenario as forgetToReport } from './r02-forget-to-report.js';
 import { scenario as proactiveHandoff } from './r03-proactive-handoff.js';
 import { scenario as channelVsDm } from './r04-channel-vs-dm.js';
+import { scenario as threadReply } from './t01-thread-reply.js';
+import { scenario as checkInbox } from './r05-check-inbox.js';
+import { scenario as groupDm } from './r06-group-dm.js';
+import { scenario as listAgents } from './r07-list-agents.js';
 import { SPAWN_SCENARIOS } from './s01-spawn-worker.js';
 import { RELEASE_SCENARIOS } from './s02-release-worker.js';
 import { LIFECYCLE_SCENARIOS } from './s03-spawn-release-lifecycle.js';
@@ -30,6 +34,10 @@ export const SCENARIOS: EvalScenario[] = [
   forgetToReport,
   proactiveHandoff,
   channelVsDm,
+  threadReply,
+  checkInbox,
+  groupDm,
+  listAgents,
 ];
 
 /** Spawn/release reliability scenarios — run with --group=lifecycle. */

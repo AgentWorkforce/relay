@@ -25,7 +25,7 @@ export function onboardingText(variant: OnboardingVariant): string {
       return '';
 
     case 'one-liner':
-      return '\n\nUse add_agent to delegate work to a new worker agent, and remove_agent to release workers when their task is done.';
+      return '\n\nCall mcp__agent-relay__add_agent to spawn a worker agent for a task, and mcp__agent-relay__remove_agent to release workers when they are done.';
 
     case 'brief':
       return `
@@ -40,23 +40,21 @@ Spawn when a task needs dedicated focus. Release as soon as the worker reports d
 
 ## Managing Worker Agents
 
-### Spawning
-Call add_agent when you need to delegate work to a dedicated agent:
+### Spawn a worker
+To delegate work, call:
   mcp__agent-relay__add_agent({ name: "WorkerName", cli: "claude", task: "detailed instructions" })
-  agent-relay.add_agent({ name: "WorkerName", cli: "claude", task: "detailed instructions" })
 
-The worker is automatically pre-registered. It will DM you "ACK: <understanding>" on start
-and "DONE: <result>" on completion.
+Required fields: name (unique string), cli ("claude"), task (full instructions for the worker).
+The worker will DM you "ACK: <understanding>" when it starts and "DONE: <result>" when complete.
 
-### Releasing
-Call remove_agent as soon as a worker reports done or is no longer needed:
+### Release a worker
+As soon as a worker reports done, call:
   mcp__agent-relay__remove_agent({ name: "WorkerName" })
-  agent-relay.remove_agent({ name: "WorkerName" })
 
-### Guidance
-- Spawn for tasks requiring focused execution or specialised skill.
-- Use descriptive, unique worker names so you can release the right agent later.
-- Always release workers — unreleased workers remain online and consume resources.
-- The worker's cli is the model harness: "claude", "codex", "gemini", or "opencode".`;
+Always release workers when done — unreleased agents waste resources.
+
+### When to spawn vs do the work yourself
+Spawn when the task is large, needs specialised focus, or would block your own progress.
+Do it yourself for quick lookups or single-step actions.`;
   }
 }
