@@ -154,6 +154,11 @@ export type SdkToBroker =
       payload: { names: string[] };
     }
   | {
+      /** Sent by fleet serve on clean shutdown after which the sidecar will not be restarted; broker responds by emitting wire node.deregister and removing the sidecar from the supervision table. */
+      type: 'deregister_node';
+      payload: Record<string, never>;
+    }
+  | {
       /** Return the output or error for a broker-initiated handler invocation. */
       type: 'handler_result';
       payload: HandlerResultPayload;

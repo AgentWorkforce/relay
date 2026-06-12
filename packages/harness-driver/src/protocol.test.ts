@@ -54,6 +54,10 @@ describe('fleet local protocol messages', () => {
       type: 'register_handlers',
       payload: { names: ['spawn:claude', 'run-foo'] },
     };
+    const deregisterNode: SdkToBroker = {
+      type: 'deregister_node',
+      payload: {},
+    };
     const handlerResult: SdkToBroker = {
       type: 'handler_result',
       payload: { invocation_id: 'inv_123', output: { ok: true } },
@@ -66,6 +70,10 @@ describe('fleet local protocol messages', () => {
     expect(JSON.parse(JSON.stringify(registerHandlers))).toEqual({
       type: 'register_handlers',
       payload: { names: ['spawn:claude', 'run-foo'] },
+    });
+    expect(JSON.parse(JSON.stringify(deregisterNode))).toEqual({
+      type: 'deregister_node',
+      payload: {},
     });
     expect(JSON.parse(JSON.stringify(handlerResult))).toEqual({
       type: 'handler_result',
