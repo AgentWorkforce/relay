@@ -31,9 +31,10 @@ export function onboardingText(variant: OnboardingVariant): string {
       return `
 
 ## Agent management
-- Spawn a worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
-- Release a worker: mcp__agent-relay__remove_agent({ name })
-Spawn when a task needs dedicated focus. Release as soon as the worker reports done.`;
+- Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
+  name = unique identifier, task = full instructions for the worker.
+- Release a relay worker: mcp__agent-relay__remove_agent({ name })
+When the task says to delegate or assign work, call add_agent. Release with remove_agent when the worker reports done.`;
 
     case 'skill':
       return `
