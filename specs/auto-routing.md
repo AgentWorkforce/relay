@@ -28,7 +28,7 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 |-------|------|-----------|-------|-------|---------|
 | haiku | 60% | 60% | 20% | 40% | **weak lead** — inconsistent, better as worker |
 | sonnet | 40% | **100%** | 60% | 80% | **strong lead** — reliable with minimal onboarding |
-| opus | **67%** | TBD | TBD | TBD | **capable lead** — s03 bare improved to 67% after 120s/phase timeout fix (was 40% at 60s/phase) |
+| opus | **67%** | **67%** | **0%** | **67%** | **capable lead** — all variants 67% after timeout fix EXCEPT brief (conditional clause causes 0%); fixed in codebase |
 
 ### Key findings
 - **Sonnet + one-liner = 100% lifecycle reliability** ✅ — confirmed production lead config
