@@ -46,15 +46,15 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 | gemini | 100% | 100% | 100% | 100% | **excellent** — relay-native |
 | droid | 80% | 100% | 100% | 100% | **good** — minor bare variance |
 | opencode:mimo | 80% | 100% | 40% | 80% | **good** — brief onboarding hurts (likely verbosity) |
-| grok | 0% | 0% | — | — | **not supported** — behavioral, not config |
-| cursor | 0% | 0% | 0% | 0% | **not supported** — behavioral, not config |
+| grok | 0% | 0% | — | — | **not supported** — MCP config fixed (no more exit 2); model doesn't call relay tools even when MCP available |
+| cursor | 0% | 0% | 0% | 0% | **not supported** — behavioral (relay tool calls not observed) |
 
 ### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each)
 
 | harness | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
 |---------|----------------|---------------|--------------|-------------|------------|-----------|
 | codex | **100%** | **100%** | **100%** | **80%** | **100%** | **100%** |
-| opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | (running) |
+| opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | **100%** |
 | droid | 80% | **100%** | **100%** | **100%** | (running) | — |
 | gemini | 60% | **100%** | 67% | (running) | — | — |
 | grok | 0% | 0% | 0% | — | — | — |
