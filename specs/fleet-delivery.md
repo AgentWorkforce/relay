@@ -80,10 +80,10 @@ Most of this already exists; the work is mostly removal.
 The spawn handler runs in the TypeScript sidecar. It resolves the harness into an `AgentSpec` and asks the broker to execute the existing local `spawn_agent` frame:
 
 ```
-{ v: 2, type: "spawn_agent", request_id?: string, payload: { agent: AgentSpec, initial_task?: string, skip_relay_prompt?: boolean } }
+{ v: 2, type: "spawn_agent", request_id?: string, payload: { agent: AgentSpec, invocation_id?: string, initial_task?: string, skip_relay_prompt?: boolean } }
 ```
 
-The broker executes that existing frame, supervises the child, and performs the pre-spawn token-authority flow so the child starts with credentials. It does **not** resolve harness definitions or run spawn policy.
+The broker executes that existing frame, supervises the child, and performs the pre-spawn token-authority flow so the child starts with credentials. It sends `agent.register` to Relaycast, waits for the reply, injects the minted token into the child environment, and only then starts the child process. It does **not** resolve harness definitions or run spawn policy.
 
 **Placement** takes an optional target:
 
@@ -199,11 +199,13 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 
 There is no `payload` wrapper on the Relaycast ↔ broker control WebSocket. The `v` field is always `1`; `type` is the message discriminant; every payload field is snake_case. The schema is strict: unknown fields are invalid, and `action.result` includes exactly one of `output` or `error`.
 
+Broker→Relaycast requests that need a response carry an optional `id`. Relaycast replies on the same channel with either `{ id, ok: true, data }` or `{ id, ok: false, code, message }`. `agent.register` uses `data` to return the minted agent token.
+
 **Broker → Relaycast:**
 
 - `node.register`
   ```
-  { v: 1, type: "node.register", name: string, node_id: string, capabilities: string[], max_agents: number, tags: string[], version: string, resume_cursor?: string | null }
+  { v: 1, id?: string, type: "node.register", name: string, node_id: string, capabilities: string[], max_agents: number, tags: string[], version: string, resume_cursor?: string | null }
   ```
 - `node.heartbeat`
   ```
@@ -215,7 +217,7 @@ There is no `payload` wrapper on the Relaycast ↔ broker control WebSocket. The
   ```
 - `agent.register`
   ```
-  { v: 1, type: "agent.register", name: string, invocation_id?: string, session_ref?: string, resumable?: boolean }
+  { v: 1, id?: string, type: "agent.register", name: string, invocation_id?: string, session_ref?: string, resumable?: boolean }
   ```
 - `agent.deregister`
   ```
@@ -295,7 +297,7 @@ Local `payload` fields are also snake_case. The fleet extension adds:
   ```
 - **Sidecar → Broker:** existing `spawn_agent`
   ```
-  { agent: AgentSpec, initial_task?: string, skip_relay_prompt?: boolean }
+  { agent: AgentSpec, invocation_id?: string, initial_task?: string, skip_relay_prompt?: boolean }
   ```
 
 The local manifest is capability names and metadata only; handler code remains in the sidecar. The optional supervision block is separate restart metadata for the broker (`argv`, `cwd`, `env`) and must not contain handler code. Existing local process control remains explicit: a spawn handler constructs an `AgentSpec` and asks the broker to execute the existing `spawn_agent` frame.
@@ -322,7 +324,7 @@ The cross-repo contract should live as versioned TypeScript wire schemas (zod) m
 - **Frame:** flat fabric of equal **agents** (peers) + a compute layer of named **nodes**; **broker is node infra, not a peer**. No "participant" umbrella, no agent subtype. Orchestrate/communicate is just an agent's **location** (via-node vs self-connected).
 - **Topology B:** Rust broker owns the node's single Relaycast control WS; `fleet serve` launches a crash-isolated TypeScript handler sidecar supervised by the broker.
 - **Delivery:** outbound is direct & stateless; inbound goes to the agent's single **location**. Invariant: one location per agent. Delete the per-agent Relaycast WS, MCP resource layer, and piggyback (PTY-only); keep cloud-direct read tools; delivery-ack marks read.
-- **Spawn = node capability** via a node-native action handler in the TypeScript sidecar; broker only executes the existing `spawn_agent { agent: AgentSpec }` frame and performs process/token supervision.
+- **Spawn = node capability** via a node-native action handler in the TypeScript sidecar; broker only executes the existing `spawn_agent { agent: AgentSpec, invocation_id? }` frame and performs process/token supervision.
 - **Placement** is targeted (`name`/`self`) or any (least-loaded); eligibility requires `live ∧ handlers_live ∧ capacity_available`; targeted placement never migrates; **resume = origin-pinned targeted spawn + session_ref**. Node roster for discovery.
 - **Reliable invocation:** idempotency (`invocation_id`) + at-least-once + reconcile; automatic reschedule with the same `invocation_id` applies only to scheduler-placed untargeted invocations, where first-to-`completed` wins. Targeted invocations stay pinned and queue or fail by policy.
 - **Node-native actions:** an action handler can be a node (`handler_node_id`), dispatched over the control connection; the node is not in the agent roster.
