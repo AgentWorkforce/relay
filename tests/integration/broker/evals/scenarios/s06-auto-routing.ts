@@ -84,17 +84,12 @@ const scenario: EvalScenario = {
     await sleep(STARTUP_MS);
     harness.clearEvents();
 
-    await harness.sendMessage({
-      to: director,
-      from: 'Orchestrator',
-      text: ORIGINAL_TASK,
-    });
-
-    // Wait for at least 2 spawn events.
-    // After the first spawn, inject a fake ACK from that worker so the Director
-    // is unblocked to spawn the second worker (workers' tasks don't include ACK
-    // instructions, so without injection the Director would wait indefinitely).
-    // Use a 180s window to allow sequential spawn patterns (spawn Worker1 → ACK → spawn Worker2).
+    // Don't send an Orchestrator message — let the Director execute autonomously from its meta-prompt.
+    // In production, the Director is spawned with the meta-prompt as its task and executes
+    // the spawn instructions on its own. Sending an Orchestrator message triggers only a partial
+    // execution (single add_agent call as a response to the message), while meta-prompt-only
+    // execution may trigger the full protocol.
+    // Wait up to 180s for 2 spawns: Director boots → reads meta-prompt → calls ACTION 1 → ACTION 2.
     let spawnCount = 0;
     const deadline = Date.now() + 180_000;
     while (spawnCount < 2 && Date.now() < deadline) {
@@ -102,18 +97,6 @@ const scenario: EvalScenario = {
       const spawnEvent = await waiter.promise.catch(() => null);
       if (!spawnEvent) break;
       spawnCount++;
-      if (spawnCount === 1) {
-        const workerName = (spawnEvent as Extract<typeof spawnEvent, { kind: 'agent_spawned' }>).name ?? 'Worker-Backend';
-        // Small delay so Director is in receive state, then inject ACK.
-        await sleep(2_000);
-        // Orchestrator nudge: Director spawned first worker but must also spawn the second.
-        // This mirrors real-world behavior where the Orchestrator monitors spawn progress.
-        await harness.sendMessage({
-          to: director,
-          from: 'Orchestrator',
-          text: `Worker-Backend has been spawned. Now execute ACTION 2: spawn Worker-Frontend with mcp__agent-relay__add_agent({ name: "Worker-Frontend", cli: "claude", task: "..." }).`,
-        }).catch(() => {});
-      }
       if (spawnCount >= 2) break;
     }
 
