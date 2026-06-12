@@ -378,6 +378,7 @@ body {
 }
 .pill.pass { color: #0d2e14; background: var(--green); }
 .pill.fail { color: #300808; background: var(--red); }
+.pill.native { color: #fff; background: #9a3412; border: 1px solid #c2410c; }
 
 .scn-stats {
   display: flex;
@@ -683,6 +684,9 @@ function scenarioHtml(s: ScenarioResult): string {
       ? `releases <b class="${s.releaseCount > 0 ? 'ok' : 'x'}">${s.releaseCount}</b>`
       : '',
     s.onboarding ? `variant <b>${esc(s.onboarding)}</b>` : '',
+    s.nativeSubagentDetected
+      ? `tool <b class="x">NATIVE TASK (not add_agent)</b>`
+      : '',
     s.notes ? `<span class="scn-stat-sep">·</span> ${esc(s.notes)}` : '',
   ].filter(Boolean);
 
@@ -704,10 +708,14 @@ function scenarioHtml(s: ScenarioResult): string {
         .join('')}</ul></div>`
     : '';
 
+  const nativePill = s.nativeSubagentDetected
+    ? `<span class="pill native">NATIVE TASK</span> `
+    : '';
+
   return `<section class="scn">
   <div class="scn-header">
     <span class="pill ${s.pass ? 'pass' : 'fail'}">${s.pass ? 'PASS' : 'FAIL'}</span>
-    <h3>${esc(s.title)}</h3>
+    ${nativePill}<h3>${esc(s.title)}</h3>
     <span class="scn-id">${esc(s.id)}</span>
   </div>
   <div class="scn-stats">${statParts.join('<span class="scn-stat-sep"> · </span>')}</div>

@@ -22,6 +22,7 @@ import { scenario as listAgents } from './r07-list-agents.js';
 import { SPAWN_SCENARIOS } from './s01-spawn-worker.js';
 import { RELEASE_SCENARIOS } from './s02-release-worker.js';
 import { LIFECYCLE_SCENARIOS } from './s03-spawn-release-lifecycle.js';
+import { NO_NATIVE_SUBAGENT_SCENARIOS } from './s04-no-native-subagents.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -45,6 +46,7 @@ export const LIFECYCLE_EVAL_SCENARIOS: EvalScenario[] = [
   ...SPAWN_SCENARIOS,
   ...RELEASE_SCENARIOS,
   ...LIFECYCLE_SCENARIOS,
+  ...NO_NATIVE_SUBAGENT_SCENARIOS,
 ];
 
 /** All scenarios including lifecycle. */

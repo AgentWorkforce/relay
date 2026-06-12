@@ -93,6 +93,8 @@ export interface ScenarioResult {
   releaseCount?: number;
   /** Onboarding variant used (lifecycle scenarios only). */
   onboarding?: string;
+  /** True when the agent used Claude's native Task tool instead of mcp__agent-relay__add_agent. */
+  nativeSubagentDetected?: boolean;
   /** Optional human-readable notes (e.g. partial-chain detail). */
   notes?: string;
 }
