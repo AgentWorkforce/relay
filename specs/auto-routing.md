@@ -68,16 +68,16 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 
 | harness | bare | one-liner | brief | skill |
 |---------|------|-----------|-------|-------|
-| codex | 80% | 100% | (running) | — |
-| opencode:mimo | **100%** | **100%** | (running) | — |
+| codex | 80% | **100%** | (running) | — |
+| opencode:mimo | **100%** | 80% | **100%** | (running) |
 | gemini | (running) | — | — | — |
 | droid | (running) | — | — | — |
 
 **Key lifecycle findings:**
-- **Codex**: 100% on all s01/s02 variants; s03 bare=80% (minor variance), one-liner=100%. Best overall.
-- **OpenCode**: s03 bare=100% despite s01 brief=40% variability. S03 is better than s01 for opencode due to more structured task prompt.
-- **Gemini**: perfect spawn (s01=100%) but release degrades without onboarding (s02 bare=20%); skill onboarding recovers to 100%.
-- **Droid**: excellent spawn but very poor release (s02 bare/one-liner/brief ≤20%). Release is nearly absent without explicit skill onboarding.
+- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner=100%. Best overall — no onboarding needed for spawn, minimal for full lifecycle.
+- **OpenCode**: s03 bare=100% (best s03 bare result!); one-liner=80%. S03 outperforms s01/s02 because the s03 task prompt is more directive. Brief onboarding weakens earlier scenarios (s01:brief=40%) but s03:brief looks good (100% so far).
+- **Gemini**: perfect spawn (s01=100%) but release degrades without onboarding (s02 bare=20%); skill onboarding recovers to 100%. S03 results pending.
+- **Droid**: excellent spawn but very poor release (s02 bare/one-liner/brief ≤20%). Release nearly absent without explicit skill onboarding. S03 results pending.
 - **Grok/Cursor**: 0% across all scenarios — not viable relay workers.
 
 **Implication for Director prompt**: Droid and gemini are unreliable as leads for the release step without skill-level onboarding. The auto-routing Director prompt explicitly includes `remove_agent` calls, which should compensate. However, codex and opencode are the safest non-Claude relay workers.
