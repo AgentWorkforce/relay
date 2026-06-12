@@ -73,10 +73,41 @@ export interface ProtocolEnvelope<TPayload> {
   payload: TPayload;
 }
 
+export interface NodeCapabilityManifest {
+  name: string;
+  kind?: string;
+  /** Capability metadata only; handler code stays in the sidecar. */
+  metadata?: Record<string, unknown>;
+}
+
+export interface NodeManifest {
+  name: string;
+  node_id?: string;
+  capabilities: NodeCapabilityManifest[];
+  max_agents?: number;
+  tags?: string[];
+  version?: string;
+}
+
 export type SdkToBroker =
   | {
       type: 'hello';
       payload: { client_name: string; client_version: string };
+    }
+  | {
+      /** Register a fleet node sidecar with its manifest. */
+      type: 'register_node';
+      payload: { manifest: NodeManifest };
+    }
+  | {
+      /** Advertise the action handler names implemented by this sidecar. */
+      type: 'register_handlers';
+      payload: { names: string[] };
+    }
+  | {
+      /** Return the output or error for a broker-initiated handler invocation. */
+      type: 'handler_result';
+      payload: { invocationId: string; output?: unknown; error?: unknown };
     }
   | {
       type: 'spawn_agent';
@@ -481,6 +512,11 @@ export type BrokerToSdk =
   | {
       type: 'hello_ack';
       payload: { broker_version: string; protocol_version: number };
+    }
+  | {
+      /** Invoke a registered action handler in the fleet node sidecar. */
+      type: 'invoke_handler';
+      payload: { invocationId: string; name: string; input: unknown };
     }
   | {
       type: 'ok';
