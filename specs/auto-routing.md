@@ -302,7 +302,117 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 ---
 
-## 5. What the eval suite still needs to answer
+## 5. Role-Fit Classification
+
+The `choosing-swarm-patterns` skill (`skills/skills/choosing-swarm-patterns/`) defines 24 patterns with
+named roles: `lead`, `worker`, `coordinator`, `planner`, `reviewer`, `critic`, `verifier`, `judge`,
+`mapper`, `reducer`, `supervisor`, `debater`, `attacker`/`defender`, `saga-orchestrator`, etc.
+
+The auto-routing composer must pick **both** the right pattern **and** the right harness per role slot.
+This requires mapping each tested harness to the roles it can reliably fill.
+
+### Role definitions (relevant subset)
+
+| Role | Requirements | Interactive? |
+|------|-------------|-------------|
+| `lead` | Orchestrates, DMs workers, aggregates, releases all | yes |
+| `coordinator` | Mid-level lead; manages sub-teams | yes |
+| `worker` | Executes one bounded task, self-reports DONE, self-releases | yes or no |
+| `planner` | Produces structured plan (JSON/markdown), no coordination needed | no (one-shot) |
+| `reviewer`/`critic` | Receives output, produces structured verdict with pass/fail | no (one-shot) |
+| `verifier` | Checks evidence, gates on condition | no (one-shot) |
+| `judge` | Adjudicates between competing outputs | no (one-shot) |
+| `mapper` | Processes one item from a list (fan-out leaf) | no (one-shot) |
+| `reducer` | Aggregates mapper outputs into one result | no (one-shot) |
+| `debater` | Argues a position in multi-turn adversarial exchange | yes |
+
+### Mapping eval signals → roles
+
+What each eval scenario proves about role fitness:
+
+| Signal | Role(s) it confirms |
+|--------|-------------------|
+| s01 pass | `worker` (spawn capable) |
+| s02 pass | `worker` with self-release |
+| s03 pass | `worker`, `planner` (non-interactive), `mapper`, `reducer` |
+| s04 pass (relay-native) | Safe for any role that involves spawning sub-agents |
+| s03 + s04 pass + one-liner/bare | `reviewer`, `critic`, `verifier`, `judge` (high reliability, relay-native) |
+| s03 + s04 all variants | `coordinator` candidate (pending multi-DM test) |
+| Lead eval (future s07) | `lead` (multi-spawn + coordinate + aggregate confirmed) |
+
+**Note on `lead` role**: s06 confirmed no single PTY agent can multi-spawn. The production solution
+is CLI-layer pre-spawn (Phase 4). So the `lead` role in practice becomes *coordinator of a
+pre-formed team* — not responsible for spawning. Any model that passes s03+s04 at ≥80% is a
+viable lead candidate for this coordinator-style role.
+
+### Provisional role-fit table (from eval data — updated 2026-06-12)
+
+Models are listed as `harness[:model]`. Role fitness levels: ✓ confirmed · ~ provisional · ✗ not viable · ? untested.
+
+| Harness | worker | coordinator/lead | planner | reviewer | mapper | reducer |
+|---------|--------|-----------------|---------|----------|--------|---------|
+| codex:gpt-5.5 | ✓ | ✓ (s03/s04 100%) | ✓ | ✓ | ✓ | ✓ |
+| codex:gpt-5.4-mini | ✓ | ~ (s03 94%, phantom 31%) | ✓ | ~ | ✓ | ✓ |
+| codex:gpt-5.4 | ~ (52% phantom) | ✗ (noisy) | ~ | ✗ | ~ | ~ |
+| codex:gpt-5.3-codex-spark | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| opencode:mimo-v2.5-free | ✓ | ~ | ✓ | ~ | ✓ | ✓ |
+| claude:sonnet | ✓ (one-liner) | ✓ (one-liner=100%) | ✓ | ✓ | ✓ | ✓ |
+| claude:opus | ✓ | ✓ (67% bare) | ✓ | ✓ | ✓ | ✓ |
+| claude:haiku | ~ (worker-only) | ✗ | ~ | ~ | ✓ | ~ |
+| gemini | ✓ (one-liner) | ~ | ✓ | ~ | ✓ | ✓ |
+| droid | ✓ (bare/one-liner) | ✗ (s04=0%) | ✓ | ~ | ✓ (leaf only) | ✓ |
+| grok | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| cursor-agent | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| opencode:deepseek-* | ? | ? | ? | ? | ? | ? |
+| opencode:kimi-* | ? | ? | ? | ? | ? | ? |
+| opencode:qwen-* | ? | ? | ? | ? | ? | ? |
+| opencode:minimax-* | ? | ? | ? | ? | ? | ? |
+| opencode:glm-* | ? | ? | ? | ? | ? | ? |
+
+The `?` rows will be filled from the opencode Phase 1+2 batch eval. An s03+s04 pass
+promotes a model from `?` to `~` for `worker`/`planner`/`mapper`; `~` becomes `✓` after
+≥5 full-repeat runs.
+
+### Pattern → required roles → harness selection
+
+How the composer will pick harnesses for a given pattern:
+
+| Pattern | Roles needed | Default harness assignment |
+|---------|-------------|--------------------------|
+| fan-out | lead + N workers | lead=claude:sonnet, workers=codex:gpt-5.5 |
+| pipeline | N workers (sequential) | codex:gpt-5.5 (interactive:false for non-final stages) |
+| hub-spoke | lead + N workers | lead=claude:sonnet, workers=codex:gpt-5.5 |
+| dag | N workers (mixed deps) | codex:gpt-5.5 (interactive:false where possible) |
+| review-loop | implementer + 2+ reviewers | implementer=codex:gpt-5.5, reviewers=claude:sonnet |
+| cascade | haiku → sonnet → opus | claude:haiku / claude:sonnet / claude:opus |
+| map-reduce | N mappers + 1 reducer | mappers=codex:gpt-5.5 (interactive:false), reducer=claude:sonnet |
+| reflection | producer + critic | producer=codex:gpt-5.5, critic=claude:sonnet |
+| consensus | N reviewers + judge | reviewers=claude:sonnet, judge=claude:opus |
+| debate | 2 debaters + judge | debaters=claude:sonnet, judge=claude:opus |
+| competitive | N independent implementers | codex:gpt-5.5 × N |
+| supervisor | supervisor + N workers | supervisor=claude:sonnet, workers=codex:gpt-5.5 |
+| circuit-breaker | primary + fallback | primary=codex:gpt-5.5, fallback=claude:sonnet |
+| red-team | attacker + defender | both=claude:sonnet (adversarial capable) |
+
+Once opencode Chinese/alternative model evals complete, high-scoring models will be added as
+viable alternatives — especially for `worker`, `planner`, `mapper`, and `reducer` roles where
+relay-nativeness and reliability matter most.
+
+### What still needs eval scenarios
+
+The current s01–s06 suite tests `worker` and basic lifecycle. These additional scenarios are needed:
+
+| Scenario | Tests | Role confirmed |
+|----------|-------|---------------|
+| s07-reviewer | Receive code diff, output structured pass/fail verdict | `reviewer`, `critic`, `verifier` |
+| s08-planner | Receive task, output JSON plan with subtasks and domains | `planner` |
+| s09-judge | Receive 2 competing outputs, pick winner with reasoning | `judge`, `adjudicator` |
+| s10-mapper | Receive one list item, transform it, return result | `mapper` (interactive:false) |
+| s11-reducer | Receive N outputs, aggregate into one | `reducer` |
+
+---
+
+## 6. What the eval suite still needs to answer
 
 | Question | Status | Answer |
 |----------|--------|--------|

@@ -18,21 +18,64 @@ export type ModelTier = 'haiku' | 'sonnet' | 'opus';
 export type OnboardingVariant = 'bare' | 'one-liner' | 'brief' | 'skill';
 
 /**
- * Which CLI harness to use for a worker.
- * 'claude' = default (direct Anthropic API via claude CLI).
- * 'codex'  = OpenAI codex CLI; pair with a codexModel from CODEX_MODEL_TIERS.
- * Future: 'opencode', 'gemini', 'droid' once opencode model evals complete.
+ * Which CLI harness to use for an agent.
+ * Extend as opencode model evals complete and confirm role fitness.
  */
-export type WorkerCli = 'claude' | 'codex';
+export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'gemini' | 'droid';
+
+/**
+ * Roles from the choosing-swarm-patterns skill.
+ * Each role slot in a pattern is filled by a harness+model with confirmed fitness.
+ */
+export type AgentRole =
+  | 'lead'        // orchestrates pre-spawned team, DMs workers, aggregates
+  | 'coordinator' // mid-level lead; manages sub-teams
+  | 'worker'      // executes one bounded task, self-reports DONE
+  | 'planner'     // produces structured plan (non-interactive ok)
+  | 'reviewer'    // produces structured critique with pass/fail verdict
+  | 'critic'      // synonym for reviewer in reflection pattern
+  | 'verifier'    // checks evidence, gates on condition
+  | 'judge'       // adjudicates between competing outputs
+  | 'mapper'      // processes one item from a list (non-interactive leaf)
+  | 'reducer'     // aggregates mapper outputs
+  | 'supervisor'  // monitors workers, can intervene
+  | 'debater';    // argues a position in adversarial exchange
+
+/**
+ * Role fitness for a harness+model combination.
+ * Derived from lifecycle eval pass rates (s01–s06).
+ *
+ * Fitness levels:
+ *   'confirmed' — s03+s04 ≥5 full-repeat runs pass reliably
+ *   'provisional' — passes but with caveats (phantom rate, onboarding dependency)
+ *   'not-viable' — fails lifecycle or not relay-native
+ *   'untested' — eval not yet run
+ */
+export type RoleFitness = 'confirmed' | 'provisional' | 'not-viable' | 'untested';
+
+export interface RoleFitEntry {
+  fitness: RoleFitness;
+  notes?: string;
+}
+
+export interface HarnessRoleMap {
+  harness: string;            // e.g. 'codex', 'opencode:mimo-v2.5-free'
+  defaultModel?: string;      // for harnesses with selectable models
+  roles: Partial<Record<AgentRole, RoleFitEntry>>;
+  bestOnboarding: OnboardingVariant;
+  relayNative: boolean;       // s04 pass — won't use native subagent tools
+}
 
 export interface WorkerSpec {
-  role: string;
+  role: AgentRole | string;
   model: ModelTier;
   task: string;
   /** Override CLI harness. Defaults to 'claude'. */
   cli?: WorkerCli;
   /** For codex workers: the OpenAI model name to pass via --model. */
   codexModel?: string;
+  /** For opencode workers: the opencode model suffix. */
+  opencodeModel?: string;
 }
 
 export interface TeamSpec {
@@ -84,6 +127,125 @@ export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
   gemini:    'one-liner', // bare s03=60% (release failures); one-liner=100%
   droid:     'bare',      // bare s03=100%; NEVER use skill (kills s03 to 0%)
 };
+
+// ── Role-fit map (from eval data 2026-06-12) ──────────────────────────────────
+// Maps each harness to which roles it can reliably fill in swarm patterns.
+// Update as eval data comes in. 'untested' = opencode batch eval pending.
+// See specs/auto-routing.md §5 for the full role-fit table and what s07+ will add.
+export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
+  {
+    harness: 'codex',
+    defaultModel: 'gpt-5.5',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker:      { fitness: 'confirmed', notes: 's03 100% all variants' },
+      coordinator: { fitness: 'confirmed', notes: 's03+s04 100%; viable lead for pre-spawned teams' },
+      planner:     { fitness: 'confirmed', notes: 's03 non-interactive ok; relay-native' },
+      reviewer:    { fitness: 'confirmed', notes: 's04 100%; relay-native; never routes to native tools' },
+      mapper:      { fitness: 'confirmed', notes: 'interactive:false reliable' },
+      reducer:     { fitness: 'confirmed', notes: 'interactive:false reliable' },
+      verifier:    { fitness: 'confirmed' },
+      judge:       { fitness: 'provisional', notes: 'untested for multi-input adjudication' },
+      debater:     { fitness: 'provisional', notes: 'relay-native but adversarial exchange untested' },
+    },
+  },
+  {
+    harness: 'claude',
+    defaultModel: 'sonnet',
+    bestOnboarding: 'one-liner',
+    relayNative: false,
+    roles: {
+      lead:        { fitness: 'confirmed', notes: 'sonnet one-liner=100%; opus bare=67%' },
+      coordinator: { fitness: 'confirmed', notes: 'sonnet is default lead; opus for high-complexity' },
+      worker:      { fitness: 'confirmed', notes: 'sonnet one-liner=100%; haiku worker-only' },
+      reviewer:    { fitness: 'confirmed', notes: 'sonnet/opus strong reviewers' },
+      critic:      { fitness: 'confirmed' },
+      judge:       { fitness: 'confirmed', notes: 'opus preferred for high-stakes adjudication' },
+      debater:     { fitness: 'confirmed', notes: 'sonnet/opus capable of adversarial exchange' },
+      planner:     { fitness: 'confirmed' },
+      mapper:      { fitness: 'confirmed', notes: 'haiku viable for simple map tasks' },
+      reducer:     { fitness: 'confirmed' },
+      supervisor:  { fitness: 'confirmed', notes: 'sonnet+ only; haiku not viable as supervisor' },
+      verifier:    { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode',
+    defaultModel: 'mimo-v2.5-free',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker:      { fitness: 'confirmed', notes: 'mimo s03 bare=100%; best bare result of all harnesses' },
+      planner:     { fitness: 'confirmed' },
+      mapper:      { fitness: 'confirmed' },
+      reducer:     { fitness: 'confirmed' },
+      coordinator: { fitness: 'provisional', notes: 's03+s04 good; multi-DM coordination untested' },
+      reviewer:    { fitness: 'provisional', notes: 'relay-native; structured verdict format untested' },
+      // Models from opencode batch eval: fitness will be updated per-model as results arrive.
+      // deepseek-v4-*/kimi-*/qwen-*/minimax-*/glm-* roles all 'untested' until Phase 1+2 complete.
+    },
+  },
+  {
+    harness: 'gemini',
+    defaultModel: undefined,
+    bestOnboarding: 'one-liner',
+    relayNative: false,
+    roles: {
+      worker:      { fitness: 'confirmed', notes: 'one-liner s03=100%; bare=60%' },
+      planner:     { fitness: 'provisional', notes: 'relay-native when prompted; avoid relay-agent vocab' },
+      mapper:      { fitness: 'confirmed', notes: 'one-liner+ reliable' },
+      reducer:     { fitness: 'provisional' },
+      coordinator: { fitness: 'provisional', notes: 's04=60-80%; occasional native fallback' },
+      reviewer:    { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'droid',
+    defaultModel: undefined,
+    bestOnboarding: 'bare',
+    relayNative: false,
+    roles: {
+      worker:      { fitness: 'confirmed', notes: 's03 bare=100% with directive phrasing' },
+      mapper:      { fitness: 'confirmed', notes: 'leaf-only; no spawning tasks' },
+      planner:     { fitness: 'provisional' },
+      // NEVER use for roles that involve spawning: s04=0% bare/one-liner
+      coordinator: { fitness: 'not-viable', notes: 's04=0%; routes to native Task tool' },
+      supervisor:  { fitness: 'not-viable', notes: 'would use native Task, not relay' },
+    },
+  },
+  {
+    harness: 'grok',
+    defaultModel: undefined,
+    bestOnboarding: 'bare',
+    relayNative: false,
+    roles: {
+      worker:      { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
+      coordinator: { fitness: 'not-viable' },
+    },
+  },
+  {
+    harness: 'cursor-agent',
+    defaultModel: undefined,
+    bestOnboarding: 'bare',
+    relayNative: false,
+    roles: {
+      worker:      { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
+      coordinator: { fitness: 'not-viable' },
+    },
+  },
+];
+
+/**
+ * Look up which harnesses can fill a given role at 'confirmed' or better fitness.
+ * Use to populate role slots when composing teams for specific swarm patterns.
+ */
+export function harnessesForRole(role: AgentRole): HarnessRoleMap[] {
+  return HARNESS_ROLE_MAP.filter(h => {
+    const entry = h.roles[role];
+    return entry?.fitness === 'confirmed' || entry?.fitness === 'provisional';
+  });
+}
 
 // ── Routing table ─────────────────────────────────────────────────────────────
 // Derived from lifecycle eval data (b3oqx02zv + subsequent s03 runs).
