@@ -62,20 +62,21 @@ export function daytonaConfigPath(
   platform: NodeJS.Platform = process.platform,
   homedir: () => string = os.homedir
 ): string {
+  const pathForPlatform = platform === 'win32' ? path.win32 : path.posix;
   const override = env.DAYTONA_CONFIG_DIR;
-  if (override) return path.join(override, 'config.json');
+  if (override) return pathForPlatform.join(override, 'config.json');
   switch (platform) {
     case 'darwin':
-      return path.join(homedir(), 'Library', 'Application Support', 'daytona', 'config.json');
+      return pathForPlatform.join(homedir(), 'Library', 'Application Support', 'daytona', 'config.json');
     case 'win32':
-      return path.join(
-        env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'),
+      return pathForPlatform.join(
+        env.APPDATA || pathForPlatform.join(homedir(), 'AppData', 'Roaming'),
         'daytona',
         'config.json'
       );
     default:
-      return path.join(
-        env.XDG_CONFIG_HOME || path.join(homedir(), '.config'),
+      return pathForPlatform.join(
+        env.XDG_CONFIG_HOME || pathForPlatform.join(homedir(), '.config'),
         'daytona',
         'config.json'
       );
@@ -86,13 +87,9 @@ export function daytonaConfigPath(
 function selectActiveProfile(config: DaytonaConfig): DaytonaProfile {
   const profiles = config.profiles ?? [];
   if (profiles.length === 0) {
-    throw new Error(
-      'No Daytona profiles found in config.json. Run `daytona login` to authenticate.'
-    );
+    throw new Error('No Daytona profiles found in config.json. Run `daytona login` to authenticate.');
   }
-  const byActive = config.activeProfile
-    ? profiles.find((p) => p.id === config.activeProfile)
-    : undefined;
+  const byActive = config.activeProfile ? profiles.find((p) => p.id === config.activeProfile) : undefined;
   return byActive ?? profiles[0];
 }
 
@@ -131,17 +128,19 @@ export async function readDaytonaCredential(
     raw = await read(configPath);
   } catch {
     throw new Error(
-      `Could not read Daytona config at ${configPath}. ` +
-        'Run `daytona login` to authenticate first.'
+      `Could not read Daytona config at ${configPath}. ` + 'Run `daytona login` to authenticate first.'
     );
   }
-  let config: DaytonaConfig;
+  let config: unknown;
   try {
-    config = JSON.parse(raw) as DaytonaConfig;
+    config = JSON.parse(raw);
   } catch {
     throw new Error(`Daytona config at ${configPath} is not valid JSON.`);
   }
-  return extractDaytonaCredential(config);
+  if (!config || typeof config !== 'object') {
+    throw new Error(`Daytona config at ${configPath} is not a valid JSON object.`);
+  }
+  return extractDaytonaCredential(config as DaytonaConfig);
 }
 
 export interface ConnectDaytonaIo {
@@ -166,8 +165,20 @@ export interface DaytonaLocalRuntime {
 function spawnExitCode(command: string, args: string[], inherit: boolean): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: inherit ? 'inherit' : 'ignore' });
-    child.on('error', reject);
-    child.on('close', (code) => resolve(code ?? 1));
+    function cleanup() {
+      child.off('error', onError);
+      child.off('close', onClose);
+    }
+    function onError(err: Error) {
+      cleanup();
+      reject(err);
+    }
+    function onClose(code: number | null) {
+      cleanup();
+      resolve(code ?? 1);
+    }
+    child.on('error', onError);
+    child.on('close', onClose);
   });
 }
 
@@ -247,9 +258,7 @@ export async function connectDaytonaLocal(
   if (!(await rt.hasDaytonaCli())) {
     io.error(color.yellow('The Daytona CLI ("daytona") is not installed.'));
     io.log('Install it, then re-run this command:');
-    io.log(
-      color.dim('  curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh')
-    );
+    io.log(color.dim('  curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh'));
     throw new Error('Daytona CLI not found on PATH.');
   }
 

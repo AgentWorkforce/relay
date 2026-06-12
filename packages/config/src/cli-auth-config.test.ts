@@ -28,7 +28,7 @@ describe('CLI auth config', () => {
     expect(CLI_AUTH_CONFIG.opencode.successPatterns.some((pattern) => pattern.test(transcript))).toBe(true);
   });
 
-  it('captures Daytona via the sandbox login flow', () => {
+  it('configures Daytona CLI auth settings', () => {
     const daytona = CLI_AUTH_CONFIG.daytona;
     // The capture contract: run `daytona login` and read the CLI's token store
     // from the Linux (XDG) config path so the credential can be extracted from

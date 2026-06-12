@@ -27,14 +27,12 @@ describe('daytonaConfigPath', () => {
 
   it('resolves the Linux XDG path (default and override)', () => {
     expect(daytonaConfigPath({}, 'linux', homedir)).toBe('/home/u/.config/daytona/config.json');
-    expect(daytonaConfigPath({ XDG_CONFIG_HOME: '/xdg' }, 'linux', homedir)).toBe(
-      '/xdg/daytona/config.json'
-    );
+    expect(daytonaConfigPath({ XDG_CONFIG_HOME: '/xdg' }, 'linux', homedir)).toBe('/xdg/daytona/config.json');
   });
 
   it('resolves the Windows APPDATA path', () => {
     expect(daytonaConfigPath({ APPDATA: 'C:\\AppData' }, 'win32', homedir)).toBe(
-      'C:\\AppData/daytona/config.json'
+      'C:\\AppData\\daytona\\config.json'
     );
   });
 
@@ -108,6 +106,11 @@ describe('readDaytonaCredential', () => {
     const read = vi.fn().mockResolvedValue('{ not json');
     await expect(readDaytonaCredential('/cfg', read)).rejects.toThrow(/not valid JSON/);
   });
+
+  it('throws when the config is not a JSON object', async () => {
+    const read = vi.fn().mockResolvedValue('null');
+    await expect(readDaytonaCredential('/cfg', read)).rejects.toThrow(/valid JSON object/);
+  });
 });
 
 describe('connectDaytonaLocal', () => {
@@ -139,9 +142,7 @@ describe('connectDaytonaLocal', () => {
   it('errors when the daytona CLI is missing (no login attempted)', async () => {
     const runLogin = vi.fn();
     const rt = runtime({ hasDaytonaCli: vi.fn().mockResolvedValue(false), runLogin });
-    await expect(
-      connectDaytonaLocal({ io: silentIo, runtime: rt })
-    ).rejects.toThrow(/Daytona CLI not found/);
+    await expect(connectDaytonaLocal({ io: silentIo, runtime: rt })).rejects.toThrow(/Daytona CLI not found/);
     expect(runLogin).not.toHaveBeenCalled();
   });
 
