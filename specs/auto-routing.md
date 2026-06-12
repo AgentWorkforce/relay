@@ -81,13 +81,15 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 |---------|------|-----------|-------|-------|
 | codex | **100%** | **100%** | **100%** | **100%** |
 | opencode:mimo | 80% | **100%** | **100%** | 80% |
-| droid | (running) | — | — | — |
-| gemini | 80% | (running) | — | — |
+| droid | 0% | 0% | — | — |
+| gemini | 80% | 60% | 80% | 80%+ |
 | grok | 0% | 0% | 0% | 0% |
 | cursor | 0% | 0% | 0% | 0% |
 
 **Key lifecycle findings:**
-- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner/brief/skill=100%; s04=100% all variants. Most reliable non-Claude harness — any onboarding except bare reliably achieves full lifecycle.
+- **Codex**: 100% on all s01/s02/s04 variants; s03 bare=80%, one-liner/brief/skill=100%. Most reliable non-Claude harness — never routes to native subagents (s04=100% all variants).
+- **Droid**: s03 bare/one-liner/brief all 100%, but s03 skill=0% (skill text confuses droid) and s04 bare/one-liner=0% (droid uses native Task tool, not relay, without explicit tool disambiguation). Droid is a strong lifecycle performer but will silently route to native subagents without the skill onboarding that disambiguates `add_agent` from `Task`.
+- **Gemini**: s04 bare=80%, one-liner=60%, brief/skill=80%+. Mostly relay-native but with occasional fallback to native subagents.
 - **OpenCode**: s03 bare=100% (best s03 bare!); one-liner=80%, brief=60%, skill=100%. Directive task prompts outperform — brief's conditional guidance hurts more than bare.
 - **Droid**: s03 bare/one-liner/brief all 100% — exceptional result. Despite s02 bare=20%, the full s03 task description ("report DONE when complete with a concise summary") drives reliable release even with bare onboarding. Skill onboarding still running (1 fail seen).
 - **Gemini**: s03 bare=60%, one-liner/brief/skill all 100%. The bare gap (release failure without onboarding) closes completely with any explicit context. Most consistent non-Claude lifecycle performance once prompted.
