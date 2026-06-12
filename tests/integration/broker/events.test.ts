@@ -23,7 +23,7 @@ import {
   assertAgentReleasedEvent,
   assertNoAclDenied,
 } from './utils/assert-helpers.js';
-import type { BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent } from '@agent-relay/harness-driver';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();

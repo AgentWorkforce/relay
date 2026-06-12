@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
-import type { BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent } from '@agent-relay/harness-driver';
 
 function skipIfMissing(t: TestContext): boolean {
   const reason = checkPrerequisites();
