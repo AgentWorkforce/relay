@@ -127,6 +127,18 @@
             "reasoning": "Only commits after v8.4.0 should remain in [Unreleased]; recent released sections should be curated from the commits between adjacent release tags."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781269986543,
+          "type": "decision",
+          "content": "Validated CodeRabbit credential findings before editing: Validated CodeRabbit credential findings before editing",
+          "raw": {
+            "question": "Validated CodeRabbit credential findings before editing",
+            "chosen": "Validated CodeRabbit credential findings before editing",
+            "alternatives": [],
+            "reasoning": "Current connect-daytona-local.ts falls back from a stale activeProfile to profiles[0] and accepts any non-empty expiresAt, so both can upload the wrong or malformed Daytona credential."
+          },
+          "significance": "high"
         }
       ]
     }

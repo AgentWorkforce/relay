@@ -77,6 +77,12 @@ describe('extractDaytonaCredential', () => {
     expect(extractDaytonaCredential(config).accessToken).toBe('a');
   });
 
+  it('throws when activeProfile does not resolve to a profile', () => {
+    expect(() => extractDaytonaCredential(configWith(token, null, 'missing'))).toThrow(
+      /activeProfile "missing".*not found/
+    );
+  });
+
   it('throws when there are no profiles', () => {
     expect(() => extractDaytonaCredential({ profiles: [] })).toThrow(/No Daytona profiles/);
   });
@@ -89,7 +95,7 @@ describe('extractDaytonaCredential', () => {
 });
 
 describe('readDaytonaCredential', () => {
-  const token = { accessToken: 'a', refreshToken: 'r', expiresAt: 'iso' };
+  const token = { accessToken: 'a', refreshToken: 'r', expiresAt: '2026-06-12T00:00:00Z' };
 
   it('reads and extracts from config.json', async () => {
     const read = vi.fn().mockResolvedValue(JSON.stringify(configWith(token, 'o')));
@@ -106,11 +112,20 @@ describe('readDaytonaCredential', () => {
     const read = vi.fn().mockResolvedValue('{ not json');
     await expect(readDaytonaCredential('/cfg', read)).rejects.toThrow(/not valid JSON/);
   });
+
+  it('throws when expiresAt is malformed', async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValue(
+        JSON.stringify(configWith({ accessToken: 'a', refreshToken: 'r', expiresAt: 'iso' }))
+      );
+    await expect(readDaytonaCredential('/cfg', read)).rejects.toThrow(/invalid `expiresAt`/i);
+  });
 });
 
 describe('connectDaytonaLocal', () => {
   const silentIo = { log: () => {}, error: () => {} };
-  const token = { accessToken: 'a', refreshToken: 'r', expiresAt: 'iso' };
+  const token = { accessToken: 'a', refreshToken: 'r', expiresAt: '2026-06-12T00:00:00Z' };
 
   function runtime(overrides: Partial<DaytonaLocalRuntime> = {}): DaytonaLocalRuntime {
     return {
@@ -129,7 +144,7 @@ describe('connectDaytonaLocal', () => {
     const result = await connectDaytonaLocal({ apiUrl: 'https://api', io: silentIo, runtime: rt });
     expect(result).toEqual({ provider: 'daytona', success: true });
     expect(upload).toHaveBeenCalledWith(
-      { accessToken: 'a', refreshToken: 'r', expiresAt: 'iso', orgId: 'org-9' },
+      { accessToken: 'a', refreshToken: 'r', expiresAt: '2026-06-12T00:00:00Z', orgId: 'org-9' },
       'https://api'
     );
   });

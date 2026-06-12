@@ -65,8 +65,8 @@ export interface CLIAuthConfig {
   /**
    * Extra environment variables to export before running the auth command in
    * the sandbox. Consumed by the cloud side when it builds the remote command.
-   * Used by providers whose OAuth callback port must be pinned to the connect
-   * harness tunnel port (see `daytona`).
+   * Used by providers that require a pinned callback port or other runtime
+   * environment for their auth flow.
    */
   env?: Record<string, string>;
 }
@@ -202,7 +202,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.codex/auth.json',
     displayName: 'Codex',
-    installCommand: 'npm install -g @openai/codex',
+    installCommand: 'npm install -g @openai/codex@0.130.0',
     waitTimeout: 30000,
     prompts: [
       {
@@ -451,7 +451,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     credentialPath: '~/.config/daytona/config.json',
     displayName: 'Daytona',
     // daytona ships as a single Go binary (no npm package).
-    installCommand: 'curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh',
+    installCommand: 'brew install daytonaio/cli/daytona',
     waitTimeout: 30000,
     prompts: [
       {

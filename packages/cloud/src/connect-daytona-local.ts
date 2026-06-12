@@ -74,14 +74,31 @@ export function daytonaConfigPath(
   }
 }
 
+const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 /** Pick the active profile (by `activeProfile` id), falling back to the first. */
 function selectActiveProfile(config: DaytonaConfig): DaytonaProfile {
   const profiles = config.profiles ?? [];
   if (profiles.length === 0) {
     throw new Error('No Daytona profiles found in config.json. Run `daytona login` to authenticate.');
   }
-  const byActive = config.activeProfile ? profiles.find((p) => p.id === config.activeProfile) : undefined;
-  return byActive ?? profiles[0];
+  if (config.activeProfile) {
+    const byActive = profiles.find((p) => p.id === config.activeProfile);
+    if (!byActive) {
+      throw new Error(
+        `Daytona config references activeProfile "${config.activeProfile}", but that profile was not found. ` +
+          'Run `daytona login` to refresh the profile list.'
+      );
+    }
+    return byActive;
+  }
+  return profiles[0];
+}
+
+function validateExpiresAt(expiresAt: string): void {
+  if (!RFC3339_TIMESTAMP.test(expiresAt) || Number.isNaN(Date.parse(expiresAt))) {
+    throw new Error('Daytona profile has invalid `expiresAt`; expected an RFC3339 timestamp.');
+  }
 }
 
 /**
@@ -97,6 +114,7 @@ export function extractDaytonaCredential(config: DaytonaConfig): DaytonaCredenti
         'Run `daytona login` (browser) — an api-key login does not yield a refresh token.'
     );
   }
+  validateExpiresAt(token.expiresAt);
   const credential: DaytonaCredential = {
     accessToken: token.accessToken,
     refreshToken: token.refreshToken,
@@ -234,7 +252,7 @@ export async function connectDaytonaLocal(
   if (!(await rt.hasDaytonaCli())) {
     io.error(color.yellow('The Daytona CLI ("daytona") is not installed.'));
     io.log('Install it, then re-run this command:');
-    io.log(color.dim('  curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh'));
+    io.log(color.dim('  brew install daytonaio/cli/daytona'));
     throw new Error('Daytona CLI not found on PATH.');
   }
 
