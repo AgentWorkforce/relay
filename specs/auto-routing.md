@@ -88,14 +88,20 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 |---------|----------------|---------------|--------------|-------------|------------|-----------|
 | codex | **100%** | **100%** | **100%** | **80%** | **100%** | **100%** |
 | opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | **100%** |
-| droid | 80% | **100%** | **100%** | **100%** | (running) | — |
-| gemini | 60% | **100%** | 67% | (running) | — | — |
-| grok | 0% | 0% | 0% | — | — | — |
-| cursor | 0% | 0% | (running) | — | — | — |
+| droid | 80% | **100%** | **100%** | 80% | 80% | (running) |
+| gemini | 60% | **100%** | 80% | 25% | (running) | — |
+| grok | 0% | 0% | 0% | 0% | — | — |
+| cursor | 0% | 0% | 0% | 0% | — | — |
 | claude haiku | 0% | 20% | 60% | 20% | 60% | 40% |
 | claude sonnet | 0% | 0% | 0% | 0% | 40% | 40% |
 
-**Key cross-harness insight**: Codex, Gemini, Droid, and OpenCode natively understand relay tools with neutral vocabulary (no relay-anchored phrasing needed). Vocabulary effects are primarily a Claude-model concern. Grok and Cursor fail at the harness level regardless of vocabulary — they are not supported relay worker targets. This means Director prompts built for Claude leads should use relay-anchored nouns; non-Claude leads can use neutral vocabulary.
+**Key cross-harness insights**:
+- Codex and OpenCode natively understand relay tools across all vocabulary variants (relay-native).
+- Droid: mostly 80-100% but vocabulary variance; "relay worker" (100%) outperforms "neutral worker" (80%).
+- Gemini: "relay-agent" specifically hurts (25%) while "relay-worker" is good (80%) and "neutral-agent" is perfect (100%). The "-agent" suffix combined with "relay" prefix confuses Gemini. The Director prompt uses "relay worker" — correct choice.
+- Grok/Cursor: 0% all variants — not viable relay workers.
+- Claude: vocabulary-dependent (see haiku/sonnet rows) — relay-anchored nouns matter.
+- **Universal recommendation**: Use "relay worker" noun in Director prompts — it's the highest-performing variant across both Claude models (haiku: 60%) and non-Claude models (droid: 100%). "relay agent" underperforms on both Gemini (25%) and Claude haiku (20%).
 
 ---
 
