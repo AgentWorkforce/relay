@@ -4,8 +4,9 @@
   "task": {
     "title": "Design auto-routing: dynamic model-tier selection and team composition for multi-agent tasks"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-12T12:26:11.727Z",
+  "completedAt": "2026-06-12T15:25:41.376Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-12T12:26:16.907Z",
+      "endedAt": "2026-06-12T15:25:41.376Z",
       "events": [
         {
           "ts": 1781267176907,
@@ -328,12 +330,80 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Completed comprehensive multi-harness eval suite across all 7 harness types. All eval data collected and documented: s05 phrasing (complete, all harnesses), s03 lifecycle (complete, all harnesses), s04 native subagent (complete, all harnesses), s06 Director multi-spawn (definitive 0%, architectural limitation documented). Key finding: PTY-mode agents spawn exactly 1 worker per turn — production Phase 4 must pre-spawn workers from CLI, not via Director. Opus achieves 100% relay-worker/relay-agent on s05. Codex is the most reliable non-Claude relay worker. Grok/cursor not viable.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "ec86a59f3",
+    "8df91eb7a",
+    "e66c3a457",
+    "c2057d49e",
+    "40086a300",
+    "112dd08bc",
+    "3ef7f043d",
+    "70f356566",
+    "4e4d105e5",
+    "9f00bf785",
+    "5805bde19",
+    "6f7b189a1",
+    "f533863b2",
+    "123a2c30f",
+    "763529c24",
+    "7c3021aa0",
+    "d8448cdb5",
+    "e8d1e1cd0",
+    "5bc6e9ae4",
+    "4abde7d06",
+    "35d24f06a",
+    "141c5246c",
+    "ac6654535",
+    "73d449999",
+    "022d8e210",
+    "98eace579",
+    "ea7233912",
+    "4f06c70e5",
+    "9b2053886",
+    "76a8afd8e",
+    "0bcff0f99",
+    "30386427c",
+    "d1a507169",
+    "111f7a846",
+    "55cea0fa2"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_899hiw3gbx8m/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-06/traj_c60wda02p633/summary.md",
+    ".agentworkforce/trajectories/completed/2026-06/traj_c60wda02p633/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-06/traj_gcn2gqbj96ya/summary.md",
+    ".agentworkforce/trajectories/completed/2026-06/traj_gcn2gqbj96ya/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/snippets.rs",
+    "package-lock.json",
+    "package.json",
+    "packages/cli/src/auto/classifier.test.ts",
+    "packages/cli/src/auto/classifier.ts",
+    "packages/cli/src/auto/composer.test.ts",
+    "packages/cli/src/auto/composer.ts",
+    "packages/cli/src/auto/director-prompt.ts",
+    "packages/cli/src/auto/index.ts",
+    "packages/cli/src/cli/commands/local-agent.ts",
+    "specs/auto-routing.md",
+    "tests/integration/broker/evals/runner.ts",
+    "tests/integration/broker/evals/scenarios/helpers.ts",
+    "tests/integration/broker/evals/scenarios/index.ts",
+    "tests/integration/broker/evals/scenarios/onboarding.ts",
+    "tests/integration/broker/evals/scenarios/s03-spawn-release-lifecycle.ts",
+    "tests/integration/broker/evals/scenarios/s05-phrasing-variants.ts",
+    "tests/integration/broker/evals/scenarios/s06-auto-routing.ts",
+    "tests/integration/broker/tsconfig.json"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2",
-    "endRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2"
+    "endRef": "ec86a59f399276340a70de512daf11fa674dd833",
+    "traceId": "78d10a5d-0d45-4503-a48f-b2c992db3c70"
   }
 }
