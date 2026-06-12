@@ -77,6 +77,36 @@ describe('fleet local protocol messages', () => {
     });
   });
 
+  it('serializes attributed spawn_agent frames', () => {
+    const message: SdkToBroker = {
+      type: 'spawn_agent',
+      payload: {
+        agent: {
+          name: 'worker-1',
+          runtime: 'pty',
+          cli: 'claude',
+        },
+        initial_task: 'handle the invocation',
+        skip_relay_prompt: true,
+        invocation_id: 'inv_123',
+      },
+    };
+
+    expect(JSON.parse(JSON.stringify(message))).toEqual({
+      type: 'spawn_agent',
+      payload: {
+        agent: {
+          name: 'worker-1',
+          runtime: 'pty',
+          cli: 'claude',
+        },
+        initial_task: 'handle the invocation',
+        skip_relay_prompt: true,
+        invocation_id: 'inv_123',
+      },
+    });
+  });
+
   it('serializes broker handler invocation frames', () => {
     const message: BrokerToSdk = {
       type: 'invoke_handler',

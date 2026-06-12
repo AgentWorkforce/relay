@@ -73,11 +73,13 @@ export interface ProtocolEnvelope<TPayload> {
   payload: TPayload;
 }
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
 export interface NodeCapabilityManifest {
   name: string;
   kind?: string;
   /** Capability metadata only; handler code stays in the sidecar. */
-  metadata?: Record<string, unknown>;
+  metadata?: JsonValue;
 }
 
 export interface NodeManifest {
@@ -96,7 +98,7 @@ export interface NodeSupervision {
 }
 
 export type HandlerResultPayload =
-  | { invocation_id: string; output: unknown; error?: never }
+  | { invocation_id: string; output: JsonValue; error?: never }
   | { invocation_id: string; error: string; output?: never };
 
 type AssertHandlerResultPayload<T extends HandlerResultPayload> = T;
@@ -104,21 +106,35 @@ type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
   invocation_id: 'inv_123';
   output: { ok: true };
 }>;
-type _HandlerResultAllowsError = AssertHandlerResultPayload<{
+type _HandlerResultAllowsNullOutput = AssertHandlerResultPayload<{
   invocation_id: 'inv_124';
+  output: null;
+}>;
+type _HandlerResultAllowsError = AssertHandlerResultPayload<{
+  invocation_id: 'inv_125';
   error: 'handler failed';
 }>;
 // @ts-expect-error handler_result requires either output or error.
-type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_125' }>;
+type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_126' }>;
+// @ts-expect-error handler_result.output must be JSON and cannot serialize away.
+type _HandlerResultRejectsUndefinedOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_127';
+  output: undefined;
+}>;
+// @ts-expect-error handler_result.output must be JSON-serializable.
+type _HandlerResultRejectsFunctionOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_128';
+  output: () => void;
+}>;
 // @ts-expect-error handler_result cannot carry both output and error.
 type _HandlerResultRejectsBoth = AssertHandlerResultPayload<{
-  invocation_id: 'inv_126';
+  invocation_id: 'inv_129';
   output: { ok: true };
   error: 'handler failed';
 }>;
 // @ts-expect-error handler_result.error must be the canonical string message.
 type _HandlerResultRejectsObjectError = AssertHandlerResultPayload<{
-  invocation_id: 'inv_127';
+  invocation_id: 'inv_130';
   error: { code: 'handler_failed' };
 }>;
 
@@ -144,7 +160,12 @@ export type SdkToBroker =
     }
   | {
       type: 'spawn_agent';
-      payload: { agent: AgentSpec; initial_task?: string; skip_relay_prompt?: boolean };
+      payload: {
+        agent: AgentSpec;
+        initial_task?: string;
+        skip_relay_prompt?: boolean;
+        invocation_id?: string;
+      };
     }
   | {
       type: 'send_message';
@@ -549,7 +570,7 @@ export type BrokerToSdk =
   | {
       /** Invoke a registered action handler in the fleet node sidecar. */
       type: 'invoke_handler';
-      payload: { invocation_id: string; name: string; input: unknown };
+      payload: { invocation_id: string; name: string; input: JsonValue };
     }
   | {
       type: 'ok';
