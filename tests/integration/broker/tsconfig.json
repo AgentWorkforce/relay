@@ -15,6 +15,8 @@
     "paths": {
       "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
       "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
+      "@agent-relay/harness-driver": ["packages/harness-driver/dist/index.d.ts"],
+      "@agent-relay/harness-driver/*": ["packages/harness-driver/dist/*"],
       "@agent-relay/config": ["packages/config/dist/index.d.ts"],
       "@agent-relay/config/*": ["packages/config/dist/*"],
       "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
