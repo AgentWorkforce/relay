@@ -8,8 +8,9 @@
       "id": "customer-auth-failures-24h"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-06-12T10:00:23.754Z",
+  "completedAt": "2026-06-12T11:49:02.942Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-12T10:12:31.002Z",
+      "endedAt": "2026-06-12T11:49:02.942Z",
       "events": [
         {
           "ts": 1781259151003,
@@ -34,6 +36,12 @@
             "alternatives": [],
             "reasoning": "Large logs require focused investigation; worker can analyze patterns without blocking lead"
           },
+          "significance": "high"
+        },
+        {
+          "ts": 1781264942943,
+          "type": "note",
+          "content": "Abandoned: Switching to dependency audit task from Orchestrator",
           "significance": "high"
         }
       ]

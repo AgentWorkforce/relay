@@ -1,0 +1,158 @@
+{
+  "id": "traj_899hiw3gbx8m",
+  "version": 1,
+  "task": {
+    "title": "Design auto-routing: dynamic model-tier selection and team composition for multi-agent tasks"
+  },
+  "status": "active",
+  "startedAt": "2026-06-12T12:26:11.727Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-12T12:26:16.907Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_x14bq4gcu422",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-12T12:26:16.907Z",
+      "events": [
+        {
+          "ts": 1781267176907,
+          "type": "decision",
+          "content": "Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation: Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation",
+          "raw": {
+            "question": "Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation",
+            "chosen": "Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation",
+            "alternatives": [],
+            "reasoning": "specs/fleet-delivery.md precedent; the docs-sync rule is for user docs only; auto-routing is pre-ship internal design"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781267183285,
+          "type": "decision",
+          "content": "Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex: Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex",
+          "raw": {
+            "question": "Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex",
+            "chosen": "Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex",
+            "alternatives": [],
+            "reasoning": "s03 lifecycle scores: haiku best=60% (bare/one-liner), sonnet best=100% (one-liner), opus bare=60% already — capability gradient is empirical not assumed"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781267243609,
+          "type": "decision",
+          "content": "Director meta-prompt pre-composes the team rather than asking the lead to plan it: Director meta-prompt pre-composes the team rather than asking the lead to plan it",
+          "raw": {
+            "question": "Director meta-prompt pre-composes the team rather than asking the lead to plan it",
+            "chosen": "Director meta-prompt pre-composes the team rather than asking the lead to plan it",
+            "alternatives": [],
+            "reasoning": "eval data shows sonnet/opus are reliable coordinators when told what to do, but unreliable planners when asked to decide team makeup from scratch; pre-composition separates routing from execution"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781267245738,
+          "type": "decision",
+          "content": "Haiku is never a lead — worker-only tier: Haiku is never a lead — worker-only tier",
+          "raw": {
+            "question": "Haiku is never a lead — worker-only tier",
+            "chosen": "Haiku is never a lead — worker-only tier",
+            "alternatives": [],
+            "reasoning": "s03 lifecycle caps at 60% even with best onboarding variant; sonnet one-liner hits 100%; deploying haiku as lead would make team orchestration unreliable by design"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781267251689,
+          "type": "reflection",
+          "content": "Auto-routing spec drafted at specs/auto-routing.md. Three pillars: task classifier (haiku-class LLM call), team composer (pure routing table), director meta-prompt (pre-composed team so lead coordinates not plans). Empirical basis from ongoing lifecycle eval b3oqx02zv. Key open question: s05 phrasing eval and opus s03 results still pending — will refine routing table once those land.",
+          "raw": {
+            "focalPoints": [
+              "eval-data-gaps",
+              "director-prompt-wording",
+              "classifier-cost"
+            ],
+            "confidence": 0.8
+          },
+          "significance": "high",
+          "tags": [
+            "focal:eval-data-gaps",
+            "focal:director-prompt-wording",
+            "focal:classifier-cost",
+            "confidence:0.8"
+          ]
+        },
+        {
+          "ts": 1781268475889,
+          "type": "decision",
+          "content": "Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid: Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid",
+          "raw": {
+            "question": "Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid",
+            "chosen": "Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid",
+            "alternatives": [],
+            "reasoning": "these CLIs were installed but never had lifecycle eval coverage; only claude had been tested; gap discovered by checking evals-reports directory and which/command-v for each harness"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781269445306,
+          "type": "decision",
+          "content": "Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle): Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle)",
+          "raw": {
+            "question": "Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle)",
+            "chosen": "Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle)",
+            "alternatives": [],
+            "reasoning": "b3oqx02zv complete: sonnet:one-liner = 5/5 on s03 full lifecycle; all other model/variant combos are lower or volatile"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781269447795,
+          "type": "decision",
+          "content": "Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead: Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead",
+          "raw": {
+            "question": "Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead",
+            "chosen": "Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead",
+            "alternatives": [],
+            "reasoning": "opus s02 bare=100% proves it knows release; s03 caps at 40% across bare/one-liner/brief and collapses to 0% with skill — opus verbose responses exhaust the 150s window leaving no time for DONE→release"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781269479085,
+          "type": "reflection",
+          "content": "Lifecycle eval b3oqx02zv complete. Three clear takeaways: (1) sonnet+one-liner=100% s03 — confirmed production lead; (2) haiku=worker-only, caps at 60%; (3) opus s03 is timeout-limited not capability-limited — needs longer scenario window to evaluate properly. Auto-routing spec updated. Next: fix skill text 'do it yourself' heuristic, bump s03 timeout for opus, run s05 phrasing eval.",
+          "raw": {
+            "focalPoints": [
+              "skill-text-fix",
+              "opus-timeout",
+              "s05-phrasing"
+            ],
+            "confidence": 0.85
+          },
+          "significance": "high",
+          "tags": [
+            "focal:skill-text-fix",
+            "focal:opus-timeout",
+            "focal:s05-phrasing",
+            "confidence:0.85"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2",
+    "endRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2"
+  }
+}

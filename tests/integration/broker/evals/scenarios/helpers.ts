@@ -9,6 +9,15 @@ import type { BrokerHarness } from '../../utils/broker-harness.js';
 export const STARTUP_MS = 15_000;
 /** How long to wait for an agent to respond to a stimulus before scoring. */
 export const RESPONSE_MS = 60_000;
+/** Extended response window for verbose/slow models (opus-class) that take longer to reason and respond. */
+export const RESPONSE_MS_SLOW = 120_000;
+
+/** Return the appropriate response window for a given model. Opus responses are verbose and take longer. */
+export function responseMs(model?: string): number {
+  if (!model) return RESPONSE_MS;
+  const m = model.toLowerCase();
+  return m.includes('opus') ? RESPONSE_MS_SLOW : RESPONSE_MS;
+}
 
 /**
  * Wait until `agent` has emitted at least `count` `relay_inbound` events, or the

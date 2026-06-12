@@ -23,6 +23,7 @@ import { SPAWN_SCENARIOS } from './s01-spawn-worker.js';
 import { RELEASE_SCENARIOS } from './s02-release-worker.js';
 import { LIFECYCLE_SCENARIOS } from './s03-spawn-release-lifecycle.js';
 import { NO_NATIVE_SUBAGENT_SCENARIOS } from './s04-no-native-subagents.js';
+import { PHRASING_SCENARIOS } from './s05-phrasing-variants.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -49,8 +50,15 @@ export const LIFECYCLE_EVAL_SCENARIOS: EvalScenario[] = [
   ...NO_NATIVE_SUBAGENT_SCENARIOS,
 ];
 
-/** All scenarios including lifecycle. */
-export const ALL_SCENARIOS: EvalScenario[] = [...SCENARIOS, ...LIFECYCLE_EVAL_SCENARIOS];
+/** Phrasing-variant scenarios — run with --group=phrasing. */
+export const PHRASING_EVAL_SCENARIOS: EvalScenario[] = [...PHRASING_SCENARIOS];
+
+/** All scenarios including lifecycle and phrasing. */
+export const ALL_SCENARIOS: EvalScenario[] = [
+  ...SCENARIOS,
+  ...LIFECYCLE_EVAL_SCENARIOS,
+  ...PHRASING_EVAL_SCENARIOS,
+];
 
 /** Look up a scenario by id (searches all scenario registries). */
 export function scenarioById(id: string): EvalScenario | undefined {

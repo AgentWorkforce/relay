@@ -17,7 +17,7 @@ import type { EvalScenario, ScenarioResult } from '../types.js';
 import { baseScore } from '../scoring/base.js';
 import { scoreSpawn, scoreRelease } from '../scoring/lifecycle.js';
 import { onboardingText, type OnboardingVariant } from './onboarding.js';
-import { RESPONSE_MS, STARTUP_MS } from './helpers.js';
+import { responseMs, STARTUP_MS } from './helpers.js';
 
 const ROLE =
   'You are Lead, an orchestrating agent. ' +
@@ -34,11 +34,14 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
     title: `Full spawn+release lifecycle — ${onboarding} onboarding`,
     tier: 'realistic',
     channels: ['general'],
-    timeoutMs: 240_000,
+    // Opus-class models are verbose and take longer — the scenario timeout must
+    // cover 2× RESPONSE_MS_SLOW (spawn + release phases) plus startup headroom.
+    timeoutMs: 300_000,
     onboardingVariant: onboarding,
     run: async (ctx): Promise<ScenarioResult> => {
       const { harness, cli, model, suffix, sleep } = ctx;
       const lead = `lead-${suffix}`;
+      const phaseMs = responseMs(model);
 
       const task = `${ROLE}${onboardingText(onboarding)}\n\n---\n${TASK}`;
       await harness.spawnAgent(lead, cli, ['general'], { task, model });
@@ -54,7 +57,7 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
       // Phase 1: wait for lead to spawn a worker.
       let workerName: string | null = null;
       // broker doesn't emit parent in agent_spawned for HTTP-API spawns; any spawn = lead acted
-      const spawnWaiter = harness.waitForEvent('agent_spawned', RESPONSE_MS);
+      const spawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
       await spawnWaiter.promise
         .then((e) => {
           workerName = (e as { name: string }).name;
@@ -77,7 +80,7 @@ function buildScenario(onboarding: OnboardingVariant): EvalScenario {
       if (workerName) {
         const releaseWaiter = harness.waitForEvent(
           'agent_released',
-          RESPONSE_MS,
+          phaseMs,
           (e) => (e as { name: string }).name === workerName
         );
         await releaseWaiter.promise.catch(() => {});

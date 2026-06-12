@@ -54,7 +54,8 @@ As soon as a worker reports done, call:
 Always release workers when done — unreleased agents waste resources.
 
 ### When to spawn vs do the work yourself
-Spawn when the task is large, needs specialised focus, or would block your own progress.
-Do it yourself for quick lookups or single-step actions.`;
+If the task explicitly asks you to delegate or assign work to a worker, always spawn — do not do it yourself.
+Spawn for anything large, parallel, or that needs specialised focus.
+Only handle it yourself when the task is trivial AND you were not asked to delegate.`;
   }
 }
