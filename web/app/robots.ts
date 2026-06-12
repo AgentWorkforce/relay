@@ -2,9 +2,22 @@ import type { MetadataRoute } from 'next';
 
 import { absoluteUrl, SITE_URL } from '../lib/site';
 
+const AI_CRAWLERS = [
+  'OAI-SearchBot',
+  'ChatGPT-User',
+  'GPTBot',
+  'Claude-SearchBot',
+  'Claude-User',
+  'ClaudeBot',
+];
+
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: [
+      ...AI_CRAWLERS.map((userAgent) => ({
+        userAgent,
+        allow: ['/'],
+      })),
       {
         userAgent: '*',
         allow: [
@@ -18,7 +31,6 @@ export default function robots(): MetadataRoute.Robots {
           '/docs/',
           '/blog/',
         ],
-        disallow: ['/openclaw/skill/invite/'],
       },
     ],
     sitemap: absoluteUrl('/sitemap.xml'),
