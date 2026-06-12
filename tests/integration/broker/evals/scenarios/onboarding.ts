@@ -40,18 +40,21 @@ Spawn when a task needs dedicated focus. Release as soon as the worker reports d
 
 ## Managing Worker Agents
 
-### Spawn a worker
+### Spawn a relay worker
 To delegate work, call:
   mcp__agent-relay__add_agent({ name: "WorkerName", cli: "claude", task: "detailed instructions" })
 
 Required fields: name (unique string), cli ("claude"), task (full instructions for the worker).
-The worker will DM you "ACK: <understanding>" when it starts and "DONE: <result>" when complete.
+The relay worker will DM you "ACK: <understanding>" when it starts and "DONE: <result>" when complete.
 
-### Release a worker
-As soon as a worker reports done, call:
+**Important**: When your task asks you to "assign to a worker", "delegate to an agent", or "spawn a relay worker",
+this means calling mcp__agent-relay__add_agent — never your built-in Task capability.
+
+### Release a relay worker
+As soon as a relay worker reports done, call:
   mcp__agent-relay__remove_agent({ name: "WorkerName" })
 
-Always release workers when done — unreleased agents waste resources.
+Always release relay workers when done — unreleased agents waste resources.
 
 ### When to spawn vs do the work yourself
 If the task explicitly asks you to delegate or assign work to a worker, always spawn — do not do it yourself.
