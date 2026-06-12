@@ -62,18 +62,14 @@ export interface CLIAuthConfig {
   supportsDeviceFlow?: boolean;
   /** Command to install the CLI if not preinstalled on the sandbox */
   installCommand?: string;
+  /**
+   * Extra environment variables to export before running the auth command in
+   * the sandbox. Consumed by the cloud side when it builds the remote command.
+   * Used by providers whose OAuth callback port must be pinned to the connect
+   * harness tunnel port (see `daytona`).
+   */
+  env?: Record<string, string>;
 }
-
-/**
- * Pinned `@openai/codex` version installed into the auth sandbox.
- *
- * The sandbox installs codex fresh per session (`npm install -g
- * @openai/codex@<version>`). Codex ships multiple releases per day and has
- * changed its login flow before, so we pin a known version instead of tracking
- * `latest` to keep `cloud connect codex` reproducible. Bump this deliberately
- * after verifying a real login still completes via the loopback callback.
- */
-export const CODEX_PINNED_VERSION = '0.138.0';
 
 /**
  * CLI commands and URL patterns for each provider
@@ -206,7 +202,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     urlPattern: /(https:\/\/[^\s]+)/,
     credentialPath: '~/.codex/auth.json',
     displayName: 'Codex',
-    installCommand: `npm install -g @openai/codex@${CODEX_PINNED_VERSION}`,
+    installCommand: 'npm install -g @openai/codex',
     waitTimeout: 30000,
     prompts: [
       {
@@ -436,53 +432,62 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
       },
     ],
   },
-  xai: {
-    command: 'grok',
+  daytona: {
+    // NOTE: daytona is captured LOCALLY, not in a sandbox like the other
+    // providers — its `login` is a loopback-only Auth0 (daytonaio.us.auth0.com)
+    // browser flow with no device-code fallback, and Daytona's managed SSH
+    // gateway won't forward the OAuth callback into a sandbox. The local flow
+    // (packages/cloud/src/connect-daytona-local.ts) runs `daytona login` on the
+    // user's own machine and reads the CLI's token store. This entry still drives
+    // that local flow: `command`/`args` are how it's invoked; `credentialPath` is
+    // where the token store lives (resolved cross-platform at capture time — the
+    // value below is the Linux/XDG default). The token shape is nested:
+    // profiles[active].api.token.{accessToken,refreshToken,expiresAt} +
+    // activeOrganizationId, normalized to { accessToken, refreshToken, expiresAt,
+    // orgId? } before upload.
+    command: 'daytona',
     args: ['login'],
-    // Device-code flow for headless/remote environments — `grok login` defaults
-    // to a loopback OAuth callback that cannot be reached through gateways
-    // which don't forward TCP (same limitation codex hit on Daytona SSH).
-    deviceFlowArgs: ['login', '--device-auth'],
-    supportsDeviceFlow: true,
     urlPattern: /(https:\/\/[^\s]+)/,
-    // Scope-keyed OIDC credential: { "https://auth.x.ai::<client_id>":
-    //   { key, refresh_token, expires_at, oidc_client_id, ... } }.
-    // Access tokens live 6h; refresh tokens are SINGLE-USE (rotated on every
-    // refresh against https://auth.x.ai/oauth2/token), so stored copies must
-    // be refresh-and-persisted server-side, never refreshed only in-sandbox.
-    credentialPath: '~/.grok/auth.json',
-    displayName: 'Grok',
-    // Official installer; GROK_BIN_DIR keeps the binary on the PATH the auth
-    // sandbox exports (~/.local/bin). Stable-channel downloads need no auth.
-    installCommand: 'curl -fsSL https://x.ai/cli/install.sh | GROK_BIN_DIR=$HOME/.local/bin bash',
+    credentialPath: '~/.config/daytona/config.json',
+    displayName: 'Daytona',
+    // daytona ships as a single Go binary (no npm package).
+    installCommand:
+      'curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh',
     waitTimeout: 30000,
     prompts: [
       {
-        // Generic enter prompt (fallback) — device-auth prints a URL + code
-        // and polls; no interactive menus observed in grok 0.2.x.
-        pattern: /press\s*enter|enter\s*to\s*(confirm|continue|proceed)/i,
+        // Some builds prompt before opening the browser — just continue, since
+        // we surface the URL for the user to open manually.
+        pattern: /press\s*enter\s*to\s*open|open.*browser|opening\s*browser/i,
         response: '\r',
-        delay: 300,
-        description: 'Generic enter prompt',
+        delay: 200,
+        description: 'Open browser prompt',
+      },
+      {
+        pattern:
+          /login\s*successful|logged\s*in.*press\s*enter|press\s*enter\s*to\s*continue|authentication\s*complete/i,
+        response: '\r',
+        delay: 200,
+        description: 'Login success prompt',
       },
     ],
     successPatterns: [
       /success/i,
       /authenticated/i,
       /logged\s*in/i,
-      /signed\s*in/i,
-      /you.*(?:are|now).*logged/i,
+      /logged\s*in\s*as/i,
+      /welcome/i,
     ],
     errorPatterns: [
       {
-        pattern: /auth.*failed|authentication\s*error|invalid.*code|code\s*expired/i,
-        message: 'Grok authentication failed',
+        pattern: /access_denied|invalid_grant|unauthorized/i,
+        message: 'Daytona authentication was denied',
         recoverable: true,
-        hint: 'Device codes expire quickly — please try again and enter the code promptly.',
+        hint: 'Complete the browser login and authorize the Daytona application, then try again.',
       },
       {
         pattern: /network\s*error|ENOTFOUND|ECONNREFUSED|timeout/i,
-        message: 'Network error during authentication',
+        message: 'Network error during Daytona authentication',
         recoverable: true,
         hint: 'Please check your internet connection and try again.',
       },
