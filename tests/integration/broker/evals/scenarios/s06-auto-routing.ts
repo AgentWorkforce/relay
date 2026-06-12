@@ -92,8 +92,9 @@ const scenario: EvalScenario = {
     // After the first spawn, inject a fake ACK from that worker so the Director
     // is unblocked to spawn the second worker (workers' tasks don't include ACK
     // instructions, so without injection the Director would wait indefinitely).
+    // Use a 180s window to allow sequential spawn patterns (spawn Worker1 → ACK → spawn Worker2).
     let spawnCount = 0;
-    const deadline = Date.now() + phaseMs;
+    const deadline = Date.now() + 180_000;
     while (spawnCount < 2 && Date.now() < deadline) {
       const waiter = harness.waitForEvent('agent_spawned', Math.max(0, deadline - Date.now()));
       const spawnEvent = await waiter.promise.catch(() => null);
@@ -106,7 +107,7 @@ const scenario: EvalScenario = {
         await harness.sendMessage({
           to: director,
           from: workerName,
-          text: `ACK: I understand my task. I will focus on my assigned work and report DONE when complete.`,
+          text: `ACK: Received. Starting work now.`,
         }).catch(() => {});
       }
       if (spawnCount >= 2) break;
