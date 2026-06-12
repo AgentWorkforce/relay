@@ -35,7 +35,7 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 - **Haiku is worker-only** — caps at 60% lifecycle regardless of onboarding
 - **Opus s02 bare = 100%** — knows the protocol natively; s03 original 40% cap was a timeout artifact (verbose responses exhausted 60s/phase window), not a capability gap
 - **Opus s03 bare = 67% with 120s/phase** — timeout fix confirmed; responseMs() helper returns 120s for opus-class models; further improvement expected with more repeats
-- **Skill text hurts capable models on lifecycle**: sonnet s01:skill = 0%, opus s03:skill = 0% — the "do it yourself" heuristic in the skill text overrides explicit delegation instructions for capable models; needs fixing
+- **Skill text heuristic fix: partial improvement** — sonnet s01:skill improved 0%→33% after removing "do it yourself for quick lookups" heuristic. Not fully fixed: root cause is the task uses "worker agent" neutral vocabulary. s05 phrasing eval confirms: neutral-agent=20%, relay-worker=60%. Fix in production: use relay-anchored vocabulary ("relay worker") in Director meta-prompts (already done).
 - **Phrasing matters**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
 
 ---
