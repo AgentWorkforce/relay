@@ -19,7 +19,7 @@ import type { EvalScenario, ScenarioResult } from '../types.js';
 import { baseScore } from '../scoring/base.js';
 import { scoreSpawn } from '../scoring/lifecycle.js';
 import { detectNativeSubagent } from '../scoring/native-subagent.js';
-import { responseMs, STARTUP_MS } from './helpers.js';
+import { STARTUP_MS } from './helpers.js';
 
 const ORIGINAL_TASK =
   'A customer reported intermittent authentication failures in the last 24 hours. ' +
@@ -77,33 +77,17 @@ const scenario: EvalScenario = {
   run: async (ctx): Promise<ScenarioResult> => {
     const { harness, cli, model, suffix, sleep } = ctx;
     const director = `director-${suffix}`;
-    const phaseMs = responseMs(model);
 
     const task = buildDirectorPrompt();
     await harness.spawnAgent(director, cli, ['general'], { task, model });
-    // Don't clearEvents() here — the Director may execute spawn calls during startup (the task is
-    // the meta-prompt, so the CLI processes it immediately after boot). clearEvents() would discard
-    // any agent_spawned events that fired during the STARTUP_MS window.
-    // Instead, reset the clock and count events from here including the startup window.
-    await sleep(STARTUP_MS);
-
-    // Don't send an Orchestrator message — let the Director execute autonomously from its meta-prompt.
-    // In production, the Director is spawned with the meta-prompt as its task and executes
-    // the spawn instructions on its own. Sending an Orchestrator message triggers only a partial
-    // execution (single add_agent call as a response to the message), while meta-prompt-only
-    // execution may trigger the full protocol.
-    // Count spawns that happened during startup + wait up to 180s for more.
-    const startupSpawns = harness.getEvents().filter(e => e.kind === 'agent_spawned' && e.parent === director);
-    let spawnCount = startupSpawns.length;
-    harness.clearEvents();
-    const deadline = Date.now() + 180_000;
-    while (spawnCount < 2 && Date.now() < deadline) {
-      const waiter = harness.waitForEvent('agent_spawned', Math.max(0, deadline - Date.now()));
-      const spawnEvent = await waiter.promise.catch(() => null);
-      if (!spawnEvent) break;
-      spawnCount++;
-      if (spawnCount >= 2) break;
-    }
+    // Wait for Director to boot and process its meta-prompt. All agent_spawned events land in the
+    // harness event buffer automatically. Skip clearEvents so scoreSpawn sees everything, including
+    // spawns that happen during the initial startup processing window.
+    //
+    // We use plain sleep (not waitForEvent) because waitForEvent resolves immediately if a matching
+    // event is already buffered — it would return the first startup spawn rather than waiting for a
+    // second one. sleep() is unconditional; new events accumulate in the buffer throughout.
+    await sleep(STARTUP_MS + 90_000); // startup window + time for a possible follow-up spawn
 
     const events = harness.getEvents();
     const base = baseScore(events, [director]);

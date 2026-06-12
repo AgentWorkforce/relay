@@ -82,7 +82,7 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 | codex | **100%** | **100%** | **100%** | **100%** |
 | opencode:mimo | 80% | **100%** | **100%** | 80% |
 | droid | 0% | 0% | — | — |
-| gemini | 80% | 60% | 80% | 80%+ |
+| gemini | 80% | 60% | 80% | **100%** |
 | grok | 0% | 0% | 0% | 0% |
 | cursor | 0% | 0% | 0% | 0% |
 
@@ -109,7 +109,7 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 | cursor | 0% | 0% | 0% | 0% | — | — |
 | claude haiku | 0% | 20% | 60% | 20% | 60% | 40% |
 | claude sonnet | 0% | 0% | 0% | 0% | 40% | 40% |
-| claude opus | (running) | (running) | (running) | (running) | (running) | (running) |
+| claude opus | 60% | 20% | **100%** | **100%** | **100%** | **100%** |
 
 **Key cross-harness insights**:
 - Codex and OpenCode natively understand relay tools across all vocabulary variants (relay-native).
@@ -117,7 +117,8 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 - Gemini: "neutral-agent" and "arw-agent" both score 100%; "relay-agent" specifically hurts (40%). The "relay" prefix combined with "-agent" suffix confuses Gemini. "relay-worker" (80%) is safe. Director prompt uses "relay worker" — correct choice.
 - Grok/Cursor: 0% all variants — not viable relay workers.
 - Claude: vocabulary-dependent (see haiku/sonnet rows) — relay-anchored nouns matter.
-- **Universal recommendation**: Use "relay worker" noun in Director prompts — it's the highest-performing variant across both Claude models (haiku: 60%) and non-Claude models (droid: 100%). "relay agent" underperforms on Gemini (40%) and Claude haiku (20%). "arw-agent" is surprisingly strong but less widely tested.
+- **Opus phrasing**: dramatically outperforms haiku/sonnet with relay-anchored vocabulary — relay-worker/relay-agent/arw-worker/arw-agent all 100%. Even neutral-worker 60% (vs 0% for haiku/sonnet). Opus has stronger native relay tool knowledge.
+- **Universal recommendation**: Use "relay worker" noun in Director prompts — it's the highest-performing variant across both Claude models (haiku: 60%, opus: 100%) and non-Claude models (droid: 100%). "relay agent" underperforms on Gemini (40%) and Claude haiku (20%). "arw-agent" is surprisingly strong (opus/codex/opencode/droid: 100%).
 
 ---
 
@@ -308,7 +309,7 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 | Does relay-anchored phrasing ("relay worker") improve bare spawn? | ✅ done | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are largely vocabulary-agnostic (codex 100% on all tested variants) |
 | Do non-Claude harnesses need relay-anchored vocabulary? | ✅ done | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific. Note: "relay-agent" specifically hurts gemini (40%) |
 | What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ running in Claude phrasing batch |
-| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (in progress) | 0% without scaffolding. Root cause: models make ONE add_agent call then stop/wait — no prompt instruction reliably chains two consecutive add_agent calls. External Orchestrator nudge after first spawn required to trigger second. Production Director prompt needs redesign. |
+| Does the Director meta-prompt reliably produce multi-worker spawns? | ✅ done | **0% across all harnesses**. Root cause: PTY-mode agents make ONE add_agent call per turn then stop/wait for input — no prompt instruction chains two back-to-back add_agent calls. Production solution: pre-spawn workers in the CLI orchestrator layer (Phase 4), not in the Director. Director coordinates pre-spawned workers rather than spawning them. |
 | Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
 | Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
 | Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
@@ -318,7 +319,7 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 ## 6. Open questions
 
-1. **Multi-spawn Director behavior**: s06 eval confirms models make ONE add_agent call then stop/wait, even with "spawn all back-to-back" CRITICAL instructions. This is a fundamental PTY-mode behavior — models need external stimulus between tool calls. Production Director prompt needs either: (a) an orchestration layer that nudges the Director after each spawn, (b) pre-wiring all workers before the Director starts (so it just coordinates rather than spawns), or (c) a task structure where spawning each worker is triggered by a message (sequential hand-off pattern). This is a Phase 5 concern but should inform Phase 3 prompt design.
+1. **Multi-spawn Director behavior**: s06 eval (8 approaches, 0% PASS across codex/claude-sonnet) confirms this is a fundamental PTY-mode limitation — models make exactly ONE add_agent call per turn then stop/wait. No prompt instruction (CRITICAL labels, explicit ACTION sequences, orchestrator nudges) reliably chains two back-to-back spawns. **Resolved**: Production Phase 4 will pre-spawn workers from the CLI layer (before the Director starts) and give the Director pre-formed worker contexts to coordinate, not spawn. The Director prompt is redesigned accordingly: "Your team is online — coordinate them." rather than "Spawn your team."
 
 2. **Classifier model cost trade-off**: haiku classifier call adds latency and cost. Is there a heuristic (task word count, presence of "and", number of domains) that can route without an LLM call for simple cases?
 

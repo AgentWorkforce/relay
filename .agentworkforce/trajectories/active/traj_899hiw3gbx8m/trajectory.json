@@ -211,6 +211,119 @@
             "reasoning": "s03 opus with timeout fix: bare=67%, one-liner=67%, brief=0% (conditional clause), skill=67% (up from 0%). The skill text fix works for opus as well as sonnet. Brief=0% is a NEW failure from the conditional 'Spawn when dedicated focus' clause — fixed in latest commit to use directive language instead."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781273705075,
+          "type": "decision",
+          "content": "Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode: Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode",
+          "raw": {
+            "question": "Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode",
+            "chosen": "Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode",
+            "alternatives": [],
+            "reasoning": "User requirement: evals must cover all harnesses not just Claude. grok required a broker fix (NAME-first arg order + flag-args embedded in command string). All harnesses now running lifecycle + phrasing evals."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781274204689,
+          "type": "reflection",
+          "content": "Multi-harness eval picture coming in: codex/gemini/droid/opencode are relay-native and vocabulary-agnostic; grok/cursor are non-starters. Vocabulary effects (relay-worker vs neutral-worker) are Claude-specific. This validates the auto-routing design — Director prompts for Claude leads need relay-anchored nouns; non-Claude leads don't. Updated spec with interim findings.",
+          "raw": {
+            "focalPoints": [
+              "multi-harness",
+              "vocabulary-effects",
+              "relay-native-models"
+            ],
+            "confidence": 0.82
+          },
+          "significance": "high",
+          "tags": [
+            "focal:multi-harness",
+            "focal:vocabulary-effects",
+            "focal:relay-native-models",
+            "confidence:0.82"
+          ]
+        },
+        {
+          "ts": 1781275157732,
+          "type": "decision",
+          "content": "Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.: Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.",
+          "raw": {
+            "question": "Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.",
+            "chosen": "Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.",
+            "alternatives": [],
+            "reasoning": "s05 phrasing eval complete for codex, opencode, haiku, sonnet + partial droid/gemini. Relay-agent specifically hurts Gemini (25-40%), ruling it out as a worker noun option."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781275164866,
+          "type": "decision",
+          "content": "Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.: Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.",
+          "raw": {
+            "question": "Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.",
+            "chosen": "Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.",
+            "alternatives": [],
+            "reasoning": "s03 lifecycle eval running for codex/opencode. Droid s02 bare=20% release rate and gemini s02 bare=20% release rate — release step requires explicit onboarding for droid/gemini."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781276801580,
+          "type": "decision",
+          "content": "s06 Director 2-worker spawn: models do single-spawn-then-wait pattern: s06 Director 2-worker spawn: models do single-spawn-then-wait pattern",
+          "raw": {
+            "question": "s06 Director 2-worker spawn: models do single-spawn-then-wait pattern",
+            "chosen": "s06 Director 2-worker spawn: models do single-spawn-then-wait pattern",
+            "alternatives": [],
+            "reasoning": "Models make one add_agent call then stop, waiting for the spawned worker's response. Neither CRITICAL instruction, nor longer timeout, nor injected ACK resolves this — models process the ACK passively without spawning the second worker. Root cause: models don't chain multiple add_agent calls without external stimulus between them. Fix attempts: (1) CRITICAL instruction (failed), (2) injected Worker ACK (failed), (3) extended 180s window (failed), (4) Orchestrator nudge after first spawn (testing v5)."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781277312551,
+          "type": "decision",
+          "content": "Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release: Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release",
+          "raw": {
+            "question": "Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release",
+            "chosen": "Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release",
+            "alternatives": [],
+            "reasoning": "Task explicitly requires dedicated focus worker for audit, then release. Using spawn_subagent as MCP relaycast unavailable in this env (servers failed). Active traj is unrelated auto-routing design, so recording decision here."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781277775976,
+          "type": "decision",
+          "content": "s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.: s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.",
+          "raw": {
+            "question": "s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.",
+            "chosen": "s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.",
+            "alternatives": [],
+            "reasoning": "8+ approaches tested across codex and claude-sonnet: simple instruction, 180s window, ACK injection, explicit nudge message, meta-prompt-only. All 0%. Production fix is architectural: pre-spawn workers from CLI layer (Phase 4), not in the Director. Director receives pre-formed team and coordinates only."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781277783194,
+          "type": "reflection",
+          "content": "All eval data is now complete across all 7 harness types. s05 phrasing eval: all harnesses done with opus confirming 100% on relay-anchored vocab. s06 architectural limitation confirmed and documented: pre-spawn workers in CLI, not Director. Lifecycle data shows codex/opencode/droid/gemini as viable relay workers; grok/cursor not viable.",
+          "raw": {
+            "focalPoints": [
+              "phrasing-data-complete",
+              "s06-architectural-conclusion",
+              "production-design"
+            ],
+            "adjustments": "Phase 4 Director prompt redesigned from spawn-and-coordinate to coordinate-only; pre-spawn workers from CLI layer",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:phrasing-data-complete",
+            "focal:s06-architectural-conclusion",
+            "focal:production-design",
+            "confidence:0.9"
+          ]
         }
       ]
     }
