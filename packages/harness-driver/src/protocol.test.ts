@@ -60,7 +60,7 @@ describe('fleet local protocol messages', () => {
     };
     const handlerError: SdkToBroker = {
       type: 'handler_result',
-      payload: { invocation_id: 'inv_124', error: { code: 'handler_failed' } },
+      payload: { invocation_id: 'inv_124', error: 'handler failed' },
     };
 
     expect(JSON.parse(JSON.stringify(registerHandlers))).toEqual({
@@ -73,7 +73,7 @@ describe('fleet local protocol messages', () => {
     });
     expect(JSON.parse(JSON.stringify(handlerError))).toEqual({
       type: 'handler_result',
-      payload: { invocation_id: 'inv_124', error: { code: 'handler_failed' } },
+      payload: { invocation_id: 'inv_124', error: 'handler failed' },
     });
   });
 

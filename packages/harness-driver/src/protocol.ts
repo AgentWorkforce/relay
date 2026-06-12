@@ -97,7 +97,7 @@ export interface NodeSupervision {
 
 export type HandlerResultPayload =
   | { invocation_id: string; output: unknown; error?: never }
-  | { invocation_id: string; error: unknown; output?: never };
+  | { invocation_id: string; error: string; output?: never };
 
 type AssertHandlerResultPayload<T extends HandlerResultPayload> = T;
 type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
@@ -106,7 +106,7 @@ type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
 }>;
 type _HandlerResultAllowsError = AssertHandlerResultPayload<{
   invocation_id: 'inv_124';
-  error: { code: 'handler_failed' };
+  error: 'handler failed';
 }>;
 // @ts-expect-error handler_result requires either output or error.
 type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_125' }>;
@@ -114,6 +114,11 @@ type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 
 type _HandlerResultRejectsBoth = AssertHandlerResultPayload<{
   invocation_id: 'inv_126';
   output: { ok: true };
+  error: 'handler failed';
+}>;
+// @ts-expect-error handler_result.error must be the canonical string message.
+type _HandlerResultRejectsObjectError = AssertHandlerResultPayload<{
+  invocation_id: 'inv_127';
   error: { code: 'handler_failed' };
 }>;
 
