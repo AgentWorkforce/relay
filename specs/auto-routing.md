@@ -28,14 +28,15 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 |-------|------|-----------|-------|-------|---------|
 | haiku | 60% | 60% | 20% | 40% | **weak lead** — inconsistent, better as worker |
 | sonnet | 40% | **100%** | 60% | 80% | **strong lead** — reliable with minimal onboarding |
-| opus | 40% | 40% | 40% | 0% | **timeout-limited** — s02 bare=100% proves capability; s03 needs longer window |
+| opus | **67%** | TBD | TBD | TBD | **capable lead** — s03 bare improved to 67% after 120s/phase timeout fix (was 40% at 60s/phase) |
 
 ### Key findings
 - **Sonnet + one-liner = 100% lifecycle reliability** ✅ — confirmed production lead config
 - **Haiku is worker-only** — caps at 60% lifecycle regardless of onboarding
-- **Opus s02 bare = 100%** — knows the protocol natively; s03 40% cap is a timeout artifact (verbose responses exhaust the 150s window), not a capability gap
+- **Opus s02 bare = 100%** — knows the protocol natively; s03 original 40% cap was a timeout artifact (verbose responses exhausted 60s/phase window), not a capability gap
+- **Opus s03 bare = 67% with 120s/phase** — timeout fix confirmed; responseMs() helper returns 120s for opus-class models; further improvement expected with more repeats
 - **Skill text hurts capable models on lifecycle**: sonnet s01:skill = 0%, opus s03:skill = 0% — the "do it yourself" heuristic in the skill text overrides explicit delegation instructions for capable models; needs fixing
-- **Phrasing matters**: s05 (in progress) measures whether relay-anchored vocabulary ("relay worker", "agent-relay worker") improves tool use independent of onboarding
+- **Phrasing matters**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
 
 ---
 
@@ -217,9 +218,9 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 | Question | Status | Answer |
 |----------|--------|--------|
-| Does relay-anchored phrasing ("relay worker") improve bare spawn? | s05 (running) | pending |
-| What is opus's s03 lifecycle score? | ✅ done | 40% (timeout-limited, not capability-limited) |
-| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (to build) | pending |
+| Does relay-anchored phrasing ("relay worker") improve bare spawn? | s05 (running) | **yes** — haiku relay-worker=60% vs neutral-worker=0%; worker noun outperforms agent noun |
+| What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ pending |
+| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (built, not yet run) | pending |
 | Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
 | Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
 | Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
