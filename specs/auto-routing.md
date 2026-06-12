@@ -93,7 +93,7 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 - **OpenCode**: s03 bare=100% (best s03 bare!); one-liner=80%, brief=60%, skill=100%. Directive task prompts outperform — brief's conditional guidance hurts more than bare.
 - **Droid**: s03 bare/one-liner/brief all 100% — exceptional result. Despite s02 bare=20%, the full s03 task description ("report DONE when complete with a concise summary") drives reliable release even with bare onboarding. Skill onboarding still running (1 fail seen).
 - **Gemini**: s03 bare=60%, one-liner/brief/skill all 100%. The bare gap (release failure without onboarding) closes completely with any explicit context. Most consistent non-Claude lifecycle performance once prompted.
-- **Grok/Cursor**: 0% across all scenarios — not viable relay workers.
+- **Grok/Cursor-agent**: 0% across all scenarios — not viable relay workers. Grok: model ignores MCP tools despite correct config. Cursor-agent: confirmed 0/48 (48 runs, s01–s04 × 4 onboarding variants) — model does not call `add_agent` or `remove_agent` regardless of onboarding level.
 
 **Implication for Director prompt**: The auto-routing Director prompt already includes explicit `remove_agent` calls and directive task phrasing — this effectively acts as inline skill onboarding even for bare leads. All tested non-Claude harnesses (except grok/cursor) are viable relay workers with the right meta-prompt. Codex is the most consistently reliable across all onboarding tiers.
 
