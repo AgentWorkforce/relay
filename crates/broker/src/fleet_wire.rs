@@ -403,6 +403,31 @@ pub struct Reply {
     pub data: Value,
 }
 
+impl Reply {
+    pub fn validate_agent_register_data(&self) -> serde_json::Result<AgentRegisterReplyData> {
+        validate_agent_register_reply_data(&self.data)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRegisterReplyData {
+    pub agent_id: String,
+    pub token: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Option<String>,
+}
+
+pub fn validate_agent_register_reply_data(
+    data: &Value,
+) -> serde_json::Result<AgentRegisterReplyData> {
+    serde_json::from_value(data.clone())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Error {
@@ -508,9 +533,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        deserialize_finite_nonnegative_f64, ActionResult, ActionResultError, ActionResultPayload,
-        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, Error, NodeHeartbeat,
-        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        deserialize_finite_nonnegative_f64, validate_agent_register_reply_data, ActionResult,
+        ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast, Deliver,
+        DeliveryMode, Error, NodeHeartbeat, RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -716,6 +741,46 @@ mod tests {
             message: "duplicate".to_string(),
         });
         assert!(serde_json::to_value(invalid_error).is_err());
+    }
+
+    #[test]
+    fn validates_agent_register_reply_data_at_use() {
+        let reply: Reply = serde_json::from_value(json!({
+            "v": 1,
+            "id": "req_agent_register_001",
+            "ok": true,
+            "data": {
+                "agent_id": "agt_1",
+                "token": "at_live_1",
+                "name": "codex-builder-1"
+            }
+        }))
+        .unwrap();
+
+        let data = reply.validate_agent_register_data().unwrap();
+        assert_eq!(data.agent_id, "agt_1");
+        assert_eq!(data.token, "at_live_1");
+        assert_eq!(data.name.as_deref(), Some("codex-builder-1"));
+
+        let without_name = validate_agent_register_reply_data(&json!({
+            "agent_id": "agt_1",
+            "token": "at_live_1"
+        }))
+        .unwrap();
+        assert_eq!(without_name.name, None);
+
+        let missing_token = json!({
+            "agent_id": "agt_1",
+            "name": "codex-builder-1"
+        });
+        assert!(validate_agent_register_reply_data(&missing_token).is_err());
+
+        let extra_field = json!({
+            "agent_id": "agt_1",
+            "token": "at_live_1",
+            "session_ref": "pty://builder-1/sessions/codex-builder-1"
+        });
+        assert!(validate_agent_register_reply_data(&extra_field).is_err());
     }
 
     #[test]

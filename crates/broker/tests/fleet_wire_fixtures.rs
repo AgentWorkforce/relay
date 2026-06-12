@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
-use relay_broker::fleet_wire::{NodeToServer, ServerToNode};
+use relay_broker::fleet_wire::{validate_agent_register_reply_data, NodeToServer, ServerToNode};
 use serde_json::Value;
 
 const FIXTURE_DIR: &str = "tests/fixtures/fleet-wire";
@@ -32,6 +32,7 @@ const EXPECTED_FIXTURE_FILES: &[&str] = &[
     "node.heartbeat.json",
     "node.register.json",
     "ping.json",
+    "reply.agent_register.json",
     "reply.json",
 ];
 
@@ -96,6 +97,23 @@ fn fleet_wire_fixtures_round_trip_semantically() {
         };
 
         assert_eq!(encoded, fixture, "fixture drift in {}", path.display());
+
+        if path.file_name().and_then(|file_name| file_name.to_str())
+            == Some("reply.agent_register.json")
+        {
+            let data = fixture
+                .get("data")
+                .unwrap_or_else(|| panic!("missing reply data in {}", path.display()));
+            let agent_register = validate_agent_register_reply_data(data).unwrap_or_else(|error| {
+                panic!(
+                    "failed to validate agent.register reply data in {}: {error}",
+                    path.display()
+                )
+            });
+            assert_eq!(agent_register.agent_id, "agt_01J7FLEET000000000000101");
+            assert_eq!(agent_register.token, "at_live_0123456789abcdef01234567");
+            assert_eq!(agent_register.name.as_deref(), Some("codex-builder-1"));
+        }
     }
 
     assert_eq!(
