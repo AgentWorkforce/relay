@@ -163,6 +163,54 @@
             "focal:sonnet-opus-hypothesis",
             "confidence:0.7"
           ]
+        },
+        {
+          "ts": 1781270904911,
+          "type": "decision",
+          "content": "relay-worker vocabulary in task prompt is most effective phrasing for haiku: relay-worker vocabulary in task prompt is most effective phrasing for haiku",
+          "raw": {
+            "question": "relay-worker vocabulary in task prompt is most effective phrasing for haiku",
+            "chosen": "relay-worker vocabulary in task prompt is most effective phrasing for haiku",
+            "alternatives": [],
+            "reasoning": "s05 phrasing eval: haiku neutral-worker=0%, neutral-agent=20%, relay-worker=60% (3/5) with bare onboarding. The 'relay worker' phrasing appears to disambiguate from native Task tool for haiku even without explicit tool guidance in onboarding."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781271534276,
+          "type": "decision",
+          "content": "skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability: skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability",
+          "raw": {
+            "question": "skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability",
+            "chosen": "skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability",
+            "alternatives": [],
+            "reasoning": "sonnet s01 skill improved from 0% to 33% after skill text heuristic fix. But still fails 2/3. The task uses 'worker agent' neutral vocabulary which maps poorly to relay add_agent. s05 phrasing shows relay-worker=60% vs neutral-agent=20% for haiku. Fix needed: update s01/s03 task text to use 'relay worker' instead of 'worker agent'."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781271860591,
+          "type": "decision",
+          "content": "brief onboarding variant crushes opus — conditional spawn guidance hurts capable models: brief onboarding variant crushes opus — conditional spawn guidance hurts capable models",
+          "raw": {
+            "question": "brief onboarding variant crushes opus — conditional spawn guidance hurts capable models",
+            "chosen": "brief onboarding variant crushes opus — conditional spawn guidance hurts capable models",
+            "alternatives": [],
+            "reasoning": "opus s03 with timeout fix: bare=67%, one-liner=67%, brief=0%. The brief text adds 'Spawn when a task needs dedicated focus' — opus interprets this as permission to evaluate whether delegation is truly needed, then decides no. Same pattern as old skill text. For capable models, directive language (just name the tool) works better than conditional language (tell them when to spawn). Fix: onboarding for opus/sonnet should be bare or one-liner only."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781272081093,
+          "type": "decision",
+          "content": "opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn': opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn'",
+          "raw": {
+            "question": "opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn'",
+            "chosen": "opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn'",
+            "alternatives": [],
+            "reasoning": "s03 opus with timeout fix: bare=67%, one-liner=67%, brief=0% (conditional clause), skill=67% (up from 0%). The skill text fix works for opus as well as sonnet. Brief=0% is a NEW failure from the conditional 'Spawn when dedicated focus' clause — fixed in latest commit to use directive language instead."
+          },
+          "significance": "high"
         }
       ]
     }
