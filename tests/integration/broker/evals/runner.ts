@@ -61,6 +61,10 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
     const model = CLAUDE_MODEL_ALIASES[modelSuffix] ?? modelSuffix;
     return { cli, model };
   }
+  // codex models are raw OpenAI model names (e.g. gpt-5.4-mini, o3) — never qualify with a prefix.
+  if (cli === 'codex') {
+    return { cli, model: modelSuffix };
+  }
   // Qualify bare model names with their provider prefix (opencode → opencode/…).
   const model = modelSuffix.includes('/') ? modelSuffix : `${cli}/${modelSuffix}`;
   return { cli, model };

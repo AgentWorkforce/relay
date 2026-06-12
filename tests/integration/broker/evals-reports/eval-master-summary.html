@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Relay Eval Master Summary — 2026-06-12</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3350;
+    --text: #d1d5e8;
+    --muted: #6b7399;
+    --green: #3ecf6e;
+    --green-dim: #1e4d35;
+    --yellow: #f5c543;
+    --yellow-dim: #3d3010;
+    --red: #e85b5b;
+    --red-dim: #3d1515;
+    --blue: #5b9ef5;
+    --blue-dim: #152a4d;
+    --orange: #f59a5b;
+    --purple: #a78bfa;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 32px 24px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 24px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  h2 { font-size: 17px; font-weight: 600; color: #fff; margin: 36px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 14px; font-weight: 600; color: var(--text); margin: 20px 0 10px; }
+  p { margin-bottom: 10px; color: var(--text); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--orange);
+  }
+  pre {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    color: var(--text);
+    margin: 12px 0;
+    line-height: 1.7;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+
+  /* Layout */
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .meta span { margin-right: 20px; }
+
+  .section { margin-bottom: 48px; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 800px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  /* Verdict badges */
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge-green { background: var(--green-dim); color: var(--green); }
+  .badge-yellow { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-red { background: var(--red-dim); color: var(--red); }
+  .badge-blue { background: var(--blue-dim); color: var(--blue); }
+
+  /* Harness tier cards */
+  .harness-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .harness-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .harness-card.tier-1 { border-color: var(--green); }
+  .harness-card.tier-2 { border-color: #4a6fa5; }
+  .harness-card.tier-warn { border-color: var(--yellow); }
+  .harness-card.tier-dead { border-color: #3d2020; opacity: 0.7; }
+  .harness-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 2px;
+  }
+  .harness-verdict {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .harness-stats { display: flex; flex-direction: column; gap: 3px; }
+  .stat-row { display: flex; justify-content: space-between; font-size: 12px; }
+  .stat-label { color: var(--muted); }
+  .stat-val { font-weight: 600; font-family: var(--mono); }
+  .stat-val.green { color: var(--green); }
+  .stat-val.yellow { color: var(--yellow); }
+  .stat-val.red { color: var(--red); }
+  .stat-val.muted { color: var(--muted); }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 12px 0 20px;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface); }
+  .cell-pct { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+  .pct-100 { color: var(--green); }
+  .pct-hi  { color: #7ec89a; }
+  .pct-mid { color: var(--yellow); }
+  .pct-low { color: var(--orange); }
+  .pct-zero { color: var(--red); }
+  .pct-na   { color: var(--muted); }
+
+  /* Action items */
+  .action-list { display: flex; flex-direction: column; gap: 16px; }
+  .action {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--blue);
+    border-radius: 6px;
+    padding: 14px 18px;
+  }
+  .action.priority-high { border-left-color: var(--red); }
+  .action.priority-medium { border-left-color: var(--yellow); }
+  .action.priority-low { border-left-color: var(--muted); }
+  .action-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .action-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    font-family: var(--mono);
+    min-width: 28px;
+  }
+  .action-title { font-weight: 600; color: #fff; font-size: 14px; }
+  .action-file {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--blue);
+    margin-bottom: 8px;
+    padding-left: 38px;
+  }
+  .action-body { color: var(--text); font-size: 13px; padding-left: 38px; }
+  .action-body ul { padding-left: 18px; }
+  .action-body li { margin-bottom: 4px; }
+  .action-body p { margin-bottom: 6px; }
+
+  /* Findings callouts */
+  .callout {
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .callout-green { background: var(--green-dim); border: 1px solid #2a6b44; }
+  .callout-yellow { background: var(--yellow-dim); border: 1px solid #5a4512; }
+  .callout-red { background: var(--red-dim); border: 1px solid #5a1f1f; }
+  .callout-blue { background: var(--blue-dim); border: 1px solid #1e3d70; }
+
+  .callout strong { color: #fff; }
+
+  /* TOC */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 32px;
+  }
+  .toc-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 10px; }
+  .toc ol { padding-left: 18px; }
+  .toc li { margin-bottom: 4px; font-size: 13px; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+  .footnote { font-size: 12px; color: var(--muted); margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<h1>Relay Eval Master Summary</h1>
+<div class="meta">
+  <span>Date: 2026-06-12</span>
+  <span>Scenarios: s01–s06</span>
+  <span>Harnesses: 9 (7 types)</span>
+  <span>Total runs: ~600+</span>
+</div>
+
+<div class="toc">
+  <div class="toc-title">Contents</div>
+  <ol>
+    <li><a href="#harness-verdicts">Harness Verdicts — quick reference</a></li>
+    <li><a href="#lifecycle">Lifecycle Eval Results (s01–s04)</a></li>
+    <li><a href="#phrasing">Phrasing Eval Results (s05)</a></li>
+    <li><a href="#s06">Director Multi-Spawn (s06)</a></li>
+    <li><a href="#codex-tiers">Codex Model Tier Comparison</a></li>
+    <li><a href="#key-findings">Key Findings</a></li>
+    <li><a href="#codebase-changes">Required Codebase Changes</a></li>
+  </ol>
+</div>
+
+<!-- ===== HARNESS VERDICTS ===== -->
+<div class="section" id="harness-verdicts">
+<h2>1. Harness Verdicts</h2>
+<p>Each harness was tested across s01–s04 (lifecycle) and s05 (phrasing), 4 onboarding variants × 3–5 runs each.</p>
+
+<div class="harness-grid">
+
+  <div class="harness-card tier-1">
+    <div class="harness-name">codex</div>
+    <div class="harness-verdict"><span class="badge badge-green">Best</span> Most reliable worker</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s01 spawn</span><span class="stat-val green">100% all variants</span></div>
+      <div class="stat-row"><span class="stat-label">s02 spawn+release</span><span class="stat-val green">100% all variants</span></div>
+      <div class="stat-row"><span class="stat-label">s03 full lifecycle</span><span class="stat-val green">80% bare / 100% rest</span></div>
+      <div class="stat-row"><span class="stat-label">s04 no native subagents</span><span class="stat-val green">100% all variants</span></div>
+      <div class="stat-row"><span class="stat-label">s05 best phrasing</span><span class="stat-val green">100% (relay-native)</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-1">
+    <div class="harness-name">opencode (mimo-v2.5)</div>
+    <div class="harness-verdict"><span class="badge badge-green">Excellent</span> Relay-native</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 bare</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 one-liner</span><span class="stat-val yellow">80%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 brief</span><span class="stat-val yellow">60%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 skill</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s04 relay-native</span><span class="stat-val green">80–100%</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-2">
+    <div class="harness-name">gemini</div>
+    <div class="harness-verdict"><span class="badge badge-blue">Good</span> Needs one-liner+</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 bare</span><span class="stat-val yellow">60%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 one-liner/brief/skill</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s04 relay-native</span><span class="stat-val yellow">60–80% (occasional native fallback)</span></div>
+      <div class="stat-row"><span class="stat-label">s05 avoid</span><span class="stat-val red">relay-agent = 40%</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-warn">
+    <div class="harness-name">droid</div>
+    <div class="harness-verdict"><span class="badge badge-yellow">Caution</span> s04 risk</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 bare/one-liner/brief</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 skill</span><span class="stat-val red">0% (skill text confuses)</span></div>
+      <div class="stat-row"><span class="stat-label">s04 bare/one-liner</span><span class="stat-val red">0% (routes to native Task)</span></div>
+      <div class="stat-row"><span class="stat-label">s04 skill</span><span class="stat-val muted">N/A — tested briefly</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-warn">
+    <div class="harness-name">claude haiku</div>
+    <div class="harness-verdict"><span class="badge badge-yellow">Worker-only</span> Never lead</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 as lead</span><span class="stat-val yellow">20–60% (unreliable)</span></div>
+      <div class="stat-row"><span class="stat-label">s05 neutral-worker</span><span class="stat-val red">0%</span></div>
+      <div class="stat-row"><span class="stat-label">s05 relay-worker</span><span class="stat-val yellow">60%</span></div>
+      <div class="stat-row"><span class="stat-label">Needs broker injection</span><span class="stat-val green">SMALL_MODEL_RELAY_SKILL</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-2">
+    <div class="harness-name">claude sonnet</div>
+    <div class="harness-verdict"><span class="badge badge-green">Best Lead</span> One-liner = 100%</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 bare</span><span class="stat-val yellow">40%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 one-liner</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s03 brief/skill</span><span class="stat-val yellow">60–80%</span></div>
+      <div class="stat-row"><span class="stat-label">s05 relay-worker</span><span class="stat-val red">0% (phrasing alone)</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-2">
+    <div class="harness-name">claude opus</div>
+    <div class="harness-verdict"><span class="badge badge-blue">High-complexity lead</span></div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">s03 bare/one-liner/skill</span><span class="stat-val yellow">67% (timeout-limited)</span></div>
+      <div class="stat-row"><span class="stat-label">s03 brief</span><span class="stat-val red">0% (conditional text)</span></div>
+      <div class="stat-row"><span class="stat-label">s05 relay-worker/agent</span><span class="stat-val green">100%</span></div>
+      <div class="stat-row"><span class="stat-label">s05 neutral-worker</span><span class="stat-val yellow">60%</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-dead">
+    <div class="harness-name">grok</div>
+    <div class="harness-verdict"><span class="badge badge-red">Not viable</span> Model ignores MCP tools</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">All scenarios</span><span class="stat-val red">0%</span></div>
+      <div class="stat-row"><span class="stat-label">MCP config</span><span class="stat-val yellow">✓ Fixed (bug: wrong flag syntax)</span></div>
+      <div class="stat-row"><span class="stat-label">Root cause</span><span class="stat-val muted">Behavioral — model doesn't call relay tools</span></div>
+    </div>
+  </div>
+
+  <div class="harness-card tier-dead">
+    <div class="harness-name">cursor-agent</div>
+    <div class="harness-verdict"><span class="badge badge-red">Not viable</span> 0/48 runs</div>
+    <div class="harness-stats">
+      <div class="stat-row"><span class="stat-label">All scenarios × variants</span><span class="stat-val red">0/48 FAIL</span></div>
+      <div class="stat-row"><span class="stat-label">Binary fix</span><span class="stat-val yellow">✓ cursor → cursor-agent (was routing to grok)</span></div>
+      <div class="stat-row"><span class="stat-label">Root cause</span><span class="stat-val muted">Model does not call add_agent or remove_agent</span></div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ===== LIFECYCLE ===== -->
+<div class="section" id="lifecycle">
+<h2>2. Lifecycle Eval Results (s01–s04)</h2>
+<p>Scenarios test the full worker lifecycle. <strong>s01</strong> = spawn only. <strong>s02</strong> = spawn + release after injected DONE. <strong>s03</strong> = full autonomous lifecycle (spawn → task → DONE → release). <strong>s04</strong> = s03 but verifies relay tools were used, not native subagents.</p>
+<p>All percentages: pass rate, 5 runs per cell, 3 runs for cursor.</p>
+
+<h3>s01 — Spawn only</h3>
+<table>
+  <tr><th>Harness</th><th>bare</th><th>one-liner</th><th>brief</th><th>skill</th></tr>
+  <tr><td>codex</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td></tr>
+  <tr><td>gemini</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td></tr>
+  <tr><td>droid</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td></tr>
+  <tr><td>opencode:mimo</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-low">40%</td><td class="cell-pct pct-hi">80%</td></tr>
+  <tr><td>claude haiku</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-low">40%</td></tr>
+  <tr><td>claude sonnet</td><td class="cell-pct pct-low">40%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-hi">80%</td></tr>
+  <tr><td>claude opus</td><td class="cell-pct pct-mid">67%</td><td class="cell-pct pct-mid">67%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-mid">67%</td></tr>
+  <tr><td>grok</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>cursor-agent</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td></tr>
+</table>
+
+<h3>s02 — Spawn + release (DONE injected)</h3>
+<table>
+  <tr><th>Harness</th><th>bare</th><th>one-liner</th><th>brief</th><th>skill</th></tr>
+  <tr><td>codex</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td></tr>
+  <tr><td>opencode:mimo</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-hi">80%</td></tr>
+  <tr><td>gemini</td><td class="cell-pct pct-low">20%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td></tr>
+  <tr><td>droid</td><td class="cell-pct pct-low">20%</td><td class="cell-pct pct-low">20%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>grok</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>cursor-agent</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td></tr>
+</table>
+
+<h3>s03 — Full autonomous lifecycle (spawn → task → DONE → release)</h3>
+<table>
+  <tr><th>Harness</th><th>bare</th><th>one-liner</th><th>brief</th><th>skill</th><th>Verdict</th></tr>
+  <tr><td>opencode:mimo</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-100">100%</td><td><span class="badge badge-green">Best bare</span></td></tr>
+  <tr><td>droid</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-zero">0%</td><td><span class="badge badge-yellow">Avoid skill</span></td></tr>
+  <tr><td>codex</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td><span class="badge badge-green">Most reliable</span></td></tr>
+  <tr><td>gemini</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td><span class="badge badge-blue">One-liner+</span></td></tr>
+  <tr><td>claude sonnet</td><td class="cell-pct pct-low">40%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-hi">80%</td><td><span class="badge badge-green">Best lead</span></td></tr>
+  <tr><td>claude opus</td><td class="cell-pct pct-mid">67%</td><td class="cell-pct pct-mid">67%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-mid">67%</td><td><span class="badge badge-blue">High-complexity</span></td></tr>
+  <tr><td>claude haiku</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-low">20%</td><td class="cell-pct pct-low">40%</td><td><span class="badge badge-yellow">Worker-only</span></td></tr>
+  <tr><td>grok</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td><span class="badge badge-red">Not viable</span></td></tr>
+  <tr><td>cursor-agent</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td><span class="badge badge-red">Not viable</span></td></tr>
+</table>
+
+<h3>s04 — No native subagents (must use relay tools, not built-in Task)</h3>
+<table>
+  <tr><th>Harness</th><th>bare</th><th>one-liner</th><th>brief</th><th>skill</th><th>Note</th></tr>
+  <tr><td>codex</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td>Never routes to native</td></tr>
+  <tr><td>opencode:mimo</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-100">100%</td><td class="cell-pct pct-hi">80%</td><td>Mostly relay-native</td></tr>
+  <tr><td>gemini</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-mid">60%</td><td class="cell-pct pct-hi">80%</td><td class="cell-pct pct-100">100%</td><td>Occasional native fallback</td></tr>
+  <tr><td>droid</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-na">—</td><td class="cell-pct pct-na">—</td><td>Uses native Task without disambiguation</td></tr>
+  <tr><td>grok</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td></td></tr>
+  <tr><td>cursor-agent</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td class="cell-pct pct-zero">0%</td><td></td></tr>
+</table>
+
+<div class="callout callout-yellow">
+  <strong>Droid s04 warning:</strong> Droid passes s03 reliably (100% bare) but routes to its native <code>Task</code> tool instead of <code>add_agent</code> on s04. This means droid workers, when asked to spawn subagents, silently use Droid's internal task system — not relay. Droid should only be used for terminal leaf workers (no delegation), or paired with a skill disambiguation clause (<em>but not the current one</em> — that skill text breaks s03).
+</div>
+</div>
+
+<!-- ===== PHRASING ===== -->
+<div class="section" id="phrasing">
+<h2>3. Phrasing Eval Results (s05)</h2>
+<p>Tests whether vocabulary choice in the task prompt affects tool-use success, independent of onboarding. All runs use bare onboarding. 5 runs per cell.</p>
+<p>The six vocabulary variants tested: <code>neutral-worker</code> · <code>neutral-agent</code> · <code>relay-worker</code> · <code>relay-agent</code> · <code>arw-worker</code> · <code>arw-agent</code></p>
+
+<table>
+  <tr>
+    <th>Harness</th>
+    <th>neutral-worker</th>
+    <th>neutral-agent</th>
+    <th>relay-worker</th>
+    <th>relay-agent</th>
+    <th>arw-worker</th>
+    <th>arw-agent</th>
+  </tr>
+  <tr>
+    <td>codex</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+  </tr>
+  <tr>
+    <td>opencode:mimo</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+  </tr>
+  <tr>
+    <td>droid</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-100">100%</td>
+  </tr>
+  <tr>
+    <td>gemini</td>
+    <td class="cell-pct pct-mid">60%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-low" style="background:var(--red-dim);"><strong>40%</strong></td>
+    <td class="cell-pct pct-hi">80%</td>
+    <td class="cell-pct pct-100">100%</td>
+  </tr>
+  <tr>
+    <td>grok</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-na">—</td>
+    <td class="cell-pct pct-na">—</td>
+  </tr>
+  <tr>
+    <td>cursor-agent</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-na">—</td>
+    <td class="cell-pct pct-na">—</td>
+  </tr>
+  <tr style="border-top: 2px solid var(--border);">
+    <td>claude haiku</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-low">20%</td>
+    <td class="cell-pct pct-mid" style="background:var(--green-dim);"><strong>60%</strong></td>
+    <td class="cell-pct pct-low">20%</td>
+    <td class="cell-pct pct-mid">60%</td>
+    <td class="cell-pct pct-low">40%</td>
+  </tr>
+  <tr>
+    <td>claude sonnet</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-zero">0%</td>
+    <td class="cell-pct pct-low">40%</td>
+    <td class="cell-pct pct-low">40%</td>
+  </tr>
+  <tr>
+    <td>claude opus</td>
+    <td class="cell-pct pct-mid">60%</td>
+    <td class="cell-pct pct-low">20%</td>
+    <td class="cell-pct pct-100" style="background:var(--green-dim);"><strong>100%</strong></td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">100%</td>
+  </tr>
+</table>
+
+<div class="callout callout-green">
+  <strong>Universal rule: always use "relay worker"</strong><br>
+  Highest average across all viable harnesses. Safe for haiku (60%), great for opus (100%), safe for droid (100%), safe for gemini (80%). Note: <code>arw-agent</code> is surprisingly strong for opus/codex/opencode/droid (all 100%), but avoid it for gemini and haiku.
+</div>
+<div class="callout callout-red">
+  <strong>Never use "relay agent" for gemini workers.</strong> "relay" + "-agent" triggers Gemini's native subagent path → 40% pass rate. The Director prompt already uses "relay worker" — keep it that way.
+</div>
+<div class="callout callout-yellow">
+  <strong>Claude sonnet is vocabulary-insensitive at bare onboarding.</strong> s05 sonnet = 0% across all phrasing variants. Sonnet only succeeds with onboarding context (one-liner/brief/skill), not phrasing alone. This is expected — the one-liner provides the tool name, which bare phrasing doesn't.
+</div>
+</div>
+
+<!-- ===== S06 ===== -->
+<div class="section" id="s06">
+<h2>4. Director Multi-Spawn (s06)</h2>
+<div class="callout callout-red">
+  <strong>s06 result: 0% across all harnesses, 8 prompt approaches tested.</strong> This is an architectural constraint, not a prompt problem.
+</div>
+
+<p><strong>Root cause:</strong> PTY-mode agents make exactly <em>one</em> tool call per turn, then stop and wait for input. No prompt instruction reliably chains two back-to-back <code>add_agent</code> calls in a single turn. The broker cannot inject "go again" between tool calls — by the time it could, the agent is already waiting.</p>
+
+<table>
+  <tr><th>Approach tried</th><th>Result</th></tr>
+  <tr><td>CRITICAL: spawn all workers in sequence before proceeding</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>Extended 180s window</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>ACK injection from first worker</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>Orchestrator nudge message after first spawn</td><td class="cell-pct pct-zero">0%</td></tr>
+  <tr><td>Sequential ACTION labels in meta-prompt</td><td class="cell-pct pct-zero">0%</td></tr>
+</table>
+
+<div class="callout callout-blue">
+  <strong>Production fix: pre-spawn workers from the CLI layer (Phase 4).</strong><br>
+  The Director prompt is redesigned from <em>"spawn your team"</em> to <em>"your team is already online — coordinate them."</em> The CLI orchestrator pre-spawns workers before the Director starts. Director receives pre-formed agent names and coordinates via messaging, not spawning.
+</div>
+</div>
+
+<!-- ===== CODEX MODEL TIERS ===== -->
+<div class="section" id="codex-tiers">
+<h2>5. Codex Model Tier Comparison</h2>
+<p>All 4 model tiers available via <code>codex --model &lt;name&gt;</code> were evaluated on s03 (full lifecycle), 4 onboarding variants × 4 runs each = 16 total runs per tier.</p>
+
+<table>
+  <tr>
+    <th>Model</th>
+    <th>s03 majority-vote pass</th>
+    <th>s03 per-run avg</th>
+    <th>Phantom agents</th>
+    <th>Verdict</th>
+  </tr>
+  <tr>
+    <td><code>gpt-5.5</code> <span style="color:var(--muted);font-size:11px">(default)</span></td>
+    <td class="cell-pct pct-100">16/16 (100%)</td>
+    <td class="cell-pct pct-100">100%</td>
+    <td class="cell-pct pct-100">0 (0%)</td>
+    <td><span class="badge badge-green">Recommended</span></td>
+  </tr>
+  <tr>
+    <td><code>gpt-5.4-mini</code></td>
+    <td class="cell-pct pct-hi">15/16 (94%)</td>
+    <td class="cell-pct pct-hi">~75%</td>
+    <td class="cell-pct pct-hi">4 phantoms (31%)</td>
+    <td><span class="badge badge-blue">Viable (budget)</span></td>
+  </tr>
+  <tr>
+    <td><code>gpt-5.4</code></td>
+    <td class="cell-pct pct-hi">16/16 (100%)</td>
+    <td class="cell-pct pct-mid">~60%</td>
+    <td class="cell-pct pct-low" style="background:var(--red-dim);"><strong>14 phantoms (52%)</strong></td>
+    <td><span class="badge badge-yellow">Avoid — noisy</span></td>
+  </tr>
+  <tr>
+    <td><code>gpt-5.3-codex-spark</code></td>
+    <td class="cell-pct pct-low">6/16 (38%)</td>
+    <td class="cell-pct pct-low">~38%</td>
+    <td class="cell-pct pct-na">—</td>
+    <td><span class="badge badge-red">Not viable</span></td>
+  </tr>
+</table>
+
+<div class="callout callout-yellow">
+  <strong>gpt-5.4 majority-vote illusion:</strong> gpt-5.4 shows 16/16 scenarios passing (majority-vote) but only ~60% of individual runs succeed. The real signal is the <strong>52% phantom agent rate</strong> — the model spawns extra unexpected agents on ~half its runs, creating noise and wasted cost. Avoid unless you need a specific gpt-5.4 capability.
+</div>
+<div class="callout callout-green">
+  <strong>Default is already optimal:</strong> <code>gpt-5.5</code> is the codex CLI default and the best-performing tier. gpt-5.4-mini is the only viable budget alternative (31% phantom rate, 94% scenario pass). Document these tiers in the spawning API so users can make an informed choice.
+</div>
+
+<h3>Recommended <code>CODEX_MODEL_TIERS</code> constants (auto-routing composer)</h3>
+<pre><code>export const CODEX_MODEL_TIERS = {
+  recommended: 'gpt-5.5',       // 16/16, 0 phantoms — always use this
+  budget:      'gpt-5.4-mini',  // 15/16, 4 phantoms — viable cost-saving
+  avoid:       'gpt-5.4',       // 16/16 majority but 52% phantom rate
+  notViable:   'gpt-5.3-codex-spark', // 6/16 — below minimum threshold
+} as const;</code></pre>
+</div>
+
+<!-- ===== KEY FINDINGS ===== -->
+<div class="section" id="key-findings">
+<h2>6. Key Findings</h2>
+
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Lead model selection</div>
+    <table style="margin:0">
+      <tr><th>Scenario</th><th>Best config</th></tr>
+      <tr><td>Default / medium</td><td><strong>sonnet + one-liner</strong> → 100%</td></tr>
+      <tr><td>High-complexity</td><td><strong>opus + bare</strong> → 67% (timeout-limited)</td></tr>
+      <tr><td>Never lead</td><td><strong>haiku</strong> — caps at 60%</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">Onboarding variant effects</div>
+    <table style="margin:0">
+      <tr><th>Variant</th><th>Effect</th></tr>
+      <tr><td><code>bare</code></td><td>Relay-native models (codex/opencode) excel; Claude needs prompting</td></tr>
+      <tr><td><code>one-liner</code></td><td>Best for Claude leads; damages opencode (60%)</td></tr>
+      <tr><td><code>brief</code></td><td>Kills opus (0%), mediocre for most — avoid for leads</td></tr>
+      <tr><td><code>skill</code></td><td>Kills droid (0%); best for haiku workers</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Worker harness ranking for reliability</div>
+    <ol style="padding-left:18px; margin:0; font-size:13px; line-height:2;">
+      <li><strong>codex</strong> — 100% all s01/s02/s04, 100% s03 with one-liner+</li>
+      <li><strong>opencode</strong> — 100% s03 bare; skip brief onboarding</li>
+      <li><strong>gemini</strong> — 100% s03 with one-liner+; skip bare</li>
+      <li><strong>droid</strong> — 100% s03 bare but 0% s04 bare; leaf workers only</li>
+      <li><strong>haiku</strong> — worker-only; needs skill injection; vocabulary-sensitive</li>
+    </ol>
+  </div>
+  <div class="card">
+    <div class="card-title">Critical vocab rules</div>
+    <ul style="padding-left:18px; margin:0; font-size:13px; line-height:2;">
+      <li>Use <strong>"relay worker"</strong> everywhere → safe for all viable harnesses</li>
+      <li>Avoid <strong>"relay agent"</strong> for gemini → 40% (triggers native subagent path)</li>
+      <li>Avoid <strong>"brief" onboarding</strong> for opus leads → 0%</li>
+      <li>Avoid <strong>"skill" onboarding</strong> for droid workers → 0%</li>
+      <li>Haiku: <code>relay-worker=60%</code> vs <code>neutral-worker=0%</code> — vocab is critical</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<!-- ===== CODEBASE CHANGES ===== -->
+<div class="section" id="codebase-changes">
+<h2>7. Required Codebase Changes</h2>
+<p>These are the actionable changes to make based on eval findings. Tracked in <a href="https://github.com/AgentWorkforce/relay/issues/1113">relay#1113</a>.</p>
+
+<div class="action-list">
+
+  <div class="action priority-high">
+    <div class="action-header">
+      <span class="action-num">#1</span>
+      <span class="action-title">Fix SMALL_MODEL_RELAY_SKILL vocabulary to use "relay worker"</span>
+      <span class="badge badge-red">High priority</span>
+    </div>
+    <div class="action-file">crates/broker/src/runtime/api.rs — SMALL_MODEL_RELAY_SKILL constant</div>
+    <div class="action-body">
+      <p>Haiku-class models (haiku, mini, flash, small) receive this skill text prepended to every task. Current text uses neutral vocabulary ("worker agent"). s05 eval proves this is wrong: haiku <code>neutral-worker=0%</code>, <code>relay-worker=60%</code>.</p>
+      <p><strong>Change:</strong> Replace every occurrence of neutral worker noun in SMALL_MODEL_RELAY_SKILL with <strong>"relay worker"</strong>. Also remove the "do it yourself for quick lookups" heuristic sentence — it lets capable models skip delegation. Confirmed: removing it improved sonnet s01:skill from 0% → 33%.</p>
+      <pre><code>// Before (current)
+const SMALL_MODEL_RELAY_SKILL: &str = "You are a worker agent in a multi-agent system...
+// For quick single-step lookups, you may complete these yourself."
+
+// After
+const SMALL_MODEL_RELAY_SKILL: &str = "You are a relay worker in a multi-agent relay system.
+Use the mcp__agent-relay__add_agent tool to spawn relay workers for delegated subtasks.
+Use mcp__agent-relay__remove_agent to release workers when they report DONE.
+Never use built-in task delegation tools — always use add_agent."</code></pre>
+    </div>
+  </div>
+
+  <div class="action priority-high">
+    <div class="action-header">
+      <span class="action-num">#2</span>
+      <span class="action-title">Fix Director meta-prompt: remove "brief" onboarding variant, set default to "one-liner"</span>
+      <span class="badge badge-red">High priority</span>
+    </div>
+    <div class="action-file">packages/cli/src/auto/director-prompt.ts (or wherever Director onboarding is set)</div>
+    <div class="action-body">
+      <p>Opus leads with <code>brief</code> onboarding score 0% on s03. Brief = conditional spawning guidance ("spawn when you need dedicated focus") which lets capable models rationalize skipping delegation entirely.</p>
+      <p><strong>Change:</strong> Remove <code>brief</code> as an option for lead onboarding. Default leads to <code>one-liner</code> (sonnet: 100%) or <code>bare</code> for opus. Never use <code>brief</code> or <code>skill</code> for leads. Only haiku workers need <code>skill</code>-level injection.</p>
+      <pre><code>// Lead onboarding config — constrain to safe variants only
+type LeadOnboarding = 'bare' | 'one-liner'; // 'brief' and 'skill' removed
+
+const LEAD_ONBOARDING: Record&lt;ModelTier, LeadOnboarding&gt; = {
+  sonnet: 'one-liner',  // 100% s03
+  opus:   'bare',       // 67% s03 — conditional text causes 0% in brief/skill variants
+  haiku:  'one-liner',  // haiku should never be lead, but if used, not bare
+};</code></pre>
+    </div>
+  </div>
+
+  <div class="action priority-high">
+    <div class="action-header">
+      <span class="action-num">#3</span>
+      <span class="action-title">Fix s06 Director: redesign from "spawn team" to "coordinate pre-spawned team"</span>
+      <span class="badge badge-red">High priority</span>
+    </div>
+    <div class="action-file">packages/cli/src/commands/spawn.ts · packages/cli/src/auto/director-prompt.ts</div>
+    <div class="action-body">
+      <p>s06 proved PTY-mode agents can only make one tool call per turn. Multi-spawn via prompt instruction is architecturally impossible. The fix is to pre-spawn workers in the CLI layer before the Director starts.</p>
+      <p><strong>Change:</strong></p>
+      <ul>
+        <li>In <code>spawn.ts</code> when <code>model=auto</code>: call <code>composeTeam()</code>, pre-spawn all workers via <code>relay.spawnAgent()</code>, then start the Director with the pre-formed team spec.</li>
+        <li>In <code>director-prompt.ts</code>: replace "Spawn each worker using <code>add_agent</code>" with "Your team is already online. Coordinate them by sending tasks and waiting for DONE, then release each with <code>remove_agent</code>."</li>
+        <li>The Director receives worker names, not instructions to spawn. Spawning is done.</li>
+      </ul>
+      <pre><code>// CLI layer — pre-spawn before Director starts
+const team = composeTeam(assessment);
+const workerNames = await Promise.all(
+  team.workers.map(w => relay.spawnAgent(w.role, { model: w.model, task: w.task }))
+);
+const directorTask = buildDirectorPrompt(originalTask, team, workerNames);
+// workerNames are injected into the prompt: "Your team: alpha, beta, gamma — all online."
+await relay.spawnAgent('Director', { model: team.lead.model, task: directorTask });</code></pre>
+    </div>
+  </div>
+
+  <div class="action priority-medium">
+    <div class="action-header">
+      <span class="action-num">#4</span>
+      <span class="action-title">Add per-harness onboarding defaults to team composer routing table</span>
+      <span class="badge badge-yellow">Medium priority</span>
+    </div>
+    <div class="action-file">packages/cli/src/auto/composer.ts</div>
+    <div class="action-body">
+      <p>Eval data shows clear harness-specific onboarding optima. The current routing table uses a single onboarding variant; it should be per-harness.</p>
+      <p><strong>Change:</strong></p>
+      <pre><code>const HARNESS_ONBOARDING: Record&lt;string, OnboardingVariant&gt; = {
+  codex:    'bare',      // relay-native; one-liner not needed, bare=80%+
+  opencode: 'bare',      // best s03 bare = 100%
+  gemini:   'one-liner', // bare=60% release failures; one-liner=100%
+  droid:    'bare',      // bare s03=100%; NEVER skill (kills s03); leaf workers only
+  haiku:    'skill',     // broker injects SMALL_MODEL_RELAY_SKILL anyway; needs disambiguation
+  sonnet:   'one-liner', // 100% s03 with one-liner
+  opus:     'bare',      // conditional text causes 0%; let opus use native knowledge
+};</code></pre>
+      <p>Also add droid guard: if a worker task description contains words like "spawn", "delegate", "subagent", or "team" — do not assign droid (s04=0%); use codex or opencode instead.</p>
+    </div>
+  </div>
+
+  <div class="action priority-medium">
+    <div class="action-header">
+      <span class="action-num">#5</span>
+      <span class="action-title">Update Director meta-prompt to use "relay worker" noun everywhere</span>
+      <span class="badge badge-yellow">Medium priority</span>
+    </div>
+    <div class="action-file">packages/cli/src/auto/director-prompt.ts · crates/broker/src/runtime/api.rs (Director meta-prompt string)</div>
+    <div class="action-body">
+      <p>Wherever the Director prompt refers to spawned agents, use <strong>"relay worker"</strong> not "agent", "worker agent", "subagent", or "relay agent".</p>
+      <ul>
+        <li>Avoid "relay agent" specifically — hurts gemini (40%)</li>
+        <li>"relay worker" is safe for all viable harnesses: haiku 60%, opus 100%, codex 100%, droid 100%</li>
+        <li>Already correct in current Director prompt — verify no regressions if prompt is changed for s06 redesign above</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="action priority-medium">
+    <div class="action-header">
+      <span class="action-num">#6</span>
+      <span class="action-title">Increase opus eval timeout to 120s/phase (already done — verify in CI)</span>
+      <span class="badge badge-yellow">Medium priority</span>
+    </div>
+    <div class="action-file">tests/integration/broker/evals/harness.ts — responseMs() helper</div>
+    <div class="action-body">
+      <p>Opus s03 original 40% was a timeout artifact, not a capability gap. Verbose opus responses exhausted the 60s/phase window. With 120s/phase, opus bare=67%. This is already fixed via <code>responseMs()</code> returning 120000 for opus-class models.</p>
+      <p><strong>Verify:</strong> CI should pass this timeout through; confirm no eval runs still use the old hard-coded 60s. Also consider 300s for a definitive opus timeout study (currently pending).</p>
+    </div>
+  </div>
+
+  <div class="action priority-low">
+    <div class="action-header">
+      <span class="action-num">#7</span>
+      <span class="action-title">Remove grok and cursor-agent from default harness registry / UI</span>
+      <span class="badge badge-blue">Low priority</span>
+    </div>
+    <div class="action-file">packages/harnesses/src/index.ts · any UI harness picker</div>
+    <div class="action-body">
+      <p>Both grok and cursor-agent are confirmed non-viable (0/48+ runs). They should not appear as spawn options to users until/unless the underlying issue is resolved.</p>
+      <ul>
+        <li><code>grok</code>: model ignores relay MCP tools. MCP config is now correct (bug was fixed) but behavioral failure persists.</li>
+        <li><code>cursor-agent</code>: model does not call <code>add_agent</code> or <code>remove_agent</code> in any tested scenario or onboarding variant. Binary mapping was fixed (<code>cursor → cursor-agent</code>), still 0%.</li>
+        <li>Keep the harness definitions (don't delete them) but mark them <code>supported: false</code> or add them to an "experimental/unsupported" group in the UI.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="action priority-low">
+    <div class="action-header">
+      <span class="action-num">#8</span>
+      <span class="action-title">Document codex model tiers in spawn API / docs</span>
+      <span class="badge badge-blue">Low priority</span>
+    </div>
+    <div class="action-file">web/content/docs/spawning.mdx · packages/cli/src/auto/composer.ts</div>
+    <div class="action-body">
+      <p><strong>Eval-validated tier summary</strong> (s03, 16 runs each):</p>
+      <ul style="padding-left:18px; margin:8px 0; font-size:13px; line-height:2;">
+        <li><code>gpt-5.5</code> — <strong>recommended</strong> (default). 16/16 pass, 0% phantom rate. Always use unless cost is the constraint.</li>
+        <li><code>gpt-5.4-mini</code> — <strong>viable budget tier</strong>. 15/16 pass, 31% phantom rate. Acceptable for non-critical workers.</li>
+        <li><code>gpt-5.4</code> — <strong>avoid</strong>. 16/16 majority-vote pass but 52% phantom agent rate per-run. Noisy and wasteful.</li>
+        <li><code>gpt-5.3-codex-spark</code> — <strong>not viable</strong>. 6/16 pass (38%). Below minimum reliability threshold.</li>
+      </ul>
+      <p>Document in spawn docs: <code>cli: "codex"</code> defaults to gpt-5.5. To use a cheaper tier: <code>cli: "codex --model gpt-5.4-mini"</code>. Add <code>CODEX_MODEL_TIERS</code> constants to <code>packages/cli/src/auto/composer.ts</code> (see §5 above for the exact values).</p>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<hr>
+
+<div class="footnote">
+  Generated 2026-06-12 · Relay eval suite s01–s06 + codex tier comparison · ~670+ individual scenario runs across 9 harness configurations ·
+  Source: <code>tests/integration/broker/evals/</code> ·
+  Issue: <a href="https://github.com/AgentWorkforce/relay/issues/1113">relay#1113</a> ·
+  Spec: <a href="../../../specs/auto-routing.md">specs/auto-routing.md</a>
+</div>
+
+</body>
+</html>
