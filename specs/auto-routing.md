@@ -119,6 +119,12 @@ complexity=med,  parallel=true   →  lead: sonnet/one-liner,  workers: [haiku×
 complexity=high, parallel=any    →  lead: opus/bare,         workers: [sonnet×N (+ haiku for grunt work)]
 ```
 
+**Why bare/one-liner for leads (never brief/skill):**
+- Conditional spawn guidance ("Spawn when... dedicated focus") gives capable models permission to skip delegation and reduces spawn rate to 0%. Validated: opus s03 brief=0% vs bare=67%, one-liner=67%.
+- Directive language (just name the tool, no conditions) works best for sonnet/opus.
+- Only haiku workers benefit from skill-level onboarding (they lack native protocol knowledge).
+- Note: skill variant with disambiguation clause ("if task explicitly asks to delegate, always spawn") improves results but still underperforms bare/one-liner for capable models.
+
 **Key invariants:**
 - Lead is always sonnet or opus — haiku is never lead
 - Opus lead only fires for `complexity=high` — it's the right tool but costs more
