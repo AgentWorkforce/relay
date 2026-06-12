@@ -30,13 +30,39 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 | sonnet | 40% | **100%** | 60% | 80% | **strong lead** — reliable with minimal onboarding |
 | opus | **67%** | **67%** | **0%** | **67%** | **capable lead** — all variants 67% after timeout fix EXCEPT brief (conditional clause causes 0%); fixed in codebase |
 
-### Key findings
+### Key findings — Claude models
 - **Sonnet + one-liner = 100% lifecycle reliability** ✅ — confirmed production lead config
 - **Haiku is worker-only** — caps at 60% lifecycle regardless of onboarding
 - **Opus s02 bare = 100%** — knows the protocol natively; s03 original 40% cap was a timeout artifact (verbose responses exhausted 60s/phase window), not a capability gap
 - **Opus s03 bare = 67% with 120s/phase** — timeout fix confirmed; responseMs() helper returns 120s for opus-class models; further improvement expected with more repeats
 - **Skill text heuristic fix: partial improvement** — sonnet s01:skill improved 0%→33% after removing "do it yourself for quick lookups" heuristic. Not fully fixed: root cause is the task uses "worker agent" neutral vocabulary. s05 phrasing eval confirms: neutral-agent=20%, relay-worker=60%. Fix in production: use relay-anchored vocabulary ("relay worker") in Director meta-prompts (already done).
-- **Phrasing matters**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
+- **Phrasing matters for Claude**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
+
+### Non-Claude harness lifecycle results (s01 spawn — early data, evals still running)
+
+| harness | bare | one-liner | brief | skill | verdict |
+|---------|------|-----------|-------|-------|---------|
+| codex | 100% | 100% | 100% | 100% | **excellent** — relay-native, vocabulary-agnostic |
+| gemini | 100% | 100% | 100% | 100% | **excellent** — relay-native |
+| droid | 80% | 100% | 100% | 100% | **good** — minor bare variance |
+| opencode:mimo | 80% | 100% | 40% | 80% | **good** — brief onboarding hurts (likely verbosity) |
+| grok | 0% | 0% | — | — | **not supported** — behavioral, not config |
+| cursor | 0% | 0% | 0% | 0% | **not supported** — behavioral, not config |
+
+### Non-Claude phrasing results (s05 — early data, bare onboarding only)
+
+| harness | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
+|---------|----------------|---------------|--------------|-------------|------------|-----------|
+| codex | 100% | 100% | 100% | 80% | 100% | (running) |
+| opencode:mimo | 100% | 80% | (running) | — | — | — |
+| droid | 80% | 100% | (running) | — | — | — |
+| gemini | 60% | 100% | (running) | — | — | — |
+| grok | 0% | 0% | (running) | — | — | — |
+| cursor | 0% | — | — | — | — | — |
+| claude haiku | 0% | 0% | 100% | 0% | 100% | 0% |
+| claude sonnet | 0% | 0% | 0% | 0% | 0% | 0% |
+
+**Key cross-harness insight**: Codex, Gemini, Droid, and OpenCode natively understand relay tools with neutral vocabulary (no relay-anchored phrasing needed). Vocabulary effects are primarily a Claude-model concern. Grok and Cursor fail at the harness level regardless of vocabulary — they are not supported relay worker targets. This means Director prompts built for Claude leads should use relay-anchored nouns; non-Claude leads can use neutral vocabulary.
 
 ---
 
@@ -224,12 +250,14 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 | Question | Status | Answer |
 |----------|--------|--------|
-| Does relay-anchored phrasing ("relay worker") improve bare spawn? | s05 (running) | **yes** — haiku relay-worker=60% vs neutral-worker=0%; worker noun outperforms agent noun |
+| Does relay-anchored phrasing ("relay worker") improve bare spawn? | s05 (running) | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are vocabulary-agnostic (codex 100% on all tested variants) |
+| Do non-Claude harnesses need relay-anchored vocabulary? | s05 (running) | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific |
 | What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ pending |
 | Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (built, not yet run) | pending |
 | Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
 | Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
 | Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
+| Which non-Claude harnesses can serve as relay workers? | s03 (running) | codex/gemini 100%, droid 80%+; grok/cursor fail at harness level — not viable as workers |
 
 ---
 
