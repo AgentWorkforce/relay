@@ -143,6 +143,26 @@
             "focal:s05-phrasing",
             "confidence:0.85"
           ]
+        },
+        {
+          "ts": 1781270492214,
+          "type": "reflection",
+          "content": "Phrasing eval (s05) running — haiku neutral-worker=0%, neutral-agent=20% so far. Expected: bare onboarding + haiku = near-zero regardless of phrasing. Key question is whether relay vocabulary ('relay worker', 'agent-relay worker') helps capable models (sonnet/opus) find the right tool without explicit guidance.",
+          "raw": {
+            "focalPoints": [
+              "phrasing-effect",
+              "haiku-baseline",
+              "sonnet-opus-hypothesis"
+            ],
+            "confidence": 0.7
+          },
+          "significance": "high",
+          "tags": [
+            "focal:phrasing-effect",
+            "focal:haiku-baseline",
+            "focal:sonnet-opus-hypothesis",
+            "confidence:0.7"
+          ]
         }
       ]
     }
