@@ -68,40 +68,43 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 
 | harness | bare | one-liner | brief | skill |
 |---------|------|-----------|-------|-------|
-| codex | 80% | **100%** | (running) | — |
-| opencode:mimo | **100%** | 80% | **100%** | (running) |
-| gemini | (running) | — | — | — |
-| droid | (running) | — | — | — |
+| codex | 80% | **100%** | **100%** | **100%** |
+| opencode:mimo | **100%** | 80% | 60% | **100%** |
+| droid | **100%** | (running) | — | — |
+| gemini | 60% | **100%** | (running) | — |
+| grok | 0% | 0% | 0% | 0% |
+| cursor | 0% | 0% | 0% | 0% |
 
 **Key lifecycle findings:**
-- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner=100%. Best overall — no onboarding needed for spawn, minimal for full lifecycle.
-- **OpenCode**: s03 bare=100% (best s03 bare result!); one-liner=80%. S03 outperforms s01/s02 because the s03 task prompt is more directive. Brief onboarding weakens earlier scenarios (s01:brief=40%) but s03:brief looks good (100% so far).
-- **Gemini**: perfect spawn (s01=100%) but release degrades without onboarding (s02 bare=20%); skill onboarding recovers to 100%. S03 results pending.
-- **Droid**: excellent spawn but very poor release (s02 bare/one-liner/brief ≤20%). Release nearly absent without explicit skill onboarding. S03 results pending.
+- **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner/brief/skill=100%. Most reliable non-Claude harness — any onboarding except bare reliably achieves full lifecycle.
+- **OpenCode**: s03 bare=100% (best s03 bare!); one-liner=80%, brief=60%, skill=100%. Directive task prompts outperform — brief's conditional guidance hurts more than bare.
+- **Droid**: s03 bare=100% — surprising given s02 bare=20%. The full s03 task description (with explicit "report DONE when complete") is more directive than s02, triggering reliable release. s03 one-liner still running.
+- **Gemini**: s03 bare=60%, one-liner=100%. Needs at least one-liner for reliable full lifecycle. Skill onboarding in s02 recovered to 100%, so the release step is learnable.
 - **Grok/Cursor**: 0% across all scenarios — not viable relay workers.
 
-**Implication for Director prompt**: Droid and gemini are unreliable as leads for the release step without skill-level onboarding. The auto-routing Director prompt explicitly includes `remove_agent` calls, which should compensate. However, codex and opencode are the safest non-Claude relay workers.
+**Implication for Director prompt**: Droid and gemini need at least one-liner onboarding for reliable full lifecycle. The auto-routing Director prompt's explicit `remove_agent` instructions effectively substitute for skill onboarding, and the directive task phrasing ("report DONE when complete") drives the release step. Codex and opencode are the most reliable non-Claude relay workers.
 
-### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each)
+### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each, all complete)
 
 | harness | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
 |---------|----------------|---------------|--------------|-------------|------------|-----------|
 | codex | **100%** | **100%** | **100%** | **80%** | **100%** | **100%** |
 | opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | **100%** |
-| droid | 80% | **100%** | **100%** | 80% | 80% | (running) |
-| gemini | 60% | **100%** | 80% | 25% | (running) | — |
+| droid | 80% | **100%** | **100%** | 80% | 80% | **100%** |
+| gemini | 60% | **100%** | 80% | 40% | 80% | **100%** |
 | grok | 0% | 0% | 0% | 0% | — | — |
 | cursor | 0% | 0% | 0% | 0% | — | — |
 | claude haiku | 0% | 20% | 60% | 20% | 60% | 40% |
 | claude sonnet | 0% | 0% | 0% | 0% | 40% | 40% |
+| claude opus | (running) | (running) | (running) | (running) | (running) | (running) |
 
 **Key cross-harness insights**:
 - Codex and OpenCode natively understand relay tools across all vocabulary variants (relay-native).
-- Droid: mostly 80-100% but vocabulary variance; "relay worker" (100%) outperforms "neutral worker" (80%).
-- Gemini: "relay-agent" specifically hurts (25%) while "relay-worker" is good (80%) and "neutral-agent" is perfect (100%). The "-agent" suffix combined with "relay" prefix confuses Gemini. The Director prompt uses "relay worker" — correct choice.
+- Droid: "relay worker" (100%) and "neutral-agent"/"arw-agent" (100%) are tops; "arw-worker" (80%) slightly weaker.
+- Gemini: "neutral-agent" and "arw-agent" both score 100%; "relay-agent" specifically hurts (40%). The "relay" prefix combined with "-agent" suffix confuses Gemini. "relay-worker" (80%) is safe. Director prompt uses "relay worker" — correct choice.
 - Grok/Cursor: 0% all variants — not viable relay workers.
 - Claude: vocabulary-dependent (see haiku/sonnet rows) — relay-anchored nouns matter.
-- **Universal recommendation**: Use "relay worker" noun in Director prompts — it's the highest-performing variant across both Claude models (haiku: 60%) and non-Claude models (droid: 100%). "relay agent" underperforms on both Gemini (25%) and Claude haiku (20%).
+- **Universal recommendation**: Use "relay worker" noun in Director prompts — it's the highest-performing variant across both Claude models (haiku: 60%) and non-Claude models (droid: 100%). "relay agent" underperforms on Gemini (40%) and Claude haiku (20%). "arw-agent" is surprisingly strong but less widely tested.
 
 ---
 
@@ -289,14 +292,14 @@ New scenario **s06-auto-routing**: submit a `complexity=medium, parallel=true` t
 
 | Question | Status | Answer |
 |----------|--------|--------|
-| Does relay-anchored phrasing ("relay worker") improve bare spawn? | s05 (running) | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are vocabulary-agnostic (codex 100% on all tested variants) |
-| Do non-Claude harnesses need relay-anchored vocabulary? | s05 (running) | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific |
-| What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ pending |
-| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (built, not yet run) | pending |
+| Does relay-anchored phrasing ("relay worker") improve bare spawn? | ✅ done | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are largely vocabulary-agnostic (codex 100% on all tested variants) |
+| Do non-Claude harnesses need relay-anchored vocabulary? | ✅ done | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific. Note: "relay-agent" specifically hurts gemini (40%) |
+| What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ running in Claude phrasing batch |
+| Does the Director meta-prompt reliably produce multi-worker spawns? | s06 (re-running with parallel-spawn fix) | 0% with sequential-spawn prompt; re-running with explicit "spawn all back-to-back" instruction |
 | Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
 | Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
 | Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
-| Which non-Claude harnesses can serve as relay workers? | s03 (running) | codex/gemini 100%, droid 80%+; grok/cursor fail at harness level — not viable as workers |
+| Which non-Claude harnesses can serve as relay workers? | ✅ done | codex (100% s03), opencode (100% s03:bare), droid (100% s03:bare), gemini (100% s03:one-liner); grok/cursor not viable |
 
 ---
 
