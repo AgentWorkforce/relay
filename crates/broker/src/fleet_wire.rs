@@ -1,6 +1,6 @@
 use serde::{
     de::{self, Deserializer},
-    Deserialize, Serialize, Serializer,
+    ser, Deserialize, Serialize, Serializer,
 };
 use serde_json::Value;
 
@@ -67,6 +67,10 @@ pub struct NodeRegister {
 #[serde(deny_unknown_fields)]
 pub struct NodeHeartbeat {
     pub v: FleetWireVersion,
+    #[serde(
+        deserialize_with = "deserialize_finite_nonnegative_f64",
+        serialize_with = "serialize_finite_nonnegative_f64"
+    )]
     pub load: f64,
     pub active_agents: u32,
     pub handlers_live: bool,
@@ -170,6 +174,32 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_finite_nonnegative_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    validate_finite_nonnegative_f64(value).map_err(de::Error::custom)
+}
+
+fn serialize_finite_nonnegative_f64<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    validate_finite_nonnegative_f64(*value).map_err(ser::Error::custom)?;
+    serializer.serialize_f64(*value)
+}
+
+fn validate_finite_nonnegative_f64(value: f64) -> Result<f64, &'static str> {
+    if !value.is_finite() {
+        return Err("load must be finite");
+    }
+    if value < 0.0 {
+        return Err("load must be nonnegative");
+    }
+    Ok(value)
 }
 
 impl From<&ActionResult> for ActionResultWire {
@@ -319,11 +349,13 @@ pub type RelaycastToBroker = ServerToNode;
 
 #[cfg(test)]
 mod tests {
+    use serde::de::{value::Error as DeError, IntoDeserializer};
     use serde_json::{json, Value};
 
     use super::{
-        ActionResult, ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast,
-        Deliver, DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
+        deserialize_finite_nonnegative_f64, ActionResult, ActionResultError, ActionResultPayload,
+        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, NodeHeartbeat, RelaycastToBroker,
+        FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -379,6 +411,63 @@ mod tests {
             "error": "handler_unavailable"
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(ambiguous).is_err());
+    }
+
+    #[test]
+    fn node_heartbeat_rejects_invalid_loads() {
+        let negative = json!({
+            "type": "node.heartbeat",
+            "v": 1,
+            "load": -0.1,
+            "active_agents": 0,
+            "handlers_live": true
+        });
+        assert!(serde_json::from_value::<BrokerToRelaycast>(negative).is_err());
+
+        for load in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let result: Result<f64, DeError> =
+                deserialize_finite_nonnegative_f64(load.into_deserializer());
+            assert!(result.is_err(), "expected load {load:?} to be rejected");
+        }
+
+        let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
+            v: FLEET_WIRE_VERSION,
+            load: f64::INFINITY,
+            active_agents: 0,
+            handlers_live: true,
+        });
+        assert!(serde_json::to_value(invalid).is_err());
+    }
+
+    #[test]
+    fn node_register_absent_resume_cursor_serializes_as_null() {
+        let decoded: BrokerToRelaycast = serde_json::from_value(json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "version": "relay-broker/test"
+        }))
+        .unwrap();
+
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "node.register",
+                "v": 1,
+                "name": "builder-1",
+                "node_id": "node_1",
+                "capabilities": [],
+                "max_agents": 1,
+                "tags": [],
+                "version": "relay-broker/test",
+                "resume_cursor": null
+            })
+        );
     }
 
     #[test]
