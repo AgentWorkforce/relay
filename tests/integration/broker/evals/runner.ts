@@ -10,7 +10,7 @@
  *   --harness=opencode:mimo-v2-flash-free  OpenCode with a specific model (free tier)
  *   --scenario=01-dm-roundtrip          Run a single scenario by id
  *   --tier=smoke|realistic|all          Default: realistic
- *   --group=messaging|lifecycle|all     Scenario group (default: messaging)
+ *   --group=messaging|lifecycle|phrasing|auto-routing|all  Scenario group (default: messaging)
  *   --repeat=N                          Repeat each scenario N times (default: 1; use 10 for reliability)
  *   --baseline=path.json                Compare against a prior report; exit 1 on regression
  *
@@ -21,7 +21,7 @@
 import { isCliAvailable } from '../utils/cli-helpers.js';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from '../utils/broker-harness.js';
 import { sleep } from '../utils/cli-helpers.js';
-import { SCENARIOS, LIFECYCLE_EVAL_SCENARIOS, PHRASING_EVAL_SCENARIOS, ALL_SCENARIOS, scenarioById, scenariosByTier } from './scenarios/index.js';
+import { SCENARIOS, LIFECYCLE_EVAL_SCENARIOS, PHRASING_EVAL_SCENARIOS, AUTO_ROUTING_EVAL_SCENARIOS, ALL_SCENARIOS, scenarioById, scenariosByTier } from './scenarios/index.js';
 import { aggregateMetrics } from './scoring/metrics.js';
 import {
   compareReports,
@@ -66,7 +66,7 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   return { cli, model };
 }
 
-type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'all';
+type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'all';
 
 interface Flags {
   harnesses: string[];
@@ -86,7 +86,7 @@ function parseFlags(argv: string[]): Flags {
     if (key === 'harness' && value) flags.harnesses = value.split(',').map((s) => s.trim());
     else if (key === 'scenario' && value) flags.scenarioIds = value.split(',').map((s) => s.trim());
     else if (key === 'tier' && (value === 'smoke' || value === 'realistic' || value === 'all')) flags.tier = value;
-    else if (key === 'group' && (value === 'messaging' || value === 'lifecycle' || value === 'phrasing' || value === 'all')) flags.group = value as ScenarioGroup;
+    else if (key === 'group' && (value === 'messaging' || value === 'lifecycle' || value === 'phrasing' || value === 'auto-routing' || value === 'all')) flags.group = value as ScenarioGroup;
     else if (key === 'repeat' && value) flags.repeat = Math.max(1, Number(value) || 1);
     else if (key === 'baseline' && value) flags.baseline = value;
   }
@@ -103,10 +103,12 @@ function selectScenarios(flags: Flags): EvalScenario[] {
       ? LIFECYCLE_EVAL_SCENARIOS
       : flags.group === 'phrasing'
         ? PHRASING_EVAL_SCENARIOS
-        : flags.group === 'all'
-          ? ALL_SCENARIOS
-          : SCENARIOS;
-  if (flags.group === 'lifecycle' || flags.group === 'phrasing') return pool;
+        : flags.group === 'auto-routing'
+          ? AUTO_ROUTING_EVAL_SCENARIOS
+          : flags.group === 'all'
+            ? ALL_SCENARIOS
+            : SCENARIOS;
+  if (flags.group === 'lifecycle' || flags.group === 'phrasing' || flags.group === 'auto-routing') return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);
 }
 
@@ -289,7 +291,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const isLifecycle = flags.group === 'lifecycle' || flags.group === 'phrasing';
+  const isLifecycle = flags.group === 'lifecycle' || flags.group === 'phrasing' || flags.group === 'auto-routing';
   console.log(
     `Running ${scenarios.length} scenario(s) [group=${flags.group}, tier=${flags.scenarioIds ? 'explicit' : flags.tier}, repeat=${flags.repeat}]`
   );

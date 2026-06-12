@@ -59,6 +59,8 @@
     "eval:phrasing": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=phrasing --repeat=5 --harness=claude",
     "eval:phrasing:claude-models": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=phrasing --repeat=5 --harness=claude:haiku,claude:sonnet,claude:opus",
     "eval:phrasing:all-harnesses": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=phrasing --repeat=5 --harness=claude:haiku,claude:sonnet,claude:opus,codex,gemini,grok,cursor,droid",
+    "eval:auto-routing": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=auto-routing --repeat=5 --harness=claude",
+    "eval:auto-routing:claude-models": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=auto-routing --repeat=5 --harness=claude:haiku,claude:sonnet,claude:opus",
     "eval:lifecycle:codex": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=codex",
     "eval:lifecycle:gemini": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=gemini",
     "eval:lifecycle:grok": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=grok",
