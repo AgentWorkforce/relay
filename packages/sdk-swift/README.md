@@ -38,6 +38,20 @@ for await event in channel.events {
 - `channel(_:) -> Channel`
 - `spawnAgent(_:initialTask:skipRelayPrompt:)`
 - `releaseAgent(name:reason:)`
+- `listAgents()`
+- `sendInput(name:data:)`
+- `resizePty(name:rows:cols:)`
+- `flush(name:)`
+- `snapshot(name:format:)`
+- `sendMessage(to:text:from:threadId:workspaceId:workspaceAlias:priority:data:mode:)`
+- `setModel(name:model:timeoutMs:)`
+- `subscribeChannels(name:channels:)`
+- `unsubscribeChannels(name:channels:)`
+- `getStatus()`
+- `getMetrics(agent:)`
+- `getCrashInsights()`
+- `preflight(agents:)`
+- `renewLease()`
 - `registerOrRotate(name:)`
 - `AgentRegistration.asClient()`
 - `AgentClient.post(to:message:)`

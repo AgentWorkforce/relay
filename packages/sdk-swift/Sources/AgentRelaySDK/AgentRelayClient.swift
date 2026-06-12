@@ -104,11 +104,11 @@ actor RelayCore {
     }
 
     func sendChannelPost(channel: String, text: String) async throws {
-        try await sendMessageHTTP(SendMessagePayload(to: channel, text: text, from: nil, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil))
+        _ = try await sendMessage(SendMessagePayload(to: channel, text: text, from: nil, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil, mode: nil))
     }
 
     func sendAgentMessage(from agentName: String, to target: String, text: String) async throws {
-        try await sendMessageHTTP(SendMessagePayload(to: target, text: text, from: agentName, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil))
+        _ = try await sendMessage(SendMessagePayload(to: target, text: text, from: agentName, threadId: nil, workspaceId: nil, workspaceAlias: nil, priority: nil, data: nil, mode: nil))
     }
 
     func spawnAgent(_ spec: AgentSpec, initialTask: String? = nil, skipRelayPrompt: Bool? = nil) async throws {
@@ -127,6 +127,82 @@ actor RelayCore {
             body = nil
         }
         _ = try await http.delete(path: "/api/spawned/\(escaped)", body: body)
+    }
+
+
+    func listAgents() async throws -> [ListAgent] {
+        try decodeJSON(try await http.get(path: "/api/spawned"), as: [ListAgent].self)
+    }
+
+    func sendInput(name: String, data: String) async throws {
+        let body = try encodeJSON(InputRequestBody(data: data))
+        _ = try await http.post(path: "/api/spawned/\(escapePathSegment(name))/input", body: body)
+    }
+
+    func resizePty(name: String, rows: Int, cols: Int) async throws {
+        let body = try encodeJSON(ResizeRequestBody(rows: rows, cols: cols))
+        _ = try await http.post(path: "/api/spawned/\(escapePathSegment(name))/resize", body: body)
+    }
+
+    func flush(name: String) async throws -> FlushResult {
+        try decodeJSON(try await http.post(path: "/api/spawned/\(escapePathSegment(name))/flush", body: nil), as: FlushResult.self)
+    }
+
+    func snapshot(name: String, format: SnapshotFormat = .plain) async throws -> PtySnapshot {
+        try decodeJSON(
+            try await http.get(path: "/api/spawned/\(escapePathSegment(name))/snapshot?format=\(format.rawValue)"),
+            as: PtySnapshot.self
+        )
+    }
+
+    func sendMessage(_ payload: SendMessagePayload) async throws -> SendMessageResult {
+        do {
+            let body = try encodeJSON(payload)
+            return try decodeJSON(try await http.post(path: "/api/send", body: body), as: SendMessageResult.self)
+        } catch RelayError.protocolError(let code, _, _) where code == "unsupported_operation" {
+            return SendMessageResult(eventId: "unsupported_operation", targets: [])
+        }
+    }
+
+    func setModel(name: String, model: String, timeoutMs: Int? = nil) async throws -> ModelUpdateResult {
+        let body = try encodeJSON(ModelRequestBody(model: model, timeoutMs: timeoutMs))
+        return try decodeJSON(
+            try await http.post(path: "/api/spawned/\(escapePathSegment(name))/model", body: body),
+            as: ModelUpdateResult.self
+        )
+    }
+
+    func subscribeChannels(name: String, channels: [String]) async throws {
+        let body = try encodeJSON(ChannelsRequestBody(channels: channels))
+        _ = try await http.post(path: "/api/spawned/\(escapePathSegment(name))/subscribe", body: body)
+    }
+
+    func unsubscribeChannels(name: String, channels: [String]) async throws {
+        let body = try encodeJSON(ChannelsRequestBody(channels: channels))
+        _ = try await http.post(path: "/api/spawned/\(escapePathSegment(name))/unsubscribe", body: body)
+    }
+
+    func getStatus() async throws -> BrokerStatus {
+        try decodeJSON(try await http.get(path: "/api/status"), as: BrokerStatus.self)
+    }
+
+    func getMetrics(agent: String? = nil) async throws -> MetricsResponse {
+        let query = agent.map { "?agent=\(escapeQueryValue($0))" } ?? ""
+        return try decodeJSON(try await http.get(path: "/api/metrics\(query)"), as: MetricsResponse.self)
+    }
+
+    func getCrashInsights() async throws -> CrashInsightsResponse {
+        try decodeJSON(try await http.get(path: "/api/crash-insights"), as: CrashInsightsResponse.self)
+    }
+
+    func preflight(agents: [[String: String]]) async throws -> PreflightResult {
+        guard !agents.isEmpty else { return PreflightResult(queued: 0) }
+        let body = try encodeJSON(PreflightRequestBody(agents: agents))
+        return try decodeJSON(try await http.post(path: "/api/preflight", body: body), as: PreflightResult.self)
+    }
+
+    func renewLease() async throws -> RenewLeaseResult {
+        try decodeJSON(try await http.post(path: "/api/session/renew", body: nil), as: RenewLeaseResult.self)
     }
 
     func registerOrRotate(name: String) async throws -> AgentRegistration {
@@ -154,9 +230,12 @@ actor RelayCore {
         connectionStateContinuations.removeAll()
     }
 
-    private func sendMessageHTTP(_ payload: SendMessagePayload) async throws {
-        let body = try encodeJSON(payload)
-        _ = try await http.post(path: "/api/send", body: body)
+    private func decodeJSON<T: Decodable>(_ data: Data, as type: T.Type) throws -> T {
+        do {
+            return try decoder.decode(type, from: data)
+        } catch {
+            throw RelayError.decodingFailed(String(describing: error))
+        }
     }
 
     private func encodeJSON<T: Encodable>(_ value: T) throws -> Data {
@@ -171,6 +250,18 @@ actor RelayCore {
         for continuation in connectionStateContinuations {
             continuation.yield(state)
         }
+    }
+
+    private func escapePathSegment(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private func escapeQueryValue(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func routeFrames() async {
@@ -195,6 +286,33 @@ actor RelayCore {
         }
         notifyConnectionState(.disconnected)
     }
+}
+
+private struct InputRequestBody: Encodable {
+    let data: String
+}
+
+private struct ResizeRequestBody: Encodable {
+    let rows: Int
+    let cols: Int
+}
+
+private struct ModelRequestBody: Encodable {
+    let model: String
+    let timeoutMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case timeoutMs = "timeout_ms"
+    }
+}
+
+private struct ChannelsRequestBody: Encodable {
+    let channels: [String]
+}
+
+private struct PreflightRequestBody: Encodable {
+    let agents: [[String: String]]
 }
 
 /// Body shape for `POST /api/spawn` — flattens the AgentSpec fields onto the
@@ -291,6 +409,99 @@ public final class AgentRelayClient: @unchecked Sendable {
     /// Release (stop) a named agent on the broker.
     public func releaseAgent(name: String, reason: String? = nil) async throws {
         try await core.releaseAgent(name: name, reason: reason)
+    }
+
+
+    /// List agents currently known to the broker.
+    public func listAgents() async throws -> [ListAgent] {
+        try await core.listAgents()
+    }
+
+    /// Send raw input to a PTY-backed agent.
+    public func sendInput(name: String, data: String) async throws {
+        try await core.sendInput(name: name, data: data)
+    }
+
+    /// Resize a PTY-backed agent terminal.
+    public func resizePty(name: String, rows: Int, cols: Int) async throws {
+        try await core.resizePty(name: name, rows: rows, cols: cols)
+    }
+
+    /// Flush queued messages for an agent using manual delivery mode.
+    public func flush(name: String) async throws -> FlushResult {
+        try await core.flush(name: name)
+    }
+
+    /// Capture the latest PTY screen snapshot for an agent.
+    public func snapshot(name: String, format: SnapshotFormat = .plain) async throws -> PtySnapshot {
+        try await core.snapshot(name: name, format: format)
+    }
+
+    /// Send a broker-level Relay message with the full REST payload surface.
+    public func sendMessage(
+        to: String,
+        text: String,
+        from: String? = nil,
+        threadId: String? = nil,
+        workspaceId: String? = nil,
+        workspaceAlias: String? = nil,
+        priority: Int? = nil,
+        data: [String: JSONValue]? = nil,
+        mode: RelayMessageMode? = nil
+    ) async throws -> SendMessageResult {
+        try await core.sendMessage(
+            SendMessagePayload(
+                to: to,
+                text: text,
+                from: from,
+                threadId: threadId,
+                workspaceId: workspaceId,
+                workspaceAlias: workspaceAlias,
+                priority: priority,
+                data: data,
+                mode: mode
+            )
+        )
+    }
+
+    /// Change a spawned agent's model when its harness supports runtime model switching.
+    public func setModel(name: String, model: String, timeoutMs: Int? = nil) async throws -> ModelUpdateResult {
+        try await core.setModel(name: name, model: model, timeoutMs: timeoutMs)
+    }
+
+    /// Subscribe an agent to additional broker channels.
+    public func subscribeChannels(name: String, channels: [String]) async throws {
+        try await core.subscribeChannels(name: name, channels: channels)
+    }
+
+    /// Unsubscribe an agent from broker channels.
+    public func unsubscribeChannels(name: String, channels: [String]) async throws {
+        try await core.unsubscribeChannels(name: name, channels: channels)
+    }
+
+    /// Return the broker status snapshot.
+    public func getStatus() async throws -> BrokerStatus {
+        try await core.getStatus()
+    }
+
+    /// Return process and broker metrics, optionally scoped to one agent.
+    public func getMetrics(agent: String? = nil) async throws -> MetricsResponse {
+        try await core.getMetrics(agent: agent)
+    }
+
+    /// Return broker crash/restart diagnostics.
+    public func getCrashInsights() async throws -> CrashInsightsResponse {
+        try await core.getCrashInsights()
+    }
+
+    /// Preflight a batch of agents so the broker can warm registration state.
+    public func preflight(agents: [[String: String]]) async throws -> PreflightResult {
+        try await core.preflight(agents: agents)
+    }
+
+    /// Renew the broker session lease.
+    public func renewLease() async throws -> RenewLeaseResult {
+        try await core.renewLease()
     }
 
     /// Disconnect from the broker and cancel all event streams.
