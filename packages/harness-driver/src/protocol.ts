@@ -89,6 +89,34 @@ export interface NodeManifest {
   version?: string;
 }
 
+export interface NodeSupervision {
+  argv: string[];
+  cwd: string;
+  env?: Record<string, string>;
+}
+
+export type HandlerResultPayload =
+  | { invocation_id: string; output: unknown; error?: never }
+  | { invocation_id: string; error: unknown; output?: never };
+
+type AssertHandlerResultPayload<T extends HandlerResultPayload> = T;
+type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_123';
+  output: { ok: true };
+}>;
+type _HandlerResultAllowsError = AssertHandlerResultPayload<{
+  invocation_id: 'inv_124';
+  error: { code: 'handler_failed' };
+}>;
+// @ts-expect-error handler_result requires either output or error.
+type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_125' }>;
+// @ts-expect-error handler_result cannot carry both output and error.
+type _HandlerResultRejectsBoth = AssertHandlerResultPayload<{
+  invocation_id: 'inv_126';
+  output: { ok: true };
+  error: { code: 'handler_failed' };
+}>;
+
 export type SdkToBroker =
   | {
       type: 'hello';
@@ -97,7 +125,7 @@ export type SdkToBroker =
   | {
       /** Register a fleet node sidecar with its manifest. */
       type: 'register_node';
-      payload: { manifest: NodeManifest };
+      payload: { manifest: NodeManifest; supervision?: NodeSupervision };
     }
   | {
       /** Advertise the action handler names implemented by this sidecar. */
@@ -107,7 +135,7 @@ export type SdkToBroker =
   | {
       /** Return the output or error for a broker-initiated handler invocation. */
       type: 'handler_result';
-      payload: { invocationId: string; output?: unknown; error?: unknown };
+      payload: HandlerResultPayload;
     }
   | {
       type: 'spawn_agent';
@@ -516,7 +544,7 @@ export type BrokerToSdk =
   | {
       /** Invoke a registered action handler in the fleet node sidecar. */
       type: 'invoke_handler';
-      payload: { invocationId: string; name: string; input: unknown };
+      payload: { invocation_id: string; name: string; input: unknown };
     }
   | {
       type: 'ok';

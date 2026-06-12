@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BrokerToSdk, ProtocolEnvelope, SdkToBroker } from './protocol.js';
+import { PROTOCOL_VERSION, type BrokerToSdk, type ProtocolEnvelope, type SdkToBroker } from './protocol.js';
 
 describe('fleet local protocol messages', () => {
   it('serializes fleet node registration frames', () => {
@@ -18,6 +18,11 @@ describe('fleet local protocol messages', () => {
           tags: ['local', 'gpu'],
           version: '0.1.0',
         },
+        supervision: {
+          argv: ['node', 'dist/fleet-sidecar.js'],
+          cwd: '/workspace',
+          env: { NODE_ENV: 'production' },
+        },
       },
     };
 
@@ -35,6 +40,11 @@ describe('fleet local protocol messages', () => {
           tags: ['local', 'gpu'],
           version: '0.1.0',
         },
+        supervision: {
+          argv: ['node', 'dist/fleet-sidecar.js'],
+          cwd: '/workspace',
+          env: { NODE_ENV: 'production' },
+        },
       },
     });
   });
@@ -46,11 +56,11 @@ describe('fleet local protocol messages', () => {
     };
     const handlerResult: SdkToBroker = {
       type: 'handler_result',
-      payload: { invocationId: 'inv_123', output: { ok: true } },
+      payload: { invocation_id: 'inv_123', output: { ok: true } },
     };
     const handlerError: SdkToBroker = {
       type: 'handler_result',
-      payload: { invocationId: 'inv_124', error: { code: 'handler_failed' } },
+      payload: { invocation_id: 'inv_124', error: { code: 'handler_failed' } },
     };
 
     expect(JSON.parse(JSON.stringify(registerHandlers))).toEqual({
@@ -59,11 +69,11 @@ describe('fleet local protocol messages', () => {
     });
     expect(JSON.parse(JSON.stringify(handlerResult))).toEqual({
       type: 'handler_result',
-      payload: { invocationId: 'inv_123', output: { ok: true } },
+      payload: { invocation_id: 'inv_123', output: { ok: true } },
     });
     expect(JSON.parse(JSON.stringify(handlerError))).toEqual({
       type: 'handler_result',
-      payload: { invocationId: 'inv_124', error: { code: 'handler_failed' } },
+      payload: { invocation_id: 'inv_124', error: { code: 'handler_failed' } },
     });
   });
 
@@ -71,7 +81,7 @@ describe('fleet local protocol messages', () => {
     const message: BrokerToSdk = {
       type: 'invoke_handler',
       payload: {
-        invocationId: 'inv_123',
+        invocation_id: 'inv_123',
         name: 'run-foo',
         input: { branch: 'main' },
       },
@@ -80,7 +90,7 @@ describe('fleet local protocol messages', () => {
     expect(JSON.parse(JSON.stringify(message))).toEqual({
       type: 'invoke_handler',
       payload: {
-        invocationId: 'inv_123',
+        invocation_id: 'inv_123',
         name: 'run-foo',
         input: { branch: 'main' },
       },
@@ -89,14 +99,14 @@ describe('fleet local protocol messages', () => {
 
   it('wraps fleet frames in the shared protocol envelope', () => {
     const frame: ProtocolEnvelope<SdkToBroker['payload']> = {
-      v: 2,
+      v: PROTOCOL_VERSION,
       type: 'register_handlers',
       request_id: 'req_123',
       payload: { names: ['run-foo'] },
     };
 
     expect(JSON.parse(JSON.stringify(frame))).toEqual({
-      v: 2,
+      v: PROTOCOL_VERSION,
       type: 'register_handlers',
       request_id: 'req_123',
       payload: { names: ['run-foo'] },
