@@ -2,6 +2,7 @@
 
 **Status**: Draft
 **Date**: 2026-06-06
+**Last updated**: 2026-06-11 (Topology B amendments)
 **Author**: Design session (Will + Claude)
 
 ---
@@ -21,24 +22,29 @@ Everything below lives on one of two planes. Keeping them separate is what keeps
 
 There is **no "participant" umbrella and no agent subtype.** "Orchestrate vs communicate" is not a type distinction — it's just whether an agent is colocated on a node-with-broker or self-connected (see *location*, §5).
 
+**Topology B: the broker owns the wire.** The Rust broker holds the node's single Relaycast control WebSocket. `fleet serve` is the operator-facing launcher plus a crash-isolated TypeScript handler sidecar supervised by that broker. The sidecar contains the node script and handler code; the broker owns delivery, process supervision, and the remote control protocol. If the sidecar dies, the broker can stay connected and keep delivering to existing PTY agents, but node action handlers are unavailable until the sidecar reconnects (§9).
+
 ## 3. Core concepts
 
 | Concept | What it is | Plane |
 |---|---|---|
 | **Agent** | a peer in the fabric: identity, send/receive, exposed actions | messaging |
 | **Node** | a named machine that runs agents and advertises capabilities | compute |
-| **Broker** | a node's runtime/delivery engine — **infra, not a peer** (not in the agent roster) | compute |
+| **Broker** | a node's Rust runtime/delivery engine; owns the node control connection — **infra, not a peer** (not in the agent roster) | compute |
+| **Handler sidecar** | the TypeScript process launched by `fleet serve` that runs node action handlers, supervised by the broker | compute |
 | **Location** | where Relaycast routes an agent's **inbound** | routing detail |
 | **Capability** | what a node can spawn (e.g. `spawn:codex`) | compute |
-| **Action** | something an agent exposes/invokes in the fabric | messaging |
+| **Action** | something an agent or node exposes/invokes in the fabric | messaging |
+| **Trigger** | a declarative message match that invokes an action engine-side | messaging |
 
-The broker is node infrastructure with a control connection to Relaycast. A colocated PTY agent receiving via its broker is the same kind of plumbing as a NIC delivering to a process — a location, not a hierarchy.
+The broker is node infrastructure with a control connection to Relaycast. A colocated PTY agent receiving via its broker is the same kind of plumbing as a NIC delivering to a process — a location, not a hierarchy. A node can own action handlers without becoming an agent; node-native handlers are addressed through the action registry and dispatched over the node control connection.
 
 ## 4. Identities & naming
 
 - **Agent**: stable `agent_id` + workspace-unique **name** (the addressable handle). One **active location** per agent name (a second live claimant is rejected; migration is explicit).
 - **Node**: workspace-unique **name**, operator-set at startup (default: hostname), optionally backed by a stable internal id so a name can move to a replacement machine. Same uniqueness rule as agents: one live owner.
-- The node's broker is the **token authority** for agents it spawns: it asks Relaycast to mint the agent identity + token on spawn, hands the token to the agent, and binds its location.
+- The node's broker is the **token authority** for agents it spawns: after local process spawn succeeds, it asks Relaycast to mint the agent identity + token, hands the token to the agent, and binds its location.
+- A node is never entered into the agent roster. If an action is node-native, the action record points at the node (`handler_node_id`) rather than a handler agent.
 
 ## 5. Delivery model — keep + delete
 
@@ -67,7 +73,9 @@ Most of this already exists; the work is mostly removal.
 
 ## 6. Spawn & placement
 
-**Spawn is not a protocol concept — it's a node capability**, expressed through the existing action mechanism (`actions.register('create', handler → driver.spawn)`). The "how spawning happens here" is a node-side harness definition (`definePtyHarness` / `StaticPtyHarnessDefinition`) — the script you provide when spinning up a node. A node advertises the capabilities it defines (e.g. `spawn:claude`, `spawn:codex`).
+**Spawn is not a protocol concept — it's a node capability**, expressed through the action mechanism as a handler defined in the node's TypeScript script. The "how spawning happens here" is a node-side harness definition (`definePtyHarness` / `StaticPtyHarnessDefinition`) wrapped by a spawn handler (`spawn(claude)`, `spawn(codex)`, etc.) in the sidecar. A node advertises the capabilities its script defines (e.g. `spawn:claude`, `spawn:codex`).
+
+The spawn handler runs in the TypeScript sidecar. It resolves the harness and returns an ordinary local `spawn_agent {command, args}` request to the broker. The broker executes that command, supervises the child, and performs the token-authority flow after successful spawn; it does **not** resolve harness definitions or run spawn policy.
 
 **Placement** takes an optional target:
 
@@ -77,7 +85,7 @@ spawn { capability, node?: <name> | "self", session_ref?, ttl_override? }
 eligible = nodes where
     (node.name == target              if target given)
   ∧ capability ∈ node.capabilities
-  ∧ node.live ∧ capacity_available
+  ∧ node.live ∧ node.handlers_live ∧ capacity_available
 place: target if given, else least-loaded(eligible)
 ```
 
@@ -85,6 +93,7 @@ place: target if given, else least-loaded(eligible)
 - `node: "self"` → same node as the requester (the common **colocation** case: shared working dir, local artifacts). An agent needn't know its node's name.
 - `node` omitted → scheduler picks any eligible (least-loaded).
 - None eligible → bounded-queue, then fail.
+- `live ∧ ¬handlers_live` → ineligible for spawn/actions. The broker may still be able to deliver messages to already-running PTY agents, but it cannot run node handlers while the sidecar is down.
 
 **Resume is a special case of targeted spawn.** "Resume agent X" = spawn with `node: <origin node>` + its `session_ref`. There is no separate resume concept — it is placement constrained to the origin node plus a session reference (see §8.2).
 
@@ -92,12 +101,22 @@ place: target if given, else least-loaded(eligible)
 
 ## 7. Reliable action invocation (spawn rides on this)
 
-Spawn inherits the action system's async invocation machinery (`invocationId`, ack, result) rather than a bespoke state machine. Exactly-once placement is impossible (dispatch, node dies before ack — did it start?), so the contract is **idempotency + at-least-once + reconcile**:
+Actions have two handler locations:
+
+- **Agent-native:** the handler is an agent identity in the fabric.
+- **Node-native:** the handler is a node (`handler_node_id`). Relaycast dispatches `action.invoke` over the node's control connection, and the node returns `action.result`. The node is still not an agent.
+
+Spawn is a node-native action and inherits the action system's async invocation machinery (`invocationId`, ack, result) rather than a bespoke state machine. Exactly-once placement is impossible (dispatch, node dies before ack — did it start?), so the contract is **idempotency + at-least-once + reconcile**:
 
 - `invocationId` is the idempotency key. A node dedups invocations by it; a requester retrying with the same id never double-spawns.
 - Invocation lifecycle: `pending → dispatched(node) → completed(agent_id)`.
-- **Dispatch timeout / node lost** before completion → **reschedule** to another eligible node with the same `invocationId`.
+- **Dispatch timeout / node lost / handler unavailable** before completion → **reschedule** to another eligible node with the same `invocationId`.
 - **Reconcile on reconnect:** a node re-announces its live agent inventory (with `agent_id`, name, `invocationId`, `session_ref`) — see §9. If an invocation already completed elsewhere → the duplicate is released. **First to `completed` wins.** A dead broker brings no agents back (its children died with it), so the dead-node case reschedules cleanly; duplicates only arise from a live-broker uplink blip and are reconciled away.
+
+There are two action entry points:
+
+- **Explicit invocation:** agents and tools call actions directly through the MCP/SDK action surface.
+- **Declarative message→action triggers:** Relaycast stores trigger declarations (channel/mention/regex in v1), matches them after message commit, and invokes the target action with the message as input. Trigger evaluation is engine-side, not a sidecar subscription. Triggers need a loop guard so action-generated messages do not re-trigger themselves, plus per-trigger rate limits.
 
 ## 8. Durability — bounded-durable mailbox
 
@@ -155,15 +174,36 @@ The per-agent mailbox **subsumes** any per-node replay buffer: node-disconnect r
 
 A node's broker holds one control connection to Relaycast, serving two roles: **compute provider** (advertises capabilities, receives spawn/release action invocations, reports results) and **delivery relay** (receives inbound for the PTY agents located on it, injects, acks).
 
-- **Register** (on connect): node name, capabilities, version, `max_agents`, tags, and a resume cursor for replay.
-- **Heartbeat** (~10–15s): `load`, `active_agents`. Relaycast TTL marks offline → stop placing there; mark its located agents unreachable.
+- **Register** (on connect): node name, stable node id, capabilities, version, `max_agents`, tags, and a resume cursor for replay.
+- **Heartbeat** (~10–15s): `load`, `active_agents`, and `handlers_live`. Relaycast TTL marks offline → stop placing there; mark its located agents unreachable. A live node with `handlers_live: false` stays eligible for delivery to existing located agents but is ineligible for action dispatch and placement.
 - **Reconnect inventory sync:** after register, the broker re-announces its full live agent inventory (`agent_id`, name, `invocationId`, `session_ref`). Relaycast reconciles **locations** and open **invocations** (§7) from it.
 - **Deregister:** graceful on shutdown; else liveness TTL.
+- **Sidecar supervision:** `fleet serve` starts the TypeScript sidecar and registers its manifest with the broker. The broker supervises the sidecar as a crash-isolated child and flips `handlers_live` on sidecar connect/disconnect. Sidecar failure should not kill the broker or existing PTY children.
 
 **Narrow control surface** (the only Relaycast protocol the broker implements — *not* the full `@relaycast/sdk`; channels/threads/reactions/search stay in the agent SDK):
 
-- **Broker → Relaycast:** `node.register`, `node.heartbeat`, `node.deregister`, `agent.register` (bind location), `agent.deregister`, `delivery.ack`, `action.result`, `inventory.sync`
-- **Relaycast → Broker:** `action.invoke` (spawn/release are actions), `deliver`, `ping`
+- **Broker → Relaycast:**
+  - `node.register {name, node_id, capabilities[], max_agents, tags, version, resume_cursor}`
+  - `node.heartbeat {load, active_agents, handlers_live}`
+  - `node.deregister`
+  - `agent.register {name, invocationId?, session_ref?, resumable?}` (bind location)
+  - `agent.deregister`
+  - `delivery.ack {agent, up_to_seq}`
+  - `action.result {invocationId, output|error}`
+  - `inventory.sync {agents[]}`
+- **Relaycast → Broker:**
+  - `deliver {agent, msg_id, seq, mode: wait|steer, payload}`
+  - `action.invoke {invocationId, action, input}`
+  - `ping`
+
+**Local broker ↔ sidecar protocol** is separate from the Relaycast control surface:
+
+- **Sidecar → Broker:** `register_node {manifest}`, `register_handlers {names[]}`, `handler_result {invocationId, output|error}`
+- **Broker → Sidecar:** `invoke_handler {invocationId, name, input}`
+
+The local manifest is capability names and metadata only; handler code remains in the sidecar. Existing local process control remains explicit: a spawn handler asks the broker to execute `spawn_agent {command, args}`, and the broker returns process/session details to the sidecar path that initiated it.
+
+The cross-repo contract should live as versioned TypeScript wire schemas (zod) mirrored by Rust serde structs, with golden JSON fixtures shared by the Relaycast engine and broker tests. The protocol is implemented twice; fixtures are the compatibility boundary.
 
 ## 10. Deferred / open
 
@@ -172,6 +212,8 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 - **Node tags / fuzzy targeting** (`gpu` instead of an exact name) and **access control** on who can target / spawn on which nodes.
 - **Exact tunables:** TTL, mailbox depth cap, heartbeat interval/TTL, dispatch timeout.
 - **Mark-read mechanism:** broker auto-mark on delivery (preferred) vs explicit `mark_read` tool — keep explicit only if a product reason emerges.
+- **Node token minting:** self-hosted first-register minting vs hosted enrollment should converge on one token format.
+- **Sidecar supervision fallback:** broker-supervised sidecar is the target; if the PTY child machinery does not fit non-PTY sidecars, `fleet serve` may self-restart while the broker only tracks connect/disconnect.
 
 ## 11. Pre-implementation verification (for the §5 delete)
 
@@ -181,9 +223,31 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 ## 12. Decisions log
 
 - **Frame:** flat fabric of equal **agents** (peers) + a compute layer of named **nodes**; **broker is node infra, not a peer**. No "participant" umbrella, no agent subtype. Orchestrate/communicate is just an agent's **location** (via-node vs self-connected).
+- **Topology B:** Rust broker owns the node's single Relaycast control WS; `fleet serve` launches a crash-isolated TypeScript handler sidecar supervised by the broker.
 - **Delivery:** outbound is direct & stateless; inbound goes to the agent's single **location**. Invariant: one location per agent. Delete the per-agent Relaycast WS, MCP resource layer, and piggyback (PTY-only); keep cloud-direct read tools; delivery-ack marks read.
-- **Spawn = node capability** via the action system; **placement** is targeted (`name`/`self`) or any (least-loaded); **resume = origin-targeted spawn + session_ref**. Node roster for discovery.
+- **Spawn = node capability** via a node-native action handler in the TypeScript sidecar; broker only executes `spawn_agent {command,args}` and performs process/token supervision.
+- **Placement** is targeted (`name`/`self`) or any (least-loaded); eligibility requires `live ∧ handlers_live ∧ capacity_available`; **resume = origin-targeted spawn + session_ref**. Node roster for discovery.
 - **Reliable invocation:** idempotency (`invocationId`) + at-least-once + reschedule + reconcile (first-to-`completed` wins); rides the action invocation machinery, no bespoke spawn state machine.
+- **Node-native actions:** an action handler can be a node (`handler_node_id`), dispatched over the control connection; the node is not in the agent roster.
+- **Triggers:** actions can be invoked explicitly through MCP/SDK or by declarative message→action triggers matched by Relaycast after message commit.
 - **Durability:** bounded-durable mailbox; at-least-once + dedup by `msg_id`; per-location `seq`; cumulative ack. Mailbox subsumes node replay; broker stateless across restarts; Relaycast is source of truth.
 - **Identity continuity requires session continuity:** resume is node-local; resumable agents node-sticky; otherwise fresh identity + dead-letter old mailbox.
 - **Policy:** dead-letter → notify sender; overflow → reject-new; down-but-resumable → lazy-resume by default (eager opt-in); one active location per agent name.
+
+## 13. Phased implementation summary
+
+1. **Protocol contract:** merge this spec, define Relaycast↔broker wire schemas, extend the local broker protocol, and lock Rust/TypeScript fixture round-trips.
+2. **Relaycast engine nodes/actions:** add node registry, node control WS, node-native action dispatch, placement, trigger storage/matching, and node roster queries.
+3. **Relaycast delivery cleanup:** evolve deliveries into the bounded mailbox state machine, route inbound by location, and remove the old PTY-only resource/piggyback paths after verification.
+4. **Rust broker control plane:** implement the node WS client, heartbeat with `handlers_live`, delivery/ack, sidecar dispatch, sidecar supervision, inventory sync, and token-authority registration.
+5. **Relay CLI/SDK:** add `@agent-relay/fleet`, `fleet serve`, `fleet nodes/status`, default local-up compatibility, `query_nodes`, and a first-class spawn action tool.
+6. **Cloud adapters/dashboard:** implement the node connection registry in Cloudflare, node enrollment, dashboard node roster, and sandbox-as-node integration.
+7. **Rollout:** feature-flag per workspace, verify old brokers keep working, run the two-node E2E matrix, then flip defaults and delete legacy delivery paths.
+
+## 14. Open decisions appendix
+
+- **Node token minting:** self-hosted workspaces can mint on first register with a workspace key; hosted workspaces likely use a relayauth enrollment flow. Both should issue the same token shape.
+- **Sidecar supervision direction:** broker-supervised sidecar is the design target; fallback is `fleet serve` self-restart plus broker `handlers_live` tracking if non-PTY child supervision does not fit.
+- **Trigger v1 surface:** proposed v1 is channel + mention + regex, with schema room for richer matchers later.
+- **Cloud workers convergence:** keep existing hosted `workers`/`workAssignments` separate in v1; converge only after fleet placement is proven.
+- **Tunables:** mailbox TTL, depth cap, heartbeat interval, liveness TTL, and dispatch timeout should be chosen with the Phase 2 test matrix rather than fixed in this spec.
