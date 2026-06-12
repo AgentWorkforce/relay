@@ -36,6 +36,11 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
+export {
+  listAccountUsage,
+  type ListAccountUsageOptions,
+} from './usage.js';
+
 export { createWorkspace, issueWorkspaceToken } from './workspaces.js';
 
 export {
@@ -110,6 +115,9 @@ export {
   type WorkspaceTokenRecord,
   type ProactiveDeploymentResponse,
   type ProactiveAgentRecord,
+  type AccountUsageSnapshot,
+  type AccountUsageWindow,
+  type CloudAgentUsageRecord,
   type WorkspaceSecretRecord,
   type WorkflowFileType,
   type RunWorkflowResponse,

@@ -19,8 +19,12 @@ import {
   syncWorkflowPatch,
   cancelWorkflow,
   connectProvider,
+  listAccountUsage,
   getProviderHelpText,
   normalizeProvider,
+  type AccountUsageSnapshot,
+  type AccountUsageWindow,
+  type CloudAgentUsageRecord,
   type WhoAmIResponse,
   type WorkflowFileType,
   type WorkflowSchedule,
@@ -175,6 +179,70 @@ function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknow
     log(
       `${schedule.id}  ${schedule.status}  ${formatScheduleCadence(schedule)}  ${schedule.name} (${lastRun})`
     );
+  }
+}
+
+function formatUsagePercent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
+function formatUsageReset(value: string | null | undefined): string {
+  if (!value) {
+    return 'reset unknown';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'reset unknown';
+  }
+  return `resets ${date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })}`;
+}
+
+function getTightestUsageWindow(usage: AccountUsageSnapshot | null | undefined): AccountUsageWindow | null {
+  if (!usage || usage.status !== 'available') {
+    return null;
+  }
+  return [...usage.windows]
+    .filter((window) => Number.isFinite(window.remainingPercent))
+    .sort((left, right) => left.remainingPercent - right.remainingPercent)[0] ?? null;
+}
+
+function renderAccountUsage(agents: CloudAgentUsageRecord[], log: (...args: unknown[]) => void): void {
+  if (agents.length === 0) {
+    log('No cloud agents found.');
+    return;
+  }
+
+  for (const agent of agents) {
+    const label = agent.displayName || agent.name || agent.id;
+    const provider = agent.modelProvider || agent.harness || 'unknown';
+    const active = agent.isActive === true ? ' active' : '';
+    const account = agent.accountEmail ? ` ${agent.accountEmail}` : '';
+    const usage = agent.usage;
+    const window = getTightestUsageWindow(usage);
+
+    if (window) {
+      log(
+        `${label} (${provider}${active})${account}: ${formatUsagePercent(window.remainingPercent)} left, ${window.label.toLowerCase()} ${formatUsagePercent(window.usedPercent)} used, ${formatUsageReset(window.resetAt)}`
+      );
+      continue;
+    }
+
+    if (usage?.status === 'unsupported') {
+      log(`${label} (${provider}${active})${account}: usage not supported for this credential`);
+      continue;
+    }
+
+    if (usage?.status === 'error') {
+      log(`${label} (${provider}${active})${account}: usage unavailable (${usage.error || 'provider request failed'})`);
+      continue;
+    }
+
+    log(`${label} (${provider}${active})${account}: usage unavailable`);
   }
 }
 
@@ -358,6 +426,22 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           provider: trackedProvider,
           ...(errorClass ? { error_class: errorClass } : {}),
         });
+      }
+    });
+
+  // ── usage ──────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('usage')
+    .description('Show remaining Codex and Claude account usage for connected cloud agents')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Print raw JSON response', false)
+    .action(async (options: { apiUrl?: string; json?: boolean }) => {
+      const agents = await listAccountUsage({ apiUrl: options.apiUrl });
+      if (options.json) {
+        deps.log(JSON.stringify({ agents }, null, 2));
+      } else {
+        renderAccountUsage(agents, deps.log);
       }
     });
 

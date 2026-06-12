@@ -99,6 +99,37 @@ export type ProactiveAgentRecord = {
   [key: string]: unknown;
 };
 
+export type AccountUsageWindow = {
+  id: string;
+  label: string;
+  usedPercent: number;
+  remainingPercent: number;
+  resetAt: string | null;
+  windowMinutes: number | null;
+};
+
+export type AccountUsageSnapshot = {
+  provider: string;
+  status: 'available' | 'unsupported' | 'unavailable' | 'error';
+  source: 'claude-oauth' | 'codex-oauth' | 'none';
+  fetchedAt: string;
+  windows: AccountUsageWindow[];
+  credits?: {
+    balance: number | null;
+    unlimited: boolean;
+  };
+  plan?: string | null;
+  error?: string;
+};
+
+export type CloudAgentUsageRecord = ProactiveAgentRecord & {
+  modelProvider?: string;
+  authType?: string;
+  accountEmail?: string | null;
+  isActive?: boolean;
+  usage?: AccountUsageSnapshot | null;
+};
+
 export type WorkspaceSecretRecord = {
   name: string;
   value?: string;

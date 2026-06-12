@@ -5,6 +5,7 @@ const cloudMocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
   scheduleWorkflow: vi.fn(),
   listWorkflowSchedules: vi.fn(),
+  listAccountUsage: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock('@agent-relay/cloud', () => ({
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  listAccountUsage: (...args: unknown[]) => cloudMocks.listAccountUsage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
@@ -68,6 +70,7 @@ describe('registerCloudCommands', () => {
       'logout',
       'whoami',
       'connect',
+      'usage',
       'run',
       'schedule',
       'schedules',
@@ -102,6 +105,41 @@ describe('registerCloudCommands', () => {
     expect(optionNames).toContain('--resume');
     expect(optionNames).toContain('--start-from');
     expect(optionNames).toContain('--previous-run-id');
+  });
+
+  it('usage renders remaining account usage', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.listAccountUsage.mockResolvedValueOnce([
+      {
+        id: 'agent-1',
+        displayName: 'Codex',
+        modelProvider: 'openai',
+        isActive: true,
+        accountEmail: 'person@example.com',
+        usage: {
+          provider: 'openai',
+          status: 'available',
+          source: 'codex-oauth',
+          fetchedAt: '2026-06-12T10:00:00.000Z',
+          windows: [
+            {
+              id: 'session',
+              label: 'Session',
+              usedPercent: 65,
+              remainingPercent: 35,
+              resetAt: '2026-06-12T15:00:00.000Z',
+              windowMinutes: 300,
+            },
+          ],
+        },
+      },
+    ]);
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'usage']);
+
+    expect(cloudMocks.listAccountUsage).toHaveBeenCalledWith({});
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('Codex (openai active)'));
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('35% left'));
   });
 
   it('status requires a runId argument', () => {
