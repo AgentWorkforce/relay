@@ -39,23 +39,25 @@ ${ORIGINAL_TASK}
   1. **Worker-Backend** (sonnet relay worker): backend authentication log analysis
   2. **Worker-Frontend** (haiku relay worker): frontend login component review
 
-## Protocol
+## Mandatory Actions — execute all of these in sequence, no exceptions
 
-**CRITICAL: Execute ALL spawn calls immediately in sequence — do NOT pause, wait for ACK DMs, or respond to any messages between spawn calls. The spawn tool returns instantly; proceed to the next spawn without delay.**
+You must execute ALL of the following actions. Skipping any action is not permitted.
 
-Step 1 — Spawn BOTH relay workers now, back-to-back, without waiting:
+**[ACTION 1 — EXECUTE NOW]** Spawn Worker-Backend:
 mcp__agent-relay__add_agent({ name: "Worker-Backend", cli: "claude", task: "You are a specialised backend worker. Your task:\n\n${ORIGINAL_TASK}\n\nFocus exclusively on the backend work. Report DONE when complete with a concise summary." })
+
+**[ACTION 2 — EXECUTE NOW, immediately after ACTION 1]** Spawn Worker-Frontend:
 mcp__agent-relay__add_agent({ name: "Worker-Frontend", cli: "claude", task: "You are a specialised frontend worker. Your task:\n\n${ORIGINAL_TASK}\n\nFocus exclusively on the frontend work. Report DONE when complete with a concise summary." })
 
-Step 2 — Only after BOTH spawns are confirmed, wait for DONE DMs from all 2 workers.
+**[ACTION 3]** Only after BOTH workers are spawned, wait for DONE DMs from Worker-Backend and Worker-Frontend.
 
-Step 3 — Synthesise their findings into a concise final answer.
+**[ACTION 4]** Synthesise their findings.
 
-Step 4 — Release each worker:
+**[ACTION 5]** Release each worker:
 mcp__agent-relay__remove_agent({ name: "Worker-Backend" })
 mcp__agent-relay__remove_agent({ name: "Worker-Frontend" })
 
-Step 5 — Report your synthesised result to the channel.
+**[ACTION 6]** Report synthesised result to the channel.
 
 ## Your relay worker tools
 - Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
@@ -104,10 +106,12 @@ const scenario: EvalScenario = {
         const workerName = (spawnEvent as Extract<typeof spawnEvent, { kind: 'agent_spawned' }>).name ?? 'Worker-Backend';
         // Small delay so Director is in receive state, then inject ACK.
         await sleep(2_000);
+        // Orchestrator nudge: Director spawned first worker but must also spawn the second.
+        // This mirrors real-world behavior where the Orchestrator monitors spawn progress.
         await harness.sendMessage({
           to: director,
-          from: workerName,
-          text: `ACK: Received. Starting work now.`,
+          from: 'Orchestrator',
+          text: `Worker-Backend has been spawned. Now execute ACTION 2: spawn Worker-Frontend with mcp__agent-relay__add_agent({ name: "Worker-Frontend", cli: "claude", task: "..." }).`,
         }).catch(() => {});
       }
       if (spawnCount >= 2) break;
