@@ -38,16 +38,49 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 - **Skill text heuristic fix: partial improvement** — sonnet s01:skill improved 0%→33% after removing "do it yourself for quick lookups" heuristic. Not fully fixed: root cause is the task uses "worker agent" neutral vocabulary. s05 phrasing eval confirms: neutral-agent=20%, relay-worker=60%. Fix in production: use relay-anchored vocabulary ("relay worker") in Director meta-prompts (already done).
 - **Phrasing matters for Claude**: s05 (running) measures whether relay-anchored vocabulary improves tool use independent of onboarding. Early haiku data (bare onboarding only): neutral-worker=0%, neutral-agent=20%, relay-worker=60%, relay-agent=20%, arw-worker=TBD, arw-agent=TBD. Confirmed: "relay worker" phrasing significantly outperforms neutral vocabulary even without onboarding text.
 
-### Non-Claude harness lifecycle results (s01 spawn — early data, evals still running)
+### Non-Claude harness lifecycle results (s01–s03 — evals still running for later scenarios)
 
-| harness | bare | one-liner | brief | skill | verdict |
-|---------|------|-----------|-------|-------|---------|
-| codex | 100% | 100% | 100% | 100% | **excellent** — relay-native, vocabulary-agnostic |
-| gemini | 100% | 100% | 100% | 100% | **excellent** — relay-native |
-| droid | 80% | 100% | 100% | 100% | **good** — minor bare variance |
-| opencode:mimo | 80% | 100% | 40% | 80% | **good** — brief onboarding hurts (likely verbosity) |
-| grok | 0% | 0% | — | — | **not supported** — MCP config fixed (no more exit 2); model doesn't call relay tools even when MCP available |
-| cursor | 0% | 0% | 0% | 0% | **not supported** — behavioral (relay tool calls not observed) |
+All onboarding variants × 5 runs each. Percentages = pass rate.
+
+#### s01 — spawn only
+
+| harness | bare | one-liner | brief | skill |
+|---------|------|-----------|-------|-------|
+| codex | 100% | 100% | 100% | 100% |
+| gemini | 100% | 100% | 100% | 100% |
+| droid | 80% | 100% | 100% | 100% |
+| opencode:mimo | 80% | 100% | 40% | 80% |
+| grok | 0% | 0% | 0% | 0% |
+| cursor | 0% | 0% | 0% | 0% |
+
+#### s02 — spawn + release (after injected DONE)
+
+| harness | bare | one-liner | brief | skill |
+|---------|------|-----------|-------|-------|
+| codex | 100% | 100% | 100% | 100% |
+| gemini | 20% | 60% | 80% | 100% |
+| droid | 20% | 20% | 0% | (running) |
+| opencode:mimo | 80% | 100% | 60% | 80% |
+| grok | 0% | 0% | 0% | 0% |
+| cursor | 0% | 0% | 0% | 0% |
+
+#### s03 — full spawn → DONE → release lifecycle
+
+| harness | bare | one-liner | brief | skill |
+|---------|------|-----------|-------|-------|
+| codex | 80% | 100% | (running) | — |
+| opencode:mimo | **100%** | **100%** | (running) | — |
+| gemini | (running) | — | — | — |
+| droid | (running) | — | — | — |
+
+**Key lifecycle findings:**
+- **Codex**: 100% on all s01/s02 variants; s03 bare=80% (minor variance), one-liner=100%. Best overall.
+- **OpenCode**: s03 bare=100% despite s01 brief=40% variability. S03 is better than s01 for opencode due to more structured task prompt.
+- **Gemini**: perfect spawn (s01=100%) but release degrades without onboarding (s02 bare=20%); skill onboarding recovers to 100%.
+- **Droid**: excellent spawn but very poor release (s02 bare/one-liner/brief ≤20%). Release is nearly absent without explicit skill onboarding.
+- **Grok/Cursor**: 0% across all scenarios — not viable relay workers.
+
+**Implication for Director prompt**: Droid and gemini are unreliable as leads for the release step without skill-level onboarding. The auto-routing Director prompt explicitly includes `remove_agent` calls, which should compensate. However, codex and opencode are the safest non-Claude relay workers.
 
 ### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each)
 
