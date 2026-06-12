@@ -49,12 +49,17 @@ PHASE1_MODELS=(
   "gpt-5-codex"
   "gpt-5-nano"
 
-  # Claude family via opencode (compare with direct claude CLI evals)
+  # Claude family via opencode (compare with direct claude CLI evals — same model, different provider path)
+  "claude-fable-5"
+  "claude-opus-4-8"
+  "claude-opus-4-7"
+  "claude-opus-4-6"
+  "claude-opus-4-5"
+  "claude-opus-4-1"
   "claude-sonnet-4-6"
   "claude-sonnet-4-5"
+  "claude-sonnet-4"
   "claude-haiku-4-5"
-  "claude-opus-4-8"
-  "claude-fable-5"
 
   # DeepSeek
   "deepseek-v4-flash"
@@ -76,7 +81,7 @@ PHASE1_MODELS=(
   "glm-5"
   "glm-5.1"
 
-  # Free/nano tiers
+  # Free/nano/specialty tiers
   "nemotron-3-ultra-free"
   "north-mini-code-free"
   "big-pickle"
@@ -95,7 +100,7 @@ run_eval() {
     --harness="opencode:$model" \
     --group="$group" \
     --repeat="$repeat" \
-    > "$log" 2>&1
+    > "$log" 2>&1 || echo "[$(date +%H:%M:%S)] FAILED  opencode:$model (see $log)"
   echo "[$(date +%H:%M:%S)] Done     opencode:$model → $log"
 }
 
