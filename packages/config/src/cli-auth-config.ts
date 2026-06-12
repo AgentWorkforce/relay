@@ -513,8 +513,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
     credentialPath: '~/.config/daytona/config.json',
     displayName: 'Daytona',
     // daytona ships as a single Go binary (no npm package).
-    installCommand:
-      'curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh',
+    installCommand: 'curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh',
     waitTimeout: 30000,
     prompts: [
       {
@@ -533,13 +532,7 @@ export const CLI_AUTH_CONFIG: Record<string, CLIAuthConfig> = {
         description: 'Login success prompt',
       },
     ],
-    successPatterns: [
-      /success/i,
-      /authenticated/i,
-      /logged\s*in/i,
-      /logged\s*in\s*as/i,
-      /welcome/i,
-    ],
+    successPatterns: [/success/i, /authenticated/i, /logged\s*in/i, /logged\s*in\s*as/i, /welcome/i],
     errorPatterns: [
       {
         pattern: /access_denied|invalid_grant|unauthorized/i,
