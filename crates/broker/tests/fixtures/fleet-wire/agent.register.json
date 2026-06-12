@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "agent.register",
+  "name": "codex-builder-1",
+  "invocationId": "inv_spawn_codex_001",
+  "session_ref": "pty://builder-1/sessions/codex-builder-1",
+  "resumable": true
+}
