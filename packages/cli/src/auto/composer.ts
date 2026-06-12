@@ -128,9 +128,9 @@ export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
   droid:     'bare',      // bare s03=100%; NEVER use skill (kills s03 to 0%)
 };
 
-// ── Role-fit map (from eval data 2026-06-12) ──────────────────────────────────
+// ── Role-fit map (from eval data 2026-06-12/13) ───────────────────────────────
 // Maps each harness to which roles it can reliably fill in swarm patterns.
-// Update as eval data comes in. 'untested' = opencode batch eval pending.
+// opencode model results from Phase 1 batch eval (s01–s04, repeat=3).
 // See specs/auto-routing.md §5 for the full role-fit table and what s07+ will add.
 export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
   {
@@ -182,8 +182,183 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
       reducer:     { fitness: 'confirmed' },
       coordinator: { fitness: 'provisional', notes: 's03+s04 good; multi-DM coordination untested' },
       reviewer:    { fitness: 'provisional', notes: 'relay-native; structured verdict format untested' },
-      // Models from opencode batch eval: fitness will be updated per-model as results arrive.
-      // deepseek-v4-*/kimi-*/qwen-*/minimax-*/glm-* roles all 'untested' until Phase 1+2 complete.
+      // Per-model fitness from Phase 1 batch eval (2026-06-13). All tested via opencode harness.
+      // Top tier (16/16, 0-2 phantoms): deepseek-v4-flash, deepseek-v4-flash-free, qwen3.6-plus,
+      //   qwen3.5-plus, minimax-m2.5, minimax-m2.7, glm-5.1, big-pickle
+      // Confirmed (16/16, 3-9 phantoms): glm-5, gemini-3.1-pro, grok-build-0.1, gemini-3-flash
+      // Provisional (12-15/16): kimi-k2.5, kimi-k2.6, mimo-v2.5-free, gemini-3.5-flash, north-mini-code-free
+      // Eliminated: deepseek-v4-pro (11/16, s03/s04 inconsistent), nemotron-3-ultra-free (10/16)
+    },
+  },
+  // ── opencode top-tier models (16/16, ≤2 phantoms) — best for any worker/mapper role ──
+  {
+    harness: 'opencode:deepseek-v4-flash',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16 s01-s04, 0 phantoms' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' }, reviewer: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:deepseek-v4-flash-free',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 0-1 phantoms; skip skill onboarding' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode:qwen3.6-plus',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' }, reviewer: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:qwen3.5-plus',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode:minimax-m2.5',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms — cleanest MiniMax' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode:minimax-m2.7',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 2 phantoms' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode:glm-5.1',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 1 phantom — prefer over glm-5' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  {
+    harness: 'opencode:big-pickle',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
+      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+    },
+  },
+  // ── opencode confirmed (16/16, 3-9 phantoms) ─────────────────────────────────
+  {
+    harness: 'opencode:glm-5',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 3 phantoms' },
+      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:gemini-3.1-pro',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 5 phantoms; bare works (fixes native CLI bare=60%)' },
+      reviewer: { fitness: 'provisional' }, mapper: { fitness: 'confirmed' },
+      coordinator: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:grok-build-0.1',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 5 phantoms; grok model is capable — native CLI MCP was the failure' },
+      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:gemini-3-flash',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'confirmed', notes: '16/16, 9 phantoms' },
+      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+    },
+  },
+  // ── opencode provisional (12-15/16) ──────────────────────────────────────────
+  {
+    harness: 'opencode:kimi-k2.5',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'provisional', notes: '15/16, 0 phantoms; s02:one-liner weak — use bare/skill' },
+      mapper: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:kimi-k2.6',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'provisional', notes: '15/16, 5 phantoms; s02:brief weak — use bare/skill' },
+      mapper: { fitness: 'provisional' },
+    },
+  },
+  {
+    harness: 'opencode:gemini-3.5-flash',
+    bestOnboarding: 'one-liner',
+    relayNative: false,
+    roles: {
+      worker: { fitness: 'provisional', notes: '14/16, 20 phantoms — high phantom rate; avoid spawning roles' },
+    },
+  },
+  {
+    harness: 'opencode:north-mini-code-free',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'provisional', notes: '12/16; s02 all-fail (injected DONE) but s03 all-pass (real tasks work)' },
+    },
+  },
+  // ── eliminated ────────────────────────────────────────────────────────────────
+  {
+    harness: 'opencode:deepseek-v4-pro',
+    bestOnboarding: 'bare',
+    relayNative: false,
+    roles: {
+      worker: { fitness: 'not-viable', notes: '11/16; s03 only brief passes, s04 partially fails' },
+    },
+  },
+  {
+    harness: 'opencode:nemotron-3-ultra-free',
+    bestOnboarding: 'one-liner',
+    relayNative: false,
+    roles: {
+      worker: { fitness: 'not-viable', notes: '10/16; scattered s01/s03/s04 failures, no reliable onboarding' },
     },
   },
   {
