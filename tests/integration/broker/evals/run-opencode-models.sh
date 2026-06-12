@@ -30,62 +30,42 @@ mkdir -p "$LOG_DIR"
 # Already tested: mimo-v2.5-free (100% s03 bare — relay-native, best bare result).
 
 PHASE1_MODELS=(
-  # OpenAI family via opencode (compare with codex CLI evals)
-  "gpt-5.5"
-  "gpt-5.5-pro"
-  "gpt-5.4"
-  "gpt-5.4-mini"
-  "gpt-5.4-pro"
-  "gpt-5.4-nano"
-  "gpt-5.3-codex"
-  "gpt-5.3-codex-spark"
-  "gpt-5.2"
-  "gpt-5.2-codex"
-  "gpt-5.1"
-  "gpt-5.1-codex"
-  "gpt-5.1-codex-max"
-  "gpt-5.1-codex-mini"
-  "gpt-5"
-  "gpt-5-codex"
-  "gpt-5-nano"
-
-  # Claude family via opencode (compare with direct claude CLI evals — same model, different provider path)
-  "claude-fable-5"
-  "claude-opus-4-8"
-  "claude-opus-4-7"
-  "claude-opus-4-6"
-  "claude-opus-4-5"
-  "claude-opus-4-1"
-  "claude-sonnet-4-6"
-  "claude-sonnet-4-5"
-  "claude-sonnet-4"
-  "claude-haiku-4-5"
-
-  # DeepSeek
+  # DeepSeek (Chinese — strong coding models)
   "deepseek-v4-flash"
   "deepseek-v4-flash-free"
   "deepseek-v4-pro"
 
-  # Gemini via opencode
+  # Kimi (Moonshot AI, Chinese)
+  "kimi-k2.5"
+  "kimi-k2.6"
+
+  # Qwen (Alibaba, Chinese)
+  "qwen3.6-plus"
+  "qwen3.5-plus"
+
+  # Minimax (Chinese)
+  "minimax-m2.5"
+  "minimax-m2.7"
+
+  # GLM (Zhipu AI, Chinese)
+  "glm-5"
+  "glm-5.1"
+
+  # MiMo (Xiaomi, Chinese — already tested bare; re-test one-liner for completeness)
+  "mimo-v2.5-free"
+
+  # Grok via opencode (different path than direct grok CLI)
+  "grok-build-0.1"
+
+  # Gemini via opencode (different routing than direct gemini CLI)
   "gemini-3.5-flash"
   "gemini-3.1-pro"
   "gemini-3-flash"
 
-  # Other frontier models
-  "kimi-k2.5"
-  "kimi-k2.6"
-  "qwen3.6-plus"
-  "qwen3.5-plus"
-  "minimax-m2.5"
-  "minimax-m2.7"
-  "glm-5"
-  "glm-5.1"
-
-  # Free/nano/specialty tiers
+  # Specialty / unknown
   "nemotron-3-ultra-free"
   "north-mini-code-free"
   "big-pickle"
-  "grok-build-0.1"
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
