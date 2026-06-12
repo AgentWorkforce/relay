@@ -199,7 +199,7 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 
 There is no `payload` wrapper on the Relaycast ↔ broker control WebSocket. The `v` field is always `1`; `type` is the message discriminant; every payload field is snake_case. The schema is strict: unknown fields are invalid, and `action.result` includes exactly one of `output` or `error`.
 
-Broker→Relaycast requests that need a response carry an optional `id`. Relaycast replies on the same channel with fully enveloped frames: `{ v: 1, type: "reply", id, data }` or `{ v: 1, type: "error", id, code, message }`. For `agent.register`, `data` is the minted token object `{ agent_id, token, name? }`.
+Broker→Relaycast requests that need a response carry an optional `id`. Relaycast replies on the same channel with fully enveloped frames: `{ v: 1, type: "reply", id, ok: true, data }` or `{ v: 1, type: "error", id, ok: false, code, message }`. For `agent.register`, `data` is the minted token object `{ agent_id, token, name? }`.
 
 **Broker → Relaycast:**
 
@@ -256,11 +256,11 @@ Broker→Relaycast requests that need a response carry an optional `id`. Relayca
   ```
 - `reply`
   ```
-  { v: 1, type: "reply", id: string, data: JsonValue }
+  { v: 1, type: "reply", id: string, ok: true, data: JsonValue }
   ```
 - `error`
   ```
-  { v: 1, type: "error", id: string, code: string, message: string }
+  { v: 1, type: "error", id: string, ok: false, code: string, message: string }
   ```
 
 **Local broker ↔ sidecar protocol** is separate from the Relaycast control surface:
