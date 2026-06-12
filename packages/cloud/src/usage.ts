@@ -14,12 +14,15 @@ export async function listAccountUsage(
     method: 'GET',
   });
 
-  const payload = (await response.json().catch(() => null)) as
-    | { agents?: CloudAgentUsageRecord[]; error?: string }
-    | null;
+  const payload = (await response.json().catch(() => null)) as {
+    agents?: CloudAgentUsageRecord[];
+    error?: string;
+  } | null;
 
   if (!response.ok || !Array.isArray(payload?.agents)) {
-    throw new Error(payload?.error || `Failed to load account usage: ${response.status} ${response.statusText}`);
+    throw new Error(
+      payload?.error || `Failed to load account usage: ${response.status} ${response.statusText}`
+    );
   }
 
   return payload.agents;

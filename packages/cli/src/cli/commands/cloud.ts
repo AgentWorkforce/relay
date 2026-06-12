@@ -206,9 +206,11 @@ function getTightestUsageWindow(usage: AccountUsageSnapshot | null | undefined):
   if (!usage || usage.status !== 'available') {
     return null;
   }
-  return [...usage.windows]
-    .filter((window) => Number.isFinite(window.remainingPercent))
-    .sort((left, right) => left.remainingPercent - right.remainingPercent)[0] ?? null;
+  return (
+    [...usage.windows]
+      .filter((window) => Number.isFinite(window.remainingPercent))
+      .sort((left, right) => left.remainingPercent - right.remainingPercent)[0] ?? null
+  );
 }
 
 function renderAccountUsage(agents: CloudAgentUsageRecord[], log: (...args: unknown[]) => void): void {
@@ -238,7 +240,9 @@ function renderAccountUsage(agents: CloudAgentUsageRecord[], log: (...args: unkn
     }
 
     if (usage?.status === 'error') {
-      log(`${label} (${provider}${active})${account}: usage unavailable (${usage.error || 'provider request failed'})`);
+      log(
+        `${label} (${provider}${active})${account}: usage unavailable (${usage.error || 'provider request failed'})`
+      );
       continue;
     }
 

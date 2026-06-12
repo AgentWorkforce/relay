@@ -17,21 +17,23 @@ describe('listAccountUsage', () => {
     const auth = { apiUrl: 'https://cloud.test' };
     authMocks.ensureAuthenticated.mockResolvedValueOnce(auth);
     authMocks.authorizedApiFetch.mockResolvedValueOnce({
-      response: new Response(JSON.stringify({
-        agents: [
-          {
-            id: 'agent-1',
-            displayName: 'Codex',
-            usage: {
-              provider: 'openai',
-              status: 'available',
-              source: 'codex-oauth',
-              fetchedAt: '2026-06-12T10:00:00.000Z',
-              windows: [],
+      response: new Response(
+        JSON.stringify({
+          agents: [
+            {
+              id: 'agent-1',
+              displayName: 'Codex',
+              usage: {
+                provider: 'openai',
+                status: 'available',
+                source: 'codex-oauth',
+                fetchedAt: '2026-06-12T10:00:00.000Z',
+                windows: [],
+              },
             },
-          },
-        ],
-      })),
+          ],
+        })
+      ),
     });
 
     const agents = await listAccountUsage({ apiUrl: 'https://cloud.test' });

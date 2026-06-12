@@ -36,10 +36,7 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export {
-  listAccountUsage,
-  type ListAccountUsageOptions,
-} from './usage.js';
+export { listAccountUsage, type ListAccountUsageOptions } from './usage.js';
 
 export { createWorkspace, issueWorkspaceToken } from './workspaces.js';
 
