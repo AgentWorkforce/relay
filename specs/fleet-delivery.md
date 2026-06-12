@@ -205,7 +205,7 @@ Broker→Relaycast requests that need a response carry an optional `id`. Relayca
 
 - `node.register`
   ```
-  { v: 1, id?: string, type: "node.register", name: string, node_id: string, capabilities: Array<{ name: string, kind?: string, metadata?: JsonValue }>, max_agents: number, tags: string[], version: string, resume_cursor?: string | null }
+  { v: 1, id?: string, type: "node.register", name: string, node_id: string, capabilities: Array<{ name: string, kind?: string, metadata?: Record<string, JsonValue> }>, max_agents: number, tags: string[], version: string, resume_cursor?: string | null }
   ```
 - `node.heartbeat`
   ```
