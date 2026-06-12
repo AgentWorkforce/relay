@@ -113,12 +113,14 @@ export function compareReports(
     'wrongChannelReplies',
     'scenariosPassed',
   ];
-  return keys.map((metric) => {
-    const b = baseline.metrics[metric];
-    const c = current.metrics[metric];
-    const delta = c - b;
-    const higherBetter = HIGHER_IS_BETTER.includes(metric);
-    const regression = higherBetter ? delta < -threshold : delta > threshold;
-    return { metric, baseline: b, current: c, delta, regression };
-  });
+  return keys
+    .filter((metric) => baseline.metrics[metric] !== undefined && current.metrics[metric] !== undefined)
+    .map((metric) => {
+      const b = baseline.metrics[metric] as number;
+      const c = current.metrics[metric] as number;
+      const delta = c - b;
+      const higherBetter = HIGHER_IS_BETTER.includes(metric);
+      const regression = higherBetter ? delta < -threshold : delta > threshold;
+      return { metric, baseline: b, current: c, delta, regression };
+    });
 }

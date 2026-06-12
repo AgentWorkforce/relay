@@ -20,6 +20,10 @@ export function aggregateMetrics(results: ScenarioResult[]): MetricSet {
   let adherenceSum = 0;
   let adherenceCount = 0;
   let scenariosPassed = 0;
+  let spawnTotal = 0;
+  let spawnPassed = 0;
+  let releaseTotal = 0;
+  let releasePassed = 0;
 
   for (const r of results) {
     sent += r.sent;
@@ -33,6 +37,15 @@ export function aggregateMetrics(results: ScenarioResult[]): MetricSet {
       adherenceCount += 1;
     }
     if (r.pass) scenariosPassed += 1;
+    // Lifecycle metrics: any scenario that measured spawn/release.
+    if (r.spawnCount !== undefined) {
+      spawnTotal += 1;
+      if ((r.spawnCount ?? 0) > 0) spawnPassed += 1;
+    }
+    if (r.releaseCount !== undefined) {
+      releaseTotal += 1;
+      if ((r.releaseCount ?? 0) > 0) releasePassed += 1;
+    }
   }
 
   return {
@@ -44,5 +57,7 @@ export function aggregateMetrics(results: ScenarioResult[]): MetricSet {
     wrongChannelReplies,
     scenariosPassed,
     scenariosTotal: total,
+    ...(spawnTotal > 0 ? { spawnRate: spawnPassed / spawnTotal } : {}),
+    ...(releaseTotal > 0 ? { releaseRate: releasePassed / releaseTotal } : {}),
   };
 }

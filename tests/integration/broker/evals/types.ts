@@ -12,7 +12,7 @@ import type { BrokerHarness } from '../utils/broker-harness.js';
 export interface ScenarioContext {
   /** A started broker harness. The scenario owns its agents but not the harness lifecycle. */
   harness: BrokerHarness;
-  /** The CLI/harness under test (e.g. "claude", "codex"). */
+  /** The CLI/harness under test (e.g. "claude", "codex", "opencode"). */
   cli: string;
   /** Unique suffix for isolating agent/channel names across runs. */
   suffix: string;
@@ -85,6 +85,12 @@ export interface ScenarioResult {
     dropped: number;
     aclDenied: number;
   };
+  /** Lifecycle: number of confirmed add_agent calls in this run. */
+  spawnCount?: number;
+  /** Lifecycle: number of confirmed remove_agent calls in this run. */
+  releaseCount?: number;
+  /** Onboarding variant used (lifecycle scenarios only). */
+  onboarding?: string;
   /** Optional human-readable notes (e.g. partial-chain detail). */
   notes?: string;
 }
@@ -110,6 +116,8 @@ export interface EvalScenario {
   harnessFilter?: string[];
   /** Overall test timeout in ms. */
   timeoutMs: number;
+  /** Onboarding variant (lifecycle scenarios only — used for report grouping). */
+  onboardingVariant?: string;
   /**
    * Orchestrate the scenario end-to-end: spawn agents, inject the stimulus,
    * wait for responses, and score the captured events into a ScenarioResult.
@@ -127,6 +135,10 @@ export interface MetricSet {
   wrongChannelReplies: number;
   scenariosPassed: number;
   scenariosTotal: number;
+  /** Lifecycle: fraction of s01/s03 scenarios where add_agent was called. */
+  spawnRate?: number;
+  /** Lifecycle: fraction of s02/s03 scenarios where remove_agent was called. */
+  releaseRate?: number;
 }
 
 /** A full report for one harness run. */
