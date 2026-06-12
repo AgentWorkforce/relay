@@ -68,17 +68,9 @@ export function daytonaConfigPath(
     case 'darwin':
       return path.join(homedir(), 'Library', 'Application Support', 'daytona', 'config.json');
     case 'win32':
-      return path.join(
-        env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'),
-        'daytona',
-        'config.json'
-      );
+      return path.join(env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'daytona', 'config.json');
     default:
-      return path.join(
-        env.XDG_CONFIG_HOME || path.join(homedir(), '.config'),
-        'daytona',
-        'config.json'
-      );
+      return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), '.config'), 'daytona', 'config.json');
   }
 }
 
@@ -86,13 +78,9 @@ export function daytonaConfigPath(
 function selectActiveProfile(config: DaytonaConfig): DaytonaProfile {
   const profiles = config.profiles ?? [];
   if (profiles.length === 0) {
-    throw new Error(
-      'No Daytona profiles found in config.json. Run `daytona login` to authenticate.'
-    );
+    throw new Error('No Daytona profiles found in config.json. Run `daytona login` to authenticate.');
   }
-  const byActive = config.activeProfile
-    ? profiles.find((p) => p.id === config.activeProfile)
-    : undefined;
+  const byActive = config.activeProfile ? profiles.find((p) => p.id === config.activeProfile) : undefined;
   return byActive ?? profiles[0];
 }
 
@@ -131,8 +119,7 @@ export async function readDaytonaCredential(
     raw = await read(configPath);
   } catch {
     throw new Error(
-      `Could not read Daytona config at ${configPath}. ` +
-        'Run `daytona login` to authenticate first.'
+      `Could not read Daytona config at ${configPath}. ` + 'Run `daytona login` to authenticate first.'
     );
   }
   let config: DaytonaConfig;
@@ -247,9 +234,7 @@ export async function connectDaytonaLocal(
   if (!(await rt.hasDaytonaCli())) {
     io.error(color.yellow('The Daytona CLI ("daytona") is not installed.'));
     io.log('Install it, then re-run this command:');
-    io.log(
-      color.dim('  curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh')
-    );
+    io.log(color.dim('  curl -fsSL -L https://download.daytona.io/daytona/install.sh | sh'));
     throw new Error('Daytona CLI not found on PATH.');
   }
 

@@ -27,9 +27,7 @@ describe('daytonaConfigPath', () => {
 
   it('resolves the Linux XDG path (default and override)', () => {
     expect(daytonaConfigPath({}, 'linux', homedir)).toBe('/home/u/.config/daytona/config.json');
-    expect(daytonaConfigPath({ XDG_CONFIG_HOME: '/xdg' }, 'linux', homedir)).toBe(
-      '/xdg/daytona/config.json'
-    );
+    expect(daytonaConfigPath({ XDG_CONFIG_HOME: '/xdg' }, 'linux', homedir)).toBe('/xdg/daytona/config.json');
   });
 
   it('resolves the Windows APPDATA path', () => {
@@ -139,9 +137,7 @@ describe('connectDaytonaLocal', () => {
   it('errors when the daytona CLI is missing (no login attempted)', async () => {
     const runLogin = vi.fn();
     const rt = runtime({ hasDaytonaCli: vi.fn().mockResolvedValue(false), runLogin });
-    await expect(
-      connectDaytonaLocal({ io: silentIo, runtime: rt })
-    ).rejects.toThrow(/Daytona CLI not found/);
+    await expect(connectDaytonaLocal({ io: silentIo, runtime: rt })).rejects.toThrow(/Daytona CLI not found/);
     expect(runLogin).not.toHaveBeenCalled();
   });
 
