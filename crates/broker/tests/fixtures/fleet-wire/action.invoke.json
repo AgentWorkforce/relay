@@ -1,7 +1,7 @@
 {
   "v": 1,
   "type": "action.invoke",
-  "invocationId": "inv_spawn_codex_001",
+  "invocation_id": "inv_spawn_codex_001",
   "action": "spawn:codex",
   "input": {
     "agent": "codex-builder-1",

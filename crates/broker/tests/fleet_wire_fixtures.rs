@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use relay_broker::fleet_wire::{NodeToServer, ServerToNode};
 use serde_json::Value;
@@ -18,6 +18,21 @@ const NODE_TO_SERVER_TYPES: &[&str] = &[
 
 const SERVER_TO_NODE_TYPES: &[&str] = &["deliver", "action.invoke", "ping"];
 
+const EXPECTED_FIXTURE_FILES: &[&str] = &[
+    "action.invoke.json",
+    "action.result.error.json",
+    "action.result.output.json",
+    "agent.deregister.json",
+    "agent.register.json",
+    "deliver.json",
+    "delivery.ack.json",
+    "inventory.sync.json",
+    "node.deregister.json",
+    "node.heartbeat.json",
+    "node.register.json",
+    "ping.json",
+];
+
 #[test]
 fn fleet_wire_fixtures_round_trip_semantically() {
     let fixture_dir = Path::new(FIXTURE_DIR);
@@ -28,10 +43,30 @@ fn fleet_wire_fixtures_round_trip_semantically() {
         .collect::<Vec<_>>();
     fixture_paths.sort();
 
-    assert!(
-        !fixture_paths.is_empty(),
-        "expected at least one fixture in {FIXTURE_DIR}"
+    let fixture_files = fixture_paths
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .unwrap_or_else(|| panic!("invalid fixture file name {}", path.display()))
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let expected_fixture_files = EXPECTED_FIXTURE_FILES
+        .iter()
+        .map(|file_name| (*file_name).to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fixture_files, expected_fixture_files,
+        "fixture file coverage mismatch in {FIXTURE_DIR}"
     );
+
+    let expected_types = NODE_TO_SERVER_TYPES
+        .iter()
+        .chain(SERVER_TO_NODE_TYPES.iter())
+        .map(|type_name| (*type_name).to_owned())
+        .collect::<BTreeSet<_>>();
+    let mut seen_types = BTreeSet::new();
 
     for path in fixture_paths {
         let raw = fs::read_to_string(&path)
@@ -42,6 +77,7 @@ fn fleet_wire_fixtures_round_trip_semantically() {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("missing string type in {}", path.display()));
+        seen_types.insert(msg_type.to_owned());
 
         let encoded = if NODE_TO_SERVER_TYPES.contains(&msg_type) {
             let decoded: NodeToServer = serde_json::from_value(fixture.clone())
@@ -59,4 +95,9 @@ fn fleet_wire_fixtures_round_trip_semantically() {
 
         assert_eq!(encoded, fixture, "fixture drift in {}", path.display());
     }
+
+    assert_eq!(
+        seen_types, expected_types,
+        "fixture coverage mismatch in {FIXTURE_DIR}"
+    );
 }

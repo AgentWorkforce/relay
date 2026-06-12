@@ -84,8 +84,6 @@ pub struct AgentRegister {
     pub v: FleetWireVersion,
     pub name: String,
     #[serde(
-        rename = "invocationId",
-        alias = "invocation_id",
         default,
         deserialize_with = "deserialize_optional_presence",
         skip_serializing_if = "Option::is_none"
@@ -109,6 +107,7 @@ pub struct AgentRegister {
 #[serde(deny_unknown_fields)]
 pub struct AgentDeregister {
     pub v: FleetWireVersion,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,7 +149,6 @@ impl<'de> Deserialize<'de> for ActionResult {
 #[serde(deny_unknown_fields)]
 struct ActionResultWire {
     pub v: FleetWireVersion,
-    #[serde(rename = "invocationId", alias = "invocation_id")]
     pub invocation_id: String,
     #[serde(
         default,
@@ -238,8 +236,6 @@ pub struct InventoryAgent {
     pub agent_id: String,
     pub name: String,
     #[serde(
-        rename = "invocationId",
-        alias = "invocation_id",
         default,
         deserialize_with = "deserialize_optional_presence",
         skip_serializing_if = "Option::is_none"
@@ -275,7 +271,6 @@ pub struct Deliver {
 #[serde(deny_unknown_fields)]
 pub struct ActionInvoke {
     pub v: FleetWireVersion,
-    #[serde(rename = "invocationId", alias = "invocation_id")]
     pub invocation_id: String,
     pub action: String,
     pub input: Value,
@@ -372,14 +367,14 @@ mod tests {
         let missing = json!({
             "type": "action.result",
             "v": 1,
-            "invocationId": "inv_2"
+            "invocation_id": "inv_2"
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(missing).is_err());
 
         let ambiguous = json!({
             "type": "action.result",
             "v": 1,
-            "invocationId": "inv_2",
+            "invocation_id": "inv_2",
             "output": null,
             "error": "handler_unavailable"
         });
@@ -392,14 +387,14 @@ mod tests {
             "type": "agent.register",
             "v": 1,
             "name": "codex-1",
-            "invocationId": null
+            "invocation_id": null
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(null_invocation).is_err());
 
         let null_error = json!({
             "type": "action.result",
             "v": 1,
-            "invocationId": "inv_2",
+            "invocation_id": "inv_2",
             "output": null,
             "error": null
         });

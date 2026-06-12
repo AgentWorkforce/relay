@@ -5,7 +5,7 @@
     {
       "agent_id": "agt_01J7FLEET000000000000101",
       "name": "codex-builder-1",
-      "invocationId": "inv_spawn_codex_001",
+      "invocation_id": "inv_spawn_codex_001",
       "session_ref": "pty://builder-1/sessions/codex-builder-1"
     },
     {

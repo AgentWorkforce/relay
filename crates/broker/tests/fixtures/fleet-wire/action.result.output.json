@@ -1,7 +1,7 @@
 {
   "v": 1,
   "type": "action.result",
-  "invocationId": "inv_spawn_codex_001",
+  "invocation_id": "inv_spawn_codex_001",
   "output": {
     "agent": "codex-builder-1",
     "status": "started"

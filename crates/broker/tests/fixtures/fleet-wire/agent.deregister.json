@@ -1,4 +1,5 @@
 {
   "v": 1,
-  "type": "agent.deregister"
+  "type": "agent.deregister",
+  "name": "codex-builder-1"
 }
