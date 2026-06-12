@@ -40,26 +40,29 @@ ${ORIGINAL_TASK}
   2. **Worker-Frontend** (haiku relay worker): frontend login component review
 
 ## Protocol
-1. Spawn each relay worker with the exact calls below:
-mcp__agent-relay__add_agent({ name: "Worker-Backend", cli: "claude", task: "You are a specialised backend worker. Your task:\\n\\n${ORIGINAL_TASK}\\n\\nFocus exclusively on the backend work. Report DONE when complete with a concise summary." })
-mcp__agent-relay__add_agent({ name: "Worker-Frontend", cli: "claude", task: "You are a specialised frontend worker. Your task:\\n\\n${ORIGINAL_TASK}\\n\\nFocus exclusively on the frontend work. Report DONE when complete with a concise summary." })
 
-2. Wait for all 2 workers to DM you "DONE: …".
+**CRITICAL: Execute ALL spawn calls immediately in sequence — do NOT pause, wait for ACK DMs, or respond to any messages between spawn calls. The spawn tool returns instantly; proceed to the next spawn without delay.**
 
-3. Synthesise their findings into a concise final answer.
+Step 1 — Spawn BOTH relay workers now, back-to-back, without waiting:
+mcp__agent-relay__add_agent({ name: "Worker-Backend", cli: "claude", task: "You are a specialised backend worker. Your task:\n\n${ORIGINAL_TASK}\n\nFocus exclusively on the backend work. Report DONE when complete with a concise summary." })
+mcp__agent-relay__add_agent({ name: "Worker-Frontend", cli: "claude", task: "You are a specialised frontend worker. Your task:\n\n${ORIGINAL_TASK}\n\nFocus exclusively on the frontend work. Report DONE when complete with a concise summary." })
 
-4. Release each worker immediately after receiving their DONE:
+Step 2 — Only after BOTH spawns are confirmed, wait for DONE DMs from all 2 workers.
+
+Step 3 — Synthesise their findings into a concise final answer.
+
+Step 4 — Release each worker:
 mcp__agent-relay__remove_agent({ name: "Worker-Backend" })
 mcp__agent-relay__remove_agent({ name: "Worker-Frontend" })
 
-5. Report your synthesised result to the channel.
+Step 5 — Report your synthesised result to the channel.
 
 ## Your relay worker tools
 - Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
 - Release a relay worker: mcp__agent-relay__remove_agent({ name })
 
 Each relay worker DMs you "ACK: <understanding>" when it starts and "DONE: <result>" when done.
-Always release workers with remove_agent as soon as they report DONE.`;
+Ignore ACK DMs until all workers are spawned. Release workers as soon as they report DONE.`;
 }
 
 const scenario: EvalScenario = {
