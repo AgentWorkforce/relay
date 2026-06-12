@@ -42,6 +42,57 @@ final class AgentRelaySDKTests: XCTestCase {
         }
     }
 
+
+
+    func testSendMessagePayloadIncludesFullParityFields() throws {
+        let payload = SendMessagePayload(
+            to: "Builder",
+            text: "Please continue",
+            from: "Lead",
+            threadId: "thread-1",
+            workspaceId: "workspace-1",
+            workspaceAlias: "default",
+            priority: 5,
+            data: ["ticket": .string("ENG-123")],
+            mode: .steer
+        )
+        let data = try JSONEncoder().encode(payload)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["thread_id"] as? String, "thread-1")
+        XCTAssertEqual(object["workspace_id"] as? String, "workspace-1")
+        XCTAssertEqual(object["workspace_alias"] as? String, "default")
+        XCTAssertEqual(object["mode"] as? String, "steer")
+        XCTAssertEqual((object["data"] as? [String: Any])?["ticket"] as? String, "ENG-123")
+    }
+
+    func testBrokerStatusDecodesParityFields() throws {
+        let json = """
+        {
+          "agent_count": 1,
+          "agents": [{
+            "name": "Builder",
+            "runtime": "pty",
+            "cli": "codex",
+            "channels": ["dev"],
+            "last_activity_ms": 42,
+            "context_budget_pct": 12.5,
+            "current_state": "blocked_on_send"
+          }],
+          "pending_delivery_count": 1,
+          "pending_deliveries": [{
+            "delivery_id": "del_1",
+            "worker_name": "Builder",
+            "event_id": "evt_1",
+            "attempts": 2
+          }]
+        }
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(BrokerStatus.self, from: json)
+        XCTAssertEqual(status.agentCount, 1)
+        XCTAssertEqual(status.agents.first?.currentState, .blockedOnSend)
+        XCTAssertEqual(status.pendingDeliveries.first?.deliveryId, "del_1")
+    }
+
     // MARK: - WebSocket URL resolution
 
     func testWebSocketURLAppendsWS() {

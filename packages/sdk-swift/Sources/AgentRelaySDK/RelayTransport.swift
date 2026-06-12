@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
 public actor RelayTransport {
     public enum ConnectionState: Sendable {
         case disconnected
