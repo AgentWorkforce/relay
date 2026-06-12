@@ -199,7 +199,7 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 
 There is no `payload` wrapper on the Relaycast ↔ broker control WebSocket. The `v` field is always `1`; `type` is the message discriminant; every payload field is snake_case. The schema is strict: unknown fields are invalid, and `action.result` includes exactly one of `output` or `error`.
 
-Broker→Relaycast requests that need a response carry an optional `id`. Relaycast replies on the same channel with either `{ id, ok: true, data }` or `{ id, ok: false, code, message }`. `agent.register` uses `data` to return the minted agent token.
+Broker→Relaycast requests that need a response carry an optional `id`. Relaycast replies on the same channel with either `{ id, ok: true, data }` or `{ id, ok: false, code, message }`. For `agent.register`, `data` is the minted token object `{ agent_id, token, name? }`.
 
 **Broker → Relaycast:**
 
@@ -221,7 +221,7 @@ Broker→Relaycast requests that need a response carry an optional `id`. Relayca
   ```
 - `agent.deregister`
   ```
-  { v: 1, type: "agent.deregister", name: string }
+  { v: 1, id?: string, type: "agent.deregister", agent_id: string, name?: string }
   ```
 - `delivery.ack`
   ```
@@ -287,6 +287,10 @@ Local `payload` fields are also snake_case. The fleet extension adds:
   ```
   { invocation_id: string, name: string, input: JsonValue }
   ```
+- **Sidecar → Broker:** `deregister_node`
+  ```
+  {}
+  ```
 - **Sidecar → Broker:** `handler_result` (success)
   ```
   { invocation_id: string, output: JsonValue }
@@ -300,7 +304,7 @@ Local `payload` fields are also snake_case. The fleet extension adds:
   { agent: AgentSpec, invocation_id?: string, initial_task?: string, skip_relay_prompt?: boolean }
   ```
 
-The local manifest is capability names and metadata only; handler code remains in the sidecar. The optional supervision block is separate restart metadata for the broker (`argv`, `cwd`, `env`) and must not contain handler code. Existing local process control remains explicit: a spawn handler constructs an `AgentSpec` and asks the broker to execute the existing `spawn_agent` frame.
+The local manifest is capability names and metadata only; handler code remains in the sidecar. The optional supervision block is separate restart metadata for the broker (`argv`, `cwd`, `env`) and must not contain handler code. Existing local process control remains explicit: a spawn handler constructs an `AgentSpec` and asks the broker to execute the existing `spawn_agent` frame. On clean shutdown, the sidecar sends `deregister_node {}` and the broker responds by emitting wire `node.deregister` and removing the sidecar from its supervision table.
 
 The cross-repo contract should live as versioned TypeScript wire schemas (zod) mirrored by Rust serde structs, with golden JSON fixtures shared by the Relaycast engine and broker tests. The protocol is implemented twice; fixtures are the compatibility boundary.
 
@@ -328,6 +332,7 @@ The cross-repo contract should live as versioned TypeScript wire schemas (zod) m
 - **Placement** is targeted (`name`/`self`) or any (least-loaded); eligibility requires `live ∧ handlers_live ∧ capacity_available`; targeted placement never migrates; **resume = origin-pinned targeted spawn + session_ref**. Node roster for discovery.
 - **Reliable invocation:** idempotency (`invocation_id`) + at-least-once + reconcile; automatic reschedule with the same `invocation_id` applies only to scheduler-placed untargeted invocations, where first-to-`completed` wins. Targeted invocations stay pinned and queue or fail by policy.
 - **Node-native actions:** an action handler can be a node (`handler_node_id`), dispatched over the control connection; the node is not in the agent roster.
+- **Token minting / deregistration:** `agent.register` reply.data is `{ agent_id, token, name? }`; `agent.deregister` is `agent_id`-primary with optional `name`; `deregister_node {}` is the clean-shutdown local frame.
 - **Triggers:** actions can be invoked explicitly through MCP/SDK or by declarative message→action triggers matched by Relaycast after message commit.
 - **Durability:** bounded-durable mailbox; at-least-once + dedup by `msg_id`; per-location `seq`; cumulative ack. Mailbox subsumes node replay; broker stateless across restarts; Relaycast is source of truth.
 - **Identity continuity requires session continuity:** resume is node-local; resumable agents node-sticky; otherwise fresh identity + dead-letter old mailbox.
