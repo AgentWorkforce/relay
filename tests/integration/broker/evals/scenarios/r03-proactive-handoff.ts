@@ -52,7 +52,12 @@ export const scenario: EvalScenario = {
       pass,
       agents: [
         { name: author, cli, role: 'author', prompt: role },
-        { name: reviewer, cli: 'cat', role: 'reviewer (peer target)', prompt: '(cat shim — hand-off target)' },
+        {
+          name: reviewer,
+          cli: 'cat',
+          role: 'reviewer (peer target)',
+          prompt: '(cat shim — hand-off target)',
+        },
       ],
       transcript: base.transcript,
       sent: base.sent,

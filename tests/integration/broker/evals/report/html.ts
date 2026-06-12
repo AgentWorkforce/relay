@@ -7,11 +7,7 @@
 import type { EvalReport, MatrixReport, MetricSet, ScenarioResult, TranscriptEntry } from '../types.js';
 
 function esc(s: string): string {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function pct(x: number): string {
@@ -77,14 +73,29 @@ th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: upper
 function metricCards(m: MetricSet): string {
   const cards: Array<{ v: string; l: string; cls?: string }> = [
     { v: pct(m.messageSentRate), l: 'Message-sent rate', cls: m.messageSentRate >= 1 ? 'good' : 'warn' },
-    { v: `${pct(m.phantomRate)} (${m.phantomCount})`, l: 'Phantom rate', cls: m.phantomCount > 0 ? 'bad' : 'good' },
+    {
+      v: `${pct(m.phantomRate)} (${m.phantomCount})`,
+      l: 'Phantom rate',
+      cls: m.phantomCount > 0 ? 'bad' : 'good',
+    },
     { v: pct(m.protocolAdherence), l: 'Protocol adherence', cls: m.protocolAdherence >= 1 ? 'good' : 'warn' },
-    { v: pct(m.deliverySuccessRate), l: 'Delivery success', cls: m.deliverySuccessRate >= 1 ? 'good' : 'bad' },
+    {
+      v: pct(m.deliverySuccessRate),
+      l: 'Delivery success',
+      cls: m.deliverySuccessRate >= 1 ? 'good' : 'bad',
+    },
     { v: String(m.wrongChannelReplies), l: 'Wrong-channel', cls: m.wrongChannelReplies > 0 ? 'bad' : 'good' },
-    { v: `${m.scenariosPassed}/${m.scenariosTotal}`, l: 'Scenarios passed', cls: m.scenariosPassed === m.scenariosTotal ? 'good' : 'bad' },
+    {
+      v: `${m.scenariosPassed}/${m.scenariosTotal}`,
+      l: 'Scenarios passed',
+      cls: m.scenariosPassed === m.scenariosTotal ? 'good' : 'bad',
+    },
   ];
   return `<div class="cards">${cards
-    .map((c) => `<div class="card ${c.cls ?? ''}"><div class="v">${esc(c.v)}</div><div class="l">${esc(c.l)}</div></div>`)
+    .map(
+      (c) =>
+        `<div class="card ${c.cls ?? ''}"><div class="v">${esc(c.v)}</div><div class="l">${esc(c.l)}</div></div>`
+    )
     .join('')}</div>`;
 }
 

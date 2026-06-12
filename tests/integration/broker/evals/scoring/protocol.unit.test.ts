@@ -64,10 +64,7 @@ describe('scoreChannelReply', () => {
   });
 
   it('counts a post to a different channel as wrong', () => {
-    const events = [
-      inbound('Worker', '#proj-x', 'READY'),
-      inbound('Worker', '#random', 'oops'),
-    ];
+    const events = [inbound('Worker', '#proj-x', 'READY'), inbound('Worker', '#random', 'oops')];
     expect(scoreChannelReply(events, 'Worker', 'proj-x')).toEqual({
       repliedToShownChannel: true,
       wrongChannelReplies: 1,

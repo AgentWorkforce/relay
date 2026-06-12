@@ -99,11 +99,7 @@ const HIGHER_IS_BETTER: Array<keyof MetricSet> = [
  * higher-is-better metric drops or a lower-is-better metric rises beyond
  * `threshold`.
  */
-export function compareReports(
-  baseline: EvalReport,
-  current: EvalReport,
-  threshold = 0.0001
-): MetricDelta[] {
+export function compareReports(baseline: EvalReport, current: EvalReport, threshold = 0.0001): MetricDelta[] {
   const keys: Array<keyof MetricSet> = [
     'messageSentRate',
     'phantomRate',
