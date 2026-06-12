@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{
     de::{self, Deserializer},
     ser, Deserialize, Serialize, Serializer,
@@ -52,11 +54,35 @@ pub enum DeliveryMode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct FleetCapability {
+    pub name: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kind: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeRegister {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     pub name: String,
     pub node_id: String,
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub tags: Vec<String>,
     pub version: String,
@@ -67,6 +93,12 @@ pub struct NodeRegister {
 #[serde(deny_unknown_fields)]
 pub struct NodeHeartbeat {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     #[serde(
         deserialize_with = "deserialize_finite_nonnegative_f64",
         serialize_with = "serialize_finite_nonnegative_f64"
@@ -80,12 +112,24 @@ pub struct NodeHeartbeat {
 #[serde(deny_unknown_fields)]
 pub struct NodeDeregister {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRegister {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     pub name: String,
     #[serde(
         default,
@@ -111,13 +155,31 @@ pub struct AgentRegister {
 #[serde(deny_unknown_fields)]
 pub struct AgentDeregister {
     pub v: FleetWireVersion,
-    pub name: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
+    pub agent_id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryAck {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     pub agent: String,
     pub up_to_seq: u64,
 }
@@ -125,6 +187,7 @@ pub struct DeliveryAck {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActionResult {
     pub v: FleetWireVersion,
+    pub id: Option<String>,
     pub invocation_id: String,
     pub result: ActionResultPayload,
 }
@@ -153,6 +216,12 @@ impl<'de> Deserialize<'de> for ActionResult {
 #[serde(deny_unknown_fields)]
 struct ActionResultWire {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     pub invocation_id: String,
     #[serde(
         default,
@@ -207,12 +276,14 @@ impl From<&ActionResult> for ActionResultWire {
         match &value.result {
             ActionResultPayload::Output(output) => Self {
                 v: value.v,
+                id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
                 output: Some(output.output.clone()),
                 error: None,
             },
             ActionResultPayload::Error(error) => Self {
                 v: value.v,
+                id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
                 output: None,
                 error: Some(error.error.clone()),
@@ -235,6 +306,7 @@ impl TryFrom<ActionResultWire> for ActionResult {
 
         Ok(Self {
             v: value.v,
+            id: value.id,
             invocation_id: value.invocation_id,
             result,
         })
@@ -283,6 +355,12 @@ pub struct InventoryAgent {
 #[serde(deny_unknown_fields)]
 pub struct InventorySync {
     pub v: FleetWireVersion,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
     pub agents: Vec<InventoryAgent>,
 }
 
@@ -310,6 +388,79 @@ pub struct ActionInvoke {
 #[serde(deny_unknown_fields)]
 pub struct Ping {
     pub v: FleetWireVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reply {
+    pub v: FleetWireVersion,
+    pub id: String,
+    #[serde(
+        deserialize_with = "deserialize_true_bool",
+        serialize_with = "serialize_true_bool"
+    )]
+    pub ok: bool,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Error {
+    pub v: FleetWireVersion,
+    pub id: String,
+    #[serde(
+        deserialize_with = "deserialize_false_bool",
+        serialize_with = "serialize_false_bool"
+    )]
+    pub ok: bool,
+    pub code: String,
+    pub message: String,
+}
+
+fn deserialize_true_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = bool::deserialize(deserializer)?;
+    if value {
+        Ok(value)
+    } else {
+        Err(de::Error::custom("expected ok to be true"))
+    }
+}
+
+fn serialize_true_bool<S>(value: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *value {
+        serializer.serialize_bool(*value)
+    } else {
+        Err(ser::Error::custom("expected ok to be true"))
+    }
+}
+
+fn deserialize_false_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = bool::deserialize(deserializer)?;
+    if value {
+        Err(de::Error::custom("expected ok to be false"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn serialize_false_bool<S>(value: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *value {
+        Err(ser::Error::custom("expected ok to be false"))
+    } else {
+        serializer.serialize_bool(*value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -342,6 +493,10 @@ pub enum ServerToNode {
     ActionInvoke(ActionInvoke),
     #[serde(rename = "ping")]
     Ping(Ping),
+    #[serde(rename = "reply")]
+    Reply(Reply),
+    #[serde(rename = "error")]
+    Error(Error),
 }
 
 pub type BrokerToRelaycast = NodeToServer;
@@ -354,14 +509,15 @@ mod tests {
 
     use super::{
         deserialize_finite_nonnegative_f64, ActionResult, ActionResultError, ActionResultPayload,
-        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, NodeHeartbeat, RelaycastToBroker,
-        FLEET_WIRE_VERSION,
+        AgentRegister, BrokerToRelaycast, Deliver, DeliveryMode, Error, NodeHeartbeat,
+        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
     };
 
     #[test]
     fn skips_absent_optional_fields() {
         let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
             v: FLEET_WIRE_VERSION,
+            id: None,
             name: "codex-1".to_string(),
             invocation_id: None,
             session_ref: None,
@@ -383,6 +539,7 @@ mod tests {
     fn action_result_allows_error_payloads() {
         let msg = BrokerToRelaycast::ActionResult(ActionResult {
             v: FLEET_WIRE_VERSION,
+            id: None,
             invocation_id: "inv_2".to_string(),
             result: ActionResultPayload::Error(ActionResultError {
                 error: "handler_unavailable".to_string(),
@@ -432,6 +589,7 @@ mod tests {
 
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
+            id: None,
             load: f64::INFINITY,
             active_agents: 0,
             handlers_live: true,
@@ -472,6 +630,14 @@ mod tests {
 
     #[test]
     fn optional_fields_reject_explicit_nulls() {
+        let null_request_id = json!({
+            "type": "agent.register",
+            "v": 1,
+            "id": null,
+            "name": "codex-1"
+        });
+        assert!(serde_json::from_value::<BrokerToRelaycast>(null_request_id).is_err());
+
         let null_invocation = json!({
             "type": "agent.register",
             "v": 1,
@@ -488,6 +654,68 @@ mod tests {
             "error": null
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(null_error).is_err());
+    }
+
+    #[test]
+    fn response_frames_enforce_ok_literal() {
+        let reply: RelaycastToBroker = serde_json::from_value(json!({
+            "type": "reply",
+            "v": 1,
+            "id": "req_1",
+            "ok": true,
+            "data": {
+                "agent_id": "agt_1"
+            }
+        }))
+        .unwrap();
+        assert_eq!(serde_json::to_value(&reply).unwrap()["ok"], true);
+
+        let error: RelaycastToBroker = serde_json::from_value(json!({
+            "type": "error",
+            "v": 1,
+            "id": "req_2",
+            "ok": false,
+            "code": "node_name_conflict",
+            "message": "duplicate"
+        }))
+        .unwrap();
+        assert_eq!(serde_json::to_value(&error).unwrap()["ok"], false);
+
+        let wrong_reply_ok = json!({
+            "type": "reply",
+            "v": 1,
+            "id": "req_1",
+            "ok": false,
+            "data": null
+        });
+        assert!(serde_json::from_value::<RelaycastToBroker>(wrong_reply_ok).is_err());
+
+        let wrong_error_ok = json!({
+            "type": "error",
+            "v": 1,
+            "id": "req_2",
+            "ok": true,
+            "code": "node_name_conflict",
+            "message": "duplicate"
+        });
+        assert!(serde_json::from_value::<RelaycastToBroker>(wrong_error_ok).is_err());
+
+        let invalid_reply = RelaycastToBroker::Reply(Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "req_1".to_string(),
+            ok: false,
+            data: Value::Null,
+        });
+        assert!(serde_json::to_value(invalid_reply).is_err());
+
+        let invalid_error = RelaycastToBroker::Error(Error {
+            v: FLEET_WIRE_VERSION,
+            id: "req_2".to_string(),
+            ok: true,
+            code: "node_name_conflict".to_string(),
+            message: "duplicate".to_string(),
+        });
+        assert!(serde_json::to_value(invalid_error).is_err());
     }
 
     #[test]

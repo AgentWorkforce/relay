@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "reply",
+  "id": "req_agent_register_001",
+  "ok": true,
+  "data": {
+    "agent_id": "agt_01J7FLEET000000000000101",
+    "name": "codex-builder-1",
+    "token": "at_live_0123456789abcdef01234567",
+    "invocation_id": "inv_spawn_codex_001",
+    "session_ref": "pty://builder-1/sessions/codex-builder-1"
+  }
+}
