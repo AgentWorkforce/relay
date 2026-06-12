@@ -81,16 +81,21 @@ const scenario: EvalScenario = {
 
     const task = buildDirectorPrompt();
     await harness.spawnAgent(director, cli, ['general'], { task, model });
+    // Don't clearEvents() here — the Director may execute spawn calls during startup (the task is
+    // the meta-prompt, so the CLI processes it immediately after boot). clearEvents() would discard
+    // any agent_spawned events that fired during the STARTUP_MS window.
+    // Instead, reset the clock and count events from here including the startup window.
     await sleep(STARTUP_MS);
-    harness.clearEvents();
 
     // Don't send an Orchestrator message — let the Director execute autonomously from its meta-prompt.
     // In production, the Director is spawned with the meta-prompt as its task and executes
     // the spawn instructions on its own. Sending an Orchestrator message triggers only a partial
     // execution (single add_agent call as a response to the message), while meta-prompt-only
     // execution may trigger the full protocol.
-    // Wait up to 180s for 2 spawns: Director boots → reads meta-prompt → calls ACTION 1 → ACTION 2.
-    let spawnCount = 0;
+    // Count spawns that happened during startup + wait up to 180s for more.
+    const startupSpawns = harness.getEvents().filter(e => e.kind === 'agent_spawned' && e.parent === director);
+    let spawnCount = startupSpawns.length;
+    harness.clearEvents();
     const deadline = Date.now() + 180_000;
     while (spawnCount < 2 && Date.now() < deadline) {
       const waiter = harness.waitForEvent('agent_spawned', Math.max(0, deadline - Date.now()));
