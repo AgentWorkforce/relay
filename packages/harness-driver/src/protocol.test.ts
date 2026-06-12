@@ -12,7 +12,7 @@ describe('fleet local protocol messages', () => {
           node_id: 'node_local_1',
           capabilities: [
             { name: 'spawn:claude', kind: 'spawn', metadata: { provider: 'claude' } },
-            { name: 'run-foo', metadata: { schema: 'v1' } },
+            { name: 'run-foo', metadata: { schema: { type: 'object' }, retryable: false } },
           ],
           max_agents: 8,
           tags: ['local', 'gpu'],
@@ -34,7 +34,7 @@ describe('fleet local protocol messages', () => {
           node_id: 'node_local_1',
           capabilities: [
             { name: 'spawn:claude', kind: 'spawn', metadata: { provider: 'claude' } },
-            { name: 'run-foo', metadata: { schema: 'v1' } },
+            { name: 'run-foo', metadata: { schema: { type: 'object' }, retryable: false } },
           ],
           max_agents: 8,
           tags: ['local', 'gpu'],

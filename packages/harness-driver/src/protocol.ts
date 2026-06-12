@@ -79,8 +79,27 @@ export interface NodeCapabilityManifest {
   name: string;
   kind?: string;
   /** Capability metadata only; handler code stays in the sidecar. */
-  metadata?: JsonValue;
+  metadata?: Record<string, JsonValue>;
 }
+
+type AssertNodeCapabilityManifest<T extends NodeCapabilityManifest> = T;
+type _NodeCapabilityAllowsObjectMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-foo';
+  metadata: { schema: { type: 'object' }; retryable: false };
+}>;
+type _NodeCapabilityAllowsMissingMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-bar';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsScalarMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-baz';
+  metadata: 'v1';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsArrayMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-qux';
+  metadata: ['v1'];
+}>;
 
 export interface NodeManifest {
   name: string;
