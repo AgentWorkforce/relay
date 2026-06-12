@@ -70,19 +70,19 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 |---------|------|-----------|-------|-------|
 | codex | 80% | **100%** | **100%** | **100%** |
 | opencode:mimo | **100%** | 80% | 60% | **100%** |
-| droid | **100%** | (running) | — | — |
-| gemini | 60% | **100%** | (running) | — |
+| droid | **100%** | **100%** | **100%** | (running) |
+| gemini | 60% | **100%** | **100%** | **100%** |
 | grok | 0% | 0% | 0% | 0% |
 | cursor | 0% | 0% | 0% | 0% |
 
 **Key lifecycle findings:**
 - **Codex**: 100% on all s01/s02 variants; s03 bare=80%, one-liner/brief/skill=100%. Most reliable non-Claude harness — any onboarding except bare reliably achieves full lifecycle.
 - **OpenCode**: s03 bare=100% (best s03 bare!); one-liner=80%, brief=60%, skill=100%. Directive task prompts outperform — brief's conditional guidance hurts more than bare.
-- **Droid**: s03 bare=100% — surprising given s02 bare=20%. The full s03 task description (with explicit "report DONE when complete") is more directive than s02, triggering reliable release. s03 one-liner still running.
-- **Gemini**: s03 bare=60%, one-liner=100%. Needs at least one-liner for reliable full lifecycle. Skill onboarding in s02 recovered to 100%, so the release step is learnable.
+- **Droid**: s03 bare/one-liner/brief all 100% — exceptional result. Despite s02 bare=20%, the full s03 task description ("report DONE when complete with a concise summary") drives reliable release even with bare onboarding. Skill onboarding still running (1 fail seen).
+- **Gemini**: s03 bare=60%, one-liner/brief/skill all 100%. The bare gap (release failure without onboarding) closes completely with any explicit context. Most consistent non-Claude lifecycle performance once prompted.
 - **Grok/Cursor**: 0% across all scenarios — not viable relay workers.
 
-**Implication for Director prompt**: Droid and gemini need at least one-liner onboarding for reliable full lifecycle. The auto-routing Director prompt's explicit `remove_agent` instructions effectively substitute for skill onboarding, and the directive task phrasing ("report DONE when complete") drives the release step. Codex and opencode are the most reliable non-Claude relay workers.
+**Implication for Director prompt**: The auto-routing Director prompt already includes explicit `remove_agent` calls and directive task phrasing — this effectively acts as inline skill onboarding even for bare leads. All tested non-Claude harnesses (except grok/cursor) are viable relay workers with the right meta-prompt. Codex is the most consistently reliable across all onboarding tiers.
 
 ### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each, all complete)
 
