@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "8.6.0",
+  "version": "8.7.0",
   "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",

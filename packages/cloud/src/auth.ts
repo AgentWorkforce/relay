@@ -6,8 +6,19 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { buildApiUrl } from './api-client.js';
+import { CloudApiClient } from './api-client.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
-import { AUTH_FILE_PATH, REFRESH_WINDOW_MS, type StoredAuth } from './types.js';
+import {
+  AUTH_FILE_PATH,
+  DEFAULT_REFRESH_TIMEOUT_MS,
+  LEGACY_AUTH_FILE_PATH,
+  REFRESH_WINDOW_MS,
+  CloudAuthError,
+  defaultApiUrl,
+  type CloudSession,
+  type CloudSessionOptions,
+  type StoredAuth,
+} from './types.js';
 
 const envBackedAuth = new WeakSet<StoredAuth>();
 
@@ -49,11 +60,16 @@ function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
 }
 
 function toEnvAuthRefreshError(error: unknown): Error {
+  if (error instanceof CloudAuthError && error.code === 'AUTH_REFRESH_TIMEOUT') {
+    return error;
+  }
+
   const message = error instanceof Error && error.message ? `${error.message}. ` : '';
 
-  return new Error(
+  return new CloudAuthError(
+    'AUTH_ENV_REPROVISION_REQUIRED',
     `${message}Env-backed cloud auth could not be refreshed interactively; re-provision CLOUD_API_URL, CLOUD_API_ACCESS_TOKEN, CLOUD_API_REFRESH_TOKEN, and CLOUD_API_ACCESS_TOKEN_EXPIRES_AT.`,
-    error instanceof Error ? { cause: error } : undefined
+    { cause: error }
   );
 }
 
@@ -81,6 +97,19 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
     const file = await fs.readFile(AUTH_FILE_PATH, 'utf8');
     const parsed = JSON.parse(file) as unknown;
     return isValidStoredAuth(parsed) ? parsed : null;
+  } catch {
+    // Fall through to the one-time migration path below.
+  }
+
+  try {
+    const legacyFile = await fs.readFile(LEGACY_AUTH_FILE_PATH, 'utf8');
+    const parsed = JSON.parse(legacyFile) as unknown;
+    if (!isValidStoredAuth(parsed)) {
+      return null;
+    }
+
+    await writeStoredAuth(parsed);
+    return parsed;
   } catch {
     return null;
   }
@@ -122,6 +151,83 @@ function openBrowser(url: string) {
   }
 
   return spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+}
+
+function browserRequired(message: string): CloudAuthError {
+  return new CloudAuthError('AUTH_BROWSER_REQUIRED', message);
+}
+
+function refreshExpired(message = 'Stored cloud login has expired'): CloudAuthError {
+  return new CloudAuthError('AUTH_REFRESH_EXPIRED', message);
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.name === 'TimeoutError' || /aborted/i.test(error.message))
+  );
+}
+
+function addAbortListener(signal: AbortSignal, listener: () => void): () => void {
+  signal.addEventListener('abort', listener, { once: true });
+  return () => signal.removeEventListener('abort', listener);
+}
+
+async function fetchWithRefreshTimeout(
+  url: URL,
+  init: RequestInit,
+  options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<Response> {
+  const refreshTimeoutMs = options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const removers: Array<() => void> = [];
+  let timedOut = false;
+  let callerAborted = false;
+
+  const abortFromCaller = () => {
+    callerAborted = true;
+    controller.abort();
+  };
+
+  for (const signal of [options.signal, init.signal]) {
+    if (!signal) {
+      continue;
+    }
+
+    if (signal.aborted) {
+      callerAborted = true;
+      controller.abort();
+      break;
+    }
+
+    removers.push(addAbortListener(signal, abortFromCaller));
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, refreshTimeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timedOut || (!callerAborted && isAbortLikeError(error))) {
+      throw new CloudAuthError(
+        'AUTH_REFRESH_TIMEOUT',
+        `Cloud auth refresh timed out after ${refreshTimeoutMs}ms`,
+        { cause: error }
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    for (const remove of removers) {
+      remove();
+    }
+  }
 }
 
 function redirectToHostedCliAuthPage(
@@ -262,14 +368,21 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
   });
 }
 
-export async function refreshStoredAuth(auth: StoredAuth): Promise<StoredAuth> {
-  const response = await fetch(buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
+export async function refreshStoredAuth(
+  auth: StoredAuth,
+  options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<StoredAuth> {
+  const response = await fetchWithRefreshTimeout(
+    buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'),
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ refreshToken: auth.refreshToken }),
     },
-    body: JSON.stringify({ refreshToken: auth.refreshToken }),
-  });
+    options
+  );
 
   const payload = (await response.json().catch(() => null)) as {
     accessToken?: string;
@@ -278,7 +391,7 @@ export async function refreshStoredAuth(auth: StoredAuth): Promise<StoredAuth> {
   } | null;
 
   if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload?.accessTokenExpiresAt) {
-    throw new Error('Stored cloud login has expired');
+    throw refreshExpired();
   }
 
   const nextAuth: StoredAuth = {
@@ -305,10 +418,24 @@ async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
 
 export async function ensureAuthenticated(
   apiUrl: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; interactive?: boolean; refreshTimeoutMs?: number }
 ): Promise<StoredAuth> {
-  const force = options?.force === true;
-  const stored = !force ? await readStoredAuth() : null;
+  const session = await ensureCloudSession({
+    apiUrl,
+    force: options?.force,
+    interactive: options?.interactive,
+    refreshTimeoutMs: options?.refreshTimeoutMs,
+  });
+  return session.auth;
+}
+
+export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
+  const env = options.env ?? process.env;
+  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const force = options.force === true;
+  const interactive = options.interactive !== false;
+  const refreshTimeoutMs = options.refreshTimeoutMs;
+  const stored = !force ? await readStoredAuth(env) : null;
 
   // Stored auth is authoritative on its own host. A host mismatch between
   // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
@@ -316,22 +443,53 @@ export async function ensureAuthenticated(
   // may have drifted (e.g. CLOUD_API_URL env set/unset between sessions).
   // Only `--force` re-links to a different host.
   if (!stored) {
-    return loginWithBrowser(apiUrl);
+    if (!interactive) {
+      throw browserRequired('Cloud login required. Run `agent-relay login`.');
+    }
+    const auth = await loginWithBrowser(apiUrl);
+    return createCloudSession(auth, { refreshTimeoutMs });
   }
 
   if (!shouldRefresh(stored.accessTokenExpiresAt)) {
-    return stored;
+    return createCloudSession(stored, { refreshTimeoutMs });
   }
 
   try {
-    return await refreshStoredAuth(stored);
+    const auth = await refreshStoredAuth(stored, { refreshTimeoutMs });
+    return createCloudSession(auth, { refreshTimeoutMs });
   } catch (error) {
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
     }
 
-    return loginWithBrowser(stored.apiUrl);
+    if (!interactive) {
+      throw error;
+    }
+
+    const auth = await loginWithBrowser(stored.apiUrl);
+    return createCloudSession(auth, { refreshTimeoutMs });
   }
+}
+
+function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
+  const client = new CloudApiClient({
+    ...auth,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+    onRefresh: async (snapshot) => {
+      if (isEnvBackedAuth(auth)) {
+        return;
+      }
+
+      await writeStoredAuth({
+        apiUrl: snapshot.apiUrl,
+        accessToken: snapshot.accessToken,
+        refreshToken: snapshot.refreshToken,
+        accessTokenExpiresAt: snapshot.accessTokenExpiresAt,
+      });
+    },
+  });
+
+  return { auth, client };
 }
 
 function apiFetch(
@@ -356,7 +514,8 @@ function apiFetch(
 export async function authorizedApiFetch(
   auth: StoredAuth,
   requestPath: string,
-  init: RequestInit
+  init: RequestInit,
+  options: { interactive?: boolean; refreshTimeoutMs?: number } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
@@ -366,10 +525,17 @@ export async function authorizedApiFetch(
   }
 
   try {
-    activeAuth = await refreshStoredAuth(activeAuth);
+    activeAuth = await refreshStoredAuth(activeAuth, {
+      refreshTimeoutMs: options.refreshTimeoutMs,
+      signal: init.signal ?? undefined,
+    });
   } catch (error) {
     if (isEnvBackedAuth(activeAuth)) {
       throw toEnvAuthRefreshError(error);
+    }
+
+    if (options.interactive === false) {
+      throw error;
     }
 
     activeAuth = await loginWithBrowser(activeAuth.apiUrl);

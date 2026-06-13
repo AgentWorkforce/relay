@@ -8,6 +8,36 @@ export type StoredAuth = {
   apiUrl: string;
 };
 
+export type CloudAuthErrorCode =
+  | 'AUTH_REFRESH_TIMEOUT'
+  | 'AUTH_REFRESH_EXPIRED'
+  | 'AUTH_BROWSER_REQUIRED'
+  | 'AUTH_ENV_REPROVISION_REQUIRED';
+
+export class CloudAuthError extends Error {
+  constructor(
+    public readonly code: CloudAuthErrorCode,
+    message: string,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+    this.name = 'CloudAuthError';
+  }
+}
+
+export type CloudSession = {
+  auth: StoredAuth;
+  client: import('./api-client.js').CloudApiClient;
+};
+
+export type CloudSessionOptions = {
+  apiUrl?: string;
+  force?: boolean;
+  interactive?: boolean;
+  refreshTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+};
+
 export type WhoAmIResponse = {
   authenticated: boolean;
   source: 'session' | 'token';
@@ -71,6 +101,29 @@ export type WorkspaceTokenRecord = {
 export type WorkspaceTokenIssueResponse = {
   key: string;
   workspaceToken?: WorkspaceTokenRecord;
+};
+
+export type ActiveWorkspaceUrls = {
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  [key: string]: string | undefined;
+};
+
+export type ActiveWorkspaceDescriptor = {
+  name?: string;
+  key: string;
+  cloudWorkspaceId: string;
+  relaycastWorkspaceId: string;
+  relaycastApiKey?: string;
+  relayfileWorkspaceId: string;
+  relayauthWorkspaceId: string;
+  organizationId?: string;
+  slug?: string;
+  urls: ActiveWorkspaceUrls;
+  apiUrl: string;
+  provisioned?: boolean;
 };
 
 export type ProactiveDeploymentResponse = {
@@ -208,7 +261,9 @@ export type GetPatchesResponse = {
 export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
 export const REFRESH_WINDOW_MS = 60_000;
+export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
 export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
+export const LEGACY_AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
 
 export function defaultApiUrl(): string {
   return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';

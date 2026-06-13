@@ -1,10 +1,13 @@
 import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
 import {
+  type ActiveWorkspaceDescriptor,
+  type ActiveWorkspaceUrls,
   defaultApiUrl,
   type WorkspaceCreateResponse,
   type WorkspaceTokenIssueResponse,
   type WorkspaceTokenRecord,
 } from './types.js';
+import { resolveActiveWorkspaceKey } from './workspace-store.js';
 
 type WorkspaceClientOptions = {
   apiUrl?: string;
@@ -12,6 +15,12 @@ type WorkspaceClientOptions = {
 
 type WorkspaceTokenIssueOptions = WorkspaceClientOptions & {
   name?: string;
+};
+
+type ResolveActiveWorkspaceOptions = WorkspaceClientOptions & {
+  interactive?: boolean;
+  refreshTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -31,6 +40,21 @@ async function readJson(response: Response): Promise<unknown> {
 function readString(payload: JsonRecord, key: string): string | undefined {
   const value = payload[key];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readStringAny(payload: JsonRecord, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = readString(payload, key);
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function readBoolean(payload: JsonRecord, key: string): boolean | undefined {
+  const value = payload[key];
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function buildEndpointError(action: string, endpoint: string, response: Response, payload: unknown): Error {
@@ -113,6 +137,85 @@ function normalizeWorkspaceTokenIssueResponse(
   };
 }
 
+function readUrls(payload: JsonRecord): ActiveWorkspaceUrls {
+  const rawUrls = payload.urls;
+  const urls: ActiveWorkspaceUrls = {};
+
+  if (isObject(rawUrls)) {
+    for (const [key, value] of Object.entries(rawUrls)) {
+      if (typeof value === 'string' && value.trim()) {
+        urls[key] = value.trim();
+      }
+    }
+  }
+
+  for (const key of ['relayfileUrl', 'relaycronUrl', 'relaycastUrl', 'relayauthUrl']) {
+    const value = readString(payload, key);
+    if (value) {
+      urls[key] = value;
+    }
+  }
+
+  return urls;
+}
+
+function normalizeActiveWorkspaceDescriptor(
+  payload: unknown,
+  fallbackKey: string,
+  apiUrl: string
+): ActiveWorkspaceDescriptor {
+  if (!isObject(payload)) {
+    throw new Error('Active workspace response was not valid JSON.');
+  }
+
+  const workspace = isObject(payload.workspace) ? payload.workspace : payload;
+  const key = readStringAny(workspace, ['key', 'workspaceKey', 'relaycastApiKey']) ?? fallbackKey;
+  const cloudWorkspaceId = readStringAny(workspace, ['cloudWorkspaceId', 'workspaceId', 'id']);
+  const relaycastWorkspaceId = readStringAny(workspace, ['relaycastWorkspaceId']);
+  const relayfileWorkspaceId = readStringAny(workspace, ['relayfileWorkspaceId']);
+  const relayauthWorkspaceId = readStringAny(workspace, ['relayauthWorkspaceId']);
+
+  if (!cloudWorkspaceId) {
+    throw new Error('Active workspace response is missing cloudWorkspaceId.');
+  }
+  if (!relaycastWorkspaceId) {
+    throw new Error('Active workspace response is missing relaycastWorkspaceId.');
+  }
+  if (!relayfileWorkspaceId) {
+    throw new Error('Active workspace response is missing relayfileWorkspaceId.');
+  }
+  if (!relayauthWorkspaceId) {
+    throw new Error('Active workspace response is missing relayauthWorkspaceId.');
+  }
+
+  return {
+    ...(readString(workspace, 'name') ? { name: readString(workspace, 'name') } : {}),
+    key,
+    cloudWorkspaceId,
+    relaycastWorkspaceId,
+    ...(readString(workspace, 'relaycastApiKey')
+      ? {
+          relaycastApiKey: readString(workspace, 'relaycastApiKey'),
+        }
+      : {}),
+    relayfileWorkspaceId,
+    relayauthWorkspaceId,
+    ...(readStringAny(workspace, ['organizationId', 'organization_id'])
+      ? {
+          organizationId: readStringAny(workspace, ['organizationId', 'organization_id']),
+        }
+      : {}),
+    ...(readString(workspace, 'slug') ? { slug: readString(workspace, 'slug') } : {}),
+    urls: readUrls(workspace),
+    apiUrl,
+    ...(readBoolean(workspace, 'provisioned') !== undefined
+      ? {
+          provisioned: readBoolean(workspace, 'provisioned'),
+        }
+      : {}),
+  };
+}
+
 async function tryPostJson(
   endpoint: string,
   body: Record<string, unknown>,
@@ -128,6 +231,34 @@ async function tryPostJson(
   return {
     response,
     payload: await readJson(response),
+  };
+}
+
+async function tryGetJson(
+  endpoint: string,
+  options: WorkspaceClientOptions & { refreshTimeoutMs?: number; interactive?: boolean }
+): Promise<{ response: Response; payload: unknown; apiUrl: string }> {
+  const apiUrl = options.apiUrl || defaultApiUrl();
+  const auth = await ensureAuthenticated(apiUrl, {
+    interactive: options.interactive,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+  });
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'GET',
+    },
+    {
+      interactive: options.interactive,
+      refreshTimeoutMs: options.refreshTimeoutMs,
+    }
+  );
+
+  return {
+    response,
+    payload: await readJson(response),
+    apiUrl: auth.apiUrl,
   };
 }
 
@@ -206,4 +337,44 @@ export async function issueWorkspaceToken(
   throw (
     lastUnsupported ?? new Error('Workspace token issuance is not supported by the configured cloud API.')
   );
+}
+
+export async function resolveActiveWorkspace(
+  options: ResolveActiveWorkspaceOptions = {}
+): Promise<ActiveWorkspaceDescriptor> {
+  const key = resolveActiveWorkspaceKey(options.env);
+  if (!key) {
+    throw new Error(
+      'No active Agent Relay workspace found. Run `agent-relay workspace set_key <name> <key>` or `agent-relay workspace join <name> <key>`.'
+    );
+  }
+
+  const encodedKey = encodeURIComponent(key);
+  const endpoints = [
+    `/api/v1/workspaces/${encodedKey}/resolve`,
+    `/api/v1/workspaces/resolve?key=${encodedKey}`,
+    `/api/v1/workspaces/active?key=${encodedKey}`,
+  ];
+  let lastUnsupported: Error | null = null;
+
+  for (const endpoint of endpoints) {
+    const { response, payload, apiUrl } = await tryGetJson(endpoint, {
+      apiUrl: options.apiUrl,
+      interactive: options.interactive ?? false,
+      refreshTimeoutMs: options.refreshTimeoutMs,
+    });
+
+    if (response.status === 404 || response.status === 405) {
+      lastUnsupported = buildEndpointError('Workspace resolve', endpoint, response, payload);
+      continue;
+    }
+
+    if (!response.ok) {
+      throw buildEndpointError('Workspace resolve', endpoint, response, payload);
+    }
+
+    return normalizeActiveWorkspaceDescriptor(payload, key, apiUrl);
+  }
+
+  throw lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.');
 }
