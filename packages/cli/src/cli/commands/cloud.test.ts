@@ -7,6 +7,9 @@ const cloudMocks = vi.hoisted(() => ({
   listWorkflowSchedules: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
+  registerCloudWorker: vi.fn(),
+  resolveCloudWorkerRecord: vi.fn(),
+  runCloudWorkerLoop: vi.fn(),
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
@@ -25,9 +28,14 @@ vi.mock('@agent-relay/cloud', () => ({
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
+  registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
+  resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
+  runCloudWorkerLoop: (...args: unknown[]) => cloudMocks.runCloudWorkerLoop(...args),
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
+  upsertCloudWorkerRecord: vi.fn(),
+  cloudWorkerStateDir: () => '/tmp/cloud-workers',
 }));
 
 vi.mock('../telemetry/index.js', () => ({
@@ -67,6 +75,7 @@ describe('registerCloudCommands', () => {
 
     expect(cloud).toBeDefined();
     expect(cloud?.commands.map((command) => command.name())).toEqual([
+      'worker',
       'login',
       'logout',
       'session',
@@ -80,6 +89,56 @@ describe('registerCloudCommands', () => {
       'sync',
       'cancel',
     ]);
+  });
+
+  it('registers cloud worker subcommands', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const worker = cloud?.commands.find((command) => command.name() === 'worker');
+
+    expect(worker).toBeDefined();
+    expect(worker?.commands.map((command) => command.name())).toEqual([
+      'register',
+      'start',
+      'status',
+      'logs',
+    ]);
+  });
+
+  it('cloud worker register stores returned credentials without printing the token', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.registerCloudWorker.mockResolvedValueOnce({
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'worker',
+      'register',
+      '--token',
+      'ocl_wrk_enr_secret',
+      '--name',
+      'demo',
+    ]);
+
+    expect(cloudMocks.registerCloudWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enrollmentToken: 'ocl_wrk_enr_secret',
+        name: 'demo',
+      })
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Registered worker demo (wrk_1)');
+    expect(output).not.toContain('ocl_wrk_secret');
+    expect(output).not.toContain('ocl_wrk_enr_secret');
   });
 
   it('prints the canonical cloud session as JSON without interactive login', async () => {

@@ -30,6 +30,7 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { registerCloudWorkerCommands } from './cloud-worker.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
@@ -187,6 +188,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   const cloudCommand = program
     .command('cloud')
     .description('Cloud account, provider auth, and workflow commands');
+
+  registerCloudWorkerCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────
 
