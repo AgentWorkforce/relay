@@ -95,6 +95,10 @@ export interface ScenarioResult {
   onboarding?: string;
   /** True when the agent used Claude's native Task tool instead of mcp__agent-relay__add_agent. */
   nativeSubagentDetected?: boolean;
+  /** True when a lead produced implementation output (code/tool calls) instead of purely delegating. */
+  selfImplemented?: boolean;
+  /** True when a lead sent a synthesis message after receiving DONE from workers. */
+  synthesisOk?: boolean;
   /** Optional human-readable notes (e.g. partial-chain detail). */
   notes?: string;
 }

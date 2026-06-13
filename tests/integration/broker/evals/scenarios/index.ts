@@ -25,6 +25,7 @@ import { LIFECYCLE_SCENARIOS } from './s03-spawn-release-lifecycle.js';
 import { NO_NATIVE_SUBAGENT_SCENARIOS } from './s04-no-native-subagents.js';
 import { PHRASING_SCENARIOS } from './s05-phrasing-variants.js';
 import { AUTO_ROUTING_SCENARIOS } from './s06-auto-routing.js';
+import { LEAD_DELEGATION_SCENARIOS } from './s07-lead-delegation.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -51,6 +52,9 @@ export const LIFECYCLE_EVAL_SCENARIOS: EvalScenario[] = [
   ...NO_NATIVE_SUBAGENT_SCENARIOS,
 ];
 
+/** Lead delegation discipline scenarios — run with --group=lead-delegation. */
+export const LEAD_DELEGATION_EVAL_SCENARIOS: EvalScenario[] = [...LEAD_DELEGATION_SCENARIOS];
+
 /** Phrasing-variant scenarios — run with --group=phrasing. */
 export const PHRASING_EVAL_SCENARIOS: EvalScenario[] = [...PHRASING_SCENARIOS];
 
@@ -63,6 +67,7 @@ export const ALL_SCENARIOS: EvalScenario[] = [
   ...LIFECYCLE_EVAL_SCENARIOS,
   ...PHRASING_EVAL_SCENARIOS,
   ...AUTO_ROUTING_EVAL_SCENARIOS,
+  ...LEAD_DELEGATION_EVAL_SCENARIOS,
 ];
 
 /** Look up a scenario by id (searches all scenario registries). */
