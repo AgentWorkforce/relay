@@ -55,6 +55,7 @@
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "posthog-node": "^5.29.2",
+    "tar": "^7.5.16",
     "zod": "^3.23.8"
   },
   "devDependencies": {

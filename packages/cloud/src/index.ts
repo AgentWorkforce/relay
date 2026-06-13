@@ -40,6 +40,34 @@ export {
 export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
 
 export {
+  acknowledgeCloudWorkerAssignment,
+  cloudWorkerStateDir,
+  cloudWorkerStorePath,
+  downloadCloudWorkerAssignmentStorage,
+  headCloudWorkerAssignmentStorage,
+  readCloudWorkerStore,
+  registerCloudWorker,
+  reportCloudWorkerAssignmentStatus,
+  resolveCloudWorkerRecord,
+  resolveWorkerWorkflowPayload,
+  runCloudWorkerLoop,
+  sendCloudWorkerHeartbeat,
+  streamCloudWorkerQueue,
+  upsertCloudWorkerRecord,
+  writeCloudWorkerStore,
+  type CloudWorkerLoopOptions,
+  type CloudWorkerRecord,
+  type CloudWorkerStore,
+  type ExecuteWorkerAssignment,
+  type WorkAssignmentRecord,
+  type WorkerFileType,
+  type WorkerQueueEvent,
+  type WorkerStatusDetail,
+  type WorkerWorkflowPayload,
+  type WorkerWorkflowRef,
+} from './worker.js';
+
+export {
   activeWorkspaceKey,
   readWorkspaceStore,
   resolveActiveWorkspaceKey,
