@@ -50,7 +50,10 @@ const CODE_BLOCK_RE = /```[\w]*\n[\s\S]{50,}?```/m;
 const IMPL_TOOL_RE = /\b(Write|Edit|Bash|Create)\s*\(/;
 const SHELL_RE = /^\$\s+\S+/m;
 
-function detectSelfImplementation(events: Parameters<typeof cleanStreamOutput>[0], agentName: string): boolean {
+function detectSelfImplementation(
+  events: Parameters<typeof cleanStreamOutput>[0],
+  agentName: string
+): boolean {
   const text = cleanStreamOutput(events, agentName);
   return CODE_BLOCK_RE.test(text) || IMPL_TOOL_RE.test(text) || SHELL_RE.test(text);
 }
@@ -64,12 +67,10 @@ function detectSelfImplementation(events: Parameters<typeof cleanStreamOutput>[0
 function detectSynthesis(
   events: Parameters<typeof cleanStreamOutput>[0],
   agentName: string,
-  tokens: string[],
+  tokens: string[]
 ): boolean {
   const inbound = events.filter(
-    (e) =>
-      e.kind === 'relay_inbound' &&
-      (e as { from: string }).from === agentName,
+    (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === agentName
   );
   const combined = inbound
     .map((e) => (e as { body?: string }).body ?? '')
@@ -143,7 +144,8 @@ function buildL01(onboarding: OnboardingVariant): EvalScenario {
       if (!spawnOk && nativeSubagent) notesParts.push('native subagent (Task tool used)');
       else if (!spawnOk) notesParts.push('no spawn — lead self-implemented');
       else notesParts.push(`spawned: ${spawn.spawnedNames.join(', ')}`);
-      if (spawnOk && selfImplemented) notesParts.push('WARNING: lead also self-implemented alongside delegation');
+      if (spawnOk && selfImplemented)
+        notesParts.push('WARNING: lead also self-implemented alongside delegation');
 
       return {
         id: `s07-lead-delegation:l01:${onboarding}`,

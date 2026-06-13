@@ -28,18 +28,18 @@ export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'gemini' | 'droid';
  * Each role slot in a pattern is filled by a harness+model with confirmed fitness.
  */
 export type AgentRole =
-  | 'lead'        // orchestrates pre-spawned team, DMs workers, aggregates
+  | 'lead' // orchestrates pre-spawned team, DMs workers, aggregates
   | 'coordinator' // mid-level lead; manages sub-teams
-  | 'worker'      // executes one bounded task, self-reports DONE
-  | 'planner'     // produces structured plan (non-interactive ok)
-  | 'reviewer'    // produces structured critique with pass/fail verdict
-  | 'critic'      // synonym for reviewer in reflection pattern
-  | 'verifier'    // checks evidence, gates on condition
-  | 'judge'       // adjudicates between competing outputs
-  | 'mapper'      // processes one item from a list (non-interactive leaf)
-  | 'reducer'     // aggregates mapper outputs
-  | 'supervisor'  // monitors workers, can intervene
-  | 'debater';    // argues a position in adversarial exchange
+  | 'worker' // executes one bounded task, self-reports DONE
+  | 'planner' // produces structured plan (non-interactive ok)
+  | 'reviewer' // produces structured critique with pass/fail verdict
+  | 'critic' // synonym for reviewer in reflection pattern
+  | 'verifier' // checks evidence, gates on condition
+  | 'judge' // adjudicates between competing outputs
+  | 'mapper' // processes one item from a list (non-interactive leaf)
+  | 'reducer' // aggregates mapper outputs
+  | 'supervisor' // monitors workers, can intervene
+  | 'debater'; // argues a position in adversarial exchange
 
 /**
  * Role fitness for a harness+model combination.
@@ -59,11 +59,11 @@ export interface RoleFitEntry {
 }
 
 export interface HarnessRoleMap {
-  harness: string;            // e.g. 'codex', 'opencode:mimo-v2.5-free'
-  defaultModel?: string;      // for harnesses with selectable models
+  harness: string; // e.g. 'codex', 'opencode:mimo-v2.5-free'
+  defaultModel?: string; // for harnesses with selectable models
   roles: Partial<Record<AgentRole, RoleFitEntry>>;
   bestOnboarding: OnboardingVariant;
-  relayNative: boolean;       // s04 pass — won't use native subagent tools
+  relayNative: boolean; // s04 pass — won't use native subagent tools
 }
 
 export interface WorkerSpec {
@@ -121,11 +121,11 @@ export const CODEX_MODEL_TIERS = {
 // Onboarding recommendations per harness (from s01–s04 eval data 2026-06-12).
 // Used by the Director meta-prompt builder to select the right onboarding text.
 export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
-  claude:    'one-liner', // sonnet: 100% s03; haiku: needs skill (broker injects SMALL_MODEL_RELAY_SKILL)
-  codex:     'bare',      // relay-native; bare s03=80%, one-liner=100% — bare saves tokens
-  opencode:  'bare',      // relay-native; bare s03=100% (best bare of all harnesses)
-  gemini:    'one-liner', // bare s03=60% (release failures); one-liner=100%
-  droid:     'bare',      // bare s03=100%; NEVER use skill (kills s03 to 0%)
+  claude: 'one-liner', // sonnet: 100% s03; haiku: needs skill (broker injects SMALL_MODEL_RELAY_SKILL)
+  codex: 'bare', // relay-native; bare s03=80%, one-liner=100% — bare saves tokens
+  opencode: 'bare', // relay-native; bare s03=100% (best bare of all harnesses)
+  gemini: 'one-liner', // bare s03=60% (release failures); one-liner=100%
+  droid: 'bare', // bare s03=100%; NEVER use skill (kills s03 to 0%)
 };
 
 // ── Role-fit map (from eval data 2026-06-12/13) ───────────────────────────────
@@ -139,15 +139,15 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: true,
     roles: {
-      worker:      { fitness: 'confirmed', notes: 's03 100% all variants' },
+      worker: { fitness: 'confirmed', notes: 's03 100% all variants' },
       coordinator: { fitness: 'confirmed', notes: 's03+s04 100%; viable lead for pre-spawned teams' },
-      planner:     { fitness: 'confirmed', notes: 's03 non-interactive ok; relay-native' },
-      reviewer:    { fitness: 'confirmed', notes: 's04 100%; relay-native; never routes to native tools' },
-      mapper:      { fitness: 'confirmed', notes: 'interactive:false reliable' },
-      reducer:     { fitness: 'confirmed', notes: 'interactive:false reliable' },
-      verifier:    { fitness: 'confirmed' },
-      judge:       { fitness: 'provisional', notes: 'untested for multi-input adjudication' },
-      debater:     { fitness: 'provisional', notes: 'relay-native but adversarial exchange untested' },
+      planner: { fitness: 'confirmed', notes: 's03 non-interactive ok; relay-native' },
+      reviewer: { fitness: 'confirmed', notes: 's04 100%; relay-native; never routes to native tools' },
+      mapper: { fitness: 'confirmed', notes: 'interactive:false reliable' },
+      reducer: { fitness: 'confirmed', notes: 'interactive:false reliable' },
+      verifier: { fitness: 'confirmed' },
+      judge: { fitness: 'provisional', notes: 'untested for multi-input adjudication' },
+      debater: { fitness: 'provisional', notes: 'relay-native but adversarial exchange untested' },
     },
   },
   {
@@ -156,18 +156,18 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'one-liner',
     relayNative: false,
     roles: {
-      lead:        { fitness: 'confirmed', notes: 'sonnet one-liner=100%; opus bare=67%' },
+      lead: { fitness: 'confirmed', notes: 'sonnet one-liner=100%; opus bare=67%' },
       coordinator: { fitness: 'confirmed', notes: 'sonnet is default lead; opus for high-complexity' },
-      worker:      { fitness: 'confirmed', notes: 'sonnet one-liner=100%; haiku worker-only' },
-      reviewer:    { fitness: 'confirmed', notes: 'sonnet/opus strong reviewers' },
-      critic:      { fitness: 'confirmed' },
-      judge:       { fitness: 'confirmed', notes: 'opus preferred for high-stakes adjudication' },
-      debater:     { fitness: 'confirmed', notes: 'sonnet/opus capable of adversarial exchange' },
-      planner:     { fitness: 'confirmed' },
-      mapper:      { fitness: 'confirmed', notes: 'haiku viable for simple map tasks' },
-      reducer:     { fitness: 'confirmed' },
-      supervisor:  { fitness: 'confirmed', notes: 'sonnet+ only; haiku not viable as supervisor' },
-      verifier:    { fitness: 'confirmed' },
+      worker: { fitness: 'confirmed', notes: 'sonnet one-liner=100%; haiku worker-only' },
+      reviewer: { fitness: 'confirmed', notes: 'sonnet/opus strong reviewers' },
+      critic: { fitness: 'confirmed' },
+      judge: { fitness: 'confirmed', notes: 'opus preferred for high-stakes adjudication' },
+      debater: { fitness: 'confirmed', notes: 'sonnet/opus capable of adversarial exchange' },
+      planner: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed', notes: 'haiku viable for simple map tasks' },
+      reducer: { fitness: 'confirmed' },
+      supervisor: { fitness: 'confirmed', notes: 'sonnet+ only; haiku not viable as supervisor' },
+      verifier: { fitness: 'confirmed' },
     },
   },
   {
@@ -176,12 +176,12 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: true,
     roles: {
-      worker:      { fitness: 'confirmed', notes: 'mimo s03 bare=100%; best bare result of all harnesses' },
-      planner:     { fitness: 'confirmed' },
-      mapper:      { fitness: 'confirmed' },
-      reducer:     { fitness: 'confirmed' },
+      worker: { fitness: 'confirmed', notes: 'mimo s03 bare=100%; best bare result of all harnesses' },
+      planner: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       coordinator: { fitness: 'provisional', notes: 's03+s04 good; multi-DM coordination untested' },
-      reviewer:    { fitness: 'provisional', notes: 'relay-native; structured verdict format untested' },
+      reviewer: { fitness: 'provisional', notes: 'relay-native; structured verdict format untested' },
       // Per-model fitness from Phase 1 batch eval (2026-06-13). All tested via opencode harness.
       // Top tier (16/16, 0-2 phantoms): deepseek-v4-flash, deepseek-v4-flash-free, qwen3.6-plus,
       //   qwen3.5-plus, minimax-m2.5, minimax-m2.7, glm-5.1, big-pickle
@@ -197,8 +197,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16 s01-s04, 0 phantoms' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
-      planner: { fitness: 'confirmed' }, reviewer: { fitness: 'provisional' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+      reviewer: { fitness: 'provisional' },
     },
   },
   {
@@ -207,7 +209,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 0-1 phantoms; skip skill onboarding' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -217,8 +220,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
-      planner: { fitness: 'confirmed' }, reviewer: { fitness: 'provisional' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
+      planner: { fitness: 'confirmed' },
+      reviewer: { fitness: 'provisional' },
     },
   },
   {
@@ -227,7 +232,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -237,7 +243,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms — cleanest MiniMax' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -247,7 +254,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 2 phantoms' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -257,7 +265,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 1 phantom — prefer over glm-5' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -267,7 +276,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 0 phantoms' },
-      mapper: { fitness: 'confirmed' }, reducer: { fitness: 'confirmed' },
+      mapper: { fitness: 'confirmed' },
+      reducer: { fitness: 'confirmed' },
       planner: { fitness: 'confirmed' },
     },
   },
@@ -278,7 +288,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 3 phantoms' },
-      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+      mapper: { fitness: 'confirmed' },
+      planner: { fitness: 'provisional' },
     },
   },
   {
@@ -287,7 +298,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 5 phantoms; bare works (fixes native CLI bare=60%)' },
-      reviewer: { fitness: 'provisional' }, mapper: { fitness: 'confirmed' },
+      reviewer: { fitness: 'provisional' },
+      mapper: { fitness: 'confirmed' },
       coordinator: { fitness: 'provisional' },
     },
   },
@@ -296,8 +308,12 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: true,
     roles: {
-      worker: { fitness: 'confirmed', notes: '16/16, 5 phantoms; grok model is capable — native CLI MCP was the failure' },
-      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+      worker: {
+        fitness: 'confirmed',
+        notes: '16/16, 5 phantoms; grok model is capable — native CLI MCP was the failure',
+      },
+      mapper: { fitness: 'confirmed' },
+      planner: { fitness: 'provisional' },
     },
   },
   {
@@ -306,7 +322,8 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     relayNative: true,
     roles: {
       worker: { fitness: 'confirmed', notes: '16/16, 9 phantoms' },
-      mapper: { fitness: 'confirmed' }, planner: { fitness: 'provisional' },
+      mapper: { fitness: 'confirmed' },
+      planner: { fitness: 'provisional' },
     },
   },
   // ── opencode provisional (12-15/16) ──────────────────────────────────────────
@@ -333,7 +350,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'one-liner',
     relayNative: false,
     roles: {
-      worker: { fitness: 'provisional', notes: '14/16, 20 phantoms — high phantom rate; avoid spawning roles' },
+      worker: {
+        fitness: 'provisional',
+        notes: '14/16, 20 phantoms — high phantom rate; avoid spawning roles',
+      },
     },
   },
   {
@@ -341,7 +361,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: true,
     roles: {
-      worker: { fitness: 'provisional', notes: '12/16; s02 all-fail (injected DONE) but s03 all-pass (real tasks work)' },
+      worker: {
+        fitness: 'provisional',
+        notes: '12/16; s02 all-fail (injected DONE) but s03 all-pass (real tasks work)',
+      },
     },
   },
   // ── eliminated ────────────────────────────────────────────────────────────────
@@ -358,7 +381,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'one-liner',
     relayNative: false,
     roles: {
-      worker: { fitness: 'not-viable', notes: '10/16; scattered s01/s03/s04 failures, no reliable onboarding' },
+      worker: {
+        fitness: 'not-viable',
+        notes: '10/16; scattered s01/s03/s04 failures, no reliable onboarding',
+      },
     },
   },
   {
@@ -367,12 +393,12 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'one-liner',
     relayNative: false,
     roles: {
-      worker:      { fitness: 'confirmed', notes: 'one-liner s03=100%; bare=60%' },
-      planner:     { fitness: 'provisional', notes: 'relay-native when prompted; avoid relay-agent vocab' },
-      mapper:      { fitness: 'confirmed', notes: 'one-liner+ reliable' },
-      reducer:     { fitness: 'provisional' },
+      worker: { fitness: 'confirmed', notes: 'one-liner s03=100%; bare=60%' },
+      planner: { fitness: 'provisional', notes: 'relay-native when prompted; avoid relay-agent vocab' },
+      mapper: { fitness: 'confirmed', notes: 'one-liner+ reliable' },
+      reducer: { fitness: 'provisional' },
       coordinator: { fitness: 'provisional', notes: 's04=60-80%; occasional native fallback' },
-      reviewer:    { fitness: 'provisional' },
+      reviewer: { fitness: 'provisional' },
     },
   },
   {
@@ -381,12 +407,12 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: false,
     roles: {
-      worker:      { fitness: 'confirmed', notes: 's03 bare=100% with directive phrasing' },
-      mapper:      { fitness: 'confirmed', notes: 'leaf-only; no spawning tasks' },
-      planner:     { fitness: 'provisional' },
+      worker: { fitness: 'confirmed', notes: 's03 bare=100% with directive phrasing' },
+      mapper: { fitness: 'confirmed', notes: 'leaf-only; no spawning tasks' },
+      planner: { fitness: 'provisional' },
       // NEVER use for roles that involve spawning: s04=0% bare/one-liner
       coordinator: { fitness: 'not-viable', notes: 's04=0%; routes to native Task tool' },
-      supervisor:  { fitness: 'not-viable', notes: 'would use native Task, not relay' },
+      supervisor: { fitness: 'not-viable', notes: 'would use native Task, not relay' },
     },
   },
   {
@@ -395,7 +421,7 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: false,
     roles: {
-      worker:      { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
+      worker: { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
       coordinator: { fitness: 'not-viable' },
     },
   },
@@ -405,7 +431,7 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     bestOnboarding: 'bare',
     relayNative: false,
     roles: {
-      worker:      { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
+      worker: { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
       coordinator: { fitness: 'not-viable' },
     },
   },
@@ -416,7 +442,7 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
  * Use to populate role slots when composing teams for specific swarm patterns.
  */
 export function harnessesForRole(role: AgentRole): HarnessRoleMap[] {
-  return HARNESS_ROLE_MAP.filter(h => {
+  return HARNESS_ROLE_MAP.filter((h) => {
     const entry = h.roles[role];
     return entry?.fitness === 'confirmed' || entry?.fitness === 'provisional';
   });
@@ -452,24 +478,50 @@ interface RoutingRow {
 const ROUTING_TABLE: Record<RoutingKey, RoutingRow> = {
   // Low complexity — cheapest reliable setup.
   // Worker: codex:gpt-5.5 (relay-native, no skill injection needed, cheaper than claude)
-  'low:serial':   { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
-  'low:parallel': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
+  'low:serial': {
+    leadModel: 'sonnet',
+    leadOnboarding: 'one-liner',
+    worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended },
+  },
+  'low:parallel': {
+    leadModel: 'sonnet',
+    leadOnboarding: 'one-liner',
+    worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended },
+  },
 
   // Medium serial — quality matters, use sonnet-class worker.
   // Worker: codex:gpt-5.5 (relay-native, equivalent quality to claude:sonnet for task execution)
-  'medium:serial': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
+  'medium:serial': {
+    leadModel: 'sonnet',
+    leadOnboarding: 'one-liner',
+    worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended },
+  },
 
   // Medium parallel — fan-out with cheap workers + sonnet synthesiser.
   // Workers: opencode:deepseek-v4-flash (16/16, 0 phantoms, fast, cost-effective)
   // Synth: claude:sonnet (structured aggregation needs Claude's output quality)
-  'medium:parallel': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' }, synth: true },
+  'medium:parallel': {
+    leadModel: 'sonnet',
+    leadOnboarding: 'one-liner',
+    worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' },
+    synth: true,
+  },
 
   // High serial — depth work; sonnet workers via codex for reliability.
-  'high:serial':   { leadModel: 'opus', leadOnboarding: 'bare', worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
+  'high:serial': {
+    leadModel: 'opus',
+    leadOnboarding: 'bare',
+    worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended },
+  },
 
   // High parallel — large fan-out; opencode workers cost-effective at scale.
   // Synthesiser is claude:sonnet (needs judgment for high-complexity aggregation).
-  'high:parallel': { leadModel: 'opus', leadOnboarding: 'bare', worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' }, synth: true },
+  'high:parallel': {
+    leadModel: 'opus',
+    leadOnboarding: 'bare',
+    worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' },
+    synth: true,
+  },
 };
 
 // ── Composer ─────────────────────────────────────────────────────────────────
@@ -485,33 +537,30 @@ export function composeTeam(assessment: TaskAssessment, originalTask: string): T
   const workerOnboarding = HARNESS_ONBOARDING[row.worker.cli ?? 'claude'] ?? 'bare';
 
   // Build worker specs from the inferred subtask list.
-  const baseWorkers: WorkerSpec[] = subtasks
-    .slice(0, estimatedWorkers)
-    .map((subtask, i) => {
-      const domain = domains[i] ?? 'general';
-      return {
-        role: 'worker' as AgentRole,
-        model: row.worker.model,
-        cli: row.worker.cli,
-        codexModel: row.worker.codexModel,
-        opencodeModel: row.worker.opencodeModel,
-        task: `You are a specialised ${domain} relay worker. Your task:\n\n${originalTask}\n\nFocus exclusively on the ${subtask}. Report DONE when complete with a concise summary.`,
-      };
-    });
+  const baseWorkers: WorkerSpec[] = subtasks.slice(0, estimatedWorkers).map((subtask, i) => {
+    const domain = domains[i] ?? 'general';
+    return {
+      role: 'worker' as AgentRole,
+      model: row.worker.model,
+      cli: row.worker.cli,
+      codexModel: row.worker.codexModel,
+      opencodeModel: row.worker.opencodeModel,
+      task: `You are a specialised ${domain} relay worker. Your task:\n\n${originalTask}\n\nFocus exclusively on the ${subtask}. Report DONE when complete with a concise summary.`,
+    };
+  });
 
   // Synthesiser is always claude:sonnet — needs judgment for aggregation.
-  const workers: WorkerSpec[] =
-    row.synth
-      ? [
-          ...baseWorkers,
-          {
-            role: 'reducer' as AgentRole,
-            model: 'sonnet',
-            cli: 'claude',
-            task: `You are a synthesis relay worker. Wait for all other relay workers to report DONE, then synthesise their findings into a single coherent summary for the lead. Report DONE when the synthesis is complete.`,
-          },
-        ]
-      : baseWorkers;
+  const workers: WorkerSpec[] = row.synth
+    ? [
+        ...baseWorkers,
+        {
+          role: 'reducer' as AgentRole,
+          model: 'sonnet',
+          cli: 'claude',
+          task: `You are a synthesis relay worker. Wait for all other relay workers to report DONE, then synthesise their findings into a single coherent summary for the lead. Report DONE when the synthesis is complete.`,
+        },
+      ]
+    : baseWorkers;
 
   return {
     lead: { model: row.leadModel, onboarding: row.leadOnboarding },

@@ -29,11 +29,7 @@ describe('composeTeam', () => {
   });
 
   it('never selects haiku as lead', () => {
-    const tasks = [
-      'Fix a typo',
-      'Implement a feature',
-      'Run a full audit',
-    ];
+    const tasks = ['Fix a typo', 'Implement a feature', 'Run a full audit'];
     for (const task of tasks) {
       const assessment = classifyTask(task);
       const team = composeTeam(assessment, task);
@@ -42,9 +38,7 @@ describe('composeTeam', () => {
   });
 
   it('caps team size at 6 workers', () => {
-    const assessment = classifyTask(
-      'security backend frontend testing devops mobile docs data api'
-    );
+    const assessment = classifyTask('security backend frontend testing devops mobile docs data api');
     const team = composeTeam(assessment, 'large task');
     expect(team.workers.length).toBeLessThanOrEqual(7); // 6 + optional synth
   });

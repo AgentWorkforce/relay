@@ -21,7 +21,16 @@
 import { isCliAvailable } from '../utils/cli-helpers.js';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from '../utils/broker-harness.js';
 import { sleep } from '../utils/cli-helpers.js';
-import { SCENARIOS, LIFECYCLE_EVAL_SCENARIOS, PHRASING_EVAL_SCENARIOS, AUTO_ROUTING_EVAL_SCENARIOS, LEAD_DELEGATION_EVAL_SCENARIOS, ALL_SCENARIOS, scenarioById, scenariosByTier } from './scenarios/index.js';
+import {
+  SCENARIOS,
+  LIFECYCLE_EVAL_SCENARIOS,
+  PHRASING_EVAL_SCENARIOS,
+  AUTO_ROUTING_EVAL_SCENARIOS,
+  LEAD_DELEGATION_EVAL_SCENARIOS,
+  ALL_SCENARIOS,
+  scenarioById,
+  scenariosByTier,
+} from './scenarios/index.js';
 import { aggregateMetrics } from './scoring/metrics.js';
 import {
   compareReports,
@@ -89,8 +98,18 @@ function parseFlags(argv: string[]): Flags {
     const [key, value] = arg.replace(/^--/, '').split('=');
     if (key === 'harness' && value) flags.harnesses = value.split(',').map((s) => s.trim());
     else if (key === 'scenario' && value) flags.scenarioIds = value.split(',').map((s) => s.trim());
-    else if (key === 'tier' && (value === 'smoke' || value === 'realistic' || value === 'all')) flags.tier = value;
-    else if (key === 'group' && (value === 'messaging' || value === 'lifecycle' || value === 'phrasing' || value === 'auto-routing' || value === 'lead-delegation' || value === 'all')) flags.group = value as ScenarioGroup;
+    else if (key === 'tier' && (value === 'smoke' || value === 'realistic' || value === 'all'))
+      flags.tier = value;
+    else if (
+      key === 'group' &&
+      (value === 'messaging' ||
+        value === 'lifecycle' ||
+        value === 'phrasing' ||
+        value === 'auto-routing' ||
+        value === 'lead-delegation' ||
+        value === 'all')
+    )
+      flags.group = value as ScenarioGroup;
     else if (key === 'repeat' && value) flags.repeat = Math.max(1, Number(value) || 1);
     else if (key === 'baseline' && value) flags.baseline = value;
   }
@@ -114,7 +133,13 @@ function selectScenarios(flags: Flags): EvalScenario[] {
             : flags.group === 'all'
               ? ALL_SCENARIOS
               : SCENARIOS;
-  if (flags.group === 'lifecycle' || flags.group === 'phrasing' || flags.group === 'auto-routing' || flags.group === 'lead-delegation') return pool;
+  if (
+    flags.group === 'lifecycle' ||
+    flags.group === 'phrasing' ||
+    flags.group === 'auto-routing' ||
+    flags.group === 'lead-delegation'
+  )
+    return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);
 }
 
@@ -153,7 +178,10 @@ function mergeRepeats(results: ScenarioResult[]): ScenarioResult {
 }
 
 /** Run one scenario once against a fresh broker. */
-async function runOnce(scenario: EvalScenario, spec: { cli: string; model?: string }): Promise<ScenarioResult> {
+async function runOnce(
+  scenario: EvalScenario,
+  spec: { cli: string; model?: string }
+): Promise<ScenarioResult> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // opencode reads its model from an env var; pass it through to the broker process.
   if (spec.model && spec.cli === 'opencode') env['OPENCODE_MODEL'] = spec.model;
@@ -244,7 +272,9 @@ function printMetrics(harness: string, m: MetricSet): void {
  */
 function printLifecycleMatrix(allReports: Array<{ harness: string; report: EvalReport }>): void {
   console.log('\n── Lifecycle reliability matrix (spawn / release, by onboarding variant) ──');
-  console.log('Variant     | Scenario                    | ' + allReports.map((r) => r.harness.padEnd(8)).join(' | '));
+  console.log(
+    'Variant     | Scenario                    | ' + allReports.map((r) => r.harness.padEnd(8)).join(' | ')
+  );
   console.log('-'.repeat(40 + allReports.length * 11));
 
   // Group scenarios by their base id (without the :variant suffix).
@@ -293,11 +323,17 @@ async function main(): Promise<void> {
 
   const scenarios = selectScenarios(flags);
   if (scenarios.length === 0) {
-    console.error(`No scenario matched (scenario=${flags.scenarioIds?.join(',') ?? '-'}, tier=${flags.tier}, group=${flags.group}).`);
+    console.error(
+      `No scenario matched (scenario=${flags.scenarioIds?.join(',') ?? '-'}, tier=${flags.tier}, group=${flags.group}).`
+    );
     process.exit(2);
   }
 
-  const isLifecycle = flags.group === 'lifecycle' || flags.group === 'phrasing' || flags.group === 'auto-routing' || flags.group === 'lead-delegation';
+  const isLifecycle =
+    flags.group === 'lifecycle' ||
+    flags.group === 'phrasing' ||
+    flags.group === 'auto-routing' ||
+    flags.group === 'lead-delegation';
   console.log(
     `Running ${scenarios.length} scenario(s) [group=${flags.group}, tier=${flags.scenarioIds ? 'explicit' : flags.tier}, repeat=${flags.repeat}]`
   );
@@ -339,7 +375,9 @@ async function main(): Promise<void> {
         const deltas = compareReports(readReport(flags.baseline), report);
         const regressions = deltas.filter((d) => d.regression);
         for (const d of regressions) {
-          console.log(`  ⚠ regression: ${d.metric} ${d.baseline} → ${d.current} (${d.delta > 0 ? '+' : ''}${d.delta.toFixed(3)})`);
+          console.log(
+            `  ⚠ regression: ${d.metric} ${d.baseline} → ${d.current} (${d.delta > 0 ? '+' : ''}${d.delta.toFixed(3)})`
+          );
         }
         if (regressions.length > 0) anyRegression = true;
       } catch (err) {

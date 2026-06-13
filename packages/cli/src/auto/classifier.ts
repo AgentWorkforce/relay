@@ -23,36 +23,73 @@ export interface TaskAssessment {
 // ── Complexity keywords ───────────────────────────────────────────────────────
 
 const HIGH_COMPLEXITY_KEYWORDS = [
-  'audit', 'refactor', 'migrate', 'redesign', 'overhaul', 'architecture',
-  'security review', 'performance analysis', 'comprehensive', 'full ',
-  'entire ', 'across all', 'end-to-end', 'investigation', 'root cause',
-  'diagnose', 'large-scale', 'multi-phase', 'research',
+  'audit',
+  'refactor',
+  'migrate',
+  'redesign',
+  'overhaul',
+  'architecture',
+  'security review',
+  'performance analysis',
+  'comprehensive',
+  'full ',
+  'entire ',
+  'across all',
+  'end-to-end',
+  'investigation',
+  'root cause',
+  'diagnose',
+  'large-scale',
+  'multi-phase',
+  'research',
 ];
 
 const MEDIUM_COMPLEXITY_KEYWORDS = [
-  'implement', 'build', 'add', 'create', 'update', 'fix', 'debug',
-  'integrate', 'configure', 'deploy', 'analyse', 'analyze', 'review',
-  'test', 'document', 'optimize', 'optimise',
+  'implement',
+  'build',
+  'add',
+  'create',
+  'update',
+  'fix',
+  'debug',
+  'integrate',
+  'configure',
+  'deploy',
+  'analyse',
+  'analyze',
+  'review',
+  'test',
+  'document',
+  'optimize',
+  'optimise',
 ];
 
 // ── Parallelism signals ───────────────────────────────────────────────────────
 
 const PARALLEL_PHRASES = [
-  ' and ', ' also ', 'at the same time', 'in parallel', 'simultaneously',
-  'concurrently', 'both ', 'each ', 'all ', 'multiple ',
+  ' and ',
+  ' also ',
+  'at the same time',
+  'in parallel',
+  'simultaneously',
+  'concurrently',
+  'both ',
+  'each ',
+  'all ',
+  'multiple ',
 ];
 
 // ── Domain detection ─────────────────────────────────────────────────────────
 
 const DOMAIN_KEYWORDS: Record<string, string[]> = {
-  backend:    ['api', 'server', 'service', 'database', 'db', 'query', 'endpoint', 'rest', 'graphql'],
-  frontend:   ['ui', 'ux', 'component', 'page', 'react', 'vue', 'css', 'style', 'layout', 'interface'],
-  testing:    ['test', 'spec', 'coverage', 'unit', 'integration', 'e2e', 'qa'],
-  security:   ['auth', 'authentication', 'security', 'vulnerability', 'permission', 'access', 'credential'],
-  devops:     ['deploy', 'ci', 'cd', 'pipeline', 'docker', 'kubernetes', 'infra', 'cloud', 'monitor'],
-  data:       ['data', 'etl', 'pipeline', 'schema', 'migration', 'report', 'analytics'],
-  docs:       ['document', 'readme', 'wiki', 'guide', 'changelog'],
-  mobile:     ['mobile', 'ios', 'android', 'react native', 'flutter'],
+  backend: ['api', 'server', 'service', 'database', 'db', 'query', 'endpoint', 'rest', 'graphql'],
+  frontend: ['ui', 'ux', 'component', 'page', 'react', 'vue', 'css', 'style', 'layout', 'interface'],
+  testing: ['test', 'spec', 'coverage', 'unit', 'integration', 'e2e', 'qa'],
+  security: ['auth', 'authentication', 'security', 'vulnerability', 'permission', 'access', 'credential'],
+  devops: ['deploy', 'ci', 'cd', 'pipeline', 'docker', 'kubernetes', 'infra', 'cloud', 'monitor'],
+  data: ['data', 'etl', 'pipeline', 'schema', 'migration', 'report', 'analytics'],
+  docs: ['document', 'readme', 'wiki', 'guide', 'changelog'],
+  mobile: ['mobile', 'ios', 'android', 'react native', 'flutter'],
 };
 
 // ── Classifier ────────────────────────────────────────────────────────────────
@@ -90,7 +127,7 @@ export function classifyTask(task: string): TaskAssessment {
   // ── Complexity ──────────────────────────────────────────────────────────────
   let complexity: TaskAssessment['complexity'];
   const highHit = HIGH_COMPLEXITY_KEYWORDS.some((kw) => lower.includes(kw));
-  const medHit  = MEDIUM_COMPLEXITY_KEYWORDS.some((kw) => lower.includes(kw));
+  const medHit = MEDIUM_COMPLEXITY_KEYWORDS.some((kw) => lower.includes(kw));
 
   if (highHit || words > 100 || domains.length >= 4) {
     complexity = 'high';
@@ -105,10 +142,7 @@ export function classifyTask(task: string): TaskAssessment {
   const estimatedWorkers = Math.min(Math.max(domains.length, 1), 6);
 
   // ── Subtask labels ──────────────────────────────────────────────────────────
-  const subtasks =
-    domains.length > 0
-      ? domains.map((d) => `${d} work`)
-      : ['primary task'];
+  const subtasks = domains.length > 0 ? domains.map((d) => `${d} work`) : ['primary task'];
 
   // ── Reasoning ──────────────────────────────────────────────────────────────
   const reasoning =

@@ -36,7 +36,7 @@ function resolveAutoSpawn(
   provider: string,
   name: string,
   task: string | undefined,
-  model: string | undefined,
+  model: string | undefined
 ): { name: string; task: string | undefined; model: string | undefined } {
   if (model !== 'auto' || provider !== 'claude' || !task) {
     return { name, task, model };
@@ -202,7 +202,7 @@ export function registerLocalAgentCommands(
           provider,
           baseName,
           opts.task as string | undefined,
-          opts.model as string | undefined,
+          opts.model as string | undefined
         );
         await spawnAgentWithClient(client, {
           name: resolved.name,
@@ -237,7 +237,7 @@ export function registerLocalAgentCommands(
         provider,
         baseName,
         options.task as string | undefined,
-        options.model as string | undefined,
+        options.model as string | undefined
       );
       await run(deps, async (client) => {
         await spawnAgentWithClient(client, {
