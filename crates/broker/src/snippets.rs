@@ -1177,8 +1177,10 @@ fn grok_mcp_add_args(
     //
     // e.g. `["npx", ["-y", "agent-relay", "mcp"]]`
     //   → `--command "npx -y"  --args agent-relay  --args mcp`
-    let (flag_args, positional_args): (Vec<_>, Vec<_>) =
-        mcp_command.args.into_iter().partition(|a| a.starts_with('-'));
+    let (flag_args, positional_args): (Vec<_>, Vec<_>) = mcp_command
+        .args
+        .into_iter()
+        .partition(|a| a.starts_with('-'));
     let command_str = if flag_args.is_empty() {
         mcp_command.command
     } else {
