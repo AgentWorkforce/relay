@@ -423,30 +423,53 @@ export function harnessesForRole(role: AgentRole): HarnessRoleMap[] {
 }
 
 // ── Routing table ─────────────────────────────────────────────────────────────
-// Derived from lifecycle eval data (b3oqx02zv + subsequent s03 runs).
-// Format: [complexity, parallelizable] → [lead tier, lead onboarding, worker tier]
+// Derived from lifecycle eval data (s01–s04, 2026-06-12/13).
+// Format: [complexity, parallelizable] → [lead config, worker config]
+//
+// Worker harness selection rationale (from HARNESS_ROLE_MAP):
+//   - codex:gpt-5.5 = most reliable single worker (16/16, 0 phantoms, relay-native)
+//   - opencode:deepseek-v4-flash = top-tier alternative (16/16, 0 phantoms, free-er)
+//   - opencode:minimax-m2.5 = best free-tier option (16/16, 0 phantoms)
+//   - claude:sonnet = required for reviewer/critic/judge roles (structured output)
+//   - claude:haiku = cheapest leaf worker; needs skill injection from broker
 type RoutingKey = `${'low' | 'medium' | 'high'}:${'serial' | 'parallel'}`;
+
+interface WorkerConfig {
+  model: ModelTier;
+  cli?: WorkerCli;
+  opencodeModel?: string;
+  codexModel?: string;
+}
 
 interface RoutingRow {
   leadModel: ModelTier;
   leadOnboarding: OnboardingVariant;
-  workerModel: ModelTier;
-  /** Use a sonnet "synthesiser" worker as the final aggregator for parallel teams. */
+  worker: WorkerConfig;
+  /** Reviewer role: sonnet worker that aggregates + critiques for parallel teams. */
   synth?: boolean;
 }
 
 const ROUTING_TABLE: Record<RoutingKey, RoutingRow> = {
-  // Low complexity: sonnet lead coordinates one haiku worker (cheapest reliable setup).
-  'low:serial':    { leadModel: 'sonnet', leadOnboarding: 'one-liner', workerModel: 'haiku' },
-  'low:parallel':  { leadModel: 'sonnet', leadOnboarding: 'one-liner', workerModel: 'haiku' },
+  // Low complexity — cheapest reliable setup.
+  // Worker: codex:gpt-5.5 (relay-native, no skill injection needed, cheaper than claude)
+  'low:serial':   { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
+  'low:parallel': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
 
-  // Medium: sonnet lead + sonnet workers for quality; add synthesiser when parallel.
-  'medium:serial':   { leadModel: 'sonnet', leadOnboarding: 'one-liner', workerModel: 'sonnet' },
-  'medium:parallel': { leadModel: 'sonnet', leadOnboarding: 'one-liner', workerModel: 'haiku', synth: true },
+  // Medium serial — quality matters, use sonnet-class worker.
+  // Worker: codex:gpt-5.5 (relay-native, equivalent quality to claude:sonnet for task execution)
+  'medium:serial': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
 
-  // High: opus lead (capable natively, bare onboarding) + sonnet workers for depth.
-  'high:serial':   { leadModel: 'opus', leadOnboarding: 'bare', workerModel: 'sonnet' },
-  'high:parallel': { leadModel: 'opus', leadOnboarding: 'bare', workerModel: 'sonnet', synth: false },
+  // Medium parallel — fan-out with cheap workers + sonnet synthesiser.
+  // Workers: opencode:deepseek-v4-flash (16/16, 0 phantoms, fast, cost-effective)
+  // Synth: claude:sonnet (structured aggregation needs Claude's output quality)
+  'medium:parallel': { leadModel: 'sonnet', leadOnboarding: 'one-liner', worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' }, synth: true },
+
+  // High serial — depth work; sonnet workers via codex for reliability.
+  'high:serial':   { leadModel: 'opus', leadOnboarding: 'bare', worker: { model: 'sonnet', cli: 'codex', codexModel: CODEX_MODEL_TIERS.recommended } },
+
+  // High parallel — large fan-out; opencode workers cost-effective at scale.
+  // Synthesiser is claude:sonnet (needs judgment for high-complexity aggregation).
+  'high:parallel': { leadModel: 'opus', leadOnboarding: 'bare', worker: { model: 'haiku', cli: 'opencode', opencodeModel: 'deepseek-v4-flash' }, synth: true },
 };
 
 // ── Composer ─────────────────────────────────────────────────────────────────
@@ -459,6 +482,7 @@ export function composeTeam(assessment: TaskAssessment, originalTask: string): T
   const { complexity, parallelizable, estimatedWorkers, subtasks, domains } = assessment;
   const key: RoutingKey = `${complexity}:${parallelizable ? 'parallel' : 'serial'}`;
   const row = ROUTING_TABLE[key];
+  const workerOnboarding = HARNESS_ONBOARDING[row.worker.cli ?? 'claude'] ?? 'bare';
 
   // Build worker specs from the inferred subtask list.
   const baseWorkers: WorkerSpec[] = subtasks
@@ -466,20 +490,24 @@ export function composeTeam(assessment: TaskAssessment, originalTask: string): T
     .map((subtask, i) => {
       const domain = domains[i] ?? 'general';
       return {
-        role: `Worker-${domain.charAt(0).toUpperCase() + domain.slice(1)}`,
-        model: row.workerModel,
+        role: 'worker' as AgentRole,
+        model: row.worker.model,
+        cli: row.worker.cli,
+        codexModel: row.worker.codexModel,
+        opencodeModel: row.worker.opencodeModel,
         task: `You are a specialised ${domain} relay worker. Your task:\n\n${originalTask}\n\nFocus exclusively on the ${subtask}. Report DONE when complete with a concise summary.`,
       };
     });
 
-  // Add a synthesiser worker for parallel medium-complexity tasks.
+  // Synthesiser is always claude:sonnet — needs judgment for aggregation.
   const workers: WorkerSpec[] =
     row.synth
       ? [
           ...baseWorkers,
           {
-            role: 'Worker-Synthesiser',
+            role: 'reducer' as AgentRole,
             model: 'sonnet',
+            cli: 'claude',
             task: `You are a synthesis relay worker. Wait for all other relay workers to report DONE, then synthesise their findings into a single coherent summary for the lead. Report DONE when the synthesis is complete.`,
           },
         ]

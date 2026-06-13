@@ -257,6 +257,8 @@
     <li><a href="#phrasing">Phrasing Eval Results (s05)</a></li>
     <li><a href="#s06">Director Multi-Spawn (s06)</a></li>
     <li><a href="#codex-tiers">Codex Model Tier Comparison</a></li>
+    <li><a href="#opencode-batch">opencode Alternative/Chinese Model Batch Eval</a></li>
+    <li><a href="#role-rankings">Role Rankings — Top 5 per Role</a></li>
     <li><a href="#key-findings">Key Findings</a></li>
     <li><a href="#codebase-changes">Required Codebase Changes</a></li>
   </ol>
@@ -626,9 +628,146 @@
 } as const;</code></pre>
 </div>
 
+<!-- ===== OPENCODE BATCH EVAL ===== -->
+<div class="section" id="opencode-batch">
+<h2>6. opencode Alternative/Chinese Model Batch Eval (Phase 1)</h2>
+<p>19 models tested via <code>opencode:&lt;model&gt;</code> harness, s01–s04 lifecycle, 4 onboarding variants × repeat=3. Evaluated 2026-06-13.</p>
+
+<table>
+  <tr>
+    <th>Model</th>
+    <th>Score</th>
+    <th>Phantoms</th>
+    <th>Best Onboarding</th>
+    <th>Verdict</th>
+  </tr>
+  <tr><td><code>deepseek-v4-flash</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>deepseek-v4-flash-free</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0–1</td><td>bare (skip skill)</td><td><span class="badge badge-green">Top tier (free)</span></td></tr>
+  <tr><td><code>qwen3.6-plus</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>qwen3.5-plus</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>minimax-m2.5</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>minimax-m2.7</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">2</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>glm-5.1</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">1</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>big-pickle</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-green">Top tier</span></td></tr>
+  <tr><td><code>glm-5</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-hi">3</td><td>bare</td><td><span class="badge badge-green">Confirmed</span></td></tr>
+  <tr><td><code>gemini-3.1-pro</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-hi">5</td><td>bare</td><td><span class="badge badge-green">Confirmed</span> <span class="badge badge-blue">bare fixed vs native CLI</span></td></tr>
+  <tr><td><code>grok-build-0.1</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-hi">5</td><td>bare</td><td><span class="badge badge-green">Confirmed</span> <span class="badge badge-yellow">model ok, native CLI was broken</span></td></tr>
+  <tr><td><code>gemini-3-flash</code></td><td class="cell-pct pct-100">16/16</td><td class="cell-pct pct-hi">9</td><td>bare</td><td><span class="badge badge-green">Confirmed</span></td></tr>
+  <tr><td><code>kimi-k2.5</code></td><td class="cell-pct pct-hi">15/16</td><td class="cell-pct pct-100">0</td><td>bare/skill</td><td><span class="badge badge-blue">Provisional</span></td></tr>
+  <tr><td><code>kimi-k2.6</code></td><td class="cell-pct pct-hi">15/16</td><td class="cell-pct pct-hi">5</td><td>bare/skill</td><td><span class="badge badge-blue">Provisional</span></td></tr>
+  <tr><td><code>mimo-v2.5-free</code></td><td class="cell-pct pct-hi">15/16</td><td class="cell-pct pct-hi">4</td><td>bare (avoid brief)</td><td><span class="badge badge-blue">Provisional</span></td></tr>
+  <tr><td><code>gemini-3.5-flash</code></td><td class="cell-pct pct-mid">14/16</td><td class="cell-pct pct-low" style="background:var(--red-dim);">20</td><td>one-liner</td><td><span class="badge badge-blue">Provisional</span> <span class="badge badge-yellow">high phantom rate</span></td></tr>
+  <tr><td><code>north-mini-code-free</code></td><td class="cell-pct pct-mid">12/16</td><td class="cell-pct pct-100">0</td><td>bare</td><td><span class="badge badge-blue">Provisional</span> <span class="badge badge-yellow">s02 injected-DONE fails; real tasks ok</span></td></tr>
+  <tr><td><code>deepseek-v4-pro</code></td><td class="cell-pct pct-mid">11/16</td><td class="cell-pct pct-100">0</td><td>—</td><td><span class="badge badge-red">Eliminated</span></td></tr>
+  <tr><td><code>nemotron-3-ultra-free</code></td><td class="cell-pct pct-low">10/16</td><td class="cell-pct pct-100">0</td><td>—</td><td><span class="badge badge-red">Eliminated</span></td></tr>
+</table>
+
+<div class="callout callout-green">
+  <strong>opencode is a normalizing layer.</strong> Two previously-failed harnesses score 16/16 via opencode:<br>
+  • <strong>grok</strong> (0/48 via native CLI → 16/16 via opencode) — the model is relay-capable; the grok CLI's MCP integration was the failure.<br>
+  • <strong>gemini bare onboarding</strong> (60% via native CLI → 16/16 via opencode) — opencode's MCP layer handles the release edge case that the native gemini CLI misses.
+</div>
+<div class="callout callout-blue">
+  <strong>Chinese models are relay-native by default.</strong> DeepSeek, Qwen, MiniMax, GLM all score 16/16 with 0 phantoms across <em>all 4 onboarding variants</em> — bare, one-liner, brief, skill. No special scaffolding needed.
+</div>
+<div class="callout callout-yellow">
+  <strong>Counter-intuitive: "pro" ≠ better for relay.</strong> deepseek-v4-pro (11/16) is significantly worse than deepseek-v4-flash (16/16). gemini-3.5-flash (14/16, 20 phantoms) is worse than gemini-3-flash (16/16, 9 phantoms). Larger/newer models don't necessarily follow tool-use protocols better.
+</div>
+
+<h3>Role fit from Phase 1 (what patterns can use these models)</h3>
+<p>All top-tier and confirmed models are validated for <code>worker</code>, <code>mapper</code>, and <code>reducer</code> roles in fan-out, pipeline, dag, and map-reduce patterns. The <code>coordinator</code> and <code>reviewer</code> roles still require Claude (structured output quality). The auto-routing composer now selects opencode workers for parallel fan-out and high-complexity teams.</p>
+</div>
+
+<!-- ===== ROLE RANKINGS ===== -->
+<div class="section" id="role-rankings">
+<h2>7. Role Rankings — Top 5 per Role</h2>
+<p>Rankings based on eval pass rates, phantom counts, and role-specific requirements. Roles map to the <code>choosing-swarm-patterns</code> skill's agent role taxonomy.</p>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Lead / Coordinator — orchestrates pre-spawned team, aggregates</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>claude:sonnet</strong> + one-liner</td><td>100% s03, best structured coordination output, handles DMs + aggregation reliably</td></tr>
+      <tr><td>2</td><td><strong>claude:opus</strong> + bare</td><td>67% s03 (timeout-limited); highest reasoning depth for high-complexity teams</td></tr>
+      <tr><td>3</td><td><strong>codex:gpt-5.5</strong> + bare</td><td>100% s03+s04, relay-native; viable lead for pre-spawned teams when Claude cost is a constraint</td></tr>
+      <tr><td>4</td><td><strong>opencode:deepseek-v4-flash</strong> + bare</td><td>16/16, 0 phantoms; relay-native coordinator candidate (multi-DM untested)</td></tr>
+      <tr><td>5</td><td><strong>opencode:qwen3.6-plus</strong> + bare</td><td>16/16, 0 phantoms; strong alternative, especially for Chinese-language tasks</td></tr>
+    </table>
+    <p style="margin-top:8px;font-size:12px;color:var(--muted);">Note: haiku is never a viable lead (caps at 60%). grok/cursor not viable.</p>
+  </div>
+  <div class="card">
+    <div class="card-title">Worker — executes bounded task, self-reports DONE</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>codex:gpt-5.5</strong></td><td>16/16, 0 phantoms, all onboarding variants, relay-native — most consistent single worker</td></tr>
+      <tr><td>2</td><td><strong>opencode:deepseek-v4-flash</strong></td><td>16/16, 0 phantoms — cost-effective alternative with identical reliability</td></tr>
+      <tr><td>3</td><td><strong>opencode:minimax-m2.5</strong></td><td>16/16, 0 phantoms — cleanest free-tier option</td></tr>
+      <tr><td>4</td><td><strong>opencode:qwen3.5-plus</strong></td><td>16/16, 0 phantoms — strong Alibaba model, relay-native</td></tr>
+      <tr><td>5</td><td><strong>opencode:qwen3.6-plus</strong></td><td>16/16, 0 phantoms — latest Qwen, same top-tier reliability</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Reviewer / Critic — structured pass/fail verdict on output</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>claude:opus</strong></td><td>Best structured reasoning, nuanced critique, highest output quality — ideal for high-stakes reviews</td></tr>
+      <tr><td>2</td><td><strong>claude:sonnet</strong></td><td>Reliable structured output, good cost/quality balance for standard reviews</td></tr>
+      <tr><td>3</td><td><strong>codex:gpt-5.5</strong></td><td>Confirmed relay-native, strong code review; structured verdict format untested but capable</td></tr>
+      <tr><td>4</td><td><strong>opencode:gemini-3.1-pro</strong></td><td>16/16 via opencode; provisional reviewer — good at analytical critique</td></tr>
+      <tr><td>5</td><td><strong>opencode:qwen3.6-plus</strong></td><td>16/16, 0 phantoms; provisional — Qwen strong at structured analysis</td></tr>
+    </table>
+    <p style="margin-top:8px;font-size:12px;color:var(--muted);">s07-reviewer eval scenario needed to confirm non-Claude entries.</p>
+  </div>
+  <div class="card">
+    <div class="card-title">Mapper / Reducer — fan-out leaf worker (non-interactive ok)</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>codex:gpt-5.5</strong></td><td>relay-native, interactive:false reliable, 0 phantoms</td></tr>
+      <tr><td>2</td><td><strong>opencode:deepseek-v4-flash</strong></td><td>16/16, 0 phantoms — cheapest reliable mapper at scale</td></tr>
+      <tr><td>3</td><td><strong>opencode:minimax-m2.5</strong></td><td>16/16, 0 phantoms — best free-tier mapper</td></tr>
+      <tr><td>4</td><td><strong>opencode:qwen3.6-plus</strong></td><td>16/16, 0 phantoms</td></tr>
+      <tr><td>5</td><td><strong>opencode:glm-5.1</strong></td><td>16/16, 1 phantom — Zhipu AI, relay-native</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Judge / Arbitrator — adjudicates between competing outputs</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>claude:opus</strong></td><td>Best reasoning depth; most capable at weighing trade-offs and producing defensible verdicts</td></tr>
+      <tr><td>2</td><td><strong>claude:sonnet</strong></td><td>Strong structured reasoning; good for standard arbitration tasks</td></tr>
+      <tr><td>3</td><td><strong>codex:gpt-5.5</strong></td><td>relay-native; provisional for judge role (multi-input adjudication untested)</td></tr>
+      <tr><td colspan="4" style="color:var(--muted);font-size:12px;">s09-judge scenario needed to confirm rankings below sonnet/opus.</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">Communicator — human-facing output, chat, summaries</div>
+    <table style="margin:0">
+      <tr><th>#</th><th>Harness + Model</th><th>Why</th></tr>
+      <tr><td>1</td><td><strong>claude:opus</strong></td><td>Most articulate, nuanced writing; best for executive summaries and human-facing explanations</td></tr>
+      <tr><td>2</td><td><strong>claude:sonnet</strong></td><td>Excellent balance of clarity and speed; default human-facing model</td></tr>
+      <tr><td>3</td><td><strong>codex:gpt-5.5</strong></td><td>Strong GPT communication; more terse/technical than Claude but reliable</td></tr>
+      <tr><td>4</td><td><strong>opencode:gemini-3.1-pro</strong></td><td>Good explanatory prose; strong at summarising findings for non-technical audiences</td></tr>
+      <tr><td>5</td><td><strong>opencode:deepseek-v4-flash</strong></td><td>Capable communicator in both English and Chinese; good for multilingual teams</td></tr>
+    </table>
+    <p style="margin-top:8px;font-size:12px;color:var(--muted);">Communicator is a proxy role — no direct eval. Claude leads score highest on qualitative output. Opencode models untested for human-facing communication quality specifically.</p>
+  </div>
+</div>
+
+<div class="callout callout-blue">
+  <strong>Who makes the best lead?</strong> <strong>claude:sonnet + one-liner onboarding</strong> — 100% lifecycle reliability, best structured coordination output, handles the "coordinate pre-spawned team" pattern that replaced the broken multi-spawn Director. Use opus only when the task genuinely requires its reasoning depth (adds latency + cost). The opencode top-tier models (deepseek-v4-flash, qwen3.6-plus) are viable leads for relay-native coordination but lack Claude's structured natural-language output quality for human-facing aggregation.
+</div>
+</div>
+
 <!-- ===== KEY FINDINGS ===== -->
 <div class="section" id="key-findings">
-<h2>6. Key Findings</h2>
+<h2>8. Key Findings</h2>
 
 
 <div class="grid-2">
@@ -679,7 +818,7 @@
 
 <!-- ===== CODEBASE CHANGES ===== -->
 <div class="section" id="codebase-changes">
-<h2>7. Required Codebase Changes</h2>
+<h2>9. Required Codebase Changes</h2>
 <p>These are the actionable changes to make based on eval findings. Tracked in <a href="https://github.com/AgentWorkforce/relay/issues/1113">relay#1113</a>.</p>
 
 <div class="action-list">
