@@ -10,7 +10,7 @@
  *   --harness=opencode:mimo-v2-flash-free  OpenCode with a specific model (free tier)
  *   --scenario=01-dm-roundtrip          Run a single scenario by id
  *   --tier=smoke|realistic|all          Default: realistic
- *   --group=messaging|lifecycle|phrasing|auto-routing|lead-delegation|all  Scenario group (default: messaging)
+ *   --group=messaging|lifecycle|phrasing|auto-routing|lead-delegation|lead-quality|all  Scenario group (default: messaging)
  *   --repeat=N                          Repeat each scenario N times (default: 1; use 10 for reliability)
  *   --baseline=path.json                Compare against a prior report; exit 1 on regression
  *
@@ -27,6 +27,7 @@ import {
   PHRASING_EVAL_SCENARIOS,
   AUTO_ROUTING_EVAL_SCENARIOS,
   LEAD_DELEGATION_EVAL_SCENARIOS,
+  LEAD_QUALITY_EVAL_SCENARIOS,
   ALL_SCENARIOS,
   scenarioById,
   scenariosByTier,
@@ -79,7 +80,7 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   return { cli, model };
 }
 
-type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'all';
+type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'lead-quality' | 'all';
 
 interface Flags {
   harnesses: string[];
@@ -107,6 +108,7 @@ function parseFlags(argv: string[]): Flags {
         value === 'phrasing' ||
         value === 'auto-routing' ||
         value === 'lead-delegation' ||
+        value === 'lead-quality' ||
         value === 'all')
     )
       flags.group = value as ScenarioGroup;
@@ -130,14 +132,17 @@ function selectScenarios(flags: Flags): EvalScenario[] {
           ? AUTO_ROUTING_EVAL_SCENARIOS
           : flags.group === 'lead-delegation'
             ? LEAD_DELEGATION_EVAL_SCENARIOS
-            : flags.group === 'all'
+            : flags.group === 'lead-quality'
+              ? LEAD_QUALITY_EVAL_SCENARIOS
+              : flags.group === 'all'
               ? ALL_SCENARIOS
               : SCENARIOS;
   if (
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
     flags.group === 'auto-routing' ||
-    flags.group === 'lead-delegation'
+    flags.group === 'lead-delegation' ||
+    flags.group === 'lead-quality'
   )
     return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);
@@ -333,7 +338,8 @@ async function main(): Promise<void> {
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
     flags.group === 'auto-routing' ||
-    flags.group === 'lead-delegation';
+    flags.group === 'lead-delegation' ||
+    flags.group === 'lead-quality';
   console.log(
     `Running ${scenarios.length} scenario(s) [group=${flags.group}, tier=${flags.scenarioIds ? 'explicit' : flags.tier}, repeat=${flags.repeat}]`
   );
