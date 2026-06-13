@@ -18,42 +18,52 @@ Reviewed PR 1124 cloud worker CLI/runtime changes; fixed unresolved reviewer fin
 ## Key Decisions
 
 ### Port PR 888 telemetry lessons to current split
+
 - **Chose:** Port PR 888 telemetry lessons to current split
 - **Reasoning:** User requested Relaycast request attribution, install/update events, and MCP action-call telemetry while preserving UA-like harness values.
 
 ### Added DeliveryOutcome::Unverified for timeout-fallback acks
+
 - **Chose:** Added DeliveryOutcome::Unverified for timeout-fallback acks
 - **Reasoning:** Fallback ack must stay (re-injection deliberately disabled to avoid duplicates) but unverified deliveries must not feed the throttle's success streak; a neutral variant breaks the streak without backing off
 
 ### PendingDeliveryStore wrapper with DerefMut dirty tracking
+
 - **Chose:** PendingDeliveryStore wrapper with DerefMut dirty tracking
 - **Reasoning:** Free delivery helpers take &mut HashMap across many call sites; a Deref/DerefMut wrapper marks dirty on any mutable coercion so the event loop persists after every mutating event with zero call-site churn
 
 ### Kept --persist flag default-off
+
 - **Chose:** Kept --persist flag default-off
 - **Reasoning:** The flag also gates state files, lock/PID files, MCP config injection mode, and lease-based ephemeral shutdown; flipping it would change far more than delivery durability and break ephemeral one-shot SDK sessions
 
 ### Skipped dedup-cache persistence
+
 - **Chose:** Skipped dedup-cache persistence
 - **Reasoning:** Optional per task; would add restart-replay dedup but bloats the diff beyond delivery semantics
 
 ### Use ordered queryEvents history for waitForResult replay
+
 - **Chose:** Use ordered queryEvents history for waitForResult replay
 - **Reasoning:** The live waitForResult path resolves on the first matching agent_result after subscription, so replay should read broker history in chronological order instead of using getLastEvent.
 
 ### Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it
+
 - **Chose:** Resolved PR 1073 trajectory conflict by keeping the active main trajectory and merging PR broker decisions into it
 - **Reasoning:** main added a later waitForResult decision after PR 1073 completed the same trajectory; keeping active plus removing stale completed artifacts preserves both histories without duplicate active/completed records for the same id
 
 ### Clean CHANGELOG by tag range
+
 - **Chose:** Clean CHANGELOG by tag range
 - **Reasoning:** Only commits after v8.4.0 should remain in [Unreleased]; recent released sections should be curated from the commits between adjacent release tags.
 
 ### PR 1123 lockfile is reproducible from current manifests
+
 - **Chose:** PR 1123 lockfile is reproducible from current manifests
 - **Reasoning:** package-lock.json is the sole changed file; npm install --package-lock-only, npm ci, npm test, typecheck, lint, and targeted prettier all validate the lockfile change. Broader syncpack/format issues are outside this lockfile PR.
 
 ### Kept PR fixes scoped to cloud worker runtime and CLI worker lifecycle comments
+
 - **Chose:** Kept PR fixes scoped to cloud worker runtime and CLI worker lifecycle comments
 - **Reasoning:** All unresolved reviewer findings were in the PR-added cloud worker files; broader docstring and local metadata formatting issues are advisory/out of scope.
 
@@ -62,7 +72,8 @@ Reviewed PR 1124 cloud worker CLI/runtime changes; fixed unresolved reviewer fin
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).: events.connect() falls back to the relaycast 2.5 workspace stream when no agent client; fixes relay#1031 so workspace relay.addListener streams. Bumped @relaycast/sdk to ^2.5.1. Also fixed pre-existing vitest-4 constructor-mock breakage in agent-relay.test.ts (main 'Test' workflow was red).
 - Port PR 888 telemetry lessons to current split: Port PR 888 telemetry lessons to current split

@@ -147,20 +147,11 @@
           "type": "reflection",
           "content": "PR 1123 review complete: no code edits needed; lockfile-only change validated locally and GitHub Actions are green",
           "raw": {
-            "focalPoints": [
-              "lockfile",
-              "ci",
-              "scope"
-            ],
+            "focalPoints": ["lockfile", "ci", "scope"],
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": [
-            "focal:lockfile",
-            "focal:ci",
-            "focal:scope",
-            "confidence:0.9"
-          ]
+          "tags": ["focal:lockfile", "focal:ci", "focal:scope", "confidence:0.9"]
         },
         {
           "ts": 1781371306129,
