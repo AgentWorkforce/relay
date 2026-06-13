@@ -141,6 +141,57 @@ describe('registerCloudCommands', () => {
     expect(output).not.toContain('ocl_wrk_enr_secret');
   });
 
+  it('cloud worker start fail-closes unsupported MVP assignment payloads', async () => {
+    const { program } = createHarness();
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce({
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    });
+    cloudMocks.runCloudWorkerLoop.mockImplementationOnce(async (options: unknown) => {
+      const loopOptions = options as {
+        executeAssignment: (input: {
+          assignment: unknown;
+          payload: Record<string, unknown>;
+          signal: AbortSignal;
+        }) => Promise<unknown>;
+      };
+
+      await expect(
+        loopOptions.executeAssignment({
+          assignment: { runId: 'run_unsupported' },
+          payload: {
+            runId: 'run_unsupported',
+            workspaceId: 'rw_1',
+            relayWorkspaceId: 'rw_relay',
+            relaycastApiKey: 'rk_live_test',
+            relayfileUrl: 'https://relayfile.test',
+            relayfileToken: 'relay_token_secret',
+            workflow: 'version: "1.0"\nworkflows: []\n',
+            fileType: 'yaml',
+            sourceFileType: 'yaml',
+            workflowFileName: 'workflow.yaml',
+            s3CodeKey: 'code/archive.tgz',
+          },
+          signal: new AbortController().signal,
+        })
+      ).rejects.toThrow('Unsupported worker assignment payload: s3CodeKey code mount');
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'worker', 'start', '--once']);
+
+    expect(cloudMocks.runCloudWorkerLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        once: true,
+        executeAssignment: expect.any(Function),
+      })
+    );
+  });
+
   it('prints the canonical cloud session as JSON without interactive login', async () => {
     const { program, deps } = createHarness();
     vi.mocked(ensureCloudSession).mockResolvedValueOnce({

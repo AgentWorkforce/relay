@@ -215,6 +215,70 @@ describe('cloud worker store and API client', () => {
     ).toEqual([{ phase: 'running' }, { phase: 'completed', exitCode: 0, durationMs: 15, summary: 'done' }]);
   });
 
+  it('reports unsupported assignments as failed instead of hanging or skipping', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 60_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const unsupportedPayload = {
+      ...payload,
+      runId: 'run_unsupported',
+      s3CodeKey: 'code/archive.tgz',
+    };
+    const asn = assignment(unsupportedPayload, { runId: 'run_unsupported' });
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const logs: string[] = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push({
+        url: requestUrl,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) as unknown } : {}),
+      });
+
+      if (requestUrl.endsWith('/heartbeat')) {
+        return jsonResponse({ ok: true, nextHeartbeatMs: 60_000 });
+      }
+      if (requestUrl.endsWith('/queue')) {
+        return sseResponse([
+          `event: assignment\ndata: ${JSON.stringify(asn)}\n\n`,
+          'event: revoke\ndata: {}\n\n',
+        ]);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+
+    await runCloudWorkerLoop({
+      worker,
+      fetchImpl,
+      executeAssignment: vi.fn(async () => {
+        throw new Error('Unsupported worker assignment payload: s3CodeKey code mount');
+      }),
+      log: (message) => logs.push(message),
+    });
+
+    expect(requests.filter((request) => request.url.endsWith('/ack'))).toHaveLength(1);
+    expect(
+      requests.filter((request) => request.url.endsWith('/status')).map((request) => request.body)
+    ).toEqual([
+      { phase: 'running' },
+      {
+        phase: 'failed',
+        exitCode: 1,
+        durationMs: expect.any(Number),
+        error: 'Unsupported worker assignment payload: s3CodeKey code mount',
+        summary: 'Worker assignment failed.',
+      },
+    ]);
+    expect(logs).toContain(
+      'Assignment run_unsupported failed: Unsupported worker assignment payload: s3CodeKey code mount'
+    );
+  });
+
   it('logs timeout events and reconnects a dropped queue stream', async () => {
     const worker: CloudWorkerRecord = {
       baseUrl: 'https://cloud.test',
