@@ -150,6 +150,18 @@
           },
           "significance": "high",
           "tags": ["focal:lockfile", "focal:ci", "focal:scope", "confidence:0.9"]
+        },
+        {
+          "ts": 1781356915656,
+          "type": "decision",
+          "content": "Regenerated package-lock.json with declared npm 10.5.1: Regenerated package-lock.json with declared npm 10.5.1",
+          "raw": {
+            "question": "Regenerated package-lock.json with declared npm 10.5.1",
+            "chosen": "Regenerated package-lock.json with declared npm 10.5.1",
+            "alternatives": [],
+            "reasoning": "The PR is lockfile-scoped, and running npm 10.5.1 install --package-lock-only against current manifests added missing peer markers to Rollup platform packages; keeping generated lockfile output avoids an unreproducible lockfile."
+          },
+          "significance": "high"
         }
       ]
     }
