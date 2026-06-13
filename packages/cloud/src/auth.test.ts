@@ -22,8 +22,14 @@ vi.mock('node:child_process', () => ({
   spawn: childProcessMocks.spawn,
 }));
 
-import { authorizedApiFetch, ensureAuthenticated, readStoredAuth, refreshStoredAuth } from './auth.js';
-import type { StoredAuth } from './types.js';
+import {
+  authorizedApiFetch,
+  ensureAuthenticated,
+  ensureCloudSession,
+  readStoredAuth,
+  refreshStoredAuth,
+} from './auth.js';
+import { AUTH_FILE_PATH, CloudAuthError, LEGACY_AUTH_FILE_PATH, type StoredAuth } from './types.js';
 
 const FILE_AUTH: StoredAuth = {
   apiUrl: 'https://file.example/cloud',
@@ -109,6 +115,39 @@ describe('readStoredAuth', () => {
 
     await expect(readStoredAuth(env)).resolves.toEqual(ENV_AUTH);
     expect(fsMocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('migrates legacy auth to the canonical auth path when canonical auth is absent', async () => {
+    fsMocks.readFile.mockImplementation(async (file: string) => {
+      if (file === AUTH_FILE_PATH) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      if (file === LEGACY_AUTH_FILE_PATH) {
+        return JSON.stringify(FILE_AUTH);
+      }
+      throw new Error(`unexpected file ${file}`);
+    });
+
+    await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
+
+    expect(fsMocks.mkdir).toHaveBeenCalledWith(expect.stringContaining('.agentworkforce/relay'), {
+      recursive: true,
+      mode: 0o700,
+    });
+    expect(fsMocks.writeFile).toHaveBeenCalledWith(
+      AUTH_FILE_PATH,
+      `${JSON.stringify(FILE_AUTH, null, 2)}\n`,
+      {
+        encoding: 'utf8',
+        mode: 0o600,
+      }
+    );
+    expect(fsMocks.writeFile).not.toHaveBeenCalledWith(
+      LEGACY_AUTH_FILE_PATH,
+      expect.anything(),
+      expect.anything()
+    );
+    expect(fsMocks.rm).not.toHaveBeenCalled();
   });
 });
 
@@ -242,6 +281,19 @@ describe('ensureAuthenticated', () => {
 
     logSpy.mockRestore();
   });
+
+  it('fails fast without opening a browser when non-interactive auth needs login', async () => {
+    await expect(
+      ensureCloudSession({
+        apiUrl: 'https://example.com/cloud',
+        interactive: false,
+      })
+    ).rejects.toMatchObject({
+      code: 'AUTH_BROWSER_REQUIRED',
+    });
+
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('refreshStoredAuth', () => {
@@ -278,6 +330,37 @@ describe('refreshStoredAuth', () => {
     });
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
     expect(fsMocks.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('aborts stalled refresh requests and throws a typed timeout error', async () => {
+    vi.useFakeTimers();
+    const auth: StoredAuth = {
+      apiUrl: 'https://origin.example/cloud',
+      accessToken: 'stale-access',
+      refreshToken: 'stored-refresh',
+      accessTokenExpiresAt: '2026-04-13T12:00:00.000Z',
+    };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (_input: string | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+            });
+          })
+      )
+    );
+
+    const refresh = refreshStoredAuth(auth, { refreshTimeoutMs: 25 }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(25);
+
+    const error = await refresh;
+    expect(error).toBeInstanceOf(CloudAuthError);
+    expect(error).toMatchObject({ code: 'AUTH_REFRESH_TIMEOUT' });
+
+    vi.useRealTimers();
   });
 });
 

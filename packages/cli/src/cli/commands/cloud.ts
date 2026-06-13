@@ -5,6 +5,7 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import {
   ensureAuthenticated,
+  ensureCloudSession,
   authorizedApiFetch,
   readStoredAuth,
   clearStoredAuth,
@@ -276,6 +277,44 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     });
 
   // ── whoami ─────────────────────────────────────────────────────────────────
+
+  cloudCommand
+    .command('session')
+    .description('Show the canonical Agent Relay Cloud session')
+    .option('--api-url <url>', 'Cloud API base URL')
+    .option('--json', 'Output the session as JSON')
+    .option(
+      '--refresh-timeout <milliseconds>',
+      'Timeout for refreshing the cloud session',
+      parsePositiveInteger
+    )
+    .action(async (options: { apiUrl?: string; json?: boolean; refreshTimeout?: number }) => {
+      const apiUrl = options.apiUrl || defaultApiUrl();
+      const session = await ensureCloudSession({
+        apiUrl,
+        interactive: false,
+        refreshTimeoutMs: options.refreshTimeout,
+      });
+
+      if (options.json) {
+        deps.log(
+          JSON.stringify(
+            {
+              apiUrl: session.auth.apiUrl,
+              accessToken: session.auth.accessToken,
+              accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+
+      deps.log(`API URL: ${session.auth.apiUrl}`);
+      deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+      deps.log(`Token file: ${AUTH_FILE_PATH}`);
+    });
 
   cloudCommand
     .command('whoami')

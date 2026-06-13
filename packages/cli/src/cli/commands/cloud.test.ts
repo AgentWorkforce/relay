@@ -18,6 +18,7 @@ vi.mock('@agent-relay/cloud', () => ({
   connectProvider: vi.fn(),
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
+  ensureCloudSession: vi.fn(),
   getProviderHelpText: () =>
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
@@ -32,6 +33,8 @@ vi.mock('@agent-relay/cloud', () => ({
 vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
+
+import { ensureCloudSession } from '@agent-relay/cloud';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 
@@ -66,6 +69,7 @@ describe('registerCloudCommands', () => {
     expect(cloud?.commands.map((command) => command.name())).toEqual([
       'login',
       'logout',
+      'session',
       'whoami',
       'connect',
       'run',
@@ -76,6 +80,42 @@ describe('registerCloudCommands', () => {
       'sync',
       'cancel',
     ]);
+  });
+
+  it('prints the canonical cloud session as JSON without interactive login', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({
+      auth: {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      client: {} as never,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'session',
+      '--json',
+      '--refresh-timeout',
+      '25',
+    ]);
+
+    expect(ensureCloudSession).toHaveBeenCalledWith({
+      apiUrl: 'https://cloud.test',
+      interactive: false,
+      refreshTimeoutMs: 25,
+    });
+    const sessionJson = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(sessionJson).toEqual({
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-token',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    expect(sessionJson).not.toHaveProperty('refreshToken');
   });
 
   it('connect requires a provider argument', () => {
