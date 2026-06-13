@@ -337,14 +337,11 @@ describe('registerCloudCommands', () => {
 
       const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
       expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
+      expect(fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')).toBe(
+        'helper from main archive'
+      );
       expect(
-        fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')
-      ).toBe('helper from main archive');
-      expect(
-        fs.readFileSync(
-          path.join(path.dirname(workflowPath), 'paths', 'shared_path', 'shared.txt'),
-          'utf-8'
-        )
+        fs.readFileSync(path.join(path.dirname(workflowPath), 'paths', 'shared_path', 'shared.txt'), 'utf-8')
       ).toBe('shared path archive');
       const persisted = fs.readFileSync(workflowPath, 'utf-8');
       expect(persisted).not.toContain('sk-secret');
