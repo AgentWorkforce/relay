@@ -7,7 +7,9 @@ import {
   cloudWorkerStorePath,
   readCloudWorkerStore,
   registerCloudWorker,
+  resolveWorkerWorkflowPayload,
   runCloudWorkerLoop,
+  sendCloudWorkerHeartbeat,
   streamCloudWorkerQueue,
   type CloudWorkerRecord,
   type WorkAssignmentRecord,
@@ -156,6 +158,85 @@ describe('cloud worker store and API client', () => {
     expect(events[1]).toMatchObject({ type: 'assignment', assignment: { runId: 'run_1' } });
   });
 
+  it('does not send worker tokens to cross-origin workflow URLs', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const seenHeaders: Array<string | null> = [];
+    const fetchImpl = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      seenHeaders.push(new Headers(init?.headers).get('authorization'));
+      return jsonResponse(payload);
+    }) as unknown as typeof fetch;
+
+    await resolveWorkerWorkflowPayload({
+      workflowRef: { type: 'url', value: 'https://workflow-cdn.test/run.json' },
+      worker,
+      fetchImpl,
+    });
+
+    expect(seenHeaders).toEqual([null]);
+  });
+
+  it('sends worker tokens only to same-origin workflow URLs', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const seenHeaders: Array<string | null> = [];
+    const fetchImpl = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      seenHeaders.push(new Headers(init?.headers).get('authorization'));
+      return jsonResponse(payload);
+    }) as unknown as typeof fetch;
+
+    await resolveWorkerWorkflowPayload({
+      workflowRef: { type: 'url', value: 'https://cloud.test/api/v1/workflows/run_1' },
+      worker,
+      fetchImpl,
+    });
+
+    expect(seenHeaders).toEqual(['Bearer ocl_wrk_secret']);
+  });
+
+  it('rejects workflow payloads without a valid sourceFileType', async () => {
+    const invalidPayload = { ...payload, sourceFileType: undefined };
+
+    await expect(
+      resolveWorkerWorkflowPayload({
+        workflowRef: { type: 'inline', value: JSON.stringify(invalidPayload) },
+      })
+    ).rejects.toThrow('Resolved worker workflow payload is invalid.');
+  });
+
+  it('falls back when Cloud returns an invalid heartbeat interval', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 45_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, nextHeartbeatMs: -1000 })
+    ) as unknown as typeof fetch;
+
+    await expect(sendCloudWorkerHeartbeat({ worker, fetchImpl })).resolves.toEqual({
+      nextHeartbeatMs: 45_000,
+    });
+  });
+
   it('runs the worker control loop with ack, running, completed, duplicate suppression, and revoke', async () => {
     const worker: CloudWorkerRecord = {
       baseUrl: 'https://cloud.test',
@@ -213,6 +294,52 @@ describe('cloud worker store and API client', () => {
     expect(
       requests.filter((request) => request.url.endsWith('/status')).map((request) => request.body)
     ).toEqual([{ phase: 'running' }, { phase: 'completed', exitCode: 0, durationMs: 15, summary: 'done' }]);
+  });
+
+  it('does not suppress redelivered assignments when ack fails first', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 60_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const asn = assignment(payload);
+    let ackAttempts = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/heartbeat')) {
+        return jsonResponse({ ok: true, nextHeartbeatMs: 60_000 });
+      }
+      if (requestUrl.endsWith('/queue')) {
+        return sseResponse([
+          `event: assignment\ndata: ${JSON.stringify(asn)}\n\n`,
+          `event: assignment\ndata: ${JSON.stringify(asn)}\n\n`,
+          'event: revoke\ndata: {}\n\n',
+        ]);
+      }
+      if (requestUrl.endsWith('/ack')) {
+        ackAttempts += 1;
+        if (ackAttempts === 1) {
+          return jsonResponse({ error: 'temporary ack failure' }, { status: 503 });
+        }
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const executeAssignment = vi.fn(async () => ({ exitCode: 0, durationMs: 15 }));
+
+    await runCloudWorkerLoop({
+      worker,
+      fetchImpl,
+      executeAssignment,
+      log: () => undefined,
+      sleep: async () => undefined,
+    });
+
+    expect(ackAttempts).toBe(2);
+    expect(executeAssignment).toHaveBeenCalledTimes(1);
   });
 
   it('reports unsupported assignments as failed instead of hanging or skipping', async () => {

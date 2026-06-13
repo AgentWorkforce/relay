@@ -122,6 +122,11 @@ async function runChild(input: {
   const startedAt = Date.now();
 
   return new Promise((resolve, reject) => {
+    if (input.signal.aborted) {
+      reject(new Error('The operation was aborted'));
+      return;
+    }
+
     const child = input.deps.spawnProcess(input.command, input.args, {
       cwd: input.cwd,
       env: input.env,
@@ -160,15 +165,15 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
     // This boundary only materializes the Cloud payload into a local workflow
     // file/env and then invokes relayflows with the equivalent run flags.
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
-    await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
-    await fsp.chmod(runDir, 0o700).catch(() => undefined);
-
-    const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
-    await writeSecretFile(workflowPath, payload.workflow);
-
-    const relayflowsCli = deps.resolveRelayflowsCliEntrypoint();
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
     try {
+      await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
+      await fsp.chmod(runDir, 0o700).catch(() => undefined);
+
+      const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
+      await writeSecretFile(workflowPath, payload.workflow);
+
+      const relayflowsCli = deps.resolveRelayflowsCliEntrypoint();
       const result = await runChild({
         command: process.execPath,
         args: relayflowsArgs(relayflowsCli, workflowPath, payload),
@@ -253,6 +258,9 @@ async function tailLog(
     if (handle) {
       try {
         const stat = await handle.stat();
+        if (stat.size < offset) {
+          offset = 0;
+        }
         if (stat.size > offset) {
           const buffer = Buffer.alloc(stat.size - offset);
           const read = await handle.read(buffer, 0, buffer.length, offset);

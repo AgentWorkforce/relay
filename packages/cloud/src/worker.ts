@@ -111,6 +111,7 @@ export type CloudWorkerLoopOptions = {
 const RESERVED_WORKER_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const QUEUE_RECONNECT_MS = 2_000;
+const MAX_SEEN_RUN_IDS = 1_000;
 
 function ensurePlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -300,6 +301,14 @@ function responseError(response: Response, payload: unknown): Error {
   return new Error(message);
 }
 
+function validHeartbeatIntervalMs(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function sameOrigin(left: string, right: string): boolean {
+  return new URL(left).origin === new URL(right).origin;
+}
+
 export async function registerCloudWorker(input: {
   enrollmentToken: string;
   name: string;
@@ -354,6 +363,7 @@ export async function registerCloudWorker(input: {
 
 export async function sendCloudWorkerHeartbeat(input: {
   worker: CloudWorkerRecord;
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<{ nextHeartbeatMs: number }> {
   const fetcher = input.fetchImpl ?? fetch;
@@ -365,16 +375,20 @@ export async function sendCloudWorkerHeartbeat(input: {
     {
       method: 'POST',
       headers: workerHeaders(input.worker.workerToken),
+      signal: input.signal,
     }
   );
   const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw responseError(response, payload);
   }
-  const nextHeartbeatMs =
-    ensurePlainObject(payload) && typeof payload.nextHeartbeatMs === 'number'
+  const requestedHeartbeatMs =
+    ensurePlainObject(payload) && validHeartbeatIntervalMs(payload.nextHeartbeatMs)
       ? payload.nextHeartbeatMs
-      : input.worker.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
+      : input.worker.heartbeatIntervalMs;
+  const nextHeartbeatMs = validHeartbeatIntervalMs(requestedHeartbeatMs)
+    ? requestedHeartbeatMs
+    : DEFAULT_HEARTBEAT_INTERVAL_MS;
   return { nextHeartbeatMs };
 }
 
@@ -448,6 +462,10 @@ function isWorkerWorkflowPayload(value: unknown): value is WorkerWorkflowPayload
     typeof value.relayfileToken === 'string' &&
     typeof value.workflow === 'string' &&
     (value.fileType === 'yaml' || value.fileType === 'ts' || value.fileType === 'py') &&
+    (value.sourceFileType === 'yaml' ||
+      value.sourceFileType === 'ts' ||
+      value.sourceFileType === 'py' ||
+      value.sourceFileType === 'workflow') &&
     typeof value.workflowFileName === 'string'
   );
 }
@@ -466,8 +484,12 @@ export async function resolveWorkerWorkflowPayload(input: {
     raw = JSON.parse(input.workflowRef.value);
   } else {
     const fetcher = input.fetchImpl ?? fetch;
+    const headers =
+      input.worker && sameOrigin(input.workflowRef.value, input.worker.baseUrl)
+        ? workerHeaders(input.worker.workerToken)
+        : undefined;
     const response = await fetcher(input.workflowRef.value, {
-      headers: input.worker ? workerHeaders(input.worker.workerToken) : undefined,
+      headers,
     });
     raw = await readJsonResponse(response);
     if (!response.ok) {
@@ -527,51 +549,55 @@ export async function* streamCloudWorkerQueue(input: {
   }
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let event = 'message';
-  let data = '';
+  try {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let event = 'message';
+    let data = '';
 
-  const flush = (): WorkerQueueEvent | null => {
-    const currentEvent = event;
-    const currentData = data.replace(/\n$/, '');
-    event = 'message';
-    data = '';
-    if (!currentData && currentEvent === 'message') {
-      return null;
-    }
-    return parseSseEvent(currentEvent, currentData);
-  };
+    const flush = (): WorkerQueueEvent | null => {
+      const currentEvent = event;
+      const currentData = data.replace(/\n$/, '');
+      event = 'message';
+      data = '';
+      if (!currentData && currentEvent === 'message') {
+        return null;
+      }
+      return parseSseEvent(currentEvent, currentData);
+    };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.search(/\r?\n/)) !== -1) {
-      const rawLine = buffer.slice(0, newlineIndex);
-      const nextOffset = buffer[newlineIndex] === '\r' && buffer[newlineIndex + 1] === '\n' ? 2 : 1;
-      buffer = buffer.slice(newlineIndex + nextOffset);
-      const line = rawLine.trimEnd();
-      if (!line) {
-        const parsed = flush();
-        if (parsed) {
-          yield parsed;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex: number;
+      while ((newlineIndex = buffer.search(/\r?\n/)) !== -1) {
+        const rawLine = buffer.slice(0, newlineIndex);
+        const nextOffset = buffer[newlineIndex] === '\r' && buffer[newlineIndex + 1] === '\n' ? 2 : 1;
+        buffer = buffer.slice(newlineIndex + nextOffset);
+        const line = rawLine.trimEnd();
+        if (!line) {
+          const parsed = flush();
+          if (parsed) {
+            yield parsed;
+          }
+          continue;
         }
-        continue;
-      }
-      if (line.startsWith(':')) {
-        continue;
-      }
-      const colonIndex = line.indexOf(':');
-      const field = colonIndex === -1 ? line : line.slice(0, colonIndex);
-      const valueText = colonIndex === -1 ? '' : line.slice(colonIndex + 1).replace(/^ /, '');
-      if (field === 'event') {
-        event = valueText || 'message';
-      } else if (field === 'data') {
-        data += `${valueText}\n`;
+        if (line.startsWith(':')) {
+          continue;
+        }
+        const colonIndex = line.indexOf(':');
+        const field = colonIndex === -1 ? line : line.slice(0, colonIndex);
+        const valueText = colonIndex === -1 ? '' : line.slice(colonIndex + 1).replace(/^ /, '');
+        if (field === 'event') {
+          event = valueText || 'message';
+        } else if (field === 'data') {
+          data += `${valueText}\n`;
+        }
       }
     }
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
 }
 
@@ -593,6 +619,7 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
   let heartbeatMs = options.worker.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
   let stopped = false;
   let wakeHeartbeat: (() => void) | undefined;
+  const heartbeatAbort = new AbortController();
 
   const sleepUntilStopped = async (ms: number): Promise<void> => {
     if (stopped || options.signal?.aborted) return;
@@ -608,9 +635,16 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
   const heartbeat = async () => {
     while (!stopped && !options.signal?.aborted) {
       try {
-        const result = await sendCloudWorkerHeartbeat({ worker: options.worker, fetchImpl });
+        const result = await sendCloudWorkerHeartbeat({
+          worker: options.worker,
+          fetchImpl,
+          signal: heartbeatAbort.signal,
+        });
         heartbeatMs = result.nextHeartbeatMs;
       } catch (error) {
+        if (stopped || heartbeatAbort.signal.aborted || options.signal?.aborted) {
+          return;
+        }
         options.log?.(`Heartbeat failed: ${toShortError(error)}`);
       }
       await sleepUntilStopped(heartbeatMs);
@@ -646,8 +680,6 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
             options.log?.(`Ignoring duplicate assignment for run ${assignment.runId}.`);
             continue;
           }
-          seenRunIds.add(assignment.runId);
-
           const startedAt = Date.now();
           try {
             await acknowledgeCloudWorkerAssignment({
@@ -655,6 +687,13 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
               runId: assignment.runId,
               fetchImpl,
             });
+            seenRunIds.add(assignment.runId);
+            if (seenRunIds.size > MAX_SEEN_RUN_IDS) {
+              const oldest = seenRunIds.values().next().value;
+              if (oldest !== undefined) {
+                seenRunIds.delete(oldest);
+              }
+            }
             const payload = await resolveWorkerWorkflowPayload({
               workflowRef: assignment.workflowRef,
               worker: options.worker,
@@ -716,6 +755,7 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
     }
   } finally {
     stopped = true;
+    heartbeatAbort.abort();
     wakeHeartbeat?.();
     await heartbeatPromise.catch(() => undefined);
   }
