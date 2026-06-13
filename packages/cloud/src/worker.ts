@@ -209,10 +209,7 @@ export function readCloudWorkerStore(env: NodeJS.ProcessEnv = process.env): Clou
   }
 }
 
-export function writeCloudWorkerStore(
-  store: CloudWorkerStore,
-  env: NodeJS.ProcessEnv = process.env
-): void {
+export function writeCloudWorkerStore(store: CloudWorkerStore, env: NodeJS.ProcessEnv = process.env): void {
   const file = cloudWorkerStorePath(env);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
@@ -232,12 +229,14 @@ export function upsertCloudWorkerRecord(
   return store;
 }
 
-export function resolveCloudWorkerRecord(input: {
-  baseUrl?: string;
-  workerId?: string;
-  name?: string;
-  env?: NodeJS.ProcessEnv;
-} = {}): CloudWorkerRecord {
+export function resolveCloudWorkerRecord(
+  input: {
+    baseUrl?: string;
+    workerId?: string;
+    name?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {}
+): CloudWorkerRecord {
   const baseUrl = normalizeBaseUrl(input.baseUrl);
   const store = readCloudWorkerStore(input.env);
   if (input.workerId) {
@@ -484,7 +483,11 @@ function parseSseEvent(event: string, data: string): WorkerQueueEvent | null {
 
   const payload = data ? (JSON.parse(data) as unknown) : {};
   if (event === 'assignment' || event === 'timeout') {
-    if (!ensurePlainObject(payload) || !isWorkflowRef(payload.workflowRef) || typeof payload.runId !== 'string') {
+    if (
+      !ensurePlainObject(payload) ||
+      !isWorkflowRef(payload.workflowRef) ||
+      typeof payload.runId !== 'string'
+    ) {
       throw new Error(`Invalid worker ${event} event payload.`);
     }
     return { type: event, assignment: payload as WorkAssignmentRecord };
@@ -639,7 +642,11 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
 
           const startedAt = Date.now();
           try {
-            await acknowledgeCloudWorkerAssignment({ worker: options.worker, runId: assignment.runId, fetchImpl });
+            await acknowledgeCloudWorkerAssignment({
+              worker: options.worker,
+              runId: assignment.runId,
+              fetchImpl,
+            });
             const payload = await resolveWorkerWorkflowPayload({
               workflowRef: assignment.workflowRef,
               worker: options.worker,

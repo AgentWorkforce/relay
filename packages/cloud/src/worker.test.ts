@@ -55,7 +55,10 @@ function sseResponse(frames: string[]): Response {
   );
 }
 
-function assignment(payload: WorkerWorkflowPayload, overrides: Partial<WorkAssignmentRecord> = {}): WorkAssignmentRecord {
+function assignment(
+  payload: WorkerWorkflowPayload,
+  overrides: Partial<WorkAssignmentRecord> = {}
+): WorkAssignmentRecord {
   return {
     id: 'asn_1',
     workspaceId: payload.workspaceId,
@@ -207,10 +210,9 @@ describe('cloud worker store and API client', () => {
 
     expect(executeAssignment).toHaveBeenCalledTimes(1);
     expect(requests.filter((request) => request.url.endsWith('/ack'))).toHaveLength(1);
-    expect(requests.filter((request) => request.url.endsWith('/status')).map((request) => request.body)).toEqual([
-      { phase: 'running' },
-      { phase: 'completed', exitCode: 0, durationMs: 15, summary: 'done' },
-    ]);
+    expect(
+      requests.filter((request) => request.url.endsWith('/status')).map((request) => request.body)
+    ).toEqual([{ phase: 'running' }, { phase: 'completed', exitCode: 0, durationMs: 15, summary: 'done' }]);
   });
 
   it('logs timeout events and reconnects a dropped queue stream', async () => {

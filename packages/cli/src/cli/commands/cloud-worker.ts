@@ -230,7 +230,10 @@ async function startDaemon(input: {
   return next;
 }
 
-async function tailLog(filePath: string, input: { follow?: boolean; deps: CloudWorkerDependencies }): Promise<void> {
+async function tailLog(
+  filePath: string,
+  input: { follow?: boolean; deps: CloudWorkerDependencies }
+): Promise<void> {
   let offset = 0;
   while (true) {
     const handle = await fsp.open(filePath, 'r').catch((error: unknown) => {
@@ -380,7 +383,9 @@ export function registerCloudWorkerCommands(
       deps.log(`API URL: ${payload.baseUrl}`);
       deps.log(`Local daemon: ${localDaemonRunning ? `running (pid ${record.pid})` : 'not running'}`);
       if (record.logPath) deps.log(`Logs: ${record.logPath}`);
-      deps.log('Cloud liveness: unknown (worker-token status only; heartbeat/queue update Cloud when running)');
+      deps.log(
+        'Cloud liveness: unknown (worker-token status only; heartbeat/queue update Cloud when running)'
+      );
     });
 
   workerCommand
