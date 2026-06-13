@@ -206,20 +206,22 @@ describe('registerCloudCommands', () => {
       cwd?: string;
       env?: NodeJS.ProcessEnv;
     }> = [];
-    const spawnProcess = vi.fn((command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
-      spawnCalls.push({ command, args, cwd: options.cwd, env: options.env });
-      const child = new EventEmitter() as EventEmitter & {
-        killed: boolean;
-        kill: ReturnType<typeof vi.fn>;
-      };
-      child.killed = false;
-      child.kill = vi.fn(() => {
-        child.killed = true;
-        return true;
-      });
-      queueMicrotask(() => child.emit('exit', 0, null));
-      return child;
-    }) as never;
+    const spawnProcess = vi.fn(
+      (command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        spawnCalls.push({ command, args, cwd: options.cwd, env: options.env });
+        const child = new EventEmitter() as EventEmitter & {
+          killed: boolean;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.killed = false;
+        child.kill = vi.fn(() => {
+          child.killed = true;
+          return true;
+        });
+        queueMicrotask(() => child.emit('exit', 0, null));
+        return child;
+      }
+    ) as never;
 
     try {
       const runner = createDefaultAssignmentRunner({

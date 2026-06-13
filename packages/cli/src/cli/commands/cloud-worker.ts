@@ -96,7 +96,11 @@ function buildWorkerRuntimeEnv(
   };
 }
 
-function relayflowsArgs(relayflowsCli: string, workflowPath: string, payload: WorkerWorkflowPayload): string[] {
+function relayflowsArgs(
+  relayflowsCli: string,
+  workflowPath: string,
+  payload: WorkerWorkflowPayload
+): string[] {
   return [
     relayflowsCli,
     'run',
