@@ -5,9 +5,11 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
+import { extract } from 'tar';
 
 import {
   cloudWorkerStateDir,
+  downloadCloudWorkerAssignmentStorage,
   registerCloudWorker,
   resolveCloudWorkerRecord,
   runCloudWorkerLoop,
@@ -29,6 +31,7 @@ export interface CloudWorkerDependencies {
   spawnProcess: typeof spawn;
   now: () => Date;
   cwd: () => string;
+  fetchImpl: typeof fetch;
   resolveRelayflowsCliEntrypoint: () => string;
 }
 
@@ -43,6 +46,7 @@ function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWo
     spawnProcess: spawn,
     now: () => new Date(),
     cwd: () => process.cwd(),
+    fetchImpl: fetch,
     resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
     ...overrides,
   };
@@ -63,20 +67,15 @@ function isProcessRunning(pid: number | undefined): boolean {
   }
 }
 
-function unsupportedReasons(payload: WorkerWorkflowPayload): string[] {
-  const reasons: string[] = [];
-  if (payload.s3CodeKey) {
-    reasons.push('s3CodeKey code mount');
-  }
-  if (payload.paths?.length) {
-    reasons.push('multi-path code mounts');
-  }
-  return reasons;
-}
-
 async function writeSecretFile(filePath: string, content: string): Promise<void> {
   await fsp.writeFile(filePath, content, { encoding: 'utf-8', mode: 0o600 });
   await fsp.chmod(filePath, 0o600).catch(() => undefined);
+}
+
+function safePathSegment(value: string): string {
+  const cleaned = value.trim().replace(/\\/g, '/');
+  const base = path.basename(cleaned || 'path');
+  return base.replace(/[^A-Za-z0-9._-]/g, '_') || 'path';
 }
 
 function buildWorkerRuntimeEnv(
@@ -154,21 +153,74 @@ async function runChild(input: {
   });
 }
 
-export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
-  return async ({ payload, signal }) => {
-    const unsupported = unsupportedReasons(payload);
-    if (unsupported.length > 0) {
-      throw new Error(`Unsupported worker assignment payload: ${unsupported.join(', ')}`);
-    }
+async function materializeArchive(input: {
+  worker: CloudWorkerRecord;
+  payload: WorkerWorkflowPayload;
+  objectKey: string;
+  destinationDir: string;
+  archivePath: string;
+  deps: CloudWorkerDependencies;
+  signal: AbortSignal;
+}): Promise<void> {
+  const archive = await downloadCloudWorkerAssignmentStorage({
+    worker: input.worker,
+    runId: input.payload.runId,
+    objectKey: input.objectKey,
+    fetchImpl: input.deps.fetchImpl,
+    signal: input.signal,
+  });
 
+  await fsp.mkdir(path.dirname(input.archivePath), { recursive: true, mode: 0o700 });
+  await fsp.writeFile(input.archivePath, archive, { mode: 0o600 });
+  await fsp.chmod(input.archivePath, 0o600).catch(() => undefined);
+  await fsp.mkdir(input.destinationDir, { recursive: true, mode: 0o700 });
+  await fsp.chmod(input.destinationDir, 0o700).catch(() => undefined);
+  await extract({
+    file: input.archivePath,
+    cwd: input.destinationDir,
+    strict: true,
+    preservePaths: false,
+  });
+}
+
+async function materializeCodeMounts(input: {
+  worker: CloudWorkerRecord;
+  payload: WorkerWorkflowPayload;
+  runDir: string;
+  deps: CloudWorkerDependencies;
+  signal: AbortSignal;
+}): Promise<void> {
+  const artifactsDir = path.join(input.runDir, '.cloud-worker-artifacts');
+  if (input.payload.s3CodeKey) {
+    await materializeArchive({
+      ...input,
+      objectKey: input.payload.s3CodeKey,
+      destinationDir: input.runDir,
+      archivePath: path.join(artifactsDir, 'code.tar.gz'),
+    });
+  }
+
+  for (const entry of input.payload.paths ?? []) {
+    await materializeArchive({
+      ...input,
+      objectKey: entry.s3CodeKey,
+      destinationDir: path.join(input.runDir, 'paths', safePathSegment(entry.name)),
+      archivePath: path.join(artifactsDir, 'paths', `${safePathSegment(entry.name)}.tar.gz`),
+    });
+  }
+}
+
+export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
+  return async ({ payload, worker, signal }) => {
     // Cloud owns assignment control-plane semantics. relayflows owns execution.
-    // This boundary only materializes the Cloud payload into a local workflow
-    // file/env and then invokes relayflows with the equivalent run flags.
+    // This boundary materializes the Cloud payload into a local workflow
+    // directory/env and then invokes relayflows with the equivalent run flags.
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
     try {
       await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
+      await materializeCodeMounts({ worker, payload, runDir, deps, signal });
 
       const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
       await writeSecretFile(workflowPath, payload.workflow);

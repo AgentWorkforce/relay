@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cloudWorkerStorePath,
+  downloadCloudWorkerAssignmentStorage,
   readCloudWorkerStore,
   registerCloudWorker,
   resolveWorkerWorkflowPayload,
@@ -208,6 +209,60 @@ describe('cloud worker store and API client', () => {
     expect(seenHeaders).toEqual(['Bearer ocl_wrk_secret']);
   });
 
+  it('downloads assignment storage through the worker-scoped route', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const seenHeaders: Array<string | null> = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      expect(String(url)).toBe(
+        'https://cloud.test/api/v1/workers/wrk_1/assignments/run_1/storage/code/nested%20archive.tgz'
+      );
+      expect(init?.method).toBe('GET');
+      seenHeaders.push(new Headers(init?.headers).get('authorization'));
+      return new Response(Buffer.from('archive-bytes'));
+    }) as unknown as typeof fetch;
+
+    await expect(
+      downloadCloudWorkerAssignmentStorage({
+        worker,
+        runId: 'run_1',
+        objectKey: 'code/nested archive.tgz',
+        fetchImpl,
+      })
+    ).resolves.toEqual(Buffer.from('archive-bytes'));
+    expect(seenHeaders).toEqual(['Bearer ocl_wrk_secret']);
+  });
+
+  it('rejects invalid assignment storage keys before fetch', async () => {
+    const worker: CloudWorkerRecord = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo-worker',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    await expect(
+      downloadCloudWorkerAssignmentStorage({
+        worker,
+        runId: 'run_1',
+        objectKey: '../code.tgz',
+        fetchImpl,
+      })
+    ).rejects.toThrow('Worker assignment storage object key is invalid.');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('rejects workflow payloads without a valid sourceFileType', async () => {
     const invalidPayload = { ...payload, sourceFileType: undefined };
 
@@ -290,6 +345,11 @@ describe('cloud worker store and API client', () => {
     });
 
     expect(executeAssignment).toHaveBeenCalledTimes(1);
+    expect(executeAssignment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worker,
+      })
+    );
     expect(requests.filter((request) => request.url.endsWith('/ack'))).toHaveLength(1);
     expect(
       requests.filter((request) => request.url.endsWith('/status')).map((request) => request.body)

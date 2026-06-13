@@ -43,6 +43,8 @@ export {
   acknowledgeCloudWorkerAssignment,
   cloudWorkerStateDir,
   cloudWorkerStorePath,
+  downloadCloudWorkerAssignmentStorage,
+  headCloudWorkerAssignmentStorage,
   readCloudWorkerStore,
   registerCloudWorker,
   reportCloudWorkerAssignmentStatus,

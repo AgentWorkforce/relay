@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
+import { create as createTar } from 'tar';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cloudMocks = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const cloudMocks = vi.hoisted(() => ({
   listWorkflowSchedules: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
+  downloadCloudWorkerAssignmentStorage: vi.fn(),
   registerCloudWorker: vi.fn(),
   resolveCloudWorkerRecord: vi.fn(),
   runCloudWorkerLoop: vi.fn(),
@@ -30,6 +32,8 @@ vi.mock('@agent-relay/cloud', () => ({
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  downloadCloudWorkerAssignmentStorage: (...args: unknown[]) =>
+    cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
   registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
@@ -72,6 +76,24 @@ function createHarness() {
   registerCloudCommands(program, deps);
 
   return { program, deps };
+}
+
+async function createTarBuffer(entries: Record<string, string>): Promise<Buffer> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-archive-'));
+  try {
+    const sourceDir = path.join(tmp, 'src');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    for (const [name, content] of Object.entries(entries)) {
+      const filePath = path.join(sourceDir, name);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+    const archivePath = path.join(tmp, 'archive.tgz');
+    await createTar({ cwd: sourceDir, file: archivePath, gzip: true }, Object.keys(entries));
+    return fs.readFileSync(archivePath);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 describe('registerCloudCommands', () => {
@@ -147,9 +169,9 @@ describe('registerCloudCommands', () => {
     expect(output).not.toContain('ocl_wrk_enr_secret');
   });
 
-  it('cloud worker start fail-closes unsupported mounted assignment payloads', async () => {
+  it('cloud worker start wires the stored worker into the control loop', async () => {
     const { program } = createHarness();
-    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce({
+    const worker = {
       baseUrl: 'https://cloud.test',
       workerId: 'wrk_1',
       workerToken: 'ocl_wrk_secret',
@@ -157,41 +179,15 @@ describe('registerCloudCommands', () => {
       heartbeatIntervalMs: 30_000,
       registeredAt: '2026-06-13T00:00:00.000Z',
       updatedAt: '2026-06-13T00:00:00.000Z',
-    });
-    cloudMocks.runCloudWorkerLoop.mockImplementationOnce(async (options: unknown) => {
-      const loopOptions = options as {
-        executeAssignment: (input: {
-          assignment: unknown;
-          payload: Record<string, unknown>;
-          signal: AbortSignal;
-        }) => Promise<unknown>;
-      };
-
-      await expect(
-        loopOptions.executeAssignment({
-          assignment: { runId: 'run_unsupported' },
-          payload: {
-            runId: 'run_unsupported',
-            workspaceId: 'rw_1',
-            relayWorkspaceId: 'rw_relay',
-            relaycastApiKey: 'rk_live_test',
-            relayfileUrl: 'https://relayfile.test',
-            relayfileToken: 'relay_token_secret',
-            workflow: 'version: "1.0"\nworkflows: []\n',
-            fileType: 'yaml',
-            sourceFileType: 'yaml',
-            workflowFileName: 'workflow.yaml',
-            s3CodeKey: 'code/archive.tgz',
-          },
-          signal: new AbortController().signal,
-        })
-      ).rejects.toThrow('Unsupported worker assignment payload: s3CodeKey code mount');
-    });
+    };
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce(worker);
+    cloudMocks.runCloudWorkerLoop.mockResolvedValueOnce(undefined);
 
     await program.parseAsync(['node', 'agent-relay', 'cloud', 'worker', 'start', '--once']);
 
     expect(cloudMocks.runCloudWorkerLoop).toHaveBeenCalledWith(
       expect.objectContaining({
+        worker,
         once: true,
         executeAssignment: expect.any(Function),
       })
@@ -224,6 +220,31 @@ describe('registerCloudCommands', () => {
     ) as never;
 
     try {
+      cloudMocks.downloadCloudWorkerAssignmentStorage.mockImplementation(
+        async (input: { objectKey: string }) => {
+          if (input.objectKey === 'code/archive.tgz') {
+            return createTarBuffer({
+              'lib/helper.txt': 'helper from main archive',
+            });
+          }
+          if (input.objectKey === 'paths/shared.tgz') {
+            return createTarBuffer({
+              'shared.txt': 'shared path archive',
+            });
+          }
+          throw new Error(`unexpected object key ${input.objectKey}`);
+        }
+      );
+
+      const worker = {
+        baseUrl: 'https://cloud.test',
+        workerId: 'wrk_1',
+        workerToken: 'ocl_wrk_secret',
+        name: 'demo',
+        heartbeatIntervalMs: 30_000,
+        registeredAt: '2026-06-13T00:00:00.000Z',
+        updatedAt: '2026-06-13T00:00:00.000Z',
+      };
       const runner = createDefaultAssignmentRunner({
         log: vi.fn(),
         error: vi.fn(),
@@ -236,6 +257,7 @@ describe('registerCloudCommands', () => {
         spawnProcess,
         now: () => new Date('2026-06-13T00:00:00.000Z'),
         cwd: () => tmpHome,
+        fetchImpl: vi.fn() as never,
         resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
       });
 
@@ -253,6 +275,13 @@ describe('registerCloudCommands', () => {
           fileType: 'yaml',
           sourceFileType: 'yaml',
           workflowFileName: '../workflow.yaml',
+          s3CodeKey: 'code/archive.tgz',
+          paths: [
+            {
+              name: '../shared path',
+              s3CodeKey: 'paths/shared.tgz',
+            },
+          ],
           envSecrets: {
             OPENAI_API_KEY: 'sk-secret',
           },
@@ -260,9 +289,24 @@ describe('registerCloudCommands', () => {
           startFrom: 'repair',
           previousRunId: 'run_cache',
         },
+        worker,
         signal: new AbortController().signal,
       });
 
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'code/archive.tgz',
+        })
+      );
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'paths/shared.tgz',
+        })
+      );
       expect(spawnCalls).toHaveLength(1);
       const call = spawnCalls[0]!;
       const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
@@ -293,8 +337,15 @@ describe('registerCloudCommands', () => {
 
       const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
       expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
-      const runDirFiles = fs.readdirSync(path.dirname(workflowPath));
-      expect(runDirFiles).toEqual(['workflow.yaml']);
+      expect(
+        fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')
+      ).toBe('helper from main archive');
+      expect(
+        fs.readFileSync(
+          path.join(path.dirname(workflowPath), 'paths', 'shared_path', 'shared.txt'),
+          'utf-8'
+        )
+      ).toBe('shared path archive');
       const persisted = fs.readFileSync(workflowPath, 'utf-8');
       expect(persisted).not.toContain('sk-secret');
       expect(persisted).not.toContain('relayfile_secret');

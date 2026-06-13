@@ -90,6 +90,7 @@ export type WorkerQueueEvent =
 export type ExecuteWorkerAssignment = (input: {
   assignment: WorkAssignmentRecord;
   payload: WorkerWorkflowPayload;
+  worker: CloudWorkerRecord;
   signal: AbortSignal;
 }) => Promise<{
   exitCode?: number;
@@ -301,6 +302,14 @@ function responseError(response: Response, payload: unknown): Error {
   return new Error(message);
 }
 
+function encodeStorageObjectKey(objectKey: string): string {
+  const segments = objectKey.split('/').filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
+    throw new Error('Worker assignment storage object key is invalid.');
+  }
+  return segments.map((segment) => encodeURIComponent(segment)).join('/');
+}
+
 function validHeartbeatIntervalMs(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -438,6 +447,61 @@ export async function reportCloudWorkerAssignmentStatus(input: {
   );
   const payload = await readJsonResponse(response);
   if (!response.ok) {
+    throw responseError(response, payload);
+  }
+}
+
+export async function downloadCloudWorkerAssignmentStorage(input: {
+  worker: CloudWorkerRecord;
+  runId: string;
+  objectKey: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<Buffer> {
+  const fetcher = input.fetchImpl ?? fetch;
+  const response = await fetcher(
+    buildApiUrl(
+      input.worker.baseUrl,
+      `/api/v1/workers/${encodeURIComponent(input.worker.workerId)}/assignments/${encodeURIComponent(
+        input.runId
+      )}/storage/${encodeStorageObjectKey(input.objectKey)}`
+    ),
+    {
+      method: 'GET',
+      headers: workerHeaders(input.worker.workerToken),
+      signal: input.signal,
+    }
+  );
+  if (!response.ok) {
+    const payload = await readJsonResponse(response);
+    throw responseError(response, payload);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export async function headCloudWorkerAssignmentStorage(input: {
+  worker: CloudWorkerRecord;
+  runId: string;
+  objectKey: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const fetcher = input.fetchImpl ?? fetch;
+  const response = await fetcher(
+    buildApiUrl(
+      input.worker.baseUrl,
+      `/api/v1/workers/${encodeURIComponent(input.worker.workerId)}/assignments/${encodeURIComponent(
+        input.runId
+      )}/storage/${encodeStorageObjectKey(input.objectKey)}`
+    ),
+    {
+      method: 'HEAD',
+      headers: workerHeaders(input.worker.workerToken),
+      signal: input.signal,
+    }
+  );
+  if (!response.ok) {
+    const payload = await readJsonResponse(response);
     throw responseError(response, payload);
   }
 }
@@ -708,6 +772,7 @@ export async function runCloudWorkerLoop(options: CloudWorkerLoopOptions): Promi
             const result = await options.executeAssignment({
               assignment,
               payload,
+              worker: options.worker,
               signal: options.signal ?? new AbortController().signal,
             });
             await reportCloudWorkerAssignmentStatus({
