@@ -42,6 +42,10 @@ const expectedLeafCommands = [
   'cloud logs',
   'cloud sync',
   'cloud cancel',
+  'cloud worker register',
+  'cloud worker start',
+  'cloud worker status',
+  'cloud worker logs',
   // workspace
   'workspace create',
   'workspace active',
