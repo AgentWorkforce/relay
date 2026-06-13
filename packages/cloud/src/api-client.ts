@@ -1,4 +1,5 @@
-import { CloudAuthError, DEFAULT_REFRESH_TIMEOUT_MS, REFRESH_WINDOW_MS } from './types.js';
+import { fetchWithRefreshTimeout } from './refresh-timeout.js';
+import { CloudAuthError, REFRESH_WINDOW_MS } from './types.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 
 export type CloudApiClientOptions = {
@@ -128,54 +129,20 @@ export class CloudApiClient {
   }
 
   private async doRefresh(signal?: AbortSignal): Promise<void> {
-    const refreshTimeoutMs = this.options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
-    const controller = new AbortController();
-    let timedOut = false;
-    let callerAborted = false;
-    const abortFromCaller = () => {
-      callerAborted = true;
-      controller.abort();
-    };
-
-    if (signal) {
-      if (signal.aborted) {
-        callerAborted = true;
-        controller.abort();
-      } else {
-        signal.addEventListener('abort', abortFromCaller, { once: true });
-      }
-    }
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, refreshTimeoutMs);
-
-    let response: Response;
-    try {
-      response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'), {
+    const response = await fetchWithRefreshTimeout(
+      buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'),
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ refreshToken: this.refreshToken }),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      if (timedOut || (!callerAborted && error instanceof Error && error.name === 'AbortError')) {
-        throw new CloudAuthError(
-          'AUTH_REFRESH_TIMEOUT',
-          `Cloud auth refresh timed out after ${refreshTimeoutMs}ms`,
-          { cause: error }
-        );
+      },
+      {
+        refreshTimeoutMs: this.options.refreshTimeoutMs,
+        signal,
       }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      if (signal) {
-        signal.removeEventListener('abort', abortFromCaller);
-      }
-    }
+    );
 
     if (!response.ok) {
       throw new CloudAuthError(

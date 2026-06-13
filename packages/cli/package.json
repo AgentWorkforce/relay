@@ -43,7 +43,7 @@
     "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-relay/cloud": "8.6.0",
+    "@agent-relay/cloud": "8.7.0",
     "@agent-relay/config": "8.6.0",
     "@agent-relay/harness-driver": "8.6.0",
     "@agent-relay/sdk": "8.6.0",

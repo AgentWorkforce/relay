@@ -32,6 +32,7 @@ const expectedLeafCommands = [
   // cloud
   'cloud login',
   'cloud logout',
+  'cloud session',
   'cloud whoami',
   'cloud connect',
   'cloud run',
@@ -42,6 +43,7 @@ const expectedLeafCommands = [
   'cloud sync',
   'cloud cancel',
   // workspace
+  'workspace active',
   'workspace create',
   'workspace list',
   'workspace set_key',
