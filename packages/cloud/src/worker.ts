@@ -116,13 +116,21 @@ function ensurePlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 function normalizeBaseUrl(value?: string): string {
-  const raw = (value?.trim() || defaultApiUrl()).replace(/\/+$/, '');
+  const raw = trimTrailingSlashes(value?.trim() || defaultApiUrl());
   if (!raw) {
     throw new Error('Cloud API base URL is required.');
   }
   try {
-    return new URL(raw).toString().replace(/\/+$/, '');
+    return trimTrailingSlashes(new URL(raw).toString());
   } catch {
     throw new Error(`Invalid Cloud API base URL: ${raw}`);
   }
