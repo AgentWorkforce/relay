@@ -1,3 +1,7 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,7 +39,8 @@ vi.mock('@agent-relay/cloud', () => ({
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
   upsertCloudWorkerRecord: vi.fn(),
-  cloudWorkerStateDir: () => '/tmp/cloud-workers',
+  cloudWorkerStateDir: (env?: NodeJS.ProcessEnv) =>
+    env?.AGENT_RELAY_HOME ? path.join(env.AGENT_RELAY_HOME, 'cloud-workers') : '/tmp/cloud-workers',
 }));
 
 vi.mock('../telemetry/index.js', () => ({
@@ -45,6 +50,7 @@ vi.mock('../telemetry/index.js', () => ({
 import { ensureCloudSession } from '@agent-relay/cloud';
 
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
+import { createDefaultAssignmentRunner } from './cloud-worker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -141,7 +147,7 @@ describe('registerCloudCommands', () => {
     expect(output).not.toContain('ocl_wrk_enr_secret');
   });
 
-  it('cloud worker start fail-closes unsupported MVP assignment payloads', async () => {
+  it('cloud worker start fail-closes unsupported mounted assignment payloads', async () => {
     const { program } = createHarness();
     cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce({
       baseUrl: 'https://cloud.test',
@@ -190,6 +196,110 @@ describe('registerCloudCommands', () => {
         executeAssignment: expect.any(Function),
       })
     );
+  });
+
+  it('materializes Cloud assignments into relayflows args and child env without persisting secrets', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-relayflows-'));
+    const spawnCalls: Array<{
+      command: string;
+      args: string[];
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const spawnProcess = vi.fn((command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+      spawnCalls.push({ command, args, cwd: options.cwd, env: options.env });
+      const child = new EventEmitter() as EventEmitter & {
+        killed: boolean;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.killed = false;
+      child.kill = vi.fn(() => {
+        child.killed = true;
+        return true;
+      });
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }) as never;
+
+    try {
+      const runner = createDefaultAssignmentRunner({
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+        env: {
+          AGENT_RELAY_HOME: tmpHome,
+          AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+          BASE_ENV: 'kept',
+        },
+        spawnProcess,
+        now: () => new Date('2026-06-13T00:00:00.000Z'),
+        cwd: () => tmpHome,
+        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+      });
+
+      await runner({
+        assignment: { runId: 'run_relayflows' } as never,
+        payload: {
+          runId: 'run_relayflows',
+          workspaceId: 'rw_1',
+          relayWorkspaceId: 'rw_relay',
+          relaycastApiKey: 'rk_live_secret',
+          relaycastBaseUrl: 'https://relaycast.test',
+          relayfileUrl: 'https://relayfile.test',
+          relayfileToken: 'relayfile_secret',
+          workflow: 'version: "1.0"\nworkflows: []\n',
+          fileType: 'yaml',
+          sourceFileType: 'yaml',
+          workflowFileName: '../workflow.yaml',
+          envSecrets: {
+            OPENAI_API_KEY: 'sk-secret',
+          },
+          resumeRunId: 'run_previous',
+          startFrom: 'repair',
+          previousRunId: 'run_cache',
+        },
+        signal: new AbortController().signal,
+      });
+
+      expect(spawnCalls).toHaveLength(1);
+      const call = spawnCalls[0]!;
+      const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
+      expect(call.command).toBe(process.execPath);
+      expect(call.args).toEqual([
+        '/opt/relayflows/dist/cli.js',
+        'run',
+        workflowPath,
+        '--resume',
+        'run_previous',
+        '--start-from',
+        'repair',
+        '--previous-run-id',
+        'run_cache',
+      ]);
+      expect(call.cwd).toBe(path.dirname(workflowPath));
+      expect(call.env).toMatchObject({
+        BASE_ENV: 'kept',
+        OPENAI_API_KEY: 'sk-secret',
+        AGENT_RELAY_CLOUD_WORKER_RUN_ID: 'run_relayflows',
+        RELAY_WORKSPACE_ID: 'rw_relay',
+        RELAY_API_KEY: 'rk_live_secret',
+        RELAYCAST_API_KEY: 'rk_live_secret',
+        RELAYCAST_BASE_URL: 'https://relaycast.test',
+        RELAYFILE_URL: 'https://relayfile.test',
+        RELAYFILE_TOKEN: 'relayfile_secret',
+      });
+
+      const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
+      expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
+      const runDirFiles = fs.readdirSync(path.dirname(workflowPath));
+      expect(runDirFiles).toEqual(['workflow.yaml']);
+      const persisted = fs.readFileSync(workflowPath, 'utf-8');
+      expect(persisted).not.toContain('sk-secret');
+      expect(persisted).not.toContain('relayfile_secret');
+      expect(persisted).not.toContain('rk_live_secret');
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 
   it('prints the canonical cloud session as JSON without interactive login', async () => {

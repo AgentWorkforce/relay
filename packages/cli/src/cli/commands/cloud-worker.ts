@@ -71,15 +71,6 @@ function unsupportedReasons(payload: WorkerWorkflowPayload): string[] {
   if (payload.paths?.length) {
     reasons.push('multi-path code mounts');
   }
-  if (payload.resumeRunId) {
-    reasons.push('resumeRunId');
-  }
-  if (payload.startFrom) {
-    reasons.push('startFrom');
-  }
-  if (payload.previousRunId) {
-    reasons.push('previousRunId');
-  }
   return reasons;
 }
 
@@ -103,6 +94,17 @@ function buildWorkerRuntimeEnv(
     RELAYFILE_URL: payload.relayfileUrl,
     RELAYFILE_TOKEN: payload.relayfileToken,
   };
+}
+
+function relayflowsArgs(relayflowsCli: string, workflowPath: string, payload: WorkerWorkflowPayload): string[] {
+  return [
+    relayflowsCli,
+    'run',
+    workflowPath,
+    ...(payload.resumeRunId ? ['--resume', payload.resumeRunId] : []),
+    ...(payload.startFrom ? ['--start-from', payload.startFrom] : []),
+    ...(payload.previousRunId ? ['--previous-run-id', payload.previousRunId] : []),
+  ];
 }
 
 async function runChild(input: {
@@ -143,13 +145,16 @@ async function runChild(input: {
   });
 }
 
-function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
+export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWorkerAssignment {
   return async ({ payload, signal }) => {
     const unsupported = unsupportedReasons(payload);
     if (unsupported.length > 0) {
       throw new Error(`Unsupported worker assignment payload: ${unsupported.join(', ')}`);
     }
 
+    // Cloud owns assignment control-plane semantics. relayflows owns execution.
+    // This boundary only materializes the Cloud payload into a local workflow
+    // file/env and then invokes relayflows with the equivalent run flags.
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
     await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
     await fsp.chmod(runDir, 0o700).catch(() => undefined);
@@ -162,7 +167,7 @@ function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): ExecuteWo
     try {
       const result = await runChild({
         command: process.execPath,
-        args: [relayflowsCli, 'run', workflowPath],
+        args: relayflowsArgs(relayflowsCli, workflowPath, payload),
         cwd: runDir,
         env: buildWorkerRuntimeEnv(payload, deps),
         deps,
