@@ -964,17 +964,25 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
-  # Publish @agent-relay/harnesses after the publish-packages matrix, which is
-  # where its exact-version workspace deps (@agent-relay/sdk and
-  # @agent-relay/harness-driver) land on the registry. Publishing harnesses
-  # before those exist would leave a window where
-  # `npm install @agent-relay/harnesses@<v>` cannot resolve its dependencies —
-  # the same install race the broker/sdk ordering above is built to avoid.
+  # Publish @agent-relay/harnesses and @agent-relay/evals after the
+  # publish-packages matrix, which is where their exact-version workspace deps
+  # (@agent-relay/sdk and @agent-relay/harness-driver) land on the registry.
+  # Publishing these before those exist would leave a window where
+  # `npm install @agent-relay/harnesses@<v>` or `@agent-relay/evals@<v>`
+  # cannot resolve their dependencies — the same install race the broker/sdk
+  # ordering above is built to avoid.
   publish-harnesses:
-    name: Publish @agent-relay/harnesses
+    name: Publish ${{ matrix.package }}
     needs: [build, publish-packages]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        package:
+          - harnesses
+          - evals
 
     steps:
       - name: Checkout code
@@ -997,12 +1005,12 @@ jobs:
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/harnesses
+        working-directory: packages/${{ matrix.package }}
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/harnesses
+        working-directory: packages/${{ matrix.package }}
         run: |
           set -euo pipefail
           PKG_NAME=$(node -p "require('./package.json').name")
