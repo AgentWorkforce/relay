@@ -18,11 +18,8 @@ export default defineNode({
   maxAgents: 8,
   capabilities: {
     'spawn:codex': spawn(stubCodex),
-    ping: action(
-      { input: z.object({ nonce: z.string() }) },
-      async (input, ctx) => {
-        return { pong: input.nonce, node: ctx.node.name };
-      },
-    ),
+    ping: action({ input: z.object({ nonce: z.string() }) }, async (input, ctx) => {
+      return { pong: input.nonce, node: ctx.node.name };
+    }),
   },
 });

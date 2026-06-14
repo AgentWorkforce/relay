@@ -24,16 +24,27 @@ export default defineNode({
     echo: action(
       // Accept both a direct `{ text }` invocation and the declarative-trigger
       // payload `{ trigger_id, message: { text, ... } }`.
-      { input: z.object({ text: z.string().optional(), message: z.object({ text: z.string() }).passthrough().optional() }).passthrough() },
+      {
+        input: z
+          .object({
+            text: z.string().optional(),
+            message: z.object({ text: z.string() }).passthrough().optional(),
+          })
+          .passthrough(),
+      },
       async (input, ctx) => {
         const text = (input.text ?? input.message?.text ?? '') as string;
         // Re-broadcast — the text contains the trigger keyword on purpose, but
         // the message is flagged `action_generated` so the engine's loop guard
         // does NOT re-fire the trigger. (Convention: action handlers stamp their
         // own emissions; the sidecar does not auto-stamp yet.)
-        await ctx.relay.sendMessage({ to: '#general', text: `echo:${text}`, data: { action_generated: true } });
+        await ctx.relay.sendMessage({
+          to: '#general',
+          text: `echo:${text}`,
+          data: { action_generated: true },
+        });
         return { echoed: text, node: ctx.node.name };
-      },
+      }
     ),
   },
   triggers: [onMessage({ channel: '#general', match: /deploy/ }, 'echo')],

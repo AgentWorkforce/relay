@@ -20,12 +20,28 @@ const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.
 function resolveEngineServe(): string | null {
   const candidates: string[] = [];
   if (process.env.RELAYCAST_ENGINE_DIR) {
-    candidates.push(path.join(process.env.RELAYCAST_ENGINE_DIR, 'packages', 'engine', 'dist', 'bin', 'serve.js'));
+    candidates.push(
+      path.join(process.env.RELAYCAST_ENGINE_DIR, 'packages', 'engine', 'dist', 'bin', 'serve.js')
+    );
   }
   for (const dir of ['fleet-rollout-flag', 'fleet-mailbox']) {
-    candidates.push(path.resolve(REPO_ROOT, '..', 'relaycast-worktrees', dir, 'packages', 'engine', 'dist', 'bin', 'serve.js'));
+    candidates.push(
+      path.resolve(
+        REPO_ROOT,
+        '..',
+        'relaycast-worktrees',
+        dir,
+        'packages',
+        'engine',
+        'dist',
+        'bin',
+        'serve.js'
+      )
+    );
   }
-  candidates.push(path.resolve(REPO_ROOT, '..', 'relaycast', 'packages', 'engine', 'dist', 'bin', 'serve.js'));
+  candidates.push(
+    path.resolve(REPO_ROOT, '..', 'relaycast', 'packages', 'engine', 'dist', 'bin', 'serve.js')
+  );
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
@@ -54,11 +70,17 @@ export function preflight(): Preflight {
   }
   const engineServe = resolveEngineServe();
   if (!engineServe) {
-    return { ok: false, reason: 'relaycast engine serve bin not found; set RELAYCAST_ENGINE_DIR to a built checkout' };
+    return {
+      ok: false,
+      reason: 'relaycast engine serve bin not found; set RELAYCAST_ENGINE_DIR to a built checkout',
+    };
   }
   const brokerBinary = resolveBrokerBinary();
   if (!brokerBinary) {
-    return { ok: false, reason: 'agent-relay-broker binary not found; set BROKER_BINARY_PATH or build target/release' };
+    return {
+      ok: false,
+      reason: 'agent-relay-broker binary not found; set BROKER_BINARY_PATH or build target/release',
+    };
   }
   return { ok: true, reason: 'ok', engineServe, brokerBinary };
 }
@@ -77,7 +99,7 @@ export function getFreePort(): Promise<number> {
 
 export async function waitFor<T>(
   fn: () => Promise<T | null | undefined | false>,
-  opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {},
+  opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const intervalMs = opts.intervalMs ?? 400;
@@ -121,10 +143,14 @@ export interface EngineHandle {
 export async function startEngine(serveBin: string, tmpRoot: string): Promise<EngineHandle> {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, [serveBin, '--port', String(port), '--db', path.join(tmpRoot, 'relaycast.db'), '--env', 'test'], {
-    env: cleanEnv({ HOME: tmpRoot }),
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    [serveBin, '--port', String(port), '--db', path.join(tmpRoot, 'relaycast.db'), '--env', 'test'],
+    {
+      env: cleanEnv({ HOME: tmpRoot }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
   child.stdout?.on('data', () => {});
   child.stderr?.on('data', () => {});
 
@@ -133,14 +159,17 @@ export async function startEngine(serveBin: string, tmpRoot: string): Promise<En
     return { status: res.status, body: await res.json().catch(() => ({})) };
   };
 
-  await waitFor(async () => {
-    try {
-      const res = await fetch(`${baseUrl}/`);
-      return res.status > 0;
-    } catch {
-      return false;
-    }
-  }, { timeoutMs: 20_000, label: 'engine ready' });
+  await waitFor(
+    async () => {
+      try {
+        const res = await fetch(`${baseUrl}/`);
+        return res.status > 0;
+      } catch {
+        return false;
+      }
+    },
+    { timeoutMs: 20_000, label: 'engine ready' }
+  );
 
   return {
     baseUrl,
@@ -176,7 +205,7 @@ export async function enrollNode(
   workspaceKey: string,
   nodeId: string,
   name: string,
-  capabilities: string[],
+  capabilities: string[]
 ): Promise<string> {
   const { status, body } = await engine.fetchJson('/v1/nodes', {
     method: 'POST',
@@ -202,7 +231,7 @@ export interface NodeRosterEntry {
 export async function getNodes(
   engine: EngineHandle,
   workspaceKey: string,
-  query: { capability?: string; name?: string } = {},
+  query: { capability?: string; name?: string } = {}
 ): Promise<NodeRosterEntry[]> {
   const qs = new URLSearchParams();
   if (query.capability) qs.set('capability', query.capability);
@@ -235,7 +264,7 @@ export class FleetNode {
       brokerBinary: string;
       tmpRoot: string;
       dashboardPort: number;
-    },
+    }
   ) {
     this.projectDir = path.join(opts.tmpRoot, `node-${opts.name}`);
     mkdirSync(path.join(this.projectDir, '.agentworkforce', 'relay'), { recursive: true });
@@ -264,7 +293,18 @@ export class FleetNode {
     const stateDir = path.join(this.projectDir, '.agentworkforce', 'relay');
     this.child = spawn(
       process.execPath,
-      [CLI_ENTRY, 'fleet', 'serve', o.nodeFile, '--name', o.name, '--workspace', o.workspaceKey, '--base-url', o.engineBaseUrl],
+      [
+        CLI_ENTRY,
+        'fleet',
+        'serve',
+        o.nodeFile,
+        '--name',
+        o.name,
+        '--workspace',
+        o.workspaceKey,
+        '--base-url',
+        o.engineBaseUrl,
+      ],
       {
         cwd: REPO_ROOT,
         env: cleanEnv({
@@ -280,10 +320,14 @@ export class FleetNode {
           AGENT_RELAY_DASHBOARD_PORT: String(o.dashboardPort),
         }),
         stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      }
     );
-    this.child.stdout?.on('data', (d) => { this.lastLog += d.toString(); });
-    this.child.stderr?.on('data', (d) => { this.lastLog += d.toString(); });
+    this.child.stdout?.on('data', (d) => {
+      this.lastLog += d.toString();
+    });
+    this.child.stderr?.on('data', (d) => {
+      this.lastLog += d.toString();
+    });
   }
 
   get log(): string {
@@ -303,7 +347,11 @@ export class FleetNode {
   }
 }
 
-export async function registerAgent(engine: EngineHandle, workspaceKey: string, name: string): Promise<string> {
+export async function registerAgent(
+  engine: EngineHandle,
+  workspaceKey: string,
+  name: string
+): Promise<string> {
   const { status, body } = await engine.fetchJson('/v1/agents', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${workspaceKey}` },
@@ -317,7 +365,7 @@ export async function invokeAction(
   engine: EngineHandle,
   agentToken: string,
   action: string,
-  input: Record<string, unknown>,
+  input: Record<string, unknown>
 ): Promise<{ status: number; invocationId?: string; body: any }> {
   const { status, body } = await engine.fetchJson(`/v1/actions/${action}/invoke`, {
     method: 'POST',
@@ -331,7 +379,7 @@ export async function getInvocation(
   engine: EngineHandle,
   agentToken: string,
   action: string,
-  invocationId: string,
+  invocationId: string
 ): Promise<{ status: string; output?: any; dispatched_node_id?: string }> {
   const { body } = await engine.fetchJson(`/v1/actions/${action}/invocations/${invocationId}`, {
     headers: { authorization: `Bearer ${agentToken}` },
@@ -342,7 +390,7 @@ export async function getInvocation(
 export async function createTrigger(
   engine: EngineHandle,
   workspaceKey: string,
-  trigger: { channel?: string; pattern?: string; mention?: string; action_name: string },
+  trigger: { channel?: string; pattern?: string; mention?: string; action_name: string }
 ): Promise<string> {
   const { status, body } = await engine.fetchJson('/v1/triggers', {
     method: 'POST',
@@ -353,7 +401,12 @@ export async function createTrigger(
   return body.data.id as string;
 }
 
-export async function postMessage(engine: EngineHandle, agentToken: string, channel: string, text: string): Promise<number> {
+export async function postMessage(
+  engine: EngineHandle,
+  agentToken: string,
+  channel: string,
+  text: string
+): Promise<number> {
   const { status } = await engine.fetchJson(`/v1/channels/${channel}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
@@ -362,12 +415,16 @@ export async function postMessage(engine: EngineHandle, agentToken: string, chan
   return status;
 }
 
-export async function listMessages(engine: EngineHandle, agentToken: string, channel: string): Promise<Array<{ text: string }>> {
+export async function listMessages(
+  engine: EngineHandle,
+  agentToken: string,
+  channel: string
+): Promise<Array<{ text: string }>> {
   const { body } = await engine.fetchJson(`/v1/channels/${channel}/messages`, {
     headers: { authorization: `Bearer ${agentToken}` },
   });
   const data = body.data;
-  const items = Array.isArray(data) ? data : data?.messages ?? [];
+  const items = Array.isArray(data) ? data : (data?.messages ?? []);
   return items as Array<{ text: string }>;
 }
 

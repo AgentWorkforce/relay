@@ -14,14 +14,14 @@ broker and engine and is now guarded here.
 
 ## Scenario matrix
 
-| Scenario | Asserts |
-|---|---|
-| boot/register | both nodes reach `online` + `handlers_live` via the real broker Bearer-header auth; capability objects are correct |
-| capability query | `GET /v1/nodes?capability=` returns the right node |
-| cross-node dispatch | `echo`→node-a and `ping`→node-b each dispatch over the owning node's control connection and ack the result |
+| Scenario            | Asserts                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| boot/register       | both nodes reach `online` + `handlers_live` via the real broker Bearer-header auth; capability objects are correct                                                   |
+| capability query    | `GET /v1/nodes?capability=` returns the right node                                                                                                                   |
+| cross-node dispatch | `echo`→node-a and `ping`→node-b each dispatch over the owning node's control connection and ack the result                                                           |
 | declarative trigger | a `#general` message matching `/deploy/` fires the action exactly once; the action-generated reply (flagged `action_generated`) does **not** re-trigger (loop guard) |
-| sidecar crash | killing a node drops `handlers_live`; restart restores it and dispatch still lands on it |
-| spawn placement | targeted spawn routes to the named node; capability-routed spawn routes to the only eligible node; an unsatisfiable capability fails cleanly |
+| sidecar crash       | killing a node drops `handlers_live`; restart restores it and dispatch still lands on it                                                                             |
+| spawn placement     | targeted spawn routes to the named node; capability-routed spawn routes to the only eligible node; an unsatisfiable capability fails cleanly                         |
 
 Full agent bring-up (a spawned PTY child connecting back) needs a real connecting
 harness and is covered by the relaycast engine conformance suite; here the stub

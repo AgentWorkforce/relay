@@ -10,9 +10,24 @@ import path from 'node:path';
 // harness itself); the node definition files are loaded out-of-process by
 // `fleet serve` via jiti, not by vitest.
 const workspacePackages = [
-  'agent', 'cloud', 'config', 'events', 'fleet', 'gateway', 'github-primitive',
-  'harness-driver', 'harnesses', 'hooks', 'memory', 'policy', 'runtime', 'sdk',
-  'slack-primitive', 'telemetry', 'trajectory', 'utils',
+  'agent',
+  'cloud',
+  'config',
+  'events',
+  'fleet',
+  'gateway',
+  'github-primitive',
+  'harness-driver',
+  'harnesses',
+  'hooks',
+  'memory',
+  'policy',
+  'runtime',
+  'sdk',
+  'slack-primitive',
+  'telemetry',
+  'trajectory',
+  'utils',
 ] as const;
 
 const workspaceAliases = workspacePackages.flatMap((packageName) => {

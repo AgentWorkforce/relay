@@ -57,24 +57,41 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     const tokenB = await enrollNode(engine, workspaceKey, 'node_b', 'node-b', ['spawn:codex', 'ping']);
 
     nodeA = new FleetNode({
-      name: 'node-a', nodeId: 'node_a', nodeFile: NODE_A_FILE, nodeToken: tokenA, workspaceKey,
-      engineBaseUrl: engine.baseUrl, brokerBinary: pre.brokerBinary!, tmpRoot, dashboardPort: await getFreePort(),
+      name: 'node-a',
+      nodeId: 'node_a',
+      nodeFile: NODE_A_FILE,
+      nodeToken: tokenA,
+      workspaceKey,
+      engineBaseUrl: engine.baseUrl,
+      brokerBinary: pre.brokerBinary!,
+      tmpRoot,
+      dashboardPort: await getFreePort(),
     });
     nodeB = new FleetNode({
-      name: 'node-b', nodeId: 'node_b', nodeFile: NODE_B_FILE, nodeToken: tokenB, workspaceKey,
-      engineBaseUrl: engine.baseUrl, brokerBinary: pre.brokerBinary!, tmpRoot, dashboardPort: await getFreePort(),
+      name: 'node-b',
+      nodeId: 'node_b',
+      nodeFile: NODE_B_FILE,
+      nodeToken: tokenB,
+      workspaceKey,
+      engineBaseUrl: engine.baseUrl,
+      brokerBinary: pre.brokerBinary!,
+      tmpRoot,
+      dashboardPort: await getFreePort(),
     });
     nodeA.start();
     nodeB.start();
 
     driverToken = await registerAgent(engine, workspaceKey, 'driver');
 
-    await waitFor(async () => {
-      const nodes = await getNodes(engine, workspaceKey);
-      const a = nodes.find((n) => n.name === 'node-a');
-      const b = nodes.find((n) => n.name === 'node-b');
-      return a?.live && a.handlers_live && b?.live && b.handlers_live ? nodes : null;
-    }, { timeoutMs: 45_000, label: 'both nodes online+handlers_live' });
+    await waitFor(
+      async () => {
+        const nodes = await getNodes(engine, workspaceKey);
+        const a = nodes.find((n) => n.name === 'node-a');
+        const b = nodes.find((n) => n.name === 'node-b');
+        return a?.live && a.handlers_live && b?.live && b.handlers_live ? nodes : null;
+      },
+      { timeoutMs: 45_000, label: 'both nodes online+handlers_live' }
+    );
   }, 60_000);
 
   afterAll(async () => {
@@ -113,18 +130,24 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     // dispatched over the owning node's control connection and complete.
     const echo = await invokeAction(engine, driverToken, 'echo', { text: 'hello-a' });
     expect(echo.status).toBe(201);
-    const echoDone = await waitFor(async () => {
-      const inv = await getInvocation(engine, driverToken, 'echo', echo.invocationId!);
-      return inv.status === 'completed' ? inv : null;
-    }, { label: 'echo completed' });
+    const echoDone = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'echo', echo.invocationId!);
+        return inv.status === 'completed' ? inv : null;
+      },
+      { label: 'echo completed' }
+    );
     expect(echoDone.output).toMatchObject({ echoed: 'hello-a', node: 'node-a' });
 
     const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'xyz' });
     expect(ping.status).toBe(201);
-    const pingDone = await waitFor(async () => {
-      const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
-      return inv.status === 'completed' ? inv : null;
-    }, { label: 'ping completed' });
+    const pingDone = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
+        return inv.status === 'completed' ? inv : null;
+      },
+      { label: 'ping completed' }
+    );
     expect(pingDone.output).toMatchObject({ pong: 'xyz', node: 'node-b' });
   });
 
@@ -134,41 +157,59 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     // auto-sync is not yet wired (it logs "trigger sync skipped"); the firing +
     // loop-guard behaviour under test is identical either way.
     await createTrigger(engine, workspaceKey, { channel: 'general', pattern: 'deploy', action_name: 'echo' });
-    const before = (await listMessages(engine, driverToken, 'general')).filter((m) => m.text?.startsWith('echo:')).length;
+    const before = (await listMessages(engine, driverToken, 'general')).filter((m) =>
+      m.text?.startsWith('echo:')
+    ).length;
     const status = await postMessage(engine, driverToken, 'general', 'please deploy now');
     expect(status).toBe(201);
 
     // The echo handler re-broadcasts `echo:please deploy now`, which itself
     // contains "deploy". If the loop guard failed, echo messages would grow
     // without bound; assert it settles at exactly one.
-    await waitFor(async () => {
-      const echoes = (await listMessages(engine, driverToken, 'general')).filter((m) => m.text?.startsWith('echo:'));
-      return echoes.length > before ? echoes : null;
-    }, { label: 'trigger fired echo' });
+    await waitFor(
+      async () => {
+        const echoes = (await listMessages(engine, driverToken, 'general')).filter((m) =>
+          m.text?.startsWith('echo:')
+        );
+        return echoes.length > before ? echoes : null;
+      },
+      { label: 'trigger fired echo' }
+    );
     await delay(2_000); // give any (buggy) re-trigger time to pile up
-    const after = (await listMessages(engine, driverToken, 'general')).filter((m) => m.text === 'echo:please deploy now');
+    const after = (await listMessages(engine, driverToken, 'general')).filter(
+      (m) => m.text === 'echo:please deploy now'
+    );
     expect(after.length).toBe(1);
   });
 
   it('sidecar crash: killing a node drops handlers_live; restart brings it back', async () => {
     await nodeB.stop();
-    await waitFor(async () => {
-      const b = (await getNodes(engine, workspaceKey)).find((n) => n.name === 'node-b');
-      return b && b.handlers_live === false ? b : null;
-    }, { timeoutMs: 30_000, label: 'node-b handlers_live false after crash' });
+    await waitFor(
+      async () => {
+        const b = (await getNodes(engine, workspaceKey)).find((n) => n.name === 'node-b');
+        return b && b.handlers_live === false ? b : null;
+      },
+      { timeoutMs: 30_000, label: 'node-b handlers_live false after crash' }
+    );
 
     nodeB.start();
-    await waitFor(async () => {
-      const b = (await getNodes(engine, workspaceKey)).find((n) => n.name === 'node-b');
-      return b?.live && b.handlers_live ? b : null;
-    }, { timeoutMs: 45_000, label: 'node-b back online after restart' });
+    await waitFor(
+      async () => {
+        const b = (await getNodes(engine, workspaceKey)).find((n) => n.name === 'node-b');
+        return b?.live && b.handlers_live ? b : null;
+      },
+      { timeoutMs: 45_000, label: 'node-b back online after restart' }
+    );
 
     // After reconcile, dispatch still lands on node-b with no duplication.
     const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'after-restart' });
-    const done = await waitFor(async () => {
-      const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
-      return inv.status === 'completed' ? inv : null;
-    }, { label: 'ping after restart' });
+    const done = await waitFor(
+      async () => {
+        const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
+        return inv.status === 'completed' ? inv : null;
+      },
+      { label: 'ping after restart' }
+    );
     expect(done.output).toMatchObject({ pong: 'after-restart', node: 'node-b' });
   }, 90_000);
 
@@ -181,7 +222,11 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     // is exercised by the relaycast engine conformance suite, not here.
 
     // Targeted: spawn:claude only exists on node-a; target it by name.
-    const spawnA = await invokeAction(engine, driverToken, 'spawn', { cli: 'claude', name: 'worker-a', target_node: 'node-a' });
+    const spawnA = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'claude',
+      name: 'worker-a',
+      target_node: 'node-a',
+    });
     expect(spawnA.status).toBe(201);
     expect(spawnA.body.data.handler_node_id).toBe('node_a');
     expect(spawnA.body.data.dispatched_node_id).toBe('node_a');
@@ -194,7 +239,11 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(spawnB.body.data.dispatched_node_id).toBe('node_b');
 
     // A capability no node advertises must fail placement cleanly.
-    const spawnNone = await invokeAction(engine, driverToken, 'spawn', { cli: 'claude', name: 'worker-x', target_node: 'node-b' });
+    const spawnNone = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'claude',
+      name: 'worker-x',
+      target_node: 'node-b',
+    });
     // node-b lacks spawn:claude → hard capability-mismatch failure, not a misroute.
     expect(spawnNone.status).toBeGreaterThanOrEqual(400);
   });
