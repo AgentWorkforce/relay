@@ -100,7 +100,8 @@
     "evals:compile": "node scripts/evals/compile-cases.mjs",
     "evals": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
-    "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline"
+    "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
