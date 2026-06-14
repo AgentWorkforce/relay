@@ -125,7 +125,7 @@ export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
   codex: 'bare', // relay-native; bare s03=80%, one-liner=100% — bare saves tokens
   opencode: 'bare', // relay-native; bare s03=100% (best bare of all harnesses)
   gemini: 'one-liner', // bare s03=60% (release failures); one-liner=100%
-  droid: 'bare', // bare s03=100%; NEVER use skill (kills s03 to 0%)
+  droid: 'skill', // high-risk: needs Task disambiguation for s04; avoid roles that spawn relay workers
 };
 
 // ── Role-fit map (from eval data 2026-06-12/13) ───────────────────────────────
@@ -404,13 +404,17 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
   {
     harness: 'droid',
     defaultModel: undefined,
-    bestOnboarding: 'bare',
+    bestOnboarding: 'skill',
     relayNative: false,
     roles: {
-      worker: { fitness: 'confirmed', notes: 's03 bare=100% with directive phrasing' },
-      mapper: { fitness: 'confirmed', notes: 'leaf-only; no spawning tasks' },
-      planner: { fitness: 'provisional' },
-      // NEVER use for roles that involve spawning: s04=0% bare/one-liner
+      worker: {
+        fitness: 'provisional',
+        notes:
+          'High-risk: s03 bare=100%, but s04 bare/one-liner=0% because Droid routes spawning to native Task without explicit disambiguation. Use only for leaf work.',
+      },
+      mapper: { fitness: 'provisional', notes: 'High-risk leaf-only harness; do not give spawning tasks.' },
+      planner: { fitness: 'provisional', notes: 'High-risk; avoid delegation or worker-spawn tasks.' },
+      // NEVER use for roles that involve spawning: s04 bare/one-liner=0%.
       coordinator: { fitness: 'not-viable', notes: 's04=0%; routes to native Task tool' },
       supervisor: { fitness: 'not-viable', notes: 'would use native Task, not relay' },
     },

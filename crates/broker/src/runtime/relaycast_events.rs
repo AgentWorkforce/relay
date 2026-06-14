@@ -260,7 +260,7 @@ impl BrokerRuntime {
                         channels: channels.clone(),
                         restart_policy: None,
                     };
-                    let effective_task = normalize_initial_task(task.clone());
+                    let mut effective_task = normalize_initial_task(task.clone());
 
                     // Pre-register an agent token for every spawned worker.
                     // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
@@ -322,6 +322,21 @@ impl BrokerRuntime {
                         .await
                     {
                         Ok(effective_spec) => {
+                            if let Some(prefix) = super::api::relay_skill_prefix(
+                                effective_spec.cli.as_deref().unwrap_or(&cli),
+                                effective_spec.model.as_deref(),
+                            ) {
+                                effective_task = Some(match effective_task {
+                                    Some(task) => format!("{prefix}\n\n{task}"),
+                                    None => prefix,
+                                });
+                                tracing::debug!(
+                                    agent = %name,
+                                    cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
+                                    model = ?effective_spec.model,
+                                    "injected relay skill prefix for Relaycast spawn"
+                                );
+                            }
                             if let Some(ref task_text) = effective_task {
                                 workers
                                     .initial_tasks
@@ -498,7 +513,7 @@ impl BrokerRuntime {
                             restart_policy: None,
                         };
                         let task_opt = Some(task).filter(|v| !v.trim().is_empty());
-                        let effective_task = normalize_initial_task(task_opt.clone());
+                        let mut effective_task = normalize_initial_task(task_opt.clone());
 
                         // Pre-register (same logic as primary WS spawn path).
                         let worker_relay_key = {
@@ -543,6 +558,21 @@ impl BrokerRuntime {
                             .await
                         {
                             Ok(effective_spec) => {
+                                if let Some(prefix) = super::api::relay_skill_prefix(
+                                    effective_spec.cli.as_deref().unwrap_or(&cli),
+                                    effective_spec.model.as_deref(),
+                                ) {
+                                    effective_task = Some(match effective_task {
+                                        Some(task) => format!("{prefix}\n\n{task}"),
+                                        None => prefix,
+                                    });
+                                    tracing::debug!(
+                                        agent = %name,
+                                        cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
+                                        model = ?effective_spec.model,
+                                        "injected relay skill prefix for Relaycast spawn"
+                                    );
+                                }
                                 if let Some(ref task_text) = effective_task {
                                     workers
                                         .initial_tasks

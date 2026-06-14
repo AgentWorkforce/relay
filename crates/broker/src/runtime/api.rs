@@ -225,17 +225,21 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
-                        // Prepend relay skill text for small-tier models (haiku/mini/flash) that
+                        // Prepend relay skill text for small-tier models and CLI harnesses that
                         // need explicit tool guidance to reliably call add_agent / remove_agent.
-                        if let Some(prefix) = model_skill_prefix(effective_spec.model.as_deref()) {
+                        if let Some(prefix) = relay_skill_prefix(
+                            effective_spec.cli.as_deref().unwrap_or(&cli),
+                            effective_spec.model.as_deref(),
+                        ) {
                             effective_task = Some(match effective_task {
                                 Some(task) => format!("{prefix}\n\n{task}"),
                                 None => prefix.to_string(),
                             });
                             tracing::debug!(
                                 agent = %name,
+                                cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
                                 model = ?effective_spec.model,
-                                "injected relay skill prefix for small-tier model"
+                                "injected relay skill prefix for model or CLI harness"
                             );
                         }
                         if let Some(ref task_text) = effective_task {
@@ -1566,6 +1570,11 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
         .any(|existing| existing.as_str().eq_ignore_ascii_case(channel))
 }
 
+/// One-line skill text prepended for CLI harnesses that need a minimal relay lifecycle hint.
+const RELAY_WORKER_ONE_LINER: &str = "\
+Call mcp__agent-relay__add_agent to spawn a relay worker for a task, and \
+mcp__agent-relay__remove_agent to release relay workers when they are done.";
+
 /// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
 /// explicit tool guidance to reliably call mcp__agent-relay__add_agent.
 /// Eval data: haiku achieves 0/5 spawn reliability without guidance, 5/5 with this text.
@@ -1573,20 +1582,39 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
 const SMALL_MODEL_RELAY_SKILL: &str = "\
 ## Agent Relay — Worker Management
 
-### Spawn a worker
-To delegate a task to a dedicated worker agent, call:
+### Spawn a relay worker
+To delegate a task to a dedicated relay worker agent, call:
   mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
-Required: name (unique string), cli (\"claude\" or other CLI), task (complete instructions for the worker).
-The worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
+Required: name (unique string), cli (\"claude\" or other CLI), task (complete instructions for the relay worker).
+The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
 
-### Release a worker
-When a worker reports DONE, immediately release them:
+### Release a relay worker
+When a relay worker reports DONE, immediately release them:
   mcp__agent-relay__remove_agent(name: \"WorkerName\")
-Always release workers — unreleased agents waste resources.
+Always release relay workers — unreleased agents waste resources.
 
-### When to spawn vs do it yourself
-Spawn when: the task is large, needs specialised focus, or would block your own progress.
-Do it yourself for: quick lookups, single-step actions.";
+### When to spawn
+Spawn when: the task asks you to delegate or assign work, is large, needs specialised focus, or would block your own progress.";
+
+/// Droid needs explicit disambiguation from its native Task capability.
+const DROID_RELAY_SKILL: &str = "\
+## Agent Relay — Worker Management
+
+### Spawn a relay worker
+To delegate work, call:
+  mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"detailed instructions\")
+
+Required fields: name (unique string), cli (\"claude\" or other CLI), task (full instructions for the relay worker).
+The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
+
+Important: When your task asks you to \"assign to a relay worker\", \"delegate to an agent\", or \"spawn a relay worker\",
+this means calling mcp__agent-relay__add_agent — never your built-in Task capability.
+
+### Release a relay worker
+As soon as a relay worker reports DONE, call:
+  mcp__agent-relay__remove_agent(name: \"WorkerName\")
+
+Always release relay workers when done — unreleased agents waste resources.";
 
 /// Returns true for small/fast model tiers that need explicit relay skill injection.
 /// Matches haiku (Claude), mini (GPT), flash (Gemini), and generic small-tier names.
@@ -1603,9 +1631,48 @@ fn model_skill_prefix(model: Option<&str>) -> Option<&'static str> {
         .map(|_| SMALL_MODEL_RELAY_SKILL)
 }
 
+/// Returns the CLI-specific relay skill prefix, if that harness needs one.
+fn cli_skill_prefix(cli: &str) -> Option<&'static str> {
+    let command = shlex::split(cli)
+        .and_then(|parts| parts.into_iter().next())
+        .or_else(|| cli.split_whitespace().next().map(ToOwned::to_owned))
+        .unwrap_or_else(|| cli.to_string());
+    let cli = Path::new(&command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command.as_str())
+        .to_lowercase();
+    if cli == "gemini" {
+        Some(RELAY_WORKER_ONE_LINER)
+    } else if cli == "droid" {
+        Some(DROID_RELAY_SKILL)
+    } else {
+        None
+    }
+}
+
+/// Returns the combined relay skill prefix for a spawned agent.
+pub(super) fn relay_skill_prefix(cli: &str, model: Option<&str>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(prefix) = model_skill_prefix(model) {
+        parts.push(prefix);
+    }
+    if let Some(prefix) = cli_skill_prefix(cli) {
+        parts.push(prefix);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 #[cfg(test)]
 mod skill_injection_tests {
-    use super::{is_small_model_tier, model_skill_prefix, SMALL_MODEL_RELAY_SKILL};
+    use super::{
+        cli_skill_prefix, is_small_model_tier, model_skill_prefix, relay_skill_prefix,
+        DROID_RELAY_SKILL, RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL,
+    };
 
     #[test]
     fn small_tier_models_receive_prefix() {
@@ -1636,6 +1703,43 @@ mod skill_injection_tests {
         let text = prefix.unwrap();
         assert!(text.contains("mcp__agent-relay__add_agent"));
         assert!(text.contains("mcp__agent-relay__remove_agent"));
+        assert!(text.contains("relay worker"));
+        assert!(!text.contains("Do it yourself"));
+    }
+
+    #[test]
+    fn cli_specific_harnesses_receive_prefixes() {
+        assert_eq!(cli_skill_prefix("gemini"), Some(RELAY_WORKER_ONE_LINER));
+        assert_eq!(
+            cli_skill_prefix("gemini --model pro"),
+            Some(RELAY_WORKER_ONE_LINER)
+        );
+        assert_eq!(
+            cli_skill_prefix("/usr/local/bin/gemini --model pro"),
+            Some(RELAY_WORKER_ONE_LINER)
+        );
+        assert_eq!(cli_skill_prefix("droid"), Some(DROID_RELAY_SKILL));
+        assert_eq!(
+            cli_skill_prefix("/opt/homebrew/bin/droid --foo"),
+            Some(DROID_RELAY_SKILL)
+        );
+        assert!(cli_skill_prefix("droid")
+            .unwrap()
+            .contains("never your built-in Task capability"));
+        assert_eq!(cli_skill_prefix("codex"), None);
+        assert_eq!(cli_skill_prefix("claude"), None);
+    }
+
+    #[test]
+    fn relay_skill_prefix_combines_model_and_cli_guidance() {
+        let prefix = relay_skill_prefix("gemini", Some("gemini-2.0-flash")).unwrap();
+        assert!(prefix.contains("## Agent Relay"));
+        assert!(prefix.contains(RELAY_WORKER_ONE_LINER));
+
+        let droid = relay_skill_prefix("droid", None).unwrap();
+        assert_eq!(droid, DROID_RELAY_SKILL);
+
+        assert!(relay_skill_prefix("codex", Some("gpt-5.5")).is_none());
     }
 }
 

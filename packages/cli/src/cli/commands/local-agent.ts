@@ -190,7 +190,10 @@ export function registerLocalAgentCommands(
   agent
     .command('spawn')
     .description('Spawn an agent with the given provider CLI')
-    .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
+    .argument(
+      '<provider>',
+      'CLI provider (claude, codex, gemini, droid, …); droid is high-risk for delegation/spawn tasks'
+    )
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
@@ -219,7 +222,10 @@ export function registerLocalAgentCommands(
   agent
     .command('new')
     .description('Spawn an agent and attach to it')
-    .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
+    .argument(
+      '<provider>',
+      'CLI provider (claude, codex, gemini, droid, …); droid is high-risk for delegation/spawn tasks'
+    )
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--mode <mode>', 'Attach mode: drive | view | passthrough', 'drive')
     .option('--channels <channels...>', 'Channels to join', ['general'])
