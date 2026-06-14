@@ -102,6 +102,16 @@ pub(crate) fn normalize_initial_task(task: Option<String>) -> Option<String> {
     })
 }
 
+const EXIT_AFTER_TASK_INSTRUCTION: &str = "## Post-task exit\n\
+When the requested task is fully complete and you have reported the final outcome, output `/exit` on its own line so the Agent Relay harness exits cleanly. Do not output `/exit` before the task is complete.";
+
+pub(crate) fn apply_exit_after_task_instruction(task: Option<String>) -> String {
+    match normalize_initial_task(task) {
+        Some(task) => format!("{task}\n\n{EXIT_AFTER_TASK_INSTRUCTION}"),
+        None => EXIT_AFTER_TASK_INSTRUCTION.to_string(),
+    }
+}
+
 pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) paths: &'a RuntimePaths,
     pub(crate) requested_name: &'a str,

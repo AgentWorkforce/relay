@@ -511,6 +511,33 @@ describe('createAgentRelayMcpServer', () => {
     );
   });
 
+  it('adds post-task exit instructions for task-exit add_agent spawns', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    await server.tools.get('add_agent')?.handler({
+      name: 'WorkerB',
+      cli: 'codex',
+      task: 'Ship it',
+      spawn_mode: 'task_exit',
+    });
+
+    const workspaceRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_existing'
+    );
+    expect(workspaceRelay?.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerB',
+        cli: 'codex',
+        task: expect.stringContaining('output `/exit` on its own line'),
+      })
+    );
+  });
+
   it('uses registered action tool names as tool types', async () => {
     const actions = {
       list: vi.fn(async () => [

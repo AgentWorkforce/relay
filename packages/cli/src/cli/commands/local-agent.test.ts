@@ -14,6 +14,7 @@ import { registerLocalAgentCommands, type LocalAgentDependencies } from './local
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
     listAgents: vi.fn(async () => [{ name: 'lead' }]),
+    spawnPty: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
     setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
     flushPending: vi.fn(async () => ({ flushed: 2 })),
@@ -64,6 +65,36 @@ describe('local agent subtree', () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
     expect(client.listAgents).toHaveBeenCalled();
+  });
+
+  it('spawn forwards task-exit lifecycle options', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'codex',
+        '--name',
+        'WorkerA',
+        '--task',
+        'Ship it',
+        '--spawn-mode',
+        'task-exit',
+        '--exit-after-task',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerA',
+        cli: 'codex',
+        task: 'Ship it',
+        spawnMode: 'task_exit',
+        exitAfterTask: true,
+      })
+    );
   });
 
   it('list connects to the existing project broker instead of spawning one', async () => {

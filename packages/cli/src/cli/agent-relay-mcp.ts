@@ -41,6 +41,14 @@ const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
 let mcpTelemetryExitHookInstalled = false;
 
+const EXIT_AFTER_TASK_INSTRUCTION =
+  '## Post-task exit\n' +
+  'When the requested task is fully complete and you have reported the final outcome, output `/exit` on its own line so the Agent Relay harness exits cleanly. Do not output `/exit` before the task is complete.';
+
+function withExitAfterTaskInstruction(task: string): string {
+  return `${task}\n\n${EXIT_AFTER_TASK_INSTRUCTION}`;
+}
+
 const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace powered by Agent Relay. You can communicate with other agents using these MCP tools:
 
 ## Getting Started
@@ -1795,16 +1803,31 @@ function registerAgentRelayTools(
         channel: z.string().optional().describe('Channel to join'),
         persona: z.string().optional().describe('Worker persona'),
         model: z.string().optional().describe('Model powering the worker'),
+        spawn_mode: z
+          .enum(['interactive', 'task_exit', 'task-exit', 'single_shot', 'single-shot'])
+          .optional()
+          .describe('Spawn lifecycle. Use task_exit to exit after the injected task completes.'),
+        exit_after_task: z
+          .boolean()
+          .optional()
+          .describe('Exit the worker after it completes the injected task.'),
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, cli, task, channel, persona, model }) =>
+    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) =>
       jsonContent(
         await getRelay().agents.spawn({
           name,
           cli,
-          task,
+          task:
+            exit_after_task ||
+            spawn_mode === 'task_exit' ||
+            spawn_mode === 'task-exit' ||
+            spawn_mode === 'single_shot' ||
+            spawn_mode === 'single-shot'
+              ? withExitAfterTaskInstruction(task)
+              : task,
           channel,
           persona,
           // SpawnAgentRequest has no top-level model field; pass via metadata

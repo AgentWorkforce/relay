@@ -49,6 +49,7 @@ pub enum ListenApiRequest {
         shadow_mode: Option<String>,
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
+        exit_after_task: bool,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
         harness_config: Option<ResolvedHarnessConfig>,
@@ -658,6 +659,30 @@ async fn listen_api_spawn(
         .get("idle_threshold_secs")
         .or_else(|| body.get("idleThresholdSecs"))
         .and_then(Value::as_u64);
+    let spawn_mode = body
+        .get("spawn_mode")
+        .or_else(|| body.get("spawnMode"))
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase());
+    let spawn_mode_exit_after_task = match spawn_mode.as_deref() {
+        None | Some("") | Some("interactive") => false,
+        Some("task_exit" | "task-exit" | "single_shot" | "single-shot") => true,
+        Some(other) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": format!("unsupported spawnMode '{other}' (expected 'interactive' or 'task_exit')")
+                })),
+            );
+        }
+    };
+    let exit_after_task = body
+        .get("exit_after_task")
+        .or_else(|| body.get("exitAfterTask"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || spawn_mode_exit_after_task;
     let skip_relay_prompt = body
         .get("skip_relay_prompt")
         .or_else(|| body.get("skipRelayPrompt"))
@@ -728,6 +753,7 @@ async fn listen_api_spawn(
             shadow_mode,
             continue_from,
             idle_threshold_secs,
+            exit_after_task,
             skip_relay_prompt,
             restart_policy,
             harness_config,
@@ -2475,6 +2501,7 @@ mod auth_tests {
                     shadow_mode,
                     continue_from,
                     idle_threshold_secs,
+                    exit_after_task,
                     skip_relay_prompt: _,
                     restart_policy: _,
                     harness_config,
@@ -2498,6 +2525,7 @@ mod auth_tests {
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
+                    assert!(exit_after_task);
                     assert!(harness_config.is_some());
                     assert_eq!(
                         agent_result_schema,
@@ -2533,6 +2561,7 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
+                            "spawnMode": "task_exit",
                             "harnessConfig": {
                                 "runtime": "pty",
                                 "command": "codex",

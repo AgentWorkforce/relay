@@ -50,7 +50,15 @@ type SpawnInput = SpawnPtyInput | SpawnCliInput;
 export type SpawnPatch = Partial<
   Pick<
     SpawnPtyInput & SpawnCliInput,
-    'args' | 'channels' | 'task' | 'model' | 'team' | 'agentToken' | 'harnessConfig'
+    | 'args'
+    | 'channels'
+    | 'task'
+    | 'model'
+    | 'team'
+    | 'agentToken'
+    | 'harnessConfig'
+    | 'spawnMode'
+    | 'exitAfterTask'
   >
 >;
 
