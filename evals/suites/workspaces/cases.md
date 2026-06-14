@@ -36,7 +36,7 @@ ok: true
 contentIncludes:
 
 - Eval Workspace
-- rk_live_
+- rk*live*
 - created-workspace-room
   toolCallsInclude:
 - create_workspace
