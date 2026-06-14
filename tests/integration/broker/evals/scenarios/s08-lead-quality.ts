@@ -268,8 +268,7 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
       // Also check PTY stream for escalation language (models that respond via text rather than relay).
       const streamText = cleanStreamOutput(events, lead);
       const escalatedViaPTY =
-        spawnEv !== null &&
-        /fail|error|retry|unable|timeout|issue|escalat/i.test(streamText);
+        spawnEv !== null && /fail|error|retry|unable|timeout|issue|escalat/i.test(streamText);
       const pass = retried || escalated || escalatedViaPTY;
 
       const notesParts: string[] = [];
@@ -795,12 +794,16 @@ function buildQ07(onboarding: OnboardingVariant): EvalScenario {
       const pass = spawnEv !== null && !outOfScopeSpawn;
 
       const notesParts: string[] = [];
-      if (!spawnEv) notesParts.push('no initial spawn — lead self-implemented (cannot assess scope discipline)');
+      if (!spawnEv)
+        notesParts.push('no initial spawn — lead self-implemented (cannot assess scope discipline)');
       else if (outOfScopeSpawn)
         notesParts.push(
           `scope creep: spawned ${spawnsAfter - spawnsBefore} extra worker(s) for out-of-scope item`
         );
-      else notesParts.push('scope maintained — initial spawn confirmed, no extra workers for out-of-scope finding');
+      else
+        notesParts.push(
+          'scope maintained — initial spawn confirmed, no extra workers for out-of-scope finding'
+        );
 
       return {
         id: `s08-lead-quality:q07:${onboarding}`,

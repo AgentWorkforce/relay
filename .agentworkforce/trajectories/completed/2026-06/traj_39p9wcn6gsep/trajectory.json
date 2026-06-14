@@ -91,11 +91,7 @@
           "type": "reflection",
           "content": "s08-lead-quality complete: q05+q06 validate cleanly (4/4 both models). q01-q04+q07 require real worker delegation — haiku never delegates (0%), sonnet rarely (bare onboarding only). Scenarios are correctly designed; the low pass rates are genuine capability findings, not scoring bugs.",
           "raw": {
-            "focalPoints": [
-              "delegation",
-              "onboarding-sensitivity",
-              "q06-fix-validated"
-            ],
+            "focalPoints": ["delegation", "onboarding-sensitivity", "q06-fix-validated"],
             "adjustments": "Accept results as-is; q01 spawn-count issue (clearEvents discards startup spawns) is a known design tradeoff documented in findings",
             "confidence": 0.8
           },
