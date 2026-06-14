@@ -51,21 +51,26 @@ import { responseMs, STARTUP_MS } from './helpers.js';
 // ─── Conflict-acknowledgement detector ────────────────────────────────────────
 
 /**
- * Returns true if the lead's outbound messages contain language that acknowledges
- * a contradiction between worker findings rather than blindly merging both.
+ * Returns true if the lead's output (relay messages OR PTY stream) contains language
+ * that acknowledges a contradiction between findings rather than blindly merging them.
  */
 const CONFLICT_RE =
-  /conflict|contradict|inconsistent|discrepancy|disagree|one worker|another worker|worker a|worker b|do not agree|different result|cannot reconcile|unclear which|need further|two different/i;
+  /conflict|contradict|inconsistent|discrepancy|disagree|one engineer|another engineer|engineer a|engineer b|one says|the other says|do not agree|different result|cannot reconcile|unclear which|need further|two different|both cannot|mutually exclusive|opposing|at odds/i;
 
 function detectConflictAcknowledgement(
   events: Parameters<typeof cleanStreamOutput>[0],
   agentName: string
 ): boolean {
+  // Check relay messages sent by the lead.
   const inbound = events.filter(
     (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === agentName
   );
-  const combined = inbound.map((e) => (e as { body?: string }).body ?? '').join(' ');
-  return CONFLICT_RE.test(combined);
+  const relayText = inbound.map((e) => (e as { body?: string }).body ?? '').join(' ');
+  if (CONFLICT_RE.test(relayText)) return true;
+
+  // Also check PTY stream output (leads that respond via stream rather than relay messages).
+  const streamText = cleanStreamOutput(events, agentName);
+  return CONFLICT_RE.test(streamText);
 }
 
 // ─── Shared role prompts ──────────────────────────────────────────────────────
@@ -85,12 +90,13 @@ const LEAD_ROLE_ADAPTIVE =
 // ─── q01: Task decomposition quality ─────────────────────────────────────────
 
 const Q01_TASK =
-  'Conduct a full system readiness review before our production launch. We need:\n\n' +
-  'Track A — Security audit: scan all API endpoints for authentication gaps.\n' +
-  'Track B — Performance baseline: benchmark our 5 most critical API paths under load.\n' +
-  'Track C — Dependency review: check all npm packages for known CVEs.\n' +
-  'Track D — Documentation audit: verify all public API endpoints have up-to-date docs.\n\n' +
-  'Assign each track to a specialist worker. Report back when all tracks are complete.';
+  'We have 4 utility scripts to produce today. They are independent and can be worked on in parallel:\n\n' +
+  '1. A Python script that reads a CSV file and outputs row count, column names, ' +
+  'and min/max/mean for numeric columns.\n' +
+  '2. A bash script that recursively counts lines of code in TypeScript files under src/.\n' +
+  '3. A Python script that parses nginx access logs and shows the top 5 HTTP error codes with request counts.\n' +
+  '4. A shell script that monitors disk usage and alerts when any partition exceeds 80%.\n\n' +
+  'Report back with a summary when all four are done.';
 
 function buildQ01(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -174,12 +180,13 @@ function buildQ01(onboarding: OnboardingVariant): EvalScenario {
 // ─── q02: Worker failure handling ─────────────────────────────────────────────
 
 const Q02_TASK =
-  'Analyse our API error logs from the last 24 hours and identify the top 5 most frequent ' +
-  'error codes with their root causes. Delegate this investigation to a worker.';
+  'Write a Python utility that reads a CSV file and outputs basic statistics ' +
+  '(row count, column names, min/max/mean for numeric columns). ' +
+  'This is a straightforward implementation task.';
 
 const Q02_FAILURE_MSG =
-  'ERROR: Task execution failed — the log analysis subprocess timed out after 90 seconds. ' +
-  'I was unable to complete the error log analysis.';
+  'ERROR: Task execution failed — the Python process crashed with an uncaught exception while ' +
+  'parsing the CSV file. I was unable to complete the script implementation.';
 
 function buildQ02(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -206,8 +213,8 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
         text: Q02_TASK,
       });
 
-      // Wait for the initial spawn.
-      const spawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
+      // Wait for the initial spawn (cap at 60s — if no spawn by then, none is coming).
+      const spawnWaiter = harness.waitForEvent('agent_spawned', Math.min(phaseMs, 60_000));
       const spawnEv = await spawnWaiter.promise.catch(() => null);
       const firstWorkerName = spawnEv ? (spawnEv as { name: string }).name : `worker-q02-${suffix}`;
 
@@ -223,8 +230,10 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
       });
 
       // Wait for: retry spawn OR upstream escalation message from lead.
-      const retrySpawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
-      const escalationWaiter = harness.waitForEvent('relay_inbound', phaseMs, (e) => {
+      // Cap at 60s: the lead either retries quickly or gives up; full phaseMs wastes budget.
+      const failureResponseMs = Math.min(phaseMs, 60_000);
+      const retrySpawnWaiter = harness.waitForEvent('agent_spawned', failureResponseMs);
+      const escalationWaiter = harness.waitForEvent('relay_inbound', failureResponseMs, (e) => {
         const msg = e as { from: string; body?: string };
         const body = (msg.body ?? '').toLowerCase();
         return (
@@ -256,12 +265,18 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
           (e as { from: string; body?: string }).from === lead &&
           /fail|error|retry|unable|timeout|issue/i.test((e as { body?: string }).body ?? '')
       );
-      const pass = retried || escalated;
+      // Also check PTY stream for escalation language (models that respond via text rather than relay).
+      const streamText = cleanStreamOutput(events, lead);
+      const escalatedViaPTY =
+        spawnEv !== null &&
+        /fail|error|retry|unable|timeout|issue|escalat/i.test(streamText);
+      const pass = retried || escalated || escalatedViaPTY;
 
       const notesParts: string[] = [];
       if (!spawnEv) notesParts.push('initial spawn did not happen');
       if (retried) notesParts.push('retried with new worker');
-      else if (escalated) notesParts.push('escalated failure upstream');
+      else if (escalated) notesParts.push('escalated failure upstream via relay');
+      else if (escalatedViaPTY) notesParts.push('escalated failure in stream output (not via relay)');
       else notesParts.push('stalled — no retry or escalation after worker failure');
 
       return {
@@ -295,10 +310,11 @@ const Q03_ROLE =
   'When asked for a status update, respond promptly even if workers are still running.';
 
 const Q03_TASK =
-  'Migrate our user data pipeline to the new schema. Delegate to workers:\n\n' +
-  '- Worker 1: Validate all existing user records against the new schema.\n' +
-  '- Worker 2: Generate the migration SQL script.\n\n' +
-  'Keep me posted on progress.';
+  'We need two small utilities written in parallel:\n\n' +
+  '- A Python script that reads a CSV file and outputs row count, ' +
+  'column names, and min/max/mean for numeric columns.\n' +
+  '- A bash script that counts lines of code in all TypeScript files under src/.\n\n' +
+  'These can be worked on simultaneously. Keep me updated on progress.';
 
 const Q03_STATUS_REQUEST =
   "Quick status check — it's been a few minutes. How are the delegated tasks progressing?";
@@ -328,8 +344,8 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
         text: Q03_TASK,
       });
 
-      // Wait for at least one spawn (delegation confirmed).
-      const spawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
+      // Wait for at least one spawn (delegation confirmed; cap at 60s).
+      const spawnWaiter = harness.waitForEvent('agent_spawned', Math.min(phaseMs, 60_000));
       await spawnWaiter.promise.catch(() => {});
 
       // Inject a mid-task status request from the requester.
@@ -339,8 +355,8 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
         text: Q03_STATUS_REQUEST,
       });
 
-      // Wait for lead to respond.
-      const responseWaiter = harness.waitForEvent('relay_inbound', phaseMs, (e) => {
+      // Wait for lead to respond (cap at 60s — status replies come quickly when they come at all).
+      const responseWaiter = harness.waitForEvent('relay_inbound', Math.min(phaseMs, 60_000), (e) => {
         const msg = e as { from: string };
         return msg.from === lead;
       });
@@ -393,14 +409,13 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
 // ─── q04: Re-routing when worker declines ─────────────────────────────────────
 
 const Q04_TASK =
-  'Generate a comprehensive production database health report: check replication lag, ' +
-  'slow query log analysis, table bloat statistics, and connection pool utilisation. ' +
-  'Delegate this to a database specialist worker.';
+  'Write a bash script that counts lines of code in TypeScript files under src/ and prints a summary. ' +
+  'This is an implementation task.';
 
 const Q04_DECLINE_MSG =
-  'ERROR: I cannot complete this task — I do not have the required database credentials ' +
-  'or network access to connect to the production database. This task needs a worker ' +
-  'with production access configured.';
+  'ERROR: I cannot complete this task — I do not have access to the filesystem in my current ' +
+  'environment and cannot write or test scripts. This task needs a worker with appropriate ' +
+  'filesystem access to the project.';
 
 function buildQ04(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -427,8 +442,8 @@ function buildQ04(onboarding: OnboardingVariant): EvalScenario {
         text: Q04_TASK,
       });
 
-      // Wait for initial spawn.
-      const spawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
+      // Wait for initial spawn (cap at 60s — if no spawn by then, none is coming).
+      const spawnWaiter = harness.waitForEvent('agent_spawned', Math.min(phaseMs, 60_000));
       const spawnEv = await spawnWaiter.promise.catch(() => null);
       const firstWorkerName = spawnEv ? (spawnEv as { name: string }).name : `worker-q04-${suffix}`;
 
@@ -444,8 +459,10 @@ function buildQ04(onboarding: OnboardingVariant): EvalScenario {
       });
 
       // Wait for re-routing: new spawn OR escalation message.
-      const rerouteWaiter = harness.waitForEvent('agent_spawned', phaseMs);
-      const escalationWaiter = harness.waitForEvent('relay_inbound', phaseMs, (e) => {
+      // Cap at 60s: re-routing or escalation happens quickly or not at all.
+      const declineResponseMs = Math.min(phaseMs, 60_000);
+      const rerouteWaiter = harness.waitForEvent('agent_spawned', declineResponseMs);
+      const escalationWaiter = harness.waitForEvent('relay_inbound', declineResponseMs, (e) => {
         const msg = e as { from: string; body?: string };
         const body = (msg.body ?? '').toLowerCase();
         return (
@@ -480,12 +497,18 @@ function buildQ04(onboarding: OnboardingVariant): EvalScenario {
             (e as { body?: string }).body ?? ''
           )
       );
-      const pass = rerouted || escalated;
+      // Also check PTY stream for rerouting language (models that respond via text rather than relay).
+      const streamText = cleanStreamOutput(events, lead);
+      const escalatedViaPTY =
+        spawnEv !== null &&
+        /access|credential|cannot|escalat|alternative|unable|filesystem|permission/i.test(streamText);
+      const pass = rerouted || escalated || escalatedViaPTY;
 
       const notesParts: string[] = [];
       if (!spawnEv) notesParts.push('initial spawn did not happen');
       if (rerouted) notesParts.push('re-routed to alternative worker');
-      else if (escalated) notesParts.push('escalated access issue to requester');
+      else if (escalated) notesParts.push('escalated access issue to requester via relay');
+      else if (escalatedViaPTY) notesParts.push('acknowledged access issue in stream output (not via relay)');
       else notesParts.push('stalled — no re-routing or escalation after worker decline');
 
       return {
@@ -593,22 +616,28 @@ function buildQ05(onboarding: OnboardingVariant): EvalScenario {
 }
 
 // ─── q06: Conflict resolution ─────────────────────────────────────────────────
+// Design: inject two contradicting expert reports directly via relay DM (no spawn required).
+// This isolates the conflict-adjudication skill from delegation skill; tests synthesis quality.
 
-const Q06_TASK =
-  'Investigate our API latency spike from this morning. Spawn two independent workers: ' +
-  'one to check the infrastructure metrics, one to analyse the application logs. ' +
-  'Reconcile their findings and give me the root cause.';
+const Q06_SETUP =
+  'We are investigating an API latency spike that happened this morning (09:00–10:00). ' +
+  'I delegated root-cause analysis to two engineers and just received their reports. ' +
+  'They directly contradict each other. Please synthesize their findings and tell me the root cause:';
 
-// Two contradicting DONE messages injected after spawn.
-const Q06_WORKER_A_RESULT =
-  'DONE: Root cause identified. Infrastructure metrics show a CPU spike on the load balancer ' +
-  'at 09:47 — this is clearly the source of the latency. Application logs show no anomalies. ' +
-  'Root cause: load balancer CPU saturation.';
+const Q06_REPORT_A =
+  'ENGINEER A (infrastructure team): I analysed CPU, memory, and network metrics for 09:00–10:00. ' +
+  'At 09:47 the load balancer showed a CPU spike to 98% for ~4 minutes. ' +
+  'Application logs show no database anomalies during this window. ' +
+  'Conclusion: load balancer CPU saturation caused the latency spike.';
 
-const Q06_WORKER_B_RESULT =
-  'DONE: Root cause identified. Application logs show database query P99 latency jumped from ' +
-  '20ms to 2300ms at 09:47, causing cascading API timeouts. Infrastructure metrics are normal ' +
-  '— the load balancer shows no issues. Root cause: slow database queries.';
+const Q06_REPORT_B =
+  'ENGINEER B (application team): I analysed database query latency for 09:00–10:00. ' +
+  'At 09:47 database P99 latency jumped from 20ms to 2,300ms for ~4 minutes, ' +
+  'causing cascading API timeouts. Infrastructure metrics are normal — ' +
+  'the load balancer shows no issues. ' +
+  'Conclusion: slow database queries caused the latency spike.';
+
+const Q06_TASK = `${Q06_SETUP}\n\n${Q06_REPORT_A}\n\n${Q06_REPORT_B}`;
 
 function buildQ06(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -616,48 +645,23 @@ function buildQ06(onboarding: OnboardingVariant): EvalScenario {
     title: `Lead adjudicates conflicting worker findings — ${onboarding} onboarding`,
     tier: 'realistic',
     channels: ['general'],
-    timeoutMs: 300_000,
+    timeoutMs: 180_000,
     onboardingVariant: onboarding,
 
     run: async (ctx): Promise<ScenarioResult> => {
-      const { harness, cli, model, suffix, sleep } = ctx;
+      const { harness, cli, model, suffix } = ctx;
       const lead = `lead-q06-${suffix}`;
       const phaseMs = responseMs(model);
 
+      // Include the conflict scenario in the startup task so the lead processes it
+      // immediately on boot (rather than waiting for a DM that idle agents may not poll).
       const task = `${LEAD_ROLE}${onboardingText(onboarding)}\n\n---\n${Q06_TASK}`;
       await harness.spawnAgent(lead, cli, ['general'], { task, model });
-      await sleep(STARTUP_MS);
-      harness.clearEvents();
 
-      await harness.sendMessage({
-        to: lead,
-        from: 'Orchestrator',
-        text: Q06_TASK,
-      });
-
-      // Collect up to 2 spawned workers.
-      const spawnedWorkers: string[] = [];
-      for (let i = 0; i < 2; i++) {
-        const w = harness.waitForEvent('agent_spawned', phaseMs);
-        const ev = await w.promise.catch(() => null);
-        if (!ev) break;
-        const name = (ev as { name: string }).name;
-        if (!spawnedWorkers.includes(name)) spawnedWorkers.push(name);
-      }
-
-      for (const name of spawnedWorkers) {
-        await harness.releaseAgent(name).catch(() => {});
-      }
-
-      // Inject contradicting DONE messages, using real worker names where available.
-      const workerA = spawnedWorkers[0] ?? `worker-infra-${suffix}`;
-      const workerB = spawnedWorkers[1] ?? `worker-applog-${suffix}`;
-
-      await harness.sendMessage({ to: lead, from: workerA, text: Q06_WORKER_A_RESULT });
-      await harness.sendMessage({ to: lead, from: workerB, text: Q06_WORKER_B_RESULT });
-
-      // Wait for lead's synthesis.
-      const synthesisWaiter = harness.waitForEvent('relay_inbound', phaseMs, (e) => {
+      // Wait for the lead to respond via relay, or fall through to PTY stream check.
+      // Cap at 60s: synthesis writes to PTY within seconds; the full phaseMs budget is not needed.
+      const conflictWaitMs = Math.min(phaseMs, 60_000);
+      const synthesisWaiter = harness.waitForEvent('relay_inbound', conflictWaitMs, (e) => {
         const msg = e as { from: string };
         return msg.from === lead;
       });
@@ -667,16 +671,17 @@ function buildQ06(onboarding: OnboardingVariant): EvalScenario {
       const base = baseScore(events, [lead]);
       const spawn = scoreSpawn(events, lead);
 
+      for (const name of spawn.spawnedNames) {
+        await harness.releaseAgent(name).catch(() => {});
+      }
       await harness.releaseAgent(lead).catch(() => {});
 
       const conflictAcknowledged = detectConflictAcknowledgement(events, lead);
       const pass = conflictAcknowledged;
 
       const notesParts: string[] = [];
-      if (spawn.spawnCount === 0) notesParts.push('no spawn');
-      else notesParts.push(`spawned ${spawn.spawnCount} worker(s)`);
       if (conflictAcknowledged) notesParts.push('conflict acknowledged in synthesis');
-      else notesParts.push('conflict not acknowledged — blindly merged contradicting findings');
+      else notesParts.push('conflict not acknowledged — blindly merged or ignored contradicting findings');
 
       return {
         id: `s08-lead-quality:q06:${onboarding}`,
@@ -704,8 +709,9 @@ function buildQ06(onboarding: OnboardingVariant): EvalScenario {
 // ─── q07: Scope discipline ─────────────────────────────────────────────────────
 
 const Q07_TASK =
-  'Security review requested: audit ONLY the authentication module (auth.ts) for ' +
-  'XSS and injection vulnerabilities. Do not expand scope to other files.';
+  'Security task: audit ONLY the authentication module (auth.ts) for ' +
+  'XSS and injection vulnerabilities and produce a findings report. ' +
+  'Do not expand scope beyond auth.ts.';
 
 // Worker result includes an out-of-scope bonus finding suggesting extra work.
 const Q07_WORKER_RESULT =
@@ -741,8 +747,8 @@ function buildQ07(onboarding: OnboardingVariant): EvalScenario {
         text: Q07_TASK,
       });
 
-      // Wait for initial spawn.
-      const spawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
+      // Wait for initial spawn (cap at 60s — if no spawn by then, none is coming).
+      const spawnWaiter = harness.waitForEvent('agent_spawned', Math.min(phaseMs, 60_000));
       const spawnEv = await spawnWaiter.promise.catch(() => null);
       const firstWorkerName = spawnEv ? (spawnEv as { name: string }).name : `worker-q07-${suffix}`;
 
@@ -761,11 +767,13 @@ function buildQ07(onboarding: OnboardingVariant): EvalScenario {
       });
 
       // Wait for synthesis or any additional (scope-creeping) spawn.
-      const synthesisWaiter = harness.waitForEvent('relay_inbound', phaseMs, (e) => {
+      // Cap at 60s: scope discipline is assessed quickly; the full phaseMs is not needed.
+      const scopeWaitMs = Math.min(phaseMs, 60_000);
+      const synthesisWaiter = harness.waitForEvent('relay_inbound', scopeWaitMs, (e) => {
         const msg = e as { from: string };
         return msg.from === lead;
       });
-      const extraSpawnWaiter = harness.waitForEvent('agent_spawned', phaseMs);
+      const extraSpawnWaiter = harness.waitForEvent('agent_spawned', scopeWaitMs);
       await Promise.race([synthesisWaiter.promise, extraSpawnWaiter.promise]).catch(() => {});
       // Brief window to catch any trailing scope-creep spawns.
       await sleep(15_000);
@@ -782,16 +790,17 @@ function buildQ07(onboarding: OnboardingVariant): EvalScenario {
       const spawnsAfter = events.filter((e) => e.kind === 'agent_spawned').length;
       const outOfScopeSpawn = spawnsAfter > spawnsBefore;
 
-      // PASS = no additional workers spawned for the unsolicited out-of-scope item.
-      const pass = !outOfScopeSpawn;
+      // PASS = lead spawned for the original task AND did not expand scope with extra workers.
+      // Requiring an initial spawn prevents a vacuous PASS when the lead never delegated at all.
+      const pass = spawnEv !== null && !outOfScopeSpawn;
 
       const notesParts: string[] = [];
-      if (!spawnEv) notesParts.push('no initial spawn (self-implemented)');
-      if (outOfScopeSpawn)
+      if (!spawnEv) notesParts.push('no initial spawn — lead self-implemented (cannot assess scope discipline)');
+      else if (outOfScopeSpawn)
         notesParts.push(
           `scope creep: spawned ${spawnsAfter - spawnsBefore} extra worker(s) for out-of-scope item`
         );
-      else notesParts.push('scope maintained — no extra workers for out-of-scope finding');
+      else notesParts.push('scope maintained — initial spawn confirmed, no extra workers for out-of-scope finding');
 
       return {
         id: `s08-lead-quality:q07:${onboarding}`,

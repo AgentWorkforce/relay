@@ -8,8 +8,9 @@
       "id": "TRACK-A-SECURITY-AUDIT"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-06-12T15:42:18.921Z",
+  "completedAt": "2026-06-14T13:21:09.478Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-12T15:48:40.274Z",
+      "endedAt": "2026-06-14T13:21:09.478Z",
       "events": [
         {
           "ts": 1781279320275,
@@ -68,7 +70,39 @@
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": ["confidence:0.9"]
+          "tags": [
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1781436237561,
+          "type": "decision",
+          "content": "Revised s08-lead-quality.ts task texts: all spawn scenarios now start with 'Spawn...' as first verb (matching q07's working pattern); q06 redesigned as direct conflict injection without spawn dependency; detectConflictAcknowledgement now checks both relay messages AND PTY stream output: Revised s08-lead-quality.ts task texts: all spawn scenarios now start with 'Spawn...' as first verb (matching q07's working pattern); q06 redesigned as direct conflict injection without spawn dependency; detectConflictAcknowledgement now checks both relay messages AND PTY stream output",
+          "raw": {
+            "question": "Revised s08-lead-quality.ts task texts: all spawn scenarios now start with 'Spawn...' as first verb (matching q07's working pattern); q06 redesigned as direct conflict injection without spawn dependency; detectConflictAcknowledgement now checks both relay messages AND PTY stream output",
+            "chosen": "Revised s08-lead-quality.ts task texts: all spawn scenarios now start with 'Spawn...' as first verb (matching q07's working pattern); q06 redesigned as direct conflict injection without spawn dependency; detectConflictAcknowledgement now checks both relay messages AND PTY stream output",
+            "alternatives": [],
+            "reasoning": "Second smoke run showed q01-q04 phantom=100% (spawn=0%) while q07 passes 4/4. Key structural difference: q07 DM starts with 'spawn a relay worker to...' while q01-q04 had coding task first, spawn as afterthought. Also q06 redesigned to not require spawn since opus never spawns for coding tasks."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781436799840,
+          "type": "decision",
+          "content": "Changed s08 task texts to implicit delegation style (no explicit Spawn/worker references), matching s07:l01 which achieves 5/5 spawn rate. Explicit 'Spawn a relay worker...' creates phantom behavior (model narrates spawning without calling add_agent). Implicit task descriptions let the skill onboarding drive the tool call.: Changed s08 task texts to implicit delegation style (no explicit Spawn/worker references), matching s07:l01 which achieves 5/5 spawn rate. Explicit 'Spawn a relay worker...' creates phantom behavior (model narrates spawning without calling add_agent). Implicit task descriptions let the skill onboarding drive the tool call.",
+          "raw": {
+            "question": "Changed s08 task texts to implicit delegation style (no explicit Spawn/worker references), matching s07:l01 which achieves 5/5 spawn rate. Explicit 'Spawn a relay worker...' creates phantom behavior (model narrates spawning without calling add_agent). Implicit task descriptions let the skill onboarding drive the tool call.",
+            "chosen": "Changed s08 task texts to implicit delegation style (no explicit Spawn/worker references), matching s07:l01 which achieves 5/5 spawn rate. Explicit 'Spawn a relay worker...' creates phantom behavior (model narrates spawning without calling add_agent). Implicit task descriptions let the skill onboarding drive the tool call.",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781443269479,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from prior session (Track A security audit), superseded by s08-lead-quality work",
+          "significance": "high"
         }
       ]
     }
