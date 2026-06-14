@@ -59,10 +59,10 @@ const CONFLICT_RE =
 
 function detectConflictAcknowledgement(
   events: Parameters<typeof cleanStreamOutput>[0],
-  agentName: string,
+  agentName: string
 ): boolean {
   const inbound = events.filter(
-    (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === agentName,
+    (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === agentName
   );
   const combined = inbound.map((e) => (e as { body?: string }).body ?? '').join(' ');
   return CONFLICT_RE.test(combined);
@@ -142,8 +142,10 @@ function buildQ01(onboarding: OnboardingVariant): EvalScenario {
 
       const notesParts: string[] = [];
       if (spawnCount === 0) notesParts.push('no delegation — lead self-implemented all tracks');
-      else if (spawnCount === 1) notesParts.push('monolithic delegation: 1 worker (all tracks lumped together)');
-      else if (spawnCount > 6) notesParts.push(`over-decomposed: ${spawnCount} workers (excessive atomisation)`);
+      else if (spawnCount === 1)
+        notesParts.push('monolithic delegation: 1 worker (all tracks lumped together)');
+      else if (spawnCount > 6)
+        notesParts.push(`over-decomposed: ${spawnCount} workers (excessive atomisation)`);
       else notesParts.push(`good decomposition: ${spawnCount} workers`);
 
       return {
@@ -252,7 +254,7 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
         (e) =>
           e.kind === 'relay_inbound' &&
           (e as { from: string; body?: string }).from === lead &&
-          /fail|error|retry|unable|timeout|issue/i.test((e as { body?: string }).body ?? ''),
+          /fail|error|retry|unable|timeout|issue/i.test((e as { body?: string }).body ?? '')
       );
       const pass = retried || escalated;
 
@@ -355,7 +357,7 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
 
       // PASS = lead sent at least one outbound message (responded to status query).
       const leadMessages = events.filter(
-        (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === lead,
+        (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === lead
       );
       const pass = leadMessages.length > 0;
 
@@ -475,8 +477,8 @@ function buildQ04(onboarding: OnboardingVariant): EvalScenario {
           e.kind === 'relay_inbound' &&
           (e as { from: string; body?: string }).from === lead &&
           /access|credential|cannot|escalat|alternative|different worker|unable/i.test(
-            (e as { body?: string }).body ?? '',
-          ),
+            (e as { body?: string }).body ?? ''
+          )
       );
       const pass = rerouted || escalated;
 
@@ -787,7 +789,7 @@ function buildQ07(onboarding: OnboardingVariant): EvalScenario {
       if (!spawnEv) notesParts.push('no initial spawn (self-implemented)');
       if (outOfScopeSpawn)
         notesParts.push(
-          `scope creep: spawned ${spawnsAfter - spawnsBefore} extra worker(s) for out-of-scope item`,
+          `scope creep: spawned ${spawnsAfter - spawnsBefore} extra worker(s) for out-of-scope item`
         );
       else notesParts.push('scope maintained — no extra workers for out-of-scope finding');
 

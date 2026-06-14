@@ -80,7 +80,14 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   return { cli, model };
 }
 
-type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'lead-quality' | 'all';
+type ScenarioGroup =
+  | 'messaging'
+  | 'lifecycle'
+  | 'phrasing'
+  | 'auto-routing'
+  | 'lead-delegation'
+  | 'lead-quality'
+  | 'all';
 
 interface Flags {
   harnesses: string[];
@@ -135,8 +142,8 @@ function selectScenarios(flags: Flags): EvalScenario[] {
             : flags.group === 'lead-quality'
               ? LEAD_QUALITY_EVAL_SCENARIOS
               : flags.group === 'all'
-              ? ALL_SCENARIOS
-              : SCENARIOS;
+                ? ALL_SCENARIOS
+                : SCENARIOS;
   if (
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
