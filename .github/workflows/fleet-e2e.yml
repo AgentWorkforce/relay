@@ -4,11 +4,18 @@ name: Fleet E2E
 # engine + two `agent-relay fleet serve` nodes (each a Rust broker + TS sidecar)
 # and drives the live control wire. Heavier than the unit suite (builds the Rust
 # broker + the relaycast engine), so it runs on its own workflow, gated to fleet
-# paths, and kept under the 10-minute budget via rust-cache.
+# paths. The scenario matrix itself runs in well under a minute (~30s locally);
+# the wall-clock is dominated by the cold build (cargo + two npm installs +
+# engine build), which rust-cache amortises on warm runs. The 20-minute job
+# timeout is a cold-build ceiling, not the matrix runtime.
 
+# NOTE on branches: the fleet stack is developed on `feat/fleet-*` branches that
+# merge into each other before `main`, so the trigger must include them — gating
+# on `[main]` alone leaves this job inert for the entire feature stack (it would
+# only run after something reaches main). Update to `[main]` once the stack lands.
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/fleet-**']
     paths:
       - 'packages/fleet/**'
       - 'packages/cli/**'
@@ -18,7 +25,7 @@ on:
       - 'vitest.e2e.config.ts'
       - '.github/workflows/fleet-e2e.yml'
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/fleet-**']
     paths:
       - 'packages/fleet/**'
       - 'packages/cli/**'
@@ -45,13 +52,18 @@ jobs:
       - name: Checkout relay
         uses: actions/checkout@v4
 
-      # The relaycast engine lives in a separate repo; the fleet feature is on an
-      # unreleased branch, so build it from source into a sibling directory.
-      - name: Checkout relaycast engine
+      # The relaycast engine lives in a separate repo. This E2E REQUIRES the two
+      # engine compat fixes it surfaced (Bearer-header node auth + the
+      # agent.register reply frame), which live on `feat/fleet-rollout-flag`
+      # (relaycast#194), NOT on `feat/fleet-mailbox` — building fleet-mailbox here
+      # would be red. Pinned to a SHA for reproducibility (the same branch the
+      # local harness resolves, so local == CI). Re-pin to `feat/fleet-mailbox@<sha>`
+      # once relaycast#194 merges down.
+      - name: Checkout relaycast engine (carries the E2E compat fixes)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: feat/fleet-mailbox
+          ref: b673dfbacfd97d47b5b511fa096daa1bb9a60d3c # feat/fleet-rollout-flag (relaycast#194)
           path: relaycast-engine
 
       - name: Setup Node.js

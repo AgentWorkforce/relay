@@ -3,23 +3,34 @@ import { definePtyHarness } from '@agent-relay/harnesses';
 import { action, defineNode, spawn } from '@agent-relay/fleet';
 
 /**
- * E2E fleet node B. Distinct capability set from node A:
- *   - spawn:codex  (stub PTY harness — see node-a for why `sleep`)
- *   - ping         (a node-native action handler used to prove cross-node
- *     dispatch lands on THIS node's control connection)
+ * E2E fleet node B.
+ *   - spawn:codex   distinct stub spawn (sleep)
+ *   - spawn:pool    SHARED stub spawn (both nodes) → least-loaded scheduling
+ *   - ping          distinct node action → cross-node dispatch
+ *   - work          SHARED slow node action (both nodes) → reschedule-on-death
  *
- * Deliberately has NO `echo` and NO `spawn:claude`, so capability-filtered
- * roster queries and capability-targeted placement have an unambiguous answer.
+ * No `echo` and no `spawn:claude`, so capability-filtered queries and
+ * capability-targeted placement have an unambiguous answer.
  */
-const stubCodex = definePtyHarness({ runtime: 'pty', command: 'sleep', args: ['86400'] });
+const stub = definePtyHarness({ runtime: 'pty', command: 'sleep', args: ['86400'] });
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({
   name: 'node-b',
   maxAgents: 8,
   capabilities: {
-    'spawn:codex': spawn(stubCodex),
-    ping: action({ input: z.object({ nonce: z.string() }) }, async (input, ctx) => {
-      return { pong: input.nonce, node: ctx.node.name };
-    }),
+    'spawn:codex': spawn(stub),
+    'spawn:pool': spawn(stub),
+    ping: action({ input: z.object({ nonce: z.string() }) }, async (input, ctx) => ({
+      pong: input.nonce,
+      node: ctx.node.name,
+    })),
+    work: action(
+      { input: z.object({ nonce: z.string(), delayMs: z.number().optional() }) },
+      async (input, ctx) => {
+        await sleepMs(input.delayMs ?? 0);
+        return { worked: input.nonce, node: ctx.node.name };
+      }
+    ),
   },
 });

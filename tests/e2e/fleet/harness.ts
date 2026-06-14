@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,14 +140,18 @@ export interface EngineHandle {
   fetchJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any }>;
 }
 
-export async function startEngine(serveBin: string, tmpRoot: string): Promise<EngineHandle> {
+export async function startEngine(
+  serveBin: string,
+  tmpRoot: string,
+  extraEnv: Record<string, string> = {}
+): Promise<EngineHandle> {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(
     process.execPath,
     [serveBin, '--port', String(port), '--db', path.join(tmpRoot, 'relaycast.db'), '--env', 'test'],
     {
-      env: cleanEnv({ HOME: tmpRoot }),
+      env: cleanEnv({ HOME: tmpRoot, ...extraEnv }),
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
@@ -334,16 +338,36 @@ export class FleetNode {
     return this.lastLog;
   }
 
-  /** Kill only the sidecar+broker process (simulates a node host dying). */
+  /** Kill the whole node host: the `fleet serve` sidecar AND the broker it
+   * spawned. SIGKILLing only the sidecar orphans the broker (it keeps the node
+   * online + holds the state-dir flock), which breaks a later restart. */
   async stop(): Promise<void> {
-    if (!this.child) return;
-    const child = this.child;
-    this.child = null;
-    await new Promise<void>((resolve) => {
-      child.once('exit', () => resolve());
-      child.kill('SIGKILL');
-      setTimeout(resolve, 2_000);
-    });
+    // Kill the broker first, by the pid it wrote to connection.json.
+    const connPath = path.join(this.projectDir, '.agentworkforce', 'relay', 'connection.json');
+    try {
+      const conn = JSON.parse(readFileSync(connPath, 'utf-8')) as { pid?: number };
+      if (typeof conn.pid === 'number') {
+        try {
+          process.kill(conn.pid, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    } catch {
+      /* no connection file */
+    }
+
+    if (this.child) {
+      const child = this.child;
+      this.child = null;
+      await new Promise<void>((resolve) => {
+        child.once('exit', () => resolve());
+        child.kill('SIGKILL');
+        setTimeout(resolve, 2_000);
+      });
+    }
+    // Give the engine a moment to observe the dropped node control WS.
+    await new Promise((r) => setTimeout(r, 500));
   }
 }
 
@@ -401,6 +425,18 @@ export async function createTrigger(
   return body.data.id as string;
 }
 
+export async function joinChannel(
+  engine: EngineHandle,
+  agentToken: string,
+  channel: string
+): Promise<number> {
+  const { status } = await engine.fetchJson(`/v1/channels/${channel}/join`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${agentToken}` },
+  });
+  return status;
+}
+
 export async function postMessage(
   engine: EngineHandle,
   agentToken: string,
@@ -426,6 +462,64 @@ export async function listMessages(
   const data = body.data;
   const items = Array.isArray(data) ? data : (data?.messages ?? []);
   return items as Array<{ text: string }>;
+}
+
+/** Release (delete) an agent, freeing its location — used to model a resumable
+ * agent being released before a resume re-spawn. */
+export async function releaseAgent(
+  engine: EngineHandle,
+  workspaceKey: string,
+  name: string
+): Promise<number> {
+  const { status } = await engine.fetchJson(`/v1/agents/${name}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${workspaceKey}` },
+  });
+  return status;
+}
+
+export async function sendDm(
+  engine: EngineHandle,
+  agentToken: string,
+  to: string,
+  text: string
+): Promise<{ status: number; body: any }> {
+  return engine.fetchJson('/v1/dm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify({ to, text }),
+  });
+}
+
+/** List an agent's own deliveries. Reading triggers the engine's TTL sweep, so
+ * polling this is how the mailbox TTL dead-letter becomes observable. */
+export async function listDeliveries(
+  engine: EngineHandle,
+  agentToken: string,
+  status?: string
+): Promise<Array<{ id: string; status: string; seq: number; msg_id: string }>> {
+  const qs = status ? `?status=${status}` : '';
+  const { body } = await engine.fetchJson(`/v1/deliveries${qs}`, {
+    headers: { authorization: `Bearer ${agentToken}` },
+  });
+  const data = body.data;
+  return (Array.isArray(data) ? data : (data?.deliveries ?? [])) as Array<{
+    id: string;
+    status: string;
+    seq: number;
+    msg_id: string;
+  }>;
+}
+
+export async function getPresence(engine: EngineHandle, workspaceKey: string): Promise<string[]> {
+  const { body } = await engine.fetchJson('/v1/agents/presence', {
+    headers: { authorization: `Bearer ${workspaceKey}` },
+  });
+  const data = body.data;
+  const list = Array.isArray(data) ? data : (data?.online ?? data?.agents ?? []);
+  return (list as Array<{ name?: string; agent_name?: string } | string>).map((x) =>
+    typeof x === 'string' ? x : (x.name ?? x.agent_name ?? '')
+  );
 }
 
 export function makeTmpRoot(): string {
