@@ -53,7 +53,7 @@ describe('composeTeam', () => {
       reasoning: 'test',
     };
     const team = composeTeam(assessment, 'build the full feature');
-    const hasSynth = team.workers.some((w) => w.role.includes('Synthesiser'));
+    const hasSynth = team.workers.some((w) => w.role === 'reducer');
     expect(hasSynth).toBe(true);
   });
 });

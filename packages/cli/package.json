@@ -43,11 +43,11 @@
     "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-relay/cloud": "8.2.0",
-    "@agent-relay/config": "8.2.0",
-    "@agent-relay/harness-driver": "8.2.0",
-    "@agent-relay/sdk": "8.2.0",
-    "@agent-relay/utils": "8.2.0",
+    "@agent-relay/cloud": "8.7.2",
+    "@agent-relay/config": "8.7.2",
+    "@agent-relay/harness-driver": "8.7.2",
+    "@agent-relay/sdk": "8.7.2",
+    "@agent-relay/utils": "8.7.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@relaycast/sdk": "^2.5.1",
     "@relayflows/cli": "^1.0.1",
