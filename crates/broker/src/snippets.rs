@@ -1130,7 +1130,14 @@ fn grok_mcp_add_args(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
 ) -> Vec<String> {
-    let mut args = vec!["mcp".to_string(), "add".to_string()];
+    // Grok v0.2.x requires the positional <NAME> argument to come before any
+    // options — unlike standard CLI conventions where [OPTIONS] precede NAME.
+    // Put NAME immediately after the sub-command.
+    let mut args = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        AGENT_RELAY_MCP_SERVER.to_string(),
+    ];
     if let Some(key) = api_key {
         args.push("--env".to_string());
         args.push(format!("RELAY_API_KEY={key}"));
@@ -1161,11 +1168,27 @@ fn grok_mcp_add_args(
         args.push("--env".to_string());
         args.push(format!("RELAY_DEFAULT_WORKSPACE={dw}"));
     }
-    args.push(AGENT_RELAY_MCP_SERVER.to_string());
     let mcp_command = agent_relay_mcp_command();
+
+    // Grok's CLI parser rejects flag-shaped `--args` values (e.g. `-y`) as
+    // unknown options even when they follow a positional arg. Work around this
+    // by embedding flag-shaped args directly into the `--command` string so
+    // that only plain positional args are passed via `--args`.
+    //
+    // e.g. `["npx", ["-y", "agent-relay", "mcp"]]`
+    //   → `--command "npx -y"  --args agent-relay  --args mcp`
+    let (flag_args, positional_args): (Vec<_>, Vec<_>) = mcp_command
+        .args
+        .into_iter()
+        .partition(|a| a.starts_with('-'));
+    let command_str = if flag_args.is_empty() {
+        mcp_command.command
+    } else {
+        format!("{} {}", mcp_command.command, flag_args.join(" "))
+    };
     args.push("--command".to_string());
-    args.push(mcp_command.command);
-    for arg in mcp_command.args {
+    args.push(command_str);
+    for arg in positional_args {
         args.push("--args".to_string());
         args.push(arg);
     }
@@ -1174,15 +1197,22 @@ fn grok_mcp_add_args(
 
 fn grok_manual_mcp_add_cmd(cli: &str) -> String {
     let mcp_command = agent_relay_mcp_command();
-    let rendered_args = mcp_command
-        .args
+    let (flag_args, positional_args): (Vec<_>, Vec<_>) =
+        mcp_command.args.iter().partition(|a| a.starts_with('-'));
+    let command_str = if flag_args.is_empty() {
+        mcp_command.command.clone()
+    } else {
+        let flags: Vec<&str> = flag_args.iter().map(|s| s.as_str()).collect();
+        format!("{} {}", mcp_command.command, flags.join(" "))
+    };
+    let rendered_args = positional_args
         .iter()
         .map(|arg| format!("--args {arg}"))
         .collect::<Vec<_>>()
         .join(" ");
+    // Note: NAME must come before options in grok v0.2.x.
     format!(
-        "{cli} mcp add --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url> {AGENT_RELAY_MCP_SERVER} --command {} {rendered_args}",
-        mcp_command.command
+        "{cli} mcp add {AGENT_RELAY_MCP_SERVER} --env RELAY_API_KEY=<key> --env RELAY_BASE_URL=<url> --command \"{command_str}\" {rendered_args}"
     )
 }
 
@@ -1751,23 +1781,26 @@ mod tests {
             None,
         );
 
-        assert!(args.starts_with(&["mcp".to_string(), "add".to_string()]));
+        // NAME ("agent-relay") must come immediately after "add" — grok v0.2.x
+        // requires the positional argument before any options.
+        assert_eq!(args[0], "mcp");
+        assert_eq!(args[1], "add");
+        assert_eq!(args[2], "agent-relay");
         assert!(args.contains(&"--env".to_string()));
         assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=GrokWorker".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_grok_123".to_string()));
-        let server_idx = args
+        // Flag-shaped args (-y) are embedded into the --command value to avoid
+        // grok's CLI parser treating them as unknown options.
+        let command_idx = args
             .iter()
-            .position(|arg| arg == "agent-relay")
-            .expect("agent-relay arg");
-        assert_eq!(args[server_idx + 1], "--command");
-        assert_eq!(args[server_idx + 2], "npx");
-        assert_eq!(args[server_idx + 3], "--args");
-        assert_eq!(args[server_idx + 4], "-y");
-        assert_eq!(args[server_idx + 5], "--args");
-        assert_eq!(args[server_idx + 6], "agent-relay");
-        assert_eq!(args[server_idx + 7], "--args");
-        assert_eq!(args[server_idx + 8], "mcp");
+            .position(|arg| arg == "--command")
+            .expect("--command arg");
+        assert_eq!(args[command_idx + 1], "npx -y");
+        assert_eq!(args[command_idx + 2], "--args");
+        assert_eq!(args[command_idx + 3], "agent-relay");
+        assert_eq!(args[command_idx + 4], "--args");
+        assert_eq!(args[command_idx + 5], "mcp");
     }
 
     #[test]
