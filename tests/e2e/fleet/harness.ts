@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import WebSocket from 'ws';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
@@ -13,9 +14,10 @@ export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 
 /**
- * Locate a built relaycast engine `serve` bin. CI sets RELAYCAST_ENGINE_DIR to
- * a checkout of AgentWorkforce/relaycast (feat/fleet-mailbox or a descendant);
- * locally we fall back to the sibling fleet worktrees.
+ * Locate a built relaycast engine `serve` bin. CI sets RELAYCAST_ENGINE_DIR to a
+ * checkout of AgentWorkforce/relaycast pinned to the `feat/fleet-rollout-flag`
+ * SHA (relaycast#194) that carries the E2E compat fixes; locally we resolve the
+ * same branch from the sibling fleet worktrees (so local == CI).
  */
 function resolveEngineServe(): string | null {
   const candidates: string[] = [];
@@ -511,15 +513,51 @@ export async function listDeliveries(
   }>;
 }
 
-export async function getPresence(engine: EngineHandle, workspaceKey: string): Promise<string[]> {
-  const { body } = await engine.fetchJson('/v1/agents/presence', {
-    headers: { authorization: `Bearer ${workspaceKey}` },
-  });
-  const data = body.data;
-  const list = Array.isArray(data) ? data : (data?.online ?? data?.agents ?? []);
-  return (list as Array<{ name?: string; agent_name?: string } | string>).map((x) =>
-    typeof x === 'string' ? x : (x.name ?? x.agent_name ?? '')
-  );
+/** A live agent WS connection that records the typed events it receives — the
+ * only way a sender observes the realtime `delivery.failed` notification. */
+export class AgentEventListener {
+  private readonly ws: WebSocket;
+  readonly events: Array<Record<string, unknown>> = [];
+  constructor(wsBaseUrl: string, agentToken: string) {
+    this.ws = new WebSocket(`${wsBaseUrl}/v1/ws`, { headers: { authorization: `Bearer ${agentToken}` } });
+    this.ws.on('message', (data) => {
+      try {
+        this.events.push(JSON.parse(data.toString()));
+      } catch {
+        /* ignore non-JSON frames */
+      }
+    });
+    this.ws.on('error', () => {});
+  }
+  ready(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.ws.readyState === WebSocket.OPEN) return resolve();
+      this.ws.once('open', () => resolve());
+      this.ws.once('error', reject);
+    });
+  }
+  ofType(type: string): Array<Record<string, unknown>> {
+    return this.events.filter((e) => e.type === type);
+  }
+  /** Strictly-increasing per-agent sequence numbers across all received events. */
+  seqs(): number[] {
+    return this.events.map((e) => e.agent_seq).filter((s): s is number => typeof s === 'number');
+  }
+  send(frame: Record<string, unknown>): void {
+    this.ws.send(JSON.stringify(frame));
+  }
+  /** Ask the engine to replay everything after `lastSeenSeq` (the resync cursor
+   * the node-restart reconcile relies on for exactly-once redelivery). */
+  resync(lastSeenSeq: number): void {
+    this.send({ type: 'resync', last_seen_seq: lastSeenSeq });
+  }
+  close(): void {
+    try {
+      this.ws.close();
+    } catch {
+      /* already closed */
+    }
+  }
 }
 
 export function makeTmpRoot(): string {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  AgentEventListener,
   cleanupTmp,
   createTrigger,
   createWorkspace,
@@ -155,7 +156,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
   it('negative auth: a node whose broker presents a bogus token never comes online', async () => {
     // Enrolled (valid roster row) but the broker is handed a wrong token, so the
     // node_control Bearer handshake is rejected → never reaches handlers_live.
-    // Guards against a regression that disables node-auth enforcement.
+    // Guards against a regression that disables node-auth enforcement. The node
+    // definition file is irrelevant here (the broker never authenticates, so the
+    // manifest is never sent) — any valid fleet node file works.
     await enrollNode(engine, workspaceKey, 'node_c', 'node-c', ['work']);
     const badNode = new FleetNode({
       name: 'node-c',
@@ -170,11 +173,15 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     });
     badNode.start();
     try {
-      // Give it ample time to (fail to) authenticate, then assert it never went live.
-      await delay(8_000);
-      const c = node(await getNodes(engine, workspaceKey), 'node-c');
-      expect(c?.handlers_live ?? false).toBe(false);
-      expect(c?.live ?? false).toBe(false);
+      // Valid nodes reach handlers_live in ~2–4s (see beforeAll); poll for 5s and
+      // assert node-c stays offline the WHOLE time — a single late check could
+      // miss a (buggy) delayed bring-up, so we require it never flips live.
+      for (let i = 0; i < 10; i++) {
+        const c = node(await getNodes(engine, workspaceKey), 'node-c');
+        expect(c?.handlers_live ?? false).toBe(false);
+        expect(c?.live ?? false).toBe(false);
+        await delay(500);
+      }
     } finally {
       await badNode.stop();
     }
@@ -410,11 +417,16 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       { timeoutMs: 45_000, label: `${homeName} back online after restart` }
     );
 
-    // (d) dispatch works again, and the settled invocation stays idempotent.
-    const ping = await invokeAction(engine, driverToken, 'ping', {
-      nonce: 'after-restart',
-      target_node: 'node-b',
-    });
+    // (d) the rescheduled invocation is NOT re-claimed by the restarted node:
+    // its result stays on the rescheduling node (first-to-completed wins; the
+    // restart + inventory.sync does not re-dispatch or duplicate it).
+    await delay(2_000); // let inventory.sync run on the restarted node
+    const post = await getInvocation(engine, driverToken, 'work', work.invocationId!);
+    expect(post.status).toBe('completed');
+    expect(post.output).toMatchObject({ worked: 'resched-1', node: otherName });
+
+    // (e) dispatch works again on the restored node.
+    const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'after-restart' });
     const pingDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
@@ -422,11 +434,46 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       },
       { label: 'ping after restart', timeoutMs: 20_000 }
     );
-    expect(pingDone.output).toMatchObject({ pong: 'after-restart' });
-    const again = await getInvocation(engine, driverToken, 'ping', ping.invocationId!);
-    expect(again.status).toBe('completed');
-    expect(again.output).toMatchObject({ pong: 'after-restart' });
+    expect(pingDone.output).toMatchObject({ pong: 'after-restart', node: 'node-b' });
   }, 120_000);
+
+  it('delivery seq/dedup: per-agent deliveries are strictly monotonic and a resync replays with no duplicates', async () => {
+    // Asserts the engine's exactly-once delivery cursor — the SAME monotonic-seq +
+    // dedup mechanism the node-restart reconcile (inventory.sync) relies on for
+    // redelivery without duplicates. Driven through a WS-connected recipient whose
+    // event stream IS observable (a spawned via-node child's stream is not).
+    const recipient = await registerAgent(engine, workspaceKey, 'seq-rx');
+    const listener = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), recipient);
+    await listener.ready();
+
+    const N = 4;
+    for (let i = 0; i < N; i++) {
+      expect((await sendDm(engine, driverToken, 'seq-rx', `seq-${i}`)).status).toBeLessThan(300);
+    }
+    await waitFor(async () => listener.ofType('dm.received').length >= N, { label: 'all DMs delivered' });
+
+    const seqs = listener.ofType('dm.received').map((e) => e.agent_seq as number);
+    expect(seqs).toHaveLength(N);
+    expect(new Set(seqs).size).toBe(N); // no duplicate delivery
+    expect([...seqs].sort((a, b) => a - b)).toEqual(seqs); // strictly monotonic, in order
+    const maxSeq = Math.max(...seqs);
+
+    // Resync from the midpoint: the engine replays ONLY the tail, with no gap and
+    // no duplicate seqs — the reconcile redelivery guarantee.
+    const cursor = seqs[1];
+    const replay = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), recipient);
+    await replay.ready();
+    replay.resync(cursor);
+    const ack = await waitFor(async () => replay.ofType('resync_ack')[0] ?? null, { label: 'resync_ack' });
+    expect(ack).toMatchObject({ last_seen_seq: cursor, current_seq: maxSeq, gap_detected: false });
+    const replayed = replay.seqs().filter((s) => s > cursor);
+    expect(new Set(replayed).size).toBe(replayed.length); // no duplicate seqs on replay
+    expect(replayed).toEqual([...replayed].sort((a, b) => a - b)); // monotonic
+    expect(Math.min(...replayed)).toBeGreaterThan(cursor); // strictly after the cursor (no re-delivery of acked)
+
+    listener.close();
+    replay.close();
+  }, 30_000);
 });
 
 /**
@@ -456,14 +503,18 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
     if (tmpRoot) cleanupTmp(tmpRoot);
   });
 
-  it('TTL: an undelivered message dead-letters after the TTL', async () => {
-    // recipient registers but never connects/reads, so the DM stays queued.
+  it('TTL: an undelivered message dead-letters AND the sender is notified (delivery.failed)', async () => {
     const recipient = await registerAgent(engine, workspaceKey, 'ttl-recipient');
+    // The sender holds a live WS so it can observe the realtime delivery.failed.
+    const senderWs = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), sender);
+    await senderWs.ready();
+
     const dm = await sendDm(engine, sender, 'ttl-recipient', 'will expire');
     expect(dm.status).toBeLessThan(300);
 
     // Reading with ?status=dead_lettered triggers the TTL sweep (the route sweeps
-    // on every read) and surfaces the dead-lettered row once the TTL elapses.
+    // on every read), which dead-letters the row AND fans delivery.failed to the
+    // sender. Poll past the TTL.
     const dead = await waitFor(
       async () => {
         const all = await listDeliveries(engine, recipient, 'dead_lettered');
@@ -472,7 +523,15 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
       { label: 'message dead-lettered', timeoutMs: 15_000, intervalMs: 400 }
     );
     expect(dead.status).toBe('dead_lettered');
-  }, 20_000);
+
+    // The sender receives delivery.failed naming the target + reason.
+    const failed = await waitFor(async () => senderWs.ofType('delivery.failed')[0] ?? null, {
+      label: 'sender notified delivery.failed',
+      timeoutMs: 10_000,
+    });
+    expect(failed).toMatchObject({ target_agent_name: 'ttl-recipient' });
+    senderWs.close();
+  }, 25_000);
 
   // Overflow reject-new is enforced by `belowDepthCapSql` (counts queued+delivered
   // per agent) at delivery-write time, and the sender is notified via the realtime

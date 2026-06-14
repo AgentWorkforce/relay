@@ -14,28 +14,33 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 
 ## Scenario matrix
 
-| Scenario                | Asserts                                                                                                                                                                                                                       |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| boot/register           | both nodes `online` + `handlers_live` via the real broker Bearer-header auth; correct capability objects                                                                                                                      |
-| negative auth           | a node whose broker presents a bogus token never reaches `handlers_live` (auth is enforced)                                                                                                                                   |
-| capability query        | `GET /v1/nodes?capability=` returns the right node(s), incl. a shared capability on both                                                                                                                                      |
-| cross-node dispatch     | `echo`→node-a, `ping`→node-b each dispatch over the owning node's control connection and ack                                                                                                                                  |
-| declarative trigger     | a `#general` `/deploy/` message fires the action exactly once; the action-generated reply does **not** re-trigger — asserted by counting the `echo:` **prefix** (a broken guard cascades to `echo:echo:…`, growing the total) |
-| spawn completes E2E     | targeted spawn mints+injects the agent token, binds the agent via-node, and the node heartbeats the count up — the regression guard for the token-authority handshake                                                         |
-| capability-routed spawn | with no target, placement picks the only node advertising the capability                                                                                                                                                      |
-| scheduled spawn         | a shared-capability spawn routes to the least-loaded node (pre-loaded node is skipped)                                                                                                                                        |
-| resume                  | a resumable spawn carries `session_ref`; after release, the resume re-targets the **origin** node                                                                                                                             |
-| placement failure       | targeting a node that lacks the capability fails with `capability_mismatch` (409)                                                                                                                                             |
-| reschedule + reconcile  | an in-flight invocation on a dying node reruns on the other eligible node; the node's `handlers_live` drops, the restart re-registers (inventory.sync), and dispatch stays idempotent                                         |
-| mailbox TTL             | an undelivered message dead-letters after a short TTL (bounded durable mailbox)                                                                                                                                               |
+| Scenario                | Asserts                                                                                                                                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| boot/register           | both nodes `online` + `handlers_live` via the real broker Bearer-header auth; correct capability objects                                                                                                                              |
+| negative auth           | a node whose broker presents a bogus token never reaches `handlers_live` (auth is enforced)                                                                                                                                           |
+| capability query        | `GET /v1/nodes?capability=` returns the right node(s), incl. a shared capability on both                                                                                                                                              |
+| cross-node dispatch     | `echo`→node-a, `ping`→node-b each dispatch over the owning node's control connection and ack                                                                                                                                          |
+| declarative trigger     | a `#general` `/deploy/` message fires the action exactly once; the action-generated reply does **not** re-trigger — asserted by counting the `echo:` **prefix** (a broken guard cascades to `echo:echo:…`, growing the total)         |
+| spawn completes E2E     | targeted spawn mints+injects the agent token, binds the agent via-node, and the node heartbeats the count up — the regression guard for the token-authority handshake                                                                 |
+| capability-routed spawn | with no target, placement picks the only node advertising the capability                                                                                                                                                              |
+| scheduled spawn         | a shared-capability spawn routes to the least-loaded node (pre-loaded node is skipped)                                                                                                                                                |
+| resume                  | a resumable spawn carries `session_ref`; after release, the resume re-targets the **origin** node                                                                                                                                     |
+| placement failure       | targeting a node that lacks the capability fails with `capability_mismatch` (409)                                                                                                                                                     |
+| reschedule + reconcile  | an in-flight invocation on a dying node reruns on the other eligible node; the node's `handlers_live` drops, the restart re-registers (inventory.sync), and the rescheduled invocation is **not re-claimed** by the restarted node    |
+| delivery seq/dedup      | per-agent deliveries carry strictly monotonic `agent_seq` (no duplicates); a resync from a mid-cursor replays only the tail (`gap_detected: false`, no duplicate seqs) — the exactly-once cursor the node-restart reconcile relies on |
+| mailbox TTL             | an undelivered message dead-letters after a short TTL **and the sender is notified** (`delivery.failed` naming the target)                                                                                                            |
 
 ### Coverage notes (intentionally not re-asserted here)
 
-- **overflow reject-new** and **per-agent message seq/dedup**: need a recipient whose
+- **overflow reject-new**: `belowDepthCapSql` rejects new deliveries past the per-agent
+  depth cap at write time, with the sender notified via the realtime
+  `notifyDeliveryRejections` fanout. Demonstrating it E2E needs a recipient whose
   deliveries QUEUE (a via-node agent on a down node) AND whose delivery ledger is
-  externally observable. The spawned agent's token is held by the broker, so it
-  isn't; a self-connected recipient auto-delivers (never queues). Covered directly
-  by the relaycast engine §8.3 mailbox conformance matrix.
+  externally observable — the spawned agent's token is held by the broker, and a
+  self-connected recipient auto-delivers (never queues). **Signed off as covered by
+  the relaycast engine §8.3 mailbox conformance matrix** (which drives the
+  delivery-write state directly). The monotonic-seq / dedup half of §8 IS asserted
+  here (the `delivery seq/dedup` scenario).
 - **self spawn** (`target: self`): needs a via-node agent as the _caller_; the E2E
   driver is self-connected. Covered by the engine placement conformance.
 - The node-file `triggers: [...]` surface is **not** exercised — the sidecar's

@@ -1,15 +1,20 @@
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { definePtyHarness } from '@agent-relay/harnesses';
-import { action, defineNode, onMessage, spawn } from '@agent-relay/fleet';
+import { action, defineNode, spawn } from '@agent-relay/fleet';
 
 /**
  * E2E fleet node A.
- *   - spawn:claude   distinct stub spawn (sleep — launchable in CI without a real CLI)
+ *   - spawn:claude   distinct stub spawn → launchable in CI without a real CLI
  *   - spawn:pool     SHARED stub spawn (both nodes) → exercises least-loaded scheduling
  *   - echo           distinct node action → cross-node dispatch + declarative trigger
  *   - work           SHARED slow node action (both nodes) → exercises reschedule-on-death
+ *
+ * The stub spawn harness runs `stub-agent.cjs` — a launchable PTY child that
+ * drains stdin and idles, so spawn completes without a real AI CLI.
  */
-const stub = definePtyHarness({ runtime: 'pty', command: 'sleep', args: ['86400'] });
+const stubPath = fileURLToPath(new URL('./stub-agent.cjs', import.meta.url));
+const stub = definePtyHarness({ runtime: 'pty', command: process.execPath, args: [stubPath] });
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({
@@ -47,5 +52,8 @@ export default defineNode({
       }
     ),
   },
-  triggers: [onMessage({ channel: '#general', match: /deploy/ }, 'echo')],
+  // No node-file `triggers: [...]` fixture — the sidecar's trigger auto-sync is
+  // not yet wired, so a declared trigger here would be dead. The declarative
+  // trigger scenario registers `#general /deploy/ -> echo` via the engine API,
+  // which exercises the identical firing + loop-guard path.
 });
