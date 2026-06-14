@@ -1,6 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -328,12 +336,19 @@ export class FleetNode {
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
-    this.child.stdout?.on('data', (d) => {
-      this.lastLog += d.toString();
-    });
-    this.child.stderr?.on('data', (d) => {
-      this.lastLog += d.toString();
-    });
+    // Persist the sidecar's output to serve.log (append across restarts) so the
+    // CI "upload node logs on failure" step has something to attach.
+    const record = (d: Buffer) => {
+      const s = d.toString();
+      this.lastLog += s;
+      try {
+        appendFileSync(this.logPath, s);
+      } catch {
+        /* best effort */
+      }
+    };
+    this.child.stdout?.on('data', record);
+    this.child.stderr?.on('data', record);
   }
 
   get log(): string {

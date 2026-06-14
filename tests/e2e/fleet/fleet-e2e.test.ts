@@ -139,7 +139,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     await nodeA?.stop();
     await nodeB?.stop();
     await engine?.stop();
-    if (tmpRoot) cleanupTmp(tmpRoot);
+    // Keep tmp (incl. serve.log) in CI so the log-upload step can attach it.
+    if (tmpRoot && !process.env.CI) cleanupTmp(tmpRoot);
   });
 
   it('boot/register: both nodes online with the right capability objects (real broker Bearer auth)', async () => {
@@ -333,14 +334,19 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(scheduled.body.data.handler_node_id).toBe('node_b'); // least-loaded
   }, 60_000);
 
-  it('resume: a resumable spawn carries session_ref and resume re-targets the origin node', async () => {
+  it('resume: a resumable spawn re-binds to the agent ORIGIN node (not an arbitrary target)', async () => {
     const sessionRef = 'sess-resume-1';
+    // First spawn is UNTARGETED → the engine picks the origin node by placement.
+    // We capture wherever it actually landed so the resume target is derived from
+    // the agent's real origin, not hard-coded (resume = targeted-origin spawn;
+    // the engine records origin_node_id but does not auto-route from session_ref).
     const first = await invokeAction(engine, driverToken, 'spawn', {
       cli: 'pool',
       name: 'resumable-1',
-      target_node: 'node-a',
       session_ref: sessionRef,
     });
+    const originId = first.body.data.handler_node_id as string; // engine-chosen origin
+    const originName = originId === 'node_a' ? 'node-a' : 'node-b';
     const firstDone = await waitFor(
       async () => {
         const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
@@ -350,19 +356,17 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     );
     expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
 
-    // Release the agent, then resume = an origin-targeted spawn carrying the same
-    // session_ref. Assert placement re-binds to the ORIGIN node (the resume
-    // contract); full re-attach of the stub child is covered by engine conformance.
+    // Release, then resume the SAME session targeted at the recorded origin.
     expect(await releaseAgent(engine, workspaceKey, 'resumable-1')).toBeLessThan(300);
     const resume = await invokeAction(engine, driverToken, 'spawn', {
       cli: 'pool',
       name: 'resumable-1',
-      target_node: 'node-a',
+      target_node: originName,
       session_ref: sessionRef,
     });
     expect(resume.status).toBe(201);
-    expect(resume.body.data.handler_node_id).toBe('node_a'); // resumed on the origin node
-    expect(resume.body.data.dispatched_node_id).toBe('node_a');
+    expect(resume.body.data.handler_node_id).toBe(originId); // resumed on the agent's origin node
+    expect(resume.body.data.dispatched_node_id).toBe(originId);
   }, 45_000);
 
   it('placement failure: spawning a capability no targeted node advertises fails with capability_mismatch', async () => {
@@ -417,13 +421,16 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       { timeoutMs: 45_000, label: `${homeName} back online after restart` }
     );
 
-    // (d) the rescheduled invocation is NOT re-claimed by the restarted node:
-    // its result stays on the rescheduling node (first-to-completed wins; the
-    // restart + inventory.sync does not re-dispatch or duplicate it).
-    await delay(2_000); // let inventory.sync run on the restarted node
-    const post = await getInvocation(engine, driverToken, 'work', work.invocationId!);
-    expect(post.status).toBe('completed');
-    expect(post.output).toMatchObject({ worked: 'resched-1', node: otherName });
+    // (d) the rescheduled invocation is NOT re-claimed by the restarted node. A
+    // re-claim would re-dispatch `work` (delayMs 6s) on the restarted node and
+    // overwrite the result on completion — so we must watch PAST that window
+    // (8s > 6s) and assert the result stays on the rescheduling node the whole time.
+    for (let i = 0; i < 16; i++) {
+      const post = await getInvocation(engine, driverToken, 'work', work.invocationId!);
+      expect(post.status).toBe('completed');
+      expect(post.output).toMatchObject({ worked: 'resched-1', node: otherName });
+      await delay(500);
+    }
 
     // (e) dispatch works again on the restored node.
     const ping = await invokeAction(engine, driverToken, 'ping', { nonce: 'after-restart' });
@@ -458,18 +465,25 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect([...seqs].sort((a, b) => a - b)).toEqual(seqs); // strictly monotonic, in order
     const maxSeq = Math.max(...seqs);
 
-    // Resync from the midpoint: the engine replays ONLY the tail, with no gap and
-    // no duplicate seqs — the reconcile redelivery guarantee.
+    // Resync a FRESH connection from the midpoint: the engine must replay EXACTLY
+    // the tail after the cursor — no more, no less.
     const cursor = seqs[1];
+    const expectedTail = seqs.filter((s) => s > cursor); // e.g. [3, 4]
     const replay = new AgentEventListener(engine.baseUrl.replace(/^http/, 'ws'), recipient);
     await replay.ready();
     replay.resync(cursor);
     const ack = await waitFor(async () => replay.ofType('resync_ack')[0] ?? null, { label: 'resync_ack' });
     expect(ack).toMatchObject({ last_seen_seq: cursor, current_seq: maxSeq, gap_detected: false });
-    const replayed = replay.seqs().filter((s) => s > cursor);
-    expect(new Set(replayed).size).toBe(replayed.length); // no duplicate seqs on replay
-    expect(replayed).toEqual([...replayed].sort((a, b) => a - b)); // monotonic
-    expect(Math.min(...replayed)).toBeGreaterThan(cursor); // strictly after the cursor (no re-delivery of acked)
+
+    // The UNFILTERED replayed dm.received seqs must equal the expected tail exactly,
+    // in order. This fails on BOTH over-delivery (replaying acked history) and
+    // under-delivery (replaying nothing) — the previous filtered check passed both.
+    await waitFor(async () => replay.ofType('dm.received').length >= expectedTail.length, {
+      label: 'tail replayed',
+    });
+    await delay(1_000); // settle so any over-delivery surfaces before asserting
+    const replayedSeqs = replay.ofType('dm.received').map((e) => e.agent_seq as number);
+    expect(replayedSeqs).toEqual(expectedTail);
 
     listener.close();
     replay.close();
@@ -500,7 +514,8 @@ describe.skipIf(!pre.ok)('bounded durable mailbox', () => {
 
   afterAll(async () => {
     await engine?.stop();
-    if (tmpRoot) cleanupTmp(tmpRoot);
+    // Keep tmp (incl. serve.log) in CI so the log-upload step can attach it.
+    if (tmpRoot && !process.env.CI) cleanupTmp(tmpRoot);
   });
 
   it('TTL: an undelivered message dead-letters AND the sender is notified (delivery.failed)', async () => {
