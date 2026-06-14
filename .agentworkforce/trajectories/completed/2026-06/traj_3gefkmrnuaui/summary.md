@@ -18,6 +18,7 @@ Reviewed PR #1129 task-exit spawn changes; applied one mechanical Markdown lint 
 ## Key Decisions
 
 ### Auto-fix malformed Markdown emphasis in tracked trajectory summary
+
 - **Chose:** Auto-fix malformed Markdown emphasis in tracked trajectory summary
 - **Reasoning:** CodeRabbit reported MD037 in a changed Markdown file; replacing malformed tool-token markup with inline code is mechanical and non-semantic.
 
@@ -26,6 +27,7 @@ Reviewed PR #1129 task-exit spawn changes; applied one mechanical Markdown lint 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Auto-fix malformed Markdown emphasis in tracked trajectory summary: Auto-fix malformed Markdown emphasis in tracked trajectory summary
