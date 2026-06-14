@@ -18,10 +18,7 @@ describe('parseToolRef', () => {
 describe('extractToolRefs', () => {
   it('pulls all references from text', () => {
     const text = 'Use mcp__agent-relay__send_dm or mcp__relaycast__message_post here.';
-    expect(extractToolRefs(text)).toEqual([
-      'mcp__agent-relay__send_dm',
-      'mcp__relaycast__message_post',
-    ]);
+    expect(extractToolRefs(text)).toEqual(['mcp__agent-relay__send_dm', 'mcp__relaycast__message_post']);
   });
 });
 
@@ -47,10 +44,7 @@ describe('checkToolNames', () => {
   });
 
   it('dedupes repeated references', () => {
-    const r = checkToolNames(registered, [
-      'mcp__agent-relay__send_dm',
-      'mcp__agent-relay__send_dm',
-    ]);
+    const r = checkToolNames(registered, ['mcp__agent-relay__send_dm', 'mcp__agent-relay__send_dm']);
     expect(r.referenced).toHaveLength(1);
   });
 });

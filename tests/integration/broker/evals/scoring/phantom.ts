@@ -50,7 +50,8 @@ const INTENT_PATTERNS: IntentPattern[] = [
 ];
 
 /** Negations immediately before a comm verb that cancel the intent. */
-const NEGATION_BEFORE = /\b(?:without|not|never|don'?t|do not|didn'?t|avoid|instead of|rather than|no need to)\s*$/i;
+const NEGATION_BEFORE =
+  /\b(?:without|not|never|don'?t|do not|didn'?t|avoid|instead of|rather than|no need to)\s*$/i;
 
 /** Words that follow a comm verb but are not real targets (filtered out). */
 const TARGET_STOPWORDS = new Set([
@@ -95,7 +96,10 @@ export function detectIntents(cleanText: string): IntentSpan[] {
       const verb = m[verbGroup]?.toLowerCase() ?? '';
       const target = targetGroup ? normalizeTarget(m[targetGroup]) : undefined;
       const start = Math.max(0, m.index - 10);
-      const snippet = cleanText.slice(start, m.index + m[0].length + 30).replace(/\s+/g, ' ').trim();
+      const snippet = cleanText
+        .slice(start, m.index + m[0].length + 30)
+        .replace(/\s+/g, ' ')
+        .trim();
       spans.push({ verb, target, offset: m.index, snippet });
     }
   }
@@ -146,9 +150,7 @@ export function detectPhantomsForAgent(events: BrokerEvent[], agent: string): Ph
   for (const intent of intents) {
     let matchIdx = -1;
     if (intent.target) {
-      matchIdx = sends.findIndex(
-        (s, i) => !consumed[i] && normalizeTarget(s.target) === intent.target
-      );
+      matchIdx = sends.findIndex((s, i) => !consumed[i] && normalizeTarget(s.target) === intent.target);
     }
     if (matchIdx === -1) {
       matchIdx = sends.findIndex((_, i) => !consumed[i]);

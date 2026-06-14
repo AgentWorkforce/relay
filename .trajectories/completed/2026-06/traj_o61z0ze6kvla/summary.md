@@ -18,6 +18,7 @@ Fixed eval parser, runner, summary, executor, and relay-check issues for PR #109
 ## Key Decisions
 
 ### Kept fixes scoped to relay eval harness
+
 - **Chose:** Kept fixes scoped to relay eval harness
 - **Reasoning:** Validated current PR comments and changed only PR eval scripts/checks; full repo verification is blocked by killed npm ci leaving missing dependencies.
 
@@ -26,6 +27,7 @@ Fixed eval parser, runner, summary, executor, and relay-check issues for PR #109
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Kept fixes scoped to relay eval harness: Kept fixes scoped to relay eval harness

@@ -37,9 +37,5 @@ export interface BrokerHarness {
 
   clearEvents(): void;
 
-  waitForEvent(
-    kind: string,
-    timeoutMs?: number,
-    predicate?: (event: BrokerEvent) => boolean
-  ): EventWaiter;
+  waitForEvent(kind: string, timeoutMs?: number, predicate?: (event: BrokerEvent) => boolean): EventWaiter;
 }

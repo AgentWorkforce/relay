@@ -9,6 +9,7 @@
 ## 1. Problem
 
 Today a user spawning a multi-agent team must manually decide:
+
 - Which model to use as lead (haiku / sonnet / opus)
 - How many workers to spawn
 - What model tier each worker should be
@@ -24,13 +25,14 @@ The lifecycle eval suite (s01–s04) across haiku / sonnet / opus produces a cle
 
 ### Lead quality (s03 full lifecycle — spawn + coordinate + release)
 
-| model | bare | one-liner | brief | skill | verdict |
-|-------|------|-----------|-------|-------|---------|
-| haiku | 60% | 60% | 20% | 40% | **weak lead** — inconsistent, better as worker |
-| sonnet | 40% | **100%** | 60% | 80% | **strong lead** — reliable with minimal onboarding |
-| opus | **67%** | **67%** | **0%** | **67%** | **capable lead** — all variants 67% after timeout fix EXCEPT brief (conditional clause causes 0%); fixed in codebase |
+| model  | bare    | one-liner | brief  | skill   | verdict                                                                                                              |
+| ------ | ------- | --------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| haiku  | 60%     | 60%       | 20%    | 40%     | **weak lead** — inconsistent, better as worker                                                                       |
+| sonnet | 40%     | **100%**  | 60%    | 80%     | **strong lead** — reliable with minimal onboarding                                                                   |
+| opus   | **67%** | **67%**   | **0%** | **67%** | **capable lead** — all variants 67% after timeout fix EXCEPT brief (conditional clause causes 0%); fixed in codebase |
 
 ### Key findings — Claude models
+
 - **Sonnet + one-liner = 100% lifecycle reliability** ✅ — confirmed production lead config
 - **Haiku is worker-only** — caps at 60% lifecycle regardless of onboarding
 - **Opus s02 bare = 100%** — knows the protocol natively; s03 original 40% cap was a timeout artifact (verbose responses exhausted 60s/phase window), not a capability gap
@@ -44,49 +46,50 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 
 #### s01 — spawn only
 
-| harness | bare | one-liner | brief | skill |
-|---------|------|-----------|-------|-------|
-| codex | 100% | 100% | 100% | 100% |
-| gemini | 100% | 100% | 100% | 100% |
-| droid | 80% | 100% | 100% | 100% |
-| opencode:mimo | 80% | 100% | 40% | 80% |
-| grok | 0% | 0% | 0% | 0% |
-| cursor | 0% | 0% | 0% | 0% |
+| harness       | bare | one-liner | brief | skill |
+| ------------- | ---- | --------- | ----- | ----- |
+| codex         | 100% | 100%      | 100%  | 100%  |
+| gemini        | 100% | 100%      | 100%  | 100%  |
+| droid         | 80%  | 100%      | 100%  | 100%  |
+| opencode:mimo | 80%  | 100%      | 40%   | 80%   |
+| grok          | 0%   | 0%        | 0%    | 0%    |
+| cursor        | 0%   | 0%        | 0%    | 0%    |
 
 #### s02 — spawn + release (after injected DONE)
 
-| harness | bare | one-liner | brief | skill |
-|---------|------|-----------|-------|-------|
-| codex | 100% | 100% | 100% | 100% |
-| gemini | 20% | 60% | 80% | 100% |
-| droid | 20% | 20% | 0% | 0% |
-| opencode:mimo | 80% | 100% | 60% | 80% |
-| grok | 0% | 0% | 0% | 0% |
-| cursor | 0% | 0% | 0% | 0% |
+| harness       | bare | one-liner | brief | skill |
+| ------------- | ---- | --------- | ----- | ----- |
+| codex         | 100% | 100%      | 100%  | 100%  |
+| gemini        | 20%  | 60%       | 80%   | 100%  |
+| droid         | 20%  | 20%       | 0%    | 0%    |
+| opencode:mimo | 80%  | 100%      | 60%   | 80%   |
+| grok          | 0%   | 0%        | 0%    | 0%    |
+| cursor        | 0%   | 0%        | 0%    | 0%    |
 
 #### s03 — full spawn → DONE → release lifecycle
 
-| harness | bare | one-liner | brief | skill |
-|---------|------|-----------|-------|-------|
-| codex | 80% | **100%** | **100%** | **100%** |
-| opencode:mimo | **100%** | 80% | 60% | **100%** |
-| droid | **100%** | **100%** | **100%** | 0% |
-| gemini | 60% | **100%** | **100%** | **100%** |
-| grok | 0% | 0% | 0% | 0% |
-| cursor | 0% | 0% | 0% | 0% |
+| harness       | bare     | one-liner | brief    | skill    |
+| ------------- | -------- | --------- | -------- | -------- |
+| codex         | 80%      | **100%**  | **100%** | **100%** |
+| opencode:mimo | **100%** | 80%       | 60%      | **100%** |
+| droid         | **100%** | **100%**  | **100%** | 0%       |
+| gemini        | 60%      | **100%**  | **100%** | **100%** |
+| grok          | 0%       | 0%        | 0%       | 0%       |
+| cursor        | 0%       | 0%        | 0%       | 0%       |
 
 #### s04 — no native subagents (spawn must use relay, not built-in Task tool)
 
-| harness | bare | one-liner | brief | skill |
-|---------|------|-----------|-------|-------|
-| codex | **100%** | **100%** | **100%** | **100%** |
-| opencode:mimo | 80% | **100%** | **100%** | 80% |
-| droid | 0% | 0% | — | — |
-| gemini | 80% | 60% | 80% | **100%** |
-| grok | 0% | 0% | 0% | 0% |
-| cursor | 0% | 0% | 0% | 0% |
+| harness       | bare     | one-liner | brief    | skill    |
+| ------------- | -------- | --------- | -------- | -------- |
+| codex         | **100%** | **100%**  | **100%** | **100%** |
+| opencode:mimo | 80%      | **100%**  | **100%** | 80%      |
+| droid         | 0%       | 0%        | —        | —        |
+| gemini        | 80%      | 60%       | 80%      | **100%** |
+| grok          | 0%       | 0%        | 0%       | 0%       |
+| cursor        | 0%       | 0%        | 0%       | 0%       |
 
 **Key lifecycle findings:**
+
 - **Codex**: 100% on all s01/s02/s04 variants; s03 bare=80%, one-liner/brief/skill=100%. Most reliable non-Claude harness — never routes to native subagents (s04=100% all variants).
 - **Droid**: s03 bare/one-liner/brief all 100%, but s03 skill=0% (skill text confuses droid) and s04 bare/one-liner=0% (droid uses native Task tool, not relay, without explicit tool disambiguation). Droid is a strong lifecycle performer but will silently route to native subagents without the skill onboarding that disambiguates `add_agent` from `Task`.
 - **Gemini**: s04 bare=80%, one-liner=60%, brief/skill=80%+. Mostly relay-native but with occasional fallback to native subagents.
@@ -99,19 +102,20 @@ All onboarding variants × 5 runs each. Percentages = pass rate.
 
 ### Non-Claude phrasing results (s05 — bare onboarding only; 5 runs each, all complete)
 
-| harness | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
-|---------|----------------|---------------|--------------|-------------|------------|-----------|
-| codex | **100%** | **100%** | **100%** | **80%** | **100%** | **100%** |
-| opencode:mimo | **100%** | 80% | **100%** | **100%** | **100%** | **100%** |
-| droid | 80% | **100%** | **100%** | 80% | 80% | **100%** |
-| gemini | 60% | **100%** | 80% | 40% | 80% | **100%** |
-| grok | 0% | 0% | 0% | 0% | — | — |
-| cursor | 0% | 0% | 0% | 0% | — | — |
-| claude haiku | 0% | 20% | 60% | 20% | 60% | 40% |
-| claude sonnet | 0% | 0% | 0% | 0% | 40% | 40% |
-| claude opus | 60% | 20% | **100%** | **100%** | **100%** | **100%** |
+| harness       | neutral-worker | neutral-agent | relay-worker | relay-agent | arw-worker | arw-agent |
+| ------------- | -------------- | ------------- | ------------ | ----------- | ---------- | --------- |
+| codex         | **100%**       | **100%**      | **100%**     | **80%**     | **100%**   | **100%**  |
+| opencode:mimo | **100%**       | 80%           | **100%**     | **100%**    | **100%**   | **100%**  |
+| droid         | 80%            | **100%**      | **100%**     | 80%         | 80%        | **100%**  |
+| gemini        | 60%            | **100%**      | 80%          | 40%         | 80%        | **100%**  |
+| grok          | 0%             | 0%            | 0%           | 0%          | —          | —         |
+| cursor        | 0%             | 0%            | 0%           | 0%          | —          | —         |
+| claude haiku  | 0%             | 20%           | 60%          | 20%         | 60%        | 40%       |
+| claude sonnet | 0%             | 0%            | 0%           | 0%          | 40%        | 40%       |
+| claude opus   | 60%            | 20%           | **100%**     | **100%**    | **100%**   | **100%**  |
 
 **Key cross-harness insights**:
+
 - Codex and OpenCode natively understand relay tools across all vocabulary variants (relay-native).
 - Droid: "relay worker" (100%) and "neutral-agent"/"arw-agent" (100%) are tops; "arw-worker" (80%) slightly weaker.
 - Gemini: "neutral-agent" and "arw-agent" both score 100%; "relay-agent" specifically hurts (40%). The "relay" prefix combined with "-agent" suffix confuses Gemini. "relay-worker" (80%) is safe. Director prompt uses "relay worker" — correct choice.
@@ -151,10 +155,10 @@ A single lightweight LLM call (haiku-class, <200ms, ~$0.001) that returns a stru
 interface TaskAssessment {
   complexity: 'low' | 'medium' | 'high';
   parallelizable: boolean;
-  subtasks: string[];          // inferred decomposition
-  domains: string[];           // e.g. ["backend", "testing", "security"]
-  estimatedWorkers: number;    // 1–8
-  reasoning: string;           // short explanation for transparency
+  subtasks: string[]; // inferred decomposition
+  domains: string[]; // e.g. ["backend", "testing", "security"]
+  estimatedWorkers: number; // 1–8
+  reasoning: string; // short explanation for transparency
 }
 ```
 
@@ -202,12 +206,14 @@ complexity=high, parallel=any    →  lead: opus/bare,         workers: [sonnet�
 ```
 
 **Why bare/one-liner for leads (never brief/skill):**
+
 - Conditional spawn guidance ("Spawn when... dedicated focus") gives capable models permission to skip delegation and reduces spawn rate to 0%. Validated: opus s03 brief=0% vs bare=67%, one-liner=67%.
 - Directive language (just name the tool, no conditions) works best for sonnet/opus.
 - Only haiku workers benefit from skill-level onboarding (they lack native protocol knowledge).
 - Note: skill variant with disambiguation clause ("if task explicitly asks to delegate, always spawn") improves results but still underperforms bare/one-liner for capable models.
 
 **Key invariants:**
+
 - Lead is always sonnet or opus — haiku is never lead
 - Opus lead only fires for `complexity=high` — it's the right tool but costs more
 - Worker model matches subtask complexity, not overall task complexity
@@ -217,7 +223,7 @@ complexity=high, parallel=any    →  lead: opus/bare,         workers: [sonnet�
 
 ### 3.4 Director Meta-Prompt
 
-The lead is not asked to *decide* the team — the routing has already done that. The meta-prompt tells the lead *what team it has* and *what each worker's job is*:
+The lead is not asked to _decide_ the team — the routing has already done that. The meta-prompt tells the lead _what team it has_ and _what each worker's job is_:
 
 ```
 You are Director, leading a {N}-worker team on this task:
@@ -239,6 +245,7 @@ This is critical: pre-composing the team means the lead's job is coordination, n
 ### 3.5 Onboarding injection per tier
 
 The broker's model-aware injection (already implemented in `crates/broker/src/runtime/api.rs`) handles workers automatically:
+
 - haiku workers → `SMALL_MODEL_RELAY_SKILL` prepended to task (broker-side injection)
 - sonnet/opus workers → no injection needed
 
@@ -253,7 +260,7 @@ The lead gets the `one-liner` or `bare` onboarding baked into the meta-prompt �
 **File**: `packages/cli/src/auto/classifier.ts`
 
 ```typescript
-export async function classifyTask(task: string): Promise<TaskAssessment>
+export async function classifyTask(task: string): Promise<TaskAssessment>;
 ```
 
 - Uses the configured default model (haiku-class) via the existing harness driver
@@ -265,7 +272,7 @@ export async function classifyTask(task: string): Promise<TaskAssessment>
 **File**: `packages/cli/src/auto/composer.ts`
 
 ```typescript
-export function composeTeam(assessment: TaskAssessment): TeamSpec
+export function composeTeam(assessment: TaskAssessment): TeamSpec;
 ```
 
 - Pure routing table lookup — no LLM call
@@ -277,7 +284,7 @@ export function composeTeam(assessment: TaskAssessment): TeamSpec
 **File**: `packages/cli/src/auto/director-prompt.ts`
 
 ```typescript
-export function buildDirectorPrompt(task: string, team: TeamSpec): string
+export function buildDirectorPrompt(task: string, team: TeamSpec): string;
 ```
 
 - Templates the meta-prompt with the team spec
@@ -313,61 +320,61 @@ This requires mapping each tested harness to the roles it can reliably fill.
 
 ### Role definitions (relevant subset)
 
-| Role | Requirements | Interactive? |
-|------|-------------|-------------|
-| `lead` | Orchestrates, DMs workers, aggregates, releases all | yes |
-| `coordinator` | Mid-level lead; manages sub-teams | yes |
-| `worker` | Executes one bounded task, self-reports DONE, self-releases | yes or no |
-| `planner` | Produces structured plan (JSON/markdown), no coordination needed | no (one-shot) |
-| `reviewer`/`critic` | Receives output, produces structured verdict with pass/fail | no (one-shot) |
-| `verifier` | Checks evidence, gates on condition | no (one-shot) |
-| `judge` | Adjudicates between competing outputs | no (one-shot) |
-| `mapper` | Processes one item from a list (fan-out leaf) | no (one-shot) |
-| `reducer` | Aggregates mapper outputs into one result | no (one-shot) |
-| `debater` | Argues a position in multi-turn adversarial exchange | yes |
+| Role                | Requirements                                                     | Interactive?  |
+| ------------------- | ---------------------------------------------------------------- | ------------- |
+| `lead`              | Orchestrates, DMs workers, aggregates, releases all              | yes           |
+| `coordinator`       | Mid-level lead; manages sub-teams                                | yes           |
+| `worker`            | Executes one bounded task, self-reports DONE, self-releases      | yes or no     |
+| `planner`           | Produces structured plan (JSON/markdown), no coordination needed | no (one-shot) |
+| `reviewer`/`critic` | Receives output, produces structured verdict with pass/fail      | no (one-shot) |
+| `verifier`          | Checks evidence, gates on condition                              | no (one-shot) |
+| `judge`             | Adjudicates between competing outputs                            | no (one-shot) |
+| `mapper`            | Processes one item from a list (fan-out leaf)                    | no (one-shot) |
+| `reducer`           | Aggregates mapper outputs into one result                        | no (one-shot) |
+| `debater`           | Argues a position in multi-turn adversarial exchange             | yes           |
 
 ### Mapping eval signals → roles
 
 What each eval scenario proves about role fitness:
 
-| Signal | Role(s) it confirms |
-|--------|-------------------|
-| s01 pass | `worker` (spawn capable) |
-| s02 pass | `worker` with self-release |
-| s03 pass | `worker`, `planner` (non-interactive), `mapper`, `reducer` |
-| s04 pass (relay-native) | Safe for any role that involves spawning sub-agents |
+| Signal                          | Role(s) it confirms                                                        |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| s01 pass                        | `worker` (spawn capable)                                                   |
+| s02 pass                        | `worker` with self-release                                                 |
+| s03 pass                        | `worker`, `planner` (non-interactive), `mapper`, `reducer`                 |
+| s04 pass (relay-native)         | Safe for any role that involves spawning sub-agents                        |
 | s03 + s04 pass + one-liner/bare | `reviewer`, `critic`, `verifier`, `judge` (high reliability, relay-native) |
-| s03 + s04 all variants | `coordinator` candidate (pending multi-DM test) |
-| Lead eval (future s07) | `lead` (multi-spawn + coordinate + aggregate confirmed) |
+| s03 + s04 all variants          | `coordinator` candidate (pending multi-DM test)                            |
+| Lead eval (future s07)          | `lead` (multi-spawn + coordinate + aggregate confirmed)                    |
 
 **Note on `lead` role**: s06 confirmed no single PTY agent can multi-spawn. The production solution
-is CLI-layer pre-spawn (Phase 4). So the `lead` role in practice becomes *coordinator of a
-pre-formed team* — not responsible for spawning. Any model that passes s03+s04 at ≥80% is a
+is CLI-layer pre-spawn (Phase 4). So the `lead` role in practice becomes _coordinator of a
+pre-formed team_ — not responsible for spawning. Any model that passes s03+s04 at ≥80% is a
 viable lead candidate for this coordinator-style role.
 
 ### Provisional role-fit table (from eval data — updated 2026-06-12)
 
 Models are listed as `harness[:model]`. Role fitness levels: ✓ confirmed · ~ provisional · ✗ not viable · ? untested.
 
-| Harness | worker | coordinator/lead | planner | reviewer | mapper | reducer |
-|---------|--------|-----------------|---------|----------|--------|---------|
-| codex:gpt-5.5 | ✓ | ✓ (s03/s04 100%) | ✓ | ✓ | ✓ | ✓ |
-| codex:gpt-5.4-mini | ✓ | ~ (s03 94%, phantom 31%) | ✓ | ~ | ✓ | ✓ |
-| codex:gpt-5.4 | ~ (52% phantom) | ✗ (noisy) | ~ | ✗ | ~ | ~ |
-| codex:gpt-5.3-codex-spark | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| opencode:mimo-v2.5-free | ✓ | ~ | ✓ | ~ | ✓ | ✓ |
-| claude:sonnet | ✓ (one-liner) | ✓ (one-liner=100%) | ✓ | ✓ | ✓ | ✓ |
-| claude:opus | ✓ | ✓ (67% bare) | ✓ | ✓ | ✓ | ✓ |
-| claude:haiku | ~ (worker-only) | ✗ | ~ | ~ | ✓ | ~ |
-| gemini | ✓ (one-liner) | ~ | ✓ | ~ | ✓ | ✓ |
-| droid | ✓ (bare/one-liner) | ✗ (s04=0%) | ✓ | ~ | ✓ (leaf only) | ✓ |
-| grok | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| cursor-agent | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| opencode:deepseek-* | ? | ? | ? | ? | ? | ? |
-| opencode:kimi-* | ? | ? | ? | ? | ? | ? |
-| opencode:qwen-* | ? | ? | ? | ? | ? | ? |
-| opencode:minimax-* | ? | ? | ? | ? | ? | ? |
-| opencode:glm-* | ? | ? | ? | ? | ? | ? |
+| Harness                   | worker             | coordinator/lead         | planner | reviewer | mapper        | reducer |
+| ------------------------- | ------------------ | ------------------------ | ------- | -------- | ------------- | ------- |
+| codex:gpt-5.5             | ✓                  | ✓ (s03/s04 100%)         | ✓       | ✓        | ✓             | ✓       |
+| codex:gpt-5.4-mini        | ✓                  | ~ (s03 94%, phantom 31%) | ✓       | ~        | ✓             | ✓       |
+| codex:gpt-5.4             | ~ (52% phantom)    | ✗ (noisy)                | ~       | ✗        | ~             | ~       |
+| codex:gpt-5.3-codex-spark | ✗                  | ✗                        | ✗       | ✗        | ✗             | ✗       |
+| opencode:mimo-v2.5-free   | ✓                  | ~                        | ✓       | ~        | ✓             | ✓       |
+| claude:sonnet             | ✓ (one-liner)      | ✓ (one-liner=100%)       | ✓       | ✓        | ✓             | ✓       |
+| claude:opus               | ✓                  | ✓ (67% bare)             | ✓       | ✓        | ✓             | ✓       |
+| claude:haiku              | ~ (worker-only)    | ✗                        | ~       | ~        | ✓             | ~       |
+| gemini                    | ✓ (one-liner)      | ~                        | ✓       | ~        | ✓             | ✓       |
+| droid                     | ✓ (bare/one-liner) | ✗ (s04=0%)               | ✓       | ~        | ✓ (leaf only) | ✓       |
+| grok                      | ✗                  | ✗                        | ✗       | ✗        | ✗             | ✗       |
+| cursor-agent              | ✗                  | ✗                        | ✗       | ✗        | ✗             | ✗       |
+| opencode:deepseek-\*      | ?                  | ?                        | ?       | ?        | ?             | ?       |
+| opencode:kimi-\*          | ?                  | ?                        | ?       | ?        | ?             | ?       |
+| opencode:qwen-\*          | ?                  | ?                        | ?       | ?        | ?             | ?       |
+| opencode:minimax-\*       | ?                  | ?                        | ?       | ?        | ?             | ?       |
+| opencode:glm-\*           | ?                  | ?                        | ?       | ?        | ?             | ?       |
 
 The `?` rows will be filled from the opencode Phase 1+2 batch eval. An s03+s04 pass
 promotes a model from `?` to `~` for `worker`/`planner`/`mapper`; `~` becomes `✓` after
@@ -377,22 +384,22 @@ promotes a model from `?` to `~` for `worker`/`planner`/`mapper`; `~` becomes `�
 
 How the composer will pick harnesses for a given pattern:
 
-| Pattern | Roles needed | Default harness assignment |
-|---------|-------------|--------------------------|
-| fan-out | lead + N workers | lead=claude:sonnet, workers=codex:gpt-5.5 |
-| pipeline | N workers (sequential) | codex:gpt-5.5 (interactive:false for non-final stages) |
-| hub-spoke | lead + N workers | lead=claude:sonnet, workers=codex:gpt-5.5 |
-| dag | N workers (mixed deps) | codex:gpt-5.5 (interactive:false where possible) |
-| review-loop | implementer + 2+ reviewers | implementer=codex:gpt-5.5, reviewers=claude:sonnet |
-| cascade | haiku → sonnet → opus | claude:haiku / claude:sonnet / claude:opus |
-| map-reduce | N mappers + 1 reducer | mappers=codex:gpt-5.5 (interactive:false), reducer=claude:sonnet |
-| reflection | producer + critic | producer=codex:gpt-5.5, critic=claude:sonnet |
-| consensus | N reviewers + judge | reviewers=claude:sonnet, judge=claude:opus |
-| debate | 2 debaters + judge | debaters=claude:sonnet, judge=claude:opus |
-| competitive | N independent implementers | codex:gpt-5.5 × N |
-| supervisor | supervisor + N workers | supervisor=claude:sonnet, workers=codex:gpt-5.5 |
-| circuit-breaker | primary + fallback | primary=codex:gpt-5.5, fallback=claude:sonnet |
-| red-team | attacker + defender | both=claude:sonnet (adversarial capable) |
+| Pattern         | Roles needed               | Default harness assignment                                       |
+| --------------- | -------------------------- | ---------------------------------------------------------------- |
+| fan-out         | lead + N workers           | lead=claude:sonnet, workers=codex:gpt-5.5                        |
+| pipeline        | N workers (sequential)     | codex:gpt-5.5 (interactive:false for non-final stages)           |
+| hub-spoke       | lead + N workers           | lead=claude:sonnet, workers=codex:gpt-5.5                        |
+| dag             | N workers (mixed deps)     | codex:gpt-5.5 (interactive:false where possible)                 |
+| review-loop     | implementer + 2+ reviewers | implementer=codex:gpt-5.5, reviewers=claude:sonnet               |
+| cascade         | haiku → sonnet → opus      | claude:haiku / claude:sonnet / claude:opus                       |
+| map-reduce      | N mappers + 1 reducer      | mappers=codex:gpt-5.5 (interactive:false), reducer=claude:sonnet |
+| reflection      | producer + critic          | producer=codex:gpt-5.5, critic=claude:sonnet                     |
+| consensus       | N reviewers + judge        | reviewers=claude:sonnet, judge=claude:opus                       |
+| debate          | 2 debaters + judge         | debaters=claude:sonnet, judge=claude:opus                        |
+| competitive     | N independent implementers | codex:gpt-5.5 × N                                                |
+| supervisor      | supervisor + N workers     | supervisor=claude:sonnet, workers=codex:gpt-5.5                  |
+| circuit-breaker | primary + fallback         | primary=codex:gpt-5.5, fallback=claude:sonnet                    |
+| red-team        | attacker + defender        | both=claude:sonnet (adversarial capable)                         |
 
 Once opencode Chinese/alternative model evals complete, high-scoring models will be added as
 viable alternatives — especially for `worker`, `planner`, `mapper`, and `reducer` roles where
@@ -402,28 +409,28 @@ relay-nativeness and reliability matter most.
 
 The current s01–s06 suite tests `worker` and basic lifecycle. These additional scenarios are needed:
 
-| Scenario | Tests | Role confirmed |
-|----------|-------|---------------|
-| s07-reviewer | Receive code diff, output structured pass/fail verdict | `reviewer`, `critic`, `verifier` |
-| s08-planner | Receive task, output JSON plan with subtasks and domains | `planner` |
-| s09-judge | Receive 2 competing outputs, pick winner with reasoning | `judge`, `adjudicator` |
-| s10-mapper | Receive one list item, transform it, return result | `mapper` (interactive:false) |
-| s11-reducer | Receive N outputs, aggregate into one | `reducer` |
+| Scenario     | Tests                                                    | Role confirmed                   |
+| ------------ | -------------------------------------------------------- | -------------------------------- |
+| s07-reviewer | Receive code diff, output structured pass/fail verdict   | `reviewer`, `critic`, `verifier` |
+| s08-planner  | Receive task, output JSON plan with subtasks and domains | `planner`                        |
+| s09-judge    | Receive 2 competing outputs, pick winner with reasoning  | `judge`, `adjudicator`           |
+| s10-mapper   | Receive one list item, transform it, return result       | `mapper` (interactive:false)     |
+| s11-reducer  | Receive N outputs, aggregate into one                    | `reducer`                        |
 
 ---
 
 ## 6. What the eval suite still needs to answer
 
-| Question | Status | Answer |
-|----------|--------|--------|
-| Does relay-anchored phrasing ("relay worker") improve bare spawn? | ✅ done | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are largely vocabulary-agnostic (codex 100% on all tested variants) |
-| Do non-Claude harnesses need relay-anchored vocabulary? | ✅ done | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific. Note: "relay-agent" specifically hurts gemini (40%) |
-| What is opus's s03 lifecycle score with timeout fix? | ✅ done | bare=67% (up from 40%); one-liner+ running in Claude phrasing batch |
-| Does the Director meta-prompt reliably produce multi-worker spawns? | ✅ done | **0% across all harnesses**. Root cause: PTY-mode agents make ONE add_agent call per turn then stop/wait for input — no prompt instruction chains two back-to-back add_agent calls. Production solution: pre-spawn workers in the CLI orchestrator layer (Phase 4), not in the Director. Director coordinates pre-spawned workers rather than spawning them. |
-| Is the one-liner sufficient for sonnet as lead? | ✅ done | yes — 100% on s03 |
-| Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval | pending |
-| Is opus s03 really timeout-limited? | needs s03 with 300s timeout | pending |
-| Which non-Claude harnesses can serve as relay workers? | ✅ done | codex (100% s03), opencode (100% s03:bare), droid (100% s03:bare), gemini (100% s03:one-liner); grok/cursor not viable |
+| Question                                                              | Status                      | Answer                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Does relay-anchored phrasing ("relay worker") improve bare spawn?     | ✅ done                     | **yes for Claude** — haiku relay-worker=60% vs neutral-worker=0%; non-Claude models are largely vocabulary-agnostic (codex 100% on all tested variants)                                                                                                                                                                                                      |
+| Do non-Claude harnesses need relay-anchored vocabulary?               | ✅ done                     | **no** — codex/droid/gemini/opencode achieve high pass rates with neutral vocabulary; effect is Claude-specific. Note: "relay-agent" specifically hurts gemini (40%)                                                                                                                                                                                         |
+| What is opus's s03 lifecycle score with timeout fix?                  | ✅ done                     | bare=67% (up from 40%); one-liner+ running in Claude phrasing batch                                                                                                                                                                                                                                                                                          |
+| Does the Director meta-prompt reliably produce multi-worker spawns?   | ✅ done                     | **0% across all harnesses**. Root cause: PTY-mode agents make ONE add_agent call per turn then stop/wait for input — no prompt instruction chains two back-to-back add_agent calls. Production solution: pre-spawn workers in the CLI orchestrator layer (Phase 4), not in the Director. Director coordinates pre-spawned workers rather than spawning them. |
+| Is the one-liner sufficient for sonnet as lead?                       | ✅ done                     | yes — 100% on s03                                                                                                                                                                                                                                                                                                                                            |
+| Does haiku-as-worker with skill injection complete subtasks reliably? | needs worker-quality eval   | pending                                                                                                                                                                                                                                                                                                                                                      |
+| Is opus s03 really timeout-limited?                                   | needs s03 with 300s timeout | pending                                                                                                                                                                                                                                                                                                                                                      |
+| Which non-Claude harnesses can serve as relay workers?                | ✅ done                     | codex (100% s03), opencode (100% s03:bare), droid (100% s03:bare), gemini (100% s03:one-liner); grok/cursor not viable                                                                                                                                                                                                                                       |
 
 ---
 
@@ -433,13 +440,13 @@ The current s01–s06 suite tests `worker` and basic lifecycle. These additional
 
 2. **Classifier model cost trade-off**: haiku classifier call adds latency and cost. Is there a heuristic (task word count, presence of "and", number of domains) that can route without an LLM call for simple cases?
 
-2. **Worker specialisation**: today workers get a task description. Should the team composer also inject domain-specific skill text (e.g. "you are a security auditor" for a security subtask)?
+3. **Worker specialisation**: today workers get a task description. Should the team composer also inject domain-specific skill text (e.g. "you are a security auditor" for a security subtask)?
 
-3. **Routing table update loop**: as eval data improves, the routing table should update. Should it be hardcoded, a JSON config, or learned from eval pass rates?
+4. **Routing table update loop**: as eval data improves, the routing table should update. Should it be hardcoded, a JSON config, or learned from eval pass rates?
 
-4. **Cost transparency**: user should see the estimated team cost before confirmation. `--dry-run` flag shows team spec without spawning.
+5. **Cost transparency**: user should see the estimated team cost before confirmation. `--dry-run` flag shows team spec without spawning.
 
-5. **Team size cap**: 6 workers is a conservative default. Should this be per-workspace config?
+6. **Team size cap**: 6 workers is a conservative default. Should this be per-workspace config?
 
 ---
 

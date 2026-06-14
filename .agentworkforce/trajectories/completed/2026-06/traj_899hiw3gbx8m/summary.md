@@ -18,70 +18,87 @@ Completed comprehensive multi-harness eval suite across all 7 harness types. All
 ## Key Decisions
 
 ### Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation
+
 - **Chose:** Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation
 - **Reasoning:** specs/fleet-delivery.md precedent; the docs-sync rule is for user docs only; auto-routing is pre-ship internal design
 
 ### Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex
+
 - **Chose:** Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex
 - **Reasoning:** s03 lifecycle scores: haiku best=60% (bare/one-liner), sonnet best=100% (one-liner), opus bare=60% already — capability gradient is empirical not assumed
 
 ### Director meta-prompt pre-composes the team rather than asking the lead to plan it
+
 - **Chose:** Director meta-prompt pre-composes the team rather than asking the lead to plan it
 - **Reasoning:** eval data shows sonnet/opus are reliable coordinators when told what to do, but unreliable planners when asked to decide team makeup from scratch; pre-composition separates routing from execution
 
 ### Haiku is never a lead — worker-only tier
+
 - **Chose:** Haiku is never a lead — worker-only tier
 - **Reasoning:** s03 lifecycle caps at 60% even with best onboarding variant; sonnet one-liner hits 100%; deploying haiku as lead would make team orchestration unreliable by design
 
 ### Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid
+
 - **Chose:** Added dedicated lifecycle + phrasing eval scripts for every installed non-claude harness: codex, gemini, grok, cursor, droid
 - **Reasoning:** these CLIs were installed but never had lifecycle eval coverage; only claude had been tested; gap discovered by checking evals-reports directory and which/command-v for each harness
 
 ### Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle)
+
 - **Chose:** Sonnet + one-liner is the confirmed production lead configuration (100% s03 lifecycle)
 - **Reasoning:** b3oqx02zv complete: sonnet:one-liner = 5/5 on s03 full lifecycle; all other model/variant combos are lower or volatile
 
 ### Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead
+
 - **Chose:** Opus s03 timeout issue: skill=0%, others=40% — s03 timeoutMs needs increase for opus before it can be evaluated as lead
 - **Reasoning:** opus s02 bare=100% proves it knows release; s03 caps at 40% across bare/one-liner/brief and collapses to 0% with skill — opus verbose responses exhaust the 150s window leaving no time for DONE→release
 
 ### relay-worker vocabulary in task prompt is most effective phrasing for haiku
+
 - **Chose:** relay-worker vocabulary in task prompt is most effective phrasing for haiku
 - **Reasoning:** s05 phrasing eval: haiku neutral-worker=0%, neutral-agent=20%, relay-worker=60% (3/5) with bare onboarding. The 'relay worker' phrasing appears to disambiguate from native Task tool for haiku even without explicit tool guidance in onboarding.
 
 ### skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability
+
 - **Chose:** skill text fix alone insufficient — task vocabulary is the bigger lever for spawn reliability
 - **Reasoning:** sonnet s01 skill improved from 0% to 33% after skill text heuristic fix. But still fails 2/3. The task uses 'worker agent' neutral vocabulary which maps poorly to relay add_agent. s05 phrasing shows relay-worker=60% vs neutral-agent=20% for haiku. Fix needed: update s01/s03 task text to use 'relay worker' instead of 'worker agent'.
 
 ### brief onboarding variant crushes opus — conditional spawn guidance hurts capable models
+
 - **Chose:** brief onboarding variant crushes opus — conditional spawn guidance hurts capable models
 - **Reasoning:** opus s03 with timeout fix: bare=67%, one-liner=67%, brief=0%. The brief text adds 'Spawn when a task needs dedicated focus' — opus interprets this as permission to evaluate whether delegation is truly needed, then decides no. Same pattern as old skill text. For capable models, directive language (just name the tool) works better than conditional language (tell them when to spawn). Fix: onboarding for opus/sonnet should be bare or one-liner only.
 
 ### opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn'
+
 - **Chose:** opus s03 skill text fix confirmed: 0%→67% with 'if task explicitly asks to delegate, always spawn'
 - **Reasoning:** s03 opus with timeout fix: bare=67%, one-liner=67%, brief=0% (conditional clause), skill=67% (up from 0%). The skill text fix works for opus as well as sonnet. Brief=0% is a NEW failure from the conditional 'Spawn when dedicated focus' clause — fixed in latest commit to use directive language instead.
 
 ### Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode
+
 - **Chose:** Run all evals across full harness matrix: claude (haiku/sonnet/opus), codex, gemini, grok, cursor, droid, opencode
 - **Reasoning:** User requirement: evals must cover all harnesses not just Claude. grok required a broker fix (NAME-first arg order + flag-args embedded in command string). All harnesses now running lifecycle + phrasing evals.
 
 ### Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.
+
 - **Chose:** Confirmed 'relay worker' noun as the universal best vocabulary — outperforms alternatives for both Claude (haiku: 60% vs neutral: 0%) and non-Claude models (droid: relay-worker=100% vs neutral-worker=80%; gemini: relay-agent=40% vs relay-worker=80%). Production Director prompt uses 'relay worker' — validated.
 - **Reasoning:** s05 phrasing eval complete for codex, opencode, haiku, sonnet + partial droid/gemini. Relay-agent specifically hurts Gemini (25-40%), ruling it out as a worker noun option.
 
 ### Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.
+
 - **Chose:** Identified codex and opencode:mimo as the best non-Claude relay workers: codex s01/s02=100% all onboardings, s03=80-100%; opencode s03:bare=100% (best full-lifecycle result). Droid/gemini reliable for spawn but weak on release without skill onboarding.
 - **Reasoning:** s03 lifecycle eval running for codex/opencode. Droid s02 bare=20% release rate and gemini s02 bare=20% release rate — release step requires explicit onboarding for droid/gemini.
 
 ### s06 Director 2-worker spawn: models do single-spawn-then-wait pattern
+
 - **Chose:** s06 Director 2-worker spawn: models do single-spawn-then-wait pattern
 - **Reasoning:** Models make one add_agent call then stop, waiting for the spawned worker's response. Neither CRITICAL instruction, nor longer timeout, nor injected ACK resolves this — models process the ACK passively without spawning the second worker. Root cause: models don't chain multiple add_agent calls without external stimulus between them. Fix attempts: (1) CRITICAL instruction (failed), (2) injected Worker ACK (failed), (3) extended 180s window (failed), (4) Orchestrator nudge after first spawn (testing v5).
 
 ### Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release
+
 - **Chose:** Delegating full dependency audit to dedicated subagent worker per Lead instructions; will poll results then cleanup/release
 - **Reasoning:** Task explicitly requires dedicated focus worker for audit, then release. Using spawn_subagent as MCP relaycast unavailable in this env (servers failed). Active traj is unrelated auto-routing design, so recording decision here.
 
 ### s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.
+
 - **Chose:** s06 Director multi-spawn is fundamentally 0% across all harnesses — PTY-mode agents make exactly one tool call per turn then stop/wait for input. No prompt instruction (CRITICAL labels, ACTION sequences, orchestrator nudges) breaks this barrier.
 - **Reasoning:** 8+ approaches tested across codex and claude-sonnet: simple instruction, 180s window, ACK injection, explicit nudge message, meta-prompt-only. All 0%. Production fix is architectural: pre-spawn workers from CLI layer (Phase 4), not in the Director. Director receives pre-formed team and coordinates only.
 
@@ -90,7 +107,8 @@ Completed comprehensive multi-harness eval suite across all 7 harness types. All
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation: Spec goes in specs/ directory (not web/content/docs/) — it is an internal design doc, not user-facing documentation
 - Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex: Eval data (b3oqx02zv) directly informs model tier recommendations: haiku=worker-tier, sonnet=lead-tier, opus=lead-tier-complex

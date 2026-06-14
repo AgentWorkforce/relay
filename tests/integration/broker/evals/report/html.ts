@@ -7,11 +7,7 @@
 import type { EvalReport, MatrixReport, MetricSet, ScenarioResult, TranscriptEntry } from '../types.js';
 
 function esc(s: string): string {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function pct(x: number): string {
@@ -684,9 +680,7 @@ function scenarioHtml(s: ScenarioResult): string {
       ? `releases <b class="${s.releaseCount > 0 ? 'ok' : 'x'}">${s.releaseCount}</b>`
       : '',
     s.onboarding ? `variant <b>${esc(s.onboarding)}</b>` : '',
-    s.nativeSubagentDetected
-      ? `tool <b class="x">NATIVE TASK (not add_agent)</b>`
-      : '',
+    s.nativeSubagentDetected ? `tool <b class="x">NATIVE TASK (not add_agent)</b>` : '',
     s.notes ? `<span class="scn-stat-sep">·</span> ${esc(s.notes)}` : '',
   ].filter(Boolean);
 
@@ -708,9 +702,7 @@ function scenarioHtml(s: ScenarioResult): string {
         .join('')}</ul></div>`
     : '';
 
-  const nativePill = s.nativeSubagentDetected
-    ? `<span class="pill native">NATIVE TASK</span> `
-    : '';
+  const nativePill = s.nativeSubagentDetected ? `<span class="pill native">NATIVE TASK</span> ` : '';
 
   return `<section class="scn">
   <div class="scn-header">
@@ -747,9 +739,7 @@ function variantBreakdownHtml(scenarios: ScenarioResult[]): string {
 
       const spawns = ss.filter((s) => s.spawnCount !== undefined);
       const spawnRate =
-        spawns.length > 0
-          ? spawns.filter((s) => (s.spawnCount ?? 0) > 0).length / spawns.length
-          : undefined;
+        spawns.length > 0 ? spawns.filter((s) => (s.spawnCount ?? 0) > 0).length / spawns.length : undefined;
 
       const releases = ss.filter((s) => s.releaseCount !== undefined);
       const releaseRate =
@@ -793,10 +783,8 @@ function lifecycleSummaryHtml(scenarios: ScenarioResult[]): string {
 
   const rows = lc
     .map((s) => {
-      const spawnOk =
-        s.spawnCount !== undefined ? (s.spawnCount > 0 ? 'ok' : 'fail') : 'neutral';
-      const releaseOk =
-        s.releaseCount !== undefined ? (s.releaseCount > 0 ? 'ok' : 'fail') : 'neutral';
+      const spawnOk = s.spawnCount !== undefined ? (s.spawnCount > 0 ? 'ok' : 'fail') : 'neutral';
+      const releaseOk = s.releaseCount !== undefined ? (s.releaseCount > 0 ? 'ok' : 'fail') : 'neutral';
       const spawnCell =
         spawnOk === 'ok'
           ? `<span class="metric-cell good">yes (${s.spawnCount})</span>`
@@ -925,16 +913,12 @@ export function renderReportHtml(report: EvalReport): string {
 export function renderMatrixHtml(matrix: MatrixReport, links: Record<string, string>): string {
   const harnesses = Object.entries(matrix.harnesses);
   const totalHarnesses = harnesses.length;
-  const passingHarnesses = harnesses.filter(
-    ([, m]) => m.scenariosPassed === m.scenariosTotal
-  ).length;
+  const passingHarnesses = harnesses.filter(([, m]) => m.scenariosPassed === m.scenariosTotal).length;
 
   // Main matrix table
   const tableRows = harnesses
     .map(([h, m]) => {
-      const link = links[h]
-        ? `<a href="${esc(links[h])}">${esc(h)}</a>`
-        : esc(h);
+      const link = links[h] ? `<a href="${esc(links[h])}">${esc(h)}</a>` : esc(h);
       const scenariosCls = m.scenariosPassed === m.scenariosTotal ? 'good' : 'bad';
       const scenariosCellCls = `cell-${scenariosCls}`;
       return `<tr>
@@ -967,9 +951,7 @@ export function renderMatrixHtml(matrix: MatrixReport, links: Record<string, str
             </tr></thead>
             <tbody>${harnesses
               .map(([h, m]) => {
-                const link = links[h]
-                  ? `<a href="${esc(links[h])}">${esc(h)}</a>`
-                  : esc(h);
+                const link = links[h] ? `<a href="${esc(links[h])}">${esc(h)}</a>` : esc(h);
                 const passCls = m.scenariosPassed === m.scenariosTotal ? 'good' : 'bad';
                 return `<tr>
                   <td style="font:600 13px var(--sans)">${link}</td>

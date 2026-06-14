@@ -29,7 +29,18 @@ Author cases in `cases.md`; `cases.jsonl` is generated and should not be edited
 by hand. A typical case looks like:
 
 ```json
-{"id":"messaging.example","suite":"messaging","executor":"relay","kind":"capability","input":{"message":"Post a channel message","operation":[{"op":"post_message","as":"Lead","channel":"general","text":"hello"}]},"expected":{"ok":true,"messageExists":[{"channel":"general","text":"hello","from":"Lead"}]},"tags":["messaging"]}
+{
+  "id": "messaging.example",
+  "suite": "messaging",
+  "executor": "relay",
+  "kind": "capability",
+  "input": {
+    "message": "Post a channel message",
+    "operation": [{ "op": "post_message", "as": "Lead", "channel": "general", "text": "hello" }]
+  },
+  "expected": { "ok": true, "messageExists": [{ "channel": "general", "text": "hello", "from": "Lead" }] },
+  "tags": ["messaging"]
+}
 ```
 
 ## Commands

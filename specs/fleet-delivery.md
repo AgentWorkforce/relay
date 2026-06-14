@@ -19,18 +19,18 @@ Everything below lives on one of two planes. Keeping them separate is what keeps
 - **Messaging fabric — flat, all equal `agents`.** Every agent is a peer: a stable identity that sends, receives, and may expose actions. No agent is above or routed "through" another.
 - **Compute layer — `nodes`.** A node is a machine where some agents run. It has a **broker** runtime and a set of **capabilities** (what it can spawn). Agents sharing a node is a deployment fact, not a relationship in the fabric.
 
-There is **no "participant" umbrella and no agent subtype.** "Orchestrate vs communicate" is not a type distinction — it's just whether an agent is colocated on a node-with-broker or self-connected (see *location*, §5).
+There is **no "participant" umbrella and no agent subtype.** "Orchestrate vs communicate" is not a type distinction — it's just whether an agent is colocated on a node-with-broker or self-connected (see _location_, §5).
 
 ## 3. Core concepts
 
-| Concept | What it is | Plane |
-|---|---|---|
-| **Agent** | a peer in the fabric: identity, send/receive, exposed actions | messaging |
-| **Node** | a named machine that runs agents and advertises capabilities | compute |
-| **Broker** | a node's runtime/delivery engine — **infra, not a peer** (not in the agent roster) | compute |
-| **Location** | where Relaycast routes an agent's **inbound** | routing detail |
-| **Capability** | what a node can spawn (e.g. `spawn:codex`) | compute |
-| **Action** | something an agent exposes/invokes in the fabric | messaging |
+| Concept        | What it is                                                                         | Plane          |
+| -------------- | ---------------------------------------------------------------------------------- | -------------- |
+| **Agent**      | a peer in the fabric: identity, send/receive, exposed actions                      | messaging      |
+| **Node**       | a named machine that runs agents and advertises capabilities                       | compute        |
+| **Broker**     | a node's runtime/delivery engine — **infra, not a peer** (not in the agent roster) | compute        |
+| **Location**   | where Relaycast routes an agent's **inbound**                                      | routing detail |
+| **Capability** | what a node can spawn (e.g. `spawn:codex`)                                         | compute        |
+| **Action**     | something an agent exposes/invokes in the fabric                                   | messaging      |
 
 The broker is node infrastructure with a control connection to Relaycast. A colocated PTY agent receiving via its broker is the same kind of plumbing as a NIC delivering to a process — a location, not a hierarchy.
 
@@ -47,21 +47,23 @@ Most of this already exists; the work is mostly removal.
 **Outbound (all agents): direct & stateless.** An agent sends with its own token straight to Relaycast (PTY agents via their MCP send tools; SDK agents via their own send). Sends are request/response — **no persistent connection required for sending**, and the broker is never in the send path.
 
 **Inbound: delivered to the agent's location.** Location has exactly two shapes — a field, not a type:
-- **Self-connected** (event-loop programs — SDK agents): the agent's own WS + message handler. This *is* the delivery path.
+
+- **Self-connected** (event-loop programs — SDK agents): the agent's own WS + message handler. This _is_ the delivery path.
 - **Via its node** (raw PTY harnesses with no event loop): the node's broker receives and injects into the agent's stdin.
   - `steer` = inject + interrupt to a prompt now.
   - `wait` = write to the buffer; the harness reads at its next prompt (the PTY defers naturally).
 
-**Invariant: an agent has exactly one location.** This is the whole cleanup — the old redundancy was a via-node agent *also* holding its own WS. One location → no double delivery, no special-casing.
+**Invariant: an agent has exactly one location.** This is the whole cleanup — the old redundancy was a via-node agent _also_ holding its own WS. One location → no double delivery, no special-casing.
 
 **Delete (these only ever applied to PTY agents):**
+
 - The per-agent Relaycast WS (`RealtimeResourceBridge`).
 - The MCP **resource layer** (`relay://inbox`, `relay://channels/...`, subscribe/notify) — it assumes a reactive client; turn-based harnesses don't subscribe.
 - The **inbox piggyback** (stapling inbox onto every tool result).
 
 **Keep:** on-demand read/query tools (`check_inbox`, `list_messages`, `thread`, `search`, `list_channels`) as **stateless cloud-direct reads** with the agent token. Pulling on your own initiative doesn't need a persistent connection. The MCP server for PTY agents becomes outbound + reads only.
 
-**Consistency bolt:** delivery acknowledgement marks a message delivered/read in Relaycast, so a cloud-backed `check_inbox` never re-surfaces something already delivered. One source of truth for *history* (cloud), one for *delivery* (the location); the ack bridges them.
+**Consistency bolt:** delivery acknowledgement marks a message delivered/read in Relaycast, so a cloud-backed `check_inbox` never re-surfaces something already delivered. One source of truth for _history_ (cloud), one for _delivery_ (the location); the ack bridges them.
 
 **Why the deleted layers existed (so we don't rebuild them):** the original design was MCP-idiom-first — inbox/channels as subscribable resources, the textbook way to surface stateful data. Turn-based harnesses didn't react to `resources/updated`, so the piggyback was bolted on, and stdin injection became the reliable push. Nothing was removed, leaving three overlapping inbound paths. **Lesson: design delivery around the agent's execution model (turn-based vs event-loop), not the protocol's idiom.**
 
@@ -124,20 +126,20 @@ Reclaiming a mailbox without resuming the actual session would dump a backlog on
 
 ### 8.3 Mailbox resolution
 
-| Situation | Resolution |
-|---|---|
-| Location temporarily unreachable (uplink/WS blip; process alive) | Hold + deliver on reconnect. Applies to **all** agents. |
-| Process dead, resumable + session recoverable | Hold up to TTL; flush on origin-targeted resume (oldest-first). |
-| Process dead, non-resumable OR session lost | **Dead-letter immediately** (notify senders). |
+| Situation                                                        | Resolution                                                      |
+| ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| Location temporarily unreachable (uplink/WS blip; process alive) | Hold + deliver on reconnect. Applies to **all** agents.         |
+| Process dead, resumable + session recoverable                    | Hold up to TTL; flush on origin-targeted resume (oldest-first). |
+| Process dead, non-resumable OR session lost                      | **Dead-letter immediately** (notify senders).                   |
 
-Consequence: persistence *across process death* is a **resumable-only** property. Non-resumable agents are ephemeral-on-death (still resilient to transient blips while alive).
+Consequence: persistence _across process death_ is a **resumable-only** property. Non-resumable agents are ephemeral-on-death (still resilient to transient blips while alive).
 
 ### 8.4 Where state lives
 
 - **Relaycast** holds all durable state (source of truth): mailboxes, agent records (`resumable`, `session_ref`, origin node), locations, node registry. Must survive Relaycast restarts.
 - **Broker** keeps only in-memory per-session state: `seq` cursor, dedup set, local pending-injection queue. **No disk needed for delivery durability.**
   - Uplink blip, broker alive → cursor/dedup survive → clean replay, no duplicates.
-  - Broker process dies → its child agents die too → they respawn and *want* redelivery → redelivery is correct, not duplicate.
+  - Broker process dies → its child agents die too → they respawn and _want_ redelivery → redelivery is correct, not duplicate.
 
 ### 8.5 One durable store
 
@@ -160,7 +162,7 @@ A node's broker holds one control connection to Relaycast, serving two roles: **
 - **Reconnect inventory sync:** after register, the broker re-announces its full live agent inventory (`agent_id`, name, `invocationId`, `session_ref`). Relaycast reconciles **locations** and open **invocations** (§7) from it.
 - **Deregister:** graceful on shutdown; else liveness TTL.
 
-**Narrow control surface** (the only Relaycast protocol the broker implements — *not* the full `@relaycast/sdk`; channels/threads/reactions/search stay in the agent SDK):
+**Narrow control surface** (the only Relaycast protocol the broker implements — _not_ the full `@relaycast/sdk`; channels/threads/reactions/search stay in the agent SDK):
 
 - **Broker → Relaycast:** `node.register`, `node.heartbeat`, `node.deregister`, `agent.register` (bind location), `agent.deregister`, `delivery.ack`, `action.result`, `inventory.sync`
 - **Relaycast → Broker:** `action.invoke` (spawn/release are actions), `deliver`, `ping`

@@ -10,6 +10,7 @@
 ## Key Decisions
 
 ### Spawn dedicated worker for auth failure analysis
+
 - **Chose:** Spawn dedicated worker for auth failure analysis
 - **Reasoning:** Large logs require focused investigation; worker can analyze patterns without blocking lead
 
@@ -18,7 +19,8 @@
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Spawn dedicated worker for auth failure analysis: Spawn dedicated worker for auth failure analysis
 - Abandoned: Switching to dependency audit task from Orchestrator

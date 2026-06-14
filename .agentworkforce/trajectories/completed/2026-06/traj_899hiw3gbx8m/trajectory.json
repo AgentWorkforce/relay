@@ -75,11 +75,7 @@
           "type": "reflection",
           "content": "Auto-routing spec drafted at specs/auto-routing.md. Three pillars: task classifier (haiku-class LLM call), team composer (pure routing table), director meta-prompt (pre-composed team so lead coordinates not plans). Empirical basis from ongoing lifecycle eval b3oqx02zv. Key open question: s05 phrasing eval and opus s03 results still pending — will refine routing table once those land.",
           "raw": {
-            "focalPoints": [
-              "eval-data-gaps",
-              "director-prompt-wording",
-              "classifier-cost"
-            ],
+            "focalPoints": ["eval-data-gaps", "director-prompt-wording", "classifier-cost"],
             "confidence": 0.8
           },
           "significance": "high",
@@ -131,31 +127,18 @@
           "type": "reflection",
           "content": "Lifecycle eval b3oqx02zv complete. Three clear takeaways: (1) sonnet+one-liner=100% s03 — confirmed production lead; (2) haiku=worker-only, caps at 60%; (3) opus s03 is timeout-limited not capability-limited — needs longer scenario window to evaluate properly. Auto-routing spec updated. Next: fix skill text 'do it yourself' heuristic, bump s03 timeout for opus, run s05 phrasing eval.",
           "raw": {
-            "focalPoints": [
-              "skill-text-fix",
-              "opus-timeout",
-              "s05-phrasing"
-            ],
+            "focalPoints": ["skill-text-fix", "opus-timeout", "s05-phrasing"],
             "confidence": 0.85
           },
           "significance": "high",
-          "tags": [
-            "focal:skill-text-fix",
-            "focal:opus-timeout",
-            "focal:s05-phrasing",
-            "confidence:0.85"
-          ]
+          "tags": ["focal:skill-text-fix", "focal:opus-timeout", "focal:s05-phrasing", "confidence:0.85"]
         },
         {
           "ts": 1781270492214,
           "type": "reflection",
           "content": "Phrasing eval (s05) running — haiku neutral-worker=0%, neutral-agent=20% so far. Expected: bare onboarding + haiku = near-zero regardless of phrasing. Key question is whether relay vocabulary ('relay worker', 'agent-relay worker') helps capable models (sonnet/opus) find the right tool without explicit guidance.",
           "raw": {
-            "focalPoints": [
-              "phrasing-effect",
-              "haiku-baseline",
-              "sonnet-opus-hypothesis"
-            ],
+            "focalPoints": ["phrasing-effect", "haiku-baseline", "sonnet-opus-hypothesis"],
             "confidence": 0.7
           },
           "significance": "high",
@@ -231,11 +214,7 @@
           "type": "reflection",
           "content": "Multi-harness eval picture coming in: codex/gemini/droid/opencode are relay-native and vocabulary-agnostic; grok/cursor are non-starters. Vocabulary effects (relay-worker vs neutral-worker) are Claude-specific. This validates the auto-routing design — Director prompts for Claude leads need relay-anchored nouns; non-Claude leads don't. Updated spec with interim findings.",
           "raw": {
-            "focalPoints": [
-              "multi-harness",
-              "vocabulary-effects",
-              "relay-native-models"
-            ],
+            "focalPoints": ["multi-harness", "vocabulary-effects", "relay-native-models"],
             "confidence": 0.82
           },
           "significance": "high",
@@ -311,11 +290,7 @@
           "type": "reflection",
           "content": "All eval data is now complete across all 7 harness types. s05 phrasing eval: all harnesses done with opus confirming 100% on relay-anchored vocab. s06 architectural limitation confirmed and documented: pre-spawn workers in CLI, not Director. Lifecycle data shows codex/opencode/droid/gemini as viable relay workers; grok/cursor not viable.",
           "raw": {
-            "focalPoints": [
-              "phrasing-data-complete",
-              "s06-architectural-conclusion",
-              "production-design"
-            ],
+            "focalPoints": ["phrasing-data-complete", "s06-architectural-conclusion", "production-design"],
             "adjustments": "Phase 4 Director prompt redesigned from spawn-and-coordinate to coordinate-only; pre-spawn workers from CLI layer",
             "confidence": 0.9
           },

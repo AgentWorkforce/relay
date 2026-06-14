@@ -1,16 +1,20 @@
 # Actions Cases
+
 Action cases verify registration, lookup, invocation results, policy decisions, and listener/audit events through InMemoryAgentRelayActions and ActionRegistry semantics.
 
 ## actions.register-and-invoke-echo
+
 Executor: relay
 Kind: regression
 Tags: actions, register, invoke
 Human Review: false
 
 ### Message
+
 An agent registers an echo action and another agent invokes it successfully.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -21,6 +25,7 @@ An agent registers an echo action and another agent invokes it successfully.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -47,32 +52,37 @@ An agent registers an echo action and another agent invokes it successfully.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - echoed
 - hello relay
-eventEmitted:
+  eventEmitted:
 - action.invoked
 - action.completed
-toolCallsInclude:
+  toolCallsInclude:
 - register_action
 - invoke_action
-must:
+  must:
 - Normalize action names by trimming whitespace before lookup.
 - Return an ok action result with the handler output.
-mustNot:
+  mustNot:
 - Emit an action.failed event for a valid invocation.
 
 ## actions.list-descriptor-after-register
+
 Executor: relay
 Kind: capability
 Tags: actions, descriptor
 Human Review: false
 
 ### Message
+
 A registered action should be visible through registry descriptor lookup with default visibility.
 
 ### Mock
+
 ```json
 {
   "agents": [{ "name": "builder", "type": "agent" }]
@@ -80,6 +90,7 @@ A registered action should be visible through registry descriptor lookup with de
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -101,27 +112,32 @@ A registered action should be visible through registry descriptor lookup with de
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - sum
 - Add two numbers
 - agent
-must:
+  must:
 - Store the normalized action name in the descriptor.
 - Default omitted visibility to `agent`.
-mustNot:
+  mustNot:
 - Drop the input schema from the descriptor.
 
 ## actions.invoke-sum-with-caller-context
+
 Executor: relay
 Kind: regression
 Tags: actions, context, invoke
 Human Review: false
 
 ### Message
+
 Action invocation should carry the caller identity into listener and audit events.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -132,6 +148,7 @@ Action invocation should carry the caller identity into listener and audit event
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -149,33 +166,44 @@ Action invocation should carry the caller identity into listener and audit event
       }
     }
   },
-  { "op": "invoke_action", "as": "planner", "name": "sum", "input": { "a": 2, "b": 5 }, "workspaceId": "ws_eval" }
+  {
+    "op": "invoke_action",
+    "as": "planner",
+    "name": "sum",
+    "input": { "a": 2, "b": 5 },
+    "workspaceId": "ws_eval"
+  }
 ]
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - 7
-eventEmitted:
+  eventEmitted:
 - { "type": "action.invoked", "action": "sum" }
 - { "type": "action.completed", "action": "sum" }
-must:
+  must:
 - Include caller `planner` in emitted action events.
 - Return a successful output of 7.
-mustNot:
+  mustNot:
 - Invoke the action without caller context.
 
 ## actions.policy-denied-result
+
 Executor: relay
 Kind: capability
 Tags: actions, policy, denied
 Human Review: false
 
 ### Message
+
 A policy-denied action returns an action_denied result and emits a denied event.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -186,6 +214,7 @@ A policy-denied action returns an action_denied result and emits a denied event.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -200,29 +229,34 @@ A policy-denied action returns an action_denied result and emits a denied event.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - action_denied
 - denied
-eventEmitted:
+  eventEmitted:
 - action.invoked
 - action.denied
-must:
+  must:
 - Return ok false with error code `action_denied`.
 - Emit action.denied rather than action.completed.
-mustNot:
+  mustNot:
 - Run the handler after policy denial.
 
 ## actions.handler-throw-failed-result
+
 Executor: relay
 Kind: regression
 Tags: actions, failure
 Human Review: false
 
 ### Message
+
 If a registered handler throws, invoke_action should return an action_failed result and emit failure events.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -233,6 +267,7 @@ If a registered handler throws, invoke_action should return an action_failed res
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -247,29 +282,34 @@ If a registered handler throws, invoke_action should return an action_failed res
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - action_failed
 - fixture threw
-eventEmitted:
+  eventEmitted:
 - action.invoked
 - action.failed
-must:
+  must:
 - Convert the thrown error into an action result with ok false.
 - Emit a listener-visible action.failed event.
-mustNot:
+  mustNot:
 - Throw out of invoke_action for handler failures.
 
 ## actions.unregister-handle-removes-action
+
 Executor: relay
 Kind: capability
 Tags: actions, unregister, lookup
 Human Review: false
 
 ### Message
+
 The action handle returned by registration should be able to unregister the action.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -280,6 +320,7 @@ The action handle returned by registration should be able to unregister the acti
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -295,25 +336,30 @@ The action handle returned by registration should be able to unregister the acti
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - action_not_found
-must:
+  must:
 - Remove the action when its registration handle is unregistered.
 - Return a not-found result on later invoke.
-mustNot:
+  mustNot:
 - Keep stale unregistered actions invokable.
 
 ## actions.listener-errors-do-not-break-invoke
+
 Executor: relay
 Kind: regression
 Tags: actions, listeners, resilience
 Human Review: false
 
 ### Message
+
 A throwing registry listener should not prevent successful action invocation.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -325,6 +371,7 @@ A throwing registry listener should not prevent successful action invocation.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -339,15 +386,17 @@ A throwing registry listener should not prevent successful action invocation.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - listener resilience
 - echoed
-eventEmitted:
+  eventEmitted:
 - action.invoked
 - action.completed
-must:
+  must:
 - Swallow listener exceptions during event emission.
 - Complete the action successfully.
-mustNot:
+  mustNot:
 - Convert listener exceptions into action_failed results.

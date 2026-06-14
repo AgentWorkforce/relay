@@ -32,6 +32,7 @@ scripts/evals/
 ```
 
 npm scripts (root `package.json`):
+
 ```
 "evals:compile": "node scripts/evals/compile-cases.mjs",
 "evals":         "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
@@ -41,7 +42,7 @@ npm scripts (root `package.json`):
 
 ## cases.md format (verbatim from relayfile — do not invent a new one)
 
-```
+````
 # <Suite Title>
 <one-paragraph description>
 
@@ -57,22 +58,26 @@ Human Review: false
 ### Mock
 ```json
 { "...seed state for the in-memory relay..." }
-```
+````
 
 ### Operations
+
 ```json
-[ { "op": "<verb>", "...": "..." } ]
+[{ "op": "<verb>", "...": "..." }]
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - ...
-must:
+  must:
 - ...
-mustNot:
+  mustNot:
 - ...
-```
+
+````
 
 ## Executor operation vocabulary (W1 owns + extends; authors target these)
 
@@ -168,11 +173,12 @@ Mock seed shape:
 { "agents": [{"name":"...","type":"agent"}],
   "channels": [{"name":"...","members":["..."]}],
   "messages": [{"id":"...","channel":"...","from":"...","text":"...","threadParent":"?"}] }
-```
+````
 
 ## Executor observed-result contract (W1 implements)
 
 So pure-function and event ops are checkable, the executor populates per run:
+
 - `observed.content` — stringified return value of each op (drives `contentIncludes`)
 - `observed.events[]` — emitted events (drives `eventEmitted`)
 - `observed.error.code` — error code when an op throws (drives `errorCode`)
@@ -183,6 +189,7 @@ So pure-function and event ops are checkable, the executor populates per run:
   an alias for `handlerFixture`.
 
 Relay-specific check keys (bullet arrays of objects):
+
 - `messageExists`: {channel?|kind?, text, from?} — an observed msg matches all fields
 - `threadReplyCount`: {parent:<id>, count}
 - `reactionCount`: {messageId, emoji, count}
@@ -190,4 +197,4 @@ Relay-specific check keys (bullet arrays of objects):
 - `agentPresence`: {name, status}
 - `errorCode`: string | string[]
 - `eventEmitted`: string | {type, ...}
-Plus shared `ok`, `contentIncludes`, `must`, `mustNot`, `toolCallsInclude`, `minToolCalls`.
+  Plus shared `ok`, `contentIncludes`, `must`, `mustNot`, `toolCallsInclude`, `minToolCalls`.

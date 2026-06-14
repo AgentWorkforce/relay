@@ -4,12 +4,12 @@
 
 The relay eval harness is currently embedded in `tests/integration/broker/evals/`. Three other repos need the same infrastructure:
 
-| Repo | Current situation | What they need |
-|---|---|---|
-| relay | source of truth | owns the harness, keeps relay-specific scenarios |
-| pear | no eval infra | i01/i02 .integrations scenarios (live agent + filesystem scoring) |
-| agent-assistant | separate telemetry eval system (fixture-based, no live agents) | protocol compliance evals for assistant agents |
-| relayfile | VFS contract unit tests (no live agents) | not relevant — different eval type |
+| Repo            | Current situation                                              | What they need                                                    |
+| --------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| relay           | source of truth                                                | owns the harness, keeps relay-specific scenarios                  |
+| pear            | no eval infra                                                  | i01/i02 .integrations scenarios (live agent + filesystem scoring) |
+| agent-assistant | separate telemetry eval system (fixture-based, no live agents) | protocol compliance evals for assistant agents                    |
+| relayfile       | VFS contract unit tests (no live agents)                       | not relevant — different eval type                                |
 
 The relayfile and agent-assistant eval systems are different in kind (no live broker, no agent spawn) and don't need this package. The extraction is primarily relay → pear path, with agent-assistant as a later consumer.
 
@@ -72,6 +72,7 @@ packages/evals/
 ```
 
 `package.json` dependencies:
+
 ```json
 {
   "name": "@agent-relay/evals",
@@ -107,11 +108,14 @@ import { LIFECYCLE_EVAL_SCENARIOS } from '@agent-relay/evals/scenarios/core';
 import { scenario as integrationsDiscovery } from './scenarios/i01-integrations-discovery.js';
 import { scenario as integrationEventReaction } from './scenarios/i02-integrations-event-reaction.js';
 
-await runScenarios([
-  ...LIFECYCLE_EVAL_SCENARIOS,   // shared protocol baseline
-  integrationsDiscovery,
-  integrationEventReaction,
-], { harness: process.env.EVAL_HARNESS ?? 'claude', repeat: 3 });
+await runScenarios(
+  [
+    ...LIFECYCLE_EVAL_SCENARIOS, // shared protocol baseline
+    integrationsDiscovery,
+    integrationEventReaction,
+  ],
+  { harness: process.env.EVAL_HARNESS ?? 'claude', repeat: 3 }
+);
 ```
 
 ---
@@ -146,6 +150,7 @@ await runScenarios([
 ## Recommended timing
 
 Start the extraction after:
+
 1. Phase 2 opencode evals are complete (runner API stable)
 2. PR #1100-series lands (lifecycle test infrastructure confirmed)
 

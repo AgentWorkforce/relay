@@ -1,16 +1,20 @@
 # Action Schema Cases
+
 Action schema cases verify JSON-schema-lite validation and actionSchemaToJsonSchema descriptor behavior for valid inputs, invalid inputs, coercion-like fixtures, required fields, and additional property boundaries.
 
 ## action-schema.valid-object-input
+
 Executor: relay
 Kind: regression
 Tags: schema, valid, actions
 Human Review: false
 
 ### Message
+
 A valid object input should satisfy the registered JSON-schema-lite input contract.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -21,6 +25,7 @@ A valid object input should satisfy the registered JSON-schema-lite input contra
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -40,27 +45,32 @@ A valid object input should satisfy the registered JSON-schema-lite input contra
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - schema ok
 - echoed
-eventEmitted:
+  eventEmitted:
 - action.completed
-must:
+  must:
 - Accept an object containing the required non-empty string field.
-mustNot:
+  mustNot:
 - Report invalid_input for valid input.
 
 ## action-schema.missing-required-field
+
 Executor: relay
 Kind: regression
 Tags: schema, required, invalid
 Human Review: false
 
 ### Message
+
 Missing required input fields should fail validation before the handler runs.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -71,6 +81,7 @@ Missing required input fields should fail validation before the handler runs.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -89,29 +100,34 @@ Missing required input fields should fail validation before the handler runs.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - invalid_input
 - $.text
 - required property is missing
-eventEmitted:
+  eventEmitted:
 - action.failed
-must:
+  must:
 - Reject missing required fields with an invalid_input result.
 - Avoid invoking the handler after input validation fails.
-mustNot:
+  mustNot:
 - Return echoed output for invalid input.
 
 ## action-schema.additional-properties-rejected
+
 Executor: relay
 Kind: regression
 Tags: schema, additional-properties, invalid
 Human Review: false
 
 ### Message
+
 additionalProperties false should reject unknown input keys.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -122,6 +138,7 @@ additionalProperties false should reject unknown input keys.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -141,28 +158,33 @@ additionalProperties false should reject unknown input keys.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - invalid_input
 - $.extra
 - additional property is not allowed
-eventEmitted:
+  eventEmitted:
 - action.failed
-must:
+  must:
 - Report the unknown property path in validation output.
-mustNot:
+  mustNot:
 - Silently strip unknown fields and run the handler.
 
 ## action-schema.array-items-and-min-items
+
 Executor: relay
 Kind: capability
 Tags: schema, array, invalid
 Human Review: false
 
 ### Message
+
 Array item schemas and minItems constraints should both be enforced.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -173,6 +195,7 @@ Array item schemas and minItems constraints should both be enforced.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -189,31 +212,41 @@ Array item schemas and minItems constraints should both be enforced.
       }
     }
   },
-  { "op": "invoke_action", "as": "planner", "name": "tag-echo", "input": { "text": "tags", "tags": ["ok", 3] } }
+  {
+    "op": "invoke_action",
+    "as": "planner",
+    "name": "tag-echo",
+    "input": { "text": "tags", "tags": ["ok", 3] }
+  }
 ]
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - invalid_input
 - $.tags[1]
 - expected string
-must:
+  must:
 - Validate every array element against the item schema.
-mustNot:
+  mustNot:
 - Accept non-string tag elements.
 
 ## action-schema.enum-and-const-valid
+
 Executor: relay
 Kind: capability
 Tags: schema, enum, const
 Human Review: false
 
 ### Message
+
 Enum and const constraints should accept matching literal values.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -224,6 +257,7 @@ Enum and const constraints should accept matching literal values.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -241,30 +275,40 @@ Enum and const constraints should accept matching literal values.
       }
     }
   },
-  { "op": "invoke_action", "as": "planner", "name": "literal-echo", "input": { "text": "literal", "kind": "review", "state": "open" } }
+  {
+    "op": "invoke_action",
+    "as": "planner",
+    "name": "literal-echo",
+    "input": { "text": "literal", "kind": "review", "state": "open" }
+  }
 ]
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - literal
 - echoed
-must:
+  must:
 - Accept matching const and enum values.
-mustNot:
+  mustNot:
 - Treat literal constraints as unsupported schema keywords.
 
 ## action-schema.one-of-rejects-zero-matches
+
 Executor: relay
 Kind: regression
 Tags: schema, oneOf, invalid
 Human Review: false
 
 ### Message
+
 oneOf should reject values that match none of the supplied schemas.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -275,6 +319,7 @@ oneOf should reject values that match none of the supplied schemas.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -302,26 +347,31 @@ oneOf should reject values that match none of the supplied schemas.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - invalid_input
 - oneOf
 - matched 0
-must:
+  must:
 - Report that the value matched zero oneOf schemas.
-mustNot:
+  mustNot:
 - Fall through to the handler when oneOf fails.
 
 ## action-schema.output-schema-invalid
+
 Executor: relay
 Kind: regression
 Tags: schema, output, invalid
 Human Review: false
 
 ### Message
+
 Invalid handler output should be validated and returned as invalid_output.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -332,6 +382,7 @@ Invalid handler output should be validated and returned as invalid_output.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -350,29 +401,34 @@ Invalid handler output should be validated and returned as invalid_output.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - invalid_output
 - $.ok
 - required property is missing
-eventEmitted:
+  eventEmitted:
 - action.failed
-must:
+  must:
 - Validate handler output against outputSchema.
 - Return ok false with invalid_output.
-mustNot:
+  mustNot:
 - Emit action.completed for invalid output.
 
 ## action-schema.schema-descriptor-passthrough
+
 Executor: relay
 Kind: capability
 Tags: schema, descriptor, json-schema
 Human Review: false
 
 ### Message
+
 JSON-schema-lite objects should pass through as action descriptor schemas.
 
 ### Mock
+
 ```json
 {
   "agents": [{ "name": "schema-bot", "type": "agent" }]
@@ -380,6 +436,7 @@ JSON-schema-lite objects should pass through as action descriptor schemas.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -399,26 +456,31 @@ JSON-schema-lite objects should pass through as action descriptor schemas.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - EchoInput
 - Text to echo
 - described
-must:
+  must:
 - Preserve JSON-schema-lite object fields on the registered descriptor.
-mustNot:
+  mustNot:
 - Replace an object schema with an empty permissive schema.
 
 ## action-schema.zod-like-coercion-fixture
+
 Executor: relay
 Kind: capability
 Tags: schema, coercion, zod-like
 Human Review: false
 
 ### Message
+
 A zod-like fixture should parse input before the handler sees it.
 
 ### Mock
+
 ```json
 {
   "agents": [
@@ -429,6 +491,7 @@ A zod-like fixture should parse input before the handler sees it.
 ```
 
 ### Operations
+
 ```json
 [
   {
@@ -443,12 +506,14 @@ A zod-like fixture should parse input before the handler sees it.
 ```
 
 ### Deterministic Checks
+
 ok: true
 contentIncludes:
+
 - 42
-eventEmitted:
+  eventEmitted:
 - action.completed
-must:
+  must:
 - Pass parsed numeric values to the handler after zod-like safeParse succeeds.
-mustNot:
+  mustNot:
 - Validate the raw string values as JSON numbers before coercion.
