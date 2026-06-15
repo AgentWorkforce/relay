@@ -72,16 +72,8 @@ function SourceNode({
 function ExchangeArrows() {
   return (
     <svg className={s.howExchange} viewBox="0 0 56 44" fill="none" aria-hidden="true">
-      <path
-        className={s.howExchangePath}
-        d="M8 15 C24 4 38 4 49 13"
-        markerEnd="url(#howArrowHead)"
-      />
-      <path
-        className={s.howExchangePath}
-        d="M48 29 C37 38 23 38 7 30"
-        markerEnd="url(#howArrowHead)"
-      />
+      <path className={s.howExchangePath} d="M8 15 C24 4 38 4 49 13" markerEnd="url(#howArrowHead)" />
+      <path className={s.howExchangePath} d="M48 29 C37 38 23 38 7 30" markerEnd="url(#howArrowHead)" />
     </svg>
   );
 }
@@ -115,11 +107,7 @@ export function HowItWorks() {
             logos={CLI_LOGOS}
             caption="PTY driven, real-time message injection"
           />
-          <SourceNode
-            label="Your custom agents"
-            logos={CUSTOM_LOGOS}
-            caption="Drop-in SDK + bindings"
-          />
+          <SourceNode label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
         </FadeIn>
 
         <div className={s.howFlow} aria-hidden="true">
