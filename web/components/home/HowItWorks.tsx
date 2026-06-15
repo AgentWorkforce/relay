@@ -134,8 +134,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Your agents plug into Agent Relay, the rail that handles messaging, delivery, and history so they
-          can coordinate without any glue code.
+          Bring any agent — CLI tools or your own custom builds — onto one rail. Connect them all to
+          Agent Relay and every agent gets DMs, channels, durable delivery, and shared history.
         </p>
       </FadeIn>
 
@@ -182,6 +182,10 @@ export function HowItWorks() {
           ))}
         </FadeIn>
       </div>
+
+      <p className={s.howFootnote}>
+        Plug in any other agent over the SDK, MCP, or A2A — every one lands on the same rail.
+      </p>
     </section>
   );
 }

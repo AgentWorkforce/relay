@@ -774,7 +774,7 @@
 }
 
 .commandsFeature {
-  order: 5;
+  order: 6;
   --feature-band-bg: #0b1c2a;
   padding-top: 36px;
 }
@@ -792,12 +792,12 @@
   max-width: 620px;
 }
 
-/* The "how it works" band sits between the commands feature (order 5) and the
-   A2A wave/feature below. The compound selector below outranks the base
-   `.featureSeparator { order: 4 }` regardless of source order, so the divider
-   still lands between the how-it-works band and the A2A feature. */
+/* The "how it works" band sits after the delivery feature's wave (order 4) and
+   before the Agent Tools / commands feature (order 6). It carries its own band
+   borders, so no wave divider is needed around it. The only divider below the
+   commands feature is the A2A wave (order 7). */
 .howItWorks {
-  order: 6;
+  order: 5;
 }
 
 .featureSeparator.a2aSeparator {
@@ -3909,13 +3909,12 @@
   isolation: isolate;
 }
 
+/* Same band fill + separation as the "Works with every agent" section. */
 .howItWorks::before {
   content: '';
   position: absolute;
   inset: 0 calc(50% - 50vw);
-  background:
-    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 46%),
-    #0b1c2a;
+  background: var(--agent-tools-band-bg);
   border-top: 1px solid color-mix(in srgb, white 5%, transparent);
   border-bottom: 1px solid color-mix(in srgb, white 5%, transparent);
   z-index: 0;
@@ -3948,6 +3947,13 @@
   color: var(--fg-muted);
   margin: 0 auto;
   max-width: 58ch;
+}
+
+.howFootnote {
+  margin: 44px 0 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--fg-faint);
 }
 
 /* agents | wires-in | hub | wires-out | capabilities */

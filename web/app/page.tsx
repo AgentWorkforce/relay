@@ -57,8 +57,8 @@ export default function HomePage() {
           <WorksWithEveryAgent />
           <DeliveryFeature />
           <WaveDivider variant="feature" />
-          <AgentToolsFeature />
           <HowItWorks />
+          <AgentToolsFeature />
           <WaveDivider variant="a2a" className={s.a2aSeparator} />
           <A2AFeature />
         </section>
