@@ -8,8 +8,9 @@
       "id": "TRACK-A-SECURITY-AUDIT"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-12T15:42:18.921Z",
+  "completedAt": "2026-06-15T18:12:20.762Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-12T15:48:40.274Z",
+      "endedAt": "2026-06-15T18:12:20.762Z",
       "events": [
         {
           "ts": 1781279320275,
@@ -87,6 +89,11 @@
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Added single-column 'How it works' section to web homepage between Agent Tools and A2A features; new HowItWorks component + Python/TS icons + landing CSS band. Verified via local build and screenshot. PR #1132.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
