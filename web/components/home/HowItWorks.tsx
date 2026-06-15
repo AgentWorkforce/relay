@@ -45,7 +45,10 @@ interface Feature {
 }
 
 const FEATURES: readonly Feature[] = [
-  { icon: <MessagesSquare size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'DMs, channels & @mentions' },
+  {
+    icon: <MessagesSquare size={17} strokeWidth={1.8} aria-hidden="true" />,
+    label: 'DMs, channels & @mentions',
+  },
   { icon: <RefreshCw size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Durable delivery & retries' },
   { icon: <CheckCheck size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Message receipts' },
   { icon: <Search size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Search, history & webhooks' },
@@ -120,8 +123,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Bring any agent — CLI tools or your own custom builds — onto one rail. They talk to each
-          other through Agent Relay, so a message from one agent reaches any other.
+          Bring any agent — CLI tools or your own custom builds — onto one rail. They talk to each other
+          through Agent Relay, so a message from one agent reaches any other.
         </p>
       </FadeIn>
 
@@ -152,11 +155,7 @@ export function HowItWorks() {
           </FadeIn>
 
           <FadeIn direction="left" delay={120} className={s.howCol}>
-            <AgentGroup
-              label="Your custom agents"
-              logos={CUSTOM_LOGOS}
-              caption="Drop-in SDK + bindings"
-            />
+            <AgentGroup label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
           </FadeIn>
         </div>
       </div>
