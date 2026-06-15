@@ -1596,7 +1596,6 @@ Always release relay workers — unreleased agents waste resources.
 ### When to spawn
 Spawn when: the task asks you to delegate or assign work, is large, needs specialised focus, or would block your own progress.";
 
-
 /// Returns true for small/fast model tiers that need explicit relay skill injection.
 /// Matches haiku (Claude), mini (GPT), flash (Gemini), and generic small-tier names.
 fn is_small_model_tier(model: &str) -> bool {
