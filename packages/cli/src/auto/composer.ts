@@ -125,7 +125,7 @@ export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
   codex: 'bare', // relay-native; bare s03=80%, one-liner=100% — bare saves tokens
   opencode: 'bare', // relay-native; bare s03=100% (best bare of all harnesses)
   gemini: 'one-liner', // bare s03=60% (release failures); one-liner=100%
-  droid: 'skill', // high-risk: needs Task disambiguation for s04; avoid roles that spawn relay workers
+  droid: 'bare', // droid 0.148.1: all variants s03=0/5 (add_agent never called); skill s03=0/5 FAIL (injection suppresses relay); s04=0/5 all variants
 };
 
 // ── Role-fit map (from eval data 2026-06-12/13) ───────────────────────────────
@@ -172,11 +172,11 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
   },
   {
     harness: 'opencode',
-    defaultModel: 'mimo-v2.5-free',
+    defaultModel: 'deepseek-v4-flash',
     bestOnboarding: 'bare',
     relayNative: true,
     roles: {
-      worker: { fitness: 'confirmed', notes: 'mimo s03 bare=100%; best bare result of all harnesses' },
+      worker: { fitness: 'confirmed', notes: 'deepseek-v4-flash 16/16, 0 phantoms — best opencode default' },
       planner: { fitness: 'confirmed' },
       mapper: { fitness: 'confirmed' },
       reducer: { fitness: 'confirmed' },
@@ -186,7 +186,7 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
       // Top tier (16/16, 0-2 phantoms): deepseek-v4-flash, deepseek-v4-flash-free, qwen3.6-plus,
       //   qwen3.5-plus, minimax-m2.5, minimax-m2.7, glm-5.1, big-pickle
       // Confirmed (16/16, 3-9 phantoms): glm-5, gemini-3.1-pro, grok-build-0.1, gemini-3-flash
-      // Provisional (12-15/16): kimi-k2.5, kimi-k2.6, mimo-v2.5-free, gemini-3.5-flash, north-mini-code-free
+      // Provisional (12-15/16): kimi-k2.5, kimi-k2.6, gpt-5.5, mimo-v2.5-free, gemini-3.5-flash, north-mini-code-free
       // Eliminated: deepseek-v4-pro (11/16, s03/s04 inconsistent), nemotron-3-ultra-free (10/16)
     },
   },
@@ -346,6 +346,15 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     },
   },
   {
+    harness: 'opencode:gpt-5.5',
+    bestOnboarding: 'bare',
+    relayNative: true,
+    roles: {
+      worker: { fitness: 'provisional', notes: '13/16, 6 phantoms; s03/s04 inconsistent across variants' },
+      mapper: { fitness: 'provisional' },
+    },
+  },
+  {
     harness: 'opencode:gemini-3.5-flash',
     bestOnboarding: 'one-liner',
     relayNative: false,
@@ -404,18 +413,18 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
   {
     harness: 'droid',
     defaultModel: undefined,
-    bestOnboarding: 'skill',
+    bestOnboarding: 'bare',
     relayNative: false,
     roles: {
       worker: {
-        fitness: 'provisional',
+        fitness: 'not-viable',
         notes:
-          'High-risk: s03 bare=100%, but s04 bare/one-liner=0% because Droid routes spawning to native Task without explicit disambiguation. Use only for leaf work.',
+          'droid 0.148.1: s03=0/5 all variants (add_agent never called); skill injection s03=0/5 (suppresses relay). Was 5/5 on older version (June 12). s04=0/5.',
       },
-      mapper: { fitness: 'provisional', notes: 'High-risk leaf-only harness; do not give spawning tasks.' },
-      planner: { fitness: 'provisional', notes: 'High-risk; avoid delegation or worker-spawn tasks.' },
-      // NEVER use for roles that involve spawning: s04 bare/one-liner=0%.
-      coordinator: { fitness: 'not-viable', notes: 's04=0%; routes to native Task tool' },
+      mapper: { fitness: 'provisional', notes: 'Leaf work only — do not give spawning or delegation tasks.' },
+      planner: { fitness: 'provisional', notes: 'No delegation tasks; droid routes delegation to native Task, not relay.' },
+      // NEVER use for roles that involve spawning: s03=0%, s04=0% with droid 0.148.1.
+      coordinator: { fitness: 'not-viable', notes: 's03/s04=0%; routes to native Task tool' },
       supervisor: { fitness: 'not-viable', notes: 'would use native Task, not relay' },
     },
   },

@@ -1315,19 +1315,7 @@ async fn configure_gemini_droid_mcp(
         .unwrap_or_else(|| cli.trim().to_string());
     let manual_cmd = gemini_droid_manual_mcp_add_cmd(&exe, is_gemini);
 
-    // Remove first for idempotency (ignore errors — may not exist yet).
-    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let _ = std::process::Command::new(&exe)
-            .args(["mcp", "remove", server_name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .and_then(|mut c| c.wait());
-    }
-
-    let mut mcp_cmd = Command::new(&exe);
-    mcp_cmd.args(gemini_droid_mcp_add_args_with_result(
+    let add_args = gemini_droid_mcp_add_args_with_result(
         api_key,
         base_url,
         agent_name,
@@ -1336,45 +1324,106 @@ async fn configure_gemini_droid_mcp(
         workspaces_json,
         default_workspace,
         agent_result,
-    ));
+    );
+
+    run_gemini_droid_mcp_add(&exe, &add_args, cli, &manual_cmd).await
+}
+
+/// Remove all known relay MCP server names from the gemini/droid shared config.
+fn remove_gemini_droid_mcp_servers(exe: &str) {
+    for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
+        let _ = std::process::Command::new(exe)
+            .args(["mcp", "remove", server_name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|mut c| c.wait());
+    }
+}
+
+/// Run `<exe> mcp add <args>`, capturing stderr.
+/// Each attempt removes the server first (idempotency). Retries with backoff on "already exists"
+/// to handle concurrent eval runs racing on the shared droid/gemini config file.
+async fn run_gemini_droid_mcp_add(
+    exe: &str,
+    add_args: &[String],
+    cli: &str,
+    manual_cmd: &str,
+) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 4;
+    let mut last_stderr = String::new();
+    for attempt in 0..MAX_ATTEMPTS {
+        // Remove first for idempotency — ignore errors (may not exist yet).
+        remove_gemini_droid_mcp_servers(exe);
+
+        let output = spawn_mcp_add(exe, add_args, cli, manual_cmd).await?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        if last_stderr.contains("already exists") && attempt < MAX_ATTEMPTS - 1 {
+            // Race with a concurrent eval run. Back off and retry — the competing
+            // process will finish its own remove+add cycle and we can win the next slot.
+            let delay = Duration::from_millis(150 * u64::from(attempt + 1));
+            tracing::debug!(
+                cli,
+                attempt,
+                ?delay,
+                "mcp add saw 'already exists'; backing off before retry"
+            );
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
+        anyhow::bail!(
+            "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` exited with code {:?} \
+             (attempt {}/{}). Please configure the Agent Relay MCP server manually:\n  {manual_cmd}\nError: {last_stderr}",
+            output.status.code(),
+            attempt + 1,
+            MAX_ATTEMPTS
+        );
+    }
+    anyhow::bail!(
+        "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` failed after {MAX_ATTEMPTS} attempts \
+         due to concurrent access. Please configure the Agent Relay MCP server manually:\n  {manual_cmd}\nError: {last_stderr}"
+    )
+}
+
+async fn spawn_mcp_add(
+    exe: &str,
+    add_args: &[String],
+    cli: &str,
+    manual_cmd: &str,
+) -> Result<std::process::Output> {
+    let mut mcp_cmd = Command::new(exe);
     mcp_cmd
+        .args(add_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
     match mcp_cmd.spawn() {
-        Ok(mut child) => match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
-            Ok(Ok(status)) if !status.success() => {
-                anyhow::bail!(
-                        "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` exited with code {:?}. \
-                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}",
-                        status.code()
-                    );
-            }
-            Ok(Err(error)) => {
-                anyhow::bail!(
+        Ok(child) => {
+            match tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(error)) => anyhow::bail!(
                     "failed to configure Agent Relay MCP for {cli}: {error}. \
-                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
-                );
+                     Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+                ),
+                Err(_) => anyhow::bail!(
+                    "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` timed out after 15s. \
+                     Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+                ),
             }
-            Err(_) => {
-                let _ = child.kill().await;
-                anyhow::bail!(
-                        "failed to configure Agent Relay MCP for {cli}: `{cli} mcp add` timed out after 15s. \
-                         Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
-                    );
-            }
-            _ => {}
-        },
-        Err(error) => {
-            anyhow::bail!(
-                "failed to configure Agent Relay MCP for {cli}: could not run `{cli} mcp add`: {error}. \
-                 Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
-            );
         }
+        Err(error) => anyhow::bail!(
+            "failed to configure Agent Relay MCP for {cli}: could not run `{cli} mcp add`: {error}. \
+             Please configure the Agent Relay MCP server manually:\n  {manual_cmd}"
+        ),
     }
-
-    Ok(())
 }
 
 fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {

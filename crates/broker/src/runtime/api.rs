@@ -1596,25 +1596,6 @@ Always release relay workers — unreleased agents waste resources.
 ### When to spawn
 Spawn when: the task asks you to delegate or assign work, is large, needs specialised focus, or would block your own progress.";
 
-/// Droid needs explicit disambiguation from its native Task capability.
-const DROID_RELAY_SKILL: &str = "\
-## Agent Relay — Worker Management
-
-### Spawn a relay worker
-To delegate work, call:
-  mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"detailed instructions\")
-
-Required fields: name (unique string), cli (\"claude\" or other CLI), task (full instructions for the relay worker).
-The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
-
-Important: When your task asks you to \"assign to a relay worker\", \"delegate to an agent\", or \"spawn a relay worker\",
-this means calling mcp__agent-relay__add_agent — never your built-in Task capability.
-
-### Release a relay worker
-As soon as a relay worker reports DONE, call:
-  mcp__agent-relay__remove_agent(name: \"WorkerName\")
-
-Always release relay workers when done — unreleased agents waste resources.";
 
 /// Returns true for small/fast model tiers that need explicit relay skill injection.
 /// Matches haiku (Claude), mini (GPT), flash (Gemini), and generic small-tier names.
@@ -1644,8 +1625,6 @@ fn cli_skill_prefix(cli: &str) -> Option<&'static str> {
         .to_lowercase();
     if cli == "gemini" {
         Some(RELAY_WORKER_ONE_LINER)
-    } else if cli == "droid" {
-        Some(DROID_RELAY_SKILL)
     } else {
         None
     }
@@ -1671,7 +1650,7 @@ pub(super) fn relay_skill_prefix(cli: &str, model: Option<&str>) -> Option<Strin
 mod skill_injection_tests {
     use super::{
         cli_skill_prefix, is_small_model_tier, model_skill_prefix, relay_skill_prefix,
-        DROID_RELAY_SKILL, RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL,
+        RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL,
     };
 
     #[test]
@@ -1718,14 +1697,9 @@ mod skill_injection_tests {
             cli_skill_prefix("/usr/local/bin/gemini --model pro"),
             Some(RELAY_WORKER_ONE_LINER)
         );
-        assert_eq!(cli_skill_prefix("droid"), Some(DROID_RELAY_SKILL));
-        assert_eq!(
-            cli_skill_prefix("/opt/homebrew/bin/droid --foo"),
-            Some(DROID_RELAY_SKILL)
-        );
-        assert!(cli_skill_prefix("droid")
-            .unwrap()
-            .contains("never your built-in Task capability"));
+        // droid: no injection — broker injection kills s03 bare (0/5 vs 5/5 baseline without it)
+        assert_eq!(cli_skill_prefix("droid"), None);
+        assert_eq!(cli_skill_prefix("/opt/homebrew/bin/droid --foo"), None);
         assert_eq!(cli_skill_prefix("codex"), None);
         assert_eq!(cli_skill_prefix("claude"), None);
     }
@@ -1736,8 +1710,8 @@ mod skill_injection_tests {
         assert!(prefix.contains("## Agent Relay"));
         assert!(prefix.contains(RELAY_WORKER_ONE_LINER));
 
-        let droid = relay_skill_prefix("droid", None).unwrap();
-        assert_eq!(droid, DROID_RELAY_SKILL);
+        // droid gets no injection — broker-injected skill text suppresses relay tool use entirely
+        assert!(relay_skill_prefix("droid", None).is_none());
 
         assert!(relay_skill_prefix("codex", Some("gpt-5.5")).is_none());
     }
