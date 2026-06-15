@@ -422,7 +422,10 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
           'droid 0.148.1: s03=0/5 all variants (add_agent never called); skill injection s03=0/5 (suppresses relay). Was 5/5 on older version (June 12). s04=0/5.',
       },
       mapper: { fitness: 'provisional', notes: 'Leaf work only — do not give spawning or delegation tasks.' },
-      planner: { fitness: 'provisional', notes: 'No delegation tasks; droid routes delegation to native Task, not relay.' },
+      planner: {
+        fitness: 'provisional',
+        notes: 'No delegation tasks; droid routes delegation to native Task, not relay.',
+      },
       // NEVER use for roles that involve spawning: s03=0%, s04=0% with droid 0.148.1.
       coordinator: { fitness: 'not-viable', notes: 's03/s04=0%; routes to native Task tool' },
       supervisor: { fitness: 'not-viable', notes: 'would use native Task, not relay' },
