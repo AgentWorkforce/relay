@@ -68,7 +68,21 @@
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": ["confidence:0.9"]
+          "tags": [
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1781547099370,
+          "type": "decision",
+          "content": "Added single-column 'How it works' band between Agent Tools and A2A features on web homepage: Added single-column 'How it works' band between Agent Tools and A2A features on web homepage",
+          "raw": {
+            "question": "Added single-column 'How it works' band between Agent Tools and A2A features on web homepage",
+            "chosen": "Added single-column 'How it works' band between Agent Tools and A2A features on web homepage",
+            "alternatives": [],
+            "reasoning": "Mirrors provided mockup; placed inline in features grid via grid order; full-bleed dark band keeps the white Agent Relay wordmark legible"
+          },
+          "significance": "high"
         }
       ]
     }

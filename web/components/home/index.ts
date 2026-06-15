@@ -1,4 +1,5 @@
 export { Hero } from './Hero';
+export { HowItWorks } from './HowItWorks';
 export { MessagingFeature } from './MessagingFeature';
 export { WorksWithEveryAgent } from './WorksWithEveryAgent';
 export { DeliveryFeature } from './DeliveryFeature';

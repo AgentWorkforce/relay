@@ -9,6 +9,7 @@ import {
   Deploy,
   DeliveryFeature,
   Hero,
+  HowItWorks,
   MessagingFeature,
   QuickStart,
   Waitlist,
@@ -57,6 +58,7 @@ export default function HomePage() {
           <DeliveryFeature />
           <WaveDivider variant="feature" />
           <AgentToolsFeature />
+          <HowItWorks />
           <WaveDivider variant="a2a" className={s.a2aSeparator} />
           <A2AFeature />
         </section>
