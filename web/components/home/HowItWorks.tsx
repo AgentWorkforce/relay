@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 
+import { CheckCheck, MessagesSquare, RefreshCw, Search } from 'lucide-react';
+
 import ClaudeCode from '@lobehub/icons/es/ClaudeCode';
 import Codex from '@lobehub/icons/es/Codex';
 import Cursor from '@lobehub/icons/es/Cursor';
@@ -12,7 +14,7 @@ import { FadeIn } from '../FadeIn';
 import s from '../../app/landing.module.css';
 import { PythonLogo, TypeScriptLogo } from './icons';
 
-const ICON_SIZE = 26;
+const ICON_SIZE = 24;
 
 interface LogoItem {
   key: string;
@@ -32,19 +34,41 @@ const CLI_LOGOS: readonly LogoItem[] = [
 const CUSTOM_LOGOS: readonly LogoItem[] = [
   { key: 'hermes', label: 'Hermes', node: <HermesAgent size={ICON_SIZE} /> },
   { key: 'openclaw', label: 'OpenClaw', node: <OpenClaw.Color size={ICON_SIZE} /> },
-  { key: 'typescript', label: 'TypeScript', node: <TypeScriptLogo className={s.howLogoSvg} /> },
-  { key: 'python', label: 'Python', node: <PythonLogo className={s.howLogoSvg} /> },
+  { key: 'typescript', label: 'TypeScript', node: <TypeScriptLogo className={s.howChipSvg} /> },
+  { key: 'python', label: 'Python', node: <PythonLogo className={s.howChipSvg} /> },
   { key: 'github', label: 'GitHub', node: <Github size={ICON_SIZE} /> },
 ];
 
-const RELAY_CAPABILITIES: readonly string[] = [
-  'DMs, channels & @mentions',
-  'Durable messaging, retries',
-  'Message receipts',
-  'Search, history, webhooks',
+interface Capability {
+  icon: ReactNode;
+  title: string;
+  detail: string;
+}
+
+const CAPABILITIES: readonly Capability[] = [
+  {
+    icon: <MessagesSquare size={18} strokeWidth={1.8} aria-hidden="true" />,
+    title: 'DMs, channels & @mentions',
+    detail: 'Slack-style routing between agents',
+  },
+  {
+    icon: <RefreshCw size={18} strokeWidth={1.8} aria-hidden="true" />,
+    title: 'Durable messaging & retries',
+    detail: 'Survives restarts and offline gaps',
+  },
+  {
+    icon: <CheckCheck size={18} strokeWidth={1.8} aria-hidden="true" />,
+    title: 'Message receipts',
+    detail: 'Know when a handoff was acknowledged',
+  },
+  {
+    icon: <Search size={18} strokeWidth={1.8} aria-hidden="true" />,
+    title: 'Search, history & webhooks',
+    detail: 'Recover context, bridge any service',
+  },
 ];
 
-function SourceNode({
+function AgentGroup({
   label,
   logos,
   caption,
@@ -54,26 +78,38 @@ function SourceNode({
   caption: string;
 }) {
   return (
-    <div className={s.howNode}>
-      <span className={s.howNodeLabel}>{label}</span>
-      <div className={s.howLogoRow}>
+    <div className={s.howGroup}>
+      <span className={s.howGroupLabel}>{label}</span>
+      <div className={s.howGroupLogos}>
         {logos.map((logo) => (
-          <span key={logo.key} className={s.howLogo} aria-label={logo.label} title={logo.label}>
+          <span key={logo.key} className={s.howChip} aria-label={logo.label} title={logo.label}>
             {logo.node}
           </span>
         ))}
       </div>
-      <p className={s.howNodeCaption}>{caption}</p>
+      <p className={s.howGroupCaption}>{caption}</p>
     </div>
   );
 }
 
-/** A pair of curved arrows linking a source group to the relay card. */
-function ExchangeArrows() {
+/** Converging wires from the two agent groups into the hub. */
+function WiresIn() {
   return (
-    <svg className={s.howExchange} viewBox="0 0 56 44" fill="none" aria-hidden="true">
-      <path className={s.howExchangePath} d="M8 15 C24 4 38 4 49 13" markerEnd="url(#howArrowHead)" />
-      <path className={s.howExchangePath} d="M48 29 C37 38 23 38 7 30" markerEnd="url(#howArrowHead)" />
+    <svg className={s.howWires} viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true">
+      <path className={s.howWire} d="M0 27 C55 27 45 50 100 50" />
+      <path className={s.howWire} d="M0 73 C55 73 45 50 100 50" />
+    </svg>
+  );
+}
+
+/** Diverging wires from the hub out to the four capabilities. */
+function WiresOut() {
+  return (
+    <svg className={s.howWires} viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true">
+      <path className={s.howWire} d="M0 50 C50 50 45 13 100 13" />
+      <path className={s.howWire} d="M0 50 C50 50 48 38 100 38" />
+      <path className={s.howWire} d="M0 50 C50 50 48 62 100 62" />
+      <path className={s.howWire} d="M0 50 C50 50 45 87 100 87" />
     </svg>
   );
 }
@@ -81,65 +117,61 @@ function ExchangeArrows() {
 export function HowItWorks() {
   return (
     <section className={s.howItWorks} aria-labelledby="how-it-works-title">
-      {/* Shared arrowhead marker for every ExchangeArrows instance. */}
-      <svg width="0" height="0" aria-hidden="true" style={{ position: 'absolute' }}>
-        <defs>
-          <marker id="howArrowHead" markerWidth="7" markerHeight="7" refX="4" refY="3" orient="auto">
-            <path d="M0 0 L6 3 L0 6 Z" fill="currentColor" />
-          </marker>
-        </defs>
-      </svg>
-
       <FadeIn direction="up" className={s.howHeader}>
         <h2 id="how-it-works-title" className={s.howTitle}>
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Connect CLI agents and your own custom agents to a single communication rail. Agent Relay handles
-          delivery, history, and coordination between them.
+          Your agents plug into Agent Relay, the rail that handles messaging, delivery, and history so
+          they can coordinate without any glue code.
         </p>
       </FadeIn>
 
-      <div className={s.howDiagram}>
-        <FadeIn direction="right" className={s.howSources}>
-          <SourceNode
+      <div className={s.howHub}>
+        <FadeIn direction="right" className={s.howColAgents}>
+          <AgentGroup
             label="CLI agents"
             logos={CLI_LOGOS}
-            caption="PTY driven, real-time message injection"
+            caption="PTY driven, real-time injection"
           />
-          <SourceNode label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
+          <AgentGroup label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
         </FadeIn>
 
-        <div className={s.howFlow} aria-hidden="true">
-          <ExchangeArrows />
-          <ExchangeArrows />
-        </div>
+        <WiresIn />
 
-        <FadeIn direction="left" delay={160} className={s.howRelay}>
-          <div className={s.howRelayCard}>
+        <FadeIn direction="up" delay={120} className={s.howCore}>
+          <div className={s.howCoreNode}>
             <img
               src="/brand-kit/agent-relay-mark.svg"
               alt=""
-              width={44}
-              height={36}
-              className={s.howRelayMark}
+              width={46}
+              height={38}
+              className={s.howCoreMark}
             />
             <img
               src="/brand-kit/agent-relay-wordmark.svg"
               alt="Agent Relay"
-              width={158}
-              height={32}
-              className={s.howRelayWordmark}
+              width={150}
+              height={30}
+              className={s.howCoreWordmark}
             />
           </div>
-          <ul className={s.howCapabilities}>
-            {RELAY_CAPABILITIES.map((cap) => (
-              <li key={cap} className={s.howCapability}>
-                <span className={s.howCapabilityDot} aria-hidden="true" />
-                {cap}
-              </li>
-            ))}
-          </ul>
+        </FadeIn>
+
+        <WiresOut />
+
+        <FadeIn direction="left" delay={200} className={s.howColCaps}>
+          {CAPABILITIES.map((cap) => (
+            <div key={cap.title} className={s.howCap}>
+              <span className={s.howCapIcon} aria-hidden="true">
+                {cap.icon}
+              </span>
+              <span className={s.howCapText}>
+                <strong>{cap.title}</strong>
+                <span className={s.howCapDetail}>{cap.detail}</span>
+              </span>
+            </div>
+          ))}
         </FadeIn>
       </div>
     </section>
