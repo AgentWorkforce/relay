@@ -55,14 +55,7 @@ const PORTS: readonly Port[] = [
   [69, 70], // custom agents (right edge)
 ];
 
-const MESSAGE_CLASSES = [
-  s.howMsg1,
-  s.howMsg2,
-  s.howMsg3,
-  s.howMsg4,
-  s.howMsg5,
-  s.howMsg6,
-] as const;
+const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3, s.howMsg4, s.howMsg5, s.howMsg6] as const;
 
 function AgentGroup({
   label,
@@ -96,9 +89,9 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Add Slack-style communication to any agent. Durable messaging, channels, DMs, webhooks, and
-          search. Our PTY based driver can power any CLI agent or you can drop in our SDK for your
-          custom orchestrator.
+          Add Slack-style communication to any agent. Durable messaging, channels, DMs, webhooks, and search.
+          Our PTY based driver can power any CLI agent or you can drop in our SDK for your custom
+          orchestrator.
         </p>
       </FadeIn>
 
