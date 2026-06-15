@@ -89,8 +89,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Add Slack-style communication to any agent. Our PTY based driver can power any CLI agent or
-          you can drop in our SDK for your custom orchestrator.
+          Add Slack-style communication to any agent. Our PTY based driver can power any CLI agent or you can
+          drop in our SDK for your custom orchestrator.
         </p>
       </FadeIn>
 
