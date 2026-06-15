@@ -4273,13 +4273,6 @@
   height: auto;
 }
 
-.howFootnote {
-  margin: 44px 0 0;
-  text-align: center;
-  font-size: 0.9rem;
-  color: var(--fg-faint);
-}
-
 @media (max-width: 1024px) {
   .howRow {
     grid-template-columns: 32% 36% 32%;

@@ -89,9 +89,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Add Slack-style communication to any agent. Durable messaging, channels, DMs, webhooks, and search.
-          Our PTY based driver can power any CLI agent or you can drop in our SDK for your custom
-          orchestrator.
+          Add Slack-style communication to any agent. Our PTY based driver can power any CLI agent or
+          you can drop in our SDK for your custom orchestrator.
         </p>
       </FadeIn>
 
@@ -137,10 +136,6 @@ export function HowItWorks() {
           </FadeIn>
         </div>
       </div>
-
-      <p className={s.howFootnote}>
-        Plug in any other agent over the SDK, MCP, or A2A — every one lands on the same rail.
-      </p>
     </section>
   );
 }
