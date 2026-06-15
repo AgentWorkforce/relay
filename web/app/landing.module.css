@@ -3953,8 +3953,10 @@
 /* agents | wires-in | hub | wires-out | capabilities */
 .howHub {
   display: grid;
-  grid-template-columns:
-    minmax(0, 0.92fr) clamp(40px, 5vw, 84px) auto clamp(40px, 5vw, 84px) minmax(0, 0.92fr);
+  grid-template-columns: minmax(0, 0.92fr) clamp(40px, 5vw, 84px) auto clamp(40px, 5vw, 84px) minmax(
+      0,
+      0.92fr
+    );
   align-items: stretch;
   width: 100%;
   max-width: 1120px;

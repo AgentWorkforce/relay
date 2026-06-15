@@ -95,7 +95,13 @@ function AgentGroup({
 /** Converging wires from the two agent groups into the hub. */
 function WiresIn() {
   return (
-    <svg className={s.howWires} viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true">
+    <svg
+      className={s.howWires}
+      viewBox="0 0 100 100"
+      fill="none"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
       <path className={s.howWire} d="M0 27 C55 27 45 50 100 50" />
       <path className={s.howWire} d="M0 73 C55 73 45 50 100 50" />
     </svg>
@@ -105,7 +111,13 @@ function WiresIn() {
 /** Diverging wires from the hub out to the four capabilities. */
 function WiresOut() {
   return (
-    <svg className={s.howWires} viewBox="0 0 100 100" fill="none" preserveAspectRatio="none" aria-hidden="true">
+    <svg
+      className={s.howWires}
+      viewBox="0 0 100 100"
+      fill="none"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
       <path className={s.howWire} d="M0 50 C50 50 45 13 100 13" />
       <path className={s.howWire} d="M0 50 C50 50 48 38 100 38" />
       <path className={s.howWire} d="M0 50 C50 50 48 62 100 62" />
@@ -122,18 +134,14 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Your agents plug into Agent Relay, the rail that handles messaging, delivery, and history so
-          they can coordinate without any glue code.
+          Your agents plug into Agent Relay, the rail that handles messaging, delivery, and history so they
+          can coordinate without any glue code.
         </p>
       </FadeIn>
 
       <div className={s.howHub}>
         <FadeIn direction="right" className={s.howColAgents}>
-          <AgentGroup
-            label="CLI agents"
-            logos={CLI_LOGOS}
-            caption="PTY driven, real-time injection"
-          />
+          <AgentGroup label="CLI agents" logos={CLI_LOGOS} caption="PTY driven, real-time injection" />
           <AgentGroup label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
         </FadeIn>
 
