@@ -3896,10 +3896,10 @@
 /* ---- HOW IT WORKS ---- */
 
 /* Communication diagram band inside the features grid, before the Agent Tools
-   feature. Agents on the left and right talk to each other *through* the
-   Agent Relay node at the center; animated message dots stream across the
-   wires and pass behind the relay. Same band fill + separation as the
-   "Works with every agent" section. */
+   feature. CLI agents (left) and custom agents (right) message each other
+   *through* the Agent Relay hub at the centre; coloured message dots route
+   agent -> relay -> agent. Same band fill + separation as the "Works with
+   every agent" section. */
 .howItWorks {
   position: relative;
   grid-column: 1 / -1;
@@ -3949,148 +3949,233 @@
   max-width: 58ch;
 }
 
-/* --- stage: agents <-> relay <-> agents with animated message lanes --- */
+/* --- stage: CLI agents <-> relay <-> custom agents --- */
 .howStage {
   position: relative;
   width: 100%;
-  max-width: 1080px;
+  max-width: 1060px;
   margin: 0 auto;
 }
 
 .howRow {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: 31% 38% 31%;
   align-items: center;
-  gap: clamp(28px, 6vw, 96px);
 }
 
-/* message lanes sit behind the row; dots are hidden behind the opaque cards
-   and relay node, so they read as messages hopping agent -> relay -> agent */
-.howLanes {
+.howCol {
+  display: flex;
+}
+
+/* spoke wires from each agent port to the hub (percentage space, matched by the
+   message dots which travel along them) */
+.howWires {
   position: absolute;
   inset: 0;
   z-index: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
-.howLane {
+.howWire {
+  stroke: color-mix(in srgb, var(--primary) 34%, transparent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* message dots travel source -> hub -> destination; hidden behind the cards
+   (endpoints) and the relay node (centre) so they read as routed messages */
+.howMsgs {
   position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.howMsg {
+  position: absolute;
+  top: 0;
   left: 0;
-  right: 0;
-  height: 0;
-}
-
-.howLane::before {
-  content: '';
-  position: absolute;
-  left: 4%;
-  right: 4%;
-  top: -1px;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--primary) 48%, transparent) 16%,
-    color-mix(in srgb, var(--primary) 48%, transparent) 84%,
-    transparent
-  );
-  opacity: 0.75;
-}
-
-.howDot {
-  position: absolute;
-  top: -5px;
   width: 10px;
   height: 10px;
-  margin-left: -5px;
+  margin: -5px 0 0 -5px;
   border-radius: 50%;
-  background: var(--primary);
+  background: var(--c);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary) 40%, transparent),
-    0 0 14px 2px color-mix(in srgb, var(--primary) 80%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent),
+    0 0 14px 2px var(--c);
   opacity: 0;
-  animation: howFlowRight 4.4s linear infinite;
 }
 
-/* Comet trail behind each dot, pointing opposite to travel direction. */
-.howDot::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  right: 50%;
-  width: 46px;
-  height: 2px;
-  transform: translateY(-50%);
-  border-radius: 2px;
-  background: linear-gradient(270deg, color-mix(in srgb, var(--primary) 70%, transparent), transparent);
+/* Each message has its own colour + path: source agent -> relay (50% 50%) ->
+   destination agent. Mix of CLI<->CLI, CLI<->custom, and custom<->custom. */
+.howMsg1 {
+  --c: #74b8e2; /* blue — CLI -> custom */
+  animation: howMsg1 5s ease-in-out 0s infinite;
+}
+.howMsg2 {
+  --c: #d97757; /* Claude orange — custom -> CLI */
+  animation: howMsg2 5.6s ease-in-out 0.85s infinite;
+}
+.howMsg3 {
+  --c: #a6d388; /* green — CLI -> CLI */
+  animation: howMsg3 4.8s ease-in-out 1.7s infinite;
+}
+.howMsg4 {
+  --c: #9ccfff; /* light blue — custom -> custom */
+  animation: howMsg4 5.4s ease-in-out 2.55s infinite;
+}
+.howMsg5 {
+  --c: #74d0c4; /* teal — CLI -> custom */
+  animation: howMsg5 5.2s ease-in-out 3.4s infinite;
+}
+.howMsg6 {
+  --c: #5a9fd4; /* deep blue — custom -> CLI */
+  animation: howMsg6 5.8s ease-in-out 4.25s infinite;
 }
 
-.howDotLeft {
-  background: #a6d388;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, #a6d388 40%, transparent),
-    0 0 14px 2px color-mix(in srgb, #a6d388 80%, transparent);
-  animation-name: howFlowLeft;
-}
-
-.howDotLeft::before {
-  right: auto;
-  left: 50%;
-  background: linear-gradient(90deg, color-mix(in srgb, #a6d388 70%, transparent), transparent);
-}
-
-@keyframes howFlowRight {
+@keyframes howMsg1 {
   0% {
-    left: 5%;
+    left: 31%;
+    top: 30%;
     opacity: 0;
   }
-  12% {
+  9%,
+  91% {
     opacity: 1;
   }
-  88% {
-    opacity: 1;
+  50% {
+    left: 50%;
+    top: 50%;
   }
   100% {
-    left: 95%;
+    left: 69%;
+    top: 70%;
     opacity: 0;
   }
 }
 
-@keyframes howFlowLeft {
+@keyframes howMsg2 {
   0% {
-    left: 95%;
+    left: 69%;
+    top: 30%;
     opacity: 0;
   }
-  12% {
+  9%,
+  91% {
     opacity: 1;
   }
-  88% {
-    opacity: 1;
+  50% {
+    left: 50%;
+    top: 50%;
   }
   100% {
-    left: 5%;
+    left: 31%;
+    top: 50%;
+    opacity: 0;
+  }
+}
+
+@keyframes howMsg3 {
+  0% {
+    left: 31%;
+    top: 70%;
+    opacity: 0;
+  }
+  9%,
+  91% {
+    opacity: 1;
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+  }
+  100% {
+    left: 31%;
+    top: 30%;
+    opacity: 0;
+  }
+}
+
+@keyframes howMsg4 {
+  0% {
+    left: 69%;
+    top: 70%;
+    opacity: 0;
+  }
+  9%,
+  91% {
+    opacity: 1;
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+  }
+  100% {
+    left: 69%;
+    top: 30%;
+    opacity: 0;
+  }
+}
+
+@keyframes howMsg5 {
+  0% {
+    left: 31%;
+    top: 50%;
+    opacity: 0;
+  }
+  9%,
+  91% {
+    opacity: 1;
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+  }
+  100% {
+    left: 69%;
+    top: 50%;
+    opacity: 0;
+  }
+}
+
+@keyframes howMsg6 {
+  0% {
+    left: 69%;
+    top: 50%;
+    opacity: 0;
+  }
+  9%,
+  91% {
+    opacity: 1;
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+  }
+  100% {
+    left: 31%;
+    top: 70%;
     opacity: 0;
   }
 }
 
 /* --- agent group cards --- */
-.howCol {
-  display: flex;
-}
-
 .howGroup {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 22px 20px;
+  padding: 22px 18px;
   border-radius: 18px;
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--card-bg) 92%, #07111c 8%);
-  box-shadow: 0 14px 38px color-mix(in srgb, #04101c 36%, transparent);
+  /* opaque enough to mask message dots at their endpoints */
+  background: color-mix(in srgb, var(--card-bg) 96%, #07111c 4%);
+  box-shadow: 0 14px 38px color-mix(in srgb, #04101c 38%, transparent);
 }
 
 .howGroupLabel {
@@ -4143,7 +4228,7 @@
   text-align: center;
 }
 
-/* --- center hub --- */
+/* --- centre hub --- */
 .howCore {
   display: flex;
   align-items: center;
@@ -4156,7 +4241,7 @@
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 26px 30px;
+  padding: 24px 26px;
   border-radius: 22px;
   border: 1px solid color-mix(in srgb, var(--primary) 42%, transparent);
   /* Opaque base so the message dots disappear behind the node. */
@@ -4171,7 +4256,7 @@
 .howCoreNode::before {
   content: '';
   position: absolute;
-  inset: -26px;
+  inset: -24px;
   z-index: -1;
   border-radius: 50%;
   background: radial-gradient(circle, color-mix(in srgb, var(--primary) 18%, transparent), transparent 68%);
@@ -4179,64 +4264,33 @@
 }
 
 .howCoreMark {
-  width: 46px;
+  width: 44px;
   height: auto;
 }
 
 .howCoreWordmark {
-  width: 150px;
+  width: 142px;
   height: auto;
 }
 
-/* --- feature strip (what the rail gives every message) --- */
-.howFeatures {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  margin: 48px auto 0;
-  max-width: 920px;
-}
-
-.howFeature {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 16px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--card-bg) 60%, transparent);
-  font-size: 0.92rem;
-  font-weight: 500;
-  color: var(--fg);
-}
-
-.howFeatureIcon {
-  display: inline-flex;
-  align-items: center;
-  color: var(--primary);
-}
-
 .howFootnote {
-  margin: 26px 0 0;
+  margin: 44px 0 0;
   text-align: center;
   font-size: 0.9rem;
   color: var(--fg-faint);
 }
 
-/* Tablet: shrink the gaps and the relay node. */
 @media (max-width: 1024px) {
   .howRow {
-    gap: clamp(20px, 4vw, 56px);
+    grid-template-columns: 32% 36% 32%;
   }
 
   .howCoreWordmark {
-    width: 128px;
+    width: 122px;
   }
 }
 
-/* Mobile: stack agents -> relay -> agents vertically; lanes run top to bottom. */
+/* Mobile: stack the cards; drop the percentage-positioned wires + messages. */
 @media (max-width: 760px) {
   .howItWorks {
     padding: 64px 0 72px;
@@ -4244,6 +4298,11 @@
 
   .howHeader {
     margin-bottom: 40px;
+  }
+
+  .howWires,
+  .howMsgs {
+    display: none;
   }
 
   .howRow {
@@ -4258,103 +4317,37 @@
     width: 100%;
     max-width: 380px;
   }
-
-  /* Vertical message flow between the stacked cards. */
-  .howLanes {
-    left: 50%;
-    right: auto;
-    width: 0;
-  }
-
-  .howLane {
-    left: 0;
-    right: auto;
-    top: 0 !important;
-    bottom: 0;
-    height: auto;
-    width: 0;
-  }
-
-  .howLane::before {
-    left: -1px;
-    right: auto;
-    top: 6%;
-    bottom: 6%;
-    width: 1.5px;
-    height: auto;
-    background: linear-gradient(
-      180deg,
-      transparent,
-      color-mix(in srgb, var(--primary) 36%, transparent) 18%,
-      color-mix(in srgb, var(--primary) 36%, transparent) 82%,
-      transparent
-    );
-  }
-
-  .howDot {
-    top: 5%;
-    left: -5px !important;
-    margin-left: 0;
-    animation-name: howFlowDown;
-  }
-
-  /* Horizontal comet trail doesn't fit vertical flow on mobile. */
-  .howDot::before {
-    display: none;
-  }
-
-  .howDotLeft {
-    animation-name: howFlowUp;
-  }
 }
 
-@keyframes howFlowDown {
-  0% {
-    top: 5%;
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  88% {
-    opacity: 1;
-  }
-  100% {
-    top: 95%;
-    opacity: 0;
-  }
-}
-
-@keyframes howFlowUp {
-  0% {
-    top: 95%;
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  88% {
-    opacity: 1;
-  }
-  100% {
-    top: 5%;
-    opacity: 0;
-  }
-}
-
-/* Respect reduced-motion: park a couple of dots statically on each wire. */
+/* Reduced motion: park the coloured messages statically on their spokes
+   instead of animating them, so the routing still reads without motion. */
 @media (prefers-reduced-motion: reduce) {
-  .howDot {
+  .howMsg {
     animation: none;
-    opacity: 0.85;
-    left: 32%;
+    opacity: 1;
   }
-
-  .howDot:nth-child(2) {
-    left: 64%;
+  .howMsg1 {
+    left: 40%;
+    top: 38%;
   }
-
-  .howDot:nth-child(3) {
-    left: 84%;
+  .howMsg2 {
+    left: 40%;
+    top: 50%;
+  }
+  .howMsg3 {
+    left: 40%;
+    top: 62%;
+  }
+  .howMsg4 {
+    left: 60%;
+    top: 38%;
+  }
+  .howMsg5 {
+    left: 60%;
+    top: 50%;
+  }
+  .howMsg6 {
+    left: 60%;
+    top: 62%;
   }
 }

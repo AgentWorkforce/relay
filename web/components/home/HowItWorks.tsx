@@ -1,7 +1,5 @@
 import type { ReactNode } from 'react';
 
-import { CheckCheck, MessagesSquare, RefreshCw, Search } from 'lucide-react';
-
 import ClaudeCode from '@lobehub/icons/es/ClaudeCode';
 import Codex from '@lobehub/icons/es/Codex';
 import Cursor from '@lobehub/icons/es/Cursor';
@@ -39,57 +37,32 @@ const CUSTOM_LOGOS: readonly LogoItem[] = [
   { key: 'github', label: 'GitHub', node: <Github size={ICON_SIZE} /> },
 ];
 
-interface Feature {
-  icon: ReactNode;
-  label: string;
-}
-
-const FEATURES: readonly Feature[] = [
-  {
-    icon: <MessagesSquare size={17} strokeWidth={1.8} aria-hidden="true" />,
-    label: 'DMs, channels & @mentions',
-  },
-  { icon: <RefreshCw size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Durable delivery & retries' },
-  { icon: <CheckCheck size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Message receipts' },
-  { icon: <Search size={17} strokeWidth={1.8} aria-hidden="true" />, label: 'Search, history & webhooks' },
-];
-
 /**
- * Animated message lanes behind the row. Each lane is a faint wire carrying
- * dots that travel the full width and pass *behind* the centered relay node —
- * so messages appear to flow from one set of agents, through Agent Relay, to
- * the other. Directions alternate to read as two-way communication.
+ * Spoke wires from each agent port to the Agent Relay hub (centre). Ports are
+ * percentages of the stage; the six animated message dots ({@link MESSAGES})
+ * travel along these spokes — source agent → relay → destination agent. Each
+ * message has its own colour + keyframes in landing.module.css so distinct
+ * messages flow between different agents (CLI↔CLI, CLI↔custom, custom↔custom).
  */
-interface Lane {
-  top: string;
-  dir: 'right' | 'left';
-  dur: number;
-  delays: readonly number[];
-}
+type Port = readonly [number, number];
 
-const LANES: readonly Lane[] = [
-  { top: '30%', dir: 'right', dur: 4.4, delays: [0, 1.1, 2.2, 3.3] },
-  { top: '50%', dir: 'left', dur: 5.0, delays: [0.6, 1.85, 3.1, 4.35] },
-  { top: '70%', dir: 'right', dur: 4.7, delays: [0.35, 1.5, 2.65, 3.8] },
+const PORTS: readonly Port[] = [
+  [31, 30],
+  [31, 50],
+  [31, 70], // CLI agents (left edge)
+  [69, 30],
+  [69, 50],
+  [69, 70], // custom agents (right edge)
 ];
 
-function MessageLanes() {
-  return (
-    <div className={s.howLanes} aria-hidden="true">
-      {LANES.map((lane, i) => (
-        <div key={i} className={s.howLane} style={{ top: lane.top }}>
-          {lane.delays.map((delay, j) => (
-            <span
-              key={j}
-              className={lane.dir === 'left' ? `${s.howDot} ${s.howDotLeft}` : s.howDot}
-              style={{ animationDelay: `${delay}s`, animationDuration: `${lane.dur}s` }}
-            />
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
+const MESSAGE_CLASSES = [
+  s.howMsg1,
+  s.howMsg2,
+  s.howMsg3,
+  s.howMsg4,
+  s.howMsg5,
+  s.howMsg6,
+] as const;
 
 function AgentGroup({
   label,
@@ -129,7 +102,18 @@ export function HowItWorks() {
       </FadeIn>
 
       <div className={s.howStage}>
-        <MessageLanes />
+        <svg className={s.howWires} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {PORTS.map((p, i) => (
+            <line key={i} x1={p[0]} y1={p[1]} x2={50} y2={50} className={s.howWire} />
+          ))}
+        </svg>
+
+        <div className={s.howMsgs} aria-hidden="true">
+          {MESSAGE_CLASSES.map((cls, i) => (
+            <span key={i} className={`${s.howMsg} ${cls}`} />
+          ))}
+        </div>
+
         <div className={s.howRow}>
           <FadeIn direction="right" className={s.howCol}>
             <AgentGroup label="CLI agents" logos={CLI_LOGOS} caption="PTY driven, real-time injection" />
@@ -159,15 +143,6 @@ export function HowItWorks() {
           </FadeIn>
         </div>
       </div>
-
-      <FadeIn direction="up" delay={160} className={s.howFeatures}>
-        {FEATURES.map((feature) => (
-          <span key={feature.label} className={s.howFeature}>
-            <span className={s.howFeatureIcon}>{feature.icon}</span>
-            {feature.label}
-          </span>
-        ))}
-      </FadeIn>
 
       <p className={s.howFootnote}>
         Plug in any other agent over the SDK, MCP, or A2A — every one lands on the same rail.
