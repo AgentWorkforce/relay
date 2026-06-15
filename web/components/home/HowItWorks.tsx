@@ -96,8 +96,9 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Bring any agent — CLI tools or your own custom builds — onto one rail. They talk to each other
-          through Agent Relay, so a message from one agent reaches any other.
+          Add Slack-style communication to any agent. Durable messaging, channels, DMs, webhooks, and
+          search. Our PTY based driver can power any CLI agent or you can drop in our SDK for your
+          custom orchestrator.
         </p>
       </FadeIn>
 
