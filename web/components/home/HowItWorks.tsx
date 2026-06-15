@@ -134,8 +134,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Bring any agent — CLI tools or your own custom builds — onto one rail. Connect them all to
-          Agent Relay and every agent gets DMs, channels, durable delivery, and shared history.
+          Bring any agent — CLI tools or your own custom builds — onto one rail. Connect them all to Agent
+          Relay and every agent gets DMs, channels, durable delivery, and shared history.
         </p>
       </FadeIn>
 
