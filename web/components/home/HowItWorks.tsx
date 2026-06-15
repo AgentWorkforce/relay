@@ -25,10 +25,24 @@ function HowConnector() {
       <svg viewBox="0 0 40 72" fill="none" preserveAspectRatio="xMidYMid meet">
         <defs>
           <marker id="howDown" markerWidth="9" markerHeight="9" refX="4.5" refY="6" orient="auto">
-            <path d="M0 0 L4.5 6 L9 0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="M0 0 L4.5 6 L9 0"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </marker>
           <marker id="howUp" markerWidth="9" markerHeight="9" refX="4.5" refY="3" orient="auto">
-            <path d="M0 9 L4.5 3 L9 9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="M0 9 L4.5 3 L9 9"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </marker>
         </defs>
         <path className={s.howConnectorPath} d="M15 6 L15 66" markerEnd="url(#howDown)" />
@@ -46,8 +60,8 @@ export function HowItWorks() {
           How it works
         </h2>
         <p className={s.howSubtitle}>
-          Connect CLI agents and your own custom agents to a single communication rail. Agent Relay
-          handles delivery, history, and coordination between them.
+          Connect CLI agents and your own custom agents to a single communication rail. Agent Relay handles
+          delivery, history, and coordination between them.
         </p>
       </FadeIn>
 
