@@ -1,0 +1,30 @@
+{
+  "comment": "Eval-suite build. Compiles only evals/ + the broker test utils it reuses, avoiding the sibling broker test files that are mid-migration against the narrowed SDK. Outputs to ../dist so `node dist/evals/runner.js` resolves ../utils.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "declaration": false,
+    "sourceMap": true,
+    "rootDir": "..",
+    "outDir": "../dist",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "baseUrl": "../../../..",
+    "paths": {
+      "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
+      "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
+      "@agent-relay/harness-driver": ["packages/harness-driver/dist/index.d.ts"],
+      "@agent-relay/harness-driver/*": ["packages/harness-driver/dist/*"],
+      "@agent-relay/config": ["packages/config/dist/index.d.ts"],
+      "@agent-relay/config/*": ["packages/config/dist/*"],
+      "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
+      "@agent-relay/utils/*": ["packages/utils/dist/*"]
+    }
+  },
+  "include": ["**/*.ts", "../utils/**/*.ts"],
+  "exclude": ["dist", "../dist", "**/*.unit.test.ts"]
+}

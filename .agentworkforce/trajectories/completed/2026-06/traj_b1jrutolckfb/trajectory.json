@@ -127,6 +127,53 @@
             "reasoning": "Only commits after v8.4.0 should remain in [Unreleased]; recent released sections should be curated from the commits between adjacent release tags."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781269986543,
+          "type": "decision",
+          "content": "Validated CodeRabbit credential findings before editing: Validated CodeRabbit credential findings before editing",
+          "raw": {
+            "question": "Validated CodeRabbit credential findings before editing",
+            "chosen": "Validated CodeRabbit credential findings before editing",
+            "alternatives": [],
+            "reasoning": "Current connect-daytona-local.ts falls back from a stale activeProfile to profiles[0] and accepts any non-empty expiresAt, so both can upload the wrong or malformed Daytona credential."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781270705057,
+          "type": "decision",
+          "content": "Restore Grok provider and harden Daytona config parsing: Restore Grok provider and harden Daytona config parsing",
+          "raw": {
+            "question": "Restore Grok provider and harden Daytona config parsing",
+            "chosen": "Restore Grok provider and harden Daytona config parsing",
+            "alternatives": [],
+            "reasoning": "Current checkout still removes xai auth config/test from the shared provider registry and parsed arbitrary JSON can throw TypeError before the Daytona-specific validation path."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781355941523,
+          "type": "decision",
+          "content": "PR 1123 lockfile is reproducible from current manifests: PR 1123 lockfile is reproducible from current manifests",
+          "raw": {
+            "question": "PR 1123 lockfile is reproducible from current manifests",
+            "chosen": "PR 1123 lockfile is reproducible from current manifests",
+            "alternatives": [],
+            "reasoning": "package-lock.json is the sole changed file; npm install --package-lock-only, npm ci, npm test, typecheck, lint, and targeted prettier all validate the lockfile change. Broader syncpack/format issues are outside this lockfile PR."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781356028983,
+          "type": "reflection",
+          "content": "PR 1123 review complete: no code edits needed; lockfile-only change validated locally and GitHub Actions are green",
+          "raw": {
+            "focalPoints": ["lockfile", "ci", "scope"],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": ["focal:lockfile", "focal:ci", "focal:scope", "confidence:0.9"]
         }
       ]
     }

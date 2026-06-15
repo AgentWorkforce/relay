@@ -14,6 +14,42 @@ import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { attachDrive } from '../lib/attach-drive.js';
 import { attachView } from '../lib/attach-view.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
+import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
+
+// ── Auto-routing model resolution ─────────────────────────────────────────────
+
+// Maps the routing tier to a concrete Claude model ID.
+const CLAUDE_MODEL_IDS: Record<'haiku' | 'sonnet' | 'opus', string> = {
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-8',
+};
+
+/**
+ * If `model === 'auto'`, run the task classifier → team composer → Director
+ * meta-prompt builder and return resolved spawn options.
+ *
+ * Only applies to the 'claude' provider — other CLIs use model=auto as a
+ * passthrough until their routing tables are defined.
+ */
+function resolveAutoSpawn(
+  provider: string,
+  name: string,
+  task: string | undefined,
+  model: string | undefined
+): { name: string; task: string | undefined; model: string | undefined } {
+  if (model !== 'auto' || provider !== 'claude' || !task) {
+    return { name, task, model };
+  }
+  const assessment = classifyTask(task);
+  const team = composeTeam(assessment, task);
+  const directorPrompt = buildDirectorPrompt(task, team);
+  return {
+    name: name === provider ? 'Director' : name,
+    task: directorPrompt,
+    model: CLAUDE_MODEL_IDS[team.lead.model],
+  };
+}
 
 export type AttachMode = 'drive' | 'view' | 'passthrough';
 export type LocalAgentMessageBrokerOptions = BrokerConnectionOptions;
@@ -161,15 +197,22 @@ export function registerLocalAgentCommands(
     .option('--model <model>', 'Model override')
     .action(async (provider: string, opts: Record<string, unknown>) => {
       await run(deps, async (client) => {
-        const name = (opts.name as string | undefined) ?? provider;
+        const baseName = (opts.name as string | undefined) ?? provider;
+        const resolved = resolveAutoSpawn(
+          provider,
+          baseName,
+          opts.task as string | undefined,
+          opts.model as string | undefined
+        );
         await spawnAgentWithClient(client, {
-          name,
+          name: resolved.name,
           cli: provider,
           channels: (opts.channels as string[] | undefined) ?? ['general'],
-          task: opts.task as string | undefined,
-          model: opts.model as string | undefined,
+          task: resolved.task,
+          model: resolved.model,
         });
-        deps.log(`Spawned ${name} (${provider}).`);
+        const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
+        deps.log(`Spawned ${resolved.name} (${provider})${autoNote}.`);
       });
     });
 
@@ -189,20 +232,27 @@ export function registerLocalAgentCommands(
         deps.exit(1);
         return;
       }
-      const name = (options.name as string | undefined) ?? provider;
+      const baseName = (options.name as string | undefined) ?? provider;
+      const resolved = resolveAutoSpawn(
+        provider,
+        baseName,
+        options.task as string | undefined,
+        options.model as string | undefined
+      );
       await run(deps, async (client) => {
         await spawnAgentWithClient(client, {
-          name,
+          name: resolved.name,
           cli: provider,
           channels: (options.channels as string[] | undefined) ?? ['general'],
-          task: options.task as string | undefined,
-          model: options.model as string | undefined,
+          task: resolved.task,
+          model: resolved.model,
         });
-        deps.log(`Spawned ${name} (${provider}). Attaching (${mode})…`);
+        const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
+        deps.log(`Spawned ${resolved.name} (${provider}). Attaching (${mode})${autoNote}…`);
       });
       // `new` spawns and attaches on the same default local broker — broker
       // override flags belong on the standalone `attach` command.
-      const code = await deps.attach(name, mode as AttachMode, {});
+      const code = await deps.attach(resolved.name, mode as AttachMode, {});
       if (code !== 0) {
         deps.exit(code);
       }

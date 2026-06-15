@@ -1,0 +1,3 @@
+# Delivery Modes Rubric
+
+Delivery mode cases pass when the in-memory executor demonstrates DeliveryRunner behavior against durable inbox state. Successful runs must show wait and steer mode context mapping, ordered processing, delivered/accepted acknowledgements, adapter deferred scheduling, terminal failures for explicit failed results, retryable failures for thrown errors, and RelayCapabilityError when delivery state is unsupported. Passing output should include the relevant status strings, record the `deliver` tool call, and avoid contradictory terminal states such as ack plus fail for the same item.

@@ -1,4 +1,4 @@
-import { REFRESH_WINDOW_MS } from './types.js';
+import { CloudAuthError, DEFAULT_REFRESH_TIMEOUT_MS, REFRESH_WINDOW_MS } from './types.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 
 export type CloudApiClientOptions = {
@@ -7,6 +7,12 @@ export type CloudApiClientOptions = {
   refreshToken: string;
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt?: string;
+  refreshTimeoutMs?: number;
+  refreshAuth?: (
+    snapshot: CloudApiClientSnapshot,
+    options: { force: boolean; signal?: AbortSignal }
+  ) => Promise<CloudApiClientSnapshot>;
+  onRefresh?: (snapshot: CloudApiClientSnapshot) => void | Promise<void>;
 };
 
 export type CloudApiClientSnapshot = {
@@ -76,7 +82,7 @@ export class CloudApiClient {
   }
 
   async fetch(p: string, init: RequestInit = {}): Promise<Response> {
-    await this.refresh();
+    await this.refresh(false, init.signal ?? undefined);
 
     const response = await fetch(buildApiUrl(this.options.apiUrl, p), {
       ...init,
@@ -87,7 +93,7 @@ export class CloudApiClient {
       return response;
     }
 
-    await this.refresh(true);
+    await this.refresh(true, init.signal ?? undefined);
 
     return fetch(buildApiUrl(this.options.apiUrl, p), {
       ...init,
@@ -109,7 +115,7 @@ export class CloudApiClient {
     }
   }
 
-  private async refresh(force = false): Promise<void> {
+  private async refresh(force = false, signal?: AbortSignal): Promise<void> {
     if (this.refreshPromise) {
       return this.refreshPromise;
     }
@@ -118,24 +124,79 @@ export class CloudApiClient {
       return;
     }
 
-    this.refreshPromise = this.doRefresh().finally(() => {
+    this.refreshPromise = this.doRefresh(force, signal).finally(() => {
       this.refreshPromise = null;
     });
 
     return this.refreshPromise;
   }
 
-  private async doRefresh(): Promise<void> {
-    const response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ refreshToken: this.refreshToken }),
-    });
+  private async doRefresh(force: boolean, signal?: AbortSignal): Promise<void> {
+    if (this.options.refreshAuth) {
+      this.applySnapshot(await this.options.refreshAuth(this.snapshot(), { force, signal }));
+      await this.options.onRefresh?.(this.snapshot());
+      return;
+    }
+
+    this.applySnapshot(await this.requestRefresh(signal));
+    await this.options.onRefresh?.(this.snapshot());
+  }
+
+  private async requestRefresh(signal?: AbortSignal): Promise<CloudApiClientSnapshot> {
+    const refreshTimeoutMs = this.options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
+    const controller = new AbortController();
+    let timedOut = false;
+    let callerAborted = false;
+    const abortFromCaller = () => {
+      callerAborted = true;
+      controller.abort();
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        callerAborted = true;
+        controller.abort();
+      } else {
+        signal.addEventListener('abort', abortFromCaller, { once: true });
+      }
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, refreshTimeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ refreshToken: this.refreshToken }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (timedOut || (!callerAborted && error instanceof Error && error.name === 'AbortError')) {
+        throw new CloudAuthError(
+          'AUTH_REFRESH_TIMEOUT',
+          `Cloud auth refresh timed out after ${refreshTimeoutMs}ms`,
+          { cause: error }
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener('abort', abortFromCaller);
+      }
+    }
 
     if (!response.ok) {
-      throw new Error(`Failed to refresh API token: ${response.status} ${response.statusText}`);
+      throw new CloudAuthError(
+        'AUTH_REFRESH_EXPIRED',
+        `Failed to refresh API token: ${response.status} ${response.statusText}`
+      );
     }
 
     const payload = (await response.json()) as {
@@ -146,13 +207,23 @@ export class CloudApiClient {
     };
 
     if (!payload.accessToken || !payload.accessTokenExpiresAt || !payload.refreshToken) {
-      throw new Error('Refresh response missing token fields');
+      throw new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Refresh response missing token fields');
     }
 
-    this.accessToken = payload.accessToken;
-    this.accessTokenExpiresAt = payload.accessTokenExpiresAt;
-    this.refreshToken = payload.refreshToken;
-    this.refreshTokenExpiresAt = payload.refreshTokenExpiresAt;
+    return {
+      apiUrl: this.options.apiUrl,
+      accessToken: payload.accessToken,
+      accessTokenExpiresAt: payload.accessTokenExpiresAt,
+      refreshToken: payload.refreshToken,
+      ...(payload.refreshTokenExpiresAt ? { refreshTokenExpiresAt: payload.refreshTokenExpiresAt } : {}),
+    };
+  }
+
+  private applySnapshot(snapshot: CloudApiClientSnapshot): void {
+    this.accessToken = snapshot.accessToken;
+    this.accessTokenExpiresAt = snapshot.accessTokenExpiresAt;
+    this.refreshToken = snapshot.refreshToken;
+    this.refreshTokenExpiresAt = snapshot.refreshTokenExpiresAt;
   }
 
   private buildHeaders(headers: HeaderInput | undefined): Headers {
