@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-relay-sdk"
-version = "7.1.1"
+version = "8.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },

@@ -1,0 +1,3 @@
+# Action Errors Rubric
+
+Action error cases pass when the executor preserves the SDK's typed error boundaries. Registration failures should throw `ActionRegistrationError` with code `action_registration_error`; execute-style missing actions should throw `ActionNotFoundError`; execute-style invalid input or output should throw `ActionValidationError` with the correct phase and issue paths. Invoke-style missing actions should remain structured action results. Passing runs should expose `observed.error.code` for thrown errors and avoid registering or invoking invalid actions after the failing boundary.

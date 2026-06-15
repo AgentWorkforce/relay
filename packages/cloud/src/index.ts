@@ -4,6 +4,7 @@ export {
   clearStoredAuth,
   refreshStoredAuth,
   ensureAuthenticated,
+  ensureCloudSession,
   authorizedApiFetch,
 } from './auth.js';
 
@@ -36,7 +37,48 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export { createWorkspace, issueWorkspaceToken } from './workspaces.js';
+export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+
+export {
+  acknowledgeCloudWorkerAssignment,
+  cloudWorkerStateDir,
+  cloudWorkerStorePath,
+  downloadCloudWorkerAssignmentStorage,
+  headCloudWorkerAssignmentStorage,
+  readCloudWorkerStore,
+  registerCloudWorker,
+  reportCloudWorkerAssignmentStatus,
+  resolveCloudWorkerRecord,
+  resolveWorkerWorkflowPayload,
+  runCloudWorkerLoop,
+  sendCloudWorkerHeartbeat,
+  streamCloudWorkerQueue,
+  upsertCloudWorkerRecord,
+  writeCloudWorkerStore,
+  type CloudWorkerLoopOptions,
+  type CloudWorkerRecord,
+  type CloudWorkerStore,
+  type ExecuteWorkerAssignment,
+  type WorkAssignmentRecord,
+  type WorkerFileType,
+  type WorkerQueueEvent,
+  type WorkerStatusDetail,
+  type WorkerWorkflowPayload,
+  type WorkerWorkflowRef,
+} from './worker.js';
+
+export {
+  activeWorkspaceKey,
+  readWorkspaceStore,
+  resolveActiveWorkspaceKey,
+  setActiveWorkspace,
+  setWorkspaceKey,
+  switchWorkspace,
+  validateWorkspaceName,
+  workspaceStorePath,
+  writeWorkspaceStore,
+  type WorkspaceStore,
+} from './workspace-store.js';
 
 export {
   deployProactiveAgent,
@@ -103,8 +145,14 @@ export { PermissionAuditLog, getDefaultPermissionAuditPath } from './audit.js';
 
 export {
   type StoredAuth,
+  CloudAuthError,
+  type CloudAuthErrorCode,
+  type CloudSession,
+  type CloudSessionOptions,
   type WhoAmIResponse,
   type AuthSessionResponse,
+  type ActiveWorkspaceDescriptor,
+  type ActiveWorkspaceUrls,
   type WorkspaceCreateResponse,
   type WorkspaceTokenIssueResponse,
   type WorkspaceTokenRecord,
@@ -119,7 +167,9 @@ export {
   type SyncPatchResponse,
   SUPPORTED_PROVIDERS,
   REFRESH_WINDOW_MS,
+  DEFAULT_REFRESH_TIMEOUT_MS,
   AUTH_FILE_PATH,
+  LEGACY_AUTH_FILE_PATH,
   defaultApiUrl,
   isSupportedProvider,
 } from './types.js';

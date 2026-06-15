@@ -1,4 +1,9 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Command } from 'commander';
+import { create as createTar } from 'tar';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cloudMocks = vi.hoisted(() => ({
@@ -7,6 +12,10 @@ const cloudMocks = vi.hoisted(() => ({
   listWorkflowSchedules: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
+  downloadCloudWorkerAssignmentStorage: vi.fn(),
+  registerCloudWorker: vi.fn(),
+  resolveCloudWorkerRecord: vi.fn(),
+  runCloudWorkerLoop: vi.fn(),
 }));
 
 vi.mock('@agent-relay/cloud', () => ({
@@ -18,22 +27,34 @@ vi.mock('@agent-relay/cloud', () => ({
   connectProvider: vi.fn(),
   defaultApiUrl: () => 'https://cloud.test',
   ensureAuthenticated: vi.fn(),
+  ensureCloudSession: vi.fn(),
   getProviderHelpText: () =>
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
   getRunLogs: vi.fn(),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
+  downloadCloudWorkerAssignmentStorage: (...args: unknown[]) =>
+    cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
   listWorkflowSchedules: (...args: unknown[]) => cloudMocks.listWorkflowSchedules(...args),
   readStoredAuth: vi.fn(),
+  registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
+  resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
+  runCloudWorkerLoop: (...args: unknown[]) => cloudMocks.runCloudWorkerLoop(...args),
   scheduleWorkflow: (...args: unknown[]) => cloudMocks.scheduleWorkflow(...args),
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
+  upsertCloudWorkerRecord: vi.fn(),
+  cloudWorkerStateDir: (env?: NodeJS.ProcessEnv) =>
+    env?.AGENT_RELAY_HOME ? path.join(env.AGENT_RELAY_HOME, 'cloud-workers') : '/tmp/cloud-workers',
 }));
 
 vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
 }));
 
+import { ensureCloudSession } from '@agent-relay/cloud';
+
 import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
+import { createDefaultAssignmentRunner } from './cloud-worker.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,6 +78,24 @@ function createHarness() {
   return { program, deps };
 }
 
+async function createTarBuffer(entries: Record<string, string>): Promise<Buffer> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-archive-'));
+  try {
+    const sourceDir = path.join(tmp, 'src');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    for (const [name, content] of Object.entries(entries)) {
+      const filePath = path.join(sourceDir, name);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+    const archivePath = path.join(tmp, 'archive.tgz');
+    await createTar({ cwd: sourceDir, file: archivePath, gzip: true }, Object.keys(entries));
+    return fs.readFileSync(archivePath);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 describe('registerCloudCommands', () => {
   it('registers cloud subcommands on the program', () => {
     const { program } = createHarness();
@@ -64,8 +103,10 @@ describe('registerCloudCommands', () => {
 
     expect(cloud).toBeDefined();
     expect(cloud?.commands.map((command) => command.name())).toEqual([
+      'worker',
       'login',
       'logout',
+      'session',
       'whoami',
       'connect',
       'run',
@@ -76,6 +117,275 @@ describe('registerCloudCommands', () => {
       'sync',
       'cancel',
     ]);
+  });
+
+  it('registers cloud worker subcommands', () => {
+    const { program } = createHarness();
+    const cloud = program.commands.find((command) => command.name() === 'cloud');
+    const worker = cloud?.commands.find((command) => command.name() === 'worker');
+
+    expect(worker).toBeDefined();
+    expect(worker?.commands.map((command) => command.name())).toEqual([
+      'register',
+      'start',
+      'status',
+      'logs',
+    ]);
+  });
+
+  it('cloud worker register stores returned credentials without printing the token', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.registerCloudWorker.mockResolvedValueOnce({
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'worker',
+      'register',
+      '--token',
+      'ocl_wrk_enr_secret',
+      '--name',
+      'demo',
+    ]);
+
+    expect(cloudMocks.registerCloudWorker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enrollmentToken: 'ocl_wrk_enr_secret',
+        name: 'demo',
+      })
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('Registered worker demo (wrk_1)');
+    expect(output).not.toContain('ocl_wrk_secret');
+    expect(output).not.toContain('ocl_wrk_enr_secret');
+  });
+
+  it('cloud worker start wires the stored worker into the control loop', async () => {
+    const { program } = createHarness();
+    const worker = {
+      baseUrl: 'https://cloud.test',
+      workerId: 'wrk_1',
+      workerToken: 'ocl_wrk_secret',
+      name: 'demo',
+      heartbeatIntervalMs: 30_000,
+      registeredAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z',
+    };
+    cloudMocks.resolveCloudWorkerRecord.mockReturnValueOnce(worker);
+    cloudMocks.runCloudWorkerLoop.mockResolvedValueOnce(undefined);
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'worker', 'start', '--once']);
+
+    expect(cloudMocks.runCloudWorkerLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worker,
+        once: true,
+        executeAssignment: expect.any(Function),
+      })
+    );
+  });
+
+  it('materializes Cloud assignments into relayflows args and child env without persisting secrets', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-relayflows-'));
+    const spawnCalls: Array<{
+      command: string;
+      args: string[];
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const spawnProcess = vi.fn(
+      (command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+        spawnCalls.push({ command, args, cwd: options.cwd, env: options.env });
+        const child = new EventEmitter() as EventEmitter & {
+          killed: boolean;
+          kill: ReturnType<typeof vi.fn>;
+        };
+        child.killed = false;
+        child.kill = vi.fn(() => {
+          child.killed = true;
+          return true;
+        });
+        queueMicrotask(() => child.emit('exit', 0, null));
+        return child;
+      }
+    ) as never;
+
+    try {
+      cloudMocks.downloadCloudWorkerAssignmentStorage.mockImplementation(
+        async (input: { objectKey: string }) => {
+          if (input.objectKey === 'code/archive.tgz') {
+            return createTarBuffer({
+              'lib/helper.txt': 'helper from main archive',
+            });
+          }
+          if (input.objectKey === 'paths/shared.tgz') {
+            return createTarBuffer({
+              'shared.txt': 'shared path archive',
+            });
+          }
+          throw new Error(`unexpected object key ${input.objectKey}`);
+        }
+      );
+
+      const worker = {
+        baseUrl: 'https://cloud.test',
+        workerId: 'wrk_1',
+        workerToken: 'ocl_wrk_secret',
+        name: 'demo',
+        heartbeatIntervalMs: 30_000,
+        registeredAt: '2026-06-13T00:00:00.000Z',
+        updatedAt: '2026-06-13T00:00:00.000Z',
+      };
+      const runner = createDefaultAssignmentRunner({
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+        env: {
+          AGENT_RELAY_HOME: tmpHome,
+          AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+          BASE_ENV: 'kept',
+        },
+        spawnProcess,
+        now: () => new Date('2026-06-13T00:00:00.000Z'),
+        cwd: () => tmpHome,
+        fetchImpl: vi.fn() as never,
+        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+      });
+
+      await runner({
+        assignment: { runId: 'run_relayflows' } as never,
+        payload: {
+          runId: 'run_relayflows',
+          workspaceId: 'rw_1',
+          relayWorkspaceId: 'rw_relay',
+          relaycastApiKey: 'rk_live_secret',
+          relaycastBaseUrl: 'https://relaycast.test',
+          relayfileUrl: 'https://relayfile.test',
+          relayfileToken: 'relayfile_secret',
+          workflow: 'version: "1.0"\nworkflows: []\n',
+          fileType: 'yaml',
+          sourceFileType: 'yaml',
+          workflowFileName: '../workflow.yaml',
+          s3CodeKey: 'code/archive.tgz',
+          paths: [
+            {
+              name: '../shared path',
+              s3CodeKey: 'paths/shared.tgz',
+            },
+          ],
+          envSecrets: {
+            OPENAI_API_KEY: 'sk-secret',
+          },
+          resumeRunId: 'run_previous',
+          startFrom: 'repair',
+          previousRunId: 'run_cache',
+        },
+        worker,
+        signal: new AbortController().signal,
+      });
+
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'code/archive.tgz',
+        })
+      );
+      expect(cloudMocks.downloadCloudWorkerAssignmentStorage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          worker,
+          runId: 'run_relayflows',
+          objectKey: 'paths/shared.tgz',
+        })
+      );
+      expect(spawnCalls).toHaveLength(1);
+      const call = spawnCalls[0]!;
+      const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
+      expect(call.command).toBe(process.execPath);
+      expect(call.args).toEqual([
+        '/opt/relayflows/dist/cli.js',
+        'run',
+        workflowPath,
+        '--resume',
+        'run_previous',
+        '--start-from',
+        'repair',
+        '--previous-run-id',
+        'run_cache',
+      ]);
+      expect(call.cwd).toBe(path.dirname(workflowPath));
+      expect(call.env).toMatchObject({
+        BASE_ENV: 'kept',
+        OPENAI_API_KEY: 'sk-secret',
+        AGENT_RELAY_CLOUD_WORKER_RUN_ID: 'run_relayflows',
+        RELAY_WORKSPACE_ID: 'rw_relay',
+        RELAY_API_KEY: 'rk_live_secret',
+        RELAYCAST_API_KEY: 'rk_live_secret',
+        RELAYCAST_BASE_URL: 'https://relaycast.test',
+        RELAYFILE_URL: 'https://relayfile.test',
+        RELAYFILE_TOKEN: 'relayfile_secret',
+      });
+
+      const workflowFile = fs.readFileSync(workflowPath, 'utf-8');
+      expect(workflowFile).toBe('version: "1.0"\nworkflows: []\n');
+      expect(fs.readFileSync(path.join(path.dirname(workflowPath), 'lib', 'helper.txt'), 'utf-8')).toBe(
+        'helper from main archive'
+      );
+      expect(
+        fs.readFileSync(path.join(path.dirname(workflowPath), 'paths', 'shared_path', 'shared.txt'), 'utf-8')
+      ).toBe('shared path archive');
+      const persisted = fs.readFileSync(workflowPath, 'utf-8');
+      expect(persisted).not.toContain('sk-secret');
+      expect(persisted).not.toContain('relayfile_secret');
+      expect(persisted).not.toContain('rk_live_secret');
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('prints the canonical cloud session as JSON without interactive login', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(ensureCloudSession).mockResolvedValueOnce({
+      auth: {
+        apiUrl: 'https://cloud.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      },
+      client: {} as never,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'session',
+      '--json',
+      '--refresh-timeout',
+      '25',
+    ]);
+
+    expect(ensureCloudSession).toHaveBeenCalledWith({
+      apiUrl: 'https://cloud.test',
+      interactive: false,
+      refreshTimeoutMs: 25,
+    });
+    const sessionJson = JSON.parse(String(vi.mocked(deps.log).mock.calls[0][0]));
+    expect(sessionJson).toEqual({
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-token',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    expect(sessionJson).not.toHaveProperty('refreshToken');
   });
 
   it('connect requires a provider argument', () => {

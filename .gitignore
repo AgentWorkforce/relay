@@ -93,3 +93,6 @@ web/.open-next
 !/workflows/refactor/
 !/workflows/relayauth-integration/
 !/workflows/cloud-connect/
+
+# Eval harness JSON reports (generated per run)
+tests/integration/broker/evals-reports/
