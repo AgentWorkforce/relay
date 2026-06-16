@@ -63,6 +63,7 @@ impl BrokerRuntime {
                 shadow_mode,
                 continue_from,
                 idle_threshold_secs,
+                exit_after_task,
                 skip_relay_prompt,
                 restart_policy,
                 harness_config,
@@ -123,7 +124,11 @@ impl BrokerRuntime {
                     }
                 };
 
-                let mut effective_task = normalize_initial_task(task);
+                let mut effective_task = if exit_after_task {
+                    Some(apply_exit_after_task_instruction(task))
+                } else {
+                    normalize_initial_task(task)
+                };
                 if let Some(ref continue_from) = continue_from {
                     let continuity_dir = continuity_dir(&paths.state);
                     let continuity_file = continuity_dir.join(format!("{}.json", continue_from));

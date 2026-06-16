@@ -21,6 +21,7 @@ export type JsonSchema = Record<string, unknown> | boolean;
  * the spawn request reaches the broker, matching the actions surface.
  */
 export type AgentResultSchema = JsonSchema | ZodLikeSchema<unknown> | SafeParseSchema;
+export type SpawnMode = 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
 
 export interface SpawnPtyInput {
   name: string;
@@ -37,6 +38,8 @@ export interface SpawnPtyInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
+  spawnMode?: SpawnMode;
+  exitAfterTask?: boolean;
   skipRelayPrompt?: boolean;
   agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
@@ -64,6 +67,8 @@ export interface SpawnHeadlessInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
+  spawnMode?: SpawnMode;
+  exitAfterTask?: boolean;
   skipRelayPrompt?: boolean;
   agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from
@@ -101,6 +106,8 @@ export interface SpawnCliInput {
   restartPolicy?: RestartPolicy;
   continueFrom?: string;
   harnessConfig?: ResolvedHarnessConfig;
+  spawnMode?: SpawnMode;
+  exitAfterTask?: boolean;
   skipRelayPrompt?: boolean;
   agentResultSchema?: AgentResultSchema;
   /** Optional pre-minted relaycast agent token (`at_live_<hex>`, from

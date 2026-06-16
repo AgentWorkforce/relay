@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.
 - `@agent-relay/harness-driver` adds local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, object-record capability metadata, and sidecar supervision metadata.
 - `@agent-relay/cloud` adds a canonical cloud session and active-workspace contract, including `ensureCloudSession`, `resolveActiveWorkspace`, promoted workspace-store APIs, access-token-only `agent-relay cloud session --json`, and `agent-relay workspace active --json` for cross-language consumers.
 - `agent-relay-broker` adds a fleet node control plane: a `node_control` client that drives the harness-driver sidecar over the local protocol, runtime wiring that registers nodes and handlers, dispatches broker handler invocations, and attributes handler spawns, with hardened node/handler registration timing.

@@ -21,6 +21,8 @@ export interface ClientSpawnOptions {
   cwd?: string;
   shadowOf?: string;
   shadowMode?: 'subagent' | 'process';
+  spawnMode?: 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
+  exitAfterTask?: boolean;
 }
 
 export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {

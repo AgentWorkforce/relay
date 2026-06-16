@@ -178,6 +178,8 @@ function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown> {
     ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+    ...(input.spawnMode !== undefined ? { spawnMode: input.spawnMode } : {}),
+    ...(input.exitAfterTask !== undefined ? { exitAfterTask: input.exitAfterTask } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
     ...(input.agentResultSchema !== undefined
       ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
@@ -202,6 +204,8 @@ function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTransport): Rec
     ...(input.harnessConfig !== undefined ? { harnessConfig: input.harnessConfig } : {}),
     ...(input.idleThresholdSecs !== undefined ? { idleThresholdSecs: input.idleThresholdSecs } : {}),
     ...(input.restartPolicy !== undefined ? { restartPolicy: input.restartPolicy } : {}),
+    ...(input.spawnMode !== undefined ? { spawnMode: input.spawnMode } : {}),
+    ...(input.exitAfterTask !== undefined ? { exitAfterTask: input.exitAfterTask } : {}),
     ...(input.skipRelayPrompt !== undefined ? { skipRelayPrompt: input.skipRelayPrompt } : {}),
     ...(input.agentResultSchema !== undefined
       ? { agentResultSchema: resolveAgentResultSchema(input.agentResultSchema) }
@@ -221,6 +225,8 @@ function applySpawnPatch<TInput extends SpawnPtyInput | SpawnCliInput>(
   if (Object.hasOwn(patch, 'team')) input.team = patch.team;
   if (Object.hasOwn(patch, 'agentToken')) input.agentToken = patch.agentToken;
   if (Object.hasOwn(patch, 'harnessConfig')) input.harnessConfig = patch.harnessConfig;
+  if (Object.hasOwn(patch, 'spawnMode')) input.spawnMode = patch.spawnMode;
+  if (Object.hasOwn(patch, 'exitAfterTask')) input.exitAfterTask = patch.exitAfterTask;
   return input;
 }
 

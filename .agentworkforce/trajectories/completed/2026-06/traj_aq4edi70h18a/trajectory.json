@@ -8,8 +8,9 @@
       "id": "TRACK-A-SECURITY-AUDIT"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-12T15:42:18.921Z",
+  "completedAt": "2026-06-14T12:21:17.464Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-12T15:48:40.274Z",
+      "endedAt": "2026-06-14T12:21:17.464Z",
       "events": [
         {
           "ts": 1781279320275,
@@ -69,10 +71,27 @@
           },
           "significance": "high",
           "tags": ["confidence:0.9"]
+        },
+        {
+          "ts": 1781439673977,
+          "type": "decision",
+          "content": "No auto-edits applied during PR #1129 review: No auto-edits applied during PR #1129 review",
+          "raw": {
+            "question": "No auto-edits applied during PR #1129 review",
+            "chosen": "No auto-edits applied during PR #1129 review",
+            "alternatives": [],
+            "reasoning": "Review found no validated mechanical lint/format/typo issue in the PR diff; semantic lifecycle behavior should remain author-owned."
+          },
+          "significance": "high"
         }
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Reviewed PR #1129 task-exit spawn changes; no code edits; JS formatting, lint, typecheck, build, focused tests, and root tests passed; Rust checks unavailable because Cargo is not installed.",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
