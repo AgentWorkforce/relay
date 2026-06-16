@@ -125,6 +125,7 @@ function toRelayNode(raw: unknown): RelayNode {
   const rawStatus = readStr(node, 'status');
   return {
     id: readStr(node, 'id', 'node_id'),
+    nodeId: readStr(node, 'nodeId', 'node_id'),
     name: readStr(node, 'name') ?? '',
     status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
     capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],

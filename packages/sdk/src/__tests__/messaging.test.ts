@@ -97,6 +97,23 @@ function createWorkspace() {
     dmMessages: vi.fn(async () => [
       { id: 'dm-1', agent_name: 'Lead', text: 'direct', created_at: '2026-05-27T11:10:00.000Z' },
     ]),
+    nodes: {
+      list: vi.fn(async () => [
+        {
+          node_id: 'node_1',
+          name: 'builder-1',
+          status: 'online',
+          capabilities: [{ name: 'spawn:codex', kind: 'spawn', metadata: { cli: 'codex' } }],
+          max_agents: 4,
+          active_agents: 1,
+          handlers_live: true,
+          load: 0.25,
+          last_heartbeat_at: '2026-06-16T12:00:00.000Z',
+          tags: ['local'],
+          version: 'relay-broker/test',
+        },
+      ]),
+    },
   };
 }
 
@@ -293,6 +310,23 @@ describe('RelaycastMessagingClient', () => {
       from: { id: 'agent-1', name: 'WorkerA' },
       channel: { id: 'ch-1', name: 'general' },
       reactions: [{ emoji: '+1', count: 1, agents: ['Lead'] }],
+    });
+
+    const [node] = await client.nodes.list({ capability: 'spawn:codex' });
+    expect(workspace.nodes.list).toHaveBeenCalledWith({ capability: 'spawn:codex' });
+    expect(node).toMatchObject({
+      id: 'node_1',
+      nodeId: 'node_1',
+      name: 'builder-1',
+      status: 'online',
+      capabilities: [{ name: 'spawn:codex', kind: 'spawn', metadata: { cli: 'codex' } }],
+      maxAgents: 4,
+      activeAgents: 1,
+      handlersLive: true,
+      load: 0.25,
+      lastHeartbeatAt: '2026-06-16T12:00:00.000Z',
+      tags: ['local'],
+      version: 'relay-broker/test',
     });
   });
 

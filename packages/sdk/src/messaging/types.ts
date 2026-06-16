@@ -41,6 +41,7 @@ export interface RelayNodeCapability {
 
 export interface RelayNode {
   id?: string;
+  nodeId?: string;
   name: string;
   status: RelayNodeStatus;
   capabilities: RelayNodeCapability[];

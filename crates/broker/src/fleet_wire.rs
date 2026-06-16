@@ -99,6 +99,10 @@ pub struct NodeHeartbeat {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    pub name: String,
+    pub node_id: String,
+    pub capabilities: Vec<FleetCapability>,
+    pub max_agents: u32,
     #[serde(
         deserialize_with = "deserialize_finite_nonnegative_f64",
         serialize_with = "serialize_finite_nonnegative_f64"
@@ -106,6 +110,8 @@ pub struct NodeHeartbeat {
     pub load: f64,
     pub active_agents: u32,
     pub handlers_live: bool,
+    pub last_heartbeat_at: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,7 +541,8 @@ mod tests {
     use super::{
         deserialize_finite_nonnegative_f64, validate_agent_register_reply_data, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast, Deliver,
-        DeliveryMode, Error, NodeHeartbeat, RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        DeliveryMode, Error, FleetCapability, NodeHeartbeat, RelaycastToBroker, Reply,
+        FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -600,9 +607,15 @@ mod tests {
         let negative = json!({
             "type": "node.heartbeat",
             "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
             "load": -0.1,
             "active_agents": 0,
-            "handlers_live": true
+            "handlers_live": true,
+            "last_heartbeat_at": "2026-06-16T12:00:00Z",
+            "version": "relay-broker/test"
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(negative).is_err());
 
@@ -615,11 +628,61 @@ mod tests {
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            name: "builder-1".to_string(),
+            node_id: "node_1".to_string(),
+            capabilities: vec![],
+            max_agents: 1,
             load: f64::INFINITY,
             active_agents: 0,
             handlers_live: true,
+            last_heartbeat_at: "2026-06-16T12:00:00Z".to_string(),
+            version: "relay-broker/test".to_string(),
         });
         assert!(serde_json::to_value(invalid).is_err());
+    }
+
+    #[test]
+    fn node_heartbeat_carries_roster_snapshot() {
+        let msg = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            name: "builder-1".to_string(),
+            node_id: "node_1".to_string(),
+            capabilities: vec![FleetCapability {
+                name: "spawn:codex".to_string(),
+                kind: Some("spawn".to_string()),
+                metadata: None,
+            }],
+            max_agents: 4,
+            load: 0.25,
+            active_agents: 1,
+            handlers_live: true,
+            last_heartbeat_at: "2026-06-16T12:00:00Z".to_string(),
+            version: "relay-broker/test".to_string(),
+        });
+
+        let value = serde_json::to_value(msg).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "type": "node.heartbeat",
+                "v": 1,
+                "name": "builder-1",
+                "node_id": "node_1",
+                "capabilities": [
+                    {
+                        "name": "spawn:codex",
+                        "kind": "spawn"
+                    }
+                ],
+                "max_agents": 4,
+                "load": 0.25,
+                "active_agents": 1,
+                "handlers_live": true,
+                "last_heartbeat_at": "2026-06-16T12:00:00Z",
+                "version": "relay-broker/test"
+            })
+        );
     }
 
     #[test]
