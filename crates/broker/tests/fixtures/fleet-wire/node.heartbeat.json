@@ -1,6 +1,23 @@
 {
   "v": 1,
   "type": "node.heartbeat",
+  "name": "builder-1",
+  "node_id": "node_01J7FLEET000000000000001",
+  "capabilities": [
+    {
+      "name": "spawn:codex",
+      "kind": "spawn",
+      "metadata": {
+        "agent": "codex"
+      }
+    },
+    {
+      "name": "spawn:claude",
+      "kind": "spawn"
+    }
+  ],
+  "max_agents": 8,
+  "version": "relay-broker/0.7.0",
   "load": 0.42,
   "active_agents": 2,
   "handlers_live": true

@@ -52,18 +52,22 @@ jobs:
       - name: Checkout relay
         uses: actions/checkout@v4
 
-      # The relaycast engine lives in a separate repo. This E2E REQUIRES the two
+      # The relaycast engine lives in a separate repo. This E2E REQUIRES the
       # engine compat fixes it surfaced (Bearer-header node auth + the
-      # agent.register reply frame), which live on `feat/fleet-rollout-flag`
-      # (relaycast#194), NOT on `feat/fleet-mailbox` — building fleet-mailbox here
-      # would be red. Pinned to a SHA for reproducibility (the same branch the
-      # local harness resolves, so local == CI). Re-pin to `feat/fleet-mailbox@<sha>`
-      # once relaycast#194 merges down.
+      # agent.register reply frame) AND the node.heartbeat roster-snapshot
+      # acceptance: the broker now carries the node roster (name/node_id/
+      # capabilities/max_agents/version) on the heartbeat, which the engine's
+      # previously-`.strict()` schema rejected wholesale (dropping every live
+      # load update and timing out the spawn/load scenarios). Those land on
+      # `feat/heartbeat-roster-snapshot` (relaycast#197, branched off the
+      # already-merged relaycast#194). Pinned to a SHA for reproducibility (the
+      # same commit the local harness resolves, so local == CI). Re-pin to
+      # `main@<sha>` once relaycast#197 merges down.
       - name: Checkout relaycast engine (carries the E2E compat fixes)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: b673dfbacfd97d47b5b511fa096daa1bb9a60d3c # feat/fleet-rollout-flag (relaycast#194)
+          ref: 2f685fa99ad486b09de5fb61091594fd48459815 # feat/heartbeat-roster-snapshot (relaycast#197)
           path: relaycast-engine
 
       - name: Setup Node.js
