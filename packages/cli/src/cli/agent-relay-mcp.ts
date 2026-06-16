@@ -28,8 +28,15 @@ import type {
   ZodLikeSchema,
 } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
-import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
+import {
+  initTelemetry,
+  shutdown as shutdownTelemetry,
+  track,
+  type AgentRelayToolCallCategory,
+  type AgentRelayToolCallType,
+} from './telemetry/index.js';
 import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
+import { errorClassName } from './lib/telemetry-helpers.js';
 
 const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
@@ -584,6 +591,126 @@ function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
   };
 }
 
+interface AgentRelayToolCallMetadata {
+  toolType: AgentRelayToolCallType;
+  toolCategory: AgentRelayToolCallCategory;
+}
+
+const AGENT_RELAY_TOOL_CALL_METADATA = {
+  add_agent: { toolType: 'agent.create', toolCategory: 'spawn' },
+  remove_agent: { toolType: 'agent.release', toolCategory: 'release' },
+  invoke_action: { toolType: 'action.invoke', toolCategory: 'action' },
+  list_actions: { toolType: 'action.list', toolCategory: 'action' },
+  submit_result: { toolType: 'result.submit', toolCategory: 'result' },
+  create_workspace: { toolType: 'workspace.create', toolCategory: 'workspace' },
+  set_workspace_key: { toolType: 'workspace.set_key', toolCategory: 'workspace' },
+  register_agent: { toolType: 'agent.register', toolCategory: 'agent' },
+  list_agents: { toolType: 'agent.list', toolCategory: 'agent' },
+  post_message: { toolType: 'message.post', toolCategory: 'message' },
+  send_dm: { toolType: 'message.dm', toolCategory: 'message' },
+  send_group_dm: { toolType: 'message.group_dm', toolCategory: 'message' },
+  list_dms: { toolType: 'message.dm_list', toolCategory: 'message' },
+  list_messages: { toolType: 'message.list', toolCategory: 'message' },
+  get_message: { toolType: 'message.get', toolCategory: 'message' },
+  reply_to_thread: { toolType: 'message.reply', toolCategory: 'message' },
+  get_message_thread: { toolType: 'message.thread', toolCategory: 'message' },
+  get_thread: { toolType: 'message.thread', toolCategory: 'message' },
+  search_messages: { toolType: 'message.search', toolCategory: 'message' },
+  create_channel: { toolType: 'channel.create', toolCategory: 'channel' },
+  list_channels: { toolType: 'channel.list', toolCategory: 'channel' },
+  join_channel: { toolType: 'channel.join', toolCategory: 'channel' },
+  leave_channel: { toolType: 'channel.leave', toolCategory: 'channel' },
+  set_channel_topic: { toolType: 'channel.set_topic', toolCategory: 'channel' },
+  archive_channel: { toolType: 'channel.archive', toolCategory: 'channel' },
+  invite_to_channel: { toolType: 'channel.invite', toolCategory: 'channel' },
+  list_channel_members: { toolType: 'channel.member_list', toolCategory: 'channel' },
+  add_reaction: { toolType: 'reaction.add', toolCategory: 'reaction' },
+  remove_reaction: { toolType: 'reaction.remove', toolCategory: 'reaction' },
+  check_inbox: { toolType: 'inbox.check', toolCategory: 'inbox' },
+  mark_message_read: { toolType: 'inbox.mark_read', toolCategory: 'inbox' },
+  get_message_readers: { toolType: 'inbox.reader_list', toolCategory: 'inbox' },
+} satisfies Record<string, AgentRelayToolCallMetadata>;
+
+function readInvokedActionName(name: string, args: unknown[]): AgentRelayToolCallType | undefined {
+  if (name !== 'invoke_action') {
+    return undefined;
+  }
+  const [input] = args;
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const actionName = (input as { name?: unknown }).name;
+  return typeof actionName === 'string' && actionName.trim() ? actionName : undefined;
+}
+
+function agentRelayActionNameCategory(name: string): AgentRelayToolCallCategory {
+  const leaf = name.split(/[._-]/).filter(Boolean).at(-1)?.toLowerCase();
+  switch (leaf) {
+    case 'create':
+    case 'spawn':
+    case 'attach':
+      return 'spawn';
+    case 'release':
+      return 'release';
+    case 'status':
+      return 'agent';
+    default:
+      return 'action';
+  }
+}
+
+function agentRelayToolCallMetadata(
+  name: string,
+  args: unknown[],
+  actionToolNames: Set<string>
+): AgentRelayToolCallMetadata {
+  const invokedActionName = readInvokedActionName(name, args);
+  if (invokedActionName) {
+    return {
+      toolType: invokedActionName,
+      toolCategory: agentRelayActionNameCategory(invokedActionName),
+    };
+  }
+
+  const known = (AGENT_RELAY_TOOL_CALL_METADATA as Partial<Record<string, AgentRelayToolCallMetadata>>)[name];
+  if (known) {
+    return known;
+  }
+
+  if (actionToolNames.has(name)) {
+    return {
+      toolType: name,
+      toolCategory: agentRelayActionNameCategory(name),
+    };
+  }
+
+  return { toolType: name, toolCategory: 'tool' };
+}
+
+function isErrorToolResult(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && (value as { isError?: unknown }).isError === true);
+}
+
+function trackAgentRelayToolCall(input: {
+  toolName: string;
+  toolType: AgentRelayToolCallType;
+  toolCategory: AgentRelayToolCallCategory;
+  transport?: AgentRelayMcpServerOptions['telemetryTransport'];
+  startedAt: number;
+  success: boolean;
+  errorClass?: string;
+}): void {
+  track('agent_relay_tool_call', {
+    tool_name: input.toolName,
+    tool_type: input.toolType,
+    tool_category: input.toolCategory,
+    transport: input.transport ?? 'unknown',
+    success: input.success,
+    duration_ms: Date.now() - input.startedAt,
+    ...(input.errorClass ? { error_class: input.errorClass } : {}),
+  });
+}
+
 function enableInboxPiggyback(
   mcpServer: McpServer,
   getSession: () => SessionState,
@@ -622,19 +749,17 @@ function enableInboxPiggyback(
         return result;
       }
 
-      if (SKIP_PIGGYBACK.has(name) || !getSession().agentToken || !hasContentArray(result)) {
-        return result;
-      }
-
-      try {
-        const inbox = await getAgentClient(asIdentity).inbox();
-        const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
-        if (inboxText) {
-          result.content.push({ type: 'text', text: inboxText });
-        }
-      } catch (err) {
-        if (isInvalidAgentTokenError(err)) {
-          invalidateAgentToken(asIdentity);
+      if (!SKIP_PIGGYBACK.has(name) && getSession().agentToken && hasContentArray(result)) {
+        try {
+          const inbox = await getAgentClient(asIdentity).inbox();
+          const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
+          if (inboxText) {
+            result.content.push({ type: 'text', text: inboxText });
+          }
+        } catch (err) {
+          if (isInvalidAgentTokenError(err)) {
+            invalidateAgentToken(asIdentity);
+          }
         }
       }
 
@@ -1071,7 +1196,8 @@ function registerAgentRelayTools(
   baseUrl: string | undefined,
   strictAgentName: boolean | undefined,
   preferredAgentName: string | undefined,
-  forcedAgentType: AgentType | undefined
+  forcedAgentType: AgentType | undefined,
+  telemetryTransport?: AgentRelayMcpServerOptions['telemetryTransport']
 ): void {
   server.registerTool(
     'create_workspace',
@@ -1666,26 +1792,52 @@ function registerAgentRelayTools(
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) =>
-      jsonContent(
-        await getRelay().agents.spawn({
-          name,
-          cli,
-          task:
-            exit_after_task ||
-            spawn_mode === 'task_exit' ||
-            spawn_mode === 'task-exit' ||
-            spawn_mode === 'single_shot' ||
-            spawn_mode === 'single-shot'
-              ? withExitAfterTaskInstruction(task)
-              : task,
-          channel,
-          persona,
-          // SpawnAgentRequest has no top-level model field; pass via metadata
-          // so the broker can extract it and forward --model to the launched CLI.
-          metadata: model ? { model } : undefined,
-        })
-      )
+    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) => {
+      const startedAt = Date.now();
+      let result: ReturnType<typeof jsonContent>;
+      try {
+        result = jsonContent(
+          await getRelay().agents.spawn({
+            name,
+            cli,
+            task:
+              exit_after_task ||
+              spawn_mode === 'task_exit' ||
+              spawn_mode === 'task-exit' ||
+              spawn_mode === 'single_shot' ||
+              spawn_mode === 'single-shot'
+                ? withExitAfterTaskInstruction(task)
+                : task,
+            channel,
+            persona,
+            // SpawnAgentRequest has no top-level model field; pass via metadata
+            // so the broker can extract it and forward --model to the launched CLI.
+            metadata: model ? { model } : undefined,
+          })
+        );
+      } catch (err) {
+        trackAgentRelayToolCall({
+          toolName: 'add_agent',
+          toolType: 'agent.create',
+          toolCategory: 'spawn',
+          transport: telemetryTransport,
+          startedAt,
+          success: false,
+          errorClass: errorClassName(err),
+        });
+        throw err;
+      }
+      trackAgentRelayToolCall({
+        toolName: 'add_agent',
+        toolType: 'agent.create',
+        toolCategory: 'spawn',
+        transport: telemetryTransport,
+        startedAt,
+        success: !isErrorToolResult(result),
+        ...(isErrorToolResult(result) ? { errorClass: 'ToolResultError' } : {}),
+      });
+      return result;
+    }
   );
 
   server.registerTool(
@@ -1749,13 +1901,38 @@ function registerAgentRelayTools(
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ name, reason, delete_agent }) => {
-      const released = await getRelay().agents.release({ name, reason, deleteAgent: delete_agent });
-      return jsonContent({
-        name: released.name,
-        removed: released.released,
-        deleted: released.deleted,
-        reason: released.reason,
+      const startedAt = Date.now();
+      let result: ReturnType<typeof jsonContent>;
+      try {
+        const released = await getRelay().agents.release({ name, reason, deleteAgent: delete_agent });
+        result = jsonContent({
+          name: released.name,
+          removed: released.released,
+          deleted: released.deleted,
+          reason: released.reason,
+        });
+      } catch (err) {
+        trackAgentRelayToolCall({
+          toolName: 'remove_agent',
+          toolType: 'agent.release',
+          toolCategory: 'release',
+          transport: telemetryTransport,
+          startedAt,
+          success: false,
+          errorClass: errorClassName(err),
+        });
+        throw err;
+      }
+      trackAgentRelayToolCall({
+        toolName: 'remove_agent',
+        toolType: 'agent.release',
+        toolCategory: 'release',
+        transport: telemetryTransport,
+        startedAt,
+        success: !isErrorToolResult(result),
+        ...(isErrorToolResult(result) ? { errorClass: 'ToolResultError' } : {}),
       });
+      return result;
     }
   );
 }
@@ -1910,7 +2087,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.baseUrl,
     options.strictAgentName,
     options.agentName,
-    options.agentType
+    options.agentType,
+    options.telemetryTransport
   );
   registerAgentRelayActionTools(
     mcpServer,
