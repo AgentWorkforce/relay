@@ -32,6 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
+## [8.8.0] - 2026-06-16
+
+### Added
+
+- @agent-relay/fleet SDK, fleet serve CLI, MCP query_nodes/spawn + §5 resource cleanup (Phase 4)
+- Fleet node control plane
+- Serde mirrors + golden fixtures for fleet node-control wire protocol (Phase 0)
+- Local protocol messages for fleet node sidecar (Phase 0)
+- Agent-relay cloud connect daytona (local capture)
+- Combined offline SDK harness + live behavioral eval suite
+
+### Changed
+
+- Publish @agent-relay/fleet in the release pipeline
+- Update @relaycast/sdk to 4.0 in @agent-relay/sdk + cli
+- Two-node fleet scenario matrix in CI (Phase 6)
+
+### Fixed
+
+- Mock @agent-relay/sdk boundary in MCP startup test
+- Serialize auth refresh writes
+
 ## [8.7.2] - 2026-06-13
 
 ### Added
