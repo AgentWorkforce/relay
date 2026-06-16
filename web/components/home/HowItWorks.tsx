@@ -47,9 +47,9 @@ const CUSTOM_LOGOS: readonly LogoItem[] = [
  */
 const WIRES: readonly string[] = [
   '31,38 35,38 35,62 31,62', // left stubs + bus
-  '35,50 38,50', // left feed into hub
+  '35,50 50,50', // left feed into the relay box (runs under it)
   '69,38 65,38 65,62 69,62', // right stubs + bus
-  '65,50 62,50', // right feed into hub
+  '65,50 50,50', // right feed into the relay box (runs under it)
 ];
 
 const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3] as const;
@@ -83,11 +83,11 @@ export function HowItWorks() {
     <section className={s.howItWorks} aria-labelledby="how-it-works-title">
       <FadeIn direction="up" className={s.howHeader}>
         <h2 id="how-it-works-title" className={s.howTitle}>
-          How it works
+          Works with Every Agent
         </h2>
         <p className={s.howSubtitle}>
-          Add Slack-style communication to any agent. Our PTY based driver can power any CLI agent or you can
-          drop in our SDK for your custom orchestrator.
+          Our PTY based driver can power any CLI agent or you can drop in our SDK for your custom
+          orchestrator.
         </p>
       </FadeIn>
 

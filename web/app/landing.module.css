@@ -774,7 +774,7 @@
 }
 
 .commandsFeature {
-  order: 6;
+  order: 5;
   --feature-band-bg: #0b1c2a;
   padding-top: 36px;
 }
@@ -792,20 +792,19 @@
   max-width: 620px;
 }
 
-/* The "how it works" band sits after the delivery feature's wave (order 4) and
-   before the Agent Tools / commands feature (order 6). It carries its own band
-   borders, so no wave divider is needed around it. The only divider below the
-   commands feature is the A2A wave (order 7). */
+/* The "works with every agent" band takes the slot between the messaging
+   feature (order 1) and the delivery feature (order 3), carrying its own band
+   borders. */
 .howItWorks {
-  order: 5;
+  order: 2;
 }
 
 .featureSeparator.a2aSeparator {
-  order: 7;
+  order: 6;
 }
 
 .a2aFeature {
-  order: 8;
+  order: 7;
   --feature-band-bg: #0b1c2a;
   padding-top: 36px;
 }
