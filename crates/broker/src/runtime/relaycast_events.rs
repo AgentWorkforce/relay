@@ -2,6 +2,7 @@ use super::*;
 
 impl BrokerRuntime {
     pub(super) async fn handle_relaycast_message(&mut self, ws_msg: WorkspaceInboundMessage) {
+        let fleet_mode_active = self.fleet_mode_enabled;
         let paths = &self.paths;
         let state = &mut self.state;
         let workspace_lookup = &self.workspace_lookup;
@@ -619,6 +620,16 @@ impl BrokerRuntime {
             }
             // Don't fall through to map_ws_event for control events
             // handled by the JSON fallback path.
+            return;
+        }
+
+        if fleet_mode_active {
+            tracing::debug!(
+                target = "relay_broker::fleet",
+                ws_type = %ws_type,
+                workspace_id = %workspace_id,
+                "ignoring workspace-stream inbound message in fleet mode; node control owns delivery"
+            );
             return;
         }
 

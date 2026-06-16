@@ -29,6 +29,10 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
+  // fleet
+  'fleet serve',
+  'fleet nodes',
+  'fleet status',
   // cloud
   'cloud login',
   'cloud logout',
@@ -134,6 +138,7 @@ describe('bootstrap CLI', () => {
         'message',
         'integration',
         'capabilities',
+        'fleet',
         'status',
         'version',
         'update',

@@ -48,6 +48,10 @@ export const docsNav: NavGroup[] = [
     ],
   },
   {
+    title: 'Fleets',
+    items: [{ title: 'Fleets', slug: 'fleets' }],
+  },
+  {
     title: 'Interfaces',
     items: [
       { title: 'TypeScript SDK', slug: 'typescript-sdk' },

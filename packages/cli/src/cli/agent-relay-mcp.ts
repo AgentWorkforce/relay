@@ -18,6 +18,7 @@ import {
   isInvalidAgentTokenError,
   isInvalidAgentTokenToolResult,
 } from '@agent-relay/sdk';
+import { AgentRelay } from '@agent-relay/sdk';
 import type {
   ActionAuditEvent,
   ActionSchema,
@@ -27,15 +28,8 @@ import type {
   ZodLikeSchema,
 } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
-import {
-  initTelemetry,
-  shutdown as shutdownTelemetry,
-  track,
-  type AgentRelayToolCallCategory,
-  type AgentRelayToolCallType,
-} from './telemetry/index.js';
+import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { relaycastWorkspaceTelemetryOptions, withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
-import { errorClassName } from './lib/telemetry-helpers.js';
 
 const DEFAULT_BASE_URL = 'https://gateway.relaycast.dev';
 export const AGENT_RELAY_MCP_VERSION = process.env.AGENT_RELAY_CLI_VERSION ?? SDK_VERSION ?? 'unknown';
@@ -56,6 +50,10 @@ const DEFAULT_SYSTEM_PROMPT = `You are an AI agent in a collaborative workspace 
 - Send direct messages with "send_dm"
 - Reply to threads with "reply_to_thread"
 - React to messages with "add_reaction"
+
+## Fleet
+- Use "query_nodes" to find fleet nodes by capability or name
+- Use "spawn" to invoke the fleet spawn action on an eligible node
 
 ## Best Practices
 - Check your inbox regularly for new messages and mentions
@@ -315,6 +313,327 @@ function createInitialSession(options: {
     wsBridge: null,
     subscriptions: null,
     wsInitAttempted: false,
+  };
+}
+
+class SubscriptionManager {
+  private readonly subscriptions = new Set<string>();
+
+  subscribe(uri: string): void {
+    this.subscriptions.add(uri);
+  }
+
+  unsubscribe(uri: string): void {
+    this.subscriptions.delete(uri);
+  }
+
+  getMatchingSubscriptions(uris: string[]): string[] {
+    return uris.filter((uri) => this.subscriptions.has(uri));
+  }
+
+  getAll(): string[] {
+    return [...this.subscriptions];
+  }
+
+  clear(): void {
+    this.subscriptions.clear();
+  }
+}
+
+function getStringEventField(event: unknown, field: string): string | null {
+  if (typeof event !== 'object' || event === null) {
+    return null;
+  }
+  const candidate = (event as Record<string, unknown>)[field];
+  return typeof candidate === 'string' ? candidate : null;
+}
+
+function eventToResourceUris(event: unknown): string[] {
+  const type = getStringEventField(event, 'type');
+  switch (type) {
+    case 'message.created': {
+      const channel = getStringEventField(event, 'channel');
+      return channel ? ['relay://inbox', `relay://channels/${channel}/messages`] : ['relay://inbox'];
+    }
+    case 'message.updated': {
+      const channel = getStringEventField(event, 'channel');
+      return channel ? [`relay://channels/${channel}/messages`] : [];
+    }
+    case 'thread.reply': {
+      const parentId = getStringEventField(event, 'parentId');
+      return parentId ? ['relay://inbox', `relay://messages/${parentId}/thread`] : ['relay://inbox'];
+    }
+    case 'dm.received':
+    case 'group_dm.received': {
+      const conversationId = getStringEventField(event, 'conversationId');
+      return conversationId ? ['relay://inbox', `relay://dm/${conversationId}`] : ['relay://inbox'];
+    }
+    case 'agent.online':
+    case 'agent.offline':
+      return ['relay://agents'];
+    case 'channel.created':
+    case 'channel.updated':
+    case 'channel.archived':
+    case 'member.joined':
+    case 'member.left':
+      return ['relay://channels'];
+    case 'webhook.received':
+    case 'command.invoked': {
+      const channel = getStringEventField(event, 'channel');
+      return channel ? [`relay://channels/${channel}/messages`] : [];
+    }
+    case 'reaction.added':
+    case 'reaction.removed':
+      return ['relay://inbox'];
+    default:
+      return [];
+  }
+}
+
+class RealtimeResourceBridge {
+  private unsubscribeFn: (() => void) | null = null;
+
+  constructor(
+    private readonly wsClient: WsClient,
+    private readonly subscriptions: SubscriptionManager,
+    private readonly notifyCallback: (uri: string) => void
+  ) {}
+
+  start(): void {
+    this.unsubscribeFn = this.wsClient.on('*', (event) => {
+      const type = getStringEventField(event, 'type');
+      if (
+        type === 'open' ||
+        type === 'close' ||
+        type === 'error' ||
+        type === 'reconnecting' ||
+        type === 'permanently_disconnected'
+      ) {
+        return;
+      }
+      const matched = this.subscriptions.getMatchingSubscriptions(eventToResourceUris(event));
+      for (const uri of matched) {
+        this.notifyCallback(uri);
+      }
+    });
+    this.wsClient.connect();
+  }
+
+  stop(): void {
+    if (this.unsubscribeFn) {
+      this.unsubscribeFn();
+      this.unsubscribeFn = null;
+    }
+    this.wsClient.disconnect();
+  }
+}
+
+function registerResourceDefinitions(
+  server: McpServer,
+  getAgentClient: (asIdentity?: string) => AgentClientLike,
+  getRelay: () => RelayCast
+): void {
+  server.registerResource(
+    'inbox',
+    'relay://inbox',
+    { title: 'Inbox', description: 'Unread messages, mentions, and DMs', mimeType: 'application/json' },
+    async (uri) => {
+      const inbox = await getAgentClient().inbox();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(inbox) }] };
+    }
+  );
+
+  server.registerResource(
+    'agents',
+    'relay://agents',
+    {
+      title: 'Agents',
+      description: 'Online and offline agents in the workspace',
+      mimeType: 'application/json',
+    },
+    async (uri) => {
+      const agents = await getRelay().agents.list();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(agents) }] };
+    }
+  );
+
+  server.registerResource(
+    'channels',
+    'relay://channels',
+    { title: 'Channels', description: 'Available channels in the workspace', mimeType: 'application/json' },
+    async (uri) => {
+      const channels = await getAgentClient().channels.list();
+      return { contents: [{ uri: uri.href, text: JSON.stringify(channels) }] };
+    }
+  );
+
+  server.registerResource(
+    'channel-messages',
+    new ResourceTemplate('relay://channels/{name}/messages', { list: undefined }),
+    {
+      title: 'Channel Messages',
+      description: 'Messages in a specific channel',
+      mimeType: 'application/json',
+    },
+    async (uri, params) => {
+      const messages = await getAgentClient().messages(String(params.name));
+      return { contents: [{ uri: uri.href, text: JSON.stringify(messages) }] };
+    }
+  );
+
+  server.registerResource(
+    'message-thread',
+    new ResourceTemplate('relay://messages/{id}/thread', { list: undefined }),
+    { title: 'Message Thread', description: 'Thread replies on a message', mimeType: 'application/json' },
+    async (uri, params) => {
+      const thread = await getAgentClient().thread(String(params.id));
+      return { contents: [{ uri: uri.href, text: JSON.stringify(thread) }] };
+    }
+  );
+
+  server.registerResource(
+    'dm-conversation',
+    new ResourceTemplate('relay://dm/{conversation_id}', { list: undefined }),
+    {
+      title: 'DM Conversation',
+      description: 'Direct message conversation',
+      mimeType: 'application/json',
+    },
+    async (uri, params) => {
+      const messages = await getAgentClient().dms.messages(String(params.conversation_id));
+      return { contents: [{ uri: uri.href, text: JSON.stringify(messages) }] };
+    }
+  );
+}
+
+function hasContentArray(value: unknown): value is { content: Array<Record<string, unknown>> } {
+  return (
+    typeof value === 'object' && value !== null && Array.isArray((value as { content?: unknown }).content)
+  );
+}
+
+const SKIP_PIGGYBACK = new Set(['check_inbox', 'create_workspace', 'set_workspace_key', 'register_agent']);
+
+function formatInbox(inbox: any, selfName?: string | null): string {
+  const norm = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
+  const selfNorm = selfName ? norm(selfName) : null;
+  const isSelf = (name: string) => selfNorm != null && norm(name) === selfNorm;
+  const lines = ['--- Pending Messages ---'];
+
+  if (inbox.unreadChannels?.length) {
+    lines.push('Unread channels:');
+    for (const ch of inbox.unreadChannels) {
+      lines.push(`  #${ch.channelName}: ${ch.unreadCount} unread`);
+    }
+  }
+
+  const mentions = selfNorm ? inbox.mentions?.filter((m: any) => !isSelf(m.agentName)) : inbox.mentions;
+  if (mentions?.length) {
+    lines.push('Mentions:');
+    for (const m of mentions) {
+      lines.push(`  @${m.agentName} in #${m.channelName}: "${m.text}"`);
+    }
+  }
+
+  const dms = selfNorm ? inbox.unreadDms?.filter((dm: any) => !isSelf(dm.from)) : inbox.unreadDms;
+  if (dms?.length) {
+    lines.push('Unread DMs:');
+    for (const dm of dms) {
+      lines.push(`  From ${dm.from}: ${dm.unreadCount} unread`);
+    }
+  }
+
+  const reactions = selfNorm
+    ? inbox.recentReactions?.filter((reaction: any) => !isSelf(reaction.agentName))
+    : inbox.recentReactions;
+  if (reactions?.length) {
+    lines.push('Reactions (informational; no response required):');
+    for (const reaction of reactions) {
+      lines.push(
+        `  :${reaction.emoji}: on your message in #${reaction.channelName} by @${reaction.agentName}`
+      );
+    }
+  }
+
+  return lines.length === 1 ? '' : lines.join('\n');
+}
+
+function readAsIdentity(args: unknown[]): string | undefined {
+  const [input] = args;
+  if (typeof input !== 'object' || input === null) return undefined;
+  const as = (input as { as?: unknown }).as;
+  return typeof as === 'string' ? as : undefined;
+}
+
+function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
+  const text = agentTokenRecoveryMessage();
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: {
+      error: { code: INVALID_AGENT_TOKEN_CODE, message: text },
+    },
+    isError: true,
+  };
+}
+
+function enableInboxPiggyback(
+  mcpServer: McpServer,
+  getSession: () => SessionState,
+  getAgentClient: (asIdentity?: string) => AgentClientLike,
+  invalidateAgentToken: (asIdentity?: string) => void
+): void {
+  const original = mcpServer.registerTool.bind(mcpServer);
+  const mutableServer = mcpServer as McpServer & {
+    registerTool: McpServer['registerTool'];
+  };
+
+  mutableServer.registerTool = (name: string, config: any, handler: any) => {
+    if (!handler) {
+      return original(name, config, handler);
+    }
+
+    const wrapped = async (...args: unknown[]) => {
+      const asIdentity = readAsIdentity(args);
+
+      let result: any;
+      try {
+        result = await handler(...args);
+      } catch (err) {
+        if (name !== 'register_agent' && isInvalidAgentTokenError(err)) {
+          invalidateAgentToken(asIdentity);
+          return invalidAgentTokenToolResult();
+        }
+        throw err;
+      }
+
+      if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {
+        invalidateAgentToken(asIdentity);
+        if (hasContentArray(result)) {
+          result.content.push({ type: 'text', text: agentTokenRecoveryMessage() });
+        }
+        return result;
+      }
+
+      if (SKIP_PIGGYBACK.has(name) || !getSession().agentToken || !hasContentArray(result)) {
+        return result;
+      }
+
+      try {
+        const inbox = await getAgentClient(asIdentity).inbox();
+        const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
+        if (inboxText) {
+          result.content.push({ type: 'text', text: inboxText });
+        }
+      } catch (err) {
+        if (isInvalidAgentTokenError(err)) {
+          invalidateAgentToken(asIdentity);
+        }
+      }
+
+      return result;
+    };
+
+    return original(name, config, wrapped);
   };
 }
 
@@ -719,496 +1038,6 @@ export async function registerAgentWithRebind({
   };
 }
 
-class SubscriptionManager {
-  private readonly subscriptions = new Set<string>();
-
-  subscribe(uri: string): void {
-    this.subscriptions.add(uri);
-  }
-
-  unsubscribe(uri: string): void {
-    this.subscriptions.delete(uri);
-  }
-
-  getMatchingSubscriptions(uris: string[]): string[] {
-    return uris.filter((uri) => this.subscriptions.has(uri));
-  }
-
-  getAll(): string[] {
-    return [...this.subscriptions];
-  }
-
-  clear(): void {
-    this.subscriptions.clear();
-  }
-}
-
-function getStringEventField(event: unknown, field: string): string | null {
-  if (typeof event !== 'object' || event === null) {
-    return null;
-  }
-  const candidate = (event as Record<string, unknown>)[field];
-  return typeof candidate === 'string' ? candidate : null;
-}
-
-function eventToResourceUris(event: unknown): string[] {
-  const type = getStringEventField(event, 'type');
-  switch (type) {
-    case 'message.created': {
-      const channel = getStringEventField(event, 'channel');
-      return channel ? ['relay://inbox', `relay://channels/${channel}/messages`] : ['relay://inbox'];
-    }
-    case 'message.updated': {
-      const channel = getStringEventField(event, 'channel');
-      return channel ? [`relay://channels/${channel}/messages`] : [];
-    }
-    case 'thread.reply': {
-      const parentId = getStringEventField(event, 'parentId');
-      return parentId ? ['relay://inbox', `relay://messages/${parentId}/thread`] : ['relay://inbox'];
-    }
-    case 'dm.received':
-    case 'group_dm.received': {
-      const conversationId = getStringEventField(event, 'conversationId');
-      return conversationId ? ['relay://inbox', `relay://dm/${conversationId}`] : ['relay://inbox'];
-    }
-    case 'agent.online':
-    case 'agent.offline':
-      return ['relay://agents'];
-    case 'channel.created':
-    case 'channel.updated':
-    case 'channel.archived':
-    case 'member.joined':
-    case 'member.left':
-      return ['relay://channels'];
-    case 'webhook.received': {
-      const channel = getStringEventField(event, 'channel');
-      return channel ? [`relay://channels/${channel}/messages`] : [];
-    }
-    case 'action.invoked':
-    case 'action.completed':
-    case 'action.failed':
-      // Actions are not channel-scoped; surface invocations via the inbox.
-      return ['relay://inbox'];
-    case 'reaction.added':
-    case 'reaction.removed':
-      return ['relay://inbox'];
-    default:
-      return [];
-  }
-}
-
-class RealtimeResourceBridge {
-  private unsubscribeFn: (() => void) | null = null;
-
-  constructor(
-    private readonly wsClient: WsClient,
-    private readonly subscriptions: SubscriptionManager,
-    private readonly notifyCallback: (uri: string) => void
-  ) {}
-
-  start(): void {
-    this.unsubscribeFn = this.wsClient.on('*', (event) => {
-      const type = getStringEventField(event, 'type');
-      if (
-        type === 'open' ||
-        type === 'close' ||
-        type === 'error' ||
-        type === 'reconnecting' ||
-        type === 'permanently_disconnected'
-      ) {
-        return;
-      }
-      const matched = this.subscriptions.getMatchingSubscriptions(eventToResourceUris(event));
-      for (const uri of matched) {
-        this.notifyCallback(uri);
-      }
-    });
-    this.wsClient.connect();
-  }
-
-  stop(): void {
-    if (this.unsubscribeFn) {
-      this.unsubscribeFn();
-      this.unsubscribeFn = null;
-    }
-    this.wsClient.disconnect();
-  }
-}
-
-function registerResourceDefinitions(
-  server: McpServer,
-  getAgentClient: (asIdentity?: string) => AgentClientLike,
-  getRelay: () => RelayCast
-): void {
-  server.registerResource(
-    'inbox',
-    'relay://inbox',
-    { title: 'Inbox', description: 'Unread messages, mentions, and DMs', mimeType: 'application/json' },
-    async (uri) => {
-      const inbox = await getAgentClient().inbox();
-      return { contents: [{ uri: uri.href, text: JSON.stringify(inbox) }] };
-    }
-  );
-
-  server.registerResource(
-    'agents',
-    'relay://agents',
-    {
-      title: 'Agents',
-      description: 'Online and offline agents in the workspace',
-      mimeType: 'application/json',
-    },
-    async (uri) => {
-      const agents = await getRelay().agents.list();
-      return { contents: [{ uri: uri.href, text: JSON.stringify(agents) }] };
-    }
-  );
-
-  server.registerResource(
-    'channels',
-    'relay://channels',
-    { title: 'Channels', description: 'Available channels in the workspace', mimeType: 'application/json' },
-    async (uri) => {
-      const channels = await getAgentClient().channels.list();
-      return { contents: [{ uri: uri.href, text: JSON.stringify(channels) }] };
-    }
-  );
-
-  server.registerResource(
-    'channel-messages',
-    new ResourceTemplate('relay://channels/{name}/messages', { list: undefined }),
-    {
-      title: 'Channel Messages',
-      description: 'Messages in a specific channel',
-      mimeType: 'application/json',
-    },
-    async (uri, params) => {
-      const messages = await getAgentClient().messages(String(params.name));
-      return { contents: [{ uri: uri.href, text: JSON.stringify(messages) }] };
-    }
-  );
-
-  server.registerResource(
-    'message-thread',
-    new ResourceTemplate('relay://messages/{id}/thread', { list: undefined }),
-    { title: 'Message Thread', description: 'Thread replies on a message', mimeType: 'application/json' },
-    async (uri, params) => {
-      const thread = await getAgentClient().thread(String(params.id));
-      return { contents: [{ uri: uri.href, text: JSON.stringify(thread) }] };
-    }
-  );
-
-  server.registerResource(
-    'dm-conversation',
-    new ResourceTemplate('relay://dm/{conversation_id}', { list: undefined }),
-    {
-      title: 'DM Conversation',
-      description: 'Direct message conversation',
-      mimeType: 'application/json',
-    },
-    async (uri, params) => {
-      const messages = await getAgentClient().dms.messages(String(params.conversation_id));
-      return { contents: [{ uri: uri.href, text: JSON.stringify(messages) }] };
-    }
-  );
-}
-
-function hasContentArray(value: unknown): value is { content: Array<Record<string, unknown>> } {
-  return (
-    typeof value === 'object' && value !== null && Array.isArray((value as { content?: unknown }).content)
-  );
-}
-
-const SKIP_PIGGYBACK = new Set(['check_inbox', 'create_workspace', 'set_workspace_key', 'register_agent']);
-
-function formatInbox(inbox: any, selfName?: string | null): string {
-  const norm = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
-  const selfNorm = selfName ? norm(selfName) : null;
-  const isSelf = (name: string) => selfNorm != null && norm(name) === selfNorm;
-  const lines = ['--- Pending Messages ---'];
-
-  if (inbox.unreadChannels?.length) {
-    lines.push('Unread channels:');
-    for (const ch of inbox.unreadChannels) {
-      lines.push(`  #${ch.channelName}: ${ch.unreadCount} unread`);
-    }
-  }
-
-  const mentions = selfNorm ? inbox.mentions?.filter((m: any) => !isSelf(m.agentName)) : inbox.mentions;
-  if (mentions?.length) {
-    lines.push('Mentions:');
-    for (const m of mentions) {
-      lines.push(`  @${m.agentName} in #${m.channelName}: "${m.text}"`);
-    }
-  }
-
-  const dms = selfNorm ? inbox.unreadDms?.filter((dm: any) => !isSelf(dm.from)) : inbox.unreadDms;
-  if (dms?.length) {
-    lines.push('Unread DMs:');
-    for (const dm of dms) {
-      lines.push(`  From ${dm.from}: ${dm.unreadCount} unread`);
-    }
-  }
-
-  const reactions = selfNorm
-    ? inbox.recentReactions?.filter((reaction: any) => !isSelf(reaction.agentName))
-    : inbox.recentReactions;
-  if (reactions?.length) {
-    lines.push('Reactions (informational; no response required):');
-    for (const reaction of reactions) {
-      lines.push(
-        `  :${reaction.emoji}: on your message in #${reaction.channelName} by @${reaction.agentName}`
-      );
-    }
-  }
-
-  return lines.length === 1 ? '' : lines.join('\n');
-}
-
-function readAsIdentity(args: unknown[]): string | undefined {
-  const [input] = args;
-  if (typeof input !== 'object' || input === null) return undefined;
-  const as = (input as { as?: unknown }).as;
-  return typeof as === 'string' ? as : undefined;
-}
-
-function invalidAgentTokenToolResult(): JsonToolResult & { isError: true } {
-  const text = agentTokenRecoveryMessage();
-  return {
-    content: [{ type: 'text', text }],
-    structuredContent: {
-      error: { code: INVALID_AGENT_TOKEN_CODE, message: text },
-    },
-    isError: true,
-  };
-}
-
-interface AgentRelayToolCallMetadata {
-  toolType: AgentRelayToolCallType;
-  toolCategory: AgentRelayToolCallCategory;
-}
-
-const AGENT_RELAY_TOOL_CALL_METADATA = {
-  add_agent: { toolType: 'agent.create', toolCategory: 'spawn' },
-  remove_agent: { toolType: 'agent.release', toolCategory: 'release' },
-  invoke_action: { toolType: 'action.invoke', toolCategory: 'action' },
-  list_actions: { toolType: 'action.list', toolCategory: 'action' },
-  submit_result: { toolType: 'result.submit', toolCategory: 'result' },
-  create_workspace: { toolType: 'workspace.create', toolCategory: 'workspace' },
-  set_workspace_key: { toolType: 'workspace.set_key', toolCategory: 'workspace' },
-  register_agent: { toolType: 'agent.register', toolCategory: 'agent' },
-  list_agents: { toolType: 'agent.list', toolCategory: 'agent' },
-  post_message: { toolType: 'message.post', toolCategory: 'message' },
-  send_dm: { toolType: 'message.dm', toolCategory: 'message' },
-  send_group_dm: { toolType: 'message.group_dm', toolCategory: 'message' },
-  list_dms: { toolType: 'message.dm_list', toolCategory: 'message' },
-  list_messages: { toolType: 'message.list', toolCategory: 'message' },
-  get_message: { toolType: 'message.get', toolCategory: 'message' },
-  reply_to_thread: { toolType: 'message.reply', toolCategory: 'message' },
-  get_message_thread: { toolType: 'message.thread', toolCategory: 'message' },
-  get_thread: { toolType: 'message.thread', toolCategory: 'message' },
-  search_messages: { toolType: 'message.search', toolCategory: 'message' },
-  create_channel: { toolType: 'channel.create', toolCategory: 'channel' },
-  list_channels: { toolType: 'channel.list', toolCategory: 'channel' },
-  join_channel: { toolType: 'channel.join', toolCategory: 'channel' },
-  leave_channel: { toolType: 'channel.leave', toolCategory: 'channel' },
-  set_channel_topic: { toolType: 'channel.set_topic', toolCategory: 'channel' },
-  archive_channel: { toolType: 'channel.archive', toolCategory: 'channel' },
-  invite_to_channel: { toolType: 'channel.invite', toolCategory: 'channel' },
-  list_channel_members: { toolType: 'channel.member_list', toolCategory: 'channel' },
-  add_reaction: { toolType: 'reaction.add', toolCategory: 'reaction' },
-  remove_reaction: { toolType: 'reaction.remove', toolCategory: 'reaction' },
-  check_inbox: { toolType: 'inbox.check', toolCategory: 'inbox' },
-  mark_message_read: { toolType: 'inbox.mark_read', toolCategory: 'inbox' },
-  get_message_readers: { toolType: 'inbox.reader_list', toolCategory: 'inbox' },
-} satisfies Record<string, AgentRelayToolCallMetadata>;
-
-function readInvokedActionName(name: string, args: unknown[]): AgentRelayToolCallType | undefined {
-  if (name !== 'invoke_action') {
-    return undefined;
-  }
-  const [input] = args;
-  if (!input || typeof input !== 'object') {
-    return undefined;
-  }
-  const actionName = (input as { name?: unknown }).name;
-  return typeof actionName === 'string' && actionName.trim() ? actionName : undefined;
-}
-
-function agentRelayActionNameCategory(name: string): AgentRelayToolCallCategory {
-  const leaf = name.split(/[._-]/).filter(Boolean).at(-1)?.toLowerCase();
-  switch (leaf) {
-    case 'create':
-    case 'spawn':
-    case 'attach':
-      return 'spawn';
-    case 'release':
-      return 'release';
-    case 'status':
-      return 'agent';
-    default:
-      return 'action';
-  }
-}
-
-function agentRelayToolCallMetadata(
-  name: string,
-  args: unknown[],
-  actionToolNames: Set<string>
-): AgentRelayToolCallMetadata {
-  const invokedActionName = readInvokedActionName(name, args);
-  if (invokedActionName) {
-    return {
-      toolType: invokedActionName,
-      toolCategory: agentRelayActionNameCategory(invokedActionName),
-    };
-  }
-
-  const known = (AGENT_RELAY_TOOL_CALL_METADATA as Partial<Record<string, AgentRelayToolCallMetadata>>)[name];
-  if (known) {
-    return known;
-  }
-
-  if (actionToolNames.has(name)) {
-    return {
-      toolType: name,
-      toolCategory: agentRelayActionNameCategory(name),
-    };
-  }
-
-  return { toolType: name, toolCategory: 'tool' };
-}
-
-function isErrorToolResult(value: unknown): boolean {
-  return Boolean(value && typeof value === 'object' && (value as { isError?: unknown }).isError === true);
-}
-
-function trackAgentRelayToolCall(input: {
-  toolName: string;
-  toolType: AgentRelayToolCallType;
-  toolCategory: AgentRelayToolCallCategory;
-  transport?: AgentRelayMcpServerOptions['telemetryTransport'];
-  startedAt: number;
-  success: boolean;
-  errorClass?: string;
-}): void {
-  track('agent_relay_tool_call', {
-    tool_name: input.toolName,
-    tool_type: input.toolType,
-    tool_category: input.toolCategory,
-    transport: input.transport ?? 'unknown',
-    success: input.success,
-    duration_ms: Date.now() - input.startedAt,
-    ...(input.errorClass ? { error_class: input.errorClass } : {}),
-  });
-}
-
-function enableInboxPiggyback(
-  mcpServer: McpServer,
-  getSession: () => SessionState,
-  getAgentClient: (asIdentity?: string) => AgentClientLike,
-  invalidateAgentToken: (asIdentity?: string) => void,
-  telemetryTransport?: AgentRelayMcpServerOptions['telemetryTransport'],
-  actionToolNames = new Set<string>()
-): void {
-  const original = mcpServer.registerTool.bind(mcpServer);
-  const mutableServer = mcpServer as McpServer & {
-    registerTool: McpServer['registerTool'];
-  };
-
-  mutableServer.registerTool = (name: string, config: any, handler: any) => {
-    if (!handler) {
-      return original(name, config, handler);
-    }
-
-    const wrapped = async (...args: unknown[]) => {
-      const asIdentity = readAsIdentity(args);
-      const startedAt = Date.now();
-      const toolMetadata = agentRelayToolCallMetadata(name, args, actionToolNames);
-
-      let result: any;
-      try {
-        result = await handler(...args);
-      } catch (err) {
-        // `register_agent` is the recovery path itself — never invalidate a
-        // freshly-issued token, and let registration errors bubble normally.
-        if (name !== 'register_agent' && isInvalidAgentTokenError(err)) {
-          invalidateAgentToken(asIdentity);
-          trackAgentRelayToolCall({
-            toolName: name,
-            toolType: toolMetadata.toolType,
-            toolCategory: toolMetadata.toolCategory,
-            transport: telemetryTransport,
-            startedAt,
-            success: false,
-            errorClass: errorClassName(err) ?? 'InvalidAgentToken',
-          });
-          return invalidAgentTokenToolResult();
-        }
-        trackAgentRelayToolCall({
-          toolName: name,
-          toolType: toolMetadata.toolType,
-          toolCategory: toolMetadata.toolCategory,
-          transport: telemetryTransport,
-          startedAt,
-          success: false,
-          errorClass: errorClassName(err),
-        });
-        throw err;
-      }
-
-      // Successful response that still carries an "Invalid agent token" body.
-      if (name !== 'register_agent' && isInvalidAgentTokenToolResult(result)) {
-        invalidateAgentToken(asIdentity);
-        trackAgentRelayToolCall({
-          toolName: name,
-          toolType: toolMetadata.toolType,
-          toolCategory: toolMetadata.toolCategory,
-          transport: telemetryTransport,
-          startedAt,
-          success: false,
-          errorClass: 'InvalidAgentToken',
-        });
-        if (hasContentArray(result)) {
-          result.content.push({ type: 'text', text: agentTokenRecoveryMessage() });
-        }
-        return result;
-      }
-
-      if (!SKIP_PIGGYBACK.has(name) && getSession().agentToken && hasContentArray(result)) {
-        try {
-          const inbox = await getAgentClient(asIdentity).inbox();
-          const inboxText = formatInbox(inbox, asIdentity ?? getSession().agentName);
-          if (inboxText) {
-            result.content.push({ type: 'text', text: inboxText });
-          }
-        } catch (err) {
-          // Inbox piggyback is opportunistic; the original tool result should
-          // still win. But if the inbox fetch itself reveals an invalid token,
-          // clear the stale identity so the next call doesn't reuse it.
-          if (isInvalidAgentTokenError(err)) {
-            invalidateAgentToken(asIdentity);
-          }
-        }
-      }
-
-      const resultIsError = isErrorToolResult(result);
-      trackAgentRelayToolCall({
-        toolName: name,
-        toolType: toolMetadata.toolType,
-        toolCategory: toolMetadata.toolCategory,
-        transport: telemetryTransport,
-        startedAt,
-        success: !resultIsError,
-        ...(resultIsError ? { errorClass: 'ToolResultError' } : {}),
-      });
-      return result;
-    };
-
-    return original(name, config, wrapped);
-  };
-}
-
 function resolveEmoji(input: string): string {
   const normalized = input.trim().replace(/^:/, '').replace(/:$/, '').toLowerCase();
   const aliases: Record<string, string> = {
@@ -1384,6 +1213,28 @@ function registerAgentRelayTools(
       requireWorkspaceKey(getSession());
       const agents = await getRelay().agents.list(status ? { status } : undefined);
       return jsonContent({ agents });
+    }
+  );
+
+  server.registerTool(
+    'query_nodes',
+    {
+      title: 'Query Fleet Nodes',
+      description: 'Query registered fleet nodes by capability or name.',
+      inputSchema: {
+        capability: z.string().optional().describe('Optional capability name filter'),
+        name: z.string().optional().describe('Optional node name filter'),
+      },
+      outputSchema: {
+        nodes: z.array(z.object({}).passthrough()).describe('Fleet nodes'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ capability, name }) => {
+      const session = getSession();
+      requireWorkspaceKey(session);
+      const relay = new AgentRelay({ workspaceKey: session.workspaceKey ?? undefined, baseUrl });
+      return jsonContent({ nodes: await relay.nodes.list({ capability, name }) });
     }
   );
 
@@ -1815,6 +1666,48 @@ function registerAgentRelayTools(
   );
 
   server.registerTool(
+    'spawn',
+    {
+      title: 'Spawn Agent',
+      description: 'Invoke the fleet spawn action. Optionally target a specific node.',
+      inputSchema: {
+        name: z.string().describe('Agent name'),
+        cli: z.enum(['claude', 'codex', 'gemini', 'aider', 'goose']).describe('AI CLI to launch'),
+        task: z.string().optional().describe('Initial task instructions'),
+        channel: z.string().optional().describe('Channel to join'),
+        channels: z.array(z.string()).optional().describe('Channels to join'),
+        model: z.string().optional().describe('Model powering the worker'),
+        session_ref: z.string().optional().describe('Session reference for resumable spawns'),
+        target_node: z.string().optional().describe('Optional target fleet node name'),
+        ...identityOverrideInputShape,
+      },
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ name, cli, task, channel, channels, model, session_ref, target_node, as }) => {
+      const actions = getAgentClient(as).actions;
+      if (!actions) {
+        throw new Error('spawn requires an agent-scoped Relaycast actions client.');
+      }
+      const actionInput = {
+        name,
+        cli,
+        ...(task ? { task } : {}),
+        ...(model ? { model } : {}),
+        ...(session_ref ? { session_ref } : {}),
+        ...(target_node ? { target_node } : {}),
+        ...((channels ?? (channel ? [channel] : undefined)) ? { channels: channels ?? [channel] } : {}),
+      };
+      return jsonContent({ invocation: await actions.invoke('spawn', actionInput) });
+    }
+  );
+
+  server.registerTool(
     'remove_agent',
     {
       title: 'Remove Agent',
@@ -1906,12 +1799,10 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     if (session.agentToken && !session.wsBridge && !session.wsInitAttempted) {
       try {
         const subscriptions = new SubscriptionManager();
-        const wsClient = new WsClient(
-          withRelaycastTelemetry({
-            token: session.agentToken,
-            baseUrl: options.baseUrl,
-          })
-        );
+        const wsClient = new WsClient({
+          token: session.agentToken,
+          baseUrl: options.baseUrl,
+        });
         const wsBridge = new RealtimeResourceBridge(wsClient, subscriptions, (uri) => {
           mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
         });
@@ -1937,9 +1828,6 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
       partial.agents = nextAgents;
     }
 
-    // Clear the active-session token when the invalidated identity is the
-    // active one (or the caller didn't pin to a particular identity). The
-    // active workspaceKey stays intact so `register_agent` can recover.
     if (!asIdentity || asIdentity === session.agentName) {
       if (session.agentToken !== null) {
         partial.agentToken = null;
@@ -1980,14 +1868,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     ).as(agentToken, { autoHeartbeatMs: false });
   };
 
-  enableInboxPiggyback(
-    mcpServer,
-    getSession,
-    getAgentClient,
-    invalidateAgentToken,
-    options.telemetryTransport,
-    actionToolNames
-  );
+  enableInboxPiggyback(mcpServer, getSession, getAgentClient, invalidateAgentToken);
   registerResourceDefinitions(mcpServer, getAgentClient, getRelay);
   mcpServer.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
     session.subscriptions?.subscribe(req.params.uri);
@@ -2060,10 +1941,6 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
       }
       return result;
     });
-  }
-
-  if (session.agentToken && !session.wsBridge) {
-    setSession({ agentToken: session.agentToken, agentName: session.agentName });
   }
 
   return mcpServer;

@@ -218,6 +218,37 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    let node_id = match crate::node_control::default_node_id_path() {
+        Some(path) => crate::node_control::load_or_create_node_id(&path).unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "failed to load fleet node machine id; using ephemeral id");
+            format!("node_{}", Uuid::new_v4().simple())
+        }),
+        None => format!("node_{}", Uuid::new_v4().simple()),
+    };
+    let node_name = crate::node_control::default_node_name(
+        (!cmd.name.trim().is_empty()).then_some(cmd.name.as_str()),
+    );
+    let fleet_ws_url = format!(
+        "{}/v1/node/ws",
+        derive_ws_base_url_from_http(&http_base).trim_end_matches('/')
+    );
+    let node_token = std::env::var("RELAY_NODE_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
+    let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
+    tokio::spawn(crate::node_control::run_node_control_client(
+        crate::node_control::FleetControlConfig {
+            ws_url: fleet_ws_url,
+            node_token,
+            node_id,
+            node_name,
+            broker_version: format!("relay-broker/{}", crate::util::version::broker_version()),
+        },
+        fleet_control_rx,
+        fleet_event_tx,
+    ));
     let workspace_memberships: Vec<WorkspaceMembershipSummary> = workspaces
         .iter()
         .map(|workspace| WorkspaceMembershipSummary {
@@ -487,6 +518,19 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         api_open: true,
         ws_inbound_rx,
         relaycast_open: true,
+        fleet_control_tx,
+        fleet_event_rx,
+        fleet_control_open: true,
+        fleet_mode_enabled: false,
+        fleet_delivery_book: FleetDeliveryBook::default(),
+        fleet_handlers: HandlerDispatchState::default(),
+        fleet_sidecar_out_tx: None,
+        fleet_sidecar_supervision: None,
+        fleet_sidecar_child: None,
+        fleet_sidecar_restart_at: None,
+        fleet_sidecar_restart: fleet::FleetSidecarRestartState::default(),
+        fleet_max_agents: 0,
+        fleet_inventory: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,
         worker_events_open: true,

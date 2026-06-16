@@ -73,14 +73,123 @@ export interface ProtocolEnvelope<TPayload> {
   payload: TPayload;
 }
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface NodeCapabilityManifest {
+  name: string;
+  kind?: string;
+  /** Capability metadata only; handler code stays in the sidecar. */
+  metadata?: Record<string, JsonValue>;
+}
+
+type AssertNodeCapabilityManifest<T extends NodeCapabilityManifest> = T;
+type _NodeCapabilityAllowsObjectMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-foo';
+  metadata: { schema: { type: 'object' }; retryable: false };
+}>;
+type _NodeCapabilityAllowsMissingMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-bar';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsScalarMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-baz';
+  metadata: 'v1';
+}>;
+// @ts-expect-error capability metadata must be an object record.
+type _NodeCapabilityRejectsArrayMetadata = AssertNodeCapabilityManifest<{
+  name: 'run-qux';
+  metadata: ['v1'];
+}>;
+
+export interface NodeManifest {
+  name: string;
+  node_id?: string;
+  capabilities: NodeCapabilityManifest[];
+  max_agents?: number;
+  tags?: string[];
+  version?: string;
+}
+
+export interface NodeSupervision {
+  argv: string[];
+  cwd: string;
+  env?: Record<string, string>;
+}
+
+export type HandlerResultPayload =
+  | { invocation_id: string; output: JsonValue; error?: never }
+  | { invocation_id: string; error: string; output?: never };
+
+type AssertHandlerResultPayload<T extends HandlerResultPayload> = T;
+type _HandlerResultAllowsOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_123';
+  output: { ok: true };
+}>;
+type _HandlerResultAllowsNullOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_124';
+  output: null;
+}>;
+type _HandlerResultAllowsError = AssertHandlerResultPayload<{
+  invocation_id: 'inv_125';
+  error: 'handler failed';
+}>;
+// @ts-expect-error handler_result requires either output or error.
+type _HandlerResultRejectsMissing = AssertHandlerResultPayload<{ invocation_id: 'inv_126' }>;
+// @ts-expect-error handler_result.output must be JSON and cannot serialize away.
+type _HandlerResultRejectsUndefinedOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_127';
+  output: undefined;
+}>;
+// @ts-expect-error handler_result.output must be JSON-serializable.
+type _HandlerResultRejectsFunctionOutput = AssertHandlerResultPayload<{
+  invocation_id: 'inv_128';
+  output: () => void;
+}>;
+// @ts-expect-error handler_result cannot carry both output and error.
+type _HandlerResultRejectsBoth = AssertHandlerResultPayload<{
+  invocation_id: 'inv_129';
+  output: { ok: true };
+  error: 'handler failed';
+}>;
+// @ts-expect-error handler_result.error must be the canonical string message.
+type _HandlerResultRejectsObjectError = AssertHandlerResultPayload<{
+  invocation_id: 'inv_130';
+  error: { code: 'handler_failed' };
+}>;
+
 export type SdkToBroker =
   | {
       type: 'hello';
       payload: { client_name: string; client_version: string };
     }
   | {
+      /** Register a fleet node sidecar with its manifest. */
+      type: 'register_node';
+      payload: { manifest: NodeManifest; supervision?: NodeSupervision };
+    }
+  | {
+      /** Advertise the action handler names implemented by this sidecar. */
+      type: 'register_handlers';
+      payload: { names: string[] };
+    }
+  | {
+      /** Sent by fleet serve on clean shutdown after which the sidecar will not be restarted; broker responds by emitting wire node.deregister and removing the sidecar from the supervision table. */
+      type: 'deregister_node';
+      payload: Record<string, never>;
+    }
+  | {
+      /** Return the output or error for a broker-initiated handler invocation. */
+      type: 'handler_result';
+      payload: HandlerResultPayload;
+    }
+  | {
       type: 'spawn_agent';
-      payload: { agent: AgentSpec; initial_task?: string; skip_relay_prompt?: boolean };
+      payload: {
+        agent: AgentSpec;
+        initial_task?: string;
+        skip_relay_prompt?: boolean;
+        invocation_id?: string;
+      };
     }
   | {
       type: 'send_message';
@@ -481,6 +590,11 @@ export type BrokerToSdk =
   | {
       type: 'hello_ack';
       payload: { broker_version: string; protocol_version: number };
+    }
+  | {
+      /** Invoke a registered action handler in the fleet node sidecar. */
+      type: 'invoke_handler';
+      payload: { invocation_id: string; name: string; input: JsonValue };
     }
   | {
       type: 'ok';
