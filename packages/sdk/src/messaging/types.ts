@@ -43,7 +43,10 @@ export interface RelayNode {
   id?: string;
   name: string;
   status: RelayNodeStatus;
+  live: boolean;
   capabilities: RelayNodeCapability[];
+  /** Repository keys from NodeConfig.repoPaths that this node can service. */
+  repoKeys?: string[];
   maxAgents?: number;
   activeAgents?: number;
   handlersLive?: boolean;
@@ -492,6 +495,8 @@ export interface RelayActionInvocationAck {
   invocationId: string;
   actionName: string;
   handlerAgentId?: string;
+  handlerNodeId?: string | null;
+  dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
   status?: string;
   createdAt?: string;
@@ -517,6 +522,68 @@ export interface RelayCompleteInvocationInput {
   output?: Record<string, unknown>;
   error?: string;
   durationMs?: number;
+}
+
+export type RelayPlacementRejectReason =
+  | 'capability_mismatch'
+  | 'placement_queue_full'
+  | 'placement_ttl_expired'
+  | 'unmapped_repo';
+
+export type RelayPlacementReconcileReason =
+  | 'no_eligible_node'
+  | 'target_offline'
+  | 'unmapped_repo';
+
+export interface RelayPlacementReconcileEvent {
+  action: 'queued' | 'failed';
+  reason: RelayPlacementReconcileReason;
+  capability: string;
+  node?: string;
+  repo?: string;
+  attempts: number;
+  message: string;
+}
+
+export interface RelaySpawnPlacementInput {
+  /** Node capability to dispatch, e.g. `spawn:claude` or `workflow:run`. */
+  capability: string;
+  /**
+   * Optional exact node target. `self` resolves through `selfNodeName` on this
+   * input, then the messaging client default self node name.
+   */
+  node?: string | 'self';
+  /** Explicit self-node name used when `node: "self"` is requested. */
+  selfNodeName?: string;
+  /** Repo label/key that must be present in the selected node's repo map. */
+  repo?: string;
+  /** Action name to invoke once placement is resolved. Defaults to the capability. */
+  actionName?: string;
+  /** Action payload passed to the node after placement metadata is added. */
+  input?: Record<string, unknown>;
+  /** Per-placement queue TTL. Defaults to the client placement TTL. */
+  ttlMs?: number;
+  /** RFC-compatible alias for `ttlMs`. */
+  ttlOverrideMs?: number;
+  /** Poll cadence while a placement is queued. */
+  pollIntervalMs?: number;
+  /** Fail immediately instead of queueing when no currently eligible node exists. */
+  failFast?: boolean;
+  /** Placement log sink. Defaults to the client placement logger. */
+  log?: (message: string) => void;
+  /** Reconcile hook for queue/fail visibility, e.g. Slack surfacing by callers. */
+  onReconcile?: (event: RelayPlacementReconcileEvent) => void | Promise<void>;
+}
+
+export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
+  node: RelayNode;
+  placement: {
+    capability: string;
+    node: string;
+    repo?: string;
+    attempts: number;
+    queued: boolean;
+  };
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────
@@ -839,6 +906,9 @@ export interface RelayMessagingClient {
   readonly nodes: {
     list(options?: RelayListNodesOptions): Promise<RelayNode[]>;
     get(name: string): Promise<RelayNode | null>;
+  };
+  readonly placement: {
+    spawn(input: RelaySpawnPlacementInput): Promise<RelaySpawnPlacementAck>;
   };
   readonly triggers: {
     list(): Promise<RelayTrigger[]>;

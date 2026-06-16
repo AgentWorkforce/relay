@@ -71,6 +71,7 @@ import type {
   RelayMessagingEventMap,
   RelayNode,
   RelayNodeCapability,
+  RelayPlacementReconcileEvent,
   RelayReadReceipt,
   RelayRegisterAgentInput,
   RelayReplyMessageInput,
@@ -78,6 +79,8 @@ import type {
   RelaySendChannelMessageInput,
   RelaySendDirectMessageInput,
   RelaySendGroupDirectMessageInput,
+  RelaySpawnPlacementAck,
+  RelaySpawnPlacementInput,
   RelayThread,
   RelayTrigger,
   RelayTriggerInput,
@@ -123,11 +126,14 @@ function toRelayCapability(raw: unknown): RelayCapability {
 function toRelayNode(raw: unknown): RelayNode {
   const node = (raw ?? {}) as Record<string, unknown>;
   const rawStatus = readStr(node, 'status');
+  const live = readBoolean(node, 'live') ?? rawStatus === 'online';
   return {
     id: readStr(node, 'id', 'node_id'),
     name: readStr(node, 'name') ?? '',
     status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
+    live,
     capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
+    repoKeys: readRepoKeys(node),
     maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
     activeAgents: readNumber(node, 'activeAgents', 'active_agents'),
     handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
@@ -136,6 +142,13 @@ function toRelayNode(raw: unknown): RelayNode {
     tags: readStringArray(node, 'tags'),
     version: readStr(node, 'version'),
   };
+}
+
+function readRepoKeys(node: Record<string, unknown>): string[] | undefined {
+  const direct = readStringArray(node, 'repoKeys') ?? readStringArray(node, 'repo_keys');
+  if (direct) return direct;
+  const repoPaths = readRecord(node, 'repoPaths', 'repo_paths');
+  return repoPaths ? Object.keys(repoPaths).filter(Boolean) : undefined;
 }
 
 function toRelayNodeCapability(raw: unknown): RelayNodeCapability {
@@ -229,6 +242,81 @@ function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<
   return undefined;
 }
 
+type PlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
+
+type PlacementSelection =
+  | { node: RelayNode; message?: never; hardFail?: never; reason?: never; reconcileReason?: never }
+  | {
+      // Hard failure — thrown before any side effect; `reason` is the error code.
+      node?: never;
+      message: string;
+      hardFail: true;
+      reason: 'capability_mismatch';
+      reconcileReason: PlacementReconcileReason;
+    }
+  | {
+      // Retryable — queued and reconciled; only `reconcileReason` is consumed.
+      node?: never;
+      message: string;
+      hardFail?: false;
+      reason?: never;
+      reconcileReason: PlacementReconcileReason;
+    };
+
+export class RelayPlacementError extends Error {
+  readonly code: 'capability_mismatch' | 'placement_queue_full' | 'placement_ttl_expired' | 'unmapped_repo';
+  readonly capability: string;
+  readonly node?: string;
+  readonly repo?: string;
+  readonly attempts: number;
+
+  constructor(
+    code: RelayPlacementError['code'],
+    message: string,
+    context: { capability: string; node?: string; repo?: string; attempts: number }
+  ) {
+    super(message);
+    this.name = 'RelayPlacementError';
+    this.code = code;
+    this.capability = context.capability;
+    this.node = context.node;
+    this.repo = context.repo;
+    this.attempts = context.attempts;
+  }
+}
+
+function nonEmptyPlacement(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`${label} is required.`);
+  return trimmed;
+}
+
+function placementActionName(capability: string): string {
+  return capability.startsWith('spawn:') ? 'spawn' : capability;
+}
+
+function placementActionInput(
+  input: Record<string, unknown> | undefined,
+  placement: { capability: string; node: string; repo?: string; ttlMs: number }
+): Record<string, unknown> {
+  const payload = { ...(input ?? {}) };
+  payload.capability = placement.capability;
+  payload.node = placement.node;
+  payload.target_node = placement.node;
+  if (placement.repo) payload.repo = placement.repo;
+  if (placement.ttlMs > 0) {
+    payload.ttl_override_ms = placement.ttlMs;
+  }
+  if (placement.capability.startsWith('spawn:') && typeof payload.cli !== 'string') {
+    payload.cli = placement.capability.slice('spawn:'.length);
+  }
+  return payload;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Normalize a relaycast invoke ack (camelized) into the relay `RelayActionInvocationAck`. */
 function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
   const record = asRecord(raw);
@@ -237,6 +325,12 @@ function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
     actionName: readStr(record, 'actionName', 'action_name') ?? '',
     ...(readStr(record, 'handlerAgentId', 'handler_agent_id')
       ? { handlerAgentId: readStr(record, 'handlerAgentId', 'handler_agent_id') }
+      : {}),
+    ...(readStr(record, 'handlerNodeId', 'handler_node_id')
+      ? { handlerNodeId: readStr(record, 'handlerNodeId', 'handler_node_id') }
+      : {}),
+    ...(readStr(record, 'dispatchedNodeId', 'dispatched_node_id')
+      ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
       : {}),
     ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
     ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
@@ -477,6 +571,14 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   agentToken?: string;
   agentClient?: RelaycastAgentLike;
   agentClientOptions?: AgentClientOptions;
+  /** Local node name used to resolve placement requests with `node: "self"`. */
+  selfNodeName?: string;
+  /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
+  placementTtlMs?: number;
+  /** Max in-process placement requests allowed to wait for an eligible node. */
+  maxQueuedPlacements?: number;
+  /** Receives placement queue/reject/fail log lines. */
+  placementLog?: (message: string) => void;
 }
 
 function definedOptions<T extends Record<string, unknown>>(options: T): Partial<T> {
@@ -524,6 +626,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private readonly relaycast: RelaycastWorkspaceLike;
   private readonly agentClient?: RelaycastAgentLike;
+  private readonly selfNodeName?: string;
+  private readonly placementTtlMs: number;
+  private readonly maxQueuedPlacements: number;
+  private readonly placementLog?: (message: string) => void;
+  private queuedPlacements = 0;
   private readonly eventHandlers = new Map<
     keyof RelayMessagingEventMap,
     Set<(event: RelayMessagingEvent) => void | Promise<void>>
@@ -535,6 +642,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.agentClient =
       options.agentClient ??
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
+    this.selfNodeName = options.selfNodeName;
+    this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
+    this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
+    this.placementLog = options.placementLog;
     // Durable delivery state is agent-scoped: it requires an agent client that
     // exposes the relaycast delivery ledger (deliveries list + transitions).
     const durable = this.deliverySurface() !== undefined;
@@ -993,6 +1104,114 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     },
   };
 
+  readonly placement = {
+    spawn: async (input: RelaySpawnPlacementInput): Promise<RelaySpawnPlacementAck> => {
+      const capability = nonEmptyPlacement(input.capability, 'placement capability');
+      const repo = input.repo?.trim() || undefined;
+      const targetNode = this.resolvePlacementNode(input.node, input.selfNodeName);
+      const ttlMs = Math.max(0, input.ttlMs ?? input.ttlOverrideMs ?? this.placementTtlMs);
+      const pollIntervalMs = Math.max(25, input.pollIntervalMs ?? 1_000);
+      const startedAt = Date.now();
+      let queued = false;
+      let attempts = 0;
+
+      try {
+        while (true) {
+          attempts += 1;
+          const decision = await this.selectPlacementNode({ capability, repo, targetNode });
+          if (decision.node) {
+            const actionName = input.actionName ?? placementActionName(capability);
+            const actionInput = placementActionInput(input.input, {
+              capability,
+              node: decision.node.name,
+              repo,
+              ttlMs,
+            });
+            const ack = await this.commands.invoke(actionName, actionInput);
+            return {
+              ...ack,
+              node: decision.node,
+              placement: {
+                capability,
+                node: decision.node.name,
+                ...(repo ? { repo } : {}),
+                attempts,
+                queued,
+              },
+            };
+          }
+
+          if (decision.hardFail) {
+            this.logPlacement(input, decision.message);
+            throw new RelayPlacementError(decision.reason, decision.message, {
+              capability,
+              node: targetNode,
+              repo,
+              attempts,
+            });
+          }
+
+          if (input.failFast || Date.now() - startedAt >= ttlMs) {
+            const message = `${decision.message}; placement TTL expired`;
+            await this.reconcilePlacement(input, {
+              action: 'failed',
+              reason: decision.reconcileReason,
+              capability,
+              ...(targetNode ? { node: targetNode } : {}),
+              ...(repo ? { repo } : {}),
+              attempts,
+              message,
+            });
+            throw new RelayPlacementError('placement_ttl_expired', message, {
+              capability,
+              node: targetNode,
+              repo,
+              attempts,
+            });
+          }
+
+          if (!queued) {
+            if (this.queuedPlacements >= this.maxQueuedPlacements) {
+              const message = `${decision.message}; placement queue full`;
+              await this.reconcilePlacement(input, {
+                action: 'failed',
+                reason: decision.reconcileReason,
+                capability,
+                ...(targetNode ? { node: targetNode } : {}),
+                ...(repo ? { repo } : {}),
+                attempts,
+                message,
+              });
+              throw new RelayPlacementError('placement_queue_full', message, {
+                capability,
+                node: targetNode,
+                repo,
+                attempts,
+              });
+            }
+            this.queuedPlacements += 1;
+            queued = true;
+            await this.reconcilePlacement(input, {
+              action: 'queued',
+              reason: decision.reconcileReason,
+              capability,
+              ...(targetNode ? { node: targetNode } : {}),
+              ...(repo ? { repo } : {}),
+              attempts,
+              message: decision.message,
+            });
+          }
+
+          // Floor the queued delay at a small minimum so a near-zero remaining
+          // TTL cannot busy-spin the poll loop before the next expiry check.
+          await delay(Math.max(5, Math.min(pollIntervalMs, ttlMs - (Date.now() - startedAt))));
+        }
+      } finally {
+        if (queued) this.queuedPlacements = Math.max(0, this.queuedPlacements - 1);
+      }
+    },
+  };
+
   readonly triggers = {
     list: async (): Promise<RelayTrigger[]> => (await this.requireTriggers().list()).map(toRelayTrigger),
     create: async (input: RelayTriggerInput): Promise<RelayTrigger> =>
@@ -1012,6 +1231,93 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
   };
+
+  private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
+    if (!node) return undefined;
+    if (node !== 'self') return nonEmptyPlacement(node, 'placement node');
+    const resolved = selfNodeName ?? this.selfNodeName;
+    if (!resolved) {
+      throw new Error('placement node "self" requires selfNodeName on the request or client.');
+    }
+    return nonEmptyPlacement(resolved, 'placement self node');
+  }
+
+  private async selectPlacementNode(input: {
+    capability: string;
+    repo?: string;
+    targetNode?: string;
+  }): Promise<PlacementSelection> {
+    if (input.targetNode) {
+      const node = await this.nodes.get(input.targetNode);
+      if (!node) {
+        return {
+          message: `Placement queued: target node "${input.targetNode}" is not registered`,
+          reconcileReason: 'target_offline',
+        };
+      }
+      if (!this.nodeHasCapability(node, input.capability)) {
+        return {
+          message: `Placement rejected: node "${node.name}" does not advertise capability "${input.capability}"`,
+          hardFail: true,
+          reason: 'capability_mismatch',
+          reconcileReason: 'no_eligible_node',
+        };
+      }
+      if (!node.live) {
+        return {
+          message: `Placement queued: target node "${node.name}" is offline`,
+          reconcileReason: 'target_offline',
+        };
+      }
+      if (!this.nodeMapsRepo(node, input.repo)) {
+        return {
+          message: `Placement queued: node "${node.name}" does not map repo "${input.repo}"`,
+          reconcileReason: 'unmapped_repo',
+        };
+      }
+      return { node };
+    }
+
+    const nodes = await this.nodes.list({ capability: input.capability });
+    const capable = nodes.filter((node) => this.nodeHasCapability(node, input.capability));
+    const live = capable.filter((node) => node.live);
+    const eligible = live.filter((node) => this.nodeMapsRepo(node, input.repo));
+    if (eligible[0]) return { node: eligible[0] };
+
+    if (input.repo && live.length > 0) {
+      return {
+        message: `Placement queued: no live node advertising "${input.capability}" maps repo "${input.repo}"`,
+        reconcileReason: 'unmapped_repo',
+      };
+    }
+    return {
+      message: `Placement queued: no live node advertises capability "${input.capability}"`,
+      reconcileReason: 'no_eligible_node',
+    };
+  }
+
+  private nodeHasCapability(node: RelayNode, capability: string): boolean {
+    return node.capabilities.some((item) => item.name === capability);
+  }
+
+  private nodeMapsRepo(node: RelayNode, repo: string | undefined): boolean {
+    if (!repo) return true;
+    return Boolean(node.repoKeys?.includes(repo));
+  }
+
+  private async reconcilePlacement(
+    input: RelaySpawnPlacementInput,
+    event: RelayPlacementReconcileEvent
+  ): Promise<void> {
+    this.logPlacement(input, event.message);
+    await input.onReconcile?.(event);
+  }
+
+  private logPlacement(input: RelaySpawnPlacementInput, message: string): void {
+    const line = `[agent-relay] ${message}`;
+    input.log?.(line);
+    if (input.log !== this.placementLog) this.placementLog?.(line);
+  }
 
   private requireWebhooks(): NonNullable<RelaycastWorkspaceLike['webhooks']> {
     if (!this.relaycast.webhooks) {
