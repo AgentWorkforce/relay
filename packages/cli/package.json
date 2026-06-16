@@ -45,16 +45,19 @@
   "dependencies": {
     "@agent-relay/cloud": "8.7.2",
     "@agent-relay/config": "8.7.2",
+    "@agent-relay/fleet": "8.7.2",
     "@agent-relay/harness-driver": "8.7.2",
     "@agent-relay/sdk": "8.7.2",
     "@agent-relay/utils": "8.7.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@relaycast/sdk": "^2.5.1",
+    "@relaycast/sdk": "^3.1.1",
     "@relayflows/cli": "^1.0.1",
     "@xterm/headless": "^6.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
+    "jiti": "^2.6.1",
     "posthog-node": "^5.29.2",
+    "ws": "^8.18.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {

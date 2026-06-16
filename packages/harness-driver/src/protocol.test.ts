@@ -135,6 +135,32 @@ describe('fleet local protocol messages', () => {
     });
   });
 
+  it('serializes spawn_agent frames with invocation ids', () => {
+    const message: SdkToBroker = {
+      type: 'spawn_agent',
+      payload: {
+        agent: {
+          name: 'worker-a',
+          runtime: 'pty',
+          cli: 'codex',
+        },
+        invocation_id: 'inv_123',
+      },
+    };
+
+    expect(JSON.parse(JSON.stringify(message))).toEqual({
+      type: 'spawn_agent',
+      payload: {
+        agent: {
+          name: 'worker-a',
+          runtime: 'pty',
+          cli: 'codex',
+        },
+        invocation_id: 'inv_123',
+      },
+    });
+  });
+
   it('wraps fleet frames in the shared protocol envelope', () => {
     const frame: ProtocolEnvelope<SdkToBroker['payload']> = {
       v: PROTOCOL_VERSION,
