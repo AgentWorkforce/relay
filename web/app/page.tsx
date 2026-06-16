@@ -9,11 +9,11 @@ import {
   Deploy,
   DeliveryFeature,
   Hero,
+  HowItWorks,
   MessagingFeature,
   QuickStart,
   Waitlist,
   WaveDivider,
-  WorksWithEveryAgent,
 } from '../components/home';
 import { HOME_OG_IMAGE_PATH, ogImage } from '../lib/og-meta';
 import { absoluteUrl } from '../lib/site';
@@ -53,7 +53,7 @@ export default function HomePage() {
       <div className={s.featuresWrapper}>
         <section className={s.featuresSection}>
           <MessagingFeature />
-          <WorksWithEveryAgent />
+          <HowItWorks />
           <DeliveryFeature />
           <WaveDivider variant="feature" />
           <AgentToolsFeature />
