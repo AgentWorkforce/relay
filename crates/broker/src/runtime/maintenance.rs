@@ -13,6 +13,8 @@ impl BrokerRuntime {
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
+        let fleet_max_agents = self.fleet_max_agents;
+        let fleet_handlers_live = self.fleet_handlers.handlers_live();
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -89,6 +91,7 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        let fleet_load_changed = !exited.is_empty();
         for (name, code, signal, exit_reason) in &exited {
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             // Record crash in insights
@@ -270,6 +273,16 @@ impl BrokerRuntime {
                     .await;
                 }
             }
+        }
+        if fleet_load_changed {
+            super::fleet::publish_fleet_load_snapshot(
+                fleet_control_tx,
+                u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                fleet_max_agents,
+                fleet_handlers_live,
+                true,
+            )
+            .await;
         }
 
         // Check for agents ready to restart (past cooldown)
