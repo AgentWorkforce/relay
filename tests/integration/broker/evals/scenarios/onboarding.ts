@@ -31,9 +31,7 @@ export function onboardingText(variant: OnboardingVariant): string {
       return `
 
 ## Agent management
-- Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli, task })
-  cli: "claude" (Claude Code), "codex" (OpenAI Codex), "gemini" (Google Gemini), "opencode".
-  To pin a Claude model: add model: "claude-opus-4-8" (Opus) or "claude-sonnet-4-6" (Sonnet).
+- Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
   name = unique identifier, task = full instructions for the relay worker.
 - Release a relay worker: mcp__agent-relay__remove_agent({ name })
 When the task says to delegate or assign work, call add_agent. Release with remove_agent when the relay worker reports done.`;

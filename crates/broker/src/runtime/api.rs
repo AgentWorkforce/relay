@@ -1575,10 +1575,9 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
 
 /// One-line skill text prepended for CLI harnesses that need a minimal relay lifecycle hint.
 const RELAY_WORKER_ONE_LINER: &str = "\
-Call mcp__agent-relay__add_agent(name, cli, task) to spawn a relay worker — \
-set cli to \"claude\", \"codex\", \"gemini\", or \"opencode\" to choose the AI tool; \
-add model to pin a Claude tier (e.g. model: \"claude-opus-4-8\"). \
-Call mcp__agent-relay__remove_agent(name) to release workers when done.";
+Call mcp__agent-relay__add_agent(name, cli, task) to spawn a relay worker \
+(cli: \"claude\", \"codex\", \"gemini\", or \"opencode\"; add model for Claude tier, \
+e.g. model: \"claude-opus-4-8\"), and mcp__agent-relay__remove_agent(name) to release when done.";
 
 /// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
 /// explicit tool guidance to reliably call mcp__agent-relay__add_agent.
@@ -1590,24 +1589,9 @@ const SMALL_MODEL_RELAY_SKILL: &str = "\
 ### Spawn a relay worker
 To delegate a task to a dedicated relay worker agent, call:
   mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
-Required: name (unique string), cli (which AI tool to use — see below), task (complete instructions).
+Required: name (unique string), cli (\"claude\", \"codex\", \"gemini\", or \"opencode\"), task (complete instructions).
+To pin a Claude model: add model: \"claude-opus-4-8\" (Opus), \"claude-sonnet-4-6\" (Sonnet), or \"claude-haiku-4-5-20251001\" (Haiku).
 The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
-
-### CLI and model options
-Use the cli parameter to choose which AI tool runs the worker:
-  cli: \"claude\"    — Claude Code (default for most tasks)
-  cli: \"codex\"     — OpenAI Codex CLI
-  cli: \"gemini\"    — Google Gemini CLI
-  cli: \"opencode\"  — Opencode
-
-To pin a specific Claude model, add the model parameter:
-  model: \"claude-opus-4-8\"           — Opus (most capable, best for complex reasoning)
-  model: \"claude-sonnet-4-6\"         — Sonnet (balanced capability and speed)
-  model: \"claude-haiku-4-5-20251001\" — Haiku (fast, lightweight tasks)
-
-Examples:
-  mcp__agent-relay__add_agent(name: \"CodexWorker\", cli: \"codex\", task: \"...\")
-  mcp__agent-relay__add_agent(name: \"OpusWorker\", cli: \"claude\", model: \"claude-opus-4-8\", task: \"...\")
 
 ### Release a relay worker
 When a relay worker reports DONE, immediately release them:
