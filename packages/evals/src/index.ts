@@ -22,6 +22,10 @@ export type {
   AgentInfo,
   TranscriptEntry,
   Phantom,
+  // Mount / writeback eval types
+  MountScenario,
+  MountScenarioResult,
+  MountCellMetrics,
 } from './types.js';
 
 export { SCHEMA_VERSION } from './types.js';

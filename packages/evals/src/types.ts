@@ -169,3 +169,55 @@ export interface MatrixReport {
 }
 
 export const SCHEMA_VERSION = 1;
+
+// ── Mount / writeback eval types ──────────────────────────────────────────────
+// Shared types for evals that test filesystem writeback behavior rather than
+// (or in addition to) relay messaging. Used by pear and any consumer that
+// evaluates agent behavior against a relayfile .integrations/ mount.
+
+/**
+ * A scenario that tests whether an agent correctly writes a writeback file
+ * to the relayfile .integrations/ mount instead of (or alongside) relay messaging.
+ */
+export interface MountScenario {
+  id: string;
+  title: string;
+  /**
+   * Path prefix (relative to the fixture/mount root) the agent must write
+   * under to pass. Example: ".integrations/slack/channels/C12345__general/messages/"
+   */
+  expectedPathPrefix: string;
+  /**
+   * Task text to inject into the agent at spawn.
+   * The eval runner may prepend a variant-specific prefix before this.
+   */
+  task: string;
+}
+
+/** One scored run of a MountScenario. */
+export interface MountScenarioResult {
+  scenarioId: string;
+  scenarioTitle: string;
+  /** Onboarding variant under test (e.g. "bare", "claude-md", "slim-inject", "full-inject"). */
+  variant: string;
+  /** 1-based repetition index within this scenario×variant cell. */
+  run: number;
+  pass: boolean;
+  wroteSomething: boolean;
+  correctPath: boolean;
+  jsonValid: boolean;
+  discoveryViolation: boolean;
+  usedRelayMessaging: boolean;
+  filesWritten: string[];
+  durationMs: number;
+  error?: string;
+}
+
+/** Aggregated metrics for one scenario×variant cell across repeated runs. */
+export interface MountCellMetrics {
+  scenarioId: string;
+  variant: string;
+  runs: number;
+  passed: number;
+  passRate: number;
+}
