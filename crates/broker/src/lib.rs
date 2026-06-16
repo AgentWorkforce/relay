@@ -6,6 +6,7 @@
 // binary/library split; each annotated module has at least one genuinely
 // unused public-facing item that the compiler would otherwise warn about.
 
+pub mod fleet_wire;
 pub mod ids;
 pub mod protocol;
 pub mod snippets;
@@ -27,6 +28,7 @@ pub(crate) mod events;
 pub(crate) mod listen_api;
 #[allow(dead_code)]
 pub(crate) mod metrics;
+pub(crate) mod node_control;
 pub(crate) mod priorities;
 #[allow(dead_code)]
 pub(crate) mod pty;

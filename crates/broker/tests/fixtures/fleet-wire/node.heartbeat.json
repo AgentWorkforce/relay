@@ -1,0 +1,7 @@
+{
+  "v": 1,
+  "type": "node.heartbeat",
+  "load": 0.42,
+  "active_agents": 2,
+  "handlers_live": true
+}

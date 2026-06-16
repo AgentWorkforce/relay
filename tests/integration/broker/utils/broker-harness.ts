@@ -163,7 +163,7 @@ export class BrokerHarness {
     name: string,
     cli = 'cat',
     channels?: string[],
-    options?: { task?: string; continueFrom?: string; model?: string }
+    options?: { task?: string; continueFrom?: string; model?: string; exitAfterTask?: boolean }
   ): Promise<{ name: string; runtime: string }> {
     return this.client.spawnPty({
       name,
@@ -172,6 +172,7 @@ export class BrokerHarness {
       task: options?.task,
       continueFrom: options?.continueFrom,
       model: options?.model,
+      exitAfterTask: options?.exitAfterTask,
     });
   }
 

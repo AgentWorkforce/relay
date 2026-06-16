@@ -2,6 +2,23 @@ use super::*;
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
+        let req = match req {
+            ListenApiRequest::FleetSidecarConnect { outbound, reply } => {
+                let result = self.handle_fleet_sidecar_connect(outbound).await;
+                let _ = reply.send(result);
+                return;
+            }
+            ListenApiRequest::FleetSidecarDisconnect => {
+                self.handle_fleet_sidecar_disconnect().await;
+                return;
+            }
+            ListenApiRequest::FleetSidecarFrame { frame, reply } => {
+                let result = self.handle_fleet_sidecar_frame(frame).await;
+                let _ = reply.send(result);
+                return;
+            }
+            other => other,
+        };
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -13,6 +30,9 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let sdk_out_tx = &self.sdk_out_tx;
         let workers = &mut self.workers;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -43,6 +63,7 @@ impl BrokerRuntime {
                 shadow_mode,
                 continue_from,
                 idle_threshold_secs,
+                exit_after_task,
                 skip_relay_prompt,
                 restart_policy,
                 harness_config,
@@ -76,37 +97,38 @@ impl BrokerRuntime {
                     }
                 };
                 let mut preregistration_warning: Option<String> = None;
-                let registration_result =
-                    retry_agent_registration(relaycast_http, &name, Some(&cli)).await;
-                let worker_relay_key = match registration_result {
-                    Ok(token) => Some(token),
-                    Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                        let message = format_worker_preregistration_error(&name, &error);
-                        tracing::warn!(
-                            worker = %name,
-                            error = %error,
-                            "continuing spawn without pre-registration after retries exhausted"
-                        );
-                        preregistration_warning = Some(message);
-                        None
-                    }
-                    Err(RegRetryOutcome::Fatal(error)) => {
-                        let _ = reply.send(Err(format_worker_preregistration_error(&name, &error)));
-                        return;
-                    }
-                };
-
-                // Caller-supplied agent_token overrides auto-registration.
-                // Seed it so broker-side read-acks later act as this exact
-                // recipient identity instead of minting a replacement token.
+                // Caller-supplied agent_token is authoritative. In fleet mode it
+                // was minted by the node control connection, and the worker must
+                // receive that exact token before its harness starts.
                 let worker_relay_key = if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     Some(token)
                 } else {
-                    worker_relay_key
+                    match retry_agent_registration(relaycast_http, &name, Some(&cli)).await {
+                        Ok(token) => Some(token),
+                        Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                            let message = format_worker_preregistration_error(&name, &error);
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "continuing spawn without pre-registration after retries exhausted"
+                            );
+                            preregistration_warning = Some(message);
+                            None
+                        }
+                        Err(RegRetryOutcome::Fatal(error)) => {
+                            let _ =
+                                reply.send(Err(format_worker_preregistration_error(&name, &error)));
+                            return;
+                        }
+                    }
                 };
 
-                let mut effective_task = normalize_initial_task(task);
+                let mut effective_task = if exit_after_task {
+                    Some(apply_exit_after_task_instruction(task))
+                } else {
+                    normalize_initial_task(task)
+                };
                 if let Some(ref continue_from) = continue_from {
                     let continuity_dir = continuity_dir(&paths.state);
                     let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
@@ -457,6 +479,13 @@ impl BrokerRuntime {
                         if paths.persist {
                             let _ = state.save(&paths.state);
                         }
+                        super::fleet::prune_fleet_agent_state(
+                            fleet_control_tx,
+                            fleet_inventory,
+                            fleet_delivery_book,
+                            &name,
+                        )
+                        .await;
                         let _ =
                             send_event(sdk_out_tx, json!({"kind":"agent_released","name":&name}))
                                 .await;
@@ -477,6 +506,13 @@ impl BrokerRuntime {
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }
+                            super::fleet::prune_fleet_agent_state(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await;
                             tracing::debug!(
                                 worker = %name,
                                 "ignoring duplicate HTTP API release for already exited worker"
@@ -1543,6 +1579,11 @@ impl BrokerRuntime {
                     "expires_in_secs": expires_in,
                     "persist": persist,
                 })));
+            }
+            ListenApiRequest::FleetSidecarConnect { .. }
+            | ListenApiRequest::FleetSidecarDisconnect
+            | ListenApiRequest::FleetSidecarFrame { .. } => {
+                unreachable!("fleet sidecar API requests are handled before runtime borrows")
             }
         }
     }

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "8.7.2",
+  "version": "8.8.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -59,6 +59,6 @@
     "@types/node": "^22.13.10"
   },
   "dependencies": {
-    "@relaycast/sdk": "^3.1.1"
+    "@relaycast/sdk": "^4.0.0"
   }
 }

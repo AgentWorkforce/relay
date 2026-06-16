@@ -58,6 +58,7 @@ import type {
   RelayInbox,
   RelayListAgentsOptions,
   RelayListChannelsOptions,
+  RelayListNodesOptions,
   RelayListDirectMessagesInput,
   RelayMessage,
   RelayMessageAttachmentInput,
@@ -68,6 +69,8 @@ import type {
   RelayMessagingClient,
   RelayMessagingEvent,
   RelayMessagingEventMap,
+  RelayNode,
+  RelayNodeCapability,
   RelayReadReceipt,
   RelayRegisterAgentInput,
   RelayReplyMessageInput,
@@ -76,6 +79,8 @@ import type {
   RelaySendDirectMessageInput,
   RelaySendGroupDirectMessageInput,
   RelayThread,
+  RelayTrigger,
+  RelayTriggerInput,
   RelayUpdateAgentInput,
   RelayUpdateChannelInput,
 } from './types.js';
@@ -113,6 +118,82 @@ function toRelayCapability(raw: unknown): RelayCapability {
     handlerAgent: action.handlerAgent as string | undefined,
     parameters: action.inputSchema ?? action.parameters,
   };
+}
+
+function toRelayNode(raw: unknown): RelayNode {
+  const node = (raw ?? {}) as Record<string, unknown>;
+  const rawStatus = readStr(node, 'status');
+  return {
+    id: readStr(node, 'id', 'node_id'),
+    name: readStr(node, 'name') ?? '',
+    status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
+    capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
+    maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
+    activeAgents: readNumber(node, 'activeAgents', 'active_agents'),
+    handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
+    load: readNumber(node, 'load'),
+    lastHeartbeatAt: readStr(node, 'lastHeartbeatAt', 'last_heartbeat_at'),
+    tags: readStringArray(node, 'tags'),
+    version: readStr(node, 'version'),
+  };
+}
+
+function toRelayNodeCapability(raw: unknown): RelayNodeCapability {
+  const capability = (raw ?? {}) as Record<string, unknown>;
+  return {
+    name: readStr(capability, 'name') ?? '',
+    kind: readStr(capability, 'kind'),
+    metadata: readRecord(capability, 'metadata'),
+  };
+}
+
+function toRelayTrigger(raw: unknown): RelayTrigger {
+  const trigger = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: readStr(trigger, 'id'),
+    channel: readStr(trigger, 'channel'),
+    pattern: readStr(trigger, 'pattern', 'match'),
+    mention: readMention(trigger.mention),
+    actionName: readStr(trigger, 'actionName', 'action_name') ?? '',
+    enabled: readBoolean(trigger, 'enabled') ?? true,
+  };
+}
+
+function toTriggerRequest(input: RelayTriggerInput | Partial<RelayTriggerInput>): Record<string, unknown> {
+  return {
+    ...(input.channel !== undefined ? { channel: input.channel } : {}),
+    ...(input.pattern !== undefined ? { pattern: input.pattern } : {}),
+    ...(input.mention !== undefined ? { mention: input.mention } : {}),
+    ...(input.actionName !== undefined
+      ? { actionName: input.actionName, action_name: input.actionName }
+      : {}),
+    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+  };
+}
+
+function readNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function readBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'boolean') return value;
+  }
+  return undefined;
+}
+
+function readStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+}
+
+function readMention(value: unknown): boolean | string | undefined {
+  return typeof value === 'boolean' || typeof value === 'string' ? value : undefined;
 }
 
 /** Translate a relay completion result into the relaycast `CompleteInvocationRequest` shape. */
@@ -265,6 +346,16 @@ type RelaycastWorkspaceLike = {
     list(): Promise<unknown[]>;
     get(name: string): Promise<unknown>;
     delete(name: string): Promise<void>;
+  };
+  nodes?: {
+    list(options?: RelayListNodesOptions): Promise<unknown[]>;
+    get?(name: string): Promise<unknown>;
+  };
+  triggers?: {
+    list(): Promise<unknown[]>;
+    create(input: unknown): Promise<unknown>;
+    update(id: string, input: unknown): Promise<unknown>;
+    delete(id: string): Promise<void>;
   };
   workspace?: {
     info(): Promise<unknown>;
@@ -888,6 +979,31 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       ),
   };
 
+  readonly nodes = {
+    list: async (options?: RelayListNodesOptions): Promise<RelayNode[]> =>
+      (await this.requireNodes().list(options)).map(toRelayNode),
+    get: async (name: string): Promise<RelayNode | null> => {
+      const nodes = this.requireNodes();
+      if (nodes.get) {
+        const raw = await nodes.get(name);
+        return raw ? toRelayNode(raw) : null;
+      }
+      const [node] = (await nodes.list({ name })).map(toRelayNode);
+      return node ?? null;
+    },
+  };
+
+  readonly triggers = {
+    list: async (): Promise<RelayTrigger[]> => (await this.requireTriggers().list()).map(toRelayTrigger),
+    create: async (input: RelayTriggerInput): Promise<RelayTrigger> =>
+      toRelayTrigger(await this.requireTriggers().create(toTriggerRequest(input))),
+    update: async (id: string, input: Partial<RelayTriggerInput>): Promise<RelayTrigger> =>
+      toRelayTrigger(await this.requireTriggers().update(id, toTriggerRequest(input))),
+    delete: async (id: string): Promise<void> => {
+      await this.requireTriggers().delete(id);
+    },
+  };
+
   readonly workspace = {
     info: async (): Promise<RelayWorkspaceInfo> => {
       if (!this.relaycast.workspace) {
@@ -918,6 +1034,20 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error('RelaycastMessagingClient.commands requires the relaycast actions API.');
     }
     return this.relaycast.actions;
+  }
+
+  private requireNodes(): NonNullable<RelaycastWorkspaceLike['nodes']> {
+    if (!this.relaycast.nodes) {
+      throw new Error('RelaycastMessagingClient.nodes requires the relaycast nodes API.');
+    }
+    return this.relaycast.nodes;
+  }
+
+  private requireTriggers(): NonNullable<RelaycastWorkspaceLike['triggers']> {
+    if (!this.relaycast.triggers) {
+      throw new Error('RelaycastMessagingClient.triggers requires the relaycast triggers API.');
+    }
+    return this.relaycast.triggers;
   }
 
   private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {

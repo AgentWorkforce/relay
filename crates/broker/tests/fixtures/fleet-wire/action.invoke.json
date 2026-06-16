@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "action.invoke",
+  "invocation_id": "inv_spawn_codex_001",
+  "action": "spawn:codex",
+  "input": {
+    "agent": "codex-builder-1",
+    "model": "gpt-5",
+    "args": ["--sandbox", "workspace-write"]
+  }
+}

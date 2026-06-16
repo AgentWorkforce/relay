@@ -1,3 +1,4 @@
+use super::fleet::refresh_fleet_inventory_session_ref;
 use super::*;
 use crate::worker::AgentWorkState;
 
@@ -14,6 +15,8 @@ impl BrokerRuntime {
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
         let delivery_retry_interval = self.delivery_retry_interval;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_inventory = &mut self.fleet_inventory;
 
         match worker_event {
             WorkerEvent::Message { name, value } => {
@@ -378,6 +381,15 @@ impl BrokerRuntime {
                                 )
                             })
                             .unwrap_or((None, None, None, None, None));
+                        if let Some(session_ref) = session_id_val.as_deref() {
+                            refresh_fleet_inventory_session_ref(
+                                fleet_control_tx,
+                                fleet_inventory,
+                                &name,
+                                session_ref,
+                            )
+                            .await;
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({

@@ -4,9 +4,10 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { buildApiUrl } from './api-client.js';
-import { CloudApiClient } from './api-client.js';
+import { CloudApiClient, type CloudApiClientOptions, type CloudApiClientSnapshot } from './api-client.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
   AUTH_FILE_PATH,
@@ -19,6 +20,12 @@ import {
   type CloudSessionOptions,
   type StoredAuth,
 } from './types.js';
+
+const AUTH_DIR_PATH = path.dirname(AUTH_FILE_PATH);
+const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
+const AUTH_LOCK_RETRY_DELAY_MS = 50;
+const AUTH_LOCK_STALE_MS = 30_000;
+const AUTH_LOCK_TIMEOUT_MS = 30_000;
 
 const envBackedAuth = new WeakSet<StoredAuth>();
 
@@ -87,18 +94,34 @@ function isValidStoredAuth(value: unknown): value is StoredAuth {
   );
 }
 
+function isNodeErrorWithCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === code
+  );
+}
+
+async function readCanonicalStoredAuth(): Promise<StoredAuth | null> {
+  try {
+    const file = await fs.readFile(AUTH_FILE_PATH, 'utf8');
+    const parsed = JSON.parse(file) as unknown;
+    return isValidStoredAuth(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Promise<StoredAuth | null> {
   const envAuth = readEnvAuth(env);
   if (envAuth) {
     return envAuth;
   }
 
-  try {
-    const file = await fs.readFile(AUTH_FILE_PATH, 'utf8');
-    const parsed = JSON.parse(file) as unknown;
-    return isValidStoredAuth(parsed) ? parsed : null;
-  } catch {
-    // Fall through to the one-time migration path below.
+  const stored = await readCanonicalStoredAuth();
+  if (stored) {
+    return stored;
   }
 
   try {
@@ -116,18 +139,93 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
 }
 
 export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
-  await fs.mkdir(path.dirname(AUTH_FILE_PATH), {
+  await fs.mkdir(AUTH_DIR_PATH, {
     recursive: true,
     mode: 0o700,
   });
-  await fs.writeFile(AUTH_FILE_PATH, `${JSON.stringify(auth, null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
+
+  const temporaryPath = path.join(
+    AUTH_DIR_PATH,
+    `.${path.basename(AUTH_FILE_PATH)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
+  );
+
+  try {
+    await fs.writeFile(temporaryPath, `${JSON.stringify(auth, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await fs.chmod(temporaryPath, 0o600);
+    await fs.rename(temporaryPath, AUTH_FILE_PATH);
+  } finally {
+    await fs.rm(temporaryPath, { force: true });
+  }
 }
 
 export async function clearStoredAuth(): Promise<void> {
   await fs.rm(AUTH_FILE_PATH, { force: true });
+}
+
+async function removeStaleStoredAuthLock(): Promise<boolean> {
+  try {
+    const lockStats = await fs.stat(AUTH_LOCK_PATH);
+    if (Date.now() - lockStats.mtimeMs < AUTH_LOCK_STALE_MS) {
+      return false;
+    }
+  } catch (error) {
+    if (isNodeErrorWithCode(error, 'ENOENT')) {
+      return true;
+    }
+    throw error;
+  }
+
+  await fs.rm(AUTH_LOCK_PATH, { recursive: true, force: true });
+  return true;
+}
+
+async function acquireStoredAuthLock(signal?: AbortSignal): Promise<void> {
+  const startedAt = Date.now();
+
+  while (true) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error('Cloud auth lock acquisition aborted');
+    }
+
+    try {
+      await fs.mkdir(AUTH_LOCK_PATH, { mode: 0o700 });
+      return;
+    } catch (error) {
+      if (!isNodeErrorWithCode(error, 'EEXIST')) {
+        throw error;
+      }
+    }
+
+    if (await removeStaleStoredAuthLock()) {
+      continue;
+    }
+
+    if (Date.now() - startedAt >= AUTH_LOCK_TIMEOUT_MS) {
+      throw new Error(`Timed out waiting for cloud auth lock at ${AUTH_LOCK_PATH}`);
+    }
+
+    await delay(AUTH_LOCK_RETRY_DELAY_MS, undefined, { signal });
+  }
+}
+
+async function withStoredAuthLock<T>(
+  callback: () => Promise<T>,
+  options: { signal?: AbortSignal } = {}
+): Promise<T> {
+  await fs.mkdir(AUTH_DIR_PATH, {
+    recursive: true,
+    mode: 0o700,
+  });
+  await acquireStoredAuthLock(options.signal);
+
+  try {
+    return await callback();
+  } finally {
+    await fs.rm(AUTH_LOCK_PATH, { recursive: true, force: true });
+  }
 }
 
 function shouldRefresh(accessTokenExpiresAt: string): boolean {
@@ -370,6 +468,32 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
 
 export async function refreshStoredAuth(
   auth: StoredAuth,
+  options: { force?: boolean; refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<StoredAuth> {
+  if (isEnvBackedAuth(auth)) {
+    return markEnvBackedAuth(await requestStoredAuthRefresh(auth, options));
+  }
+
+  return withStoredAuthLock(async () => {
+    const latestAuth = await readCanonicalStoredAuth();
+    const refreshSource = latestAuth?.apiUrl === auth.apiUrl ? latestAuth : auth;
+
+    if (
+      !options.force &&
+      latestAuth?.apiUrl === auth.apiUrl &&
+      !shouldRefresh(latestAuth.accessTokenExpiresAt)
+    ) {
+      return latestAuth;
+    }
+
+    const nextAuth = await requestStoredAuthRefresh(refreshSource, options);
+    await writeStoredAuth(nextAuth);
+    return nextAuth;
+  }, options);
+}
+
+async function requestStoredAuthRefresh(
+  auth: StoredAuth,
   options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<StoredAuth> {
   const response = await fetchWithRefreshTimeout(
@@ -401,11 +525,6 @@ export async function refreshStoredAuth(
     accessTokenExpiresAt: payload.accessTokenExpiresAt,
   };
 
-  if (isEnvBackedAuth(auth)) {
-    return markEnvBackedAuth(nextAuth);
-  }
-
-  await writeStoredAuth(nextAuth);
   return nextAuth;
 }
 
@@ -472,24 +591,38 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
 }
 
 function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
-  const client = new CloudApiClient({
+  const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
-    onRefresh: async (snapshot) => {
-      if (isEnvBackedAuth(auth)) {
-        return;
-      }
+  };
 
-      await writeStoredAuth({
-        apiUrl: snapshot.apiUrl,
-        accessToken: snapshot.accessToken,
-        refreshToken: snapshot.refreshToken,
-        accessTokenExpiresAt: snapshot.accessTokenExpiresAt,
-      });
-    },
-  });
+  if (!isEnvBackedAuth(auth)) {
+    clientOptions.refreshAuth = async (snapshot, refreshOptions) =>
+      toCloudApiClientSnapshot(
+        await refreshStoredAuth(toStoredAuth(snapshot), {
+          force: refreshOptions.force,
+          refreshTimeoutMs: options.refreshTimeoutMs,
+          signal: refreshOptions.signal,
+        })
+      );
+  }
+
+  const client = new CloudApiClient(clientOptions);
 
   return { auth, client };
+}
+
+function toStoredAuth(snapshot: CloudApiClientSnapshot): StoredAuth {
+  return {
+    apiUrl: snapshot.apiUrl,
+    accessToken: snapshot.accessToken,
+    refreshToken: snapshot.refreshToken,
+    accessTokenExpiresAt: snapshot.accessTokenExpiresAt,
+  };
+}
+
+function toCloudApiClientSnapshot(auth: StoredAuth): CloudApiClientSnapshot {
+  return auth;
 }
 
 function apiFetch(
@@ -526,6 +659,7 @@ export async function authorizedApiFetch(
 
   try {
     activeAuth = await refreshStoredAuth(activeAuth, {
+      force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
     });

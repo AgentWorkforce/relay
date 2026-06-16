@@ -1021,6 +1021,55 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+  # Publish @agent-relay/fleet after @agent-relay/harnesses lands on the
+  # registry. fleet pins @agent-relay/{harnesses,harness-driver,sdk} by exact
+  # version, so publishing it before harnesses exists would leave a window where
+  # `npm install @agent-relay/fleet@<v>` cannot resolve its dependencies — the
+  # same install race the broker/sdk/harnesses ordering above is built to avoid.
+  # The root CLI depends on @agent-relay/fleet, so this must finish before
+  # publish-main (wired via publish-main's needs).
+  publish-fleet:
+    name: Publish fleet
+    needs: [build, publish-harnesses]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'all'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run check
+        if: github.event.inputs.dry_run == 'true'
+        working-directory: packages/fleet
+        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Publish to NPM
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/fleet
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
   # bumped version. Publish those direct deps first so a main-only release
@@ -1443,7 +1492,7 @@ jobs:
   # Publish main package
   publish-main:
     name: Publish Main Package
-    needs: [build, verify-binaries, publish-packages, publish-main-runtime-deps]
+    needs: [build, verify-binaries, publish-packages, publish-fleet, publish-main-runtime-deps]
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.publish_root.outputs.published }}
@@ -1453,6 +1502,7 @@ jobs:
       needs.build.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
+      (needs.publish-fleet.result == 'success' || needs.publish-fleet.result == 'skipped') &&
       (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped')
 
     steps:

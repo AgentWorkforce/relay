@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "8.7.2",
+  "version": "8.8.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -9,9 +9,9 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:evals && npm run build:cli",
+    "build:core": "npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:evals && npm run build:fleet && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
@@ -22,6 +22,7 @@
     "build:harness-driver": "npm --prefix packages/harness-driver run build",
     "build:harnesses": "npm --prefix packages/harnesses run build",
     "build:evals": "npm --prefix packages/evals run build",
+    "build:fleet": "npm --prefix packages/fleet run build",
     "build:driver": "npm run build:harness-driver",
     "build:sdk": "npm --prefix packages/sdk run build",
     "build:telemetry": "npm --prefix packages/telemetry run build",
@@ -101,7 +102,8 @@
     "evals:compile": "node scripts/evals/compile-cases.mjs",
     "evals": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
-    "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline"
+    "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",

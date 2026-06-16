@@ -8,6 +8,10 @@ export type CloudApiClientOptions = {
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt?: string;
   refreshTimeoutMs?: number;
+  refreshAuth?: (
+    snapshot: CloudApiClientSnapshot,
+    options: { force: boolean; signal?: AbortSignal }
+  ) => Promise<CloudApiClientSnapshot>;
   onRefresh?: (snapshot: CloudApiClientSnapshot) => void | Promise<void>;
 };
 
@@ -120,14 +124,25 @@ export class CloudApiClient {
       return;
     }
 
-    this.refreshPromise = this.doRefresh(signal).finally(() => {
+    this.refreshPromise = this.doRefresh(force, signal).finally(() => {
       this.refreshPromise = null;
     });
 
     return this.refreshPromise;
   }
 
-  private async doRefresh(signal?: AbortSignal): Promise<void> {
+  private async doRefresh(force: boolean, signal?: AbortSignal): Promise<void> {
+    if (this.options.refreshAuth) {
+      this.applySnapshot(await this.options.refreshAuth(this.snapshot(), { force, signal }));
+      await this.options.onRefresh?.(this.snapshot());
+      return;
+    }
+
+    this.applySnapshot(await this.requestRefresh(signal));
+    await this.options.onRefresh?.(this.snapshot());
+  }
+
+  private async requestRefresh(signal?: AbortSignal): Promise<CloudApiClientSnapshot> {
     const refreshTimeoutMs = this.options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
     const controller = new AbortController();
     let timedOut = false;
@@ -195,11 +210,20 @@ export class CloudApiClient {
       throw new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Refresh response missing token fields');
     }
 
-    this.accessToken = payload.accessToken;
-    this.accessTokenExpiresAt = payload.accessTokenExpiresAt;
-    this.refreshToken = payload.refreshToken;
-    this.refreshTokenExpiresAt = payload.refreshTokenExpiresAt;
-    await this.options.onRefresh?.(this.snapshot());
+    return {
+      apiUrl: this.options.apiUrl,
+      accessToken: payload.accessToken,
+      accessTokenExpiresAt: payload.accessTokenExpiresAt,
+      refreshToken: payload.refreshToken,
+      ...(payload.refreshTokenExpiresAt ? { refreshTokenExpiresAt: payload.refreshTokenExpiresAt } : {}),
+    };
+  }
+
+  private applySnapshot(snapshot: CloudApiClientSnapshot): void {
+    this.accessToken = snapshot.accessToken;
+    this.accessTokenExpiresAt = snapshot.accessTokenExpiresAt;
+    this.refreshToken = snapshot.refreshToken;
+    this.refreshTokenExpiresAt = snapshot.refreshTokenExpiresAt;
   }
 
   private buildHeaders(headers: HeaderInput | undefined): Headers {

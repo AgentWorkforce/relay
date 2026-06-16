@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::listen_api::{
-    broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
-    ListenApiRequest, SetInboundDeliveryModeOk,
+    broadcast_if_relevant, listen_api_router, DeliveryRouteError, FleetSidecarFrameResponse,
+    ListenApiConfig, ListenApiRequest, SetInboundDeliveryModeOk,
 };
 use crate::routing::display_target_for_dashboard;
 use crate::util::ansi::floor_char_boundary;
@@ -26,14 +26,19 @@ use uuid::Uuid;
 
 use crate::{
     dedup::DedupCache,
+    fleet_wire::InventoryAgent,
     ids::{
         AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
         WorkspaceAlias, WorkspaceId,
     },
+    node_control::{
+        FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot,
+        HandlerDispatchState,
+    },
     protocol::{
         AgentRuntime, AgentSpec, BrokerEvent, DeliveryReadAckStatus,
-        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, ProtocolEnvelope,
-        RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
+        HeadlessProvider as ProtocolHeadlessProvider, MessageInjectionMode, NodeSupervision,
+        ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
         agent_name_eq, format_worker_preregistration_error, is_self_name, map_ws_event,
@@ -42,6 +47,7 @@ use crate::{
         RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
+    supervisor::{RestartDecision, RestartPolicy},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
     types::{
         AgentResultMcpConfig, InboundDeliveryDispatch, InboundDeliveryMode, InboundDeliveryState,
@@ -69,6 +75,7 @@ mod app_server;
 mod connection;
 mod delivery;
 mod event_loop;
+mod fleet;
 mod headless;
 mod init;
 mod io;

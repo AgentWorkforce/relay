@@ -37,10 +37,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3.19"
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures-lite = "2.6"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 uuid = { version = "1.15", features = ["v4", "serde"] }
 urlencoding = "2.1"
 alacritty_terminal = "0.26"
 base64 = "0.22"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
