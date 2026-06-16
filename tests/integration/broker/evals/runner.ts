@@ -27,6 +27,7 @@ import {
   PHRASING_EVAL_SCENARIOS,
   AUTO_ROUTING_EVAL_SCENARIOS,
   LEAD_DELEGATION_EVAL_SCENARIOS,
+  TASK_EXIT_EVAL_SCENARIOS,
   ALL_SCENARIOS,
   scenarioById,
   scenariosByTier,
@@ -79,7 +80,7 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   return { cli, model };
 }
 
-type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'all';
+type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'task-exit' | 'all';
 
 interface Flags {
   harnesses: string[];
@@ -107,6 +108,7 @@ function parseFlags(argv: string[]): Flags {
         value === 'phrasing' ||
         value === 'auto-routing' ||
         value === 'lead-delegation' ||
+        value === 'task-exit' ||
         value === 'all')
     )
       flags.group = value as ScenarioGroup;
@@ -130,14 +132,17 @@ function selectScenarios(flags: Flags): EvalScenario[] {
           ? AUTO_ROUTING_EVAL_SCENARIOS
           : flags.group === 'lead-delegation'
             ? LEAD_DELEGATION_EVAL_SCENARIOS
-            : flags.group === 'all'
-              ? ALL_SCENARIOS
-              : SCENARIOS;
+            : flags.group === 'task-exit'
+              ? TASK_EXIT_EVAL_SCENARIOS
+              : flags.group === 'all'
+                ? ALL_SCENARIOS
+                : SCENARIOS;
   if (
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
     flags.group === 'auto-routing' ||
-    flags.group === 'lead-delegation'
+    flags.group === 'lead-delegation' ||
+    flags.group === 'task-exit'
   )
     return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);

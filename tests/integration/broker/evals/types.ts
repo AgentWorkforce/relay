@@ -99,6 +99,10 @@ export interface ScenarioResult {
   selfImplemented?: boolean;
   /** True when a lead sent a synthesis message after receiving DONE from workers. */
   synthesisOk?: boolean;
+  /** True when the worker agent exited after completing its task (task-exit scenarios). */
+  exitConfirmed?: boolean;
+  /** Exit code from agent_exited event, or null if no exit event was received. */
+  exitCode?: number | null;
   /** Optional human-readable notes (e.g. partial-chain detail). */
   notes?: string;
 }

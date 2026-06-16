@@ -26,6 +26,7 @@ import { NO_NATIVE_SUBAGENT_SCENARIOS } from './s04-no-native-subagents.js';
 import { PHRASING_SCENARIOS } from './s05-phrasing-variants.js';
 import { AUTO_ROUTING_SCENARIOS } from './s06-auto-routing.js';
 import { LEAD_DELEGATION_SCENARIOS } from './s07-lead-delegation.js';
+import { scenario as taskExit } from './s08-task-exit.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -52,6 +53,9 @@ export const LIFECYCLE_EVAL_SCENARIOS: EvalScenario[] = [
   ...NO_NATIVE_SUBAGENT_SCENARIOS,
 ];
 
+/** Task-exit scenarios — run with --group=task-exit. */
+export const TASK_EXIT_EVAL_SCENARIOS: EvalScenario[] = [taskExit];
+
 /** Lead delegation discipline scenarios — run with --group=lead-delegation. */
 export const LEAD_DELEGATION_EVAL_SCENARIOS: EvalScenario[] = [...LEAD_DELEGATION_SCENARIOS];
 
@@ -68,6 +72,7 @@ export const ALL_SCENARIOS: EvalScenario[] = [
   ...PHRASING_EVAL_SCENARIOS,
   ...AUTO_ROUTING_EVAL_SCENARIOS,
   ...LEAD_DELEGATION_EVAL_SCENARIOS,
+  ...TASK_EXIT_EVAL_SCENARIOS,
 ];
 
 /** Look up a scenario by id (searches all scenario registries). */
