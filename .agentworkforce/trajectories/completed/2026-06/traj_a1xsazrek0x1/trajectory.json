@@ -1,0 +1,202 @@
+{
+  "id": "traj_a1xsazrek0x1",
+  "version": 1,
+  "task": {
+    "title": "factory-p11-broker-heartbeat-workflow",
+    "description": "[factory p11] Broker outbound heartbeat/liveness + reconnect inventory sync so placement + the durable mailbox survive blips.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "56cf97ed76fbd3444a46a4aa"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-06-16T13:44:08.174Z",
+  "completedAt": "2026-06-16T14:00:39.405Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-06-16T13:44:08.174Z"
+    },
+    {
+      "name": "lead-claude",
+      "role": "specialist",
+      "joinedAt": "2026-06-16T13:44:15.702Z"
+    },
+    {
+      "name": "impl-codex",
+      "role": "specialist",
+      "joinedAt": "2026-06-16T13:44:15.702Z"
+    },
+    {
+      "name": "shadow-claude",
+      "role": "specialist",
+      "joinedAt": "2026-06-16T13:44:15.702Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_z8jq93ckl7zs",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-06-16T13:44:08.174Z",
+      "endedAt": "2026-06-16T13:44:15.698Z",
+      "events": [
+        {
+          "ts": 1781617448174,
+          "type": "note",
+          "content": "Purpose: [factory p11] Broker outbound heartbeat/liveness + reconnect inventory sync so placement + the durable mailbox survive blips."
+        },
+        {
+          "ts": 1781617448174,
+          "type": "note",
+          "content": "Approach: 15-step dag workflow — Parsed 15 steps, 14 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_9im38xjmdjnk",
+      "title": "Execution: lead-coordinate, impl-work, shadow-review",
+      "agentName": "orchestrator",
+      "startedAt": "2026-06-16T13:44:15.698Z",
+      "endedAt": "2026-06-16T13:44:15.707Z",
+      "events": []
+    },
+    {
+      "id": "chap_xtkfswnueaxd",
+      "title": "Execution: impl-work",
+      "agentName": "impl-codex",
+      "startedAt": "2026-06-16T13:44:15.707Z",
+      "endedAt": "2026-06-16T13:44:15.708Z",
+      "events": [
+        {
+          "ts": 1781617455707,
+          "type": "note",
+          "content": "\"impl-work\": You are impl-codex",
+          "raw": {
+            "agent": "impl-codex"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_bv66w3v0rvk1",
+      "title": "Execution: lead-coordinate",
+      "agentName": "lead-claude",
+      "startedAt": "2026-06-16T13:44:15.708Z",
+      "endedAt": "2026-06-16T13:44:15.708Z",
+      "events": [
+        {
+          "ts": 1781617455708,
+          "type": "note",
+          "content": "\"lead-coordinate\": You are lead-claude on this channel",
+          "raw": {
+            "agent": "lead-claude"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_hq4dgx16jmgb",
+      "title": "Execution: shadow-review",
+      "agentName": "shadow-claude",
+      "startedAt": "2026-06-16T13:44:15.708Z",
+      "endedAt": "2026-06-16T14:00:39.405Z",
+      "events": [
+        {
+          "ts": 1781617455708,
+          "type": "note",
+          "content": "\"shadow-review\": You are shadow-claude, the live shadow reviewer for issue p11",
+          "raw": {
+            "agent": "shadow-claude"
+          }
+        },
+        {
+          "ts": 1781618070230,
+          "type": "completion-marker",
+          "content": "\"shadow-review\" marker-based completion — Legacy STEP_COMPLETE marker observed (2 signal(s), 6 file change(s); signals=shadow-review, 0q▗ ▗   ▖ ▖ClaudeCodev2.1.178; files=created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json, created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json, created:.agentworkforce/relay/team/worker-logs/impl-work-56cf97ed.log, created:.agentworkforce/relay/team/worker-logs/lead-coordinate-56cf97ed.log, created:.agentworkforce/relay/team/worker-logs/shadow-review-56cf97ed.log, modified:.agentworkforce/trajectories/active/traj_a1xsazrek0x1/trajectory.json)",
+          "raw": {
+            "stepName": "shadow-review",
+            "completionMode": "marker",
+            "reason": "Legacy STEP_COMPLETE marker observed",
+            "evidence": {
+              "summary": "2 signal(s), 6 file change(s)",
+              "signals": [
+                "shadow-review",
+                "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"
+              ],
+              "files": [
+                "created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json",
+                "created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json",
+                "created:.agentworkforce/relay/team/worker-logs/impl-work-56cf97ed.log",
+                "created:.agentworkforce/relay/team/worker-logs/lead-coordinate-56cf97ed.log",
+                "created:.agentworkforce/relay/team/worker-logs/shadow-review-56cf97ed.log",
+                "modified:.agentworkforce/trajectories/active/traj_a1xsazrek0x1/trajectory.json"
+              ]
+            }
+          },
+          "significance": "medium"
+        },
+        {
+          "ts": 1781618070232,
+          "type": "finding",
+          "content": "\"shadow-review\" completed → \u000f\u000f\u000f",
+          "significance": "medium"
+        },
+        {
+          "ts": 1781618070356,
+          "type": "completion-marker",
+          "content": "\"lead-coordinate\" marker-based completion — Legacy STEP_COMPLETE marker observed (3 signal(s), 6 file change(s); signals=LEAD_DONE, lead-coordinate, 0q▗ ▗   ▖ ▖ClaudeCodev2.1.178; files=created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json, created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json, created:.agentworkforce/relay/team/worker-logs/impl-work-56cf97ed.log, created:.agentworkforce/relay/team/worker-logs/lead-coordinate-56cf97ed.log, created:.agentworkforce/relay/team/worker-logs/shadow-review-56cf97ed.log, modified:.agentworkforce/trajectories/active/traj_a1xsazrek0x1/trajectory.json)",
+          "raw": {
+            "stepName": "lead-coordinate",
+            "completionMode": "marker",
+            "reason": "Legacy STEP_COMPLETE marker observed",
+            "evidence": {
+              "summary": "3 signal(s), 6 file change(s)",
+              "signals": [
+                "LEAD_DONE",
+                "lead-coordinate",
+                "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"
+              ],
+              "files": [
+                "created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json",
+                "created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json",
+                "created:.agentworkforce/relay/team/worker-logs/impl-work-56cf97ed.log",
+                "created:.agentworkforce/relay/team/worker-logs/lead-coordinate-56cf97ed.log",
+                "created:.agentworkforce/relay/team/worker-logs/shadow-review-56cf97ed.log",
+                "modified:.agentworkforce/trajectories/active/traj_a1xsazrek0x1/trajectory.json"
+              ]
+            }
+          },
+          "significance": "medium"
+        },
+        {
+          "ts": 1781618070358,
+          "type": "finding",
+          "content": "\"lead-coordinate\" completed → \u000f\u000f\u000f",
+          "significance": "medium"
+        },
+        {
+          "ts": 1781618130989,
+          "type": "decision",
+          "content": "Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields: Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields",
+          "raw": {
+            "question": "Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields",
+            "chosen": "Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields",
+            "alternatives": [],
+            "reasoning": "Lead confirmed heartbeat/reconnect/deregister already shipped; remaining AC1 gap was stale node load after release/exit plus missing live/createdAt fields in RelayNode."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented p11 residual node load freshness and SDK RelayNode liveness fields",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}
