@@ -4381,19 +4381,31 @@
     height: 60px;
   }
 
+  .howRow {
+    gap: 12px;
+  }
+
   .howGroup {
-    padding: 18px 12px;
+    padding: 16px 8px;
     gap: 10px;
   }
 
+  /* Cap the logo row at three chips wide so the five icons wrap evenly to a
+     3-over-2 grid (the bottom two stay centred). */
+  .howGroupLogos {
+    gap: 8px;
+    max-width: 140px;
+    margin: 0 auto;
+  }
+
   .howChip {
-    width: 38px;
-    height: 38px;
+    width: 41px;
+    height: 41px;
   }
 
   .howChipSvg {
-    width: 21px;
-    height: 21px;
+    width: 24px;
+    height: 24px;
   }
 
   .howGroupLabel {

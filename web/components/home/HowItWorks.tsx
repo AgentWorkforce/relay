@@ -4,6 +4,7 @@ import ClaudeCode from '@lobehub/icons/es/ClaudeCode';
 import Codex from '@lobehub/icons/es/Codex';
 import Cursor from '@lobehub/icons/es/Cursor';
 import Github from '@lobehub/icons/es/Github';
+import Grok from '@lobehub/icons/es/Grok';
 import HermesAgent from '@lobehub/icons/es/HermesAgent';
 import OpenClaw from '@lobehub/icons/es/OpenClaw';
 import OpenCode from '@lobehub/icons/es/OpenCode';
@@ -26,6 +27,7 @@ const CLI_LOGOS: readonly LogoItem[] = [
   { key: 'codex', label: 'Codex', node: <Codex.Color size={ICON_SIZE} /> },
   { key: 'opencode', label: 'OpenCode', node: <OpenCode size={ICON_SIZE} /> },
   { key: 'cursor', label: 'Cursor', node: <Cursor size={ICON_SIZE} /> },
+  { key: 'grok', label: 'Grok', node: <Grok size={ICON_SIZE} /> },
 ];
 
 /** Custom agents you build against the SDK and language bindings. */
