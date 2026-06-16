@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
 - `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message ...` path was removed.
+- `agent-relay-broker` improves relay-worker spawning guidance for small models and Gemini; removes Droid broker injection (it suppresses relay tool use); `droid mcp add` now retries with backoff when concurrent processes race on `~/.factory/mcp.json`.
+- `opencode` composer default model updated to `deepseek-v4-flash` (16/16, 0 phantoms); `opencode:gpt-5.5` added as provisional worker entry (13/16).
+- `add_agent` MCP tool description now maps natural-language spawn requests to exact parameters: "spawn a codex agent" → `cli:"codex"`, "spawn an opus claude agent" → `cli:"claude", model:"claude-opus-4-8"`. Relay orchestrators without explicit relay onboarding can now route cross-CLI and model-tier requests correctly.
 
 ### Fixed
 

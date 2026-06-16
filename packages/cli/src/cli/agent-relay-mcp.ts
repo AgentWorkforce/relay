@@ -1788,14 +1788,32 @@ function registerAgentRelayTools(
     'add_agent',
     {
       title: 'Add Agent',
-      description: 'Ask Relaycast to spawn a worker agent for a task.',
+      description:
+        'Spawn another AI agent (relay worker) to delegate a task to. This is how you ' +
+        'create workers — including non-Claude ones. Use it for any "spawn a <tool> agent" request. ' +
+        'Examples: "spawn a codex agent" → cli:"codex"; ' +
+        '"spawn an opus claude agent" → cli:"claude", model:"claude-opus-4-8"; ' +
+        '"spawn a sonnet claude agent" → cli:"claude", model:"claude-sonnet-4-6". ' +
+        'Do NOT use the built-in Agent/Task tool for relay workers.',
       inputSchema: {
         name: z.string().describe('Worker agent name'),
-        cli: z.enum(['claude', 'codex', 'gemini', 'aider', 'goose']).describe('AI CLI to launch'),
+        cli: z
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .describe(
+            'Which AI CLI runs the worker: "codex agent" → codex, "gemini agent" → gemini, ' +
+              '"claude/opus claude/sonnet claude agent" → claude (default).'
+          ),
         task: z.string().describe('Task instructions'),
         channel: z.string().optional().describe('Channel to join'),
         persona: z.string().optional().describe('Worker persona'),
-        model: z.string().optional().describe('Model powering the worker'),
+        model: z
+          .string()
+          .optional()
+          .describe(
+            'Model to pin (Claude only). Required when a tier is specified: ' +
+              '"opus claude" → claude-opus-4-8, "sonnet claude" → claude-sonnet-4-6, ' +
+              '"haiku" → claude-haiku-4-5-20251001.'
+          ),
         spawn_mode: z
           .enum(['interactive', 'task_exit', 'task-exit', 'single_shot', 'single-shot'])
           .optional()
@@ -1812,7 +1830,10 @@ function registerAgentRelayTools(
       jsonContent(
         await getRelay().agents.spawn({
           name,
-          cli,
+          // The broker/gateway support grok and opencode at runtime, but the
+          // @relaycast/sdk SpawnAgentRequest type narrows cli to the core five.
+          // Cast to keep grok/opencode selectable from the MCP tool enum.
+          cli: cli as 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
           task:
             exit_after_task ||
             spawn_mode === 'task_exit' ||

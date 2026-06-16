@@ -50,6 +50,8 @@ Flags:
 
 `mcp-args` writes side-effect files synchronously when the target CLI requires a config file. For `opencode`, it may write `<cwd>/opencode.json`; for `cursor`, `cursor-agent`, and `agent`, it may write `<cwd>/.cursor/mcp.json`; for `gemini`, it may write `<HOME>/.gemini/trustedFolders.json`. Treat the command as compute plus configure for those CLIs, not as a side-effect-free dry run.
 
+`droid` is high-risk for relay worker delegation. Current evals show it can route spawning tasks to its native Task capability instead of Agent Relay unless explicit disambiguation is present, so avoid using droid for coordinator or supervisor roles that need to spawn relay workers.
+
 ## `view`
 
 Stream a running agent's PTY output to your terminal in real time. `view` is read-only: keystrokes are not forwarded to the agent, and the broker keeps doing whatever it was doing. Multiple `view` clients can attach to the same agent simultaneously. Exit with `Ctrl+C` — the agent keeps running under the broker.

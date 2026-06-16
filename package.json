@@ -67,6 +67,8 @@
     "eval:lead-delegation": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lead-delegation --repeat=5 --harness=claude",
     "eval:lead-delegation:claude-models": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lead-delegation --repeat=5 --harness=claude:haiku,claude:sonnet,claude:opus",
     "eval:lead-delegation:all-harnesses": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lead-delegation --repeat=5 --harness=claude:haiku,claude:sonnet,claude:opus,codex,gemini,grok,cursor,droid",
+    "eval:lead-quality": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lead-quality --repeat=5 --harness=claude:opus",
+    "eval:lead-quality:all-harnesses": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lead-quality --repeat=5 --harness=claude:opus,codex,gemini",
     "eval:lifecycle:codex": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=codex",
     "eval:lifecycle:gemini": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=gemini",
     "eval:lifecycle:grok": "npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --group=lifecycle --repeat=5 --harness=grok",
