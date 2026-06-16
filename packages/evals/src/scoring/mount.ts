@@ -112,9 +112,7 @@ export function scoreMountRun(opts: ScoreMountRunOptions): MountScore {
 
   const relative = newFiles.map((f) => f.replace(mountDir + '/', ''));
   const inExpectedPath = relative.filter((p) => p.startsWith(expectedPathPrefix));
-  const inDiscovery = relative.filter(
-    (p) => p.includes('/discovery/') || p.startsWith('discovery/'),
-  );
+  const inDiscovery = relative.filter((p) => p.includes('/discovery/') || p.startsWith('discovery/'));
 
   const jsonValid =
     inExpectedPath.length > 0 &&
@@ -150,7 +148,16 @@ export function scoreMountRun(opts: ScoreMountRunOptions): MountScore {
  */
 export function mountCellStats(scores: MountScore[]): MountCellStats {
   const n = scores.length;
-  if (n === 0) return { runs: 0, passed: 0, passRate: 0, wroteSomethingRate: 0, correctPathRate: 0, discoveryViolationRate: 0, usedRelayMessagingRate: 0 };
+  if (n === 0)
+    return {
+      runs: 0,
+      passed: 0,
+      passRate: 0,
+      wroteSomethingRate: 0,
+      correctPathRate: 0,
+      discoveryViolationRate: 0,
+      usedRelayMessagingRate: 0,
+    };
   const rate = (pred: (s: MountScore) => boolean) => scores.filter(pred).length / n;
   return {
     runs: n,
