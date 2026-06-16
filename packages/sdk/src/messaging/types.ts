@@ -530,10 +530,7 @@ export type RelayPlacementRejectReason =
   | 'placement_ttl_expired'
   | 'unmapped_repo';
 
-export type RelayPlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo';
+export type RelayPlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
