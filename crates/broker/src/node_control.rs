@@ -44,7 +44,7 @@ pub(crate) struct FleetLoadSnapshot {
 }
 
 impl FleetLoadSnapshot {
-    fn heartbeat(&self, node: &NodeRegister) -> NodeHeartbeat {
+    fn heartbeat(&self) -> NodeHeartbeat {
         let load = if self.max_agents == 0 {
             0.0
         } else {
@@ -53,15 +53,9 @@ impl FleetLoadSnapshot {
         NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
-            name: node.name.clone(),
-            node_id: node.node_id.clone(),
-            capabilities: node.capabilities.clone(),
-            max_agents: node.max_agents,
             load,
             active_agents: self.active_agents,
             handlers_live: self.handlers_live,
-            last_heartbeat_at: chrono::Utc::now().to_rfc3339(),
-            version: node.version.clone(),
         }
     }
 }
@@ -500,7 +494,7 @@ async fn run_connected_once(
     inventory: &mut Vec<InventoryAgent>,
     load: &mut FleetLoadSnapshot,
 ) -> ControlRunResult {
-    let Some(mut node_register) = registration.clone() else {
+    let Some(node_register) = registration.clone() else {
         return ControlRunResult::Disconnected;
     };
     let Some(node_token) = config.node_token.as_deref() else {
@@ -536,12 +530,9 @@ async fn run_connected_once(
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
 
-    if send_wire(
-        &mut sink,
-        &BrokerToRelaycast::NodeRegister(node_register.clone()),
-    )
-    .await
-    .is_err()
+    if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(node_register))
+        .await
+        .is_err()
     {
         return ControlRunResult::Disconnected;
     }
@@ -561,7 +552,7 @@ async fn run_connected_once(
     }
     if send_wire(
         &mut sink,
-        &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register)),
+        &BrokerToRelaycast::NodeHeartbeat(load.heartbeat()),
     )
     .await
     .is_err()
@@ -579,7 +570,6 @@ async fn run_connected_once(
                     Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
                         load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
                         let next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
-                        node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
                             return ControlRunResult::Disconnected;
@@ -609,7 +599,7 @@ async fn run_connected_once(
                         *load = next;
                     }
                     Some(FleetControlCommand::HeartbeatNow) => {
-                        if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                        if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat())).await.is_err() {
                             return ControlRunResult::Disconnected;
                         }
                     }
@@ -662,7 +652,7 @@ async fn run_connected_once(
             }
             _ = heartbeat.tick() => {
                 expire_agent_registrations(&mut pending_agent_registrations, Instant::now());
-                if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat())).await.is_err() {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }

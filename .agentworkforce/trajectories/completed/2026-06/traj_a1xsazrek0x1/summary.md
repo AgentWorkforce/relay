@@ -47,4 +47,4 @@ _Agent: lead-claude_
 
 _Agent: shadow-claude_
 
-- Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields: Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields
+- Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields
