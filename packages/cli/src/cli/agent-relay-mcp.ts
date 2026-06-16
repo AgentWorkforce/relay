@@ -1830,7 +1830,10 @@ function registerAgentRelayTools(
       jsonContent(
         await getRelay().agents.spawn({
           name,
-          cli,
+          // The broker/gateway support grok and opencode at runtime, but the
+          // @relaycast/sdk SpawnAgentRequest type narrows cli to the core five.
+          // Cast to keep grok/opencode selectable from the MCP tool enum.
+          cli: cli as 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
           task:
             exit_after_task ||
             spawn_mode === 'task_exit' ||

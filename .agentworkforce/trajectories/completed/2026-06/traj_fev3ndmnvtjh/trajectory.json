@@ -1,0 +1,110 @@
+{
+  "id": "traj_fev3ndmnvtjh",
+  "version": 1,
+  "task": {
+    "title": "Fix add_agent tool description for cross-CLI spawn routing",
+    "source": {
+      "system": "plain",
+      "id": "s08/s09 PR #1126"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-06-16T11:53:50.624Z",
+  "completedAt": "2026-06-16T12:05:03.430Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-16T11:53:59.959Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_jbxwczmv1q6u",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-16T11:53:59.959Z",
+      "endedAt": "2026-06-16T12:05:03.430Z",
+      "events": [
+        {
+          "ts": 1781610839960,
+          "type": "decision",
+          "content": "Three-version A/B eval design: baseline vs FIX v1 vs FIX v2 description: Three-version A/B eval design: baseline vs FIX v1 vs FIX v2 description",
+          "raw": {
+            "question": "Three-version A/B eval design: baseline vs FIX v1 vs FIX v2 description",
+            "chosen": "Three-version A/B eval design: baseline vs FIX v1 vs FIX v2 description",
+            "alternatives": [],
+            "reasoning": "Baseline ('Ask Relaycast...') → confirms fix needed; FIX v1 (inline examples as prose) → q01 fixed 12/12 but q03/q04 still broken; FIX v2 (concrete param examples: 'spawn an opus claude agent' → cli:claude, model:claude-opus-4-8) → expected to fix q03/q04 by eliminating ambiguity in cli param mapping"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781610849744,
+          "type": "decision",
+          "content": "q03 (opus) zero-spawn root cause: cli param had no mapping for 'opus claude' → 'claude': q03 (opus) zero-spawn root cause: cli param had no mapping for 'opus claude' → 'claude'",
+          "raw": {
+            "question": "q03 (opus) zero-spawn root cause: cli param had no mapping for 'opus claude' → 'claude'",
+            "chosen": "q03 (opus) zero-spawn root cause: cli param had no mapping for 'opus claude' → 'claude'",
+            "alternatives": [],
+            "reasoning": "cli enum has 'claude','codex','gemini' etc. Param description only mapped 'codex agent'→codex, 'claude agent'→claude. 'opus claude agent' had no explicit mapping so model tried cli='opus' (invalid enum) or gave up. q04 (sonnet) did spawn but no model — model param description was passive 'map the request' vs directive 'required when tier is specified'. V2 fix: concrete param examples in tool description show exact cli/model combo needed."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781611174973,
+          "type": "reflection",
+          "content": "FIX v2 description fully resolves cross-CLI spawn routing for all harnesses",
+          "raw": {
+            "focalPoints": [
+              "q03-opus-fix",
+              "q04-sonnet-fix",
+              "description-specificity"
+            ],
+            "adjustments": "Committed; baseline running for A/B completion",
+            "confidence": 0.92
+          },
+          "significance": "high",
+          "tags": [
+            "focal:q03-opus-fix",
+            "focal:q04-sonnet-fix",
+            "focal:description-specificity",
+            "confidence:0.92"
+          ]
+        },
+        {
+          "ts": 1781611351241,
+          "type": "decision",
+          "content": "FIX v2 description fully fixes q03/q04 with 0→12/12 improvement: FIX v2 description fully fixes q03/q04 with 0→12/12 improvement",
+          "raw": {
+            "question": "FIX v2 description fully fixes q03/q04 with 0→12/12 improvement",
+            "chosen": "FIX v2 description fully fixes q03/q04 with 0→12/12 improvement",
+            "alternatives": [],
+            "reasoning": "Key change: added concrete parameter examples directly in tool description showing 'spawn an opus claude agent' → cli:claude, model:claude-opus-4-8 and 'spawn a sonnet claude agent' → cli:claude, model:claude-sonnet-4-6. Also made cli param explicit for opus/sonnet→claude mapping, and changed model param from passive 'map the request' to directive 'Required when tier specified'. Both claude and codex harnesses show 12/12 for q03 and q04."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed add_agent MCP tool description to map cross-CLI and model-tier spawn requests. s09-cross-cli-spawn eval (16 scenarios) proves fix: q03/q04 went 0/12→12/12 on both claude and codex harnesses. Committed, pushed to feature/s08-lead-quality-v2, PR #1126 updated.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "f6f7f8edd"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/agent-relay-mcp.ts",
+    "tests/integration/broker/evals/runner.ts",
+    "tests/integration/broker/evals/scenarios/s09-cross-cli-spawn.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0179a06fd5abc6fe6d9bdfb4a01535111e0d1a57",
+    "endRef": "f6f7f8edd130d8a152c296c159cccaf456bc14da",
+    "traceId": "94bde1e6-eeae-489f-b4e5-9153818714ea"
+  }
+}
