@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type LoadOptions = {
-  wsClientThrows?: boolean;
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
 };
@@ -26,7 +25,6 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }
 
   const serverInstances: FakeMcpServer[] = [];
-  const wsClientInstances: FakeWsClient[] = [];
   const telemetryTrack = vi.fn();
   const telemetryInit = vi.fn();
   const telemetryShutdown = vi.fn(async () => undefined);
@@ -34,6 +32,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     config: Record<string, unknown>;
     registerOrRotate: ReturnType<typeof vi.fn>;
     agentsList: ReturnType<typeof vi.fn>;
+    nodesList: ReturnType<typeof vi.fn>;
     spawn: ReturnType<typeof vi.fn>;
     release: ReturnType<typeof vi.fn>;
     as: ReturnType<typeof vi.fn>;
@@ -51,39 +50,6 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     })),
     registerImpl: vi.fn(async ({ name }) => ({ name, token: `at_live_${name}` })),
   };
-
-  class FakeResourceTemplate {
-    constructor(
-      public readonly template: string,
-      public readonly options: unknown
-    ) {}
-  }
-
-  class FakeWsClient {
-    readonly handlers = new Map<string, Set<(event: unknown) => void>>();
-    readonly connect = vi.fn();
-    readonly disconnect = vi.fn();
-
-    constructor(public readonly config: Record<string, unknown>) {
-      if (options.wsClientThrows) {
-        throw new Error('ws init failed');
-      }
-      wsClientInstances.push(this);
-    }
-
-    on(event: string, handler: (event: unknown) => void): () => void {
-      const handlers = this.handlers.get(event) ?? new Set();
-      handlers.add(handler);
-      this.handlers.set(event, handlers);
-      return () => handlers.delete(handler);
-    }
-
-    emit(event: unknown): void {
-      for (const handler of this.handlers.get('*') ?? []) {
-        handler(event);
-      }
-    }
-  }
 
   class FakeTransport {}
 
@@ -162,6 +128,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
 
   const createAgentClient = (token: string) => ({
     token,
+    actions: {
+      invoke: vi.fn(async (name: string, input: unknown) => ({
+        invocationId: 'inv_1',
+        actionName: name,
+        input,
+      })),
+    },
     send: vi.fn(async (channel: string, text: string) => ({ id: 'msg_1', channel, text })),
     messages: vi.fn(async () => []),
     reply: vi.fn(async (messageId: string, text: string) => ({ id: 'reply_1', messageId, text })),
@@ -195,6 +168,13 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       behavior.registerImpl(input)
     );
     const agentsList = vi.fn(async () => []);
+    const nodesList = vi.fn(async () => [
+      {
+        name: 'node-a',
+        status: 'online',
+        capabilities: [{ name: 'spawn:codex' }],
+      },
+    ]);
     const spawn = vi.fn(async (input: unknown) => ({ spawned: true, input }));
     const release = vi.fn(async (input: { name: string; reason?: string; deleteAgent?: boolean }) => ({
       name: input.name,
@@ -203,13 +183,16 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       reason: input.reason ?? null,
     }));
     const as = vi.fn((token: string) => createAgentClient(token));
-    relayInstances.push({ config, registerOrRotate, agentsList, spawn, release, as });
+    relayInstances.push({ config, registerOrRotate, agentsList, nodesList, spawn, release, as });
     return {
       agents: {
         registerOrRotate,
         list: agentsList,
         spawn,
         release,
+      },
+      nodes: {
+        list: nodesList,
       },
       as,
     };
@@ -218,7 +201,12 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
 
   vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
     McpServer: FakeMcpServer,
-    ResourceTemplate: FakeResourceTemplate,
+    ResourceTemplate: class ResourceTemplate {
+      constructor(
+        public readonly uriTemplate: string,
+        public readonly options: { list?: unknown }
+      ) {}
+    },
   }));
   vi.doMock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: FakeTransport }));
   vi.doMock('@modelcontextprotocol/sdk/types.js', () => ({
@@ -228,7 +216,6 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }));
   vi.doMock('@relaycast/sdk', () => ({
     RelayCast,
-    WsClient: FakeWsClient,
     SDK_VERSION: 'test-sdk-version',
   }));
   vi.doMock('./telemetry/index.js', () => ({
@@ -248,7 +235,6 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       behavior,
       serverInstances,
       relayInstances,
-      wsClientInstances,
       telemetryTrack,
       telemetryInit,
       telemetryShutdown,
@@ -302,7 +288,7 @@ describe('agent-relay-mcp startup helpers', () => {
 });
 
 describe('createAgentRelayMcpServer', () => {
-  it('registers owned tools, resources, prompt text, and strips execution metadata from tools/list', async () => {
+  it('registers owned tools, prompt text, fleet tools, and strips execution metadata from tools/list', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
 
     mod.createAgentRelayMcpServer({ baseUrl: 'https://api.relaycast.dev/' });
@@ -311,16 +297,23 @@ describe('createAgentRelayMcpServer', () => {
     expect(server.tools.get('create_workspace')).toBeDefined();
     expect(server.tools.get('register_agent')).toBeDefined();
     expect(server.tools.get('list_agents')).toBeDefined();
+    expect(server.tools.get('query_nodes')).toBeDefined();
     expect(server.tools.get('post_message')).toBeDefined();
     expect(server.tools.get('add_agent')).toBeDefined();
+    expect(server.tools.get('spawn')).toBeDefined();
     expect([...server.tools.keys()].filter((name) => name.includes('.'))).toEqual([]);
-    expect(server.resources.get('inbox')).toBeDefined();
-    expect(server.resources.get('channel-messages')).toBeDefined();
+    expect([...server.resources.keys()]).toEqual([
+      'inbox',
+      'agents',
+      'channels',
+      'channel-messages',
+      'message-thread',
+      'dm-conversation',
+    ]);
+    expect(server.server._requestHandlers.has('resources/subscribe')).toBe(true);
+    expect(server.server._requestHandlers.has('resources/unsubscribe')).toBe(true);
     expect(server.prompts.get('system')).toBeDefined();
 
-    await expect(server.resources.get('agents')?.handler(new URL('relay://agents'))).rejects.toThrow(
-      'Workspace key not configured. Call "create_workspace" first, or provide a shared workspace key with "set_workspace_key".'
-    );
     await expect(server.tools.get('register_agent')?.handler({ name: 'WorkerA' })).rejects.toThrow(
       'Workspace key not configured. Call "create_workspace" first, or "set_workspace_key" if someone shared a workspace key.'
     );
@@ -356,6 +349,34 @@ describe('createAgentRelayMcpServer', () => {
       registered_name: 'WorkerA',
     });
 
+    const queryNodesResult = await server.tools.get('query_nodes')?.handler({ capability: 'spawn:codex' });
+    expect(queryNodesResult.structuredContent.nodes).toEqual([
+      {
+        name: 'node-a',
+        status: 'online',
+        capabilities: [{ name: 'spawn:codex' }],
+      },
+    ]);
+
+    const spawnResult = await server.tools.get('spawn')?.handler({
+      name: 'FleetWorker',
+      cli: 'codex',
+      task: 'Implement a fix',
+      channel: 'general',
+      target_node: 'node-a',
+    });
+    expect(spawnResult.structuredContent.invocation).toEqual({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      input: {
+        name: 'FleetWorker',
+        cli: 'codex',
+        task: 'Implement a fix',
+        target_node: 'node-a',
+        channels: ['general'],
+      },
+    });
+
     const toolsList = await server.listToolsHandler?.({}, {});
     expect(toolsList?.tools).toEqual([
       {
@@ -367,6 +388,8 @@ describe('createAgentRelayMcpServer', () => {
 
     const promptResult = await server.prompts.get('system')?.handler();
     expect(promptResult.messages[0].content.text).toContain('create_workspace');
+    expect(promptResult.messages[0].content.text).toContain('query_nodes');
+    expect(promptResult.messages[0].content.text).toContain('spawn');
     expect(promptResult.messages[0].content.text).not.toContain('workspace.create');
   });
 
@@ -418,12 +441,6 @@ describe('createAgentRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    expect(mocks.wsClientInstances[0]?.config).toMatchObject({
-      token: 'at_live_existing',
-      baseUrl: 'https://api.relaycast.dev/',
-      originActor: 'agent-relay-cli/agent/claude-code',
-      agentRelayDistinctId: 'distinct_test',
-    });
 
     await server.tools.get('check_inbox')?.handler({});
     const agentRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
@@ -472,46 +489,7 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
-  it('tracks Agent Relay tool calls with action names and coarse categories', async () => {
-    const { mod, mocks } = await loadAgentRelayMcpModule();
-    mod.createAgentRelayMcpServer({
-      workspaceKey: 'rk_live_existing',
-      telemetryTransport: 'stdio',
-    });
-
-    const server = mocks.serverInstances[0];
-    await server.tools.get('add_agent')?.handler({
-      name: 'WorkerB',
-      cli: 'claude',
-      task: 'help',
-    });
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'agent_relay_tool_call',
-      expect.objectContaining({
-        tool_name: 'add_agent',
-        tool_type: 'agent.create',
-        tool_category: 'spawn',
-        transport: 'stdio',
-        success: true,
-        duration_ms: expect.any(Number),
-      })
-    );
-
-    await server.tools.get('remove_agent')?.handler({ name: 'WorkerB', reason: 'done' });
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'agent_relay_tool_call',
-      expect.objectContaining({
-        tool_name: 'remove_agent',
-        tool_type: 'agent.release',
-        tool_category: 'release',
-        transport: 'stdio',
-        success: true,
-        duration_ms: expect.any(Number),
-      })
-    );
-  });
-
-  it('uses registered action tool names as tool types', async () => {
+  it('uses registered action tool names for dynamic action tools', async () => {
     const actions = {
       list: vi.fn(async () => [
         {
@@ -535,19 +513,17 @@ describe('createAgentRelayMcpServer', () => {
 
     await server.tools.get('agent.create')?.handler({ name: 'WorkerB', cli: 'claude' });
 
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'agent_relay_tool_call',
-      expect.objectContaining({
-        tool_name: 'agent.create',
-        tool_type: 'agent.create',
-        tool_category: 'spawn',
-        transport: 'stdio',
-        success: true,
-      })
-    );
+    expect(actions.invoke).toHaveBeenCalledWith({
+      name: 'agent.create',
+      input: { name: 'WorkerB', cli: 'claude' },
+      context: {
+        caller: { type: 'agent', name: 'mcp' },
+        emit: undefined,
+      },
+    });
   });
 
-  it('uses invoke_action names as tool types without argument values', async () => {
+  it('invokes registered actions without routing through per-tool telemetry', async () => {
     const actions = {
       list: vi.fn(async () => []),
       invoke: vi.fn(async () => ({ ok: true, action: 'github.open_pr', output: {} })),
@@ -564,27 +540,26 @@ describe('createAgentRelayMcpServer', () => {
       input: { title: 'private PR title' },
     });
 
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
-      'agent_relay_tool_call',
-      expect.objectContaining({
-        tool_name: 'invoke_action',
-        tool_type: 'github.open_pr',
-        tool_category: 'action',
-        transport: 'stdio',
-        success: true,
-      })
-    );
-    const telemetryPayload = mocks.telemetryTrack.mock.calls.find(
-      ([eventName]) => eventName === 'agent_relay_tool_call'
-    )?.[1];
-    expect(JSON.stringify(telemetryPayload)).not.toContain('private PR title');
+    expect(actions.invoke).toHaveBeenCalledWith({
+      name: 'github.open_pr',
+      input: { title: 'private PR title' },
+      context: {
+        caller: { type: 'agent', name: 'mcp' },
+        emit: undefined,
+      },
+    });
+    expect(mocks.telemetryTrack).not.toHaveBeenCalledWith('agent_relay_tool_call', expect.anything());
   });
 
-  it('tracks failed Agent Relay tool calls without argument values', async () => {
+  it('still emits inbox piggyback and resource updates for legacy consumers', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ telemetryTransport: 'http' });
 
     const server = mocks.serverInstances[0];
+    expect(server.server._requestHandlers.has('resources/subscribe')).toBe(true);
+    expect(server.server._requestHandlers.has('resources/unsubscribe')).toBe(true);
+    expect(server.server.sendResourceUpdated).not.toHaveBeenCalled();
+
     await expect(
       server.tools.get('add_agent')?.handler({
         name: 'WorkerB',
@@ -592,19 +567,9 @@ describe('createAgentRelayMcpServer', () => {
         task: 'private task text',
       })
     ).rejects.toThrow('Workspace key not configured');
-
-    expect(mocks.telemetryTrack).toHaveBeenCalledWith('agent_relay_tool_call', {
-      tool_name: 'add_agent',
-      tool_type: 'agent.create',
-      tool_category: 'spawn',
-      transport: 'http',
-      success: false,
-      duration_ms: expect.any(Number),
-      error_class: 'Error',
-    });
   });
 
-  it('dispatches websocket resource callbacks only to subscribed resources', async () => {
+  it('registers websocket resource subscriptions for legacy consumers', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({
       apiKey: 'rk_live_existing',
@@ -614,40 +579,9 @@ describe('createAgentRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    const ws = mocks.wsClientInstances[0];
-    const subscribe = server.server._requestHandlers.get('resources/subscribe');
-    await subscribe?.({ params: { uri: 'relay://inbox' } }, {});
-
-    ws.emit({ type: 'message.created', channel: 'general' });
-    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relay://inbox' });
-    expect(server.server.sendResourceUpdated).not.toHaveBeenCalledWith({
-      uri: 'relay://channels/general/messages',
-    });
-  });
-
-  it('reinitializes the websocket bridge when the workspace changes', async () => {
-    const { mod, mocks } = await loadAgentRelayMcpModule();
-    mod.createAgentRelayMcpServer({
-      apiKey: 'rk_live_existing',
-      agentToken: 'at_live_existing',
-      agentName: 'PinnedWorker',
-      baseUrl: 'https://api.relaycast.dev',
-    });
-
-    const server = mocks.serverInstances[0];
-    const ws = mocks.wsClientInstances[0];
-    const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
-
-    expect(ws.connect).toHaveBeenCalledTimes(1);
-    await expect(setWorkspaceKeyTool?.handler({ api_key: 'bad_key' })).rejects.toThrow(
-      'Workspace key must start with "rk_live_"'
-    );
-
-    const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_other' });
-    expect(ws.disconnect).toHaveBeenCalledTimes(1);
-    expect(result.structuredContent).toEqual({
-      message: 'Workspace key set. Call "register_agent" to join this workspace.',
-    });
+    expect(server.server._requestHandlers.has('resources/subscribe')).toBe(true);
+    expect(server.server._requestHandlers.has('resources/unsubscribe')).toBe(true);
+    expect(server.server.sendResourceUpdated).not.toHaveBeenCalled();
   });
 
   it('preserves the current agent session when the workspace key does not change', async () => {
@@ -660,12 +594,10 @@ describe('createAgentRelayMcpServer', () => {
     });
 
     const server = mocks.serverInstances[0];
-    const ws = mocks.wsClientInstances[0];
     const setWorkspaceKeyTool = server.tools.get('set_workspace_key');
 
     const result = await setWorkspaceKeyTool?.handler({ workspace_key: 'rk_live_existing' });
 
-    expect(ws.disconnect).not.toHaveBeenCalled();
     expect(result.structuredContent).toEqual({
       message: 'Workspace key set.',
     });
@@ -673,37 +605,6 @@ describe('createAgentRelayMcpServer', () => {
     await server.tools.get('check_inbox')?.handler({});
     const agentRelay = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
     expect(agentRelay?.as).toHaveBeenCalledWith('at_live_existing', { autoHeartbeatMs: false });
-  });
-
-  it('marks websocket initialization attempted even when bridge setup fails', async () => {
-    const { mod, mocks } = await loadAgentRelayMcpModule({ wsClientThrows: true });
-    mod.createAgentRelayMcpServer({
-      apiKey: 'rk_live_existing',
-      agentToken: 'at_live_existing',
-      agentName: 'PinnedWorker',
-    });
-
-    expect(mocks.wsClientInstances).toHaveLength(0);
-  });
-
-  it('swallows websocket resource update emission failures', async () => {
-    const { mod, mocks } = await loadAgentRelayMcpModule();
-    mod.createAgentRelayMcpServer({
-      apiKey: 'rk_live_existing',
-      agentToken: 'at_live_existing',
-      agentName: 'PinnedWorker',
-    });
-
-    const server = mocks.serverInstances[0];
-    const ws = mocks.wsClientInstances[0];
-    const subscribe = server.server._requestHandlers.get('resources/subscribe');
-    await subscribe?.({ params: { uri: 'relay://inbox' } }, {});
-    server.server.sendResourceUpdated.mockRejectedValueOnce(new Error('emit failed'));
-
-    ws.emit({ type: 'reaction.added' });
-    await Promise.resolve();
-
-    expect(server.server.sendResourceUpdated).toHaveBeenCalledWith({ uri: 'relay://inbox' });
   });
 });
 

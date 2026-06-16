@@ -3,10 +3,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 
-import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import type {
+  CoreDependencies,
+  CoreProjectPaths,
+  CoreRelay,
+  CoreTeamsConfig,
+  SpawnedProcess,
+} from '../commands/core.js';
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
+import {
+  createImplicitLocalFleetNode,
+  fleetStatusPath,
+  startFleetSidecar,
+  type RunningFleetSidecar,
+} from './fleet-sidecar.js';
 
 type UpOptions = {
   dashboard?: boolean;
@@ -207,7 +219,7 @@ async function resolveApiPortWithFallback(
   throw new Error(`Failed to find an available API port near ${startApiPort}.`);
 }
 
-async function startBrokerWithPortFallback(
+export async function startBrokerWithPortFallback(
   paths: CoreProjectPaths,
   dashboardPort: number,
   deps: CoreDependencies,
@@ -223,6 +235,36 @@ async function startBrokerWithPortFallback(
 
   await candidate.getStatus();
   return { relay: candidate, apiPort };
+}
+
+function startImplicitLocalFleetSidecar(
+  paths: CoreProjectPaths,
+  relay: CoreRelay,
+  options: UpOptions,
+  deps: CoreDependencies,
+  teamsConfig: CoreTeamsConfig | null = deps.loadTeamsConfig(paths.projectRoot)
+): RunningFleetSidecar | undefined {
+  if (deps.env.AGENT_RELAY_DISABLE_IMPLICIT_FLEET_NODE === '1') {
+    return undefined;
+  }
+  const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (!conn) {
+    deps.warn('Fleet local node skipped: broker connection file was not available.');
+    return undefined;
+  }
+  const node = createImplicitLocalFleetNode({
+    paths,
+    teamsConfig,
+    name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+  });
+  return startFleetSidecar({
+    definition: node,
+    connection: { url: conn.url, apiKey: conn.api_key },
+    workspaceKey: relay.workspaceKey,
+    statusPath: fleetStatusPath(paths),
+    reconnect: true,
+    warn: (message) => deps.warn(message),
+  });
 }
 
 async function resolveDashboardPortWithFallback(
@@ -1374,6 +1416,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let relay: CoreRelay | null = null;
   let apiPort = dashboardPort + 1;
   let dashboardProcess: SpawnedProcess | undefined;
+  let fleetSidecar: RunningFleetSidecar | undefined;
   const dashboardVerbose = Boolean(options.verbose) || isDebugLikeLoggingEnabled(deps);
   let shuttingDown = false;
   let sigintCount = 0;
@@ -1384,7 +1427,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       if (relay === null) {
         shutdownPromise = Promise.resolve();
       } else {
-        shutdownPromise = shutdownUpResources(relay, dashboardProcess, paths.dataDir, deps, ownsBroker);
+        shutdownPromise = (async () => {
+          await fleetSidecar?.stop();
+          await shutdownUpResources(relay, dashboardProcess, paths.dataDir, deps, ownsBroker);
+        })();
       }
     }
     await shutdownPromise;
@@ -1471,6 +1517,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
               );
             }
           }
+
+          fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps);
 
           deps.onSignal('SIGINT', async () => {
             sigintCount += 1;
@@ -1571,6 +1619,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
+    fleetSidecar = startImplicitLocalFleetSidecar(paths, relay, options, deps, teamsConfig);
     const shouldSpawn =
       options.spawn === true ? true : options.spawn === false ? false : Boolean(teamsConfig?.autoSpawn);
 
