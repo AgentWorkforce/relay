@@ -3892,13 +3892,9 @@
   }
 }
 
-/* ---- HOW IT WORKS ---- */
+/* ---- WORKS WITH EVERY AGENT (pyramid diagram) ---- */
 
-/* Communication diagram band inside the features grid, before the Agent Tools
-   feature. CLI agents (left) and custom agents (right) message each other
-   *through* the Agent Relay hub at the centre; coloured message dots route
-   agent -> relay -> agent. Same band fill + separation as the "Works with
-   every agent" section. */
+/* Same band fill + separation as the surrounding feature bands. */
 .howItWorks {
   position: relative;
   grid-column: 1 / -1;
@@ -3926,7 +3922,7 @@
 
 .howHeader {
   max-width: 660px;
-  margin: 0 0 52px;
+  margin: 0 0 48px;
   text-align: center;
 }
 
@@ -3945,55 +3941,87 @@
   line-height: 1.65;
   color: var(--fg-muted);
   margin: 0 auto;
-  max-width: 58ch;
+  max-width: 56ch;
 }
 
-/* --- stage: CLI agents <-> relay <-> custom agents --- */
+/* pyramid: relay (top) -> connector pipes -> two agent groups (bottom) */
 .howStage {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   width: 100%;
-  max-width: 1060px;
+  max-width: 680px;
   margin: 0 auto;
 }
 
-.howRow {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: 31% 38% 31%;
-  align-items: center;
-}
-
-.howCol {
+/* --- relay hub at the apex --- */
+.howCore {
   display: flex;
+  justify-content: center;
 }
 
-/* spoke wires from each agent port to the hub (percentage space, matched by the
-   message dots which travel along them) */
+.howCoreNode {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 26px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, transparent);
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 72%),
+    #0e2031;
+  box-shadow:
+    0 0 0 6px color-mix(in srgb, var(--primary) 8%, transparent),
+    0 16px 44px color-mix(in srgb, #04101c 52%, transparent);
+}
+
+.howCoreNode::before {
+  content: '';
+  position: absolute;
+  inset: -22px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 16%, transparent), transparent 68%);
+  pointer-events: none;
+}
+
+.howCoreMark {
+  width: 40px;
+  height: auto;
+}
+
+.howCoreWordmark {
+  width: 138px;
+  height: auto;
+}
+
+/* --- connector zone: fixed height so pipes + dots align at any width --- */
+.howLink {
+  position: relative;
+  width: 100%;
+  height: 78px;
+}
+
 .howWires {
   position: absolute;
   inset: 0;
-  z-index: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none;
 }
 
 .howWire {
   fill: none;
-  stroke: color-mix(in srgb, var(--primary) 34%, transparent);
+  stroke: color-mix(in srgb, var(--primary) 38%, transparent);
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 
-/* message dots travel source -> hub -> destination; hidden behind the cards
-   (endpoints) and the relay node (centre) so they read as routed messages */
 .howMsgs {
   position: absolute;
   inset: 0;
-  z-index: 1;
   pointer-events: none;
 }
 
@@ -4012,67 +4040,57 @@
   opacity: 0;
 }
 
-/* Three messages, each its own colour, routed with right-angle turns:
-   agent -> side bus -> relay (hidden behind the hub) -> bus -> agent. Linear
-   timing + a gap at the end of each cycle keeps every route easy to follow. */
+/* Three messages, each its own colour, routed up to the relay and back down. */
 .howMsg1 {
   --c: #74b8e2; /* blue — CLI -> custom */
-  animation: howMsg_m1 5s linear 0s infinite;
+  animation: howMsg_m1 4.6s linear 0s infinite;
 }
 .howMsg2 {
   --c: #d97757; /* Claude orange — custom -> CLI */
-  animation: howMsg_m2 5.4s linear 2s infinite;
+  animation: howMsg_m2 5s linear 1.8s infinite;
 }
 .howMsg3 {
   --c: #a6d388; /* green — CLI -> CLI */
-  animation: howMsg_m3 4.8s linear 4s infinite;
+  animation: howMsg_m3 4.4s linear 3.6s infinite;
 }
 
 @keyframes howMsg_m1 {
   0% {
     opacity: 0;
   }
-  0% {
-    left: 31%;
-    top: 38%;
-  }
   3% {
     opacity: 1;
   }
-  6.24% {
-    left: 35%;
-    top: 38%;
+  0% {
+    left: 25%;
+    top: 100%;
   }
-  9.6% {
-    left: 35%;
+  5.07% {
+    left: 25%;
     top: 50%;
   }
-  14.28% {
-    left: 38%;
-    top: 50%;
-  }
-  33% {
+  26.93% {
     left: 50%;
     top: 50%;
   }
-  51.72% {
-    left: 62%;
+  32% {
+    left: 50%;
+    top: 0%;
+  }
+  37.07% {
+    left: 50%;
     top: 50%;
   }
-  56.4% {
-    left: 65%;
+  58.93% {
+    left: 75%;
     top: 50%;
   }
-  59.76% {
-    left: 65%;
-    top: 62%;
-  }
-  64% {
+  62% {
     opacity: 1;
   }
-  66% {
-    left: 69%;
-    top: 62%;
+  64% {
+    left: 75%;
+    top: 100%;
     opacity: 0;
   }
   100% {
@@ -4084,47 +4102,39 @@
   0% {
     opacity: 0;
   }
-  0% {
-    left: 69%;
-    top: 38%;
-  }
   3% {
     opacity: 1;
   }
-  6.24% {
-    left: 65%;
-    top: 38%;
+  0% {
+    left: 75%;
+    top: 100%;
   }
-  9.6% {
-    left: 65%;
+  5.07% {
+    left: 75%;
     top: 50%;
   }
-  14.28% {
-    left: 62%;
-    top: 50%;
-  }
-  33% {
+  26.93% {
     left: 50%;
     top: 50%;
   }
-  51.72% {
-    left: 38%;
+  32% {
+    left: 50%;
+    top: 0%;
+  }
+  37.07% {
+    left: 50%;
     top: 50%;
   }
-  56.4% {
-    left: 35%;
+  58.93% {
+    left: 25%;
     top: 50%;
   }
-  59.76% {
-    left: 35%;
-    top: 62%;
-  }
-  64% {
+  62% {
     opacity: 1;
   }
-  66% {
-    left: 31%;
-    top: 62%;
+  64% {
+    left: 25%;
+    top: 100%;
     opacity: 0;
   }
   100% {
@@ -4136,47 +4146,39 @@
   0% {
     opacity: 0;
   }
-  0% {
-    left: 31%;
-    top: 62%;
-  }
   3% {
     opacity: 1;
   }
-  6.24% {
-    left: 35%;
-    top: 62%;
+  0% {
+    left: 25%;
+    top: 100%;
   }
-  9.6% {
-    left: 35%;
+  5.07% {
+    left: 25%;
     top: 50%;
   }
-  14.28% {
-    left: 38%;
-    top: 50%;
-  }
-  33% {
+  26.93% {
     left: 50%;
     top: 50%;
   }
-  51.72% {
-    left: 38%;
+  32% {
+    left: 50%;
+    top: 0%;
+  }
+  37.07% {
+    left: 50%;
     top: 50%;
   }
-  56.4% {
-    left: 35%;
+  58.93% {
+    left: 25%;
     top: 50%;
   }
-  59.76% {
-    left: 35%;
-    top: 38%;
-  }
-  64% {
+  62% {
     opacity: 1;
   }
-  66% {
-    left: 31%;
-    top: 38%;
+  64% {
+    left: 25%;
+    top: 100%;
     opacity: 0;
   }
   100% {
@@ -4184,7 +4186,19 @@
   }
 }
 
-/* --- agent group cards --- */
+/* --- agent groups at the base --- */
+.howRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(16px, 4vw, 40px);
+  width: 100%;
+}
+
+.howCol {
+  display: flex;
+  justify-content: center;
+}
+
 .howGroup {
   flex: 1;
   display: flex;
@@ -4194,17 +4208,17 @@
   padding: 22px 18px;
   border-radius: 18px;
   border: 1px solid var(--line);
-  /* opaque enough to mask message dots at their endpoints */
-  background: color-mix(in srgb, var(--card-bg) 96%, #07111c 4%);
-  box-shadow: 0 14px 38px color-mix(in srgb, #04101c 38%, transparent);
+  background: color-mix(in srgb, var(--card-bg) 92%, #07111c 8%);
+  box-shadow: 0 14px 38px color-mix(in srgb, #04101c 36%, transparent);
 }
 
 .howGroupLabel {
   font-family: var(--font-heading), sans-serif;
-  font-size: 1.08rem;
+  font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--fg);
+  text-align: center;
 }
 
 .howGroupLogos {
@@ -4249,107 +4263,63 @@
   text-align: center;
 }
 
-/* --- centre hub --- */
-.howCore {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.howCoreNode {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 24px 26px;
-  border-radius: 22px;
-  border: 1px solid color-mix(in srgb, var(--primary) 42%, transparent);
-  /* Opaque base so the message dots disappear behind the node. */
-  background:
-    radial-gradient(circle at 50% 20%, color-mix(in srgb, var(--primary) 24%, transparent), transparent 70%),
-    #0e2031;
-  box-shadow:
-    0 0 0 6px color-mix(in srgb, var(--primary) 8%, transparent),
-    0 18px 54px color-mix(in srgb, #04101c 55%, transparent);
-}
-
-.howCoreNode::before {
-  content: '';
-  position: absolute;
-  inset: -24px;
-  z-index: -1;
-  border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 18%, transparent), transparent 68%);
-  pointer-events: none;
-}
-
-.howCoreMark {
-  width: 44px;
-  height: auto;
-}
-
-.howCoreWordmark {
-  width: 142px;
-  height: auto;
-}
-
-@media (max-width: 1024px) {
-  .howRow {
-    grid-template-columns: 32% 36% 32%;
-  }
-
-  .howCoreWordmark {
-    width: 122px;
-  }
-}
-
-/* Mobile: stack the cards; drop the percentage-positioned wires + messages. */
-@media (max-width: 760px) {
+@media (max-width: 600px) {
   .howItWorks {
     padding: 64px 0 72px;
   }
 
   .howHeader {
-    margin-bottom: 40px;
+    margin-bottom: 38px;
   }
 
-  .howWires,
-  .howMsgs {
-    display: none;
+  .howCoreWordmark {
+    width: 120px;
   }
 
-  .howRow {
-    grid-template-columns: 1fr;
-    gap: 22px;
-    max-width: 420px;
-    margin: 0 auto;
-    justify-items: center;
+  .howLink {
+    height: 60px;
   }
 
-  .howCol {
-    width: 100%;
-    max-width: 380px;
+  .howGroup {
+    padding: 18px 12px;
+    gap: 10px;
+  }
+
+  .howChip {
+    width: 38px;
+    height: 38px;
+  }
+
+  .howChipSvg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .howGroupLabel {
+    font-size: 0.95rem;
+  }
+
+  .howGroupCaption {
+    font-size: 0.74rem;
   }
 }
 
-/* Reduced motion: park the coloured messages statically on their spokes
-   instead of animating them, so the routing still reads without motion. */
+/* Reduced motion: park the three messages on the pipes instead of animating. */
 @media (prefers-reduced-motion: reduce) {
   .howMsg {
     animation: none;
     opacity: 1;
   }
   .howMsg1 {
-    left: 33%;
-    top: 38%;
+    left: 25%;
+    top: 72%;
   }
   .howMsg2 {
-    left: 67%;
-    top: 38%;
+    left: 50%;
+    top: 26%;
   }
   .howMsg3 {
-    left: 33%;
-    top: 62%;
+    left: 75%;
+    top: 72%;
   }
 }

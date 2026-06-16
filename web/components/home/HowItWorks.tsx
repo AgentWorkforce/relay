@@ -38,18 +38,19 @@ const CUSTOM_LOGOS: readonly LogoItem[] = [
 ];
 
 /**
- * Orthogonal pipe network: each agent group connects to a side bus, and each
- * bus feeds the Agent Relay hub at the centre. Coordinates are percentages of
- * the stage; axis-aligned segments stay square under the stretched viewBox.
- * Three message dots ({@link MESSAGE_CLASSES}) travel these pipes with
- * right-angle turns — source agent → relay → destination — so each route is
- * easy to follow (CLI → custom, custom → CLI, CLI → CLI).
+ * Pyramid layout: the Agent Relay hub sits at the top; the two agent groups
+ * sit below it. A fixed-height connector zone between them carries the
+ * orthogonal pipes (relay → bus → each group) and the animated messages.
+ * Coordinates are percentages of that connector zone, so the pipes and dots
+ * line up at every width. Three message dots ({@link MESSAGE_CLASSES}) travel
+ * the pipes up to the relay and back down to another agent (CLI → custom,
+ * custom → CLI, CLI → CLI).
  */
 const WIRES: readonly string[] = [
-  '31,38 35,38 35,62 31,62', // left stubs + bus
-  '35,50 50,50', // left feed into the relay box (runs under it)
-  '69,38 65,38 65,62 69,62', // right stubs + bus
-  '65,50 50,50', // right feed into the relay box (runs under it)
+  '50,0 50,50', // relay down to the bus
+  '25,50 75,50', // bus across
+  '25,50 25,100', // bus down to CLI agents
+  '75,50 75,100', // bus down to custom agents
 ];
 
 const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3] as const;
@@ -92,43 +93,43 @@ export function HowItWorks() {
       </FadeIn>
 
       <div className={s.howStage}>
-        <svg className={s.howWires} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {WIRES.map((points, i) => (
-            <polyline key={i} points={points} className={s.howWire} />
-          ))}
-        </svg>
+        <FadeIn direction="up" delay={120} className={s.howCore}>
+          <div className={s.howCoreNode}>
+            <img
+              src="/brand-kit/agent-relay-mark.svg"
+              alt=""
+              width={46}
+              height={38}
+              className={s.howCoreMark}
+            />
+            <img
+              src="/brand-kit/agent-relay-wordmark.svg"
+              alt="Agent Relay"
+              width={150}
+              height={30}
+              className={s.howCoreWordmark}
+            />
+          </div>
+        </FadeIn>
 
-        <div className={s.howMsgs} aria-hidden="true">
-          {MESSAGE_CLASSES.map((cls, i) => (
-            <span key={i} className={`${s.howMsg} ${cls}`} />
-          ))}
+        <div className={s.howLink}>
+          <svg className={s.howWires} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {WIRES.map((points, i) => (
+              <polyline key={i} points={points} className={s.howWire} />
+            ))}
+          </svg>
+          <div className={s.howMsgs} aria-hidden="true">
+            {MESSAGE_CLASSES.map((cls, i) => (
+              <span key={i} className={`${s.howMsg} ${cls}`} />
+            ))}
+          </div>
         </div>
 
         <div className={s.howRow}>
           <FadeIn direction="right" className={s.howCol}>
             <AgentGroup label="CLI agents" logos={CLI_LOGOS} caption="PTY driven, real-time injection" />
           </FadeIn>
-
-          <FadeIn direction="up" delay={120} className={s.howCore}>
-            <div className={s.howCoreNode}>
-              <img
-                src="/brand-kit/agent-relay-mark.svg"
-                alt=""
-                width={46}
-                height={38}
-                className={s.howCoreMark}
-              />
-              <img
-                src="/brand-kit/agent-relay-wordmark.svg"
-                alt="Agent Relay"
-                width={150}
-                height={30}
-                className={s.howCoreWordmark}
-              />
-            </div>
-          </FadeIn>
-
-          <FadeIn direction="left" delay={120} className={s.howCol}>
+          <FadeIn direction="left" delay={80} className={s.howCol}>
             <AgentGroup label="Your custom agents" logos={CUSTOM_LOGOS} caption="Drop-in SDK + bindings" />
           </FadeIn>
         </div>
