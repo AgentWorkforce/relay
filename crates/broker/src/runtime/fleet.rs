@@ -581,6 +581,7 @@ impl BrokerRuntime {
             harness_config: spec.harness_config,
             agent_token,
             agent_result_schema: None,
+            exit_after_task: false,
             reply: reply_tx,
         }))
         .await;

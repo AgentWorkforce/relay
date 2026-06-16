@@ -28,8 +28,9 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use super::{
-    build_agent_state_transition_event, build_http_api_spawn_spec, build_thread_infos,
-    channels_from_csv, clear_pending_delivery_if_event_matches, continuity_dir,
+    apply_exit_after_task_instruction, build_agent_state_transition_event,
+    build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
+    clear_pending_delivery_if_event_matches, continuity_dir,
     delivery_read_ack_is_relaycast_message, delivery_retry_interval, derive_ws_base_url_from_http,
     display_target_for_dashboard, drop_pending_for_worker, emit_delivery_attempt_outcome,
     emit_dropped_delivery_failures, ensure_ephemeral_paths, extract_mcp_message_ids,
@@ -682,6 +683,13 @@ fn normalize_initial_task_keeps_non_empty_values() {
         normalize_initial_task(Some("Ship the patch".to_string())),
         Some("Ship the patch".to_string())
     );
+}
+
+#[test]
+fn exit_after_task_instruction_appends_clean_exit_contract() {
+    let task = apply_exit_after_task_instruction(Some("Ship the patch".to_string()));
+    assert!(task.starts_with("Ship the patch\n\n## Post-task exit"));
+    assert!(task.contains("output `/exit` on its own line"));
 }
 
 #[test]

@@ -514,6 +514,72 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
+  it('tracks Agent Relay tool calls with action names and coarse categories', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    await server.tools.get('add_agent')?.handler({
+      name: 'WorkerB',
+      cli: 'claude',
+      task: 'help',
+    });
+    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
+      'agent_relay_tool_call',
+      expect.objectContaining({
+        tool_name: 'add_agent',
+        tool_type: 'agent.create',
+        tool_category: 'spawn',
+        transport: 'stdio',
+        success: true,
+        duration_ms: expect.any(Number),
+      })
+    );
+
+    await server.tools.get('remove_agent')?.handler({ name: 'WorkerB', reason: 'done' });
+    expect(mocks.telemetryTrack).toHaveBeenCalledWith(
+      'agent_relay_tool_call',
+      expect.objectContaining({
+        tool_name: 'remove_agent',
+        tool_type: 'agent.release',
+        tool_category: 'release',
+        transport: 'stdio',
+        success: true,
+        duration_ms: expect.any(Number),
+      })
+    );
+  });
+
+  it('adds post-task exit instructions for task-exit add_agent spawns', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    await server.tools.get('add_agent')?.handler({
+      name: 'WorkerB',
+      cli: 'codex',
+      task: 'Ship it',
+      spawn_mode: 'task_exit',
+    });
+
+    const workspaceRelay = mocks.relayInstances.find(
+      (instance) => instance.config.apiKey === 'rk_live_existing'
+    );
+    expect(workspaceRelay?.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'WorkerB',
+        cli: 'codex',
+        task: expect.stringContaining('output `/exit` on its own line'),
+      })
+    );
+  });
+
   it('uses registered action tool names for dynamic action tools', async () => {
     const actions = {
       list: vi.fn(async () => [
@@ -573,6 +639,26 @@ describe('createAgentRelayMcpServer', () => {
         emit: undefined,
       },
     });
+    expect(mocks.telemetryTrack).not.toHaveBeenCalledWith('agent_relay_tool_call', expect.anything());
+  });
+
+  it('does not emit per-tool telemetry for the action-routed spawn tool', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      agentToken: 'at_live_fleet',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    const spawnResult = await server.tools.get('spawn')?.handler({
+      name: 'FleetWorker',
+      cli: 'codex',
+      task: 'Implement a fix',
+    });
+
+    // The tool still runs (delegates to the actions surface)...
+    expect(spawnResult.structuredContent.invocation).toMatchObject({ actionName: 'spawn' });
+    // ...but, like invoke_action, it must not double-count as a per-tool call.
     expect(mocks.telemetryTrack).not.toHaveBeenCalledWith('agent_relay_tool_call', expect.anything());
   });
 

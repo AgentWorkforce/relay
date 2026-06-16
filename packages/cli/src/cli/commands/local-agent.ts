@@ -190,13 +190,29 @@ export function registerLocalAgentCommands(
   agent
     .command('spawn')
     .description('Spawn an agent with the given provider CLI')
-    .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
+    .argument(
+      '<provider>',
+      'CLI provider (claude, codex, gemini, droid, …); droid is high-risk for delegation/spawn tasks'
+    )
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
+    .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, opts: Record<string, unknown>) => {
       await run(deps, async (client) => {
+        const spawnMode = opts.spawnMode as string | undefined;
+        if (
+          spawnMode &&
+          spawnMode !== 'interactive' &&
+          spawnMode !== 'task-exit' &&
+          spawnMode !== 'task_exit'
+        ) {
+          deps.error(`Unknown spawn mode "${spawnMode}". Expected one of: interactive, task-exit.`);
+          deps.exit(1);
+          return;
+        }
         const baseName = (opts.name as string | undefined) ?? provider;
         const resolved = resolveAutoSpawn(
           provider,
@@ -210,6 +226,9 @@ export function registerLocalAgentCommands(
           channels: (opts.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          spawnMode:
+            spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
+          exitAfterTask: opts.exitAfterTask as boolean | undefined,
         });
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider})${autoNote}.`);
@@ -219,16 +238,32 @@ export function registerLocalAgentCommands(
   agent
     .command('new')
     .description('Spawn an agent and attach to it')
-    .argument('<provider>', 'CLI provider (claude, codex, gemini, …)')
+    .argument(
+      '<provider>',
+      'CLI provider (claude, codex, gemini, droid, …); droid is high-risk for delegation/spawn tasks'
+    )
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--mode <mode>', 'Attach mode: drive | view | passthrough', 'drive')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
+    .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, options: Record<string, unknown>) => {
       const mode = (options.mode as string) ?? 'drive';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
         deps.error(`Unknown attach mode "${mode}". Expected one of: drive, view, passthrough.`);
+        deps.exit(1);
+        return;
+      }
+      const spawnMode = options.spawnMode as string | undefined;
+      if (
+        spawnMode &&
+        spawnMode !== 'interactive' &&
+        spawnMode !== 'task-exit' &&
+        spawnMode !== 'task_exit'
+      ) {
+        deps.error(`Unknown spawn mode "${spawnMode}". Expected one of: interactive, task-exit.`);
         deps.exit(1);
         return;
       }
@@ -246,6 +281,9 @@ export function registerLocalAgentCommands(
           channels: (options.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          spawnMode:
+            spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
+          exitAfterTask: options.exitAfterTask as boolean | undefined,
         });
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider}). Attaching (${mode})${autoNote}…`);

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.
 - `@agent-relay/harness-driver` adds local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, object-record capability metadata, and sidecar supervision metadata.
 - `@agent-relay/cloud` adds a canonical cloud session and active-workspace contract, including `ensureCloudSession`, `resolveActiveWorkspace`, promoted workspace-store APIs, access-token-only `agent-relay cloud session --json`, and `agent-relay workspace active --json` for cross-language consumers.
 - `agent-relay-broker` adds a fleet node control plane: a `node_control` client that drives the harness-driver sidecar over the local protocol, runtime wiring that registers nodes and handlers, dispatches broker handler invocations, and attributes handler spawns, with hardened node/handler registration timing.
@@ -24,12 +25,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
 - `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message ...` path was removed.
+- `agent-relay-broker` improves relay-worker spawning guidance for small models and Gemini; removes Droid broker injection (it suppresses relay tool use); `droid mcp add` now retries with backoff when concurrent processes race on `~/.factory/mcp.json`.
+- `opencode` composer default model updated to `deepseek-v4-flash` (16/16, 0 phantoms); `opencode:gpt-5.5` added as provisional worker entry (13/16).
+- `add_agent` MCP tool description now maps natural-language spawn requests to exact parameters: "spawn a codex agent" → `cli:"codex"`, "spawn an opus claude agent" → `cli:"claude", model:"claude-opus-4-8"`. Relay orchestrators without explicit relay onboarding can now route cross-CLI and model-tier requests correctly.
 
 ### Fixed
 
 - `@agent-relay/cloud` now writes cloud auth atomically and serializes file-backed token refreshes across processes, preventing concurrent refreshes from clobbering rotated credentials.
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
+
+## [8.8.0] - 2026-06-16
+
+### Added
+
+- @agent-relay/fleet SDK, fleet serve CLI, MCP query_nodes/spawn + §5 resource cleanup (Phase 4)
+- Fleet node control plane
+- Serde mirrors + golden fixtures for fleet node-control wire protocol (Phase 0)
+- Local protocol messages for fleet node sidecar (Phase 0)
+- Agent-relay cloud connect daytona (local capture)
+- Combined offline SDK harness + live behavioral eval suite
+
+### Changed
+
+- Publish @agent-relay/fleet in the release pipeline
+- Update @relaycast/sdk to 4.0 in @agent-relay/sdk + cli
+- Two-node fleet scenario matrix in CI (Phase 6)
+
+### Fixed
+
+- Mock @agent-relay/sdk boundary in MCP startup test
+- Serialize auth refresh writes
 
 ## [8.7.2] - 2026-06-13
 

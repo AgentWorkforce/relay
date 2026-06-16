@@ -96,3 +96,7 @@ web/.open-next
 
 # Eval harness JSON reports (generated per run)
 tests/integration/broker/evals-reports/
+
+# Per-harness runtime config written during eval/agent runs — contains live
+# workspace keys and agent tokens; must never be committed.
+/opencode.json
