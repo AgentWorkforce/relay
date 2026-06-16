@@ -527,6 +527,14 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
+/** Workspace-wide realtime fanout config. Off by default; enable with `stream.set(true)`. */
+export interface RelayWorkspaceStreamConfig {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  /** Explicit override, or `null` when inheriting the default. */
+  override: boolean | null;
+}
+
 export type InboxItemState = 'queued' | 'delivered' | 'failed' | 'deferred' | 'read';
 
 export interface InboxItem {
@@ -848,6 +856,12 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+    /** Workspace-wide realtime fanout. Off by default; enable with `set(true)`. */
+    readonly stream: {
+      get(): Promise<RelayWorkspaceStreamConfig>;
+      set(enabled: boolean): Promise<RelayWorkspaceStreamConfig>;
+      inherit(): Promise<RelayWorkspaceStreamConfig>;
+    };
   };
 }
 

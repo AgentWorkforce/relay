@@ -701,3 +701,71 @@ describe('RelaycastMessagingClient workspace stream', () => {
     expect(workspace.connect).not.toHaveBeenCalled();
   });
 });
+
+describe('workspace stream (realtime fanout)', () => {
+  function streamWorkspace(enabled: boolean) {
+    const config = { enabled, defaultEnabled: false, override: enabled };
+    return {
+      ...createWorkspace(),
+      workspace: {
+        info: vi.fn(async () => ({ id: 'ws-1', name: 'demo' })),
+        stream: {
+          get: vi.fn(async () => config),
+          set: vi.fn(async (value: boolean) => ({ ...config, enabled: value, override: value })),
+          inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+        },
+      },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      on: { any: vi.fn(() => () => {}) },
+    };
+  }
+
+  it('exposes workspace.stream get/set/inherit and normalizes the config', async () => {
+    const workspace = streamWorkspace(false);
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    expect(await client.workspace.stream.get()).toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: false,
+    });
+    expect(await client.workspace.stream.set(true)).toEqual({
+      enabled: true,
+      defaultEnabled: false,
+      override: true,
+    });
+    expect(workspace.workspace.stream.set).toHaveBeenCalledWith(true);
+    expect((await client.workspace.stream.inherit()).override).toBeNull();
+  });
+
+  it('throws a clear error when the relaycast stream API is unavailable', async () => {
+    const workspace = { ...createWorkspace(), workspace: { info: vi.fn() } };
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+    await expect(client.workspace.stream.get()).rejects.toThrow(/workspace stream API/);
+  });
+
+  it('warns once when a workspace-key client connects with fanout disabled', async () => {
+    const workspace = streamWorkspace(false);
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    client.events.connect();
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(warn.mock.calls[0]?.[0]).toContain('relay.workspace.stream.set(true)');
+    warn.mockRestore();
+  });
+
+  it('does not warn when fanout is already enabled', async () => {
+    const workspace = streamWorkspace(true);
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    client.events.connect();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});

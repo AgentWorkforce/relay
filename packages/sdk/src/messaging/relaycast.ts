@@ -47,6 +47,7 @@ import type {
   RelayRegisterCapabilityInput,
   RelayWebhook,
   RelayWorkspaceInfo,
+  RelayWorkspaceStreamConfig,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -359,6 +360,12 @@ type RelaycastWorkspaceLike = {
   };
   workspace?: {
     info(): Promise<unknown>;
+    // Workspace-wide realtime fanout config (relaycast 2.5+).
+    stream?: {
+      get(): Promise<unknown>;
+      set(enabled: boolean): Promise<unknown>;
+      inherit(): Promise<unknown>;
+    };
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
   // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
@@ -519,6 +526,17 @@ function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWor
   ) as unknown as RelaycastWorkspaceLike;
 }
 
+/** Coerce a relaycast workspace-stream config (camel or snake case) into the relay shape. */
+function normalizeStreamConfig(raw: unknown): RelayWorkspaceStreamConfig {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const override = record.override ?? record.override_value ?? null;
+  return {
+    enabled: Boolean(record.enabled),
+    defaultEnabled: Boolean(record.defaultEnabled ?? record.default_enabled),
+    override: override === null ? null : Boolean(override),
+  };
+}
+
 export class RelaycastMessagingClient implements RelayMessagingClient {
   readonly capabilities: RelayMessagingCapabilities;
 
@@ -529,6 +547,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     Set<(event: RelayMessagingEvent) => void | Promise<void>>
   >();
   private eventUnsubscribe?: () => void;
+  private workspaceStreamWarned = false;
 
   constructor(options: RelaycastMessagingOptions) {
     this.relaycast = createRelaycastClient(options);
@@ -835,6 +854,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       if (typeof this.relaycast.connect === 'function' && this.relaycast.on) {
         this.relaycast.connect();
         this.eventUnsubscribe = this.relaycast.on.any(forward);
+        // A workspace-key client only receives events when fanout is enabled;
+        // warn (once) instead of silently delivering nothing.
+        this.warnIfWorkspaceStreamDisabled();
         return;
       }
       // No agent client and no workspace stream available: preserve the
@@ -1011,7 +1033,47 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
+    // Workspace-wide realtime fanout. Off by default. See `events.connect`.
+    stream: {
+      get: async (): Promise<RelayWorkspaceStreamConfig> =>
+        normalizeStreamConfig(await this.requireWorkspaceStream('get').get()),
+      set: async (enabled: boolean): Promise<RelayWorkspaceStreamConfig> =>
+        normalizeStreamConfig(await this.requireWorkspaceStream('set').set(enabled)),
+      inherit: async (): Promise<RelayWorkspaceStreamConfig> =>
+        normalizeStreamConfig(await this.requireWorkspaceStream('inherit').inherit()),
+    },
   };
+
+  private requireWorkspaceStream(
+    op: string
+  ): NonNullable<NonNullable<RelaycastWorkspaceLike['workspace']>['stream']> {
+    const stream = this.relaycast.workspace?.stream;
+    if (!stream) {
+      throw new Error(
+        `RelaycastMessagingClient.workspace.stream.${op} requires the relaycast workspace stream API (relaycast 2.5+).`
+      );
+    }
+    return stream;
+  }
+
+  /** Warn once if a workspace-key client subscribes while fanout is off (avoids silent zero delivery). */
+  private warnIfWorkspaceStreamDisabled(): void {
+    if (this.workspaceStreamWarned) return;
+    const stream = this.relaycast.workspace?.stream;
+    if (!stream) return;
+    void stream
+      .get()
+      .then((raw) => {
+        if (this.workspaceStreamWarned || normalizeStreamConfig(raw).enabled) return;
+        this.workspaceStreamWarned = true;
+        console.warn(
+          '[agent-relay] Listening on a workspace-key client but realtime fanout is off — no events ' +
+            'will arrive. Enable once with `relay.workspace.stream.set(true)`. ' +
+            'https://agentrelay.com/docs/events#realtime-fanout'
+        );
+      })
+      .catch(() => {});
+  }
 
   private requireWebhooks(): NonNullable<RelaycastWorkspaceLike['webhooks']> {
     if (!this.relaycast.webhooks) {
