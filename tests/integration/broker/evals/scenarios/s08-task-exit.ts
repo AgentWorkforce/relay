@@ -1,85 +1,76 @@
 /**
- * Scenario S08 — Task-exit: single-shot worker exits after completing its task.
+ * Scenario S08 — Self-release: worker calls remove_agent(own name) after task.
  *
- * A worker agent is spawned with a simple task and explicit exit instructions
- * (the same instruction injected by add_agent's task_exit spawn mode). The
- * worker must:
- *   1. Complete the task (send a message to the general channel).
- *   2. Output `/exit` on its own line to terminate cleanly.
+ * A worker is spawned with a simple task and explicit instructions to release
+ * itself when done by calling mcp__agent-relay__remove_agent with its own name.
+ * This mirrors the task_exit spawn mode's intended production behaviour.
  *
- * PASS = agent_exited event with code 0 received within the response window.
+ * PASS = agent_released event received for the worker within the response window.
  *
- * This scenario is the ground-truth check for task-exit behaviour across
- * harnesses (claude:haiku/sonnet/opus, codex variants, opencode, etc.).
- * It does NOT go through a lead — the worker is spawned directly by the
- * harness so exit reliability is isolated from spawn-decision quality.
+ * The worker's name is embedded in the task so the model has it without needing
+ * to look it up. This isolates self-release compliance from name-discovery.
  */
 import type { EvalScenario, ScenarioResult } from '../types.js';
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { baseScore } from '../scoring/base.js';
 import { responseMs, STARTUP_MS } from './helpers.js';
 
-const EXIT_INSTRUCTION =
-  '## Post-task exit\n' +
-  'When the requested task is fully complete and you have reported the final outcome, ' +
-  'output `/exit` on its own line so the Agent Relay harness exits cleanly. ' +
-  'Do not output `/exit` before the task is complete.';
-
-const TASK =
-  'Send a message to the "general" channel with the text "Task complete: 1+1=2". ' +
-  'That is your only task — send that one message, then exit.';
+function buildTask(workerName: string): string {
+  return (
+    `Your agent name is "${workerName}".\n\n` +
+    `Send a message to the "general" channel with the text "Task complete: 1+1=2".\n\n` +
+    `When that message is sent, call mcp__agent-relay__remove_agent with name="${workerName}" ` +
+    `to release yourself. Do not call remove_agent before the message is sent.`
+  );
+}
 
 export const scenario: EvalScenario = {
   id: 's08-task-exit',
-  title: 'Task-exit: worker exits after completing task',
+  title: 'Self-release: worker calls remove_agent(self) after task',
   tier: 'realistic',
   channels: ['general'],
-  // Allow extra time for slow models (opus-class) that reason before acting.
   timeoutMs: 240_000,
   run: async (ctx): Promise<ScenarioResult> => {
     const { harness, cli, model, suffix, sleep } = ctx;
     const worker = `worker-${suffix}`;
     const phaseMs = responseMs(model);
 
-    const task = `${TASK}\n\n${EXIT_INSTRUCTION}`;
+    const task = buildTask(worker);
     await harness.spawnAgent(worker, cli, ['general'], { task, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
 
-    // Phase 1: wait for the worker to send its result message.
+    // Phase 1: wait for the worker to send its task result.
     await harness.waitForEvent('relay_inbound', phaseMs).promise.catch(() => {});
 
-    // Phase 2: wait for the worker process to exit.
-    const exitWaiter = harness.waitForEvent(
-      'agent_exited',
+    // Phase 2: wait for the worker to self-release via remove_agent(own name).
+    const releaseWaiter = harness.waitForEvent(
+      'agent_released',
       phaseMs,
-      (e) => (e as Extract<BrokerEvent, { kind: 'agent_exited' }>).name === worker
+      (e) => (e as Extract<BrokerEvent, { kind: 'agent_released' }>).name === worker
     );
-    await exitWaiter.promise.catch(() => {});
+    await releaseWaiter.promise.catch(() => {});
 
     const events = harness.getEvents();
     const base = baseScore(events, [worker]);
 
-    const exitEvent = events.find(
-      (e): e is Extract<BrokerEvent, { kind: 'agent_exited' }> =>
-        e.kind === 'agent_exited' && e.name === worker
+    const released = events.some(
+      (e): e is Extract<BrokerEvent, { kind: 'agent_released' }> =>
+        e.kind === 'agent_released' && e.name === worker
     );
 
-    const exitConfirmed = Boolean(exitEvent);
-    const exitCode = exitEvent?.code ?? null;
-    const pass = exitConfirmed && exitCode === 0;
+    const pass = released && base.sent > 0;
 
     await harness.releaseAgent(worker).catch(() => {});
 
     const notesParts: string[] = [];
     if (!base.sent) notesParts.push('no task message sent');
-    if (!exitConfirmed) notesParts.push('no exit event (worker did not output /exit)');
-    else if (exitCode !== 0) notesParts.push(`exited with code ${exitCode}`);
-    if (pass) notesParts.push('clean exit (code 0)');
+    if (!released) notesParts.push('never called remove_agent(self)');
+    if (pass) notesParts.push('sent message + self-released');
 
     return {
       id: 's08-task-exit',
-      title: 'Task-exit: worker exits after completing task',
+      title: 'Self-release: worker calls remove_agent(self) after task',
       pass,
       agents: [{ name: worker, cli, role: 'worker', prompt: task }],
       transcript: base.transcript,
@@ -91,8 +82,7 @@ export const scenario: EvalScenario = {
       wrongChannelReplies: 0,
       deliveryOk: base.deliveryOk,
       events: base.events,
-      exitConfirmed,
-      exitCode,
+      exitConfirmed: released,
       notes: notesParts.join('; ') || undefined,
     };
   },
