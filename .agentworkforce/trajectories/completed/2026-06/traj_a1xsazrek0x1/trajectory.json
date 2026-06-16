@@ -121,10 +121,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "2 signal(s), 6 file change(s)",
-              "signals": [
-                "shadow-review",
-                "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"
-              ],
+              "signals": ["shadow-review", "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"],
               "files": [
                 "created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json",
                 "created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json",
@@ -153,11 +150,7 @@
             "reason": "Legacy STEP_COMPLETE marker observed",
             "evidence": {
               "summary": "3 signal(s), 6 file change(s)",
-              "signals": [
-                "LEAD_DONE",
-                "lead-coordinate",
-                "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"
-              ],
+              "signals": ["LEAD_DONE", "lead-coordinate", "0q▗ ▗   ▖ ▖ClaudeCodev2.1.178"],
               "files": [
                 "created:.agentworkforce/relay/pending-relay-p11-broker-heartbeat-56cf97ed.json",
                 "created:.agentworkforce/relay/state-relay-p11-broker-heartbeat-56cf97ed.json",

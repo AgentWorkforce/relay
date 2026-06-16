@@ -19,6 +19,7 @@ Implemented p11 residual node load freshness and SDK RelayNode liveness fields
 ## Key Decisions
 
 ### Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields
+
 - **Chose:** Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields
 - **Reasoning:** Lead confirmed heartbeat/reconnect/deregister already shipped; remaining AC1 gap was stale node load after release/exit plus missing live/createdAt fields in RelayNode.
 
@@ -27,18 +28,23 @@ Implemented p11 residual node load freshness and SDK RelayNode liveness fields
 ## Chapters
 
 ### 1. Planning
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 2. Execution: lead-coordinate, impl-work, shadow-review
-*Agent: orchestrator*
+
+_Agent: orchestrator_
 
 ### 3. Execution: impl-work
-*Agent: impl-codex*
+
+_Agent: impl-codex_
 
 ### 4. Execution: lead-coordinate
-*Agent: lead-claude*
+
+_Agent: lead-claude_
 
 ### 5. Execution: shadow-review
-*Agent: shadow-claude*
+
+_Agent: shadow-claude_
 
 - Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields: Kept p11 residual scoped to activeAgents/load freshness and SDK node liveness fields
