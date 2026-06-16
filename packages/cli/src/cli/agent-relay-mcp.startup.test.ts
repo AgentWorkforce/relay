@@ -642,6 +642,26 @@ describe('createAgentRelayMcpServer', () => {
     expect(mocks.telemetryTrack).not.toHaveBeenCalledWith('agent_relay_tool_call', expect.anything());
   });
 
+  it('does not emit per-tool telemetry for the action-routed spawn tool', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      agentToken: 'at_live_fleet',
+      telemetryTransport: 'stdio',
+    });
+
+    const server = mocks.serverInstances[0];
+    const spawnResult = await server.tools.get('spawn')?.handler({
+      name: 'FleetWorker',
+      cli: 'codex',
+      task: 'Implement a fix',
+    });
+
+    // The tool still runs (delegates to the actions surface)...
+    expect(spawnResult.structuredContent.invocation).toMatchObject({ actionName: 'spawn' });
+    // ...but, like invoke_action, it must not double-count as a per-tool call.
+    expect(mocks.telemetryTrack).not.toHaveBeenCalledWith('agent_relay_tool_call', expect.anything());
+  });
+
   it('still emits inbox piggyback and resource updates for legacy consumers', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ telemetryTransport: 'http' });

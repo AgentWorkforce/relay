@@ -601,10 +601,20 @@ interface AgentRelayToolCallMetadata {
 }
 
 /**
+ * Owned tools that delegate to the actions surface (`actions.invoke(...)`)
+ * rather than the agents/messaging APIs. Together with the dynamic per-action
+ * tools (tracked via `actionToolNames`), these intentionally skip per-tool
+ * telemetry so the same underlying action is not counted differently depending
+ * on which MCP surface the caller used (e.g. `spawn` vs `invoke_action`).
+ */
+const ACTION_ROUTED_TOOL_NAMES = new Set(['invoke_action', 'spawn']);
+
+/**
  * Coarse type/category metadata for the statically-registered ("owned") MCP
- * tools. Action-routed calls — `invoke_action` and the dynamic per-action tools
- * surfaced from the actions registry — are intentionally excluded from per-tool
- * telemetry (see the skip in `enableInboxPiggyback`), so they have no entry.
+ * tools. Action-routed calls (see `ACTION_ROUTED_TOOL_NAMES`) and the dynamic
+ * per-action tools surfaced from the actions registry are intentionally
+ * excluded from per-tool telemetry (see the skip in `enableInboxPiggyback`),
+ * so they have no entry.
  */
 const AGENT_RELAY_TOOL_CALL_METADATA = {
   add_agent: { toolType: 'agent.create', toolCategory: 'spawn' },
@@ -683,11 +693,13 @@ function enableInboxPiggyback(
     const wrapped = async (...args: unknown[]) => {
       const asIdentity = readAsIdentity(args);
       const startedAt = Date.now();
-      // Action-routed calls (`invoke_action` and the dynamic per-action tools)
-      // run through their own fire-and-forget surface and deliberately skip
+      // Action-routed calls (`invoke_action`, `spawn`, and the dynamic
+      // per-action tools) run through the actions surface and deliberately skip
       // per-tool telemetry; only the owned tools emit `agent_relay_tool_call`.
       const toolMetadata =
-        name !== 'invoke_action' && !actionToolNames.has(name) ? agentRelayToolCallMetadata(name) : undefined;
+        !ACTION_ROUTED_TOOL_NAMES.has(name) && !actionToolNames.has(name)
+          ? agentRelayToolCallMetadata(name)
+          : undefined;
 
       let result: any;
       try {
