@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "reply",
+  "id": "req_agent_register_001",
+  "ok": true,
+  "data": {
+    "agent_id": "agt_01J7FLEET000000000000101",
+    "token": "at_live_0123456789abcdef01234567",
+    "name": "codex-builder-1"
+  }
+}

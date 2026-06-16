@@ -1,0 +1,6 @@
+{
+  "v": 1,
+  "type": "agent.deregister",
+  "agent_id": "agt_01J7FLEET000000000000101",
+  "name": "codex-builder-1"
+}
