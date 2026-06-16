@@ -1330,15 +1330,16 @@ async fn configure_gemini_droid_mcp(
 }
 
 /// Remove all known relay MCP server names from the gemini/droid shared config.
-fn remove_gemini_droid_mcp_servers(exe: &str) {
+async fn remove_gemini_droid_mcp_servers(exe: &str) {
     for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let _ = std::process::Command::new(exe)
-            .args(["mcp", "remove", server_name])
+        let mut cmd = Command::new(exe);
+        cmd.args(["mcp", "remove", server_name])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .and_then(|mut c| c.wait());
+            .stderr(Stdio::null());
+        if let Ok(child) = cmd.spawn() {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output()).await;
+        }
     }
 }
 
@@ -1355,7 +1356,7 @@ async fn run_gemini_droid_mcp_add(
     let mut last_stderr = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         // Remove first for idempotency — ignore errors (may not exist yet).
-        remove_gemini_droid_mcp_servers(exe);
+        remove_gemini_droid_mcp_servers(exe).await;
 
         let output = spawn_mcp_add(exe, add_args, cli, manual_cmd).await?;
         if output.status.success() {

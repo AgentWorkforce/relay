@@ -222,6 +222,9 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
         await harness.releaseAgent(firstWorkerName).catch(() => {});
       }
 
+      // Capture event count before failure injection so escalated check only covers post-failure.
+      const preFailureEventCount = harness.getEvents().length;
+
       // Inject failure from the worker.
       await harness.sendMessage({
         to: lead,
@@ -259,7 +262,9 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
       await harness.releaseAgent(lead).catch(() => {});
 
       const retried = spawn.spawnCount > (spawnEv ? 1 : 0);
-      const escalated = events.some(
+      // Only scan events after failure injection to avoid false positives from early lead messages.
+      const postFailureEvents = events.slice(preFailureEventCount);
+      const escalated = postFailureEvents.some(
         (e) =>
           e.kind === 'relay_inbound' &&
           (e as { from: string; body?: string }).from === lead &&
@@ -347,6 +352,11 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
       const spawnWaiter = harness.waitForEvent('agent_spawned', Math.min(phaseMs, 60_000));
       await spawnWaiter.promise.catch(() => {});
 
+      // Record lead message count before status injection so pass requires a post-query response.
+      const preQueryLeadMsgCount = harness
+        .getEvents()
+        .filter((e) => e.kind === 'relay_inbound' && (e as { from: string }).from === lead).length;
+
       // Inject a mid-task status request from the requester.
       await harness.sendMessage({
         to: lead,
@@ -370,11 +380,11 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
       }
       await harness.releaseAgent(lead).catch(() => {});
 
-      // PASS = lead sent at least one outbound message (responded to status query).
+      // PASS = lead sent a message after the status request was injected.
       const leadMessages = events.filter(
         (e) => e.kind === 'relay_inbound' && (e as { from: string }).from === lead
       );
-      const pass = leadMessages.length > 0;
+      const pass = leadMessages.length > preQueryLeadMsgCount;
 
       const notesParts: string[] = [];
       if (spawn.spawnCount === 0) notesParts.push('lead did not spawn any workers');

@@ -227,20 +227,23 @@ impl BrokerRuntime {
                     Ok(effective_spec) => {
                         // Prepend relay skill text for small-tier models and CLI harnesses that
                         // need explicit tool guidance to reliably call add_agent / remove_agent.
-                        if let Some(prefix) = relay_skill_prefix(
-                            effective_spec.cli.as_deref().unwrap_or(&cli),
-                            effective_spec.model.as_deref(),
-                        ) {
-                            effective_task = Some(match effective_task {
-                                Some(task) => format!("{prefix}\n\n{task}"),
-                                None => prefix.to_string(),
-                            });
-                            tracing::debug!(
-                                agent = %name,
-                                cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
-                                model = ?effective_spec.model,
-                                "injected relay skill prefix for model or CLI harness"
-                            );
+                        // Skip when relay prompt injection is opted out — relay tools are absent.
+                        if !skip_relay_prompt {
+                            if let Some(prefix) = relay_skill_prefix(
+                                effective_spec.cli.as_deref().unwrap_or(&cli),
+                                effective_spec.model.as_deref(),
+                            ) {
+                                effective_task = Some(match effective_task {
+                                    Some(task) => format!("{prefix}\n\n{task}"),
+                                    None => prefix,
+                                });
+                                tracing::debug!(
+                                    agent = %name,
+                                    cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
+                                    model = ?effective_spec.model,
+                                    "injected relay skill prefix for model or CLI harness"
+                                );
+                            }
                         }
                         if let Some(ref task_text) = effective_task {
                             workers
