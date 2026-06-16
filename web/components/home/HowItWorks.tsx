@@ -89,8 +89,8 @@ export function HowItWorks() {
           Works with Every Agent
         </h2>
         <p className={s.howSubtitle}>
-          Our PTY based driver can power any CLI agent or you can drop in our SDK for your custom
-          orchestrator.
+          It's not a harness, and it's not a framework. Our PTY based driver can power any CLI agent
+          or you can drop in our SDK for your custom orchestrator.
         </p>
       </FadeIn>
 
