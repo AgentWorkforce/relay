@@ -13,7 +13,7 @@
 
 export type OnboardingVariant = 'bare' | 'one-liner' | 'brief' | 'skill';
 
-export const ONBOARDING_VARIANTS: OnboardingVariant[] = ['bare', 'one-liner', 'brief', 'skill'];
+export const ONBOARDING_VARIANTS = ['bare', 'one-liner', 'brief', 'skill'] as const satisfies readonly OnboardingVariant[];
 
 /**
  * Return the onboarding text suffix for a given variant.
@@ -61,5 +61,8 @@ Always release relay workers when done — unreleased agents waste resources.
 If the task explicitly asks you to delegate or assign work to a worker, always spawn — do not do it yourself.
 Spawn for anything large, parallel, or that needs specialised focus.
 Only handle it yourself when the task is trivial AND you were not asked to delegate.`;
+
+    default:
+      throw new Error(`Unknown OnboardingVariant: ${variant as string}`);
   }
 }

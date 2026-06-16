@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 
@@ -110,9 +110,11 @@ export function newMountFiles(mountDir: string, snapshot: Set<string>): string[]
 export function scoreMountRun(opts: ScoreMountRunOptions): MountScore {
   const { mountDir, newFiles, expectedPathPrefix, events, cleanExit = true } = opts;
 
-  const relative = newFiles.map((f) => f.replace(mountDir + '/', ''));
-  const inExpectedPath = relative.filter((p) => p.startsWith(expectedPathPrefix));
-  const inDiscovery = relative.filter((p) => p.includes('/discovery/') || p.startsWith('discovery/'));
+  const relFiles = newFiles.map((f) => relative(mountDir, f));
+  const inExpectedPath = relFiles.filter((p) => p.startsWith(expectedPathPrefix));
+  const inDiscovery = relFiles.filter(
+    (p) => p.includes('/discovery/') || p.startsWith('discovery/'),
+  );
 
   const jsonValid =
     inExpectedPath.length > 0 &&
@@ -128,14 +130,14 @@ export function scoreMountRun(opts: ScoreMountRunOptions): MountScore {
   const usedRelayMessaging = events.some((e) => e.kind === 'relay_inbound');
 
   return {
-    wroteSomething: relative.length > 0,
+    wroteSomething: relFiles.length > 0,
     correctPath: inExpectedPath.length > 0,
     jsonValid,
     discoveryViolation: inDiscovery.length > 0,
     usedRelayMessaging,
     cleanExit,
     pass: inExpectedPath.length > 0 && jsonValid && inDiscovery.length === 0,
-    filesWritten: relative,
+    filesWritten: relFiles,
     filesAtCorrectPath: inExpectedPath,
   };
 }
