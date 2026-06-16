@@ -3981,8 +3981,11 @@
 }
 
 .howWire {
+  fill: none;
   stroke: color-mix(in srgb, var(--primary) 34%, transparent);
   stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 
@@ -4010,155 +4013,174 @@
   opacity: 0;
 }
 
-/* Each message has its own colour + path: source agent -> relay (50% 50%) ->
-   destination agent. Mix of CLI<->CLI, CLI<->custom, and custom<->custom. */
+/* Three messages, each its own colour, routed with right-angle turns:
+   agent -> side bus -> relay (hidden behind the hub) -> bus -> agent. Linear
+   timing + a gap at the end of each cycle keeps every route easy to follow. */
 .howMsg1 {
   --c: #74b8e2; /* blue — CLI -> custom */
-  animation: howMsg1 5s ease-in-out 0s infinite;
+  animation: howMsg_m1 5s linear 0s infinite;
 }
 .howMsg2 {
   --c: #d97757; /* Claude orange — custom -> CLI */
-  animation: howMsg2 5.6s ease-in-out 0.85s infinite;
+  animation: howMsg_m2 5.4s linear 2s infinite;
 }
 .howMsg3 {
   --c: #a6d388; /* green — CLI -> CLI */
-  animation: howMsg3 4.8s ease-in-out 1.7s infinite;
-}
-.howMsg4 {
-  --c: #9ccfff; /* light blue — custom -> custom */
-  animation: howMsg4 5.4s ease-in-out 2.55s infinite;
-}
-.howMsg5 {
-  --c: #74d0c4; /* teal — CLI -> custom */
-  animation: howMsg5 5.2s ease-in-out 3.4s infinite;
-}
-.howMsg6 {
-  --c: #5a9fd4; /* deep blue — custom -> CLI */
-  animation: howMsg6 5.8s ease-in-out 4.25s infinite;
+  animation: howMsg_m3 4.8s linear 4s infinite;
 }
 
-@keyframes howMsg1 {
+@keyframes howMsg_m1 {
   0% {
-    left: 31%;
-    top: 30%;
     opacity: 0;
   }
-  9%,
-  91% {
+  0% {
+    left: 31%;
+    top: 38%;
+  }
+  3% {
     opacity: 1;
   }
-  50% {
+  6.24% {
+    left: 35%;
+    top: 38%;
+  }
+  9.6% {
+    left: 35%;
+    top: 50%;
+  }
+  14.28% {
+    left: 38%;
+    top: 50%;
+  }
+  33% {
     left: 50%;
     top: 50%;
   }
-  100% {
-    left: 69%;
-    top: 70%;
-    opacity: 0;
+  51.72% {
+    left: 62%;
+    top: 50%;
   }
-}
-
-@keyframes howMsg2 {
-  0% {
-    left: 69%;
-    top: 30%;
-    opacity: 0;
+  56.4% {
+    left: 65%;
+    top: 50%;
   }
-  9%,
-  91% {
+  59.76% {
+    left: 65%;
+    top: 62%;
+  }
+  64% {
     opacity: 1;
   }
-  50% {
-    left: 50%;
-    top: 50%;
+  66% {
+    left: 69%;
+    top: 62%;
+    opacity: 0;
   }
   100% {
-    left: 31%;
-    top: 50%;
     opacity: 0;
   }
 }
 
-@keyframes howMsg3 {
+@keyframes howMsg_m2 {
   0% {
-    left: 31%;
-    top: 70%;
     opacity: 0;
   }
-  9%,
-  91% {
+  0% {
+    left: 69%;
+    top: 38%;
+  }
+  3% {
     opacity: 1;
   }
-  50% {
+  6.24% {
+    left: 65%;
+    top: 38%;
+  }
+  9.6% {
+    left: 65%;
+    top: 50%;
+  }
+  14.28% {
+    left: 62%;
+    top: 50%;
+  }
+  33% {
     left: 50%;
     top: 50%;
   }
-  100% {
+  51.72% {
+    left: 38%;
+    top: 50%;
+  }
+  56.4% {
+    left: 35%;
+    top: 50%;
+  }
+  59.76% {
+    left: 35%;
+    top: 62%;
+  }
+  64% {
+    opacity: 1;
+  }
+  66% {
     left: 31%;
-    top: 30%;
+    top: 62%;
+    opacity: 0;
+  }
+  100% {
     opacity: 0;
   }
 }
 
-@keyframes howMsg4 {
+@keyframes howMsg_m3 {
   0% {
-    left: 69%;
-    top: 70%;
     opacity: 0;
   }
-  9%,
-  91% {
-    opacity: 1;
-  }
-  50% {
-    left: 50%;
-    top: 50%;
-  }
-  100% {
-    left: 69%;
-    top: 30%;
-    opacity: 0;
-  }
-}
-
-@keyframes howMsg5 {
   0% {
     left: 31%;
-    top: 50%;
-    opacity: 0;
+    top: 62%;
   }
-  9%,
-  91% {
+  3% {
     opacity: 1;
   }
-  50% {
+  6.24% {
+    left: 35%;
+    top: 62%;
+  }
+  9.6% {
+    left: 35%;
+    top: 50%;
+  }
+  14.28% {
+    left: 38%;
+    top: 50%;
+  }
+  33% {
     left: 50%;
     top: 50%;
   }
-  100% {
-    left: 69%;
+  51.72% {
+    left: 38%;
     top: 50%;
-    opacity: 0;
   }
-}
-
-@keyframes howMsg6 {
-  0% {
-    left: 69%;
+  56.4% {
+    left: 35%;
     top: 50%;
-    opacity: 0;
   }
-  9%,
-  91% {
+  59.76% {
+    left: 35%;
+    top: 38%;
+  }
+  64% {
     opacity: 1;
   }
-  50% {
-    left: 50%;
-    top: 50%;
-  }
-  100% {
+  66% {
     left: 31%;
-    top: 70%;
+    top: 38%;
+    opacity: 0;
+  }
+  100% {
     opacity: 0;
   }
 }
@@ -4320,27 +4342,15 @@
     opacity: 1;
   }
   .howMsg1 {
-    left: 40%;
+    left: 33%;
     top: 38%;
   }
   .howMsg2 {
-    left: 40%;
-    top: 50%;
-  }
-  .howMsg3 {
-    left: 40%;
-    top: 62%;
-  }
-  .howMsg4 {
-    left: 60%;
+    left: 67%;
     top: 38%;
   }
-  .howMsg5 {
-    left: 60%;
-    top: 50%;
-  }
-  .howMsg6 {
-    left: 60%;
+  .howMsg3 {
+    left: 33%;
     top: 62%;
   }
 }

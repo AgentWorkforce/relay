@@ -38,24 +38,21 @@ const CUSTOM_LOGOS: readonly LogoItem[] = [
 ];
 
 /**
- * Spoke wires from each agent port to the Agent Relay hub (centre). Ports are
- * percentages of the stage; the six animated message dots ({@link MESSAGES})
- * travel along these spokes — source agent → relay → destination agent. Each
- * message has its own colour + keyframes in landing.module.css so distinct
- * messages flow between different agents (CLI↔CLI, CLI↔custom, custom↔custom).
+ * Orthogonal pipe network: each agent group connects to a side bus, and each
+ * bus feeds the Agent Relay hub at the centre. Coordinates are percentages of
+ * the stage; axis-aligned segments stay square under the stretched viewBox.
+ * Three message dots ({@link MESSAGE_CLASSES}) travel these pipes with
+ * right-angle turns — source agent → relay → destination — so each route is
+ * easy to follow (CLI → custom, custom → CLI, CLI → CLI).
  */
-type Port = readonly [number, number];
-
-const PORTS: readonly Port[] = [
-  [31, 30],
-  [31, 50],
-  [31, 70], // CLI agents (left edge)
-  [69, 30],
-  [69, 50],
-  [69, 70], // custom agents (right edge)
+const WIRES: readonly string[] = [
+  '31,38 35,38 35,62 31,62', // left stubs + bus
+  '35,50 38,50', // left feed into hub
+  '69,38 65,38 65,62 69,62', // right stubs + bus
+  '65,50 62,50', // right feed into hub
 ];
 
-const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3, s.howMsg4, s.howMsg5, s.howMsg6] as const;
+const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3] as const;
 
 function AgentGroup({
   label,
@@ -96,8 +93,8 @@ export function HowItWorks() {
 
       <div className={s.howStage}>
         <svg className={s.howWires} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {PORTS.map((p, i) => (
-            <line key={i} x1={p[0]} y1={p[1]} x2={50} y2={50} className={s.howWire} />
+          {WIRES.map((points, i) => (
+            <polyline key={i} points={points} className={s.howWire} />
           ))}
         </svg>
 
