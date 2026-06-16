@@ -2,12 +2,17 @@ use super::*;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        self.handle_fleet_sidecar_supervision_tick().await;
+
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
         let workers = &mut self.workers;
+        let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
         let telemetry = &self.telemetry;
         let crash_insights = &mut self.crash_insights;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -196,6 +201,13 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
                 None => {
                     // Not supervised — original behavior
@@ -249,6 +261,13 @@ impl BrokerRuntime {
                             tracing::warn!(path = %paths.state.display(), error = %error, "failed to persist broker state");
                         }
                     }
+                    super::fleet::prune_fleet_agent_state(
+                        fleet_control_tx,
+                        fleet_inventory,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await;
                 }
             }
         }
