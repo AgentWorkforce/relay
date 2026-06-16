@@ -1790,7 +1790,7 @@ function registerAgentRelayTools(
       description: 'Ask Relaycast to spawn a worker agent for a task.',
       inputSchema: {
         name: z.string().describe('Worker agent name'),
-        cli: z.enum(['claude', 'codex', 'gemini', 'aider', 'goose']).describe('AI CLI to launch'),
+        cli: z.enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']).describe('AI CLI to launch'),
         task: z.string().describe('Task instructions'),
         channel: z.string().optional().describe('Channel to join'),
         persona: z.string().optional().describe('Worker persona'),
