@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{
+    de::{self, Deserializer},
+    Deserialize, Serialize, Serializer,
+};
 use serde_json::Value;
 
 use crate::ids::{
@@ -236,6 +239,135 @@ pub struct AgentSpec {
     pub restart_policy: Option<RestartPolicy>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapabilityManifest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeManifest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<NodeCapabilityManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSupervision {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<RestartPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HandlerResult {
+    pub invocation_id: String,
+    pub result: HandlerResultPayload,
+}
+
+impl Serialize for HandlerResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        HandlerResultWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HandlerResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        HandlerResultWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HandlerResultWire {
+    pub invocation_id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output: Option<Value>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub error: Option<String>,
+}
+
+fn deserialize_optional_presence<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl From<&HandlerResult> for HandlerResultWire {
+    fn from(value: &HandlerResult) -> Self {
+        match &value.result {
+            HandlerResultPayload::Output { output } => Self {
+                invocation_id: value.invocation_id.clone(),
+                output: Some(output.clone()),
+                error: None,
+            },
+            HandlerResultPayload::Error { error } => Self {
+                invocation_id: value.invocation_id.clone(),
+                output: None,
+                error: Some(error.clone()),
+            },
+        }
+    }
+}
+
+impl TryFrom<HandlerResultWire> for HandlerResult {
+    type Error = String;
+
+    fn try_from(value: HandlerResultWire) -> Result<Self, Self::Error> {
+        let result = match (value.output, value.error) {
+            (Some(output), None) => HandlerResultPayload::Output { output },
+            (None, Some(error)) => HandlerResultPayload::Error { error },
+            _ => {
+                return Err("handler_result must include exactly one of output or error".to_string())
+            }
+        };
+
+        Ok(Self {
+            invocation_id: value.invocation_id,
+            result,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HandlerResultPayload {
+    Output { output: Value },
+    Error { error: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageInjectionMode {
@@ -282,6 +414,26 @@ pub enum SdkToBroker {
     },
     SpawnAgent {
         agent: Box<AgentSpec>,
+        #[serde(default)]
+        invocation_id: Option<String>,
+        #[serde(default)]
+        initial_task: Option<String>,
+        #[serde(default)]
+        skip_relay_prompt: bool,
+    },
+    RegisterNode {
+        manifest: NodeManifest,
+        #[serde(default)]
+        supervision: Option<NodeSupervision>,
+    },
+    DeregisterNode {},
+    RegisterHandlers {
+        names: Vec<String>,
+    },
+    HandlerResult(HandlerResult),
+    SendInput {
+        name: WorkerName,
+        data: String,
     },
     SendMessage {
         to: MessageTarget,
@@ -320,6 +472,11 @@ pub enum BrokerToSdk {
     HelloAck {
         broker_version: String,
         protocol_version: u32,
+    },
+    InvokeHandler {
+        invocation_id: String,
+        name: String,
+        input: Value,
     },
     Ok {
         result: Value,
@@ -612,6 +769,157 @@ mod tests {
         assert_eq!(decoded.v, PROTOCOL_VERSION);
         assert_eq!(decoded.msg_type, "spawn_agent");
         assert_eq!(decoded.request_id.as_deref(), Some("req_1"));
+    }
+
+    #[test]
+    fn sdk_spawn_agent_accepts_invocation_id() {
+        use super::SdkToBroker;
+
+        let decoded: SdkToBroker = serde_json::from_value(json!({
+            "type": "spawn_agent",
+            "payload": {
+                "invocation_id": "inv-1",
+                "agent": {
+                    "name": "Worker1",
+                    "runtime": "pty",
+                    "cli": "codex"
+                }
+            }
+        }))
+        .unwrap();
+
+        match decoded {
+            SdkToBroker::SpawnAgent {
+                invocation_id,
+                agent,
+                ..
+            } => {
+                assert_eq!(invocation_id.as_deref(), Some("inv-1"));
+                assert_eq!(agent.name.as_str(), "Worker1");
+            }
+            other => panic!("expected spawn_agent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sdk_deregister_node_frame_round_trips() {
+        use super::SdkToBroker;
+
+        let decoded: SdkToBroker = serde_json::from_value(json!({
+            "type": "deregister_node",
+            "payload": {}
+        }))
+        .unwrap();
+
+        assert!(matches!(decoded, SdkToBroker::DeregisterNode {}));
+    }
+
+    #[test]
+    fn sdk_register_node_capability_metadata_requires_object() {
+        use super::SdkToBroker;
+
+        let decoded: SdkToBroker = serde_json::from_value(json!({
+            "type": "register_node",
+            "payload": {
+                "manifest": {
+                    "name": "node-a",
+                    "capabilities": [{
+                        "name": "run:test",
+                        "kind": "action",
+                        "metadata": {"suite": "unit"}
+                    }]
+                }
+            }
+        }))
+        .unwrap();
+
+        match decoded {
+            SdkToBroker::RegisterNode { manifest, .. } => {
+                assert_eq!(
+                    manifest.capabilities[0]
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("suite")),
+                    Some(&Value::String("unit".to_string()))
+                );
+            }
+            other => panic!("expected register_node, got {other:?}"),
+        }
+
+        assert!(serde_json::from_value::<SdkToBroker>(json!({
+            "type": "register_node",
+            "payload": {
+                "manifest": {
+                    "name": "node-a",
+                    "capabilities": [{
+                        "name": "run:test",
+                        "metadata": ["not", "an", "object"]
+                    }]
+                }
+            }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn sdk_handler_result_round_trips_output_and_error() {
+        use super::{HandlerResult, HandlerResultPayload, SdkToBroker};
+
+        let output = SdkToBroker::HandlerResult(HandlerResult {
+            invocation_id: "inv_1".to_string(),
+            result: HandlerResultPayload::Output {
+                output: json!({"ok": true}),
+            },
+        });
+        let encoded = serde_json::to_string(&output).unwrap();
+        assert!(encoded.contains("\"output\""));
+        assert!(!encoded.contains("\"error\""));
+        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, output);
+
+        let error = SdkToBroker::HandlerResult(HandlerResult {
+            invocation_id: "inv_2".to_string(),
+            result: HandlerResultPayload::Error {
+                error: "handler_failed".to_string(),
+            },
+        });
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(encoded.contains("\"error\""));
+        assert!(!encoded.contains("\"output\""));
+        let decoded: SdkToBroker = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, error);
+    }
+
+    #[test]
+    fn sdk_handler_result_requires_exactly_one_result_field() {
+        use super::SdkToBroker;
+
+        let missing = json!({
+            "type": "handler_result",
+            "payload": {
+                "invocation_id": "inv_1"
+            }
+        });
+        assert!(serde_json::from_value::<SdkToBroker>(missing).is_err());
+
+        let ambiguous = json!({
+            "type": "handler_result",
+            "payload": {
+                "invocation_id": "inv_2",
+                "output": null,
+                "error": "handler_failed"
+            }
+        });
+        assert!(serde_json::from_value::<SdkToBroker>(ambiguous).is_err());
+
+        let non_string_error = json!({
+            "type": "handler_result",
+            "payload": {
+                "invocation_id": "inv_3",
+                "error": {"code": "handler_failed"}
+            }
+        });
+        assert!(serde_json::from_value::<SdkToBroker>(non_string_error).is_err());
     }
 
     #[test]
