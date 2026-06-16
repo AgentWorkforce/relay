@@ -20,19 +20,19 @@ import { responseMs, STARTUP_MS } from './helpers.js';
 
 // ── Shared role ───────────────────────────────────────────────────────────────
 
+// Deliberately minimal/generic — mirrors a Pear locally-spawned orchestrator that
+// has the add_agent tool but no explicit "use add_agent with cli/model" coaching.
+// The only thing that should map "spawn a codex agent" → add_agent(cli) is the tool
+// description plus whatever the onboarding variant adds. Do not do the work yourself.
 const LEAD_ROLE =
-  'You are Lead, an orchestrating relay agent. ' +
-  'When asked to spawn a specific type of agent, call mcp__agent-relay__add_agent ' +
-  'with the matching cli and model parameters, then release the worker with ' +
-  'mcp__agent-relay__remove_agent once it reports done. ' +
+  'You are an orchestrating agent. Delegate work to worker agents when asked. ' +
   'Do not do the delegated work yourself.';
 
 // ── q01: spawn by CLI name (codex) ───────────────────────────────────────────
 
-const Q01_TASK =
-  'Spawn a codex agent to write a hello-world program in Python. ' +
-  'Give the worker the task: "Write a Python script that prints Hello World." ' +
-  'Use the codex CLI harness for the worker.';
+// Terse phrasing matching the real failure ("spawn a codex agent") — no "use the
+// codex CLI harness" hint. The orchestrator must infer cli: "codex" itself.
+const Q01_TASK = 'Spawn a codex agent to write a Python script that prints Hello World.';
 
 function buildQ01(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -101,10 +101,7 @@ function buildQ01(onboarding: OnboardingVariant): EvalScenario {
 
 // ── q02: spawn by CLI name (claude) ──────────────────────────────────────────
 
-const Q02_TASK =
-  'Spawn a claude agent to review a pull request description. ' +
-  'Give the worker the task: "Review this PR summary and list any gaps." ' +
-  'Use the claude CLI harness for the worker.';
+const Q02_TASK = 'Spawn a claude agent to review a PR summary and list any gaps.';
 
 function buildQ02(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -173,10 +170,9 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
 
 // ── q03: model-tier pinning (opus) ───────────────────────────────────────────
 
+// Terse — the orchestrator must map "opus claude" → cli: "claude" + model containing "opus".
 const Q03_TASK =
-  'Spawn an opus claude agent to produce a detailed technical design for a distributed rate limiter. ' +
-  'Use the claude CLI with the opus model tier (claude-opus-4-8). ' +
-  'Give the worker the task: "Write a thorough technical design for a distributed rate limiter."';
+  'Spawn an opus claude agent to write a thorough technical design for a distributed rate limiter.';
 
 function buildQ03(onboarding: OnboardingVariant): EvalScenario {
   return {
@@ -252,10 +248,9 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
 
 // ── q04: model-tier pinning (sonnet) ─────────────────────────────────────────
 
+// Terse — the orchestrator must map "sonnet claude" → cli: "claude" + model containing "sonnet".
 const Q04_TASK =
-  'Spawn a sonnet claude agent to write integration tests for a REST API. ' +
-  'Use the claude CLI with the sonnet model tier (claude-sonnet-4-6). ' +
-  'Give the worker the task: "Write integration tests for a REST API that manages user accounts."';
+  'Spawn a sonnet claude agent to write integration tests for a REST API that manages user accounts.';
 
 function buildQ04(onboarding: OnboardingVariant): EvalScenario {
   return {

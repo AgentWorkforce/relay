@@ -88,6 +88,7 @@ type ScenarioGroup =
   | 'auto-routing'
   | 'lead-delegation'
   | 'lead-quality'
+  | 'cross-cli-spawn'
   | 'all';
 
 interface Flags {
@@ -117,6 +118,7 @@ function parseFlags(argv: string[]): Flags {
         value === 'auto-routing' ||
         value === 'lead-delegation' ||
         value === 'lead-quality' ||
+        value === 'cross-cli-spawn' ||
         value === 'all')
     )
       flags.group = value as ScenarioGroup;
