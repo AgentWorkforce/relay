@@ -31,6 +31,50 @@ export interface RelayAgentRegistration {
   createdAt?: string;
 }
 
+export type RelayNodeStatus = 'online' | 'offline' | 'unknown';
+
+export interface RelayNodeCapability {
+  name: string;
+  kind?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RelayNode {
+  id?: string;
+  name: string;
+  status: RelayNodeStatus;
+  capabilities: RelayNodeCapability[];
+  maxAgents?: number;
+  activeAgents?: number;
+  handlersLive?: boolean;
+  load?: number;
+  lastHeartbeatAt?: string;
+  tags?: string[];
+  version?: string;
+}
+
+export interface RelayListNodesOptions {
+  capability?: string;
+  name?: string;
+}
+
+export interface RelayTrigger {
+  id?: string;
+  channel?: string;
+  pattern?: string;
+  mention?: boolean | string;
+  actionName: string;
+  enabled: boolean;
+}
+
+export interface RelayTriggerInput {
+  channel?: string;
+  pattern?: string;
+  mention?: boolean | string;
+  actionName: string;
+  enabled?: boolean;
+}
+
 export interface RelayAgentPresence {
   agentId: string;
   agentName: string;
@@ -791,6 +835,16 @@ export interface RelayMessagingClient {
     ): Promise<RelayActionInvocation>;
     /** True when this client carries an agent-scoped connection (can invoke/complete/subscribe). */
     agentScoped(): boolean;
+  };
+  readonly nodes: {
+    list(options?: RelayListNodesOptions): Promise<RelayNode[]>;
+    get(name: string): Promise<RelayNode | null>;
+  };
+  readonly triggers: {
+    list(): Promise<RelayTrigger[]>;
+    create(input: RelayTriggerInput): Promise<RelayTrigger>;
+    update(id: string, input: Partial<RelayTriggerInput>): Promise<RelayTrigger>;
+    delete(id: string): Promise<void>;
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;

@@ -240,7 +240,7 @@ async function createDefaultRelay(cwd: string, apiPort = 0, brokerName?: string)
   return relay;
 }
 
-function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
+export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
