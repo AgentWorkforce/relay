@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # run-task-exit-evals.sh — task-exit eval runner across harness/model matrix
 #
-# Tests whether each model correctly outputs `/exit` after completing a task
-# when given the EXIT_AFTER_TASK_INSTRUCTION (the same instruction injected
-# by add_agent with spawn_mode=task_exit).
+# Tests whether each model correctly self-releases after completing a task:
+# the worker is given a task via relay message and instructed to call
+# mcp__agent-relay__remove_agent with its own name once done (the s08
+# scenario). PASS = task message sent AND agent_released event observed.
 #
 # Models under test:
 #   Claude:  haiku, sonnet, opus
