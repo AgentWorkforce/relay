@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay fleet serve|nodes|status` runs a fleet node sidecar and inspects registered nodes, and the broker MCP surface adds `query_nodes` and `spawn` tools.
 - `@agent-relay/config` `CLI_AUTH_CONFIG` adds an `xai` provider (Grok CLI): `grok login --device-auth` device-code connect, `~/.grok/auth.json` credential capture, and the official x.ai installer as the sandbox fallback — so cloud sandboxes can authenticate the `grok` harness from a connected account instead of an API key.
 - `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`, `inbox.subscribe`, `inbox.ack/fail/defer`, and `deliveries.ack/fail/defer` now use the hosted delivery ledger, agent-scoped capabilities report `serverDeliveryState: true`, and `DeliveryRunner` works against Relaycast-backed inbox items.
+- Two-node fleet E2E (`tests/e2e/fleet`, `npm run test:e2e`, `Fleet E2E` CI workflow): boots a real relaycast engine plus two `agent-relay fleet serve` nodes (real Rust broker + sidecar each) and asserts the live control wire — boot/register (real broker `Authorization: Bearer` node auth), negative auth, capability-filtered roster, cross-node action dispatch + ack, declarative trigger fire-once with loop guard, end-to-end spawn completion (token mint+inject), capability-routed + least-loaded + resume placement, `capability_mismatch` failure, in-flight reschedule on node death + restart reconcile, and bounded-mailbox TTL dead-letter.
 
 ### Changed
 
