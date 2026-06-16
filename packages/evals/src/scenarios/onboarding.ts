@@ -13,7 +13,12 @@
 
 export type OnboardingVariant = 'bare' | 'one-liner' | 'brief' | 'skill';
 
-export const ONBOARDING_VARIANTS = ['bare', 'one-liner', 'brief', 'skill'] as const satisfies readonly OnboardingVariant[];
+export const ONBOARDING_VARIANTS = [
+  'bare',
+  'one-liner',
+  'brief',
+  'skill',
+] as const satisfies readonly OnboardingVariant[];
 
 /**
  * Return the onboarding text suffix for a given variant.

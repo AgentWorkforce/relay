@@ -112,9 +112,7 @@ export function scoreMountRun(opts: ScoreMountRunOptions): MountScore {
 
   const relFiles = newFiles.map((f) => relative(mountDir, f));
   const inExpectedPath = relFiles.filter((p) => p.startsWith(expectedPathPrefix));
-  const inDiscovery = relFiles.filter(
-    (p) => p.includes('/discovery/') || p.startsWith('discovery/'),
-  );
+  const inDiscovery = relFiles.filter((p) => p.includes('/discovery/') || p.startsWith('discovery/'));
 
   const jsonValid =
     inExpectedPath.length > 0 &&
