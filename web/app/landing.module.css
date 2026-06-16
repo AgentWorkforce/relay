@@ -3954,8 +3954,20 @@
   margin: 0 auto;
 }
 
-/* --- relay hub at the apex --- */
+/* apex zone: relay box (top) over the connector; wires + dots span both so a
+   message can travel up behind the relay box and pop back out */
+.howApex {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+/* --- relay hub at the apex (sits above the dots so they hide behind it) --- */
 .howCore {
+  position: relative;
+  z-index: 2;
   display: flex;
   justify-content: center;
 }
@@ -3964,8 +3976,10 @@
   position: relative;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 14px;
-  padding: 18px 26px;
+  height: 72px;
+  padding: 0 28px;
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--primary) 42%, transparent);
   background:
@@ -3996,16 +4010,17 @@
   height: auto;
 }
 
-/* --- connector zone: fixed height so pipes + dots align at any width --- */
+/* --- connector spacer: fixed height so pipes + dots align at any width.
+       Combined with the 72px relay box, the apex zone is a known height. --- */
 .howLink {
-  position: relative;
   width: 100%;
-  height: 78px;
+  height: 72px;
 }
 
 .howWires {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
 }
@@ -4022,6 +4037,7 @@
 .howMsgs {
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
 }
 
@@ -4038,6 +4054,7 @@
     0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent),
     0 0 14px 2px var(--c);
   opacity: 0;
+  will-change: left, top, transform, opacity;
 }
 
 /* Three messages, each its own colour, routed up to the relay and back down. */
@@ -4056,39 +4073,65 @@
 
 @keyframes howMsg_m1 {
   0% {
-    opacity: 0;
-  }
-  3% {
-    opacity: 1;
-  }
-  0% {
     left: 25%;
     top: 100%;
+    opacity: 0;
+    transform: scale(1);
   }
-  5.07% {
-    left: 25%;
-    top: 50%;
-  }
-  26.93% {
-    left: 50%;
-    top: 50%;
-  }
-  32% {
-    left: 50%;
-    top: 0%;
-  }
-  37.07% {
-    left: 50%;
-    top: 50%;
-  }
-  58.93% {
-    left: 75%;
-    top: 50%;
-  }
-  62% {
+  4% {
     opacity: 1;
   }
-  64% {
+  9% {
+    left: 25%;
+    top: 75%;
+  }
+  22% {
+    left: 50%;
+    top: 75%;
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
+  }
+  37% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(0.5);
+  }
+  43% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  49% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(1.55);
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  56% {
+    left: 50%;
+    top: 57%;
+    transform: scale(1);
+  }
+  66% {
+    left: 50%;
+    top: 75%;
+  }
+  82% {
+    left: 75%;
+    top: 75%;
+  }
+  86% {
+    opacity: 1;
+  }
+  91% {
     left: 75%;
     top: 100%;
     opacity: 0;
@@ -4100,39 +4143,65 @@
 
 @keyframes howMsg_m2 {
   0% {
-    opacity: 0;
-  }
-  3% {
-    opacity: 1;
-  }
-  0% {
     left: 75%;
     top: 100%;
+    opacity: 0;
+    transform: scale(1);
   }
-  5.07% {
-    left: 75%;
-    top: 50%;
-  }
-  26.93% {
-    left: 50%;
-    top: 50%;
-  }
-  32% {
-    left: 50%;
-    top: 0%;
-  }
-  37.07% {
-    left: 50%;
-    top: 50%;
-  }
-  58.93% {
-    left: 25%;
-    top: 50%;
-  }
-  62% {
+  4% {
     opacity: 1;
   }
-  64% {
+  9% {
+    left: 75%;
+    top: 75%;
+  }
+  22% {
+    left: 50%;
+    top: 75%;
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
+  }
+  37% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(0.5);
+  }
+  43% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  49% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(1.55);
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  56% {
+    left: 50%;
+    top: 57%;
+    transform: scale(1);
+  }
+  66% {
+    left: 50%;
+    top: 75%;
+  }
+  82% {
+    left: 25%;
+    top: 75%;
+  }
+  86% {
+    opacity: 1;
+  }
+  91% {
     left: 25%;
     top: 100%;
     opacity: 0;
@@ -4144,39 +4213,65 @@
 
 @keyframes howMsg_m3 {
   0% {
-    opacity: 0;
-  }
-  3% {
-    opacity: 1;
-  }
-  0% {
     left: 25%;
     top: 100%;
+    opacity: 0;
+    transform: scale(1);
   }
-  5.07% {
-    left: 25%;
-    top: 50%;
-  }
-  26.93% {
-    left: 50%;
-    top: 50%;
-  }
-  32% {
-    left: 50%;
-    top: 0%;
-  }
-  37.07% {
-    left: 50%;
-    top: 50%;
-  }
-  58.93% {
-    left: 25%;
-    top: 50%;
-  }
-  62% {
+  4% {
     opacity: 1;
   }
-  64% {
+  9% {
+    left: 25%;
+    top: 75%;
+  }
+  22% {
+    left: 50%;
+    top: 75%;
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
+  }
+  37% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(0.5);
+  }
+  43% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  49% {
+    left: 50%;
+    top: 40%;
+    opacity: 0;
+    transform: scale(0.25);
+  }
+  50% {
+    left: 50%;
+    top: 50%;
+    opacity: 1;
+    transform: scale(1.55);
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  56% {
+    left: 50%;
+    top: 57%;
+    transform: scale(1);
+  }
+  66% {
+    left: 50%;
+    top: 75%;
+  }
+  82% {
+    left: 25%;
+    top: 75%;
+  }
+  86% {
+    opacity: 1;
+  }
+  91% {
     left: 25%;
     top: 100%;
     opacity: 0;
@@ -4276,6 +4371,12 @@
     width: 120px;
   }
 
+  /* Keep the relay box and connector equal so the apex coordinate math
+     (relay bottom 50%, bus 75%) holds at this breakpoint too. */
+  .howCoreNode {
+    height: 60px;
+  }
+
   .howLink {
     height: 60px;
   }
@@ -4309,17 +4410,18 @@
   .howMsg {
     animation: none;
     opacity: 1;
+    transform: none;
   }
   .howMsg1 {
     left: 25%;
-    top: 72%;
+    top: 88%;
   }
   .howMsg2 {
     left: 50%;
-    top: 26%;
+    top: 62%;
   }
   .howMsg3 {
     left: 75%;
-    top: 72%;
+    top: 88%;
   }
 }

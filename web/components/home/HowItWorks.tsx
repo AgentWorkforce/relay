@@ -46,11 +46,13 @@ const CUSTOM_LOGOS: readonly LogoItem[] = [
  * the pipes up to the relay and back down to another agent (CLI → custom,
  * custom → CLI, CLI → CLI).
  */
+// Apex coords (% of the relay+connector zone): relay bottom 50%, bus 75%,
+// card tops 100%. The pipes connect the relay box down to each agent group.
 const WIRES: readonly string[] = [
-  '50,0 50,50', // relay down to the bus
-  '25,50 75,50', // bus across
-  '25,50 25,100', // bus down to CLI agents
-  '75,50 75,100', // bus down to custom agents
+  '50,50 50,75', // relay down to the bus
+  '25,75 75,75', // bus across
+  '25,75 25,100', // bus down to CLI agents
+  '75,75 75,100', // bus down to custom agents
 ];
 
 const MESSAGE_CLASSES = [s.howMsg1, s.howMsg2, s.howMsg3] as const;
@@ -93,26 +95,10 @@ export function HowItWorks() {
       </FadeIn>
 
       <div className={s.howStage}>
-        <FadeIn direction="up" delay={120} className={s.howCore}>
-          <div className={s.howCoreNode}>
-            <img
-              src="/brand-kit/agent-relay-mark.svg"
-              alt=""
-              width={46}
-              height={38}
-              className={s.howCoreMark}
-            />
-            <img
-              src="/brand-kit/agent-relay-wordmark.svg"
-              alt="Agent Relay"
-              width={150}
-              height={30}
-              className={s.howCoreWordmark}
-            />
-          </div>
-        </FadeIn>
-
-        <div className={s.howLink}>
+        {/* Apex zone = relay box (top) + connector (below). Wires and message
+            dots span the whole zone so a dot can travel up behind the relay
+            box and pop back out. */}
+        <div className={s.howApex}>
           <svg className={s.howWires} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {WIRES.map((points, i) => (
               <polyline key={i} points={points} className={s.howWire} />
@@ -123,6 +109,27 @@ export function HowItWorks() {
               <span key={i} className={`${s.howMsg} ${cls}`} />
             ))}
           </div>
+
+          <div className={s.howCore}>
+            <div className={s.howCoreNode}>
+              <img
+                src="/brand-kit/agent-relay-mark.svg"
+                alt=""
+                width={46}
+                height={38}
+                className={s.howCoreMark}
+              />
+              <img
+                src="/brand-kit/agent-relay-wordmark.svg"
+                alt="Agent Relay"
+                width={150}
+                height={30}
+                className={s.howCoreWordmark}
+              />
+            </div>
+          </div>
+
+          <div className={s.howLink} aria-hidden="true" />
         </div>
 
         <div className={s.howRow}>
