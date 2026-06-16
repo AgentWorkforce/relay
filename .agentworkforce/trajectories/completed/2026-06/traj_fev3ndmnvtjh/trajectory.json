@@ -55,11 +55,7 @@
           "type": "reflection",
           "content": "FIX v2 description fully resolves cross-CLI spawn routing for all harnesses",
           "raw": {
-            "focalPoints": [
-              "q03-opus-fix",
-              "q04-sonnet-fix",
-              "description-specificity"
-            ],
+            "focalPoints": ["q03-opus-fix", "q04-sonnet-fix", "description-specificity"],
             "adjustments": "Committed; baseline running for A/B completion",
             "confidence": 0.92
           },
@@ -91,9 +87,7 @@
     "approach": "Standard approach",
     "confidence": 0.93
   },
-  "commits": [
-    "f6f7f8edd"
-  ],
+  "commits": ["f6f7f8edd"],
   "filesChanged": [
     "CHANGELOG.md",
     "packages/cli/src/cli/agent-relay-mcp.ts",
