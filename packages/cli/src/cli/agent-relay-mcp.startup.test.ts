@@ -199,6 +199,27 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }) as any;
   RelayCast.createWorkspace = vi.fn((name: string) => behavior.createWorkspaceImpl(name));
 
+  // The query_nodes tool constructs `new AgentRelay(...)` from @agent-relay/sdk
+  // and calls `.nodes.list()`. AgentRelay wraps @relaycast/sdk internally, so
+  // mocking only @relaycast/sdk leaves this path dependent on the two packages
+  // resolving the SAME physical @relaycast/sdk copy. A fresh publish-time
+  // `npm install` can nest a duplicate @relaycast/sdk under packages/sdk, at
+  // which point AgentRelay's internal client is the real (unmocked) one and the
+  // call escapes to a live HTTP request. Mock the direct boundary so the test is
+  // independent of node_modules hoisting.
+  const agentRelayNodesList = vi.fn(async (_query?: { capability?: string; name?: string }) => [
+    {
+      name: 'node-a',
+      status: 'online',
+      capabilities: [{ name: 'spawn:codex' }],
+    },
+  ]);
+  const AgentRelayMock = vi.fn(function (this: unknown) {
+    return {
+      nodes: { list: agentRelayNodesList },
+    };
+  }) as any;
+
   vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
     McpServer: FakeMcpServer,
     ResourceTemplate: class ResourceTemplate {
@@ -218,6 +239,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     RelayCast,
     SDK_VERSION: 'test-sdk-version',
   }));
+  vi.doMock('@agent-relay/sdk', async () => {
+    const actual = await vi.importActual<Record<string, unknown>>('@agent-relay/sdk');
+    return { ...actual, AgentRelay: AgentRelayMock };
+  });
   vi.doMock('./telemetry/index.js', () => ({
     initTelemetry: telemetryInit,
     shutdown: telemetryShutdown,
