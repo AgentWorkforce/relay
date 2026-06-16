@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/evals",
-  "version": "8.8.1",
+  "version": "8.8.2",
   "description": "Agent Relay eval harness — scenario runner, broker harness, and scoring utilities for testing relay-connected agents",
   "type": "module",
   "main": "dist/index.js",
@@ -45,6 +45,11 @@
       "types": "./dist/scenarios/onboarding.d.ts",
       "import": "./dist/scenarios/onboarding.js",
       "default": "./dist/scenarios/onboarding.js"
+    },
+    "./scoring/mount": {
+      "types": "./dist/scoring/mount.d.ts",
+      "import": "./dist/scoring/mount.js",
+      "default": "./dist/scoring/mount.js"
     },
     "./scenarios/core": {
       "types": "./dist/scenarios/index.d.ts",
