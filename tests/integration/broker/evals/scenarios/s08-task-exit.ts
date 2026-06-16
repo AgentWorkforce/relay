@@ -1,23 +1,27 @@
 /**
- * Scenario S08 — Self-release: worker calls remove_agent(own name) after task.
+ * Scenario S08 — Task-exit: worker calls remove_agent(self) after completing task.
  *
- * A worker is spawned with a simple task and explicit instructions to release
- * itself when done by calling mcp__agent-relay__remove_agent with its own name.
- * This mirrors the task_exit spawn mode's intended production behaviour.
+ * A worker is spawned with a role context; the actual task is delivered as a
+ * relay message after startup (so the trigger fires after MCP is connected).
+ * The task instructs the worker to call mcp__agent-relay__remove_agent with
+ * its own name once done — the correct task-exit path for all harnesses.
  *
- * PASS = agent_released event received for the worker within the response window.
+ * Note: `/exit` text output was evaluated for opencode but found unreliable in
+ * this harness context (model sends the message but doesn't produce a bare
+ * `/exit` line). remove_agent(self) works across claude, codex, and opencode.
  *
- * The worker's name is embedded in the task so the model has it without needing
- * to look it up. This isolates self-release compliance from name-discovery.
+ * PASS = task message sent AND agent_released event received for the worker.
  */
 import type { EvalScenario, ScenarioResult } from '../types.js';
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { baseScore } from '../scoring/base.js';
 import { responseMs, STARTUP_MS } from './helpers.js';
 
-function buildTask(workerName: string): string {
+const ROLE =
+  'You are a relay worker agent. Complete the task you receive and then terminate yourself as instructed.';
+
+function buildTrigger(workerName: string): string {
   return (
-    `Your agent name is "${workerName}".\n\n` +
     `Send a message to the "general" channel with the text "Task complete: 1+1=2".\n\n` +
     `When that message is sent, call mcp__agent-relay__remove_agent with name="${workerName}" ` +
     `to release yourself. Do not call remove_agent before the message is sent.`
@@ -26,7 +30,7 @@ function buildTask(workerName: string): string {
 
 export const scenario: EvalScenario = {
   id: 's08-task-exit',
-  title: 'Self-release: worker calls remove_agent(self) after task',
+  title: 'Task-exit: worker calls remove_agent(self) after task',
   tier: 'realistic',
   channels: ['general'],
   timeoutMs: 240_000,
@@ -35,10 +39,15 @@ export const scenario: EvalScenario = {
     const worker = `worker-${suffix}`;
     const phaseMs = responseMs(model);
 
-    const task = buildTask(worker);
-    await harness.spawnAgent(worker, cli, ['general'], { task, model });
+    await harness.spawnAgent(worker, cli, ['general'], { task: ROLE, model });
     await sleep(STARTUP_MS);
     harness.clearEvents();
+
+    await harness.sendMessage({
+      to: worker,
+      from: 'Orchestrator',
+      text: buildTrigger(worker),
+    });
 
     // Phase 1: wait for the worker to send its task result.
     await harness.waitForEvent('relay_inbound', phaseMs).promise.catch(() => {});
@@ -66,13 +75,13 @@ export const scenario: EvalScenario = {
     const notesParts: string[] = [];
     if (!base.sent) notesParts.push('no task message sent');
     if (!released) notesParts.push('never called remove_agent(self)');
-    if (pass) notesParts.push('sent message + self-released');
+    if (pass) notesParts.push('sent message + self-released via remove_agent');
 
     return {
       id: 's08-task-exit',
-      title: 'Self-release: worker calls remove_agent(self) after task',
+      title: 'Task-exit: worker calls remove_agent(self) after task',
       pass,
-      agents: [{ name: worker, cli, role: 'worker', prompt: task }],
+      agents: [{ name: worker, cli, role: 'worker', prompt: ROLE }],
       transcript: base.transcript,
       sent: base.sent,
       expected: 1,
