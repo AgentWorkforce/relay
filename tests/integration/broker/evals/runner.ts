@@ -10,7 +10,7 @@
  *   --harness=opencode:mimo-v2-flash-free  OpenCode with a specific model (free tier)
  *   --scenario=01-dm-roundtrip          Run a single scenario by id
  *   --tier=smoke|realistic|all          Default: realistic
- *   --group=messaging|lifecycle|phrasing|auto-routing|lead-delegation|lead-quality|all  Scenario group (default: messaging)
+ *   --group=messaging|lifecycle|phrasing|auto-routing|lead-delegation|lead-quality|cross-cli-spawn|all  Scenario group (default: messaging)
  *   --repeat=N                          Repeat each scenario N times (default: 1; use 10 for reliability)
  *   --baseline=path.json                Compare against a prior report; exit 1 on regression
  *
@@ -28,6 +28,7 @@ import {
   AUTO_ROUTING_EVAL_SCENARIOS,
   LEAD_DELEGATION_EVAL_SCENARIOS,
   LEAD_QUALITY_EVAL_SCENARIOS,
+  CROSS_CLI_SPAWN_EVAL_SCENARIOS,
   ALL_SCENARIOS,
   scenarioById,
   scenariosByTier,
@@ -141,7 +142,9 @@ function selectScenarios(flags: Flags): EvalScenario[] {
             ? LEAD_DELEGATION_EVAL_SCENARIOS
             : flags.group === 'lead-quality'
               ? LEAD_QUALITY_EVAL_SCENARIOS
-              : flags.group === 'all'
+              : flags.group === 'cross-cli-spawn'
+                ? CROSS_CLI_SPAWN_EVAL_SCENARIOS
+                : flags.group === 'all'
                 ? ALL_SCENARIOS
                 : SCENARIOS;
   if (
@@ -149,7 +152,8 @@ function selectScenarios(flags: Flags): EvalScenario[] {
     flags.group === 'phrasing' ||
     flags.group === 'auto-routing' ||
     flags.group === 'lead-delegation' ||
-    flags.group === 'lead-quality'
+    flags.group === 'lead-quality' ||
+    flags.group === 'cross-cli-spawn'
   )
     return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);

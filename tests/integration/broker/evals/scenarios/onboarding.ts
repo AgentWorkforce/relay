@@ -31,7 +31,9 @@ export function onboardingText(variant: OnboardingVariant): string {
       return `
 
 ## Agent management
-- Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli: "claude", task })
+- Spawn a relay worker: mcp__agent-relay__add_agent({ name, cli, task })
+  cli: "claude" (Claude Code), "codex" (OpenAI Codex), "gemini" (Google Gemini), "opencode".
+  To pin a Claude model: add model: "claude-opus-4-8" (Opus) or "claude-sonnet-4-6" (Sonnet).
   name = unique identifier, task = full instructions for the relay worker.
 - Release a relay worker: mcp__agent-relay__remove_agent({ name })
 When the task says to delegate or assign work, call add_agent. Release with remove_agent when the relay worker reports done.`;
@@ -45,8 +47,12 @@ When the task says to delegate or assign work, call add_agent. Release with remo
 To delegate work, call:
   mcp__agent-relay__add_agent({ name: "WorkerName", cli: "claude", task: "detailed instructions" })
 
-Required fields: name (unique string), cli ("claude"), task (full instructions for the relay worker).
+Required fields: name (unique string), cli (which AI tool to use), task (full instructions for the relay worker).
 The relay worker will DM you "ACK: <understanding>" when it starts and "DONE: <result>" when complete.
+
+**CLI options**: cli: "claude" (Claude Code), cli: "codex" (OpenAI Codex), cli: "gemini" (Google Gemini), cli: "opencode".
+**Model pinning** (Claude only): add model to specify a tier — "claude-opus-4-8" (Opus, most capable), "claude-sonnet-4-6" (Sonnet, balanced), "claude-haiku-4-5-20251001" (Haiku, fast).
+Examples: add_agent({ name: "CodexWorker", cli: "codex", task: "..." }) · add_agent({ name: "OpusWorker", cli: "claude", model: "claude-opus-4-8", task: "..." })
 
 **Important**: When your task asks you to "assign to a relay worker", "delegate to an agent", or "spawn a relay worker",
 this means calling mcp__agent-relay__add_agent — never your built-in Task capability.

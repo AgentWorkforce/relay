@@ -27,6 +27,7 @@ import { PHRASING_SCENARIOS } from './s05-phrasing-variants.js';
 import { AUTO_ROUTING_SCENARIOS } from './s06-auto-routing.js';
 import { LEAD_DELEGATION_SCENARIOS } from './s07-lead-delegation.js';
 import { LEAD_QUALITY_SCENARIOS } from './s08-lead-quality.js';
+import { CROSS_CLI_SPAWN_SCENARIOS } from './s09-cross-cli-spawn.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -59,6 +60,9 @@ export const LEAD_DELEGATION_EVAL_SCENARIOS: EvalScenario[] = [...LEAD_DELEGATIO
 /** Lead coordination quality scenarios — run with --group=lead-quality. */
 export const LEAD_QUALITY_EVAL_SCENARIOS: EvalScenario[] = [...LEAD_QUALITY_SCENARIOS];
 
+/** Cross-CLI spawn and model-tier pinning scenarios — run with --group=cross-cli-spawn. */
+export const CROSS_CLI_SPAWN_EVAL_SCENARIOS: EvalScenario[] = [...CROSS_CLI_SPAWN_SCENARIOS];
+
 /** Phrasing-variant scenarios — run with --group=phrasing. */
 export const PHRASING_EVAL_SCENARIOS: EvalScenario[] = [...PHRASING_SCENARIOS];
 
@@ -73,6 +77,7 @@ export const ALL_SCENARIOS: EvalScenario[] = [
   ...AUTO_ROUTING_EVAL_SCENARIOS,
   ...LEAD_DELEGATION_EVAL_SCENARIOS,
   ...LEAD_QUALITY_EVAL_SCENARIOS,
+  ...CROSS_CLI_SPAWN_EVAL_SCENARIOS,
 ];
 
 /** Look up a scenario by id (searches all scenario registries). */
