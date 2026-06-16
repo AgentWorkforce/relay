@@ -33,6 +33,8 @@ impl BrokerRuntime {
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
+        let fleet_max_agents = self.fleet_max_agents;
+        let fleet_handlers_live = self.fleet_handlers.handlers_live();
         let telemetry = &self.telemetry;
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
@@ -486,6 +488,14 @@ impl BrokerRuntime {
                             &name,
                         )
                         .await;
+                        super::fleet::publish_fleet_load_snapshot(
+                            fleet_control_tx,
+                            u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                            fleet_max_agents,
+                            fleet_handlers_live,
+                            true,
+                        )
+                        .await;
                         let _ =
                             send_event(sdk_out_tx, json!({"kind":"agent_released","name":&name}))
                                 .await;
@@ -511,6 +521,14 @@ impl BrokerRuntime {
                                 fleet_inventory,
                                 fleet_delivery_book,
                                 &name,
+                            )
+                            .await;
+                            super::fleet::publish_fleet_load_snapshot(
+                                fleet_control_tx,
+                                u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                                fleet_max_agents,
+                                fleet_handlers_live,
+                                true,
                             )
                             .await;
                             tracing::debug!(

@@ -41,14 +41,17 @@ export interface RelayNodeCapability {
 
 export interface RelayNode {
   id?: string;
+  nodeId?: string;
   name: string;
   status: RelayNodeStatus;
+  live?: boolean;
   capabilities: RelayNodeCapability[];
   maxAgents?: number;
   activeAgents?: number;
   handlersLive?: boolean;
   load?: number;
   lastHeartbeatAt?: string;
+  createdAt?: string;
   tags?: string[];
   version?: string;
 }

@@ -99,6 +99,21 @@ pub struct NodeHeartbeat {
         skip_serializing_if = "Option::is_none"
     )]
     pub id: Option<String>,
+    // Roster snapshot carried for liveness: lets the relaycast engine refresh
+    // this node's descriptor (name/capabilities/max_agents/version) from the
+    // steady-state heartbeat without waiting for a fresh node.register — e.g.
+    // after an engine restart where the broker keeps heartbeating an
+    // already-registered node. `max_agents` here is the SAME authoritative value
+    // the broker reports via node.register (sourced from the active
+    // FleetLoadSnapshot), so the engine never sees a divergent capacity.
+    //
+    // NOTE: `last_heartbeat_at` is intentionally NOT a field — receipt time is
+    // the engine's server-stamped single source of truth for liveness.
+    pub name: String,
+    pub node_id: String,
+    pub capabilities: Vec<FleetCapability>,
+    pub max_agents: u32,
+    pub version: String,
     #[serde(
         deserialize_with = "deserialize_finite_nonnegative_f64",
         serialize_with = "serialize_finite_nonnegative_f64"
@@ -535,7 +550,8 @@ mod tests {
     use super::{
         deserialize_finite_nonnegative_f64, validate_agent_register_reply_data, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, BrokerToRelaycast, Deliver,
-        DeliveryMode, Error, NodeHeartbeat, RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        DeliveryMode, Error, FleetCapability, NodeHeartbeat, RelaycastToBroker, Reply,
+        FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -600,6 +616,11 @@ mod tests {
         let negative = json!({
             "type": "node.heartbeat",
             "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "version": "relay-broker/test",
             "load": -0.1,
             "active_agents": 0,
             "handlers_live": true
@@ -615,11 +636,70 @@ mod tests {
         let invalid = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
+            name: "builder-1".to_string(),
+            node_id: "node_1".to_string(),
+            capabilities: vec![],
+            max_agents: 1,
+            version: "relay-broker/test".to_string(),
             load: f64::INFINITY,
             active_agents: 0,
             handlers_live: true,
         });
         assert!(serde_json::to_value(invalid).is_err());
+    }
+
+    #[test]
+    fn node_heartbeat_carries_roster_snapshot() {
+        // The heartbeat carries the node roster snapshot (name, node_id,
+        // capabilities, max_agents, version) ALONGSIDE live load/liveness, so
+        // the relaycast engine can refresh this node's descriptor from the
+        // steady-state heartbeat without a fresh `node.register` (e.g. after an
+        // engine restart). `last_heartbeat_at` is intentionally ABSENT — the
+        // engine stamps receipt time server-side as the single source of truth
+        // for liveness. This guards the exact wire contract the engine accepts.
+        let msg = BrokerToRelaycast::NodeHeartbeat(NodeHeartbeat {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            name: "builder-1".to_string(),
+            node_id: "node_1".to_string(),
+            capabilities: vec![FleetCapability {
+                name: "spawn:codex".to_string(),
+                kind: Some("spawn".to_string()),
+                metadata: None,
+            }],
+            max_agents: 4,
+            version: "relay-broker/test".to_string(),
+            load: 0.25,
+            active_agents: 1,
+            handlers_live: true,
+        });
+
+        let value = serde_json::to_value(msg).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "type": "node.heartbeat",
+                "v": 1,
+                "name": "builder-1",
+                "node_id": "node_1",
+                "capabilities": [
+                    {
+                        "name": "spawn:codex",
+                        "kind": "spawn"
+                    }
+                ],
+                "max_agents": 4,
+                "version": "relay-broker/test",
+                "load": 0.25,
+                "active_agents": 1,
+                "handlers_live": true
+            })
+        );
+        // last_heartbeat_at must NOT appear on the wire.
+        assert!(
+            value.get("last_heartbeat_at").is_none(),
+            "broker must not send last_heartbeat_at; the engine stamps it server-side"
+        );
     }
 
     #[test]

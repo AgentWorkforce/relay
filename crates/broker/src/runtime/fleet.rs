@@ -599,20 +599,14 @@ impl BrokerRuntime {
 
     async fn publish_fleet_load(&self, heartbeat_now: bool) {
         let active_agents = u32::try_from(self.workers.workers.len()).unwrap_or(u32::MAX);
-        let _ = self
-            .fleet_control_tx
-            .send(FleetControlCommand::UpdateLoad(FleetLoadSnapshot {
-                active_agents,
-                max_agents: self.fleet_max_agents,
-                handlers_live: self.fleet_handlers.handlers_live(),
-            }))
-            .await;
-        if heartbeat_now {
-            let _ = self
-                .fleet_control_tx
-                .send(FleetControlCommand::HeartbeatNow)
-                .await;
-        }
+        publish_fleet_load_snapshot(
+            &self.fleet_control_tx,
+            active_agents,
+            self.fleet_max_agents,
+            self.fleet_handlers.handlers_live(),
+            heartbeat_now,
+        )
+        .await;
     }
 
     async fn publish_fleet_inventory(&self) {
@@ -705,6 +699,27 @@ impl BrokerRuntime {
                 self.schedule_fleet_sidecar_restart("sidecar restart spawn failed");
             }
         }
+    }
+}
+
+pub(super) async fn publish_fleet_load_snapshot(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    active_agents: u32,
+    max_agents: u32,
+    handlers_live: bool,
+    heartbeat_now: bool,
+) {
+    let _ = fleet_control_tx
+        .send(FleetControlCommand::UpdateLoad(FleetLoadSnapshot {
+            active_agents,
+            max_agents,
+            handlers_live,
+        }))
+        .await;
+    if heartbeat_now {
+        let _ = fleet_control_tx
+            .send(FleetControlCommand::HeartbeatNow)
+            .await;
     }
 }
 
@@ -993,6 +1008,27 @@ mod tests {
             !refresh_fleet_inventory_session_ref(&tx, &mut inventory, &name, "session-discovered")
                 .await
         );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn publish_fleet_load_snapshot_emits_immediate_heartbeat_after_release() {
+        let (tx, mut rx) = mpsc::channel(4);
+
+        publish_fleet_load_snapshot(&tx, 1, 4, true, true).await;
+
+        match rx.recv().await {
+            Some(FleetControlCommand::UpdateLoad(load)) => {
+                assert_eq!(load.active_agents, 1);
+                assert_eq!(load.max_agents, 4);
+                assert!(load.handlers_live);
+            }
+            other => panic!("expected load update, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.recv().await,
+            Some(FleetControlCommand::HeartbeatNow)
+        ));
         assert!(rx.try_recv().is_err());
     }
 
