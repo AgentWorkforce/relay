@@ -80,7 +80,14 @@ function parseHarnessSpec(spec: string): { cli: string; model?: string } {
   return { cli, model };
 }
 
-type ScenarioGroup = 'messaging' | 'lifecycle' | 'phrasing' | 'auto-routing' | 'lead-delegation' | 'task-exit' | 'all';
+type ScenarioGroup =
+  | 'messaging'
+  | 'lifecycle'
+  | 'phrasing'
+  | 'auto-routing'
+  | 'lead-delegation'
+  | 'task-exit'
+  | 'all';
 
 interface Flags {
   harnesses: string[];
