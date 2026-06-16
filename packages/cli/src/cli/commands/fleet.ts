@@ -4,7 +4,11 @@ import { pathToFileURL } from 'node:url';
 import type { Command } from 'commander';
 import { createJiti } from 'jiti';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { isFleetNodeDefinition, type FleetNodeDefinition } from '@agent-relay/fleet';
+import type { FleetNodeDefinition } from '@agent-relay/fleet';
+// Namespace import sidesteps bun --compile's named-import validation against the
+// package .d.ts (see cli/lib/fleet-sidecar.ts).
+import * as fleetSdk from '@agent-relay/fleet';
+const { isFleetNodeDefinition } = fleetSdk;
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import { readBrokerConnection, startBrokerWithPortFallback } from '../lib/broker-lifecycle.js';
