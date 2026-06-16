@@ -68,7 +68,7 @@ function buildQ01(onboarding: OnboardingVariant): EvalScenario {
       await harness.releaseAgent(lead).catch(() => {});
 
       // PASS = spawned with cli: "codex"
-      const spawnedCli = spawnEv ? (spawnEv as { cli?: string }).cli ?? '' : '';
+      const spawnedCli = spawnEv ? ((spawnEv as { cli?: string }).cli ?? '') : '';
       const pass = spawnedCli.toLowerCase().includes('codex');
 
       const notesParts: string[] = [];
@@ -140,7 +140,7 @@ function buildQ02(onboarding: OnboardingVariant): EvalScenario {
       await harness.releaseAgent(lead).catch(() => {});
 
       // PASS = spawned with cli: "claude"
-      const spawnedCli = spawnEv ? (spawnEv as { cli?: string }).cli ?? '' : '';
+      const spawnedCli = spawnEv ? ((spawnEv as { cli?: string }).cli ?? '') : '';
       const pass = spawnedCli.toLowerCase().includes('claude');
 
       const notesParts: string[] = [];
@@ -212,8 +212,8 @@ function buildQ03(onboarding: OnboardingVariant): EvalScenario {
       await harness.releaseAgent(lead).catch(() => {});
 
       // PASS = spawned cli: "claude" with a model containing "opus"
-      const spawnedCli = spawnEv ? (spawnEv as { cli?: string }).cli ?? '' : '';
-      const spawnedModel = spawnEv ? (spawnEv as { model?: string }).model ?? '' : '';
+      const spawnedCli = spawnEv ? ((spawnEv as { cli?: string }).cli ?? '') : '';
+      const spawnedModel = spawnEv ? ((spawnEv as { model?: string }).model ?? '') : '';
       const rightCli = spawnedCli.toLowerCase().includes('claude');
       const rightModel = /opus/i.test(spawnedModel);
       const pass = rightCli && rightModel;
@@ -291,8 +291,8 @@ function buildQ04(onboarding: OnboardingVariant): EvalScenario {
       await harness.releaseAgent(lead).catch(() => {});
 
       // PASS = spawned cli: "claude" with a model containing "sonnet"
-      const spawnedCli = spawnEv ? (spawnEv as { cli?: string }).cli ?? '' : '';
-      const spawnedModel = spawnEv ? (spawnEv as { model?: string }).model ?? '' : '';
+      const spawnedCli = spawnEv ? ((spawnEv as { cli?: string }).cli ?? '') : '';
+      const spawnedModel = spawnEv ? ((spawnEv as { model?: string }).model ?? '') : '';
       const rightCli = spawnedCli.toLowerCase().includes('claude');
       const rightModel = /sonnet/i.test(spawnedModel);
       const pass = rightCli && rightModel;

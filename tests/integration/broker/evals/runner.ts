@@ -145,8 +145,8 @@ function selectScenarios(flags: Flags): EvalScenario[] {
               : flags.group === 'cross-cli-spawn'
                 ? CROSS_CLI_SPAWN_EVAL_SCENARIOS
                 : flags.group === 'all'
-                ? ALL_SCENARIOS
-                : SCENARIOS;
+                  ? ALL_SCENARIOS
+                  : SCENARIOS;
   if (
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
