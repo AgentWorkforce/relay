@@ -20,7 +20,7 @@ const cloudMocks = vi.hoisted(() => ({
 
 vi.mock('@agent-relay/cloud', () => ({
   AUTH_FILE_PATH: '/tmp/cloud-auth.json',
-  REFRESH_WINDOW_MS: 60_000,
+  REFRESH_WINDOW_MS: 5 * 60_000,
   authorizedApiFetch: vi.fn(),
   cancelWorkflow: vi.fn(),
   clearStoredAuth: vi.fn(),
@@ -360,6 +360,7 @@ describe('registerCloudCommands', () => {
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
         accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
       },
       client: {} as never,
     });
@@ -384,6 +385,7 @@ describe('registerCloudCommands', () => {
       apiUrl: 'https://cloud.test',
       accessToken: 'access-token',
       accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
     });
     expect(sessionJson).not.toHaveProperty('refreshToken');
   });

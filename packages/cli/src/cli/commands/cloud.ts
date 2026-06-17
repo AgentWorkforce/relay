@@ -306,6 +306,9 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
               apiUrl: session.auth.apiUrl,
               accessToken: session.auth.accessToken,
               accessTokenExpiresAt: session.auth.accessTokenExpiresAt,
+              ...(session.auth.refreshTokenExpiresAt
+                ? { refreshTokenExpiresAt: session.auth.refreshTokenExpiresAt }
+                : {}),
             },
             null,
             2
@@ -316,6 +319,9 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
       deps.log(`API URL: ${session.auth.apiUrl}`);
       deps.log(`Access token expires: ${session.auth.accessTokenExpiresAt}`);
+      if (session.auth.refreshTokenExpiresAt) {
+        deps.log(`Refresh token expires: ${session.auth.refreshTokenExpiresAt}`);
+      }
       deps.log(`Token file: ${AUTH_FILE_PATH}`);
     });
 

@@ -13,6 +13,7 @@ import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,
   LEGACY_AUTH_FILE_PATH,
+  REFRESH_TOKEN_WINDOW_MS,
   REFRESH_WINDOW_MS,
   CloudAuthError,
   defaultApiUrl,
@@ -43,6 +44,7 @@ function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
   const accessToken = env.CLOUD_API_ACCESS_TOKEN?.trim();
   const refreshToken = env.CLOUD_API_REFRESH_TOKEN?.trim();
   const accessTokenExpiresAt = env.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT?.trim();
+  const refreshTokenExpiresAt = env.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT?.trim();
 
   if (!apiUrl || !accessToken || !refreshToken || !accessTokenExpiresAt) {
     return null;
@@ -58,11 +60,16 @@ function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
     return null;
   }
 
+  if (refreshTokenExpiresAt && Number.isNaN(Date.parse(refreshTokenExpiresAt))) {
+    return null;
+  }
+
   return markEnvBackedAuth({
     apiUrl,
     accessToken,
     refreshToken,
     accessTokenExpiresAt,
+    ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
   });
 }
 
@@ -75,7 +82,7 @@ function toEnvAuthRefreshError(error: unknown): Error {
 
   return new CloudAuthError(
     'AUTH_ENV_REPROVISION_REQUIRED',
-    `${message}Env-backed cloud auth could not be refreshed interactively; re-provision CLOUD_API_URL, CLOUD_API_ACCESS_TOKEN, CLOUD_API_REFRESH_TOKEN, and CLOUD_API_ACCESS_TOKEN_EXPIRES_AT.`,
+    `${message}Env-backed cloud auth could not be refreshed interactively; re-provision CLOUD_API_URL, CLOUD_API_ACCESS_TOKEN, CLOUD_API_REFRESH_TOKEN, CLOUD_API_ACCESS_TOKEN_EXPIRES_AT, and optionally CLOUD_API_REFRESH_TOKEN_EXPIRES_AT.`,
     { cause: error }
   );
 }
@@ -90,7 +97,10 @@ function isValidStoredAuth(value: unknown): value is StoredAuth {
     typeof auth.accessToken === 'string' &&
     typeof auth.refreshToken === 'string' &&
     typeof auth.accessTokenExpiresAt === 'string' &&
-    typeof auth.apiUrl === 'string'
+    typeof auth.apiUrl === 'string' &&
+    (auth.refreshTokenExpiresAt === undefined || typeof auth.refreshTokenExpiresAt === 'string') &&
+    !Number.isNaN(Date.parse(auth.accessTokenExpiresAt)) &&
+    (auth.refreshTokenExpiresAt === undefined || !Number.isNaN(Date.parse(auth.refreshTokenExpiresAt)))
   );
 }
 
@@ -235,6 +245,23 @@ function shouldRefresh(accessTokenExpiresAt: string): boolean {
   }
 
   return expiresAt - Date.now() <= REFRESH_WINDOW_MS;
+}
+
+function shouldRefreshStoredAuth(auth: StoredAuth): boolean {
+  if (shouldRefresh(auth.accessTokenExpiresAt)) {
+    return true;
+  }
+
+  if (!auth.refreshTokenExpiresAt) {
+    return false;
+  }
+
+  const refreshExpiresAt = Date.parse(auth.refreshTokenExpiresAt);
+  if (Number.isNaN(refreshExpiresAt)) {
+    return true;
+  }
+
+  return refreshExpiresAt - Date.now() <= REFRESH_TOKEN_WINDOW_MS;
 }
 
 function openBrowser(url: string) {
@@ -390,6 +417,7 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
       const accessToken = requestUrl.searchParams.get('access_token');
       const refreshToken = requestUrl.searchParams.get('refresh_token');
       const accessTokenExpiresAt = requestUrl.searchParams.get('access_token_expires_at');
+      const refreshTokenExpiresAt = requestUrl.searchParams.get('refresh_token_expires_at');
       const returnedApiUrl = requestUrl.searchParams.get('api_url');
 
       if (!accessToken || !refreshToken || !accessTokenExpiresAt || !returnedApiUrl) {
@@ -417,6 +445,7 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
           accessToken,
           refreshToken,
           accessTokenExpiresAt,
+          ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
           apiUrl: returnedApiUrl,
         });
       }
@@ -478,11 +507,7 @@ export async function refreshStoredAuth(
     const latestAuth = await readCanonicalStoredAuth();
     const refreshSource = latestAuth?.apiUrl === auth.apiUrl ? latestAuth : auth;
 
-    if (
-      !options.force &&
-      latestAuth?.apiUrl === auth.apiUrl &&
-      !shouldRefresh(latestAuth.accessTokenExpiresAt)
-    ) {
+    if (!options.force && latestAuth?.apiUrl === auth.apiUrl && !shouldRefreshStoredAuth(latestAuth)) {
       return latestAuth;
     }
 
@@ -512,6 +537,8 @@ async function requestStoredAuthRefresh(
     accessToken?: string;
     refreshToken?: string;
     accessTokenExpiresAt?: string;
+    refreshTokenExpiresAt?: string;
+    apiUrl?: string;
   } | null;
 
   if (!response.ok || !payload?.accessToken || !payload?.refreshToken || !payload?.accessTokenExpiresAt) {
@@ -519,10 +546,11 @@ async function requestStoredAuthRefresh(
   }
 
   const nextAuth: StoredAuth = {
-    apiUrl: auth.apiUrl,
+    apiUrl: typeof payload.apiUrl === 'string' && payload.apiUrl.trim() ? payload.apiUrl.trim() : auth.apiUrl,
     accessToken: payload.accessToken,
     refreshToken: payload.refreshToken,
     accessTokenExpiresAt: payload.accessTokenExpiresAt,
+    ...(payload.refreshTokenExpiresAt ? { refreshTokenExpiresAt: payload.refreshTokenExpiresAt } : {}),
   };
 
   return nextAuth;
@@ -569,7 +597,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     return createCloudSession(auth, { refreshTimeoutMs });
   }
 
-  if (!shouldRefresh(stored.accessTokenExpiresAt)) {
+  if (!shouldRefreshStoredAuth(stored)) {
     return createCloudSession(stored, { refreshTimeoutMs });
   }
 
@@ -618,6 +646,7 @@ function toStoredAuth(snapshot: CloudApiClientSnapshot): StoredAuth {
     accessToken: snapshot.accessToken,
     refreshToken: snapshot.refreshToken,
     accessTokenExpiresAt: snapshot.accessTokenExpiresAt,
+    ...(snapshot.refreshTokenExpiresAt ? { refreshTokenExpiresAt: snapshot.refreshTokenExpiresAt } : {}),
   };
 }
 

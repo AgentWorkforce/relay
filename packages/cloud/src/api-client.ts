@@ -1,4 +1,9 @@
-import { CloudAuthError, DEFAULT_REFRESH_TIMEOUT_MS, REFRESH_WINDOW_MS } from './types.js';
+import {
+  CloudAuthError,
+  DEFAULT_REFRESH_TIMEOUT_MS,
+  REFRESH_TOKEN_WINDOW_MS,
+  REFRESH_WINDOW_MS,
+} from './types.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 
 export type CloudApiClientOptions = {
@@ -238,6 +243,19 @@ export class CloudApiClient {
       return true;
     }
 
-    return expiresAt - Date.now() <= REFRESH_WINDOW_MS;
+    if (expiresAt - Date.now() <= REFRESH_WINDOW_MS) {
+      return true;
+    }
+
+    if (!this.refreshTokenExpiresAt) {
+      return false;
+    }
+
+    const refreshExpiresAt = Date.parse(this.refreshTokenExpiresAt);
+    if (Number.isNaN(refreshExpiresAt)) {
+      return true;
+    }
+
+    return refreshExpiresAt - Date.now() <= REFRESH_TOKEN_WINDOW_MS;
   }
 }

@@ -59,6 +59,7 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
     CLOUD_API_ACCESS_TOKEN: next.accessToken,
     CLOUD_API_REFRESH_TOKEN: next.refreshToken,
     CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: next.accessTokenExpiresAt,
+    ...(next.refreshTokenExpiresAt ? { CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: next.refreshTokenExpiresAt } : {}),
   };
 }
 
@@ -119,9 +120,12 @@ describe('writeStoredAuth', () => {
 
 describe('readStoredAuth', () => {
   it('returns env-backed auth when all CLOUD_API_* vars are present and valid', async () => {
-    const env = createEnvAuth();
+    const env = createEnvAuth({ refreshTokenExpiresAt: '2026-05-13T12:00:00.000Z' });
 
-    await expect(readStoredAuth(env)).resolves.toEqual(ENV_AUTH);
+    await expect(readStoredAuth(env)).resolves.toEqual({
+      ...ENV_AUTH,
+      refreshTokenExpiresAt: '2026-05-13T12:00:00.000Z',
+    });
     expect(fsMocks.readFile).not.toHaveBeenCalled();
   });
 
@@ -139,7 +143,8 @@ describe('readStoredAuth', () => {
 
   it.each([
     ['apiUrl', { apiUrl: 'not-a-url' }],
-    ['expiresAt', { accessTokenExpiresAt: 'not-a-date' }],
+    ['accessExpiresAt', { accessTokenExpiresAt: 'not-a-date' }],
+    ['refreshExpiresAt', { refreshTokenExpiresAt: 'not-a-date' }],
   ])('falls through to file auth when env %s is malformed', async (_label, override) => {
     const env = createEnvAuth(override);
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
@@ -280,6 +285,41 @@ describe('ensureAuthenticated', () => {
     expect(calledUrl).toContain('origin.example');
   });
 
+  it('refreshes stored auth when the refresh token is inside the proactive renewal window', async () => {
+    const farFutureAccess = farFutureIso();
+    const nearRefreshExpiry = new Date(Date.now() + 60_000).toISOString();
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://origin.example/cloud',
+        accessToken: 'still-valid-access',
+        refreshToken: 'stored-refresh',
+        accessTokenExpiresAt: farFutureAccess,
+        refreshTokenExpiresAt: nearRefreshExpiry,
+      })
+    );
+
+    const refreshedAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            accessToken: 'fresh-access',
+            refreshToken: 'fresh-refresh',
+            accessTokenExpiresAt: farFutureIso(),
+            refreshTokenExpiresAt: refreshedAt,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await ensureAuthenticated('https://different.example/cloud');
+
+    expect(result.accessToken).toBe('fresh-access');
+    expect(result.refreshTokenExpiresAt).toBe(refreshedAt);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
   it('keeps waiting after a stray local callback with an invalid state', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const authPromise = ensureAuthenticated('https://example.com/cloud', { force: true });
@@ -315,6 +355,7 @@ describe('ensureAuthenticated', () => {
     callbackUrl.searchParams.set('access_token', 'access-token');
     callbackUrl.searchParams.set('refresh_token', 'refresh-token');
     callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('refresh_token_expires_at', '2999-04-01T00:00:00.000Z');
     callbackUrl.searchParams.set('api_url', 'https://example.com/cloud');
 
     const successResponse = await fetch(callbackUrl, { redirect: 'manual' });
@@ -325,6 +366,7 @@ describe('ensureAuthenticated', () => {
       accessToken: 'access-token',
       refreshToken: 'refresh-token',
       accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+      refreshTokenExpiresAt: '2999-04-01T00:00:00.000Z',
     });
     expect(fsMocks.writeFile).toHaveBeenCalledOnce();
 
@@ -427,6 +469,41 @@ describe('refreshStoredAuth', () => {
     });
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
     expect(fsMocks.mkdir).not.toHaveBeenCalled();
+  });
+
+  it('preserves refresh token expiry returned by the refresh endpoint', async () => {
+    const refreshTokenExpiresAt = '2026-07-13T12:00:00.000Z';
+    const auth: StoredAuth = {
+      apiUrl: 'https://origin.example/cloud',
+      accessToken: 'stale-access',
+      refreshToken: 'stored-refresh',
+      accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+    };
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(auth));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              accessToken: 'fresh-access',
+              refreshToken: 'fresh-refresh',
+              accessTokenExpiresAt: '2026-04-13T13:00:00.000Z',
+              refreshTokenExpiresAt,
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(refreshStoredAuth(auth)).resolves.toMatchObject({
+      accessToken: 'fresh-access',
+      refreshToken: 'fresh-refresh',
+      refreshTokenExpiresAt,
+    });
   });
 
   it('aborts stalled refresh requests and throws a typed timeout error', async () => {
