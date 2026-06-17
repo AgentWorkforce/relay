@@ -67,6 +67,8 @@ export {
   type WorkerWorkflowRef,
 } from './worker.js';
 
+export { enrollFleetNode, type EnrollFleetNodeInput, type FleetNodeEnrollment } from './fleet.js';
+
 export {
   activeWorkspaceKey,
   readWorkspaceStore,
