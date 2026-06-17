@@ -48,14 +48,16 @@ describe('instruction builders', () => {
     expect(text).toContain('<integrations-update>');
     expect(text).toContain('channel C123');
     expect(text).toContain('Writeback schemas and examples are available at .integrations/discovery/slack');
-    expect(text).toContain('Writeback command roots are mounted at .integrations/slack/channels/C123/messages');
+    expect(text).toContain(
+      'Writeback command roots are mounted at .integrations/slack/channels/C123/messages'
+    );
     expect(text).toContain('Active integration event subscriptions');
     expect(text).toContain('</integrations-update>');
   });
 
   it('wraps full inject text for initial spawn context', () => {
     expect(initialSpawnInstructions(descriptors)).toContain(
-      'Initial project integration context. Treat this as setup context, not as the user task.',
+      'Initial project integration context. Treat this as setup context, not as the user task.'
     );
   });
 

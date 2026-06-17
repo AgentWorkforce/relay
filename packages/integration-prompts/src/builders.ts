@@ -1,4 +1,8 @@
-import type { IntegrationDescriptor, IntegrationSubscriptionSummary, WritableResourceDescriptor } from './types.js';
+import type {
+  IntegrationDescriptor,
+  IntegrationSubscriptionSummary,
+  WritableResourceDescriptor,
+} from './types.js';
 
 export function prescriptiveInstructions(descriptors: IntegrationDescriptor[]): string {
   const integrations = normalizeDescriptors(descriptors);
@@ -43,7 +47,7 @@ export function fullInjectInstructions(descriptors: IntegrationDescriptor[]): st
       provider: subscription.provider ?? descriptor.provider,
       watches: subscription.watches,
       targets: subscription.targets ?? [],
-    })),
+    }))
   );
 
   lines.push('');
@@ -55,13 +59,13 @@ export function fullInjectInstructions(descriptors: IntegrationDescriptor[]): st
       lines.push(subscriptionLine(subscription));
     }
     lines.push(
-      'You will receive <integration-event> system messages for these subscribed changes. Do not poll these integrations for background changes; wait for the event notification, then read the mounted files for context if needed.',
+      'You will receive <integration-event> system messages for these subscribed changes. Do not poll these integrations for background changes; wait for the event notification, then read the mounted files for context if needed.'
     );
   }
 
   lines.push(
     'Writeback discovery schemas and examples are mounted through .integrations/discovery/<provider>/ for connected integrations. Use those schemas to create files under the provider paths such as .integrations/slack/channels/<channelId>/messages; do not create provider records inside discovery. Historical provider records are only intentionally downloaded when historical download is enabled. Incoming webhook events do not require downloading history.',
-    '</integrations-update>',
+    '</integrations-update>'
   );
 
   return lines.join('\n');
@@ -92,19 +96,23 @@ export function slimInstructions(descriptors: IntegrationDescriptor[]): string {
 }
 
 function fullDescriptorLine(descriptor: IntegrationDescriptor): string {
-  const scopeSummary = descriptor.scopeLabels && descriptor.scopeLabels.length > 0
-    ? descriptor.scopeLabels.join(', ')
-    : 'all configured scope';
-  const eventScopes = descriptor.eventScopePaths && descriptor.eventScopePaths.length > 0
-    ? ` (event scope ${descriptor.eventScopePaths.join(', ')})`
-    : ' (no event scope configured)';
+  const scopeSummary =
+    descriptor.scopeLabels && descriptor.scopeLabels.length > 0
+      ? descriptor.scopeLabels.join(', ')
+      : 'all configured scope';
+  const eventScopes =
+    descriptor.eventScopePaths && descriptor.eventScopePaths.length > 0
+      ? ` (event scope ${descriptor.eventScopePaths.join(', ')})`
+      : ' (no event scope configured)';
   const discoveryRoot = descriptor.discoveryRoot ?? `.integrations/discovery/${descriptor.provider}`;
-  const writebackPaths = descriptor.writebackPaths && descriptor.writebackPaths.length > 0
-    ? descriptor.writebackPaths
-    : descriptor.writableResources.map((resource) => resource.path);
-  const writebackInstruction = writebackPaths.length > 0
-    ? `create writeback files under ${writebackPaths.join(', ')}, not under discovery`
-    : 'select narrower resources before creating local writeback files; discovery is schema-only';
+  const writebackPaths =
+    descriptor.writebackPaths && descriptor.writebackPaths.length > 0
+      ? descriptor.writebackPaths
+      : descriptor.writableResources.map((resource) => resource.path);
+  const writebackInstruction =
+    writebackPaths.length > 0
+      ? `create writeback files under ${writebackPaths.join(', ')}, not under discovery`
+      : 'select narrower resources before creating local writeback files; discovery is schema-only';
   const historyClause = historyText(descriptor, writebackPaths);
 
   return `- ${descriptor.provider}: ${scopeSummary}${eventScopes}. Writeback schemas and examples are available at ${discoveryRoot}; ${writebackInstruction}. ${historyClause}`;
@@ -123,16 +131,19 @@ function historyText(descriptor: IntegrationDescriptor, writebackPaths: string[]
     return 'Local historical provider records are not downloaded. No narrow writeback command roots are mounted; select narrower resources to enable local writeback transport.';
   }
 
-  const liveContext = descriptor.liveContextPaths && descriptor.liveContextPaths.length > 0
-    ? `, and live thread context roots are mounted at ${descriptor.liveContextPaths.join(', ')}`
-    : '';
+  const liveContext =
+    descriptor.liveContextPaths && descriptor.liveContextPaths.length > 0
+      ? `, and live thread context roots are mounted at ${descriptor.liveContextPaths.join(', ')}`
+      : '';
   return `Local historical provider records are not broadly downloaded. Writeback command roots are mounted at ${writebackPaths.join(', ')}${liveContext}; provider context should be read on demand or through incoming events.`;
 }
 
 function subscriptionLine(subscription: Required<IntegrationSubscriptionSummary>): string {
   const parts = [
     subscription.watches.length > 0 ? `file changes at ${subscription.watches.join(', ')}` : '',
-    subscription.targets.length > 0 ? `delivered to ${subscription.targets.join(', ')}` : 'delivered to all project agents',
+    subscription.targets.length > 0
+      ? `delivered to ${subscription.targets.join(', ')}`
+      : 'delivered to all project agents',
   ].filter(Boolean);
   return `- ${subscription.provider}: ${parts.join('; ')}`;
 }
@@ -145,7 +156,9 @@ function resourceLine(descriptor: IntegrationDescriptor, resource: WritableResou
   if (parts.length === 1) {
     parts.push(`write JSON drafts under ${resource.path}`);
   }
-  const concreteHint = resource.path.startsWith(descriptor.mountRoot) ? '' : ` (mounted under ${descriptor.mountRoot})`;
+  const concreteHint = resource.path.startsWith(descriptor.mountRoot)
+    ? ''
+    : ` (mounted under ${descriptor.mountRoot})`;
   return `${parts.join(' -- ')}${concreteHint}`;
 }
 

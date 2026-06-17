@@ -3,10 +3,7 @@
 Shared prompt builders for Relayfile integration writeback instructions.
 
 ```ts
-import {
-  deriveDescriptorsFromMount,
-  prescriptiveInstructions,
-} from '@agent-relay/integration-prompts';
+import { deriveDescriptorsFromMount, prescriptiveInstructions } from '@agent-relay/integration-prompts';
 
 const descriptors = await deriveDescriptorsFromMount({
   readFile: async (path) => mount.readText(path),

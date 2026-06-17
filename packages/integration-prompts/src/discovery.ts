@@ -33,7 +33,7 @@ type NormalizedOptions = Required<Pick<DeriveDescriptorsOptions, 'discoveryRoot'
 
 export async function deriveDescriptorsFromMount(
   reader: MountDiscoveryReader | MountReadFile,
-  options: DeriveDescriptorsOptions | string = {},
+  options: DeriveDescriptorsOptions | string = {}
 ): Promise<IntegrationDescriptor[]> {
   const readFile = typeof reader === 'function' ? reader : reader.readFile;
   const normalized = normalizeOptions(reader, options);
@@ -44,9 +44,10 @@ export async function deriveDescriptorsFromMount(
     const providerRoot = joinPath(normalized.discoveryRoot, provider);
     const adapterDoc = await readFileSafe(readFile, joinPath(providerRoot, '.adapter.md'));
     const resources = parseWritableResources(adapterDoc ?? '', provider);
-    const discoveredResources = resources.length > 0
-      ? resources
-      : await discoverWritableResourcesFromTree(provider, providerRoot, normalized.listPaths);
+    const discoveredResources =
+      resources.length > 0
+        ? resources
+        : await discoverWritableResourcesFromTree(provider, providerRoot, normalized.listPaths);
 
     if (!adapterDoc && discoveredResources.length === 0) continue;
 
@@ -62,7 +63,10 @@ export async function deriveDescriptorsFromMount(
   return descriptors.sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
-export function parseWritableResources(adapterDoc: string, providerHint?: string): WritableResourceDescriptor[] {
+export function parseWritableResources(
+  adapterDoc: string,
+  providerHint?: string
+): WritableResourceDescriptor[] {
   const rows = parseMarkdownResourceRows(adapterDoc);
   if (rows.length > 0) return rows;
 
@@ -91,7 +95,7 @@ async function discoverProviders(readFile: MountReadFile, options: NormalizedOpt
 async function discoverWritableResourcesFromTree(
   provider: string,
   providerRoot: string,
-  listPaths?: MountListPaths,
+  listPaths?: MountListPaths
 ): Promise<WritableResourceDescriptor[]> {
   if (!listPaths) return [];
   const paths = await listPathsSafe(listPaths, providerRoot);
@@ -137,7 +141,8 @@ function parseMarkdownResourceRows(adapterDoc: string): WritableResourceDescript
     resources.set(path, {
       path,
       schemaPath: schemaCell && schemaCell.startsWith('/') ? schemaCell : undefined,
-      createExamplePath: createExampleCell && createExampleCell.startsWith('/') ? createExampleCell : undefined,
+      createExamplePath:
+        createExampleCell && createExampleCell.startsWith('/') ? createExampleCell : undefined,
       description: descriptionCell || undefined,
       name: lastMeaningfulSegment(path),
     });
@@ -178,7 +183,10 @@ function parseWriteFieldContracts(adapterDoc: string, providerHint?: string): Wr
   }
 
   if (resources.size === 0 && providerHint) {
-    const fallbackPattern = new RegExp(`/${escapeRegExp(providerHint)}/[^\\s\`|]+/\\.create\\.example\\.json`, 'gu');
+    const fallbackPattern = new RegExp(
+      `/${escapeRegExp(providerHint)}/[^\\s\`|]+/\\.create\\.example\\.json`,
+      'gu'
+    );
     for (const match of adapterDoc.matchAll(fallbackPattern)) {
       const createExamplePath = match[0];
       const path = normalizeResourcePath(createExamplePath.replace(/\/\.create\.example\.json$/u, ''));
@@ -195,10 +203,10 @@ function parseWriteFieldContracts(adapterDoc: string, providerHint?: string): Wr
 
 function normalizeOptions(
   reader: MountDiscoveryReader | MountReadFile,
-  options: DeriveDescriptorsOptions | string,
+  options: DeriveDescriptorsOptions | string
 ): NormalizedOptions {
   const opts = typeof options === 'string' ? { discoveryRoot: options } : options;
-  const readerList = typeof reader === 'function' ? undefined : reader.listPaths ?? reader.listTree;
+  const readerList = typeof reader === 'function' ? undefined : (reader.listPaths ?? reader.listTree);
   return {
     discoveryRoot: trimTrailingSlash(opts.discoveryRoot ?? DEFAULT_DISCOVERY_ROOT),
     knownProviders: opts.knownProviders ?? DEFAULT_KNOWN_PROVIDERS,
@@ -224,7 +232,11 @@ function providersFromManifest(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.flatMap((entry) => {
       if (typeof entry === 'string') return [entry];
-      if (entry && typeof entry === 'object' && typeof (entry as { provider?: unknown }).provider === 'string') {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        typeof (entry as { provider?: unknown }).provider === 'string'
+      ) {
         return [(entry as { provider: string }).provider];
       }
       return [];
@@ -280,10 +292,13 @@ function normalizeResourcePath(path: string): string {
 }
 
 function joinPath(...parts: string[]): string {
-  return parts.map((part, index) => {
-    const trimmed = index === 0 ? trimTrailingSlash(part) : part.replace(/^\/+|\/+$/gu, '');
-    return trimmed;
-  }).filter(Boolean).join('/');
+  return parts
+    .map((part, index) => {
+      const trimmed = index === 0 ? trimTrailingSlash(part) : part.replace(/^\/+|\/+$/gu, '');
+      return trimmed;
+    })
+    .filter(Boolean)
+    .join('/');
 }
 
 function normalizePath(path: string): string {
@@ -298,7 +313,8 @@ function stripPrefix(path: string, prefix: string): string {
   const normalizedPrefix = normalizePath(prefix);
   const normalizedPath = normalizePath(path);
   if (normalizedPath === normalizedPrefix) return '';
-  if (normalizedPath.startsWith(`${normalizedPrefix}/`)) return normalizedPath.slice(normalizedPrefix.length + 1);
+  if (normalizedPath.startsWith(`${normalizedPrefix}/`))
+    return normalizedPath.slice(normalizedPrefix.length + 1);
   return normalizedPath;
 }
 

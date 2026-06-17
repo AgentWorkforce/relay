@@ -36,9 +36,7 @@ describe('parseWritableResources', () => {
 
 describe('deriveDescriptorsFromMount', () => {
   it('uses listTree/listPaths to discover providers and adapter docs', async () => {
-    const files = new Map([
-      ['.integrations/discovery/slack/.adapter.md', slackAdapterDoc],
-    ]);
+    const files = new Map([['.integrations/discovery/slack/.adapter.md', slackAdapterDoc]]);
 
     const descriptors = await deriveDescriptorsFromMount({
       readFile: (path) => files.get(path),
@@ -55,8 +53,8 @@ describe('deriveDescriptorsFromMount', () => {
   });
 
   it('skips missing providers without throwing', async () => {
-    await expect(
-      deriveDescriptorsFromMount(() => undefined, { knownProviders: ['slack'] }),
-    ).resolves.toEqual([]);
+    await expect(deriveDescriptorsFromMount(() => undefined, { knownProviders: ['slack'] })).resolves.toEqual(
+      []
+    );
   });
 });

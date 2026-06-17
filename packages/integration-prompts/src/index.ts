@@ -1,7 +1,4 @@
-export {
-  deriveDescriptorsFromMount,
-  parseWritableResources,
-} from './discovery.js';
+export { deriveDescriptorsFromMount, parseWritableResources } from './discovery.js';
 export {
   fullInjectInstructions,
   initialSpawnInstructions,

@@ -18,6 +18,7 @@ Added @agent-relay/integration-prompts with discovery reader, prompt builders, e
 ## Key Decisions
 
 ### Kept integration prompt descriptor portable with optional pear richness
+
 - **Chose:** Kept integration prompt descriptor portable with optional pear richness
 - **Reasoning:** Factory only needs provider, mountRoot, and writableResources while Pear needs optional scope, subscription, and history fields to preserve full integrations-update wording.
 
@@ -26,6 +27,7 @@ Added @agent-relay/integration-prompts with discovery reader, prompt builders, e
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Kept integration prompt descriptor portable with optional pear richness: Kept integration prompt descriptor portable with optional pear richness
