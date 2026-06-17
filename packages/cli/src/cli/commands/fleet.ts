@@ -174,17 +174,41 @@ async function maybeEnrollFleetNode(
   return enrollment;
 }
 
-async function resolveServeNodeDefinition(input: {
-  file: string | undefined;
+/**
+ * Wires the explicit `--workspace`/`--base-url` overrides into the broker env so
+ * `startBrokerWithPortFallback` binds the node to the right workspace and origin.
+ * Returns the resolved values for downstream sidecar wiring.
+ *
+ * Precedence for the Relaycast origin: enrollment is the source of truth (it
+ * already wrote RELAY_BASE_URL during the exchange) and an explicit `--base-url`
+ * is the only thing that overrides it; the override must reach the broker via
+ * RELAY_BASE_URL, not just `serveFleetSidecar`.
+ */
+function applyServeEnvOverrides(
+  options: Record<string, unknown>,
+  deps: FleetCommandDependencies
+): { workspaceKey: string; baseUrlOverride: string } {
+  const workspaceKey = typeof options.workspace === 'string' ? options.workspace.trim() : '';
+  if (workspaceKey) {
+    deps.core.env.RELAY_WORKSPACE_KEY = workspaceKey;
+    deps.core.env.RELAY_API_KEY = workspaceKey;
+  }
+
+  const baseUrlOverride = typeof options.baseUrl === 'string' ? options.baseUrl.trim() : '';
+  if (baseUrlOverride) {
+    deps.core.env.RELAY_BASE_URL = baseUrlOverride;
+  }
+
+  return { workspaceKey, baseUrlOverride };
+}
+
+function createImplicitServeNodeDefinition(input: {
   paths: CoreProjectPaths;
   enrollment: FleetNodeEnrollment | undefined;
   nameOption: string | undefined;
   maxAgentsOverride: number | undefined;
   deps: FleetCommandDependencies;
-}): Promise<FleetNodeDefinition> {
-  if (input.file) {
-    return input.deps.loadNodeDefinition(input.file);
-  }
+}): FleetNodeDefinition {
   return createImplicitLocalFleetNode({
     paths: input.paths,
     teamsConfig: input.deps.core.loadTeamsConfig(input.paths.projectRoot),
@@ -210,36 +234,30 @@ async function runFleetServe(
   // The `<file>` node-def is OPTIONAL in enrollment mode — identity/name/
   // capabilities come from the enrollment record; a `<file>`, when present,
   // overrides/augments it.
+  //
+  // Load + validate the `<file>` BEFORE redeeming the one-time enrollment token:
+  // the token is single-use, so a missing/invalid file must fail fast rather than
+  // burn the token on a run that can't succeed (the durable creds returned by the
+  // exchange would never be persisted, forcing the operator to mint a fresh token
+  // just to fix a local file error).
+  const fileDefinition = file ? await deps.loadNodeDefinition(file) : undefined;
+
   const enrollment = await maybeEnrollFleetNode(options, nameOption, maxAgentsOverride, deps);
   if (!enrollment && !file) {
     throw new Error('A node definition <file> is required unless --enrollment-token is provided.');
   }
 
-  const nodeDefinition = await resolveServeNodeDefinition({
-    file,
-    paths,
-    enrollment,
-    nameOption,
-    maxAgentsOverride,
-    deps,
-  });
+  const nodeDefinition =
+    fileDefinition ??
+    createImplicitServeNodeDefinition({
+      paths,
+      enrollment,
+      nameOption,
+      maxAgentsOverride,
+      deps,
+    });
 
-  const workspaceKey = typeof options.workspace === 'string' ? options.workspace.trim() : '';
-  if (workspaceKey) {
-    deps.core.env.RELAY_WORKSPACE_KEY = workspaceKey;
-    deps.core.env.RELAY_API_KEY = workspaceKey;
-  }
-
-  // Precedence for the node's Relaycast origin: enrollment provides the source of
-  // truth (already written to RELAY_BASE_URL during the exchange), and an explicit
-  // --base-url is the only thing that overrides it. The override must reach the
-  // broker via RELAY_BASE_URL too — startBrokerWithPortFallback (below) binds the
-  // node to the workspace fleet roster from the environment, so propagating it only
-  // to serveFleetSidecar would leave the broker pointed at the enrollment URL.
-  const baseUrlOverride = typeof options.baseUrl === 'string' ? options.baseUrl.trim() : '';
-  if (baseUrlOverride) {
-    deps.core.env.RELAY_BASE_URL = baseUrlOverride;
-  }
+  const { workspaceKey, baseUrlOverride } = applyServeEnvOverrides(options, deps);
 
   // An enrolled node prefers the name from the enrollment record; a --name flag
   // (already forwarded to the exchange) still wins through nameOption.
@@ -262,7 +280,13 @@ async function runFleetServe(
     nameOverride,
     maxAgentsOverride,
     supervision: buildNodeSupervision({
-      argv: deps.core.argv,
+      // Strip the one-time --enrollment-token/--enrollment-url flags from the
+      // supervised argv. The broker restarts supervised sidecars by re-executing
+      // this argv; replaying a consumed enrollment token would fail the exchange
+      // and the node would never come back. The durable credentials minted by the
+      // first exchange live in the supervision env (RELAY_NODE_TOKEN /
+      // RELAY_BASE_URL), so restarts take the durable path with no flags to redeem.
+      argv: stripEnrollmentFlags(deps.core.argv),
       cwd: process.cwd(),
       env: deps.core.env,
     }),
@@ -332,6 +356,33 @@ function connectionFromFile(dataDir: string): FleetBrokerConnection {
     throw new Error(`Broker connection file was not written in ${dataDir}`);
   }
   return { url: conn.url, apiKey: conn.api_key };
+}
+
+/**
+ * Removes the one-time enrollment flags (and their values) from a captured argv
+ * so the broker's supervised-restart replay never re-redeems a consumed token.
+ * Handles both `--flag value` and `--flag=value` forms. The durable credentials
+ * minted by the first exchange are carried in the supervision env instead.
+ */
+export function stripEnrollmentFlags(argv: readonly string[]): string[] {
+  const oneTimeFlags = new Set(['--enrollment-token', '--enrollment-url']);
+  const result: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    const eqIndex = arg.indexOf('=');
+    const flagName = eqIndex === -1 ? arg : arg.slice(0, eqIndex);
+    if (oneTimeFlags.has(flagName)) {
+      // `--flag=value` carries its value inline; `--flag value` consumes the next
+      // token. Skip the following token only when this flag had no inline `=value`
+      // and a value token actually follows.
+      if (eqIndex === -1 && i + 1 < argv.length) {
+        i += 1;
+      }
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
 }
 
 function parsePositiveIntegerOption(value: unknown, label: string): number | undefined {

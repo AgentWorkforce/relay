@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { action, defineNode, onMessage } from '@agent-relay/fleet';
 
-import { loadNodeDefinition, registerFleetCommands } from './fleet.js';
+import { loadNodeDefinition, registerFleetCommands, stripEnrollmentFlags } from './fleet.js';
 import { startFleetSidecar, serveFleetSidecar } from '../lib/fleet-sidecar.js';
 
 describe('fleet command support', () => {
@@ -421,6 +421,60 @@ describe('fleet command support', () => {
 
       vi.doUnmock('../lib/fleet-sidecar.js');
       vi.resetModules();
+    });
+
+    it('validates the <file> before redeeming the one-time enrollment token', async () => {
+      const harness = buildServeHarness();
+
+      // A nonexistent node file must fail-fast WITHOUT burning the single-use
+      // enrollment token, so the operator can fix the path and retry the token.
+      await harness.program
+        .parseAsync(
+          ['fleet', 'serve', '/tmp/does-not-exist-node-def.ts', '--enrollment-token', 'ocl_node_enr_xyz'],
+          { from: 'user' }
+        )
+        .catch(() => undefined);
+
+      expect(harness.enroll).not.toHaveBeenCalled();
+      expect(harness.env.RELAY_NODE_TOKEN).toBeUndefined();
+    });
+  });
+
+  describe('stripEnrollmentFlags', () => {
+    it('removes --enrollment-token/--enrollment-url and their space-separated values', () => {
+      const argv = [
+        'node',
+        'agent-relay',
+        'fleet',
+        'serve',
+        '--enrollment-token',
+        'ocl_node_enr_xyz',
+        '--enrollment-url',
+        'https://agentrelay.com/api/v1/fleet/register',
+        '--name',
+        'kjglaptop',
+      ];
+
+      expect(stripEnrollmentFlags(argv)).toEqual([
+        'node',
+        'agent-relay',
+        'fleet',
+        'serve',
+        '--name',
+        'kjglaptop',
+      ]);
+    });
+
+    it('removes the --flag=value inline form without dropping the following token', () => {
+      const argv = ['fleet', 'serve', '--enrollment-token=ocl_node_enr_xyz', '--name', 'kjglaptop'];
+
+      expect(stripEnrollmentFlags(argv)).toEqual(['fleet', 'serve', '--name', 'kjglaptop']);
+    });
+
+    it('leaves argv untouched when no enrollment flags are present', () => {
+      const argv = ['fleet', 'serve', 'node.ts', '--base-url', 'https://relaycast.example.com'];
+
+      expect(stripEnrollmentFlags(argv)).toEqual(argv);
     });
   });
 
