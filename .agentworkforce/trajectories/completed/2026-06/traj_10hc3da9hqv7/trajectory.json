@@ -1,0 +1,53 @@
+{
+  "id": "traj_10hc3da9hqv7",
+  "version": 1,
+  "task": {
+    "title": "Add --cwd flag to local agent spawn and new commands"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-17T18:02:59.236Z",
+  "completedAt": "2026-06-17T18:03:40.783Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-17T18:03:40.318Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ehrl1jgbagwo",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-17T18:03:40.318Z",
+      "endedAt": "2026-06-17T18:03:40.783Z",
+      "events": [
+        {
+          "ts": 1781719420319,
+          "type": "decision",
+          "content": "Add --cwd flag to CLI only; no broker changes needed: Add --cwd flag to CLI only; no broker changes needed",
+          "raw": {
+            "question": "Add --cwd flag to CLI only; no broker changes needed",
+            "chosen": "Add --cwd flag to CLI only; no broker changes needed",
+            "alternatives": [],
+            "reasoning": "cwd was already in the full stack (broker protocol, harness-driver SpawnPtyInput, ClientSpawnOptions) — only the CLI option was missing"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added --cwd <path> option to local agent spawn and new commands; passes through to spawnPty; test added",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "217b5eae5c010a4c8547afc7f9c7eb465d3d123e",
+    "endRef": "217b5eae5c010a4c8547afc7f9c7eb465d3d123e"
+  }
+}
