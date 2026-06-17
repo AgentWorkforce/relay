@@ -1389,8 +1389,8 @@ async fn codex_local_fallback_model(
     }
 
     match codex_debug_models_contains_model(resolved_cli, requested_model).await {
-        Some(true) => None,
-        Some(false) | None => Some(GPT_5_5_FALLBACK),
+        Some(true) | None => None,
+        Some(false) => Some(GPT_5_5_FALLBACK),
     }
 }
 

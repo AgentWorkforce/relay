@@ -198,6 +198,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, opts: Record<string, unknown>) => {
@@ -226,6 +227,7 @@ export function registerLocalAgentCommands(
           channels: (opts.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          cwd: opts.cwd as string | undefined,
           spawnMode:
             spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
@@ -247,6 +249,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
     .action(async (provider: string, options: Record<string, unknown>) => {
@@ -281,6 +284,7 @@ export function registerLocalAgentCommands(
           channels: (options.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          cwd: options.cwd as string | undefined,
           spawnMode:
             spawnMode === 'task-exit' ? 'task_exit' : (spawnMode as 'interactive' | 'task_exit' | undefined),
           exitAfterTask: options.exitAfterTask as boolean | undefined,
