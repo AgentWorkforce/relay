@@ -4,7 +4,7 @@ import type { EventBus } from './event-bus.js';
 import type { HarnessDriverEvents } from './lifecycle-hooks.js';
 
 export interface BrokerInitArgs {
-  /** Optional HTTP API port for dashboard proxy (0 = disabled). */
+  /** Optional HTTP API port for the broker (0 = disabled). */
   apiPort?: number;
   /** Bind address for the HTTP API. Defaults to 127.0.0.1 in the broker. */
   apiBind?: string;
