@@ -44,7 +44,7 @@ export interface RelayNode {
   nodeId?: string;
   name: string;
   status: RelayNodeStatus;
-  live: boolean;
+  live?: boolean;
   capabilities: RelayNodeCapability[];
   /** Repository keys from NodeConfig.repoPaths that this node can service. */
   repoKeys?: string[];

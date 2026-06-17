@@ -106,6 +106,56 @@ describe('RelaycastMessagingClient placement', () => {
     });
   });
 
+  it('rejects a spawn whose input cli does not match the spawn: capability', async () => {
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+    ]);
+
+    await expect(
+      client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-mismatch', cli: 'codex' },
+      })
+    ).rejects.toMatchObject({
+      name: 'RelayPlacementError',
+      code: 'capability_mismatch',
+      capability: 'spawn:claude',
+    });
+    // The broker is never invoked with the wrong harness.
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('overwrites cli from the spawn: capability when the input cli already matches', async () => {
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+    ]);
+
+    await client.placement.spawn({
+      capability: 'spawn:claude',
+      node: 'node-a',
+      repo: 'relay',
+      input: { name: 'worker-match', cli: 'claude' },
+    });
+
+    expect(invoke).toHaveBeenCalledWith('spawn', expect.objectContaining({ cli: 'claude' }));
+  });
+
   it('hard-fails a named node that does not advertise the requested capability', async () => {
     const { client, invoke } = createClient([
       {
@@ -242,6 +292,71 @@ describe('RelaycastMessagingClient placement', () => {
 
     expect(invoke).not.toHaveBeenCalled();
     expect(reconciled).toEqual([expect.objectContaining({ action: 'failed', reason: 'no_eligible_node' })]);
+  });
+
+  it('fails fast with code unmapped_repo when a live capable node never maps the repo', async () => {
+    const reconciled: unknown[] = [];
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['cloud'],
+      },
+    ]);
+
+    await expect(
+      client.placement.spawn({
+        capability: 'spawn:claude',
+        repo: 'relay',
+        failFast: true,
+        onReconcile: (event) => {
+          reconciled.push(event);
+        },
+      })
+    ).rejects.toMatchObject({
+      name: 'RelayPlacementError',
+      code: 'unmapped_repo',
+      capability: 'spawn:claude',
+      repo: 'relay',
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(reconciled).toEqual([
+      expect.objectContaining({ action: 'failed', reason: 'unmapped_repo', repo: 'relay' }),
+    ]);
+  });
+
+  it('isolates a throwing onReconcile hook so placement still drains', async () => {
+    const { client, invoke, nodes } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'offline',
+        live: false,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+    ]);
+
+    const placement = client.placement.spawn({
+      capability: 'spawn:claude',
+      node: 'node-a',
+      repo: 'relay',
+      input: { name: 'worker-throwing-hook' },
+      pollIntervalMs: 25,
+      onReconcile: () => {
+        throw new Error('observability sink down');
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    nodes[0] = { ...nodes[0], status: 'online', live: true };
+
+    const ack = await placement;
+    expect(ack.placement).toMatchObject({ node: 'node-a', queued: true });
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it('queues a targeted offline node with reason target_offline and drains once it is live', async () => {

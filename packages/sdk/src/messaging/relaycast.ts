@@ -126,13 +126,12 @@ function toRelayCapability(raw: unknown): RelayCapability {
 function toRelayNode(raw: unknown): RelayNode {
   const node = (raw ?? {}) as Record<string, unknown>;
   const rawStatus = readStr(node, 'status');
-  const live = readBoolean(node, 'live') ?? rawStatus === 'online';
   return {
     id: readStr(node, 'id', 'node_id'),
     nodeId: readStr(node, 'nodeId', 'node_id'),
     name: readStr(node, 'name') ?? '',
     status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
-    live,
+    live: readBoolean(node, 'live'),
     capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
     repoKeys: readRepoKeys(node),
     maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
@@ -309,8 +308,20 @@ function placementActionInput(
   if (placement.ttlMs > 0) {
     payload.ttl_override_ms = placement.ttlMs;
   }
-  if (placement.capability.startsWith('spawn:') && typeof payload.cli !== 'string') {
-    payload.cli = placement.capability.slice('spawn:'.length);
+  if (placement.capability.startsWith('spawn:')) {
+    // The broker picks the harness from `cli`, but node eligibility was gated on
+    // the `spawn:<cli>` capability. An explicit, mismatched `cli` would select a
+    // harness the chosen node never advertised — reject it instead of silently
+    // dispatching the wrong harness.
+    const capabilityCli = placement.capability.slice('spawn:'.length);
+    if (typeof payload.cli === 'string' && payload.cli !== capabilityCli) {
+      throw new RelayPlacementError(
+        'capability_mismatch',
+        `Placement rejected: input cli "${payload.cli}" does not match capability "${placement.capability}"`,
+        { capability: placement.capability, node: placement.node, repo: placement.repo, attempts: 0 }
+      );
+    }
+    payload.cli = capabilityCli;
   }
   return payload;
 }
@@ -1154,7 +1165,14 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           }
 
           if (input.failFast || Date.now() - startedAt >= ttlMs) {
-            const message = `${decision.message}; placement TTL expired`;
+            // A repo that no live, capable node maps will never drain by waiting,
+            // so report it as `unmapped_repo` rather than a generic TTL expiry.
+            const code: RelayPlacementError['code'] =
+              decision.reconcileReason === 'unmapped_repo' ? 'unmapped_repo' : 'placement_ttl_expired';
+            const message =
+              code === 'unmapped_repo'
+                ? `${decision.message}; no node maps the requested repo`
+                : `${decision.message}; placement TTL expired`;
             await this.reconcilePlacement(input, {
               action: 'failed',
               reason: decision.reconcileReason,
@@ -1164,7 +1182,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               attempts,
               message,
             });
-            throw new RelayPlacementError('placement_ttl_expired', message, {
+            throw new RelayPlacementError(code, message, {
               capability,
               node: targetNode,
               repo,
@@ -1312,13 +1330,34 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     event: RelayPlacementReconcileEvent
   ): Promise<void> {
     this.logPlacement(input, event.message);
-    await input.onReconcile?.(event);
+    // A throwing/rejecting reconcile hook (e.g. a Slack/log sink outage) must not
+    // break an otherwise valid placement — isolate it and log the failure.
+    try {
+      await input.onReconcile?.(event);
+    } catch (error) {
+      this.placementLog?.(
+        `[agent-relay] placement reconcile hook threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   private logPlacement(input: RelaySpawnPlacementInput, message: string): void {
     const line = `[agent-relay] ${message}`;
-    input.log?.(line);
-    if (input.log !== this.placementLog) this.placementLog?.(line);
+    // Observability log sinks are caller-provided; never let them break placement.
+    try {
+      input.log?.(line);
+    } catch (error) {
+      this.placementLog?.(
+        `[agent-relay] placement log hook threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (input.log !== this.placementLog) {
+      try {
+        this.placementLog?.(line);
+      } catch {
+        // Intentionally swallow the client log-sink failure; nothing else to report to.
+      }
+    }
   }
 
   private requireWebhooks(): NonNullable<RelaycastWorkspaceLike['webhooks']> {
