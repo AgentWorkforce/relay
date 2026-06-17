@@ -95,14 +95,29 @@ function enrollmentError(response: Response, payload: unknown): Error {
   return new Error(`Node enrollment failed: ${detail}`);
 }
 
-function isFleetNodeEnrollment(value: unknown): value is FleetNodeEnrollment {
+/**
+ * Validate the register endpoint's response carries the credentials we depend
+ * on. The required trio (nodeToken/relaycastUrl/relayWorkspaceId) must be present
+ * non-empty strings; the optional fields (nodeId/nodeName/websocketUrl), which we
+ * fill in with derived defaults below, must be strings when present so a
+ * malformed server response is rejected rather than silently coerced.
+ */
+function isFleetNodeEnrollment(value: unknown): value is Partial<FleetNodeEnrollment> & {
+  nodeToken: string;
+  relaycastUrl: string;
+  relayWorkspaceId: string;
+} {
   if (!ensurePlainObject(value)) return false;
   return (
     typeof value.nodeToken === 'string' &&
     value.nodeToken.trim().length > 0 &&
     typeof value.relaycastUrl === 'string' &&
     value.relaycastUrl.trim().length > 0 &&
-    typeof value.relayWorkspaceId === 'string'
+    typeof value.relayWorkspaceId === 'string' &&
+    value.relayWorkspaceId.trim().length > 0 &&
+    (value.nodeId === undefined || typeof value.nodeId === 'string') &&
+    (value.nodeName === undefined || typeof value.nodeName === 'string') &&
+    (value.websocketUrl === undefined || typeof value.websocketUrl === 'string')
   );
 }
 

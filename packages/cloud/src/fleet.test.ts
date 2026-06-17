@@ -131,6 +131,46 @@ describe('enrollFleetNode', () => {
     ).rejects.toThrow(/missing node credentials/i);
   });
 
+  it('rejects a response whose optional fields are the wrong type', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        nodeToken: 'nt_secret',
+        relayWorkspaceId: 'rw_123',
+        relaycastUrl: 'https://relaycast.example.com',
+        // The required trio is present, but a malformed optional field (number,
+        // not string) must still be caught by the tightened type guard rather
+        // than silently coerced.
+        nodeId: 42,
+      })
+    );
+
+    await expect(
+      enrollFleetNode({
+        enrollmentToken: 'ocl_node_enr_xyz',
+        enrollmentUrl: REGISTER_URL,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+    ).rejects.toThrow(/missing node credentials/i);
+  });
+
+  it('rejects a response with an empty relayWorkspaceId', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        nodeToken: 'nt_secret',
+        relayWorkspaceId: '   ',
+        relaycastUrl: 'https://relaycast.example.com',
+      })
+    );
+
+    await expect(
+      enrollFleetNode({
+        enrollmentToken: 'ocl_node_enr_xyz',
+        enrollmentUrl: REGISTER_URL,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })
+    ).rejects.toThrow(/missing node credentials/i);
+  });
+
   it('requires a non-empty enrollment token', async () => {
     await expect(enrollFleetNode({ enrollmentToken: '   ', enrollmentUrl: REGISTER_URL })).rejects.toThrow(
       /enrollment token is required/i

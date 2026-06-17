@@ -232,6 +232,38 @@ describe('fleet command support', () => {
       expect(harness.env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
     });
 
+    it('lets an explicit --base-url override the enrollment relaycast url in the broker env', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program
+        .parseAsync(
+          [
+            'fleet',
+            'serve',
+            '--enrollment-token',
+            'ocl_node_enr_xyz',
+            '--base-url',
+            'https://override.example.com',
+          ],
+          { from: 'user' }
+        )
+        .catch(() => undefined);
+
+      // Enrollment first writes its relaycastUrl, then the explicit --base-url
+      // overrides it so the broker (started from the env) binds to the override.
+      expect(harness.env.RELAY_BASE_URL).toBe('https://override.example.com');
+    });
+
+    it('keeps the enrollment relaycast url in the broker env when --base-url is omitted', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program
+        .parseAsync(['fleet', 'serve', '--enrollment-token', 'ocl_node_enr_xyz'], { from: 'user' })
+        .catch(() => undefined);
+
+      expect(harness.env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
+    });
+
     it('serves an enrolled node without a <file> argument', async () => {
       const harness = buildServeHarness();
 
@@ -265,6 +297,130 @@ describe('fleet command support', () => {
 
       expect(harness.enroll).not.toHaveBeenCalled();
       expect(harness.errors.join('\n')).toMatch(/--enrollment-url requires --enrollment-token/i);
+    });
+
+    it('prefers --name over the enrollment nodeName when building the implicit node', async () => {
+      vi.resetModules();
+
+      const createImplicitLocalFleetNode = vi.fn(() => defineNode({ name: 'placeholder', capabilities: {} }));
+      vi.doMock('../lib/fleet-sidecar.js', async () => {
+        const actual =
+          await vi.importActual<typeof import('../lib/fleet-sidecar.js')>('../lib/fleet-sidecar.js');
+        return { ...actual, createImplicitLocalFleetNode };
+      });
+
+      const { registerFleetCommands: registerWithMock } = await import('./fleet.js');
+
+      const enroll = vi.fn(async () => ({
+        nodeId: 'node_abc',
+        nodeName: 'enrollment-name',
+        nodeToken: 'nt_secret',
+        relayWorkspaceId: 'rw_123',
+        relaycastUrl: 'https://relaycast.example.com',
+        websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+      }));
+      const core = {
+        getProjectPaths: () => ({ projectRoot: '/tmp/proj', dataDir: '/tmp/proj/.data' }),
+        loadTeamsConfig: () => null,
+        createRelay: vi.fn(() => {
+          throw new Error('__stop_after_enrollment__');
+        }),
+        fs: { mkdirSync: vi.fn() },
+        env: {} as NodeJS.ProcessEnv,
+        argv: ['node', 'agent-relay'],
+        onSignal: vi.fn(),
+        isPortInUse: vi.fn(async () => false),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }),
+      } as never;
+
+      const program = new Command();
+      program.exitOverride();
+      registerWithMock(program, {
+        core,
+        enrollFleetNode: enroll as never,
+        error: () => undefined,
+        log: () => undefined,
+        warn: () => undefined,
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      });
+
+      await program
+        .parseAsync(['fleet', 'serve', '--enrollment-token', 'ocl_node_enr_xyz', '--name', 'cli-name'], {
+          from: 'user',
+        })
+        .catch(() => undefined);
+
+      expect(createImplicitLocalFleetNode).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'cli-name' })
+      );
+
+      vi.doUnmock('../lib/fleet-sidecar.js');
+      vi.resetModules();
+    });
+
+    it('falls back to the enrollment nodeName when --name is omitted', async () => {
+      vi.resetModules();
+
+      const createImplicitLocalFleetNode = vi.fn(() => defineNode({ name: 'placeholder', capabilities: {} }));
+      vi.doMock('../lib/fleet-sidecar.js', async () => {
+        const actual =
+          await vi.importActual<typeof import('../lib/fleet-sidecar.js')>('../lib/fleet-sidecar.js');
+        return { ...actual, createImplicitLocalFleetNode };
+      });
+
+      const { registerFleetCommands: registerWithMock } = await import('./fleet.js');
+
+      const enroll = vi.fn(async () => ({
+        nodeId: 'node_abc',
+        nodeName: 'enrollment-name',
+        nodeToken: 'nt_secret',
+        relayWorkspaceId: 'rw_123',
+        relaycastUrl: 'https://relaycast.example.com',
+        websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+      }));
+      const core = {
+        getProjectPaths: () => ({ projectRoot: '/tmp/proj', dataDir: '/tmp/proj/.data' }),
+        loadTeamsConfig: () => null,
+        createRelay: vi.fn(() => {
+          throw new Error('__stop_after_enrollment__');
+        }),
+        fs: { mkdirSync: vi.fn() },
+        env: {} as NodeJS.ProcessEnv,
+        argv: ['node', 'agent-relay'],
+        onSignal: vi.fn(),
+        isPortInUse: vi.fn(async () => false),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }),
+      } as never;
+
+      const program = new Command();
+      program.exitOverride();
+      registerWithMock(program, {
+        core,
+        enrollFleetNode: enroll as never,
+        error: () => undefined,
+        log: () => undefined,
+        warn: () => undefined,
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      });
+
+      await program
+        .parseAsync(['fleet', 'serve', '--enrollment-token', 'ocl_node_enr_xyz'], { from: 'user' })
+        .catch(() => undefined);
+
+      expect(createImplicitLocalFleetNode).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'enrollment-name' })
+      );
+
+      vi.doUnmock('../lib/fleet-sidecar.js');
+      vi.resetModules();
     });
   });
 

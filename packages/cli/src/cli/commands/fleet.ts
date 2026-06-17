@@ -188,7 +188,11 @@ async function resolveServeNodeDefinition(input: {
   return createImplicitLocalFleetNode({
     paths: input.paths,
     teamsConfig: input.deps.core.loadTeamsConfig(input.paths.projectRoot),
-    name: input.enrollment?.nodeName || input.nameOption,
+    // Name precedence (kept identical to nameOverride in runFleetServe so the
+    // implicit node definition and the sidecar registration always agree):
+    // --name > enrollment record's nodeName > createImplicitLocalFleetNode's
+    // projectRoot-basename default.
+    name: input.nameOption ?? input.enrollment?.nodeName,
     ...(input.maxAgentsOverride !== undefined ? { maxAgents: input.maxAgentsOverride } : {}),
   });
 }
@@ -226,11 +230,21 @@ async function runFleetServe(
     deps.core.env.RELAY_API_KEY = workspaceKey;
   }
 
+  // Precedence for the node's Relaycast origin: enrollment provides the source of
+  // truth (already written to RELAY_BASE_URL during the exchange), and an explicit
+  // --base-url is the only thing that overrides it. The override must reach the
+  // broker via RELAY_BASE_URL too — startBrokerWithPortFallback (below) binds the
+  // node to the workspace fleet roster from the environment, so propagating it only
+  // to serveFleetSidecar would leave the broker pointed at the enrollment URL.
+  const baseUrlOverride = typeof options.baseUrl === 'string' ? options.baseUrl.trim() : '';
+  if (baseUrlOverride) {
+    deps.core.env.RELAY_BASE_URL = baseUrlOverride;
+  }
+
   // An enrolled node prefers the name from the enrollment record; a --name flag
   // (already forwarded to the exchange) still wins through nameOption.
   const nameOverride = nameOption ?? enrollment?.nodeName ?? undefined;
-  const baseUrl =
-    (typeof options.baseUrl === 'string' && options.baseUrl) || enrollment?.relaycastUrl || undefined;
+  const baseUrl = baseUrlOverride || enrollment?.relaycastUrl || undefined;
 
   const dashboardPort = Number.parseInt(deps.core.env.AGENT_RELAY_DASHBOARD_PORT ?? '3888', 10) || 3888;
   const started = await startBrokerWithPortFallback(paths, dashboardPort, deps.core);
