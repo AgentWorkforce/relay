@@ -19,6 +19,7 @@ Addressed PR bot feedback for relay cloud auth refresh handling: ignored malform
 ## Key Decisions
 
 ### Preserved existing refresh-token expiry on sparse refresh responses
+
 - **Chose:** Preserved existing refresh-token expiry on sparse refresh responses
 - **Reasoning:** Both stored-auth refresh and live CloudApiClient refresh can receive older cloud responses without refreshTokenExpiresAt; keeping the prior timestamp preserves the proactive backstop instead of silently disabling it.
 
@@ -27,6 +28,7 @@ Addressed PR bot feedback for relay cloud auth refresh handling: ignored malform
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Preserved existing refresh-token expiry on sparse refresh responses: Preserved existing refresh-token expiry on sparse refresh responses
