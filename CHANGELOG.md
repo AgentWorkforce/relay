@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
+## [8.8.2] - 2026-06-17
+
+### Added
+
+- Support fleet-node enrollment in `fleet serve`
+- Broker heartbeat carries node roster snapshot for liveness (factory p11)
+- Add mount scoring and onboarding variants to @agent-relay/evals
+
+### Changed
+
+- [factory] p12: node-targeted placement + reject-and-reconcile
+
 ## [8.8.1] - 2026-06-16
 
 ### Added

@@ -68,7 +68,7 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "8.8.1"
+    "@agent-relay/harness-driver": "8.8.2"
   },
   "publishConfig": {
     "access": "public"
