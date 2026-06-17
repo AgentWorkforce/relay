@@ -14,7 +14,11 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "@agent-relay/integration-prompts": ["../integration-prompts/dist/index.d.ts"],
+      "@agent-relay/integration-prompts/*": ["../integration-prompts/dist/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]

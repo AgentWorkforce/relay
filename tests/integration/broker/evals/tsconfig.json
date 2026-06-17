@@ -22,7 +22,9 @@
       "@agent-relay/config": ["packages/config/dist/index.d.ts"],
       "@agent-relay/config/*": ["packages/config/dist/*"],
       "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
-      "@agent-relay/utils/*": ["packages/utils/dist/*"]
+      "@agent-relay/utils/*": ["packages/utils/dist/*"],
+      "@agent-relay/integration-prompts": ["packages/integration-prompts/dist/index.d.ts"],
+      "@agent-relay/integration-prompts/*": ["packages/integration-prompts/dist/*"]
     }
   },
   "include": ["**/*.ts", "../utils/**/*.ts"],

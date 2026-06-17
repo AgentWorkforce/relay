@@ -901,6 +901,7 @@ jobs:
           - telemetry
           - brand
           - harness-driver
+          - integration-prompts
 
     steps:
       - name: Checkout code

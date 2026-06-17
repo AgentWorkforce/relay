@@ -21,6 +21,7 @@ const workspacePackages = [
   'harness-driver',
   'harnesses',
   'hooks',
+  'integration-prompts',
   'memory',
   'policy',
   'runtime',
