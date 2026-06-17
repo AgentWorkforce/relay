@@ -41,6 +41,7 @@ export interface RelayNodeCapability {
 
 export interface RelayNode {
   id?: string;
+  nodeId?: string;
   name: string;
   status: RelayNodeStatus;
   live: boolean;
@@ -52,6 +53,7 @@ export interface RelayNode {
   handlersLive?: boolean;
   load?: number;
   lastHeartbeatAt?: string;
+  createdAt?: string;
   tags?: string[];
   version?: string;
 }

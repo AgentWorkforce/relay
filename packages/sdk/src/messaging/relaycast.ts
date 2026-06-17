@@ -129,6 +129,7 @@ function toRelayNode(raw: unknown): RelayNode {
   const live = readBoolean(node, 'live') ?? rawStatus === 'online';
   return {
     id: readStr(node, 'id', 'node_id'),
+    nodeId: readStr(node, 'nodeId', 'node_id'),
     name: readStr(node, 'name') ?? '',
     status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
     live,
@@ -139,6 +140,7 @@ function toRelayNode(raw: unknown): RelayNode {
     handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
     load: readNumber(node, 'load'),
     lastHeartbeatAt: readStr(node, 'lastHeartbeatAt', 'last_heartbeat_at'),
+    createdAt: readStr(node, 'createdAt', 'created_at'),
     tags: readStringArray(node, 'tags'),
     version: readStr(node, 'version'),
   };
