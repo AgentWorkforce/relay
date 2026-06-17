@@ -18,6 +18,7 @@ Preserved cloud operator refresh-token expiry metadata in @agent-relay/cloud, re
 ## Key Decisions
 
 ### Preserve refresh token expiry and proactively refresh cloud sessions
+
 - **Chose:** Preserve refresh token expiry and proactively refresh cloud sessions
 - **Reasoning:** Cloud and relayauth return refreshTokenExpiresAt for durable operator sessions; agent-relay must store it and refresh before access or refresh renewal windows so sibling CLIs can consume one canonical session without browser re-login.
 
@@ -26,6 +27,7 @@ Preserved cloud operator refresh-token expiry metadata in @agent-relay/cloud, re
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Preserve refresh token expiry and proactively refresh cloud sessions: Preserve refresh token expiry and proactively refresh cloud sessions
