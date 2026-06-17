@@ -334,40 +334,57 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(scheduled.body.data.handler_node_id).toBe('node_b'); // least-loaded
   }, 60_000);
 
-  it('resume: a resumable spawn re-binds to the agent ORIGIN node (not an arbitrary target)', async () => {
-    const sessionRef = 'sess-resume-1';
-    // First spawn is UNTARGETED → the engine picks the origin node by placement.
-    // We capture wherever it actually landed so the resume target is derived from
-    // the agent's real origin, not hard-coded (resume = targeted-origin spawn;
-    // the engine records origin_node_id but does not auto-route from session_ref).
-    const first = await invokeAction(engine, driverToken, 'spawn', {
-      cli: 'pool',
-      name: 'resumable-1',
-      session_ref: sessionRef,
-    });
-    const originId = first.body.data.handler_node_id as string; // engine-chosen origin
-    const originName = originId === 'node_a' ? 'node-a' : 'node-b';
-    const firstDone = await waitFor(
-      async () => {
-        const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
-        return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
-      },
-      { label: 'resumable spawn settled', timeoutMs: 20_000 }
-    );
-    expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
+  // This is the 7th scenario in the serial chain — by now both nodes are running
+  // several stub PTY children from the earlier spawn scenarios, so the broker +
+  // sidecar are under real contention and the FIRST (untargeted) spawn's settle
+  // can occasionally exceed a tight deadline (observed `last=null` ⇒ the
+  // invocation simply hadn't reached a terminal status yet, not a logic fault).
+  // The origin-rebind correctness (the actual subject of this test, asserted on
+  // the resume response below) is unaffected — so we give the settle a realistic
+  // deadline and a bounded retry rather than weakening any assertion. The retry
+  // re-runs the whole body, so we first release any `resumable-1` left bound by a
+  // prior timed-out attempt (the release at the end is skipped when settle throws)
+  // to keep each attempt starting from a clean slate.
+  it(
+    'resume: a resumable spawn re-binds to the agent ORIGIN node (not an arbitrary target)',
+    { retry: 2 },
+    async () => {
+      const sessionRef = 'sess-resume-1';
+      await releaseAgent(engine, workspaceKey, 'resumable-1'); // idempotent cleanup for retries
+      // First spawn is UNTARGETED → the engine picks the origin node by placement.
+      // We capture wherever it actually landed so the resume target is derived from
+      // the agent's real origin, not hard-coded (resume = targeted-origin spawn;
+      // the engine records origin_node_id but does not auto-route from session_ref).
+      const first = await invokeAction(engine, driverToken, 'spawn', {
+        cli: 'pool',
+        name: 'resumable-1',
+        session_ref: sessionRef,
+      });
+      const originId = first.body.data.handler_node_id as string; // engine-chosen origin
+      const originName = originId === 'node_a' ? 'node-a' : 'node-b';
+      const firstDone = await waitFor(
+        async () => {
+          const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
+          return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
+        },
+        { label: 'resumable spawn settled', timeoutMs: 30_000, intervalMs: 300 }
+      );
+      expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
 
-    // Release, then resume the SAME session targeted at the recorded origin.
-    expect(await releaseAgent(engine, workspaceKey, 'resumable-1')).toBeLessThan(300);
-    const resume = await invokeAction(engine, driverToken, 'spawn', {
-      cli: 'pool',
-      name: 'resumable-1',
-      target_node: originName,
-      session_ref: sessionRef,
-    });
-    expect(resume.status).toBe(201);
-    expect(resume.body.data.handler_node_id).toBe(originId); // resumed on the agent's origin node
-    expect(resume.body.data.dispatched_node_id).toBe(originId);
-  }, 45_000);
+      // Release, then resume the SAME session targeted at the recorded origin.
+      expect(await releaseAgent(engine, workspaceKey, 'resumable-1')).toBeLessThan(300);
+      const resume = await invokeAction(engine, driverToken, 'spawn', {
+        cli: 'pool',
+        name: 'resumable-1',
+        target_node: originName,
+        session_ref: sessionRef,
+      });
+      expect(resume.status).toBe(201);
+      expect(resume.body.data.handler_node_id).toBe(originId); // resumed on the agent's origin node
+      expect(resume.body.data.dispatched_node_id).toBe(originId);
+    },
+    60_000
+  );
 
   it('placement failure: spawning a capability no targeted node advertises fails with capability_mismatch', async () => {
     const res = await invokeAction(engine, driverToken, 'spawn', {
