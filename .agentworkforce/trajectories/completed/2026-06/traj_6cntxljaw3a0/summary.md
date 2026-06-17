@@ -18,6 +18,7 @@ Merged the shared integration prompts package PR, published Relay 8.8.4 through 
 ## Key Decisions
 
 ### Run publish.yml as a normal patch release
+
 - **Chose:** Run publish.yml as a normal patch release
 - **Reasoning:** The integration-prompts package was visible at 8.8.3 before merge, but merged main also changes evals and the publish matrix. A patch release publishes the merged state consistently through the repo workflow.
 
@@ -26,7 +27,8 @@ Merged the shared integration prompts package PR, published Relay 8.8.4 through 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Run publish.yml as a normal patch release: Run publish.yml as a normal patch release
 - Relay PR 1149 merged, npm 8.8.4 published, release workflow waiting only on terminal Summary job

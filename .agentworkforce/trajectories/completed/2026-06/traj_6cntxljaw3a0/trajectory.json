@@ -39,21 +39,12 @@
           "type": "reflection",
           "content": "Relay PR 1149 merged, npm 8.8.4 published, release workflow waiting only on terminal Summary job",
           "raw": {
-            "focalPoints": [
-              "release",
-              "consumers",
-              "verification"
-            ],
+            "focalPoints": ["release", "consumers", "verification"],
             "adjustments": "Continue monitoring until workflow conclusion reports success, then complete trajectory and notify relay channel.",
             "confidence": 0.9
           },
           "significance": "high",
-          "tags": [
-            "focal:release",
-            "focal:consumers",
-            "focal:verification",
-            "confidence:0.9"
-          ]
+          "tags": ["focal:release", "focal:consumers", "focal:verification", "confidence:0.9"]
         }
       ]
     }
@@ -63,9 +54,7 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [
-    "a1e1f63c1"
-  ],
+  "commits": ["a1e1f63c1"],
   "filesChanged": [
     "CHANGELOG.md",
     "package.json",
