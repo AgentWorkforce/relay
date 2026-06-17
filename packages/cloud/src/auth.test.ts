@@ -144,13 +144,20 @@ describe('readStoredAuth', () => {
   it.each([
     ['apiUrl', { apiUrl: 'not-a-url' }],
     ['accessExpiresAt', { accessTokenExpiresAt: 'not-a-date' }],
-    ['refreshExpiresAt', { refreshTokenExpiresAt: 'not-a-date' }],
   ])('falls through to file auth when env %s is malformed', async (_label, override) => {
     const env = createEnvAuth(override);
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
 
     await expect(readStoredAuth(env)).resolves.toEqual(FILE_AUTH);
     expect(fsMocks.readFile).toHaveBeenCalledOnce();
+  });
+
+  it('ignores malformed optional env refresh-token expiry metadata', async () => {
+    const env = createEnvAuth({ refreshTokenExpiresAt: 'not-a-date' });
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
+
+    await expect(readStoredAuth(env)).resolves.toEqual(ENV_AUTH);
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
   });
 
   it('returns file auth when env is absent', async () => {
@@ -490,6 +497,41 @@ describe('refreshStoredAuth', () => {
               refreshToken: 'fresh-refresh',
               accessTokenExpiresAt: '2026-04-13T13:00:00.000Z',
               refreshTokenExpiresAt,
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(refreshStoredAuth(auth)).resolves.toMatchObject({
+      accessToken: 'fresh-access',
+      refreshToken: 'fresh-refresh',
+      refreshTokenExpiresAt,
+    });
+  });
+
+  it('retains existing refresh token expiry when the refresh endpoint omits it', async () => {
+    const refreshTokenExpiresAt = '2026-07-13T12:00:00.000Z';
+    const auth: StoredAuth = {
+      apiUrl: 'https://origin.example/cloud',
+      accessToken: 'stale-access',
+      refreshToken: 'stored-refresh',
+      accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+      refreshTokenExpiresAt,
+    };
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(auth));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              accessToken: 'fresh-access',
+              refreshToken: 'fresh-refresh',
+              accessTokenExpiresAt: '2026-04-13T13:00:00.000Z',
             }),
             {
               status: 200,

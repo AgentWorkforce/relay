@@ -60,16 +60,14 @@ function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
     return null;
   }
 
-  if (refreshTokenExpiresAt && Number.isNaN(Date.parse(refreshTokenExpiresAt))) {
-    return null;
-  }
-
   return markEnvBackedAuth({
     apiUrl,
     accessToken,
     refreshToken,
     accessTokenExpiresAt,
-    ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
+    ...(refreshTokenExpiresAt && !Number.isNaN(Date.parse(refreshTokenExpiresAt))
+      ? { refreshTokenExpiresAt }
+      : {}),
   });
 }
 
@@ -545,12 +543,17 @@ async function requestStoredAuthRefresh(
     throw refreshExpired();
   }
 
+  const nextRefreshTokenExpiresAt =
+    typeof payload.refreshTokenExpiresAt === 'string' && payload.refreshTokenExpiresAt.trim()
+      ? payload.refreshTokenExpiresAt.trim()
+      : auth.refreshTokenExpiresAt;
+
   const nextAuth: StoredAuth = {
     apiUrl: typeof payload.apiUrl === 'string' && payload.apiUrl.trim() ? payload.apiUrl.trim() : auth.apiUrl,
     accessToken: payload.accessToken,
     refreshToken: payload.refreshToken,
     accessTokenExpiresAt: payload.accessTokenExpiresAt,
-    ...(payload.refreshTokenExpiresAt ? { refreshTokenExpiresAt: payload.refreshTokenExpiresAt } : {}),
+    ...(nextRefreshTokenExpiresAt ? { refreshTokenExpiresAt: nextRefreshTokenExpiresAt } : {}),
   };
 
   return nextAuth;
