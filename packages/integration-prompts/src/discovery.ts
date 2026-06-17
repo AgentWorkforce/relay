@@ -158,9 +158,10 @@ function parseWriteFieldContracts(adapterDoc: string, providerHint?: string): Wr
 
   for (const rawLine of adapterDoc.split(/\r?\n/u)) {
     const line = rawLine.trim();
-    const heading = line.match(/^###\s+(.+)$/u);
-    if (heading) {
-      pendingDescription = heading[1]?.trim();
+    if (line.startsWith('###')) {
+      const heading = line.slice(3).trim();
+      if (!heading) continue;
+      pendingDescription = heading;
       currentPath = undefined;
       continue;
     }
@@ -294,7 +295,7 @@ function normalizeResourcePath(path: string): string {
 function joinPath(...parts: string[]): string {
   return parts
     .map((part, index) => {
-      const trimmed = index === 0 ? trimTrailingSlash(part) : part.replace(/^\/+|\/+$/gu, '');
+      const trimmed = index === 0 ? trimTrailingSlash(part) : trimSlashes(part);
       return trimmed;
     })
     .filter(Boolean)
@@ -302,11 +303,24 @@ function joinPath(...parts: string[]): string {
 }
 
 function normalizePath(path: string): string {
-  return path.replace(/\\/gu, '/').replace(/\/+/gu, '/').replace(/\/$/u, '');
+  const normalized = path.replace(/\\/gu, '/');
+  const segments = normalized.split('/').filter(Boolean);
+  const prefix = normalized.startsWith('/') ? '/' : '';
+  return `${prefix}${segments.join('/')}`;
 }
 
 function trimTrailingSlash(path: string): string {
-  return path.replace(/\/+$/u, '');
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end -= 1;
+  return path.slice(0, end);
+}
+
+function trimSlashes(path: string): string {
+  let start = 0;
+  let end = path.length;
+  while (start < end && path[start] === '/') start += 1;
+  while (end > start && path[end - 1] === '/') end -= 1;
+  return path.slice(start, end);
 }
 
 function stripPrefix(path: string, prefix: string): string {
