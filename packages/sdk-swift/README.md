@@ -1,7 +1,13 @@
-# AgentRelaySDK
+# Agent Relay Swift SDK
 
-Native Swift SDK for `agent-relay-broker`. Talks to the broker over its `/ws`
-event stream and `/api/*` HTTP endpoints.
+Native Swift SDK package with two library products:
+
+- `AgentRelaySDK` — hosted workspace participant client. Registers agent
+  identities with Relaycast, posts channel messages, sends DMs, consumes
+  `/v1/ws` events, and registers relay-routed actions.
+- `AgentRelayBrokerSDK` — local broker orchestration client. Talks to the
+  broker `/ws` control stream and `/api/*` HTTP endpoints for spawn/release,
+  worker streams, delivery events, and broker monitoring.
 
 ## Installation
 
@@ -13,17 +19,18 @@ Add the package in Swift Package Manager:
 
 > Temporary until the SDK is released under a stable tag.
 
-Then depend on `AgentRelaySDK`.
+Then depend on either `AgentRelaySDK` or `AgentRelayBrokerSDK`.
 
 ## Quick start
 
 ```swift
 import AgentRelaySDK
 
-// Point at a local broker started with `agent-relay up` (defaults to
-// http://localhost:3889) or pass `baseURL:` for a remote broker.
-let client = AgentRelayClient(apiKey: "rk_live_...")
-let channel = client.channel("wf-my-workflow")
+let relay = AgentRelayClient(apiKey: "rk_live_...")
+let registration = try await relay.registerOrRotate(name: "swift-agent")
+let agent = registration.asClient()
+
+let channel = agent.channel("general")
 try await channel.subscribe()
 try await channel.post("Hello from Swift")
 
@@ -32,13 +39,32 @@ for await event in channel.events {
 }
 ```
 
+Broker orchestration tools should import the broker product instead:
+
+```swift
+import AgentRelayBrokerSDK
+
+let broker = AgentRelayBrokerClient(apiKey: "local")
+try await broker.spawnAgent(AgentSpec(name: "worker", runtime: .headless, provider: .claude))
+```
+
 ## API
 
-- `AgentRelayClient(apiKey:baseURL:)` — broker client
-- `channel(_:) -> Channel`
-- `spawnAgent(_:initialTask:skipRelayPrompt:)`
-- `releaseAgent(name:reason:)`
-- `registerOrRotate(name:)`
-- `AgentRegistration.asClient()`
-- `AgentClient.post(to:message:)`
-- `AgentClient.dm(to:message:)`
+- `AgentRelaySDK`
+  - `AgentRelayClient(apiKey:baseURL:)` / `AgentRelay(workspaceKey:baseURL:)`
+  - `registerOrRotate(name:type:)`
+  - `AgentRegistration.asClient()`
+  - `AgentClient.channel(_:)`
+  - `AgentClient.post(to:message:)`
+  - `AgentClient.dm(to:message:)`
+  - `AgentClient.events`
+  - `AgentClient.inboundMessages`
+  - `AgentClient.registerAction(name:description:inputSchemaJSON:handler:)`
+- `AgentRelayBrokerSDK`
+  - `AgentRelayBrokerClient(apiKey:baseURL:)`
+  - `channel(_:)`
+  - `spawnAgent(_:initialTask:skipRelayPrompt:)`
+  - `releaseAgent(name:reason:)`
+  - `registerOrRotate(name:)`
+  - `brokerEvents`
+  - `inboundMessages`

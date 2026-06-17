@@ -4,16 +4,16 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Minimal HTTP client for the broker REST API.
-actor RelayHTTP {
+protocol HostedHTTPClient: Sendable {
+    func get(path: String, query: [String: String]?) async throws -> Data
+    func post(path: String, body: Data?) async throws -> Data
+    func delete(path: String) async throws -> Data
+}
+
+actor HostedHTTP: HostedHTTPClient {
     private let baseURL: URL
     private let apiKey: String
     private let session: URLSession
-    private let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        return encoder
-    }()
-    private let decoder: JSONDecoder = JSONDecoder()
 
     init(baseURL: URL, apiKey: String, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -21,26 +21,27 @@ actor RelayHTTP {
         self.session = session
     }
 
+    func get(path: String, query: [String: String]? = nil) async throws -> Data {
+        try await request(method: "GET", path: path, query: query, body: nil)
+    }
+
     func post(path: String, body: Data?) async throws -> Data {
-        try await request(method: "POST", path: path, body: body)
+        try await request(method: "POST", path: path, query: nil, body: body)
     }
 
-    func delete(path: String, body: Data?) async throws -> Data {
-        try await request(method: "DELETE", path: path, body: body)
+    func delete(path: String) async throws -> Data {
+        try await request(method: "DELETE", path: path, query: nil, body: nil)
     }
 
-    func get(path: String) async throws -> Data {
-        try await request(method: "GET", path: path, body: nil)
-    }
-
-    private func request(method: String, path: String, body: Data?) async throws -> Data {
-        guard let url = url(for: path) else {
+    private func request(method: String, path: String, query: [String: String]?, body: Data?) async throws -> Data {
+        guard let url = Self.resolveAPIURL(baseURL: baseURL, path: path, query: query) else {
             throw RelayError.invalidBaseURL("Could not resolve URL for path \(path)")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("agent-relay-swift", forHTTPHeaderField: "X-Relaycast-Origin-Client")
+        request.setValue("swift-sdk-split", forHTTPHeaderField: "X-Relaycast-Origin-Version")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -54,7 +55,7 @@ actor RelayHTTP {
         }
 
         guard let http = response as? HTTPURLResponse else {
-            throw RelayError.connectionFailed("Non-HTTP response from broker")
+            throw RelayError.connectionFailed("Non-HTTP response from Relaycast")
         }
 
         if !(200..<300).contains(http.statusCode) {
@@ -62,18 +63,14 @@ actor RelayHTTP {
             throw RelayError.protocolError(
                 code: code,
                 message: message,
-                retryable: http.statusCode >= 500
+                retryable: http.statusCode == 429 || http.statusCode >= 500
             )
         }
 
         return data
     }
 
-    private func url(for path: String) -> URL? {
-        Self.resolveAPIURL(baseURL: baseURL, path: path)
-    }
-
-    static func resolveAPIURL(baseURL: URL, path: String) -> URL? {
+    static func resolveAPIURL(baseURL: URL, path: String, query: [String: String]? = nil) -> URL? {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -84,26 +81,62 @@ actor RelayHTTP {
         while basePath.hasSuffix("/") { basePath = String(basePath.dropLast()) }
         if basePath.hasSuffix("/v1/ws") {
             basePath = String(basePath.dropLast("/v1/ws".count))
-        } else if basePath.hasSuffix("/ws") {
-            basePath = String(basePath.dropLast("/ws".count))
         }
 
         let normalizedPath = path.hasPrefix("/") ? path : "/" + path
         components.path = basePath + normalizedPath
-        components.query = nil
+        components.queryItems = query?.map { URLQueryItem(name: $0.key, value: $0.value) }
         components.fragment = nil
         return components.url
     }
 
     private func decodeErrorBody(_ data: Data, fallbackStatus: Int) -> (code: String, message: String) {
+        if let envelope = try? JSONDecoder().decode(APIEnvelope<EmptyAPIData>.self, from: data),
+           let error = envelope.error {
+            return (error.code, error.message)
+        }
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let code = (json["code"] as? String) ?? "http_\(fallbackStatus)"
+            let error = json["error"] as? [String: Any]
+            let code = (error?["code"] as? String) ?? (json["code"] as? String) ?? "http_\(fallbackStatus)"
             let message =
-                (json["message"] as? String)
-                ?? (json["error"] as? String)
+                (error?["message"] as? String)
+                ?? (json["message"] as? String)
                 ?? "HTTP \(fallbackStatus)"
             return (code, message)
         }
         return ("http_\(fallbackStatus)", "HTTP \(fallbackStatus)")
+    }
+}
+
+struct APIEnvelope<T: Decodable>: Decodable {
+    let ok: Bool
+    let data: T?
+    let error: APIErrorPayload?
+}
+
+struct APIErrorPayload: Decodable {
+    let code: String
+    let message: String
+}
+
+struct EmptyAPIData: Decodable {}
+
+func decodeAPIData<T: Decodable>(_ data: Data, as type: T.Type = T.self) throws -> T {
+    do {
+        let envelope = try JSONDecoder().decode(APIEnvelope<T>.self, from: data)
+        if envelope.ok, let value = envelope.data {
+            return value
+        }
+        if envelope.ok, T.self == EmptyAPIData.self {
+            return EmptyAPIData() as! T
+        }
+        if let error = envelope.error {
+            throw RelayError.protocolError(code: error.code, message: error.message, retryable: false)
+        }
+        throw RelayError.decodingFailed("Relay API response did not include data")
+    } catch let error as RelayError {
+        throw error
+    } catch {
+        throw RelayError.decodingFailed(String(describing: error))
     }
 }
