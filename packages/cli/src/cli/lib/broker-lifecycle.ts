@@ -689,11 +689,7 @@ async function waitForBrokerReadiness(
   return latest;
 }
 
-async function shutdownUpResources(
-  relay: CoreRelay,
-  dataDir: string,
-  deps: CoreDependencies
-): Promise<void> {
+async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
   await relay.shutdown().catch(() => undefined);
   safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
 }

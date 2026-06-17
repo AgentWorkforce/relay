@@ -334,15 +334,11 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/usr/bin/node',
-      ['/tmp/agent-relay.js', 'up'],
-      {
-        detached: true,
-        stdio: 'ignore',
-        env: deps.env,
-      }
-    );
+    expect(deps.spawnProcess).toHaveBeenCalledWith('/usr/bin/node', ['/tmp/agent-relay.js', 'up'], {
+      detached: true,
+      stdio: 'ignore',
+      env: deps.env,
+    });
     expect(spawnedProcess.unref).toHaveBeenCalled();
     expect(sleepImpl).toHaveBeenCalledWith(500);
     expect(sdkStatusClient.getStatus).toHaveBeenCalledTimes(1);
@@ -446,15 +442,11 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--background']);
 
     expect(exitCode).toBe(0);
-    expect(deps.spawnProcess).toHaveBeenCalledWith(
-      '/tmp/agent-relay-darwin-arm64',
-      ['up'],
-      {
-        detached: true,
-        stdio: 'ignore',
-        env: deps.env,
-      }
-    );
+    expect(deps.spawnProcess).toHaveBeenCalledWith('/tmp/agent-relay-darwin-arm64', ['up'], {
+      detached: true,
+      stdio: 'ignore',
+      env: deps.env,
+    });
   });
 
   it('up --background exits non-zero when the detached broker never becomes ready', async () => {
