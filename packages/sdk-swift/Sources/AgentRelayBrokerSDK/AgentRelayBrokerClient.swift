@@ -223,6 +223,9 @@ private struct SpawnRequestBody: Encodable {
         if let cwd = spec.cwd {
             try container.encode(cwd, forKey: .cwd)
         }
+        if let sessionId = spec.sessionId {
+            try container.encode(sessionId, forKey: .sessionId)
+        }
         if let team = spec.team {
             try container.encode(team, forKey: .team)
         }
@@ -245,6 +248,7 @@ private struct SpawnRequestBody: Encodable {
 
     enum SpawnCodingKeys: String, CodingKey {
         case name, cli, runtime, model, args, channels, cwd, team, task
+        case sessionId = "session_id"
         case shadowOf = "shadow_of"
         case shadowMode = "shadow_mode"
         case restartPolicy = "restart_policy"
@@ -328,6 +332,8 @@ public final class Channel: @unchecked Sendable {
     public let name: String
     private let core: BrokerCore
     private let continuationRef: AsyncStream<RelayChannelEvent>.Continuation?
+    private let subscriptionLock = NSLock()
+    private var subscribed = false
     public let events: AsyncStream<RelayChannelEvent>
 
     init(name: String, core: BrokerCore) {
@@ -341,7 +347,7 @@ public final class Channel: @unchecked Sendable {
     }
 
     public func subscribe() async throws {
-        if let continuationRef {
+        if markSubscribed(), let continuationRef {
             await core.registerChannelContinuation(continuationRef, for: name)
         }
         try await core.ensureConnected()
@@ -349,6 +355,14 @@ public final class Channel: @unchecked Sendable {
 
     public func post(_ text: String) async throws {
         try await core.sendChannelPost(channel: name, text: text)
+    }
+
+    private func markSubscribed() -> Bool {
+        subscriptionLock.lock()
+        defer { subscriptionLock.unlock() }
+        guard !subscribed else { return false }
+        subscribed = true
+        return true
     }
 }
 

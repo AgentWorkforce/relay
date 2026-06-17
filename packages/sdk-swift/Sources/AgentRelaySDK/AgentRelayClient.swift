@@ -81,7 +81,7 @@ final class HostedWorkspaceCore: @unchecked Sendable {
     func registerOrRotate(name: String, type: RelayAgentType) async throws -> AgentRegistration {
         do {
             return try await register(name: name, type: type)
-        } catch RelayError.protocolError(code: let code, message: _, retryable: _) where isNameConflict(code) {
+        } catch RelayError.protocolError(code: let code, message: let message, retryable: _) where isNameConflict(code: code, message: message) {
             let agent = try await getAgent(name: name)
             let token = try await rotateToken(name: agent.name)
             return AgentRegistration(
@@ -185,8 +185,12 @@ final class HostedWorkspaceCore: @unchecked Sendable {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    private func isNameConflict(_ code: String) -> Bool {
-        code == "name_conflict" || code == "agent_exists" || code == "conflict"
+    private func isNameConflict(code: String, message: String) -> Bool {
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["agent_already_exists", "name_conflict", "name_taken", "agent_exists", "conflict", "duplicate", "http_409"].contains(normalizedCode) {
+            return true
+        }
+        return message.lowercased().contains("already exists")
     }
 }
 
@@ -339,9 +343,17 @@ actor HostedParticipantCore {
         if routerTask == nil || routerTask?.isCancelled == true {
             routerTask = Task { [weak self] in await self?.routeFrames() }
         }
+        await transport.setOnConnect { [weak self] in
+            await self?.transportDidReconnect()
+        }
         try await transport.connect()
         notifyConnectionState(.connected)
         try await syncSubscriptions()
+    }
+
+    func transportDidReconnect() async {
+        notifyConnectionState(.connected)
+        try? await syncSubscriptions()
     }
 
     func disconnect() async {
@@ -424,7 +436,13 @@ actor HostedParticipantCore {
 
     func unregisterAction(name: String, registrationId: String) async {
         guard actionHandlers[name]?.id == registrationId else { return }
-        actionHandlers.removeValue(forKey: name)
+        do {
+            try await unregisterActionDescriptor(name: name)
+            actionHandlers.removeValue(forKey: name)
+        } catch {
+            // Keep the handler if the relay descriptor could not be removed so
+            // advertised invocations are still handled instead of silently dropped.
+        }
     }
 
     private func registerActionDescriptor(name: String, description: String, inputSchema: JSONValue) async throws {
@@ -436,6 +454,10 @@ actor HostedParticipantCore {
         )
         let body = try encode(request)
         _ = try await workspaceHTTP.post(path: "/v1/actions", body: body)
+    }
+
+    private func unregisterActionDescriptor(name: String) async throws {
+        _ = try await workspaceHTTP.delete(path: "/v1/actions/\(Self.escapePath(name))")
     }
 
     private func syncSubscriptions() async throws {
@@ -477,7 +499,7 @@ actor HostedParticipantCore {
 
     private func channelEvent(from event: RelayEvent) -> RelayChannelEvent? {
         switch event.type {
-        case "message.created", "messageCreated", "thread.reply", "threadReply", "dm.received", "dmReceived", "group_dm.received", "groupDmReceived":
+        case "message.created", "messageCreated", "message.received", "messageReceived", "thread.reply", "threadReply", "dm.received", "dmReceived", "group_dm.received", "groupDmReceived":
             break
         default:
             return nil
@@ -537,7 +559,11 @@ actor HostedParticipantCore {
     }
 
     private func completeInvocation(actionName: String, invocationId: String, output: JSONValue) async throws {
-        try await completeInvocation(actionName: actionName, invocationId: invocationId, body: CompleteInvocationRequest(output: output, error: nil))
+        try await completeInvocation(
+            actionName: actionName,
+            invocationId: invocationId,
+            body: CompleteInvocationRequest(output: Self.outputRecord(output), error: nil)
+        )
     }
 
     private func completeInvocation(actionName: String, invocationId: String, error: String) async throws {
@@ -633,6 +659,13 @@ actor HostedParticipantCore {
             }
         }
         return error.localizedDescription
+    }
+
+    private static func outputRecord(_ value: JSONValue) -> JSONValue {
+        if case .object = value {
+            return value
+        }
+        return .object(["value": value])
     }
 }
 

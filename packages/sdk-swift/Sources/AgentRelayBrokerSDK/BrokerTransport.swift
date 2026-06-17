@@ -4,6 +4,38 @@ import Foundation
 import FoundationNetworking
 #endif
 
+private final class PingWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning: Void = ()) {
+        resume(.success(()))
+    }
+
+    func resume(throwing error: Error) {
+        resume(.failure(error))
+    }
+
+    private func resume(_ result: Result<Void, Error>) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+
+        guard let pending else { return }
+        switch result {
+        case .success:
+            pending.resume(returning: ())
+        case .failure(let error):
+            pending.resume(throwing: error)
+        }
+    }
+}
+
 protocol RelayTransportClient: Sendable {
     var inbound: AsyncStream<Data> { get }
 
@@ -176,11 +208,21 @@ public actor RelayTransport: RelayTransportClient {
         guard let task = webSocketTask else { throw TransportError.notConnected }
         let before = Date()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let waiter = PingWaiter(continuation)
+            let timeout = Task {
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch {
+                    return
+                }
+                waiter.resume(throwing: TransportError.connectionFailed("Pong timed out"))
+            }
             task.sendPing { error in
+                timeout.cancel()
                 if let error {
-                    continuation.resume(throwing: error)
+                    waiter.resume(throwing: error)
                 } else {
-                    continuation.resume(returning: ())
+                    waiter.resume()
                 }
             }
         }

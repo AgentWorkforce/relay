@@ -223,6 +223,7 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, text, from, channel
+        case body
         case messageId = "message_id"
         case messageIdCamel = "messageId"
         case conversationId = "conversation_id"
@@ -241,7 +242,9 @@ public struct RelayMessage: Decodable, Sendable, Equatable {
         messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
             ?? container.decodeIfPresent(String.self, forKey: .messageIdCamel)
             ?? id
-        text = (try? container.decode(String.self, forKey: .text)) ?? ""
+        text = (try? container.decode(String.self, forKey: .text))
+            ?? (try? container.decode(String.self, forKey: .body))
+            ?? ""
         from = (try? container.decode(RelayMessageSender.self, forKey: .from)) ?? RelayMessageSender()
         channel = try container.decodeIfPresent(RelayMessageChannelRef.self, forKey: .channel)
         conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
@@ -268,7 +271,7 @@ public struct RelayEvent: Decodable, Sendable {
     public let rawJSON: JSONValue?
 
     enum CodingKeys: String, CodingKey {
-        case type, id, channel, message, status
+        case type, id, channel, message, status, payload
         case invocationId = "invocation_id"
         case invocationIdCamel = "invocationId"
         case actionName = "action_name"
@@ -283,20 +286,38 @@ public struct RelayEvent: Decodable, Sendable {
     public init(from decoder: Decoder) throws {
         rawJSON = try? JSONValue(from: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let payload = try? container.nestedContainer(keyedBy: CodingKeys.self, forKey: .payload)
         type = try container.decode(String.self, forKey: .type)
-        id = try container.decodeIfPresent(String.self, forKey: .id)
-        channel = try container.decodeIfPresent(String.self, forKey: .channel)
-        message = try container.decodeIfPresent(RelayMessage.self, forKey: .message)
-        invocationId = try container.decodeIfPresent(String.self, forKey: .invocationId)
-            ?? container.decodeIfPresent(String.self, forKey: .invocationIdCamel)
-        actionName = try container.decodeIfPresent(String.self, forKey: .actionName)
-            ?? container.decodeIfPresent(String.self, forKey: .actionNameCamel)
-        callerName = try container.decodeIfPresent(String.self, forKey: .callerName)
-            ?? container.decodeIfPresent(String.self, forKey: .callerNameCamel)
-        agentName = try container.decodeIfPresent(String.self, forKey: .agentName)
-            ?? container.decodeIfPresent(String.self, forKey: .agentNameCamel)
+        id = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.id])
+        channel = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.channel])
+        message = Self.decodeIfPresent(RelayMessage.self, from: container, payload: payload, keys: [.message])
+        invocationId = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.invocationId, .invocationIdCamel])
+        actionName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.actionName, .actionNameCamel])
+        callerName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.callerName, .callerNameCamel])
+        agentName = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.agentName, .agentNameCamel])
             ?? RelayEvent.decodeAgentName(from: container)
-        status = try container.decodeIfPresent(String.self, forKey: .status)
+            ?? payload.flatMap { RelayEvent.decodeAgentName(from: $0) }
+        status = Self.decodeIfPresent(String.self, from: container, payload: payload, keys: [.status])
+    }
+
+    private static func decodeIfPresent<T: Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        payload: KeyedDecodingContainer<CodingKeys>?,
+        keys: [CodingKeys]
+    ) -> T? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(type, forKey: key) {
+                return value
+            }
+        }
+        guard let payload else { return nil }
+        for key in keys {
+            if let value = try? payload.decodeIfPresent(type, forKey: key) {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func decodeAgentName(from container: KeyedDecodingContainer<CodingKeys>) -> String? {

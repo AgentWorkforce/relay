@@ -12,10 +12,12 @@ private actor MockHostedHTTP: HostedHTTPClient {
     private var requests: [Request] = []
     private var getResponses: [String: Data]
     private var postResponses: [String: Data]
+    private var postErrors: [String: Error]
 
-    init(getResponses: [String: Data] = [:], postResponses: [String: Data] = [:]) {
+    init(getResponses: [String: Data] = [:], postResponses: [String: Data] = [:], postErrors: [String: Error] = [:]) {
         self.getResponses = getResponses
         self.postResponses = postResponses
+        self.postErrors = postErrors
     }
 
     func get(path: String, query: [String: String]?) async throws -> Data {
@@ -25,6 +27,9 @@ private actor MockHostedHTTP: HostedHTTPClient {
 
     func post(path: String, body: Data?) async throws -> Data {
         requests.append(Request(method: "POST", path: path, body: body))
+        if let error = postErrors[path] {
+            throw error
+        }
         return postResponses[path] ?? Self.envelope(#"{}"#)
     }
 
@@ -48,6 +53,7 @@ private actor MockHostedTransport: HostedEventTransportClient {
     private let continuation: AsyncStream<Data>.Continuation
     private var sent: [Data] = []
     private var connectCount = 0
+    private var onConnect: (@Sendable () async -> Void)?
 
     init() {
         var continuationRef: AsyncStream<Data>.Continuation?
@@ -55,6 +61,10 @@ private actor MockHostedTransport: HostedEventTransportClient {
             continuationRef = continuation
         }
         self.continuation = continuationRef!
+    }
+
+    func setOnConnect(_ handler: @escaping @Sendable () async -> Void) async {
+        onConnect = handler
     }
 
     func connect() async throws {
@@ -79,6 +89,10 @@ private actor MockHostedTransport: HostedEventTransportClient {
 
     func connections() -> Int {
         connectCount
+    }
+
+    func triggerReconnect() async {
+        await onConnect?()
     }
 }
 
@@ -139,6 +153,46 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "https://gateway.relaycast.dev/v1/dm")
     }
 
+    func testRegisterOrRotateTreatsAgentAlreadyExistsAsConflict() async throws {
+        let workspaceHTTP = MockHostedHTTP(
+            getResponses: [
+                "/v1/agents/swift-agent": MockHostedHTTP.envelope(
+                    #"{"id":"ag_existing","name":"swift-agent","type":"agent","status":"online","created_at":"2026-01-01T00:00:00Z"}"#
+                )
+            ],
+            postResponses: [
+                "/v1/agents/swift-agent/rotate-token": MockHostedHTTP.envelope(#"{"token":"at_rotated"}"#)
+            ],
+            postErrors: [
+                "/v1/agents": RelayError.protocolError(
+                    code: "agent_already_exists",
+                    message: "name_taken",
+                    retryable: false
+                )
+            ]
+        )
+        let core = HostedWorkspaceCore(
+            workspaceKey: "rk_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            http: workspaceHTTP
+        )
+
+        let registration = try await core.registerOrRotate(name: "swift-agent", type: .agent)
+
+        XCTAssertEqual(registration.id, "ag_existing")
+        XCTAssertEqual(registration.name, "swift-agent")
+        XCTAssertEqual(registration.token, "at_rotated")
+        let requests = await workspaceHTTP.allRequests()
+        XCTAssertEqual(
+            requests.map { "\($0.method) \($0.path)" },
+            [
+                "POST /v1/agents",
+                "GET /v1/agents/swift-agent",
+                "POST /v1/agents/swift-agent/rotate-token"
+            ]
+        )
+    }
+
     func testAgentClientPostsChannelAndDirectMessagesToHostedEndpoints() async throws {
         let workspaceHTTP = MockHostedHTTP()
         let agentHTTP = MockHostedHTTP()
@@ -168,6 +222,7 @@ final class HostedParticipantSDKTests: XCTestCase {
     }
 
     func testChannelSubscribeSendsHostedSubscribeFrameAndRoutesMessages() async throws {
+        let transport = MockHostedTransport()
         let core = HostedParticipantCore(
             agentId: "ag_1",
             agentName: "swift-agent",
@@ -175,11 +230,16 @@ final class HostedParticipantSDKTests: XCTestCase {
             baseURL: URL(string: "https://gateway.relaycast.dev")!,
             workspaceHTTP: MockHostedHTTP(),
             agentHTTP: MockHostedHTTP(),
-            transport: MockHostedTransport()
+            transport: transport
         )
         let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
         let channel = client.channel("general")
         try await channel.subscribe()
+        var sentMessages = await transport.sentMessages()
+        XCTAssertEqual(sentMessages.count, 1)
+        await transport.triggerReconnect()
+        sentMessages = await transport.sentMessages()
+        XCTAssertEqual(sentMessages.count, 2)
 
         let messages = channel.events
         let task = Task { () -> RelayChannelEvent? in
@@ -189,16 +249,18 @@ final class HostedParticipantSDKTests: XCTestCase {
             return nil
         }
 
-        await core.transportAsMock()?.emit(
+        await transport.emit(
             """
             {
-              "type": "message.created",
-              "channel": "general",
-              "message": {
-                "id": "msg_1",
-                "text": "hello",
-                "from": {"name": "alice"},
-                "channel": {"name": "general"}
+              "type": "message.received",
+              "payload": {
+                "channel": "general",
+                "message": {
+                  "id": "msg_1",
+                  "body": "hello",
+                  "from": {"name": "alice"},
+                  "channel": {"name": "general"}
+                }
               }
             }
             """
@@ -262,9 +324,12 @@ final class HostedParticipantSDKTests: XCTestCase {
             """
             {
               "type": "action.invoked",
-              "invocation_id": "inv_1",
-              "action_name": "echo",
-              "caller_name": "alice"
+              "payload": {
+                "type": "action.invoked",
+                "invocation_id": "inv_1",
+                "action_name": "echo",
+                "caller_name": "alice"
+              }
             }
             """
         )
@@ -279,6 +344,88 @@ final class HostedParticipantSDKTests: XCTestCase {
         XCTAssertEqual(inputs.count, 1)
         let input = try jsonObject(Data(inputs[0].utf8))
         XCTAssertEqual(input["text"] as? String, "hello")
+    }
+
+    func testRegisterActionWrapsScalarHandlerOutput() async throws {
+        let invocationPath = "/v1/actions/plain/invocations/inv_scalar"
+        let completionPath = "\(invocationPath)/complete"
+        let workspaceHTTP = MockHostedHTTP()
+        let agentHTTP = MockHostedHTTP(
+            getResponses: [
+                invocationPath: MockHostedHTTP.envelope(
+                    #"{"invocation_id":"inv_scalar","action_name":"plain","caller_name":"alice","input":{},"status":"invoked"}"#
+                )
+            ],
+            postResponses: [
+                completionPath: MockHostedHTTP.envelope(
+                    #"{"invocation_id":"inv_scalar","action_name":"plain","status":"completed","output":{"value":"done"},"error":null}"#
+                )
+            ]
+        )
+        let transport = MockHostedTransport()
+        let core = HostedParticipantCore(
+            agentId: "ag_1",
+            agentName: "swift-agent",
+            token: "at_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            workspaceHTTP: workspaceHTTP,
+            agentHTTP: agentHTTP,
+            transport: transport
+        )
+        let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
+
+        _ = try await client.registerAction(
+            name: "plain",
+            description: "Plain output",
+            inputSchemaJSON: #"{"type":"object"}"#
+        ) { _ in
+            "done"
+        }
+
+        await transport.emit(
+            """
+            {
+              "type": "action.invoked",
+              "payload": {
+                "action_name": "plain",
+                "invocation_id": "inv_scalar",
+                "caller_name": "alice"
+              }
+            }
+            """
+        )
+
+        let completion = try await waitForRequest(in: agentHTTP) { request in
+            request.method == "POST" && request.path == completionPath
+        }
+        let completionBody = try jsonObject(try XCTUnwrap(completion.body))
+        XCTAssertEqual((completionBody["output"] as? [String: Any])?["value"] as? String, "done")
+    }
+
+    func testUnregisterActionDeletesHostedDescriptor() async throws {
+        let workspaceHTTP = MockHostedHTTP()
+        let core = HostedParticipantCore(
+            agentId: "ag_1",
+            agentName: "swift-agent",
+            token: "at_test",
+            baseURL: URL(string: "https://gateway.relaycast.dev")!,
+            workspaceHTTP: workspaceHTTP,
+            agentHTTP: MockHostedHTTP(),
+            transport: MockHostedTransport()
+        )
+        let client = AgentClient(core: core, id: "ag_1", name: "swift-agent", token: "at_test")
+
+        let handle = try await client.registerAction(
+            name: "cleanup",
+            description: "Cleanup",
+            inputSchemaJSON: #"{"type":"object"}"#
+        ) { _ in
+            "{}"
+        }
+        await handle.unregister()
+
+        let requests = await workspaceHTTP.allRequests()
+        XCTAssertTrue(requests.contains { $0.method == "DELETE" && $0.path == "/v1/actions/cleanup" })
     }
 }
 

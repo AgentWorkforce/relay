@@ -7,6 +7,7 @@ import FoundationNetworking
 protocol HostedEventTransportClient: Sendable {
     var inbound: AsyncStream<Data> { get }
 
+    func setOnConnect(_ handler: @escaping @Sendable () async -> Void) async
     func connect() async throws
     func disconnect() async
     func send(_ message: Data) async throws
@@ -39,6 +40,7 @@ public actor RelayEventTransport: HostedEventTransportClient {
     private var state: ConnectionState = .disconnected
     private var manuallyDisconnected = false
     private var reconnectAttempt = 0
+    private var onConnect: (@Sendable () async -> Void)?
 
     public init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -51,6 +53,10 @@ public actor RelayEventTransport: HostedEventTransportClient {
         self.inboundContinuation = continuationRef
     }
 
+    public func setOnConnect(_ handler: @escaping @Sendable () async -> Void) async {
+        self.onConnect = handler
+    }
+
     public func connect() async throws {
         switch state {
         case .connected, .connecting:
@@ -61,6 +67,7 @@ public actor RelayEventTransport: HostedEventTransportClient {
 
         manuallyDisconnected = false
         state = reconnectAttempt == 0 ? .connecting : .reconnecting
+        let isReconnect = reconnectAttempt > 0
         let request = URLRequest(url: Self.resolveWebSocketURL(baseURL: baseURL, token: token) ?? baseURL)
         let task = session.webSocketTask(with: request)
         webSocketTask = task
@@ -69,6 +76,9 @@ public actor RelayEventTransport: HostedEventTransportClient {
         reconnectAttempt = 0
         startReceiveLoop()
         startPingLoop()
+        if isReconnect, let onConnect {
+            await onConnect()
+        }
     }
 
     public func disconnect() async {
