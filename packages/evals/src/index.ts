@@ -29,3 +29,20 @@ export type {
 } from './types.js';
 
 export { SCHEMA_VERSION } from './types.js';
+export {
+  deriveDescriptorsFromMount,
+  fullInjectInstructions,
+  initialSpawnInstructions,
+  parseWritableResources,
+  prescriptiveInstructions,
+  slimInstructions,
+} from '@agent-relay/integration-prompts';
+export type {
+  DeriveDescriptorsOptions,
+  IntegrationDescriptor,
+  IntegrationSubscriptionSummary,
+  MountDiscoveryReader,
+  MountListPaths,
+  MountReadFile,
+  WritableResourceDescriptor,
+} from '@agent-relay/integration-prompts';
