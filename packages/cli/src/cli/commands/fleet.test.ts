@@ -1,12 +1,13 @@
 import { once } from 'node:events';
 import path from 'node:path';
 
+import { Command } from 'commander';
 import { WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { action, defineNode, onMessage } from '@agent-relay/fleet';
 
-import { loadNodeDefinition } from './fleet.js';
+import { loadNodeDefinition, registerFleetCommands } from './fleet.js';
 import { startFleetSidecar, serveFleetSidecar } from '../lib/fleet-sidecar.js';
 
 describe('fleet command support', () => {
@@ -140,6 +141,131 @@ describe('fleet command support', () => {
 
     expect(frameTypes).toEqual(['hello', 'register_node', 'register_handlers', 'deregister_node']);
     broker.close();
+  });
+
+  describe('fleet serve enrollment flags', () => {
+    function buildServeHarness(
+      overrides: {
+        enrollFleetNode?: ReturnType<typeof vi.fn>;
+        env?: NodeJS.ProcessEnv;
+      } = {}
+    ) {
+      const env: NodeJS.ProcessEnv = overrides.env ?? {};
+      const errors: string[] = [];
+      const exit = vi.fn(() => {
+        throw new Error('__exit__');
+      });
+      // Stop the flow right after enrollment by failing broker startup with a
+      // sentinel, so the test exercises flag parsing + the token exchange only.
+      const createRelay = vi.fn(() => {
+        throw new Error('__stop_after_enrollment__');
+      });
+      const enroll =
+        overrides.enrollFleetNode ??
+        vi.fn(async () => ({
+          nodeId: 'node_abc',
+          nodeName: 'kjglaptop',
+          nodeToken: 'nt_secret',
+          relayWorkspaceId: 'rw_123',
+          relaycastUrl: 'https://relaycast.example.com',
+          websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+        }));
+
+      const core = {
+        getProjectPaths: () => ({ projectRoot: '/tmp/proj', dataDir: '/tmp/proj/.data' }),
+        loadTeamsConfig: () => null,
+        createRelay,
+        fs: { mkdirSync: vi.fn() },
+        env,
+        argv: ['node', 'agent-relay'],
+        onSignal: vi.fn(),
+        isPortInUse: vi.fn(async () => false),
+        exit,
+      } as never;
+
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        core,
+        enrollFleetNode: enroll as never,
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        log: () => undefined,
+        warn: () => undefined,
+        exit: exit as never,
+      });
+
+      return { program, enroll, env, errors, exit };
+    }
+
+    it('accepts --enrollment-token/--enrollment-url and exchanges the token', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program
+        .parseAsync(
+          [
+            'fleet',
+            'serve',
+            '--enrollment-token',
+            'ocl_node_enr_xyz',
+            '--enrollment-url',
+            'https://agentrelay.com/api/v1/fleet/register',
+            '--name',
+            'kjglaptop',
+            '--max-agents',
+            '4',
+          ],
+          { from: 'user' }
+        )
+        .catch(() => undefined);
+
+      expect(harness.enroll).toHaveBeenCalledTimes(1);
+      expect(harness.enroll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enrollmentToken: 'ocl_node_enr_xyz',
+          enrollmentUrl: 'https://agentrelay.com/api/v1/fleet/register',
+          name: 'kjglaptop',
+          maxAgents: 4,
+        })
+      );
+      // The exchange result is wired into the broker env before serving.
+      expect(harness.env.RELAY_NODE_TOKEN).toBe('nt_secret');
+      expect(harness.env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
+    });
+
+    it('serves an enrolled node without a <file> argument', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program
+        .parseAsync(['fleet', 'serve', '--enrollment-token', 'ocl_node_enr_xyz'], { from: 'user' })
+        .catch(() => undefined);
+
+      expect(harness.enroll).toHaveBeenCalledTimes(1);
+      // Reaching broker startup (the sentinel) proves the missing <file> did not
+      // abort the command in enrollment mode.
+      expect(harness.env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    });
+
+    it('errors when neither <file> nor --enrollment-token is provided', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program.parseAsync(['fleet', 'serve'], { from: 'user' }).catch(() => undefined);
+
+      expect(harness.enroll).not.toHaveBeenCalled();
+      expect(harness.errors.join('\n')).toMatch(/node definition <file> is required/i);
+    });
+
+    it('rejects --enrollment-url without --enrollment-token', async () => {
+      const harness = buildServeHarness();
+
+      await harness.program
+        .parseAsync(['fleet', 'serve', '--enrollment-url', 'https://agentrelay.com/api/v1/fleet/register'], {
+          from: 'user',
+        })
+        .catch(() => undefined);
+
+      expect(harness.enroll).not.toHaveBeenCalled();
+      expect(harness.errors.join('\n')).toMatch(/--enrollment-url requires --enrollment-token/i);
+    });
   });
 
   it('keeps trigger sync idempotent across repeated node registrations', async () => {
