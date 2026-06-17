@@ -18,6 +18,7 @@ Added --cwd <path> option to local agent spawn and new commands; passes through 
 ## Key Decisions
 
 ### Add --cwd flag to CLI only; no broker changes needed
+
 - **Chose:** Add --cwd flag to CLI only; no broker changes needed
 - **Reasoning:** cwd was already in the full stack (broker protocol, harness-driver SpawnPtyInput, ClientSpawnOptions) — only the CLI option was missing
 
@@ -26,6 +27,7 @@ Added --cwd <path> option to local agent spawn and new commands; passes through 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Add --cwd flag to CLI only; no broker changes needed: Add --cwd flag to CLI only; no broker changes needed
