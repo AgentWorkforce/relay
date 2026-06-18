@@ -431,6 +431,9 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
 
 const OPENCODE_CONFIG: &str = "opencode.json";
 const OPENCODE_AGENT_NAME: &str = AGENT_RELAY_MCP_SERVER;
+// Key name taken from https://opencode.ai/config.json §permission.
+// Update here (and the unit tests) if opencode renames this field.
+const OPENCODE_PERMISSION_KEY: &str = "permission";
 
 /// Ensure an `opencode.json` config exists with the Agent Relay MCP server and
 /// a custom `agent-relay` agent that has those tools enabled.
@@ -546,7 +549,21 @@ pub fn ensure_opencode_config_with_result(
         inner
     };
 
-    if !path.exists() {
+    // Atomically claim the file to avoid the TOCTOU between a separate
+    // exists()-check and a subsequent write. If another process created the
+    // file between our check and this open, AlreadyExists is returned and we
+    // fall through to the merge path below instead of silently overwriting.
+    let file_is_new = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(e),
+    };
+
+    if file_is_new {
         let mut top = Map::new();
         let mut mcp = Map::new();
         mcp.insert(OPENCODE_AGENT_NAME.into(), Value::Object(mcp_server));
@@ -554,7 +571,7 @@ pub fn ensure_opencode_config_with_result(
         let mut agents = Map::new();
         agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
         top.insert("agent".into(), Value::Object(agents));
-        top.insert("permission".into(), Value::Object(permission_block));
+        top.insert(OPENCODE_PERMISSION_KEY.into(), Value::Object(permission_block));
         write_pretty_json(&path, &Value::Object(top))?;
         return Ok(true);
     }
@@ -576,21 +593,24 @@ pub fn ensure_opencode_config_with_result(
 
     let mut changed = false;
 
-    // Upsert mcp.agent-relay
-    let mcp = top
-        .entry("mcp")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(mcp_obj) = mcp.as_object_mut() {
+    // Upsert mcp.agent-relay — also replace any non-object value (e.g. null)
+    // that would cause as_object_mut() to silently return None.
+    let mcp_entry = top.entry("mcp").or_insert_with(|| Value::Object(Map::new()));
+    if !mcp_entry.is_object() {
+        *mcp_entry = Value::Object(Map::new());
+    }
+    if let Some(mcp_obj) = mcp_entry.as_object_mut() {
         mcp_obj.remove(LEGACY_RELAYCAST_SERVER);
         mcp_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(mcp_server));
         changed = true;
     }
 
-    // Upsert agent.agent-relay
-    let agents = top
-        .entry("agent")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(agents_obj) = agents.as_object_mut() {
+    // Upsert agent.agent-relay — same non-object guard.
+    let agents_entry = top.entry("agent").or_insert_with(|| Value::Object(Map::new()));
+    if !agents_entry.is_object() {
+        *agents_entry = Value::Object(Map::new());
+    }
+    if let Some(agents_obj) = agents_entry.as_object_mut() {
         if agents_obj.remove(LEGACY_RELAYCAST_SERVER).is_some() {
             changed = true;
         }
@@ -601,9 +621,26 @@ pub fn ensure_opencode_config_with_result(
     }
 
     // Ensure the wildcard permission block is present.
-    if !top.contains_key("permission") {
-        top.insert("permission".into(), Value::Object(permission_block));
-        changed = true;
+    // - Missing or non-object value (null, string, …) → replace with the full wildcard block.
+    // - Existing object that lacks a "*" catch-all → inject the wildcard entry inside it so
+    //   tool categories not covered by custom rules are also auto-approved.
+    // - Existing object already containing "*" → leave it alone (user controls their config).
+    match top.get(OPENCODE_PERMISSION_KEY) {
+        Some(Value::Object(_)) => {
+            if let Some(Value::Object(perm_obj)) = top.get_mut(OPENCODE_PERMISSION_KEY) {
+                if !perm_obj.contains_key("*") {
+                    let mut wildcard = Map::new();
+                    wildcard.insert("*".into(), Value::String("allow".into()));
+                    perm_obj.insert("*".into(), Value::Object(wildcard));
+                    changed = true;
+                }
+            }
+        }
+        _ => {
+            // Missing, null, or non-object — replace entirely.
+            top.insert(OPENCODE_PERMISSION_KEY.into(), Value::Object(permission_block));
+            changed = true;
+        }
     }
 
     if changed {
@@ -2948,9 +2985,9 @@ mod tests {
     }
 
     #[test]
-    fn opencode_config_preserves_existing_permission_block() {
+    fn opencode_config_augments_partial_permission_block_with_wildcard() {
         let temp = tempdir().expect("tempdir");
-        // Pre-existing config with a custom permission block — must not be clobbered
+        // Pre-existing config with a partial permission block (no wildcard catch-all)
         let existing = r#"{"mcp": {}, "agent": {}, "permission": {"bash": {"read": "allow"}}}"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
@@ -2969,15 +3006,102 @@ mod tests {
             fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
 
-        // Custom block preserved, wildcard NOT injected on top
+        // Custom entry preserved AND wildcard catch-all added for uncovered tools
         assert_eq!(
             json["permission"]["bash"]["read"].as_str(),
             Some("allow"),
-            "existing custom permission block must be preserved"
+            "existing custom permission entry must be preserved"
         );
+        assert_eq!(
+            json["permission"]["*"]["*"].as_str(),
+            Some("allow"),
+            "wildcard catch-all must be added to cover uncovered tool categories"
+        );
+    }
+
+    #[test]
+    fn opencode_config_does_not_touch_existing_wildcard_permission() {
+        let temp = tempdir().expect("tempdir");
+        // Pre-existing config that already has a wildcard — leave it entirely alone
+        let existing =
+            r#"{"mcp": {}, "agent": {}, "permission": {"*": {"*": "ask"}, "bash": {"read": "allow"}}}"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // User's custom wildcard is preserved, not overwritten to "allow"
+        assert_eq!(
+            json["permission"]["*"]["*"].as_str(),
+            Some("ask"),
+            "user's custom wildcard permission must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn opencode_config_replaces_null_permission_with_wildcard() {
+        let temp = tempdir().expect("tempdir");
+        let existing = r#"{"mcp": {}, "agent": {}, "permission": null}"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        assert_eq!(
+            json["permission"]["*"]["*"].as_str(),
+            Some("allow"),
+            "null permission value must be replaced with wildcard block"
+        );
+    }
+
+    #[test]
+    fn opencode_config_replaces_null_mcp_with_proper_server() {
+        let temp = tempdir().expect("tempdir");
+        let existing = r#"{"mcp": null, "agent": {}}"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
         assert!(
-            json["permission"]["*"].is_null(),
-            "wildcard block must not overwrite existing permission config"
+            json["mcp"]["agent-relay"].is_object(),
+            "null mcp value must be replaced with a proper object containing the agent-relay server"
         );
     }
 

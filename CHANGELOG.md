@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay-broker` now writes `"permission": {"*": {"*": "allow"}}` into every `opencode.json` it generates, preventing opencode from pausing to prompt for tool approval when spawned as a worker agent.
+- `agent-relay-broker` now writes `"permission": {"*": {"*": "allow"}}` into every `opencode.json` it generates, preventing opencode from pausing to prompt for tool approval when spawned as a worker agent. Existing permission objects without a wildcard catch-all are augmented rather than replaced. Non-object permission values (e.g. `null`) and non-object `mcp` values are now replaced rather than silently skipped. The new-file write path is now atomic (`O_CREAT|O_EXCL`) to avoid a TOCTOU race with concurrent broker processes.
 
 ### Added
 
