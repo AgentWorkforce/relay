@@ -18,6 +18,7 @@ Fixed PR CI by adding the newly registered fleet workspace CLI commands to the b
 ## Key Decisions
 
 ### Updated bootstrap expected CLI commands for fleet workspace controls
+
 - **Chose:** Updated bootstrap expected CLI commands for fleet workspace controls
 - **Reasoning:** CI failed because createProgram now registers fleet config/enable/disable/inherit, but the bootstrap test expected list still omitted them.
 
@@ -26,6 +27,7 @@ Fixed PR CI by adding the newly registered fleet workspace CLI commands to the b
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Updated bootstrap expected CLI commands for fleet workspace controls: Updated bootstrap expected CLI commands for fleet workspace controls
