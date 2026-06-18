@@ -26,15 +26,22 @@ import type { EvalScenario, ScenarioResult } from '../types.js';
 import { baseScore } from '../scoring/base.js';
 import { RESPONSE_MS, STARTUP_MS } from './helpers.js';
 
-const ROLE = 'You are a relay worker agent. Complete the task you receive and report results.';
+// Mirrors s08-task-exit but prefixes the relay message with a bash command
+// that would trigger an EXECUTE permission prompt without the fix.
+const ROLE = 'You are a relay worker agent. Complete the task you receive and then terminate yourself.';
 
-const TASK =
-  'Run the shell command `ls ../..` and post the output (first 10 lines are enough) to the ' +
-  '"general" channel. Do not ask for confirmation — just run it and report what you see.';
+function buildTrigger(workerName: string): string {
+  return (
+    `Step 1: Run the bash command \`echo PERM_BYPASS_OK\` (this WILL ask for permission without the fix).\n` +
+    `Step 2: Send a message to the "general" channel with the text "PERM_BYPASS_OK".\n` +
+    `Step 3: Call mcp__agent-relay__remove_agent with name="${workerName}" to release yourself.\n\n` +
+    `Do not skip step 1 — the bash command must run before you send the message.`
+  );
+}
 
 export const scenario: EvalScenario = {
   id: 's10-opencode-perm-bypass',
-  title: 'opencode: permission-bypass — ls ../../ must not block',
+  title: 'opencode: permission-bypass — echo command must not block before relay send',
   tier: 'smoke',
   channels: ['general'],
   timeoutMs: 180_000,
@@ -44,6 +51,7 @@ export const scenario: EvalScenario = {
   run: async (ctx): Promise<ScenarioResult> => {
     const { harness, cli, model, suffix, sleep } = ctx;
     const worker = `perm-worker-${suffix}`;
+    const phaseMs = RESPONSE_MS;
 
     await harness.spawnAgent(worker, cli, ['general'], { task: ROLE, model });
     await sleep(STARTUP_MS);
@@ -52,23 +60,34 @@ export const scenario: EvalScenario = {
     await harness.sendMessage({
       to: worker,
       from: 'Orchestrator',
-      text: TASK,
+      text: buildTrigger(worker),
     });
 
-    // Give the agent the full response window. If permission prompts block it,
-    // this will elapse with 0 relay_inbound events.
-    await harness.waitForEvent('relay_inbound', RESPONSE_MS).promise.catch(() => {});
+    // Phase 1: wait for the relay message confirming the bash command ran.
+    await harness.waitForEvent('relay_inbound', phaseMs).promise.catch(() => {});
+
+    // Phase 2: wait for remove_agent self-release.
+    const releaseWaiter = harness.waitForEvent('agent_released', phaseMs);
+    await releaseWaiter.promise.catch(() => {});
 
     const events = harness.getEvents();
     const base = baseScore(events, [worker]);
+    const released = events.some((e) => e.kind === 'agent_released' && (e as { name?: string }).name === worker);
 
     await harness.releaseAgent(worker).catch(() => {});
 
-    const pass = base.sent > 0;
+    // PASS = message sent (bash ran without blocking) AND agent self-released.
+    const pass = base.sent > 0 && released;
+
+    const notesParts: string[] = [];
+    if (!base.sent) notesParts.push('no relay message — agent likely blocked on EXECUTE permission prompt');
+    else notesParts.push('bash ran without prompt block, relay message sent');
+    if (!released) notesParts.push('did not self-release');
+    else notesParts.push('self-released via remove_agent');
 
     return {
       id: 's10-opencode-perm-bypass',
-      title: 'opencode: permission-bypass — ls ../../ must not block',
+      title: 'opencode: permission-bypass — echo command must not block before relay send',
       pass,
       agents: [{ name: worker, cli, role: 'worker', prompt: ROLE }],
       transcript: base.transcript,
@@ -80,9 +99,8 @@ export const scenario: EvalScenario = {
       wrongChannelReplies: 0,
       deliveryOk: base.deliveryOk,
       events: base.events,
-      notes: pass
-        ? 'agent ran ls ../../ and reported back — permission block working'
-        : 'no message received — agent likely blocked on EXECUTE permission prompt',
+      exitConfirmed: released,
+      notes: notesParts.join('; '),
     };
   },
 };
