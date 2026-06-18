@@ -167,18 +167,24 @@
     background 0.2s,
     border-color 0.2s,
     box-shadow 0.2s,
-    transform 0.15s;
+    transform 0.15s var(--ease-out-quint);
 }
 
-.installCommand:hover {
-  border-color: rgba(156, 207, 255, 0.42);
-  background:
-    linear-gradient(180deg, rgba(156, 207, 255, 0.21), rgba(156, 207, 255, 0.075)), rgba(8, 24, 42, 0.5);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(156, 207, 255, 0.1),
-    0 20px 40px rgba(3, 10, 20, 0.2);
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .installCommand:hover {
+    border-color: rgba(156, 207, 255, 0.42);
+    background:
+      linear-gradient(180deg, rgba(156, 207, 255, 0.21), rgba(156, 207, 255, 0.075)), rgba(8, 24, 42, 0.5);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 -1px 0 rgba(156, 207, 255, 0.1),
+      0 20px 40px rgba(3, 10, 20, 0.2);
+    transform: translateY(-1px);
+  }
+}
+
+.installCommand:active {
+  transform: scale(0.99);
 }
 
 .installCommand:focus-visible {
@@ -536,18 +542,33 @@
     border-color 0.2s,
     box-shadow 0.2s,
     color 0.2s,
-    transform 0.15s;
+    transform 0.15s var(--ease-out-quint);
 }
 
-.agentPromptCopy:hover {
-  border-color: rgba(156, 207, 255, 0.22);
-  background:
-    linear-gradient(180deg, rgba(156, 207, 255, 0.08), rgba(156, 207, 255, 0.024)), rgba(7, 17, 31, 0.5);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    inset 0 -1px 0 rgba(156, 207, 255, 0.05),
-    0 12px 28px rgba(3, 10, 20, 0.12);
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .agentPromptCopy:hover {
+    border-color: rgba(156, 207, 255, 0.22);
+    background:
+      linear-gradient(180deg, rgba(156, 207, 255, 0.08), rgba(156, 207, 255, 0.024)), rgba(7, 17, 31, 0.5);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      inset 0 -1px 0 rgba(156, 207, 255, 0.05),
+      0 12px 28px rgba(3, 10, 20, 0.12);
+    transform: translateY(-1px);
+  }
+}
+
+.agentPromptCopy:active {
+  transform: scale(0.99);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .installCommand:hover,
+  .installCommand:active,
+  .agentPromptCopy:hover,
+  .agentPromptCopy:active {
+    transform: none;
+  }
 }
 
 .agentPromptCopy:focus-within {
