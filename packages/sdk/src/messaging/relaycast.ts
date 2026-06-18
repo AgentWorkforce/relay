@@ -1423,7 +1423,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     return this.relaycast.triggers;
   }
 
-  private requireWorkspaceFleetNodes(): NonNullable<NonNullable<RelaycastWorkspaceLike['workspace']>['fleetNodes']> {
+  private requireWorkspaceFleetNodes(): NonNullable<
+    NonNullable<RelaycastWorkspaceLike['workspace']>['fleetNodes']
+  > {
     if (!this.relaycast.workspace?.fleetNodes) {
       throw new Error(
         'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API.'
