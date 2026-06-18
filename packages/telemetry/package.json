@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/telemetry",
-  "version": "8.8.4",
+  "version": "8.8.5",
   "description": "Deprecated Agent Relay telemetry package placeholder",
   "private": true,
   "deprecated": "@agent-relay/telemetry is deprecated. Telemetry is now internal to the agent-relay CLI.",

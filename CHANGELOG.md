@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
+## [8.8.5] - 2026-06-18
+
+### Changed
+
+- Track integration prompts release trajectory
+
+### Fixed
+
+- Inject permission allow-all block into opencode.json
+
 ## [8.8.4] - 2026-06-17
 
 ### Changed
