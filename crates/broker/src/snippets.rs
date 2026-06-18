@@ -571,7 +571,10 @@ pub fn ensure_opencode_config_with_result(
         let mut agents = Map::new();
         agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
         top.insert("agent".into(), Value::Object(agents));
-        top.insert(OPENCODE_PERMISSION_KEY.into(), Value::Object(permission_block));
+        top.insert(
+            OPENCODE_PERMISSION_KEY.into(),
+            Value::Object(permission_block),
+        );
         write_pretty_json(&path, &Value::Object(top))?;
         return Ok(true);
     }
@@ -595,7 +598,9 @@ pub fn ensure_opencode_config_with_result(
 
     // Upsert mcp.agent-relay — also replace any non-object value (e.g. null)
     // that would cause as_object_mut() to silently return None.
-    let mcp_entry = top.entry("mcp").or_insert_with(|| Value::Object(Map::new()));
+    let mcp_entry = top
+        .entry("mcp")
+        .or_insert_with(|| Value::Object(Map::new()));
     if !mcp_entry.is_object() {
         *mcp_entry = Value::Object(Map::new());
     }
@@ -606,7 +611,9 @@ pub fn ensure_opencode_config_with_result(
     }
 
     // Upsert agent.agent-relay — same non-object guard.
-    let agents_entry = top.entry("agent").or_insert_with(|| Value::Object(Map::new()));
+    let agents_entry = top
+        .entry("agent")
+        .or_insert_with(|| Value::Object(Map::new()));
     if !agents_entry.is_object() {
         *agents_entry = Value::Object(Map::new());
     }
@@ -638,7 +645,10 @@ pub fn ensure_opencode_config_with_result(
         }
         _ => {
             // Missing, null, or non-object — replace entirely.
-            top.insert(OPENCODE_PERMISSION_KEY.into(), Value::Object(permission_block));
+            top.insert(
+                OPENCODE_PERMISSION_KEY.into(),
+                Value::Object(permission_block),
+            );
             changed = true;
         }
     }
@@ -3023,8 +3033,7 @@ mod tests {
     fn opencode_config_does_not_touch_existing_wildcard_permission() {
         let temp = tempdir().expect("tempdir");
         // Pre-existing config that already has a wildcard — leave it entirely alone
-        let existing =
-            r#"{"mcp": {}, "agent": {}, "permission": {"*": {"*": "ask"}, "bash": {"read": "allow"}}}"#;
+        let existing = r#"{"mcp": {}, "agent": {}, "permission": {"*": {"*": "ask"}, "bash": {"read": "allow"}}}"#;
         fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
 
         super::ensure_opencode_config(
