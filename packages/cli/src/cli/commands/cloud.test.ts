@@ -571,10 +571,13 @@ describe('registerCloudCommands', () => {
     try {
       await program.parseAsync(['node', 'agent-relay', 'cloud', 'logs', 'run-1', '--redact']);
 
-      expect(cloudMocks.getRunLogs).toHaveBeenCalledWith('run-1', expect.objectContaining({
-        offset: 0,
-        redact: true,
-      }));
+      expect(cloudMocks.getRunLogs).toHaveBeenCalledWith(
+        'run-1',
+        expect.objectContaining({
+          offset: 0,
+          redact: true,
+        })
+      );
       expect(stdoutWriteSpy).toHaveBeenCalledWith('Authorization: Bearer [REDACTED]\n');
     } finally {
       stdoutWriteSpy.mockRestore();

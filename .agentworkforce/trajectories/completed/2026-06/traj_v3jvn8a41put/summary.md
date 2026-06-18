@@ -19,6 +19,7 @@ Added agent-relay cloud logs --redact and SDK query propagation with CLI/SDK tes
 ## Key Decisions
 
 ### Pass --redact through the cloud SDK instead of redacting locally
+
 - **Chose:** Pass --redact through the cloud SDK instead of redacting locally
 - **Reasoning:** Server-side redaction ensures content is scrubbed before the CLI writes stdout or JSON output and keeps redaction logic in Cloud's canonical Ricky module.
 
@@ -27,6 +28,7 @@ Added agent-relay cloud logs --redact and SDK query propagation with CLI/SDK tes
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Pass --redact through the cloud SDK instead of redacting locally: Pass --redact through the cloud SDK instead of redacting locally
