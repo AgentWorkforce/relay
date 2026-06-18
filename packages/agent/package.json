@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/agent",
-  "version": "7.1.1",
+  "version": "7.1.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
   "dependencies": {
     "@agent-relay/events": "7.1.1",
     "@relaycast/sdk": "1.1.2",
-    "@relayfile/sdk": "^0.7.2"
+    "@relayfile/sdk": "^0.10.1"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
