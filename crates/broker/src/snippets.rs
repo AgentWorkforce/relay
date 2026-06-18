@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use tokio::process::Command;
 
 use crate::types::AgentResultMcpConfig;
@@ -541,13 +541,7 @@ pub fn ensure_opencode_config_with_result(
     // Build the wildcard permission block that suppresses all interactive
     // approval prompts. opencode.json in the repo takes priority over the
     // global config, so writing this here is the reliable way to bypass them.
-    let permission_block = {
-        let mut inner = Map::new();
-        let mut tool_wildcard = Map::new();
-        tool_wildcard.insert("*".into(), Value::String("allow".into()));
-        inner.insert("*".into(), Value::Object(tool_wildcard));
-        inner
-    };
+    let permission_block = json!({ "*": { "*": "allow" } });
 
     // Atomically claim the file to avoid the TOCTOU between a separate
     // exists()-check and a subsequent write. If another process created the
@@ -571,10 +565,7 @@ pub fn ensure_opencode_config_with_result(
         let mut agents = Map::new();
         agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
         top.insert("agent".into(), Value::Object(agents));
-        top.insert(
-            OPENCODE_PERMISSION_KEY.into(),
-            Value::Object(permission_block),
-        );
+        top.insert(OPENCODE_PERMISSION_KEY.into(), permission_block.clone());
         write_pretty_json(&path, &Value::Object(top))?;
         return Ok(true);
     }
@@ -636,19 +627,14 @@ pub fn ensure_opencode_config_with_result(
         Some(Value::Object(_)) => {
             if let Some(Value::Object(perm_obj)) = top.get_mut(OPENCODE_PERMISSION_KEY) {
                 if !perm_obj.contains_key("*") {
-                    let mut wildcard = Map::new();
-                    wildcard.insert("*".into(), Value::String("allow".into()));
-                    perm_obj.insert("*".into(), Value::Object(wildcard));
+                    perm_obj.insert("*".into(), json!({ "*": "allow" }));
                     changed = true;
                 }
             }
         }
         _ => {
             // Missing, null, or non-object — replace entirely.
-            top.insert(
-                OPENCODE_PERMISSION_KEY.into(),
-                Value::Object(permission_block),
-            );
+            top.insert(OPENCODE_PERMISSION_KEY.into(), permission_block);
             changed = true;
         }
     }
