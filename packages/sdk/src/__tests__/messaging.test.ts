@@ -143,6 +143,14 @@ function createWorkspace() {
         load: 0,
       })),
     },
+    workspace: {
+      info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
+      fleetNodes: {
+        get: vi.fn(async () => ({ enabled: true, default_enabled: false, override: true })),
+        set: vi.fn(async (enabled: boolean) => ({ enabled, default_enabled: false, override: enabled })),
+        inherit: vi.fn(async () => ({ enabled: false, default_enabled: false, override: null })),
+      },
+    },
   };
 }
 
@@ -357,6 +365,92 @@ describe('RelaycastMessagingClient', () => {
       tags: ['local'],
       version: 'relay-broker/test',
     });
+  });
+
+  it('delegates workspace fleet node config calls to Relaycast', async () => {
+    const workspace = createWorkspace();
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    await expect(client.workspace.fleetNodes.get()).resolves.toEqual({
+      enabled: true,
+      defaultEnabled: false,
+      override: true,
+    });
+    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: false,
+    });
+    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+
+    expect(workspace.workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
+    expect(workspace.workspace.fleetNodes.set).toHaveBeenCalledWith(false);
+    expect(workspace.workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the REST workspace fleet node config endpoint when the Relaycast SDK method is unavailable', async () => {
+    const workspace = createWorkspace();
+    delete (workspace.workspace as { fleetNodes?: unknown }).fleetNodes;
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        ok: true,
+        data: {
+          enabled: true,
+          default_enabled: false,
+          override: true,
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const client = new RelaycastMessagingClient({
+        relaycast: workspace,
+        workspaceKey: 'rk_live_test',
+        baseUrl: 'https://gateway.example.test',
+      });
+
+      await expect(client.workspace.fleetNodes.get()).resolves.toEqual({
+        enabled: true,
+        defaultEnabled: false,
+        override: true,
+      });
+      await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual({
+        enabled: true,
+        defaultEnabled: false,
+        override: true,
+      });
+      await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual({
+        enabled: true,
+        defaultEnabled: false,
+        override: true,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('https://gateway.example.test/v1/workspace/fleet-nodes');
+      expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bearer rk_live_test' }),
+      });
+      expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer rk_live_test',
+          'Content-Type': 'application/json',
+        }),
+      });
+      expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({ enabled: false });
+      expect(JSON.parse(fetchMock.mock.calls[2]?.[1]?.body as string)).toEqual({ mode: 'inherit' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('normalizes fleet node roster fields and passes node query options through', async () => {

@@ -593,6 +593,12 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
+export interface RelayWorkspaceFleetNodesConfig {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  override: boolean | null;
+}
+
 export type InboxItemState = 'queued' | 'delivered' | 'failed' | 'deferred' | 'read';
 
 export interface InboxItem {
@@ -917,6 +923,11 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+    fleetNodes: {
+      get(): Promise<RelayWorkspaceFleetNodesConfig>;
+      set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
+      inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
+    };
   };
 }
 

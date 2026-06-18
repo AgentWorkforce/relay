@@ -47,6 +47,7 @@ import type {
   RelayRegisterCapabilityInput,
   RelayWebhook,
   RelayWorkspaceInfo,
+  RelayWorkspaceFleetNodesConfig,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -241,6 +242,15 @@ function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<
     }
   }
   return undefined;
+}
+
+function toRelayWorkspaceFleetNodesConfig(raw: unknown): RelayWorkspaceFleetNodesConfig {
+  const record = asRecord(raw);
+  return {
+    enabled: readBoolean(record, 'enabled') ?? false,
+    defaultEnabled: readBoolean(record, 'defaultEnabled', 'default_enabled') ?? false,
+    override: readBoolean(record, 'override') ?? null,
+  };
 }
 
 type PlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
@@ -466,6 +476,11 @@ type RelaycastWorkspaceLike = {
   };
   workspace?: {
     info(): Promise<unknown>;
+    fleetNodes?: {
+      get(): Promise<unknown>;
+      set(enabled: boolean): Promise<unknown>;
+      inherit(): Promise<unknown>;
+    };
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
   // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
@@ -481,6 +496,8 @@ type RelaycastDeliveryStatus = 'accepted' | 'delivered' | 'deferred' | 'failed';
 type RelaycastAgentDeliverySurface = Required<
   Pick<RelaycastAgentLike, 'deliveries' | 'ackDelivery' | 'failDelivery' | 'deferDelivery'>
 >;
+
+const DEFAULT_RELAYCAST_BASE_URL = 'https://gateway.relaycast.dev';
 
 type RelaycastAgentLike = {
   me(): Promise<unknown>;
@@ -639,6 +656,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private readonly relaycast: RelaycastWorkspaceLike;
   private readonly agentClient?: RelaycastAgentLike;
+  private readonly workspaceKey?: string;
+  private readonly baseUrl: string;
   private readonly selfNodeName?: string;
   private readonly placementTtlMs: number;
   private readonly maxQueuedPlacements: number;
@@ -655,6 +674,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.agentClient =
       options.agentClient ??
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
+    this.workspaceKey = options.workspaceKey ?? options.apiKey;
+    this.baseUrl = options.baseUrl ?? DEFAULT_RELAYCAST_BASE_URL;
     this.selfNodeName = options.selfNodeName;
     this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
     this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
@@ -1250,7 +1271,69 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
+    fleetNodes: {
+      get: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
+        const api = this.relaycast.workspace?.fleetNodes;
+        return api
+          ? toRelayWorkspaceFleetNodesConfig(await api.get())
+          : await this.requestWorkspaceFleetNodesConfig('GET');
+      },
+      set: async (enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig> => {
+        const api = this.relaycast.workspace?.fleetNodes;
+        return api
+          ? toRelayWorkspaceFleetNodesConfig(await api.set(enabled))
+          : await this.requestWorkspaceFleetNodesConfig('PUT', { enabled });
+      },
+      inherit: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
+        const api = this.relaycast.workspace?.fleetNodes;
+        return api
+          ? toRelayWorkspaceFleetNodesConfig(await api.inherit())
+          : await this.requestWorkspaceFleetNodesConfig('PUT', { mode: 'inherit' });
+      },
+    },
   };
+
+  private async requestWorkspaceFleetNodesConfig(
+    method: 'GET' | 'PUT',
+    body?: { enabled: boolean } | { mode: 'inherit' }
+  ): Promise<RelayWorkspaceFleetNodesConfig> {
+    if (!this.workspaceKey) {
+      throw new Error(
+        'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API or a workspaceKey for the REST fallback.'
+      );
+    }
+
+    const url = new URL('/v1/workspace/fleet-nodes', this.baseUrl);
+    const response = await fetch(url.toString(), {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${this.workspaceKey}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      throw new Error(
+        `RelaycastMessagingClient.workspace.fleetNodes failed to parse Relaycast response: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    const envelope = asRecord(payload);
+    if (!response.ok || envelope.ok === false) {
+      const error = asRecord(envelope.error);
+      const message = readStr(error, 'message') ?? `Relaycast fleet node config request failed (${response.status})`;
+      throw new Error(message);
+    }
+
+    return toRelayWorkspaceFleetNodesConfig(envelope.data ?? payload);
+  }
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
     if (!node) return undefined;

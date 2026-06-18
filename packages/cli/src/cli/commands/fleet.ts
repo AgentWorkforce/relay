@@ -107,6 +107,42 @@ export function registerFleetCommands(
     });
   });
 
+  addSdkOptions(group.command('config').description('Show workspace fleet node configuration')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.get());
+      });
+    }
+  );
+
+  addSdkOptions(group.command('enable').description('Enable fleet nodes for the workspace')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.set(true));
+      });
+    }
+  );
+
+  addSdkOptions(group.command('disable').description('Disable fleet nodes for the workspace')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.set(false));
+      });
+    }
+  );
+
+  addSdkOptions(group.command('inherit').description('Use the deployment default for workspace fleet nodes')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
+      });
+    }
+  );
+
   group
     .command('status')
     .description('Show local fleet broker and sidecar status')
