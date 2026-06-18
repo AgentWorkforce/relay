@@ -143,6 +143,14 @@ function createWorkspace() {
         load: 0,
       })),
     },
+    workspace: {
+      info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
+      fleetNodes: {
+        get: vi.fn(async () => ({ enabled: true, default_enabled: false, override: true })),
+        set: vi.fn(async (enabled: boolean) => ({ enabled, default_enabled: false, override: enabled })),
+        inherit: vi.fn(async () => ({ enabled: false, default_enabled: false, override: null })),
+      },
+    },
   };
 }
 
@@ -357,6 +365,31 @@ describe('RelaycastMessagingClient', () => {
       tags: ['local'],
       version: 'relay-broker/test',
     });
+  });
+
+  it('delegates workspace fleet node config calls to Relaycast', async () => {
+    const workspace = createWorkspace();
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    await expect(client.workspace.fleetNodes.get()).resolves.toEqual({
+      enabled: true,
+      defaultEnabled: false,
+      override: true,
+    });
+    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: false,
+    });
+    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual({
+      enabled: false,
+      defaultEnabled: false,
+      override: null,
+    });
+
+    expect(workspace.workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
+    expect(workspace.workspace.fleetNodes.set).toHaveBeenCalledWith(false);
+    expect(workspace.workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
   });
 
   it('normalizes fleet node roster fields and passes node query options through', async () => {
