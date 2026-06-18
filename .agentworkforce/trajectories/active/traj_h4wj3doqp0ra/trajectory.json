@@ -1,0 +1,46 @@
+{
+  "id": "traj_h4wj3doqp0ra",
+  "version": 1,
+  "task": {
+    "title": "Architecture refactor of Relay monorepo"
+  },
+  "status": "active",
+  "startedAt": "2026-06-18T23:36:50.727Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-18T23:58:24.013Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_beyia4dq9oyw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-18T23:58:24.013Z",
+      "events": [
+        {
+          "ts": 1781827104014,
+          "type": "decision",
+          "content": "Decomposed agent-relay-mcp.ts god file into cohesive mcp/ modules: Decomposed agent-relay-mcp.ts god file into cohesive mcp/ modules",
+          "raw": {
+            "question": "Decomposed agent-relay-mcp.ts god file into cohesive mcp/ modules",
+            "chosen": "Decomposed agent-relay-mcp.ts god file into cohesive mcp/ modules",
+            "alternatives": [],
+            "reasoning": "2215-line file mixed 8 concerns (schema adapter, telemetry, resources, inbox, workspace, action tools); split into single-responsibility modules behind unchanged public surface. Verified pure move via dual autoreview, tsc, full test suite, and live MCP stdio probe."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "66f972f23cafb958fa1956d3654710423e2391b5",
+    "endRef": "66f972f23cafb958fa1956d3654710423e2391b5"
+  }
+}
