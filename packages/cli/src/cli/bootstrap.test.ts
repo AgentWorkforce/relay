@@ -30,6 +30,10 @@ const expectedLeafCommands = [
   'telemetry',
   'mcp',
   // fleet
+  'fleet config',
+  'fleet disable',
+  'fleet enable',
+  'fleet inherit',
   'fleet serve',
   'fleet nodes',
   'fleet status',
