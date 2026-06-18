@@ -10,6 +10,7 @@ const cloudMocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
   scheduleWorkflow: vi.fn(),
   listWorkflowSchedules: vi.fn(),
+  getRunLogs: vi.fn(),
   getRunStatus: vi.fn(),
   syncWorkflowPatch: vi.fn(),
   downloadCloudWorkerAssignmentStorage: vi.fn(),
@@ -30,7 +31,7 @@ vi.mock('@agent-relay/cloud', () => ({
   ensureCloudSession: vi.fn(),
   getProviderHelpText: () =>
     'anthropic (alias: claude), openai (alias: codex), google (alias: gemini), cursor, opencode, droid',
-  getRunLogs: vi.fn(),
+  getRunLogs: (...args: unknown[]) => cloudMocks.getRunLogs(...args),
   getRunStatus: (...args: unknown[]) => cloudMocks.getRunStatus(...args),
   downloadCloudWorkerAssignmentStorage: (...args: unknown[]) =>
     cloudMocks.downloadCloudWorkerAssignmentStorage(...args),
@@ -554,6 +555,30 @@ describe('registerCloudCommands', () => {
     const optionNames = logs?.options.map((option) => option.long);
     expect(optionNames).toContain('--follow');
     expect(optionNames).toContain('--poll-interval');
+    expect(optionNames).toContain('--redact');
+  });
+
+  it('passes --redact to cloud log requests before writing output', async () => {
+    const { program } = createHarness();
+    const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    cloudMocks.getRunLogs.mockResolvedValueOnce({
+      content: 'Authorization: Bearer [REDACTED]\n',
+      offset: 32,
+      totalSize: 32,
+      done: true,
+    });
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'logs', 'run-1', '--redact']);
+
+      expect(cloudMocks.getRunLogs).toHaveBeenCalledWith('run-1', expect.objectContaining({
+        offset: 0,
+        redact: true,
+      }));
+      expect(stdoutWriteSpy).toHaveBeenCalledWith('Authorization: Bearer [REDACTED]\n');
+    } finally {
+      stdoutWriteSpy.mockRestore();
+    }
   });
 
   it('sync has --dry-run option', () => {

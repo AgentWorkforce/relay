@@ -30,6 +30,7 @@ vi.mock('./auth.js', () => ({
 }));
 
 import {
+  getRunLogs,
   listWorkflowSchedules,
   parseGitHubRemote,
   parseWorkflowPaths,
@@ -674,5 +675,43 @@ describe('workflow schedules', () => {
     );
     expect(schedules).toHaveLength(1);
     expect(schedules[0].id).toBe('sched-1');
+  });
+});
+
+describe('workflow logs', () => {
+  beforeEach(() => {
+    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes the opt-in redaction query parameter when requested', async () => {
+    authorizedApiFetchMock.mockResolvedValueOnce({
+      auth: { accessToken: 'token' },
+      response: new Response(
+        JSON.stringify({
+          content: 'Authorization: Bearer [REDACTED]\n',
+          offset: 42,
+          totalSize: 42,
+          done: true,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      ),
+    });
+
+    const result = await getRunLogs('run-1', {
+      offset: 5,
+      sandboxId: 'sandbox-1',
+      redact: true,
+    });
+
+    expect(authorizedApiFetchMock).toHaveBeenCalledWith(
+      { accessToken: 'token' },
+      '/api/v1/workflows/runs/run-1/logs?offset=5&sandboxId=sandbox-1&redact=true',
+      expect.objectContaining({ headers: { Accept: 'application/json' } })
+    );
+    expect(result.content).toBe('Authorization: Bearer [REDACTED]\n');
   });
 });

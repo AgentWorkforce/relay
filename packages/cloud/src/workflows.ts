@@ -825,6 +825,7 @@ export async function getRunLogs(
     apiUrl?: string;
     offset?: number;
     sandboxId?: string;
+    redact?: boolean;
   } = {}
 ): Promise<WorkflowLogsResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
@@ -835,6 +836,9 @@ export async function getRunLogs(
   }
   if (options.sandboxId) {
     searchParams.set('sandboxId', options.sandboxId);
+  }
+  if (options.redact === true) {
+    searchParams.set('redact', 'true');
   }
 
   const requestPath = `/api/v1/workflows/runs/${encodeURIComponent(runId)}/logs${searchParams.size ? `?${searchParams.toString()}` : ''}`;

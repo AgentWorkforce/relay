@@ -592,6 +592,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--offset <bytes>', 'Start reading logs from a byte offset', parseNonNegativeInteger, 0)
     .option('--agent <name>', 'Read logs for a specific agent')
     .option('--sandbox-id <sandboxId>', 'Read logs for a specific step sandbox')
+    .option('--redact', 'Redact known secret patterns from log output', false)
     .option('--json', 'Print raw JSON responses', false)
     .action(
       async (
@@ -603,6 +604,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           offset?: number;
           agent?: string;
           sandboxId?: string;
+          redact?: boolean;
           json?: boolean;
         }
       ) => {
@@ -614,6 +616,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             apiUrl: options.apiUrl,
             offset,
             sandboxId,
+            redact: options.redact === true,
           });
 
           if (options.json) {
