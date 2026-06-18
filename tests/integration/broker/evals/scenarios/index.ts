@@ -29,6 +29,7 @@ import { LEAD_DELEGATION_SCENARIOS } from './s07-lead-delegation.js';
 import { LEAD_QUALITY_SCENARIOS } from './s08-lead-quality.js';
 import { CROSS_CLI_SPAWN_SCENARIOS } from './s09-cross-cli-spawn.js';
 import { scenario as taskExit } from './s08-task-exit.js';
+import { scenario as opencodePermBypass } from './s10-opencode-perm-bypass.js';
 
 export const SCENARIOS: EvalScenario[] = [
   // smoke (plumbing canary)
@@ -58,6 +59,9 @@ export const LIFECYCLE_EVAL_SCENARIOS: EvalScenario[] = [
 /** Task-exit scenarios — run with --group=task-exit. */
 export const TASK_EXIT_EVAL_SCENARIOS: EvalScenario[] = [taskExit];
 
+/** opencode permission-bypass smoke test — run with --group=perm-bypass --harness=opencode:mimo-v2-flash-free. */
+export const PERM_BYPASS_EVAL_SCENARIOS: EvalScenario[] = [opencodePermBypass];
+
 /** Lead delegation discipline scenarios — run with --group=lead-delegation. */
 export const LEAD_DELEGATION_EVAL_SCENARIOS: EvalScenario[] = [...LEAD_DELEGATION_SCENARIOS];
 
@@ -83,6 +87,7 @@ export const ALL_SCENARIOS: EvalScenario[] = [
   ...LEAD_QUALITY_EVAL_SCENARIOS,
   ...CROSS_CLI_SPAWN_EVAL_SCENARIOS,
   ...TASK_EXIT_EVAL_SCENARIOS,
+  ...PERM_BYPASS_EVAL_SCENARIOS,
 ];
 
 /** Look up a scenario by id (searches all scenario registries). */

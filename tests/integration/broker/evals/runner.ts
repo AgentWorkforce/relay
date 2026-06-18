@@ -30,6 +30,7 @@ import {
   LEAD_QUALITY_EVAL_SCENARIOS,
   CROSS_CLI_SPAWN_EVAL_SCENARIOS,
   TASK_EXIT_EVAL_SCENARIOS,
+  PERM_BYPASS_EVAL_SCENARIOS,
   ALL_SCENARIOS,
   scenarioById,
   scenariosByTier,
@@ -91,6 +92,7 @@ type ScenarioGroup =
   | 'lead-quality'
   | 'cross-cli-spawn'
   | 'task-exit'
+  | 'perm-bypass'
   | 'all';
 
 interface Flags {
@@ -122,6 +124,7 @@ function parseFlags(argv: string[]): Flags {
         value === 'lead-quality' ||
         value === 'cross-cli-spawn' ||
         value === 'task-exit' ||
+        value === 'perm-bypass' ||
         value === 'all')
     )
       flags.group = value as ScenarioGroup;
@@ -151,7 +154,9 @@ function selectScenarios(flags: Flags): EvalScenario[] {
                 ? CROSS_CLI_SPAWN_EVAL_SCENARIOS
                 : flags.group === 'task-exit'
                   ? TASK_EXIT_EVAL_SCENARIOS
-                  : flags.group === 'all'
+                  : flags.group === 'perm-bypass'
+                    ? PERM_BYPASS_EVAL_SCENARIOS
+                    : flags.group === 'all'
                     ? ALL_SCENARIOS
                     : SCENARIOS;
   if (
@@ -161,7 +166,8 @@ function selectScenarios(flags: Flags): EvalScenario[] {
     flags.group === 'lead-delegation' ||
     flags.group === 'lead-quality' ||
     flags.group === 'cross-cli-spawn' ||
-    flags.group === 'task-exit'
+    flags.group === 'task-exit' ||
+    flags.group === 'perm-bypass'
   )
     return pool;
   return flags.tier === 'all' ? pool : pool.filter((s) => s.tier === flags.tier);
