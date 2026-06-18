@@ -1,0 +1,500 @@
+# Instincts generated from https://github.com/AgentWorkforce/relay
+# Generated: 2026-06-18T20:10:38.225Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: relay-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Commit Length
+
+## Action
+
+Keep commit messages concise (~32 characters)
+
+## Evidence
+
+- Average commit message length: 32 chars
+- Based on 5 commits
+
+---
+id: relay-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: relay-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: relay-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: relay-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: relay-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: relay-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Test Types
+
+## Action
+
+Write unit, integration tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration
+- Coverage config: no
+
+---
+id: relay-workflow-feature-development-or-change-with-documentation-and-tests
+trigger: "when doing feature development or change with documentation and tests"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Workflow Feature Development Or Change With Documentation And Tests
+
+## Action
+
+Follow the feature-development-or-change-with-documentation-and-tests workflow:
+1. Update implementation files in packages/cli and/or packages/sdk
+2. Update or add corresponding test files in __tests__ directories
+3. Update documentation files (e.g., web/content/docs/*.mdx)
+4. Update package.json and package-lock.json if dependencies or versions change
+5. Update CHANGELOG.md to reflect the change
+6. Record agentworkforce trajectory metadata
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: packages/cli/src/cli/commands/*.ts, packages/cli/src/cli/commands/*.test.ts, packages/sdk/src/**/*.ts
+
+---
+id: relay-workflow-code-auto-formatting-with-prettier
+trigger: "when doing code auto formatting with prettier"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Workflow Code Auto Formatting With Prettier
+
+## Action
+
+Follow the code-auto-formatting-with-prettier workflow:
+1. Run Prettier on relevant source files
+2. Commit the auto-formatted files
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: packages/sdk/src/**/*.ts, packages/cli/src/cli/commands/*.ts, .agentworkforce/trajectories/completed/*/summary.md
+
+---
+id: relay-workflow-dependency-or-sdk-version-update
+trigger: "when doing dependency or sdk version update"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/AgentWorkforce/relay
+---
+
+# Relay Workflow Dependency Or Sdk Version Update
+
+## Action
+
+Follow the dependency-or-sdk-version-update workflow:
+1. Update package.json and package-lock.json with new version
+2. Commit the updated files
+3. Optionally update agentworkforce trajectory metadata
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: package-lock.json, packages/cli/package.json, packages/sdk/package.json
+
+---
+id: relay-coding-naming-files
+trigger: "When creating or renaming a file in the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Naming Files
+
+## Action
+
+Use camelCase for file names
+
+## Evidence
+
+- Pattern in namingConventions.files
+- Observed in packages/cli/src/cli/commands/*.ts
+
+---
+id: relay-coding-naming-functions
+trigger: "When defining a function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Naming Functions
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+- TypeScript code in packages/sdk/src/**/*.ts
+
+---
+id: relay-coding-naming-classes
+trigger: "When defining a class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Naming Classes
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+- TypeScript code in packages/cli/src/cli/commands/*.ts
+
+---
+id: relay-coding-naming-constants
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Naming Constants
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+- TypeScript code in packages/sdk/src/**/*.ts
+
+---
+id: relay-coding-import-style
+trigger: "When importing modules within the codebase"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+- TypeScript imports in packages/cli/src/cli/commands/*.ts
+
+---
+id: relay-coding-export-style
+trigger: "When exporting modules or functions"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Coding Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+- TypeScript exports in packages/sdk/src/**/*.ts
+
+---
+id: relay-testing-file-pattern
+trigger: "When creating a test file"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Testing File Pattern
+
+## Action
+
+Name the file with the pattern *.test.ts
+
+## Evidence
+
+- Pattern in testing.filePattern
+- Seen in packages/sdk/src/__tests__/*.test.ts
+
+---
+id: relay-testing-framework
+trigger: "When writing or running tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Testing Framework
+
+## Action
+
+Use the vitest framework
+
+## Evidence
+
+- Pattern in testing.framework
+- Test imports in packages/sdk/src/__tests__/*.test.ts
+
+---
+id: relay-testing-types
+trigger: "When writing tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Testing Types
+
+## Action
+
+Include both unit and integration tests as appropriate
+
+## Evidence
+
+- Pattern in testing.testTypes
+- Examples in packages/cli/src/cli/commands/*.test.ts
+
+---
+id: relay-git-commit-style-prefix
+trigger: "When making a commit for code formatting"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Git Commit Style Prefix
+
+## Action
+
+Prefix the commit message with 'style:'
+
+## Evidence
+
+- Seen in commit 'style: auto-format with Prettier'
+- Pattern in commits.prefixes
+
+---
+id: relay-git-commit-style-length
+trigger: "When writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Git Commit Style Length
+
+## Action
+
+Keep the commit message concise, around 32 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+- Examples in commit history
+
+---
+id: relay-workflow-feature-change
+trigger: "When adding or modifying a feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Workflow Feature Change
+
+## Action
+
+Update implementation, add/modify tests, update documentation, update package.json and package-lock.json if needed, update CHANGELOG.md, and record agentworkforce trajectory metadata
+
+## Evidence
+
+- Workflow: feature-development-or-change-with-documentation-and-tests
+- Seen in commit sequences and file changes
+
+---
+id: relay-workflow-auto-format
+trigger: "When enforcing code style consistency"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Workflow Auto Format
+
+## Action
+
+Run Prettier on source files and commit the auto-formatted files with a 'style:' prefix
+
+## Evidence
+
+- Workflow: code-auto-formatting-with-prettier
+- Seen in commit 'style: auto-format with Prettier'
+
+---
+id: relay-workflow-dependency-update
+trigger: "When updating a dependency or SDK version"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: AgentWorkforce/relay
+---
+
+# Relay Workflow Dependency Update
+
+## Action
+
+Update package.json and package-lock.json, commit the updated files, and optionally update agentworkforce trajectory metadata
+
+## Evidence
+
+- Workflow: dependency-or-sdk-version-update
+- Seen in commits updating package.json and package-lock.json
+
