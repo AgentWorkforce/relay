@@ -72,7 +72,9 @@ export const scenario: EvalScenario = {
 
     const events = harness.getEvents();
     const base = baseScore(events, [worker]);
-    const released = events.some((e) => e.kind === 'agent_released' && (e as { name?: string }).name === worker);
+    const released = events.some(
+      (e) => e.kind === 'agent_released' && (e as { name?: string }).name === worker
+    );
 
     await harness.releaseAgent(worker).catch(() => {});
 
