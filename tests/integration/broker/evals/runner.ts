@@ -157,8 +157,8 @@ function selectScenarios(flags: Flags): EvalScenario[] {
                   : flags.group === 'perm-bypass'
                     ? PERM_BYPASS_EVAL_SCENARIOS
                     : flags.group === 'all'
-                    ? ALL_SCENARIOS
-                    : SCENARIOS;
+                      ? ALL_SCENARIOS
+                      : SCENARIOS;
   if (
     flags.group === 'lifecycle' ||
     flags.group === 'phrasing' ||
