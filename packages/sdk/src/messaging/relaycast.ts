@@ -1328,7 +1328,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     const envelope = asRecord(payload);
     if (!response.ok || envelope.ok === false) {
       const error = asRecord(envelope.error);
-      const message = readStr(error, 'message') ?? `Relaycast fleet node config request failed (${response.status})`;
+      const message =
+        readStr(error, 'message') ?? `Relaycast fleet node config request failed (${response.status})`;
       throw new Error(message);
     }
 

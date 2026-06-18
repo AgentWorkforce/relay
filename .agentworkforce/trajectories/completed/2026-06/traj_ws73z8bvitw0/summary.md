@@ -18,6 +18,7 @@ Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/di
 ## Key Decisions
 
 ### Use REST fallback for workspace fleet config
+
 - **Chose:** Use REST fallback for workspace fleet config
 - **Reasoning:** @relaycast/sdk 4.1.0 is published and installed, but its dist types do not expose workspace.fleetNodes, so Relay should call /v1/workspace/fleet-nodes directly when the SDK convenience method is absent.
 
@@ -26,6 +27,7 @@ Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/di
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use REST fallback for workspace fleet config: Use REST fallback for workspace fleet config

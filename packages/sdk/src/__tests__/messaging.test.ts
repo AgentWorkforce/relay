@@ -395,18 +395,22 @@ describe('RelaycastMessagingClient', () => {
   it('falls back to the REST workspace fleet node config endpoint when the Relaycast SDK method is unavailable', async () => {
     const workspace = createWorkspace();
     delete (workspace.workspace as { fleetNodes?: unknown }).fleetNodes;
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({
-        ok: true,
-        data: {
-          enabled: true,
-          default_enabled: false,
-          override: true,
-        },
-      }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              enabled: true,
+              default_enabled: false,
+              override: true,
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
     );
     vi.stubGlobal('fetch', fetchMock);
 

@@ -134,14 +134,14 @@ export function registerFleetCommands(
     }
   );
 
-  addSdkOptions(group.command('inherit').description('Use the deployment default for workspace fleet nodes')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
-      });
-    }
-  );
+  addSdkOptions(
+    group.command('inherit').description('Use the deployment default for workspace fleet nodes')
+  ).action(async (options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
+    });
+  });
 
   group
     .command('status')
