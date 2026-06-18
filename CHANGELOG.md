@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-relay-broker` now writes `"permission": {"*": {"*": "allow"}}` into every `opencode.json` it generates, preventing opencode from pausing to prompt for tool approval when spawned as a worker agent.
+
 ### Added
 
 - `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.

@@ -535,6 +535,17 @@ pub fn ensure_opencode_config_with_result(
     tools.insert("agent-relay_*".into(), Value::Bool(true));
     agent.insert("tools".into(), Value::Object(tools));
 
+    // Build the wildcard permission block that suppresses all interactive
+    // approval prompts. opencode.json in the repo takes priority over the
+    // global config, so writing this here is the reliable way to bypass them.
+    let permission_block = {
+        let mut inner = Map::new();
+        let mut tool_wildcard = Map::new();
+        tool_wildcard.insert("*".into(), Value::String("allow".into()));
+        inner.insert("*".into(), Value::Object(tool_wildcard));
+        inner
+    };
+
     if !path.exists() {
         let mut top = Map::new();
         let mut mcp = Map::new();
@@ -543,6 +554,7 @@ pub fn ensure_opencode_config_with_result(
         let mut agents = Map::new();
         agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
         top.insert("agent".into(), Value::Object(agents));
+        top.insert("permission".into(), Value::Object(permission_block));
         write_pretty_json(&path, &Value::Object(top))?;
         return Ok(true);
     }
@@ -586,6 +598,12 @@ pub fn ensure_opencode_config_with_result(
             agents_obj.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
             changed = true;
         }
+    }
+
+    // Ensure the wildcard permission block is present.
+    if !top.contains_key("permission") {
+        top.insert("permission".into(), Value::Object(permission_block));
+        changed = true;
     }
 
     if changed {
@@ -2873,6 +2891,94 @@ mod tests {
         // but agent.agent-relay is only inserted if missing.
         // The function returns true because mcp upsert always sets changed=true.
         assert!(changed, "mcp section always gets upserted");
+    }
+
+    #[test]
+    fn opencode_config_includes_permission_allow_all() {
+        let temp = tempdir().expect("tempdir");
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_live_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("create opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        assert_eq!(
+            json["permission"]["*"]["*"].as_str(),
+            Some("allow"),
+            "opencode.json must include permission[*][*] = allow to suppress prompts"
+        );
+    }
+
+    #[test]
+    fn opencode_config_adds_permission_block_to_existing_file() {
+        let temp = tempdir().expect("tempdir");
+        // Pre-existing config without a permission block
+        let existing = r#"{"mcp": {}, "agent": {}}"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        assert_eq!(
+            json["permission"]["*"]["*"].as_str(),
+            Some("allow"),
+            "permission block must be added to pre-existing opencode.json"
+        );
+    }
+
+    #[test]
+    fn opencode_config_preserves_existing_permission_block() {
+        let temp = tempdir().expect("tempdir");
+        // Pre-existing config with a custom permission block — must not be clobbered
+        let existing = r#"{"mcp": {}, "agent": {}, "permission": {"bash": {"read": "allow"}}}"#;
+        fs::write(temp.path().join("opencode.json"), existing).expect("write existing");
+
+        super::ensure_opencode_config(
+            temp.path(),
+            Some("rk_test"),
+            None,
+            Some("Agent"),
+            None,
+            None,
+            None,
+        )
+        .expect("upsert opencode config");
+
+        let contents =
+            fs::read_to_string(temp.path().join("opencode.json")).expect("read opencode.json");
+        let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
+
+        // Custom block preserved, wildcard NOT injected on top
+        assert_eq!(
+            json["permission"]["bash"]["read"].as_str(),
+            Some("allow"),
+            "existing custom permission block must be preserved"
+        );
+        assert!(
+            json["permission"]["*"].is_null(),
+            "wildcard block must not overwrite existing permission config"
+        );
     }
 
     // -----------------------------------------------------------------------
