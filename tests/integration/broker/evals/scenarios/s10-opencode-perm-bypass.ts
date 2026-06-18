@@ -69,7 +69,9 @@ export const scenario: EvalScenario = {
 
       const events = harness.getEvents();
       const base = baseScore(events, [worker]);
-      const released = events.some((e) => e.kind === 'agent_released' && (e as { name?: string }).name === worker);
+      const released = events.some(
+        (e) => e.kind === 'agent_released' && (e as { name?: string }).name === worker
+      );
 
       // PASS = message sent (bash ran without blocking) AND agent self-released.
       const pass = base.sent > 0 && released;
