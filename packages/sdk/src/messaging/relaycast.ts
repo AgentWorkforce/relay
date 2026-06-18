@@ -497,8 +497,6 @@ type RelaycastAgentDeliverySurface = Required<
   Pick<RelaycastAgentLike, 'deliveries' | 'ackDelivery' | 'failDelivery' | 'deferDelivery'>
 >;
 
-const DEFAULT_RELAYCAST_BASE_URL = 'https://gateway.relaycast.dev';
-
 type RelaycastAgentLike = {
   me(): Promise<unknown>;
   connect(): void;
@@ -656,8 +654,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private readonly relaycast: RelaycastWorkspaceLike;
   private readonly agentClient?: RelaycastAgentLike;
-  private readonly workspaceKey?: string;
-  private readonly baseUrl: string;
   private readonly selfNodeName?: string;
   private readonly placementTtlMs: number;
   private readonly maxQueuedPlacements: number;
@@ -674,8 +670,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.agentClient =
       options.agentClient ??
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
-    this.workspaceKey = options.workspaceKey ?? options.apiKey;
-    this.baseUrl = options.baseUrl ?? DEFAULT_RELAYCAST_BASE_URL;
     this.selfNodeName = options.selfNodeName;
     this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
     this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
@@ -1273,68 +1267,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     },
     fleetNodes: {
       get: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        const api = this.relaycast.workspace?.fleetNodes;
-        return api
-          ? toRelayWorkspaceFleetNodesConfig(await api.get())
-          : await this.requestWorkspaceFleetNodesConfig('GET');
+        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().get());
       },
       set: async (enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig> => {
-        const api = this.relaycast.workspace?.fleetNodes;
-        return api
-          ? toRelayWorkspaceFleetNodesConfig(await api.set(enabled))
-          : await this.requestWorkspaceFleetNodesConfig('PUT', { enabled });
+        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().set(enabled));
       },
       inherit: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        const api = this.relaycast.workspace?.fleetNodes;
-        return api
-          ? toRelayWorkspaceFleetNodesConfig(await api.inherit())
-          : await this.requestWorkspaceFleetNodesConfig('PUT', { mode: 'inherit' });
+        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().inherit());
       },
     },
   };
-
-  private async requestWorkspaceFleetNodesConfig(
-    method: 'GET' | 'PUT',
-    body?: { enabled: boolean } | { mode: 'inherit' }
-  ): Promise<RelayWorkspaceFleetNodesConfig> {
-    if (!this.workspaceKey) {
-      throw new Error(
-        'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API or a workspaceKey for the REST fallback.'
-      );
-    }
-
-    const url = new URL('/v1/workspace/fleet-nodes', this.baseUrl);
-    const response = await fetch(url.toString(), {
-      method,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${this.workspaceKey}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      throw new Error(
-        `RelaycastMessagingClient.workspace.fleetNodes failed to parse Relaycast response: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-
-    const envelope = asRecord(payload);
-    if (!response.ok || envelope.ok === false) {
-      const error = asRecord(envelope.error);
-      const message =
-        readStr(error, 'message') ?? `Relaycast fleet node config request failed (${response.status})`;
-      throw new Error(message);
-    }
-
-    return toRelayWorkspaceFleetNodesConfig(envelope.data ?? payload);
-  }
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
     if (!node) return undefined;
@@ -1479,6 +1421,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error('RelaycastMessagingClient.triggers requires the relaycast triggers API.');
     }
     return this.relaycast.triggers;
+  }
+
+  private requireWorkspaceFleetNodes(): NonNullable<NonNullable<RelaycastWorkspaceLike['workspace']>['fleetNodes']> {
+    if (!this.relaycast.workspace?.fleetNodes) {
+      throw new Error(
+        'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API.'
+      );
+    }
+    return this.relaycast.workspace.fleetNodes;
   }
 
   private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {

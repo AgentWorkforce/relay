@@ -9,7 +9,7 @@
 
 ## Summary
 
-Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/disable/inherit commands, docs and changelog entries, and updated Relay workspaces to @relaycast/sdk 4.1.0 with a REST fallback for the missing convenience method. SDK tests/build and focused fleet CLI tests pass; full CLI build is blocked by existing current-main cloud auth StoredAuth type errors.
+Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/disable/inherit commands, docs and changelog entries, and updated Relay workspaces to @relaycast/sdk 4.1.0. Removed the direct REST fallback so Relay requires the Relaycast SDK workspace fleet-node method shipped by the follow-up Relaycast SDK fix. SDK tests/build and focused fleet CLI tests pass; full CLI build is blocked by existing current-main cloud auth StoredAuth type errors.
 
 **Approach:** Standard approach
 
@@ -17,10 +17,10 @@ Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/di
 
 ## Key Decisions
 
-### Use REST fallback for workspace fleet config
+### Require Relaycast SDK workspace fleet config API
 
-- **Chose:** Use REST fallback for workspace fleet config
-- **Reasoning:** @relaycast/sdk 4.1.0 is published and installed, but its dist types do not expose workspace.fleetNodes, so Relay should call /v1/workspace/fleet-nodes directly when the SDK convenience method is absent.
+- **Chose:** Require Relaycast SDK workspace fleet config API
+- **Reasoning:** Relay should not duplicate the Relaycast REST call. The missing workspace.fleetNodes method belongs in @relaycast/sdk, so Relay delegates to the SDK surface and the Relaycast fix is tracked separately.
 
 ---
 
@@ -30,4 +30,4 @@ Added Relay SDK workspace.fleetNodes get/set/inherit, CLI fleet config/enable/di
 
 _Agent: default_
 
-- Use REST fallback for workspace fleet config: Use REST fallback for workspace fleet config
+- Require Relaycast SDK workspace fleet config API: Require Relaycast SDK workspace fleet config API
