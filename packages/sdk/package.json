@@ -59,6 +59,6 @@
     "@types/node": "^22.13.10"
   },
   "dependencies": {
-    "@relaycast/sdk": "^4.1.0"
+    "@relaycast/sdk": "^4.1.1"
   }
 }
