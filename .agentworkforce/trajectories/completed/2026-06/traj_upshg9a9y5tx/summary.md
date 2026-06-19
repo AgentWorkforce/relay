@@ -2,8 +2,8 @@
 
 > **Status:** ✅ Completed
 > **Confidence:** 90%
-> **Started:** June 19, 2026 at 01:41 PM
-> **Completed:** June 19, 2026 at 01:42 PM
+> **Started:** June 19, 2026, at 01:41 PM
+> **Completed:** June 19, 2026, at 01:42 PM
 
 ---
 
@@ -30,4 +30,4 @@ Addressed PR 1170 automated review feedback by adding marker-aware default unwra
 
 _Agent: default_
 
-- Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback: Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback
+- Updated the loader to preserve Node.js interop for CommonJS default wrappers and ESM-syntax `.js` files while keeping the Bun standalone path on native import unless a TypeScript-like extension requires `jiti`.
