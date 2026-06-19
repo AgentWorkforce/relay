@@ -54,7 +54,6 @@ actor RelayHTTP: RelayHTTPClient {
         request.httpMethod = method
         request.timeoutInterval = 10
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

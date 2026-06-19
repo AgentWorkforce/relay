@@ -236,10 +236,17 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
             }
             """
         )
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Wait deterministically for the event to be delivered rather than
+        // relying on a fixed sleep window, which is flaky on slower runners.
+        var events = await recorder.all()
+        for _ in 0..<500 where events.isEmpty {
+            try await Task.sleep(nanoseconds: 1_000_000)
+            events = await recorder.all()
+        }
         readTask.cancel()
+        _ = await readTask.value
 
-        let events = await recorder.all()
+        events = await recorder.all()
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.body, "hello")
     }
