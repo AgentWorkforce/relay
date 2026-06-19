@@ -18,19 +18,22 @@ Fixed fleet serve node-definition loading for Bun-compiled CLI by using native i
 ## Key Decisions
 
 ### Use native dynamic import for JS fleet node definitions
+
 - **Chose:** Use native dynamic import for JS fleet node definitions
 - **Reasoning:** The Bun-compiled CLI fails when jiti constructs its transform backend; compiled JS can be loaded by the runtime directly, so jiti should only be loaded for TypeScript-like sources that need transpilation.
 
 ### Validate loaded fleet node definitions locally in the CLI
+
 - **Chose:** Validate loaded fleet node definitions locally in the CLI
-- **Reasoning:** The Bun-compiled smoke showed the fleet SDK validator import can be undefined in the standalone binary; the public validator only checks the __agentRelayFleetNode marker, so a local marker check avoids another runtime import failure without changing validation behavior.
+- **Reasoning:** The Bun-compiled smoke showed the fleet SDK validator import can be undefined in the standalone binary; the public validator only checks the \_\_agentRelayFleetNode marker, so a local marker check avoids another runtime import failure without changing validation behavior.
 
 ---
 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Use native dynamic import for JS fleet node definitions: Use native dynamic import for JS fleet node definitions
 - Validate loaded fleet node definitions locally in the CLI: Validate loaded fleet node definitions locally in the CLI

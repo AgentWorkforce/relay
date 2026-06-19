@@ -169,8 +169,8 @@ export async function loadNodeDefinition(file: string): Promise<FleetNodeDefinit
 function isFleetNodeDefinitionLike(value: unknown): value is FleetNodeDefinition {
   return Boolean(
     value &&
-      typeof value === 'object' &&
-      (value as { __agentRelayFleetNode?: unknown }).__agentRelayFleetNode === true
+    typeof value === 'object' &&
+    (value as { __agentRelayFleetNode?: unknown }).__agentRelayFleetNode === true
   );
 }
 
