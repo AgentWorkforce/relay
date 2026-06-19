@@ -50,7 +50,8 @@ await engineer.channels.join('customer-complaints');
 ```
 
 To spawn a real CLI agent that self-registers, use a harness: `await claude.create({ relay, model })`
-returns the same kind of live client. See [Harnesses](/docs/harnesses).
+returns a handle (identity + `status`/`tools` predicates), not a messaging client. See
+[Harnesses](/docs/harnesses).
 
 ## Send A Message
 

@@ -57,18 +57,14 @@ The minimum useful harness creates a session that can receive messages. Declare 
 implement it: include `release` here only because the capabilities below set `lifecycle.release: true`.
 
 ```ts file="minimum-harness.ts"
-import { defineHarness } from '@agent-relay/harnesses';
+import { defineHarness, normalizeAgentIdentity } from '@agent-relay/harnesses';
 
 const customHarness = defineHarness({
   name: 'task-bot',
 
   create: async (input, ctx) => {
-    const identity = {
-      id: ctx.ids.agent(input.name),
-      name: input.name,
-      handle: `@${input.name}`,
-      type: 'agent' as const,
-    };
+    // ctx.agent is an AgentIdentityInput; normalize fills in id/handle.
+    const identity = normalizeAgentIdentity(ctx.agent);
 
     return {
       identity,
@@ -96,38 +92,36 @@ Most real harnesses will also implement `onEvent`, richer delivery modes, and ac
 ## Harness Context
 
 ```ts
-type HarnessInitContext = {
-  workspace: Workspace;
-  logger: RelayLogger;
-  env: Record<string, string | undefined>;
-};
-
-type HarnessCreateContext = HarnessInitContext & {
-  ids: {
-    agent(name: string): string;
-    session(name: string): string;
-  };
-  messaging: RelayMessaging;
-  actions: AgentRelayActions;
-  events: HarnessDriverEvents;
+interface HarnessInitContext {
+  relay?: unknown;
+  workspace?: HarnessWorkspaceContext;
+  env?: Record<string, string>;
+  secrets?: Record<string, string>;
   signal?: AbortSignal;
-};
+  log?: (event: AgentSessionEvent) => void | Promise<void>;
+}
+
+interface HarnessCreateContext extends HarnessInitContext {
+  agent: AgentIdentityInput;
+}
 ```
 
-The context gives the harness workspace information and access to Relay services without requiring the harness to import app-specific globals.
+`init(ctx)` runs once per harness; `create(input, ctx)` runs per agent and additionally receives the
+`agent` identity to spawn.
 
 ## Session Identity
 
 Identity is stable routing information. It is not capability state and it is not lifecycle state.
 
 ```ts
-type AgentIdentity = {
+interface AgentIdentity {
   id: string;
   name: string;
   handle: string;
-  kind?: 'agent' | 'human' | 'system' | 'service';
+  displayName?: string;
+  description?: string;
   metadata?: Record<string, unknown>;
-};
+}
 ```
 
 Status belongs in events. Capabilities belong on the session. A session may emit `status.changed` events over time while keeping the same identity.
@@ -209,9 +203,13 @@ Relay should call the session method and record the lifecycle event. The harness
 
 ## Prebuilt Harnesses
 
-`@agent-relay/harnesses` provides prebuilt definitions for common environments such as Claude Code, Codex,
-Gemini, and OpenCode. `create({ relay })` spawns the agent **and** self-registers it, returning the live
-agent client — no separate `relay.workspace.register(...)` call.
+`@agent-relay/harnesses` provides prebuilt definitions including `claude`, `codex`, `gemini`, `opencode`,
+`cursor`, `droid`, `aider`, `goose`, and `grok`. `create({ relay })` spawns the agent process, which
+self-registers — no separate `relay.workspace.register(...)` call.
+
+`create({ relay })` returns a `HarnessAgent`: the agent's identity (`id`, `name`, `handle`) plus the predicate
+builders `status` and `tools`. It is **not** a messaging client — it has no `sendMessage`. Address it by
+`handle`, observe it with predicates, and send on its behalf with `relay.messages.send({ from })`.
 
 ```ts file="prebuilt.ts"
 import { claude, codex } from '@agent-relay/harnesses';
@@ -219,17 +217,21 @@ import { claude, codex } from '@agent-relay/harnesses';
 const planner = await claude.create({ relay, model: 'sonnet' });
 const engineer = await codex.create({ relay, model: 'gpt-5.5' });
 
-await planner.sendMessage({ to: '#reviews', text: `${engineer.handle} let's pair on the migration.` });
-```
+await relay.messages.send({
+  from: planner,
+  to: '#reviews',
+  text: `${engineer.handle} let's pair on the migration.`,
+});
 
-The returned client carries the same identity, messaging, and predicate surface as a `register`-ed agent, so
-`planner.status.becomes('idle')` and `engineer.tools.called('bash')` work directly with
-`relay.addListener(...)`.
+// predicates work directly with relay.addListener(...)
+relay.addListener(planner.status.becomes('idle'), () => {});
+relay.addListener(engineer.tools.called('bash'), () => {});
+```
 
 ## Humans
 
-A human is just a harness with no managed runtime. `createHuman` self-registers and returns a live client,
-mirroring `claude.create({ relay })`.
+A human is just a harness with no managed runtime. `createHuman` self-registers and returns a live messaging
+client (a `RelayAgentClient` with `sendMessage`), so unlike `claude.create`, you can send from it directly.
 
 ```ts file="human.ts"
 import { createHuman } from '@agent-relay/harnesses';
