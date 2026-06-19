@@ -142,5 +142,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: scripts/post-publish-verify/retry-command.sh "SDK npm install" npm install
       - run: npm run -w @agent-relay/sdk check

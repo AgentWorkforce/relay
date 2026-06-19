@@ -1396,7 +1396,7 @@ async fn codex_local_fallback_model(
 
 async fn codex_debug_models_contains_model(resolved_cli: &str, model: &str) -> Option<bool> {
     let output = timeout(
-        Duration::from_millis(1_500),
+        Duration::from_secs(5),
         Command::new(resolved_cli)
             .arg("debug")
             .arg("models")
