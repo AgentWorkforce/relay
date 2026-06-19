@@ -18,6 +18,7 @@ Pinned agent-relay runtime dependencies on @relaycast/sdk to 4.1.1 so publish-ti
 ## Key Decisions
 
 ### Pinned @relaycast/sdk runtime dependency exactly
+
 - **Chose:** Pinned @relaycast/sdk runtime dependency exactly
 - **Reasoning:** Publish build removes package-lock.json and runs npm install after versioning; caret ranges can float to a newly published @relaycast/sdk whose exact @relaycast/types dependency may not have propagated yet.
 
@@ -26,6 +27,7 @@ Pinned agent-relay runtime dependencies on @relaycast/sdk to 4.1.1 so publish-ti
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Pinned @relaycast/sdk runtime dependency exactly: Pinned @relaycast/sdk runtime dependency exactly
