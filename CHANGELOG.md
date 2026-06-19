@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
 
+## [8.9.1] - 2026-06-19
+
+### Changed
+
+- Update Relaycast SDK to 4.1.2
+- Address fleet serve review follow-up
+- Align web/content/docs with actual SDK/CLI implementation
+- Decompose the two largest CLI god files into cohesive modules
+- Add design engineering skills and improve button interaction polish
+- Fix fleet serve JS node loading in standalone CLI
+
 ## [8.9.0] - 2026-06-18
 
 ### Changed
