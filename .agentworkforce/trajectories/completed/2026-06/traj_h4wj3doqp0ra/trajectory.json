@@ -66,11 +66,7 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [
-    "afdc289",
-    "f5e538c",
-    "f7715d3"
-  ],
+  "commits": ["afdc289", "f5e538c", "f7715d3"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_h4wj3doqp0ra/trajectory.json",
     "packages/cli/src/cli/agent-relay-mcp.ts",
