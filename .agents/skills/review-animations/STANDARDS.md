@@ -4,12 +4,12 @@ The precise values, curves, and rules behind the review. Cite these in findings 
 
 ## Should it animate? (frequency table)
 
-| Frequency | Decision |
-| --- | --- |
-| 100+ times/day (keyboard shortcuts, command palette toggle) | No animation. Ever. |
-| Tens of times/day (hover effects, list navigation) | Remove or drastically reduce |
-| Occasional (modals, drawers, toasts) | Standard animation |
-| Rare / first-time (onboarding, feedback, celebrations) | Can add delight |
+| Frequency                                                   | Decision                     |
+| ----------------------------------------------------------- | ---------------------------- |
+| 100+ times/day (keyboard shortcuts, command palette toggle) | No animation. Ever.          |
+| Tens of times/day (hover effects, list navigation)          | Remove or drastically reduce |
+| Occasional (modals, drawers, toasts)                        | Standard animation           |
+| Rare / first-time (onboarding, feedback, celebrations)      | Can add delight              |
 
 **Never animate keyboard-initiated actions** — they repeat hundreds of times daily; animation makes them feel slow and disconnected. (Raycast has no open/close animation — correct for something used hundreds of times a day.)
 
@@ -18,33 +18,34 @@ Valid purposes for motion: spatial consistency, state indication, explanation, f
 ## Easing
 
 Decision order:
+
 - Entering or exiting → **`ease-out`** (starts fast, feels responsive)
 - Moving / morphing on screen → **`ease-in-out`**
 - Hover / color change → **`ease`**
 - Constant motion (marquee, progress) → **`linear`**
 - Default → **`ease-out`**
 
-**Never `ease-in` on UI.** It starts slow, delaying the exact moment the user is watching. `ease-out` at 200ms *feels* faster than `ease-in` at 200ms.
+**Never `ease-in` on UI.** It starts slow, delaying the exact moment the user is watching. `ease-out` at 200ms _feels_ faster than `ease-in` at 200ms.
 
 Built-in CSS easings are too weak. Use strong custom curves:
 
 ```css
---ease-out: cubic-bezier(0.23, 1, 0.32, 1);        /* strong ease-out for UI */
---ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);    /* strong ease-in-out for on-screen movement */
---ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);     /* iOS-like drawer curve (Ionic) */
+--ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* strong ease-out for UI */
+--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1); /* strong ease-in-out for on-screen movement */
+--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1); /* iOS-like drawer curve (Ionic) */
 ```
 
 Find curves at [easing.dev](https://easing.dev/) or [easings.co](https://easings.co/) — don't hand-roll from scratch.
 
 ## Duration
 
-| Element | Duration |
-| --- | --- |
-| Button press feedback | 100–160ms |
-| Tooltips, small popovers | 125–200ms |
-| Dropdowns, selects | 150–250ms |
-| Modals, drawers | 200–500ms |
-| Marketing / explanatory | Can be longer |
+| Element                  | Duration      |
+| ------------------------ | ------------- |
+| Button press feedback    | 100–160ms     |
+| Tooltips, small popovers | 125–200ms     |
+| Dropdowns, selects       | 150–250ms     |
+| Modals, drawers          | 200–500ms     |
+| Marketing / explanatory  | Can be longer |
 
 **Rule: UI animations stay under 300ms.** A 180ms dropdown feels more responsive than a 400ms one. Faster spinners make load feel faster (same actual time). Instant tooltips after the first (skip delay + animation) make a toolbar feel faster.
 
@@ -53,8 +54,12 @@ Find curves at [easing.dev](https://easing.dev/) or [easings.co](https://easings
 - **Never `scale(0)`.** Start from `scale(0.9–0.97)` + `opacity: 0`. Nothing in the real world appears from nothing.
 - **Origin-aware popovers.** Scale from the trigger, not center:
   ```css
-  .popover { transform-origin: var(--radix-popover-content-transform-origin); } /* Radix */
-  .popover { transform-origin: var(--transform-origin); }                       /* Base UI */
+  .popover {
+    transform-origin: var(--radix-popover-content-transform-origin);
+  } /* Radix */
+  .popover {
+    transform-origin: var(--transform-origin);
+  } /* Base UI */
   ```
   **Modals are exempt** — they appear centered in the viewport, keep `transform-origin: center`.
 - **Button press feedback.** `transform: scale(0.97)` on `:active`, `transition: transform 160ms ease-out`. Subtle (0.95–0.98). Applies to any pressable element.
@@ -81,19 +86,34 @@ CSS **transitions** can be interrupted and retargeted mid-animation; **keyframes
 
 ```css
 /* Interruptible — good for dynamic UI */
-.toast { transition: transform 400ms ease; }
+.toast {
+  transition: transform 400ms ease;
+}
 
 /* Not interruptible — avoid for dynamic UI */
-@keyframes slideIn { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes slideIn {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
 ```
 
 Use `@starting-style` for entry without JS:
 
 ```css
 .toast {
-  opacity: 1; transform: translateY(0);
-  transition: opacity 400ms ease, transform 400ms ease;
-  @starting-style { opacity: 0; transform: translateY(100%); }
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 400ms ease,
+    transform 400ms ease;
+  @starting-style {
+    opacity: 0;
+    transform: translateY(100%);
+  }
 }
 ```
 
@@ -104,8 +124,12 @@ Legacy fallback: `useEffect(() => setMounted(true), [])` + `data-mounted` attrib
 Slow where the user is deciding, fast where the system responds.
 
 ```css
-.overlay { transition: clip-path 200ms ease-out; }            /* release: fast */
-.button:active .overlay { transition: clip-path 2s linear; }  /* press: slow, deliberate */
+.overlay {
+  transition: clip-path 200ms ease-out;
+} /* release: fast */
+.button:active .overlay {
+  transition: clip-path 2s linear;
+} /* press: slow, deliberate */
 ```
 
 ## Performance
@@ -114,7 +138,7 @@ Slow where the user is deciding, fast where the system responds.
 - **Don't drive child transforms via a CSS variable on the parent** — it recalcs styles for all children. Set `transform` directly on the element.
   ```js
   element.style.setProperty('--swipe-amount', `${d}px`); // bad: recalc on all children
-  element.style.transform = `translateY(${d}px)`;        // good: only this element
+  element.style.transform = `translateY(${d}px)`; // good: only this element
   ```
 - **Framer Motion shorthands are NOT hardware-accelerated.** `x`/`y`/`scale` run on the main thread via rAF and drop frames under load. Use the full transform string:
   ```jsx
@@ -124,8 +148,11 @@ Slow where the user is deciding, fast where the system responds.
 - **CSS animations beat JS under load** — they run off the main thread; rAF-based animations stutter while the browser loads/scripts/paints. Use CSS for predetermined motion, JS for dynamic/interruptible.
 - **WAAPI** gives JS control with CSS performance (hardware-accelerated, interruptible, no library):
   ```js
-  element.animate([{ clipPath: 'inset(0 0 100% 0)' }, { clipPath: 'inset(0 0 0 0)' }],
-    { duration: 1000, fill: 'forwards', easing: 'cubic-bezier(0.77, 0, 0.175, 1)' });
+  element.animate([{ clipPath: 'inset(0 0 100% 0)' }, { clipPath: 'inset(0 0 0 0)' }], {
+    duration: 1000,
+    fill: 'forwards',
+    easing: 'cubic-bezier(0.77, 0, 0.175, 1)',
+  });
   ```
 
 ## Transforms & clip-path
@@ -152,20 +179,37 @@ When a crossfade shows two overlapping states despite tuning easing/duration, ad
 Stagger group entrances; 30–80ms between items. Longer delays feel slow. Stagger is decorative — never block interaction while it plays.
 
 ```css
-.item { opacity: 0; transform: translateY(8px); animation: fadeIn 300ms ease-out forwards; }
-.item:nth-child(2) { animation-delay: 50ms; }
-.item:nth-child(3) { animation-delay: 100ms; }
-@keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
+.item {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: fadeIn 300ms ease-out forwards;
+}
+.item:nth-child(2) {
+  animation-delay: 50ms;
+}
+.item:nth-child(3) {
+  animation-delay: 100ms;
+}
+@keyframes fadeIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 ```
 
 ## Accessibility
 
 ```css
 @media (prefers-reduced-motion: reduce) {
-  .element { animation: fade 0.2s ease; } /* keep opacity/color, drop transform-based motion */
+  .element {
+    animation: fade 0.2s ease;
+  } /* keep opacity/color, drop transform-based motion */
 }
 @media (hover: hover) and (pointer: fine) {
-  .element:hover { transform: scale(1.05); } /* gate hover motion — touch fires false hovers on tap */
+  .element:hover {
+    transform: scale(1.05);
+  } /* gate hover motion — touch fires false hovers on tap */
 }
 ```
 
