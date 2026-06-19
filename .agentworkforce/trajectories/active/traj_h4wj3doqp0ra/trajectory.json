@@ -43,6 +43,18 @@
             "reasoning": "1879-line broker-lifecycle mixed broker start/stop/status with ~550 lines of dashboard discovery/spawn/asset-refresh logic. Moved the self-contained dashboard cluster behind a 7-function boundary. Verified byte-identical move via structural function diff (69->69), dual checks, tsc, full suite, and direct module live test of all 7 exports."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781828145275,
+          "type": "decision",
+          "content": "Extracted messaging MCP tools into mcp/messaging-tools.ts: Extracted messaging MCP tools into mcp/messaging-tools.ts",
+          "raw": {
+            "question": "Extracted messaging MCP tools into mcp/messaging-tools.ts",
+            "chosen": "Extracted messaging MCP tools into mcp/messaging-tools.ts",
+            "alternatives": [],
+            "reasoning": "registerAgentRelayTools was a 720-line god function; split out the 20 homogeneous messaging tools (channels/messages/threads/DMs/reactions/search/inbox) which depend only on getAgentClient, plus shared zod shapes into mcp/tool-shapes.ts. Main file 2215->969 lines overall. Verified byte-identical move, all 28 tools register live, full suite 968 pass, dual reviewer APPROVE."
+          },
+          "significance": "high"
         }
       ]
     }
