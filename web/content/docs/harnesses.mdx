@@ -21,7 +21,7 @@ type AgentSession = {
   identity: AgentIdentity;
   capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
-  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  onEvent?(emit: (event: AgentSessionEvent) => void | Promise<void>): Unsubscribe;
   /** Provide only when `capabilities.lifecycle.release` is `true`. */
   release?(reason?: string): Promise<void>;
 };

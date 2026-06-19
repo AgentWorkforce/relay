@@ -39,7 +39,7 @@ The SDK-backed groups are `agent`, `channel`, `message`, `integration`, and `cap
 | `agent-relay workspace set_key <name> <key>` | Store a workspace key under a name. |
 | `agent-relay workspace join <name> <key>` | Store a key and switch to that workspace. |
 | `agent-relay workspace switch <name>` | Switch the active stored workspace. |
-| `agent-relay workspace active [--json] [--api-url <url>]` | Show the active canonical cloud workspace. |
+| `agent-relay workspace active [--json] [--api-url <url>] [--refresh-timeout <ms>]` | Show the active canonical cloud workspace. |
 
 ## Agents
 
@@ -177,7 +177,7 @@ Hosted run commands remain under `cloud`:
 
 | Command | Description |
 | --- | --- |
-| `agent-relay fleet serve <node>` | Serve a fleet node definition. |
+| `agent-relay fleet serve [file] [--enrollment-token <token>]` | Serve a fleet node from a TS/JS definition file, or register via a Cloud enrollment token. |
 | `agent-relay fleet nodes` | List fleet nodes in the workspace. |
 | `agent-relay fleet config` | Show workspace fleet node configuration. |
 | `agent-relay fleet enable` | Enable fleet nodes for the workspace. |
