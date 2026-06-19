@@ -1,7 +1,4 @@
-import {
-  INVALID_AGENT_TOKEN_CODE,
-  agentTokenRecoveryMessage,
-} from '@agent-relay/sdk';
+import { INVALID_AGENT_TOKEN_CODE, agentTokenRecoveryMessage } from '@agent-relay/sdk';
 import { z } from 'zod';
 
 /** Permissive output schema for tools that return arbitrary JSON objects. */

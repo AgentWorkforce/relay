@@ -31,6 +31,18 @@
             "reasoning": "2215-line file mixed 8 concerns (schema adapter, telemetry, resources, inbox, workspace, action tools); split into single-responsibility modules behind unchanged public surface. Verified pure move via dual autoreview, tsc, full test suite, and live MCP stdio probe."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1781827670970,
+          "type": "decision",
+          "content": "Extracted dashboard management from broker-lifecycle.ts into broker-dashboard.ts: Extracted dashboard management from broker-lifecycle.ts into broker-dashboard.ts",
+          "raw": {
+            "question": "Extracted dashboard management from broker-lifecycle.ts into broker-dashboard.ts",
+            "chosen": "Extracted dashboard management from broker-lifecycle.ts into broker-dashboard.ts",
+            "alternatives": [],
+            "reasoning": "1879-line broker-lifecycle mixed broker start/stop/status with ~550 lines of dashboard discovery/spawn/asset-refresh logic. Moved the self-contained dashboard cluster behind a 7-function boundary. Verified byte-identical move via structural function diff (69->69), dual checks, tsc, full suite, and direct module live test of all 7 exports."
+          },
+          "significance": "high"
         }
       ]
     }

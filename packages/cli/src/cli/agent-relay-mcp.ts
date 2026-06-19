@@ -16,11 +16,7 @@ import { AgentRelay } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { withRelaycastTelemetry } from './lib/relaycast-telemetry.js';
-import {
-  RealtimeResourceBridge,
-  SubscriptionManager,
-  registerResourceDefinitions,
-} from './mcp/resources.js';
+import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
 import {
   createWorkspace,

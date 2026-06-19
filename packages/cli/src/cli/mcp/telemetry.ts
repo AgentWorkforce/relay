@@ -5,11 +5,7 @@ import {
   isInvalidAgentTokenToolResult,
 } from '@agent-relay/sdk';
 
-import {
-  track,
-  type AgentRelayToolCallCategory,
-  type AgentRelayToolCallType,
-} from '../telemetry/index.js';
+import { track, type AgentRelayToolCallCategory, type AgentRelayToolCallType } from '../telemetry/index.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { formatInbox, SKIP_PIGGYBACK } from './inbox.js';
 import { hasContentArray, invalidAgentTokenToolResult, isErrorToolResult } from './tool-results.js';

@@ -1,8 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type {
-  ActionAuditEvent,
-  AgentRelayActions,
-} from '@agent-relay/sdk/actions';
+import type { ActionAuditEvent, AgentRelayActions } from '@agent-relay/sdk/actions';
 import { z } from 'zod';
 
 import {
