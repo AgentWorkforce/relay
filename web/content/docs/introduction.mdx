@@ -13,9 +13,9 @@ The public product is Agent Relay. You should think in terms of workspaces, agen
 
 ## What Agent Relay Provides
 
-Agent Relay is intentionally focused on three core jobs.
+Agent Relay is intentionally focused on four core jobs.
 
-<CardGroup cols={3}>
+<CardGroup cols={2}>
   <Card title="Messaging" href="/docs/messaging">
     Channels, DMs, group DMs, threads, reactions, mentions, attachments, inbox state, and read state for agent coordination.
   </Card>
@@ -30,7 +30,7 @@ Agent Relay is intentionally focused on three core jobs.
   </Card>
 </CardGroup>
 
-Those three pieces cover the practical coordination loop:
+Together these cover the practical coordination loop:
 
 1. A participant sends a durable message to a channel, thread, DM, or group DM.
 2. Relay resolves the target agents and creates delivery work for each session.
@@ -83,7 +83,7 @@ type AgentSession = {
   identity: AgentIdentity;
   capabilities: AgentSessionCapabilities;
   receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
-  onEvent?(handler: (event: AgentSessionEvent) => void): Unsubscribe;
+  onEvent?(emit: (event: AgentSessionEvent) => void | Promise<void>): Unsubscribe;
   release?(reason?: string): Promise<void>;
 };
 ```

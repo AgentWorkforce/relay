@@ -1,0 +1,113 @@
+{
+  "id": "traj_whkub57v6igb",
+  "version": 1,
+  "task": {
+    "title": "Audit and fix web/content/docs against actual code implementation"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-19T21:16:54.045Z",
+  "completedAt": "2026-06-19T21:27:56.505Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-19T21:27:41.012Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pbgbfbixpnpb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-19T21:27:41.012Z",
+      "endedAt": "2026-06-19T21:27:56.505Z",
+      "events": [
+        {
+          "ts": 1781904461014,
+          "type": "decision",
+          "content": "Fixed intro 'three core jobs' vs 4 cards: Fixed intro 'three core jobs' vs 4 cards",
+          "raw": {
+            "question": "Fixed intro 'three core jobs' vs 4 cards",
+            "chosen": "Fixed intro 'three core jobs' vs 4 cards",
+            "alternatives": [],
+            "reasoning": "Card group listed Messaging/Delivery/Actions/Webhooks (4) and prose said three; cols={3} with 4 cards. Corrected to four + cols={2}."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781904462023,
+          "type": "decision",
+          "content": "Rewrote agent-relay-mcp tool table: Rewrote agent-relay-mcp tool table",
+          "raw": {
+            "question": "Rewrote agent-relay-mcp tool table",
+            "chosen": "Rewrote agent-relay-mcp tool table",
+            "alternatives": [],
+            "reasoning": "Doc claimed table was 'the names registered by agent-relay mcp' but mcp registers ~31 tools across 3 files; table listed 12 mixed messaging+agent tools. Replaced with accurate 3 tool groups and complete 20-tool messaging table verified against mcp/messaging-tools.ts."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781904463006,
+          "type": "decision",
+          "content": "Fixed MCP Action Result Shape: Fixed MCP Action Result Shape",
+          "raw": {
+            "question": "Fixed MCP Action Result Shape",
+            "chosen": "Fixed MCP Action Result Shape",
+            "alternatives": [],
+            "reasoning": "Shown success JSON had inline 'output', contradicting the doc's own fire-and-forget statement and action-tools.ts which returns { ok, status: 'invoked', invocation }. Replaced with the real ack shape."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781904464079,
+          "type": "decision",
+          "content": "Aligned onEvent signature to source: Aligned onEvent signature to source",
+          "raw": {
+            "question": "Aligned onEvent signature to source",
+            "chosen": "Aligned onEvent signature to source",
+            "alternatives": [],
+            "reasoning": "Docs showed onEvent(handler...): void-only; source is onEvent(emit: ...=> void|Promise<void>): () => void. Fixed param name and return in intro + harnesses."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781904465375,
+          "type": "decision",
+          "content": "Fixed reference-cli fleet serve + workspace active: Fixed reference-cli fleet serve + workspace active",
+          "raw": {
+            "question": "Fixed reference-cli fleet serve + workspace active",
+            "chosen": "Fixed reference-cli fleet serve + workspace active",
+            "alternatives": [],
+            "reasoning": "fleet serve documented as required <node>; code is optional [file] with --enrollment-token path. workspace active missing --refresh-timeout. Both verified in commands/fleet.ts and workspace.ts."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1781904466358,
+          "type": "decision",
+          "content": "Fixed session-capabilities attachments optionality: Fixed session-capabilities attachments optionality",
+          "raw": {
+            "question": "Fixed session-capabilities attachments optionality",
+            "chosen": "Fixed session-capabilities attachments optionality",
+            "alternatives": [],
+            "reasoning": "Messaging Capabilities block dropped the ? on attachments; source type is attachments?: MessageAttachmentCapability[]."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Audited web/content/docs against code: fixed intro 3-vs-4 inconsistency, rewrote agent-relay-mcp tool table and action result shape, aligned onEvent signature, fixed reference-cli fleet/workspace rows and session-capabilities attachments optionality. SDK/messaging and delivery/actions/events docs verified accurate.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8805fd3e1c37ac38b9d8db136568444c768c58ea",
+    "endRef": "8805fd3e1c37ac38b9d8db136568444c768c58ea"
+  }
+}
