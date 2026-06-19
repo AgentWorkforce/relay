@@ -4,8 +4,9 @@
   "task": {
     "title": "Architecture refactor of Relay monorepo"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-06-18T23:36:50.727Z",
+  "completedAt": "2026-06-19T00:16:10.817Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-06-18T23:58:24.013Z",
+      "endedAt": "2026-06-19T00:16:10.817Z",
       "events": [
         {
           "ts": 1781827104014,
@@ -59,12 +61,37 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Decomposed the two largest Agent Relay CLI god files into cohesive single-responsibility modules: agent-relay-mcp.ts (2215->969 lines, 10 mcp/ modules) and broker-lifecycle.ts (1879->1320, dashboard extracted). Three pure-move refactors, each verified with tsc + full test suite (968 pass) + live MCP probe + independent autoreview. No behavior change.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "afdc289",
+    "f5e538c",
+    "f7715d3"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_h4wj3doqp0ra/trajectory.json",
+    "packages/cli/src/cli/agent-relay-mcp.ts",
+    "packages/cli/src/cli/lib/broker-dashboard.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.ts",
+    "packages/cli/src/cli/mcp/action-schema.ts",
+    "packages/cli/src/cli/mcp/action-tools.ts",
+    "packages/cli/src/cli/mcp/inbox.ts",
+    "packages/cli/src/cli/mcp/messaging-tools.ts",
+    "packages/cli/src/cli/mcp/resources.ts",
+    "packages/cli/src/cli/mcp/telemetry.ts",
+    "packages/cli/src/cli/mcp/tool-results.ts",
+    "packages/cli/src/cli/mcp/tool-shapes.ts",
+    "packages/cli/src/cli/mcp/types.ts",
+    "packages/cli/src/cli/mcp/workspace.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "66f972f23cafb958fa1956d3654710423e2391b5",
-    "endRef": "66f972f23cafb958fa1956d3654710423e2391b5"
+    "endRef": "afdc289bdcd2b7de860699df39dd0df5eec94d99",
+    "traceId": "35467489-5fde-46b4-b686-b372747b0eb9"
   }
 }
