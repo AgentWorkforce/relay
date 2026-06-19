@@ -18,6 +18,7 @@ Audited all 27 docs in web/content/docs against SDK/CLI/harness source. Fixed pe
 ## Key Decisions
 
 ### Register actions on agent clients, not workspace client
+
 - **Chose:** Register actions on agent clients, not workspace client
 - **Reasoning:** Code (agent-relay.ts:256) confirms workspace-client registerAction stays in-process and is not MCP-exposed; only agent clients pass handlerAgent
 
@@ -26,7 +27,8 @@ Audited all 27 docs in web/content/docs against SDK/CLI/harness source. Fixed pe
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Register actions on agent clients, not workspace client: Register actions on agent clients, not workspace client
 

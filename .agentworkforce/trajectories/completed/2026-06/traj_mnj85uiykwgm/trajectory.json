@@ -42,14 +42,7 @@
     "approach": "Standard approach",
     "confidence": 0.8
   },
-  "commits": [
-    "bbb5405",
-    "37c6897",
-    "c168617",
-    "b87e0ba",
-    "406449f",
-    "bc7dff1"
-  ],
+  "commits": ["bbb5405", "37c6897", "c168617", "b87e0ba", "406449f", "bc7dff1"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_mnj85uiykwgm/trajectory.json",
     "web/components/docs/DocsNav.tsx",
