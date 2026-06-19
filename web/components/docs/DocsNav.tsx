@@ -76,7 +76,6 @@ const navIcons: Record<string, NavIcon> = {
   'cli-on-the-relay': Plug,
   'reference-cli': BookOpen,
   'reference-broker-api': Network,
-  'reference-openclaw': Bot,
   'typescript-sdk': SiTypescript,
   'python-sdk': SiPython,
   'react-sdk': FaReact,
