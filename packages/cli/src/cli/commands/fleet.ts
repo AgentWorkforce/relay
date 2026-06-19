@@ -2,14 +2,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { Command } from 'commander';
-import { createJiti } from 'jiti';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { enrollFleetNode, type FleetNodeEnrollment } from '@agent-relay/cloud';
 import type { FleetNodeDefinition } from '@agent-relay/fleet';
-// Namespace import sidesteps bun --compile's named-import validation against the
-// package .d.ts (see cli/lib/fleet-sidecar.ts).
-import * as fleetSdk from '@agent-relay/fleet';
-const { isFleetNodeDefinition } = fleetSdk;
 
 import { withDefaults, type CoreDependencies, type CoreProjectPaths } from './core.js';
 import { readBrokerConnection, startBrokerWithPortFallback } from '../lib/broker-lifecycle.js';
@@ -29,6 +24,8 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+
+const JITI_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 
 export interface FleetCommandDependencies {
   core: CoreDependencies;
@@ -158,18 +155,35 @@ export function registerFleetCommands(
 
 export async function loadNodeDefinition(file: string): Promise<FleetNodeDefinition> {
   const absolutePath = path.resolve(file);
-  const jiti = createJiti(pathToFileURL(process.cwd()).href, {
-    interopDefault: true,
-  });
-  const loaded = (await jiti.import(absolutePath, { default: true })) as unknown;
+  const loaded = await importNodeDefinition(absolutePath);
   const definition =
     loaded && typeof loaded === 'object' && 'default' in loaded
       ? (loaded as { default?: unknown }).default
       : loaded;
-  if (!isFleetNodeDefinition(definition)) {
+  if (!isFleetNodeDefinitionLike(definition)) {
     throw new Error(`Fleet node file ${absolutePath} must default-export defineNode(...)`);
   }
   return definition;
+}
+
+function isFleetNodeDefinitionLike(value: unknown): value is FleetNodeDefinition {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      (value as { __agentRelayFleetNode?: unknown }).__agentRelayFleetNode === true
+  );
+}
+
+async function importNodeDefinition(absolutePath: string): Promise<unknown> {
+  if (!JITI_NODE_DEFINITION_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) {
+    return import(pathToFileURL(absolutePath).href) as Promise<unknown>;
+  }
+
+  const { createJiti } = await import('jiti');
+  const jiti = createJiti(pathToFileURL(process.cwd()).href, {
+    interopDefault: true,
+  });
+  return jiti.import(absolutePath, { default: true }) as Promise<unknown>;
 }
 
 /**

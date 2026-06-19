@@ -1,4 +1,6 @@
 import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { Command } from 'commander';
@@ -68,6 +70,31 @@ describe('fleet command support', () => {
 
     expect(node.name).toBe('local-builder');
     expect(Object.keys(node.capabilities)).toContain('spawn:codex');
+  });
+
+  it('loads a plain JS node file through native import', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'relay-node-def-'));
+    try {
+      await writeFile(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const file = path.join(dir, 'node-def.js');
+      await writeFile(
+        file,
+        [
+          'export default {',
+          '  __agentRelayFleetNode: true,',
+          '  name: "plain-js-node",',
+          '  capabilities: {},',
+          '  triggers: [],',
+          '};',
+        ].join('\n')
+      );
+
+      const node = await loadNodeDefinition(file);
+
+      expect(node.name).toBe('plain-js-node');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('registers a served node and dispatches invoke_handler over a stub broker', async () => {
