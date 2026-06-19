@@ -81,10 +81,10 @@ const unsubscribe = relay.addListener(engineer.status.becomes('idle'), () =>
   })
 );
 
-relay.addListener('delivery.failed', (event) =>
+relay.addListener('action.failed', (event) =>
   planner.sendMessage({
     to: '#customer-complaints',
-    text: `Delivery ${event.deliveryId} failed for ${event.messageId}: ${event.reason}.`,
+    text: `Action ${event.action} failed for ${event.agent.name}: ${event.error}.`,
   })
 );
 
@@ -98,19 +98,25 @@ and tool calls. See [Event handlers](/docs/event-handlers) and [Events](/docs/ev
 ## Register An Action
 
 Actions are fire-and-forget typed capabilities. Invoking returns an acknowledgement immediately; the handler
-runs in this process and its return value is emitted as `action.completed` to your listeners.
+runs in the SDK process that registered it and its return value is emitted as `action.completed` to your
+listeners.
+
+Register the action on an **agent client** (here `planner`). The handler agent's identity is what wires the
+action onto the relay; an action registered on the workspace client (`relay.registerAction`) stays in-process
+and is not exposed to other agents.
 
 ```ts file="actions.ts"
 import { z } from 'zod';
 import { relay } from './relay';
+import { planner } from './agents';
 
-relay.registerAction({
+planner.registerAction({
   name: 'review.submit_vote',
   description: 'Submit a review vote.',
   input: z.object({ vote: z.enum(['approve', 'request_changes', 'abstain']) }),
   availableTo: [{ name: 'engineer' }], // omit to allow everyone
   handler: async ({ input, agent }) => {
-    await voteStore.record(agent.name, input.vote);
+    await voteStore.record(agent.name, input.vote); // `agent` is the caller: { name, id?, type? }
     return { recorded: true }; // becomes the action.completed payload
   },
 });
@@ -120,7 +126,7 @@ relay.addListener(relay.action('review.submit_vote').completed(), (event) => {
 });
 ```
 
-The agent-relay MCP exposes each registered action as a named tool, so an agent that cannot embed the SDK can
+The agent-relay MCP exposes each relay-wired action as a named tool, so an agent that cannot embed the SDK can
 still invoke it. See [Actions](/docs/actions).
 
 ## Add A Human

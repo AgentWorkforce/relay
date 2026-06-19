@@ -156,7 +156,7 @@ full `message` and a rich `envelope` (`from`, `to`, `channel`, `parent`).
 ```ts file="events.ts"
 const stop = relay.addListener('message.created', ({ message, envelope }) => {
   if (envelope.channel?.name !== 'reviews') return;
-  console.log(envelope.from.handle, message.text);
+  console.log(envelope.from?.name, message.text);
 });
 
 // Later:

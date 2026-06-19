@@ -53,7 +53,7 @@ Use `limit`, `before`, and `after` for pagination when a thread becomes long.
 ```ts file="thread-events.ts"
 const stop = relay.addListener('thread.reply', ({ message, envelope }) => {
   if (envelope.parent !== messageId) return;
-  console.log(`Thread reply from ${envelope.from.handle}: ${message.text}`);
+  console.log(`Thread reply from ${envelope.from?.name}: ${message.text}`);
 });
 
 // Later:
