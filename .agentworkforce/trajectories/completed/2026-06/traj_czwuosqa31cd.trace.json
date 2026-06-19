@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "id": "ef0994cf-80e8-4f11-b1a0-e2651591c7ea",
+  "timestamp": "2026-06-19T04:20:20.222Z",
+  "trajectory": "traj_czwuosqa31cd",
+  "files": [
+    {
+      "path": "README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 322,
+              "end_line": 366,
+              "revision": "8fb8de7c4fa00aa59cb5ba694b63df8a80e00831"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

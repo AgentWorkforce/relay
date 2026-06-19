@@ -1,0 +1,62 @@
+{
+  "id": "traj_czwuosqa31cd",
+  "version": 1,
+  "task": {
+    "title": "Validate README onboarding: fresh-clone clone-to-running pass, closing doc/setup gaps",
+    "source": {
+      "system": "plain",
+      "id": "readme-onboarding"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-06-19T04:02:33.793Z",
+  "completedAt": "2026-06-19T04:20:20.189Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-19T04:11:20.911Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_w9x49tfntka8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-19T04:11:20.911Z",
+      "endedAt": "2026-06-19T04:20:20.189Z",
+      "events": [
+        {
+          "ts": 1781842280912,
+          "type": "decision",
+          "content": "Documented run path = README Development section (npm install/build/test); it passes offline from a fresh clone. Live broker (local up) requires hosted relaycast cloud and cannot run offline.: Documented run path = README Development section (npm install/build/test); it passes offline from a fresh clone. Live broker (local up) requires hosted relaycast cloud and cannot run offline.",
+          "raw": {
+            "question": "Documented run path = README Development section (npm install/build/test); it passes offline from a fresh clone. Live broker (local up) requires hosted relaycast cloud and cannot run offline.",
+            "chosen": "Documented run path = README Development section (npm install/build/test); it passes offline from a fresh clone. Live broker (local up) requires hosted relaycast cloud and cannot run offline.",
+            "alternatives": [],
+            "reasoning": "build:rust hardcodes gateway.relaycast.dev with no offline override; gateway returns 403 in restricted env. Offline-verifiable clean pass = install+build+test; live run is cloud-gated and must be documented as such, not as a quiet assumption."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Validated README onboarding via repeated fresh clones. Closed the unstated-prerequisites gap (Node>=20.9/Node22, git, optional Rust) and added offline build/test + cloud-gated live-run docs. Verified clean clone->build->test pass twice: with Rust and with Rust simulated absent (prebuilt npm broker), 968 tests green both times.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "8fb8de7"
+  ],
+  "filesChanged": [
+    "README.md"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "66f972f23cafb958fa1956d3654710423e2391b5",
+    "endRef": "8fb8de7c4fa00aa59cb5ba694b63df8a80e00831",
+    "traceId": "ef0994cf-80e8-4f11-b1a0-e2651591c7ea"
+  }
+}
