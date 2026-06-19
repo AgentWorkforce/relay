@@ -18,6 +18,7 @@ Addressed PR 1170 automated review feedback by adding marker-aware default unwra
 ## Key Decisions
 
 ### Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback
+
 - **Chose:** Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback
 - **Reasoning:** Native import fixes compiled JavaScript node definitions in the Bun binary. Node.js can still hit SyntaxError for ESM-syntax .js files in CommonJS projects, so the loader falls back to jiti only for syntax failures outside Bun and unwraps nested CommonJS default wrappers.
 
@@ -26,6 +27,7 @@ Addressed PR 1170 automated review feedback by adding marker-aware default unwra
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback: Preserve Node.js JS interop while keeping Bun standalone off the jiti fallback
