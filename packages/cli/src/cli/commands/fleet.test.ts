@@ -100,6 +100,7 @@ describe('fleet command support', () => {
   it('loads CommonJS compiled JS node files that export default wrappers', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'relay-node-def-'));
     try {
+      await writeFile(path.join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
       const file = path.join(dir, 'node-def.js');
       await writeFile(
         file,
