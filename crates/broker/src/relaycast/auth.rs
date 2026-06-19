@@ -699,12 +699,7 @@ impl AuthClient {
                 .register_or_get_agent(request)
                 .await
                 .map_err(relay_error_to_anyhow)?;
-            return Ok((
-                result.id,
-                result.name,
-                result.token,
-                result.workspace_id,
-            ));
+            return Ok((result.id, result.name, result.token, result.workspace_id));
         }
 
         loop {
@@ -717,12 +712,7 @@ impl AuthClient {
 
             match relay.register_agent(request).await {
                 Ok(result) => {
-                    return Ok((
-                        result.id,
-                        result.name,
-                        result.token,
-                        result.workspace_id,
-                    ));
+                    return Ok((result.id, result.name, result.token, result.workspace_id));
                 }
                 Err(RelayError::Api { code, status, .. })
                     if is_conflict_code(&code) || status == 409 =>
