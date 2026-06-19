@@ -10,17 +10,27 @@ let package = Package(
         .tvOS(.v16)
     ],
     products: [
-        .library(name: "AgentRelaySDK", targets: ["AgentRelaySDK"])
+        .library(name: "AgentRelaySDK", targets: ["AgentRelaySDK"]),
+        .library(name: "AgentRelayBrokerSDK", targets: ["AgentRelayBrokerSDK"])
     ],
     targets: [
         .target(
             name: "AgentRelaySDK",
             path: "packages/sdk-swift/Sources/AgentRelaySDK"
         ),
+        .target(
+            name: "AgentRelayBrokerSDK",
+            path: "packages/sdk-swift/Sources/AgentRelayBrokerSDK"
+        ),
         .testTarget(
             name: "AgentRelaySDKTests",
             dependencies: ["AgentRelaySDK"],
             path: "packages/sdk-swift/Tests/AgentRelaySDKTests"
+        ),
+        .testTarget(
+            name: "AgentRelayBrokerSDKTests",
+            dependencies: ["AgentRelayBrokerSDK"],
+            path: "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests"
         )
     ]
 )

@@ -4,7 +4,39 @@ import Foundation
 import FoundationNetworking
 #endif
 
-protocol HostedEventTransportClient: Sendable {
+private final class PingWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning: Void = ()) {
+        resume(.success(()))
+    }
+
+    func resume(throwing error: Error) {
+        resume(.failure(error))
+    }
+
+    private func resume(_ result: Result<Void, Error>) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+
+        guard let pending else { return }
+        switch result {
+        case .success:
+            pending.resume(returning: ())
+        case .failure(let error):
+            pending.resume(throwing: error)
+        }
+    }
+}
+
+protocol RelayTransportClient: Sendable {
     var inbound: AsyncStream<Data> { get }
 
     func setOnConnect(_ handler: @escaping @Sendable () async -> Void) async
@@ -13,7 +45,7 @@ protocol HostedEventTransportClient: Sendable {
     func send(_ message: Data) async throws
 }
 
-public actor RelayEventTransport: HostedEventTransportClient {
+public actor RelayTransport: RelayTransportClient {
     public enum ConnectionState: Sendable {
         case disconnected
         case connecting
@@ -22,6 +54,7 @@ public actor RelayEventTransport: HostedEventTransportClient {
     }
 
     public enum TransportError: Error, Sendable {
+        case invalidResponse
         case notConnected
         case sendFailed(String)
         case connectionFailed(String)
@@ -30,8 +63,8 @@ public actor RelayEventTransport: HostedEventTransportClient {
     public nonisolated let inbound: AsyncStream<Data>
 
     private let baseURL: URL
-    private let token: String
     private let session: URLSession
+    private let authToken: String
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
@@ -40,11 +73,12 @@ public actor RelayEventTransport: HostedEventTransportClient {
     private var state: ConnectionState = .disconnected
     private var manuallyDisconnected = false
     private var reconnectAttempt = 0
+    private var lastPongAt = Date()
     private var onConnect: (@Sendable () async -> Void)?
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    public init(baseURL: URL, authToken: String, session: URLSession = .shared) {
         self.baseURL = baseURL
-        self.token = token
+        self.authToken = authToken
         self.session = session
         var continuationRef: AsyncStream<Data>.Continuation?
         self.inbound = AsyncStream<Data> { continuation in
@@ -67,13 +101,16 @@ public actor RelayEventTransport: HostedEventTransportClient {
 
         manuallyDisconnected = false
         state = reconnectAttempt == 0 ? .connecting : .reconnecting
+
         let isReconnect = reconnectAttempt > 0
-        let request = URLRequest(url: Self.resolveWebSocketURL(baseURL: baseURL, token: token) ?? baseURL)
+        let request = websocketRequest()
         let task = session.webSocketTask(with: request)
         webSocketTask = task
         task.resume()
         state = .connected
         reconnectAttempt = 0
+        lastPongAt = Date()
+
         startReceiveLoop()
         startPingLoop()
         if isReconnect, let onConnect {
@@ -98,18 +135,22 @@ public actor RelayEventTransport: HostedEventTransportClient {
         guard let task = webSocketTask, state == .connected else {
             throw TransportError.notConnected
         }
+
         do {
-            if let string = String(data: message, encoding: .utf8) {
-                try await task.send(.string(string))
-            } else {
-                try await task.send(.data(message))
-            }
+            try await task.send(.data(message))
         } catch {
             throw TransportError.sendFailed(String(describing: error))
         }
     }
 
-    static func resolveWebSocketURL(baseURL: URL, token: String) -> URL? {
+    private func websocketRequest() -> URLRequest {
+        var request = URLRequest(url: Self.resolveWebSocketURL(baseURL: baseURL) ?? baseURL)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(authToken, forHTTPHeaderField: "X-API-Key")
+        return request
+    }
+
+    static func resolveWebSocketURL(baseURL: URL) -> URL? {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         if components?.scheme == "http" { components?.scheme = "ws" }
         if components?.scheme == "https" { components?.scheme = "wss" }
@@ -118,14 +159,13 @@ public actor RelayEventTransport: HostedEventTransportClient {
         while path.hasSuffix("/") { path = String(path.dropLast()) }
         if path.hasSuffix("/v1/ws") {
             path = String(path.dropLast("/v1/ws".count))
+        } else if path.hasSuffix("/ws") {
+            path = String(path.dropLast("/ws".count))
         }
-        components?.path = path + "/v1/ws"
+        components?.path = path + "/ws"
 
-        var queryItems = components?.queryItems?.filter { $0.name != "token" } ?? []
-        queryItems.append(URLQueryItem(name: "token", value: token))
-        queryItems.append(URLQueryItem(name: "origin_client", value: "agent-relay-swift"))
-        queryItems.append(URLQueryItem(name: "origin_version", value: "swift-sdk-split"))
-        components?.queryItems = queryItems
+        let filteredQuery = components?.queryItems?.filter { $0.name != "token" }
+        components?.queryItems = (filteredQuery?.isEmpty == false) ? filteredQuery : nil
 
         return components?.url
     }
@@ -152,10 +192,43 @@ public actor RelayEventTransport: HostedEventTransportClient {
         pingTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(20))
                 if Task.isCancelled { return }
-                try? await self.send(Self.encodeSocketMessage(["type": "ping"]))
+                do {
+                    try await self.sendPing()
+                } catch {
+                    await self.handleDisconnect(error: error)
+                    return
+                }
             }
+        }
+    }
+
+    private func sendPing() async throws {
+        guard let task = webSocketTask else { throw TransportError.notConnected }
+        let before = Date()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let waiter = PingWaiter(continuation)
+            let timeout = Task {
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch {
+                    return
+                }
+                waiter.resume(throwing: TransportError.connectionFailed("Pong timed out"))
+            }
+            task.sendPing { error in
+                timeout.cancel()
+                if let error {
+                    waiter.resume(throwing: error)
+                } else {
+                    waiter.resume()
+                }
+            }
+        }
+        lastPongAt = Date()
+        if lastPongAt.timeIntervalSince(before) > 10 {
+            throw TransportError.connectionFailed("Pong exceeded watchdog")
         }
     }
 
@@ -200,15 +273,13 @@ public actor RelayEventTransport: HostedEventTransportClient {
 
     private func reconnectDelay(for attempt: Int) -> Int {
         switch attempt {
-        case 0: return 1_000
-        case 1: return 2_000
-        case 2: return 4_000
-        case 3: return 8_000
+        case 0: return 500
+        case 1: return 1_000
+        case 2: return 2_000
+        case 3: return 4_000
+        case 4: return 8_000
+        case 5: return 16_000
         default: return 30_000
         }
-    }
-
-    static func encodeSocketMessage(_ value: [String: Any]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: value)
     }
 }
