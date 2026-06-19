@@ -322,11 +322,44 @@ While webSockets are the fast path for live coordination, they are not the only 
 
 ## Development
 
+### Prerequisites
+
+Install these before cloning — the steps below assume nothing else is already
+set up:
+
+- **Node.js ≥ 20.9** and its bundled **npm**. The repo is developed and
+  CI-tested on Node 22 (see [`.nvmrc`](./.nvmrc)); with [nvm](https://github.com/nvm-sh/nvm)
+  you can run `nvm install && nvm use` to match it.
+- **git**, to clone the repository.
+- _(Optional)_ A **Rust toolchain** (`cargo` + `rustc`, e.g. via
+  [rustup](https://rustup.rs)) if you want to compile the native broker
+  (`agent-relay-broker`) from source. Without it, `npm run build` prints
+  `⚠ Rust not installed, skipping local broker build` and falls back to the
+  prebuilt platform binary shipped as an optional npm dependency.
+
+### Build and test
+
+From a fresh clone (runs fully offline):
+
 ```bash
-npm install
-npm run build
-npm test
+npm install   # install workspace dependencies
+npm run build # build the Rust broker (when cargo is present) + all TypeScript packages
+npm test      # rebuild and run the vitest suite
 ```
+
+### Run the local broker + dashboard
+
+```bash
+npm run build
+node packages/cli/dist/cli/index.js local up   # web dashboard on http://localhost:3888
+```
+
+> [!NOTE]
+> Unlike build and test, running the broker connects to the hosted Relaycast
+> service at `gateway.relaycast.dev` to create/join a workspace, so it needs
+> outbound network access to that host (and a Relaycast login via
+> `node packages/cli/dist/cli/index.js cloud …` for a persistent workspace).
+> Use `--no-dashboard` or `--port <port>` to adjust; see `local up --help`.
 
 References:
 
