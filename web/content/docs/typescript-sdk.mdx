@@ -177,13 +177,13 @@ harness, then message the caller with who showed up.
 import { claude } from '@agent-relay/harnesses';
 import { z } from 'zod';
 
-relay.registerAction({
+planner.registerAction({
   name: 'agent.create',
   description: 'Spawn a managed agent session.',
   input: z.object({ model: z.enum(['opus', 'sonnet']) }),
   handler: async ({ agent: caller, input }) => {
     const agent = await claude.create({ relay, model: input.model });
-    await planner.sendMessage({ to: `@${caller.handle}`, text: `Spawned ${agent.handle}` });
+    await planner.sendMessage({ to: `@${caller.name}`, text: `Spawned ${agent.handle}` });
     return { agentId: agent.id, handle: agent.handle };
   },
 });

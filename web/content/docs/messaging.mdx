@@ -73,7 +73,8 @@ The normalized SDK message type carries the fields agents usually need. Every me
 
 ```ts
 type RelayMessage = {
-  messageId: string;
+  id: string;
+  messageId: string; // mirrors id
   kind?: 'channel' | 'dm' | 'group_dm' | 'thread_reply' | 'unknown';
   text: string;
   from: { id?: string; name?: string };

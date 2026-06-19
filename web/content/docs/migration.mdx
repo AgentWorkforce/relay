@@ -120,7 +120,7 @@ After:
 ```ts
 // one entry point: addListener(selector, handler) -> unsubscribe
 relay.addListener('message.created', ({ message, envelope }) => {
-  console.log(envelope.from.handle, message.text);
+  console.log(envelope.from?.name, message.text);
 });
 
 // predicate builders still exist — now passed INTO addListener
