@@ -109,73 +109,74 @@ Use `deferred` when the mode is understood but the session cannot receive it yet
 
 ## Delivery Runner
 
-`DeliveryRunner` is the server-backed coordinator that turns message targets into session delivery attempts.
+`DeliveryRunner` (`@agent-relay/sdk/delivery`) subscribes to an agent's inbox and drives delivery into a
+target adapter or session. It is a class with two methods:
 
 ```ts
-type DeliveryRunner = {
-  deliver(input: {
-    message: RelayMessage;
-    target: AgentSession;
-    context: MessageContext;
-  }): Promise<MessageReceipt>;
-
-  retry(deliveryId: string): Promise<MessageReceipt>;
-  flush(input: { agent: AgentId; mode?: DeliveryMode }): Promise<MessageReceipt[]>;
-};
+class DeliveryRunner {
+  constructor(options: {
+    messaging: RelayMessaging;
+    delivery: AgentDeliveryAdapter | AgentSession;
+    agentName?: string;
+    context?: DeliveryRunnerContext;
+    onResult?: (item: InboxItem, result: InjectionResult) => void | Promise<void>;
+    onError?: (item: InboxItem, error: unknown) => void | Promise<void>;
+  });
+  start(): Promise<void>;
+  stop(): void;
+}
 ```
 
-The runner should:
-
-1. Load the message and target session.
-2. Check session capabilities.
-3. Apply workspace delivery policy.
-4. Call `session.receiveMessage(message, context)` or enqueue for a supported boundary.
-5. Persist the receipt.
-6. Emit delivery events.
-
-Durable `ack`, `fail`, and `defer` APIs depend on backend delivery-state support. Until that exists everywhere, SDK implementations can expose the contract while reporting unsupported operations explicitly.
+`start()` requires `messaging.capabilities.serverDeliveryState` and throws `RelayCapabilityError` otherwise.
+It consumes `messaging.inbox.subscribe(...)`, calls the target for each item, then `ack`s, `defer`s, or
+`fail`s the inbox item based on the returned `InjectionResult`. A thrown error is failed with `retry: true`;
+an adapter that returns `status: 'failed'` is failed with `retry: false`. `stop()` ends the loop.
 
 ## Adapter Responsibilities
 
 A delivery adapter owns the runtime-specific details.
 
 ```ts
-type AgentDeliveryAdapter = {
-  receiveMessage(message: RelayMessage, ctx: MessageContext): Promise<MessageReceipt>;
-  flush?(deliveryId?: string): Promise<MessageReceipt[]>;
-  cancel?(deliveryId: string, reason?: string): Promise<void>;
-};
+interface AgentDeliveryAdapter {
+  readonly id: string;
+  readonly kind?: string;
+  readonly capabilities: DeliveryCapabilities;
+  connect?(): Promise<void>;
+  disconnect?(): Promise<void>;
+  inject?(message: RelayMessage, context: InjectionContext): Promise<InjectionResult>;
+  receiveMessage?(message: RelayMessage, context: MessageContext): Promise<MessageReceipt>;
+  getStatus?(): Promise<AgentRuntimeStatus>;
+  interrupt?(): Promise<void>;
+  onActivity?(handler: (event: AgentActivityEvent) => void): Unsubscribe;
+}
 ```
 
 Examples:
 
 - A Claude Code harness may inject text through a terminal-safe boundary and use hooks to detect idle or tool-call events.
 - A Codex harness may use session-level notifications and tool-call boundaries when available.
-- An OpenClaw adapter may deliver through an app-server API.
 - A custom app agent may call a callback directly inside its process.
 
 All of those are valid as long as the adapter returns receipts and emits events that match the Agent Relay contract.
 
 ## Event Flow
 
-Delivery should emit stable events:
+Delivery events are `AgentSessionEvent` variants a harness emits with `relay.emitSessionEvent(...)`:
 
 ```ts
 type DeliveryEvent =
-  | { type: 'delivery.created'; deliveryId: string; message: RelayMessage; agent: AgentIdentity }
-  | { type: 'delivery.accepted'; deliveryId: string; agent: AgentIdentity }
-  | { type: 'delivery.delivered'; deliveryId: string; agent: AgentIdentity }
-  | { type: 'delivery.deferred'; deliveryId: string; agent: AgentIdentity; availableAt: Date | string; reason?: string }
-  | { type: 'delivery.failed'; deliveryId: string; agent: AgentIdentity; reason: string; retryable?: boolean };
+  | { type: 'delivery.accepted' | 'delivery.delivered'; messageId: string; deliveryId?: string }
+  | { type: 'delivery.deferred'; messageId: string; deliveryId?: string; availableAt: Date | string; reason?: string }
+  | { type: 'delivery.failed'; messageId: string; deliveryId?: string; reason: string; retryable?: boolean };
 ```
 
-Listeners can then react to delivery outcomes:
+Through `addListener` these arrive as `{ type, agentId, event }` — the fields above live under `event`:
 
 ```ts file="delivery-listener.ts"
-relay.addListener('delivery.failed', (event) =>
+relay.addListener('delivery.failed', (e) =>
   planner.sendMessage({
     to: '#ops',
-    text: `Delivery ${event.deliveryId} failed for ${event.messageId}: ${event.reason}.`,
+    text: `Delivery ${e.event.deliveryId} failed for ${e.event.messageId}: ${e.event.reason}.`,
   })
 );
 ```
@@ -195,7 +196,8 @@ Harnesses and adapters should:
 - Redact secrets before emitting terminal, transcript, or tool events.
 - Return a receipt for every delivery attempt.
 - Use `deferred` instead of silent buffering when a delivery cannot happen yet.
-- Use `failed` with `retryable: true` when Relay should retry later.
+- Throw to request a retry. `DeliveryRunner` retries only on thrown errors; an adapter that returns
+  `status: 'failed'` is failed with `retry: false`.
 - Expose explicit unsupported errors for delivery-state operations the backend cannot persist yet.
 
 <BannerLink href="/docs/harnesses" icon="docs">

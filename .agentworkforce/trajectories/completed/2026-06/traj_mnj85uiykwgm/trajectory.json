@@ -1,0 +1,79 @@
+{
+  "id": "traj_mnj85uiykwgm",
+  "version": 1,
+  "task": {
+    "title": "Audit and fix web/content/docs against implementation"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-19T04:19:59.025Z",
+  "completedAt": "2026-06-19T04:44:35.447Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-19T04:44:34.441Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zslddogcdtiu",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-19T04:44:34.441Z",
+      "endedAt": "2026-06-19T04:44:35.447Z",
+      "events": [
+        {
+          "ts": 1781844274442,
+          "type": "decision",
+          "content": "Register actions on agent clients, not workspace client: Register actions on agent clients, not workspace client",
+          "raw": {
+            "question": "Register actions on agent clients, not workspace client",
+            "chosen": "Register actions on agent clients, not workspace client",
+            "alternatives": [],
+            "reasoning": "Code (agent-relay.ts:256) confirms workspace-client registerAction stays in-process and is not MCP-exposed; only agent clients pass handlerAgent"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Audited all 27 docs in web/content/docs against SDK/CLI/harness source. Fixed pervasive errors: action registration must be on an agent client (not workspace client) to reach MCP; envelope.from has no handle (use name); action-caller has no handle; corrected event union/envelope/session-event shapes; real MCP tool names; real DeliveryRunner/AgentDeliveryAdapter/HarnessCreateContext; register is idempotent-by-default; CLI reference gaps; deleted fictional reference-openclaw page",
+    "approach": "Standard approach",
+    "confidence": 0.8
+  },
+  "commits": ["bbb5405", "37c6897", "c168617", "b87e0ba", "406449f", "bc7dff1"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_mnj85uiykwgm/trajectory.json",
+    "web/components/docs/DocsNav.tsx",
+    "web/content/docs/actions.mdx",
+    "web/content/docs/agent-relay-mcp.mdx",
+    "web/content/docs/cli-overview.mdx",
+    "web/content/docs/delivery.mdx",
+    "web/content/docs/event-handlers.mdx",
+    "web/content/docs/events.mdx",
+    "web/content/docs/fleets.mdx",
+    "web/content/docs/harness-driver.mdx",
+    "web/content/docs/harnesses.mdx",
+    "web/content/docs/introduction.mdx",
+    "web/content/docs/messaging.mdx",
+    "web/content/docs/migration.mdx",
+    "web/content/docs/orchestrating-with-actions.mdx",
+    "web/content/docs/quickstart.mdx",
+    "web/content/docs/reference-cli.mdx",
+    "web/content/docs/reference-openclaw.mdx",
+    "web/content/docs/session-capabilities.mdx",
+    "web/content/docs/threads.mdx",
+    "web/content/docs/typescript-sdk.mdx",
+    "web/content/docs/webhooks.mdx",
+    "web/content/docs/workspaces.mdx",
+    "web/lib/docs-nav.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "66f972f23cafb958fa1956d3654710423e2391b5",
+    "endRef": "bbb54057155ea3ecb9a9edebc9300a87f5e4c849",
+    "traceId": "c8c3682c-11d5-472d-90ab-3ffea5cbfe0a"
+  }
+}

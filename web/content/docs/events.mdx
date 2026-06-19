@@ -9,14 +9,18 @@ one vocabulary.
 
 ## Naming scheme
 
-Event names are lowercase, dotted, and past-tense: `noun.verb`.
+Event names are lowercase and dotted. The relay event map (`RelayEventMap` in
+`packages/sdk/src/listeners.ts`) defines the names `addListener` narrows by type:
 
-- `message.created`, `message.reacted`, `message.read`
-- `delivery.accepted`, `delivery.delivered`, `delivery.deferred`, `delivery.failed`
-- `agent.status.changed`, `agent.idle`, `agent.active`, `agent.blocked`, `agent.waiting`, `agent.offline`
+- `message.created`, `message.updated`, `thread.reply`, `dm.received`, `group_dm.received`
+- `message.read`, `message.reacted`
 - `action.invoked`, `action.completed`, `action.failed`, `action.denied`
-- `tool.called`, `tool.completed`, `tool.failed`
-- `transcript.chunk`, `file.changed`, `terminal.output`
+- `agent.status.changed`, `agent.status.idle`, `agent.status.active`, `agent.status.blocked`, `agent.status.waiting`, `agent.status.offline`
+
+Harness session events (`delivery.*`, `tool.*`, `transcript.chunk`, `terminal.*`, `command.*`, `usage.updated`,
+`session.*`) reach `addListener` only when a harness calls `relay.emitSessionEvent(...)`. They are delivered as
+`{ type, agentId, event }` — the original session payload is nested under `event`. See
+[Session capabilities](/docs/session-capabilities) for the full list.
 
 ## Listening
 
@@ -48,38 +52,46 @@ TypeScript; listening to `'*'` gives you the full union.
 
 ```ts
 type RelayEvent =
-  | { type: 'message.created'; message: RelayMessage; envelope: MessageEnvelope }
-  | { type: 'message.reacted'; messageId: string; emoji: string; by: AgentRef }
-  | { type: 'delivery.failed'; deliveryId: string; messageId: string; reason: string }
-  | { type: 'agent.idle'; agent: AgentRef }
-  | { type: 'action.completed'; action: string; input: unknown; output: unknown; agent: AgentRef }
+  | { type: 'message.created'; message: RelayMessage; envelope: RelayEventEnvelope }
+  | { type: 'message.read'; messageId: string; agentName: string; readAt?: string }
+  | { type: 'message.reacted'; messageId: string; emoji: string; agentName: string; action: 'added' | 'removed' }
+  | { type: 'action.completed'; action: string; agent: ActionCaller; input?: unknown; output?: unknown; at: string }
+  | { type: 'agent.status.idle'; agentId: string; status?: AgentSessionStatus; reason?: string }
   // ...one variant per event name above
   ;
+
+// the caller carried on action events — not a full AgentRef
+type ActionCaller = { name: string; id?: string; type?: 'agent' | 'human' | 'system' };
 ```
 
 ## The message envelope
 
-`message.created` (and other message events) carry both the full `message` and a flat, ergonomic
-`envelope`. The envelope fields are **rich objects**, not bare strings.
+`message.created` (and other message events) carry both the full `message` and a flat `envelope`. Every
+envelope field is optional.
 
 ```ts
-interface AgentRef {
-  id: string;
-  name: string;
-  handle: string;
-  type: 'agent' | 'human';
+interface RelayMessageSender {
+  id?: string;
+  name?: string;
 }
 
-interface ChannelRef {
-  id: string;
-  name: string; // without the leading '#'
+interface RelayMessageChannelRef {
+  id?: string;
+  name?: string; // without the leading '#'
 }
 
-interface MessageEnvelope {
-  from: AgentRef;                       // the sender
-  to?: AgentRef | AgentRef[];           // DM recipient, or group-DM recipients
-  channel?: ChannelRef;                 // present for channel posts and threads in a channel
-  parent?: string;                      // messageId this is a reply to, for thread replies
+// discriminated by `kind`
+type RelayMessageTarget =
+  | { kind: 'agent'; agentName: string; agentId?: string }
+  | { kind: 'channel'; channelName: string; channelId?: string }
+  | { kind: 'dm'; conversationId: string }
+  | { kind: 'group_dm'; conversationId: string };
+
+interface RelayEventEnvelope {
+  from?: RelayMessageSender;          // the sender
+  to?: RelayMessageTarget;            // the routing target
+  channel?: RelayMessageChannelRef;   // present for channel posts and threads in a channel
+  parent?: string;                    // messageId this is a reply to, for thread replies
 }
 ```
 
@@ -89,7 +101,7 @@ So a channel-message handler reads identity off the objects:
 relay.addListener('message.created', ({ message, envelope }) => {
   const { from, channel } = envelope;
   if (channel?.name === 'general') {
-    console.log(`${from.handle} in #${channel.name}: ${message.text}`);
+    console.log(`${from?.name} in #${channel.name}: ${message.text}`);
   }
 });
 ```
@@ -118,13 +130,15 @@ it and invokes it over relaycast — the handler can run in any SDK process that
    message it from the handler.
 
 ```ts
-relay.registerAction({
+// register on an agent client (coordinator), not the workspace client —
+// only an agent-scoped registration is exposed as an MCP tool.
+coordinator.registerAction({
   name: 'classify',
   input: z.object({ text: z.string() }),
   availableTo: [{ name: 'codex-1' }], // omit to allow every agent
   handler: async ({ agent, input }) => {
     const label = await classify(input.text);
-    await coordinator.sendMessage({ to: `@${agent.handle}`, text: `Classified as ${label}` });
+    await coordinator.sendMessage({ to: `@${agent.name}`, text: `Classified as ${label}` });
     return { label }; // becomes the action.completed payload for listeners
   },
 });
