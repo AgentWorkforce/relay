@@ -56,7 +56,6 @@ export const docsNav: NavGroup[] = [
     items: [
       { title: 'TypeScript SDK', slug: 'typescript-sdk' },
       { title: 'Agent Relay MCP', slug: 'agent-relay-mcp' },
-      { title: 'OpenClaw adapter', slug: 'reference-openclaw' },
     ],
   },
   {
@@ -164,7 +163,6 @@ const LEGACY_HIDDEN_SLUGS = [
   'doctor-orchestration-repros',
   'harness-runtime-config',
   'local-mode',
-  'reference-openclaw',
 ];
 
 export const legacyDocsSlugs = [

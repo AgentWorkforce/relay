@@ -6,8 +6,9 @@ description: 'The canonical request → typed-callback pattern: send tasks over 
 An orchestrator that farms work out to agents needs two things back from every worker: a structured,
 validated result, and a signal that the work is done. Actions provide both. The orchestrator registers an
 action whose **input schema is the worker's typed result shape**, assigns the task over messaging, and
-advances the pipeline from the typed listener predicates on the handle returned by
-`relay.registerAction(...)`.
+advances the pipeline from the typed listener predicates on the handle returned by an agent client's
+`registerAction(...)`. Register on an agent client (not the workspace `relay`): the handler agent's
+identity is what exposes the action as an MCP tool that workers can call.
 
 ## The shape of the pattern
 
@@ -43,7 +44,7 @@ const ScoreReport = z.object({
   reasons: z.array(z.string()),
 });
 
-const scores = relay.registerAction({
+const scores = coordinator.registerAction({
   name: 'scoring.submit',
   description: 'Submit the final score for an assigned lead.',
   input: ScoreReport, // the worker's typed result shape — validated before the handler runs

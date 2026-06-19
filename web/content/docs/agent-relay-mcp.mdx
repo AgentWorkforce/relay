@@ -15,17 +15,18 @@ The MCP server should expose:
 
 ## Start The MCP Server
 
+`agent-relay mcp` is a stdio MCP server with no subcommands. It reads its configuration from environment
+variables; set the workspace key before launching:
+
 ```bash
-agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
+RELAY_WORKSPACE_KEY="$RELAY_WORKSPACE_KEY" agent-relay mcp
 ```
 
 The workspace key connects the MCP server to the same workspace as your SDK app, runtime, and harness adapters.
-
-For local development, a setup command can create a workspace and write the key to a project or user config.
+Create a workspace first if you do not have a key:
 
 ```bash
 agent-relay workspace create support-triage
-agent-relay mcp install --workspace "$RELAY_WORKSPACE_KEY"
 ```
 
 ## Core Messaging Tools
@@ -39,14 +40,15 @@ Messaging primitives should stay first class because agents use them constantly.
 | `join_channel` | Join a named channel. |
 | `leave_channel` | Leave a named channel. |
 | `list_channels` | Show channels available in the workspace. |
-| `send_message` | Send a channel message, DM, group DM, or thread reply. |
-| `reply` | Reply to an existing thread. |
-| `react` | Add a reaction to a message. |
-| `list_inbox` | Read inbox state for the current agent. |
-| `mark_read` | Mark a message or thread read. |
-| `subscribe_events` | Subscribe to workspace or session events when the host supports streaming. |
+| `post_message` | Post a channel message. |
+| `send_dm` | Send a direct message. |
+| `send_group_dm` | Send a group DM. |
+| `reply_to_thread` | Reply in a message thread. |
+| `add_reaction` / `remove_reaction` | Add or remove an emoji reaction. |
+| `check_inbox` | Read inbox state for the current agent. |
+| `mark_message_read` | Mark a message read. |
 
-The exact tool names can be host-friendly, but the concepts should map directly to the SDK messaging API.
+These are the names registered by `agent-relay mcp` (see `packages/cli/src/cli/agent-relay-mcp.ts`).
 
 ## Example Agent Tool Flow
 
@@ -54,17 +56,18 @@ An agent using MCP can coordinate without SDK imports:
 
 1. Call `register_agent` with its name and handle.
 2. Call `join_channel` for `#planning`.
-3. Call `send_message` to announce readiness or ask for work.
-4. Receive live events or inspect `list_inbox`.
-5. Call generated action tools such as `agent.create` or `ui.show_search_results`.
-6. Call `reply`, `react`, or `mark_read` as work progresses.
+3. Call `post_message` to announce readiness or ask for work.
+4. Inspect `check_inbox`.
+5. Call a generated action tool (each registered action is exposed by name), or `invoke_action` / `list_actions`.
+6. Call `reply_to_thread`, `add_reaction`, or `mark_message_read` as work progresses.
 
 ## Generated Action Tools
 
 Registered actions should become explicit MCP tools whenever possible.
 
 ```ts file="sdk-actions.ts"
-relay.registerAction({
+// register on an agent client so the action is exposed as an MCP tool
+coordinator.registerAction({
   name: 'review.submit_vote',
   description: 'Submit a review vote for the current proposal.',
   input: z.object({
@@ -138,11 +141,10 @@ If the host supports streaming, the MCP server can push `message.created`, `deli
 
 If the host does not support live subscriptions, the MCP tools still provide durable fallbacks:
 
-- `list_inbox`
-- `mark_read`
-- `flush_deliveries`
-- `list_events`
-- generated action result tools
+- `check_inbox`
+- `mark_message_read`
+- `list_actions`
+- `invoke_action`
 
 Relay should not rely on agents voluntarily checking an inbox as the only path. MCP should work alongside WebSockets, harness callbacks, and delivery adapters.
 
@@ -159,12 +161,6 @@ MCP tools should:
 
 ## Runtime Integration
 
-Runtime-managed sessions can register action tools such as:
-
-- `agent.create`
-- `agent.release`
-- `agent.status`
-- `agent.pause`
-- `agent.resume`
-
-Those tools are runtime-provided actions. Core MCP only needs the action protocol and generated tool surface.
+`registerDriverActions` (from `@agent-relay/harness-driver`) registers `agent.create`, `agent.release`, and
+`agent.status` as actions, plus `agent.attach` when the driver implements `attach`. They surface as MCP tools
+like any other registered action.

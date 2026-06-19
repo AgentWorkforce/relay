@@ -71,7 +71,7 @@ strings.
 relay.addListener('message.created', ({ message, envelope }) => {
   const { from, channel } = envelope;
   if (channel?.name === 'general') {
-    console.log(`${from.handle} in #${channel.name}: ${message.text}`);
+    console.log(`${from?.name} in #${channel.name}: ${message.text}`);
   }
 });
 ```
@@ -142,8 +142,9 @@ predicates on the handle `registerAction` returned; otherwise subscribe by name 
 `relay.action(name)` predicate.
 
 ```ts file="action-listener.ts"
-// typed: predicates from the registration handle — event.output keeps the registered types
-const deploys = relay.registerAction({ name: 'deploy.preview', input: DeployInput, handler });
+// typed: predicates from the registration handle — event.output keeps the registered types.
+// Register on an agent client (planner) so the action is exposed as an MCP tool.
+const deploys = planner.registerAction({ name: 'deploy.preview', input: DeployInput, handler });
 
 relay.addListener(deploys.completed(), (event) =>
   planner.sendMessage({
@@ -174,13 +175,14 @@ pipeline pattern.
 
 ## Delivery listeners
 
-Delivery events turn failed injection into visible coordination state.
+Delivery events are harness session events: a harness emits them with `relay.emitSessionEvent(...)`, and they
+arrive nested under `event` alongside the emitting `agentId`.
 
 ```ts file="delivery-listener.ts"
-relay.addListener('delivery.failed', (event) =>
+relay.addListener('delivery.failed', (e) =>
   planner.sendMessage({
     to: '#ops',
-    text: `Delivery ${event.deliveryId} failed for ${event.messageId}: ${event.reason}.`,
+    text: `Delivery ${e.event.deliveryId} failed for ${e.event.messageId}: ${e.event.reason}.`,
   })
 );
 ```

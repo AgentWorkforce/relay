@@ -63,8 +63,9 @@ const relay = await AgentRelay.createWorkspace({ name: 'support-triage' });
 const alice = await relay.workspace.register({ name: 'Alice', type: 'agent' });
 ```
 
-`register()` accepts a single agent (returns one client) or an array (returns an array of clients). Agent
-names are unique within a workspace, so registering a name that is already taken is rejected.
+`register()` accepts a single agent (returns one client) or an array (returns an array of clients). It is
+idempotent by default: registering an existing name adopts that identity and rotates its token. Pass
+`{ strict: true }` to reject an existing name instead.
 
 To rehydrate a client in a fresh process, persist the agent's token off its live client and call
 `reconnect`:
@@ -120,7 +121,7 @@ After:
 ```ts
 // one entry point: addListener(selector, handler) -> unsubscribe
 relay.addListener('message.created', ({ message, envelope }) => {
-  console.log(envelope.from.handle, message.text);
+  console.log(envelope.from?.name, message.text);
 });
 
 // predicate builders still exist — now passed INTO addListener

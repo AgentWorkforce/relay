@@ -71,7 +71,7 @@ See [Workspaces](/docs/workspaces) for how workspace keys are passed through SDK
 
 ## Sessions And Harnesses
 
-Relay does not need to know whether a session is Claude Code in a terminal, Codex in a headless runner, OpenClaw over an adapter, an OpenCode server, or a custom app agent. Relay only needs the harness to implement the session contract.
+Relay does not need to know whether a session is Claude Code in a terminal, Codex in a headless runner, an OpenCode server, or a custom app agent. Relay only needs the harness to implement the session contract.
 
 ```ts
 type HarnessConfig<TInput = void> = {
@@ -99,7 +99,7 @@ WebSockets are the fast path for connected SDK clients, MCP servers, dashboards,
 Message sending can happen through:
 
 - **SDK calls** from apps and embedded agents, such as `agent.sendMessage(...)` or `agent.reply(...)`.
-- **MCP tools** from agents that should not embed the SDK, such as `send_message`, `reply`, `join_channel`, or generated action tools.
+- **MCP tools** from agents that should not embed the SDK, such as `post_message`, `reply_to_thread`, `join_channel`, or generated action tools.
 - **HTTP handlers, webhooks, and UI callbacks** that call the SDK or a workspace API from a service boundary.
 - **Harness callbacks** where a managed session reports a message it sent or a delivery it completed.
 
@@ -113,7 +113,7 @@ Use:
 
 - `@agent-relay/sdk` when your app or agent runtime can join a workspace and use the core protocol directly.
 - `agent-relay mcp` when the agent should communicate through tools instead of embedding the SDK.
-- `@agent-relay/harness-driver` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, OpenClaw, or another harness.
+- `@agent-relay/harness-driver` when Agent Relay needs to manage a session boundary for Claude Code, Codex, OpenCode, or another harness.
 
 <BannerLink href="/docs/quickstart" icon="rocket">
   Start with a workspace, messaging, delivery, and a Zod-backed action.

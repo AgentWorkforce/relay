@@ -22,18 +22,24 @@ Use only the core SDK when your app already owns the agent process or can embed 
 
 Use the harness driver package when Agent Relay should manage the harness boundary for you.
 
+`registerDriverActions(actions, driver)` takes an `AgentRelayActions` registry, not the `AgentRelay` facade.
+Pass the same registry to `createWorkspace` so the actions register on the relay (and `relay.action(...)`
+listeners fire):
+
 ```ts file="harness-driver.ts"
 import { AgentRelay } from '@agent-relay/sdk';
+import { ActionRegistry } from '@agent-relay/sdk/actions';
 import { BrokerDriver, registerDriverActions } from '@agent-relay/harness-driver';
 
-const relay = await AgentRelay.createWorkspace({ name: 'release-review' });
+const actions = new ActionRegistry();
+const relay = await AgentRelay.createWorkspace({ name: 'release-review', actions });
 
 // The driver owns the managed harness boundary: broker startup, PTY/headless
 // spawn, release, and status.
 const driver = new BrokerDriver();
 
 // Expose that lifecycle as actions (agent.create, agent.release, agent.status).
-registerDriverActions(relay, driver);
+registerDriverActions(actions, driver);
 ```
 
 The harness driver package should be optional. An SDK user should not pull in PTY, process management, browser, cloud, workflow, or proactive runtime dependencies just to send messages or register actions.
@@ -41,14 +47,14 @@ The harness driver package should be optional. An SDK user should not pull in PT
 ## Harness driver actions
 
 Managed lifecycle is exposed as actions. `registerDriverActions` registers
-`agent.create`, `agent.release`, and `agent.status` against any `AgentDriver`,
-so callers create and release managed agents the same way they invoke any other
-action.
+`agent.create`, `agent.release`, and `agent.status` against any `AgentDriver`
+(plus `agent.attach` when the driver implements `attach`), so callers create and
+release managed agents the same way they invoke any other action.
 
 ```ts
 import { registerDriverActions } from '@agent-relay/harness-driver';
 
-registerDriverActions(relay, driver);
+registerDriverActions(actions, driver);
 
 // An agent invokes `agent.create` through its MCP tools. Like every action it is
 // fire-and-forget: the call returns an acknowledgement and the driver emits
@@ -107,17 +113,16 @@ Avoid making users learn whether a provider is running in a PTY, headless mode, 
 
 ## CLI Shape
 
-The CLI should expose harness driver lifecycle as an optional group instead of making it the core product.
+Managed session lifecycle lives under the `local agent` command group:
 
 ```bash
 agent-relay workspace create release-review
-agent-relay mcp start --workspace "$RELAY_WORKSPACE_KEY"
-agent-relay driver create reviewer --harness codex --channel '#reviews'
-agent-relay driver status reviewer
-agent-relay driver release reviewer
+agent-relay local agent spawn codex --channels reviews
+agent-relay local agent list
+agent-relay local agent release <agent>
 ```
 
-If the implementation still uses `driver` as the command group, the docs should explain it as a managed session harness command, not as the central broker.
+See [Agent management](/docs/cli-agent-management) for the full flag set.
 
 ## Harness driver events
 
@@ -135,8 +140,9 @@ Harness-driver-managed sessions should emit the same normalized session events a
 
 This keeps harness-driver-managed agents and externally owned agents visible through one listener system.
 
-## OpenClaw And External Adapters
+## External Adapters
 
-OpenClaw can stay in the repo as an adapter when it implements the harness/session contract or helps a provider join Relay. The ACP bridge lives in the standalone `AgentWorkforce/agent-relay-acp-bridge` repository.
-
-Adapters should not force the core SDK to depend on managed spawning or non-core workflow surfaces.
+An external adapter joins Relay by implementing the harness/session contract (see
+[Harnesses](/docs/harnesses)). The ACP bridge lives in the standalone
+`AgentWorkforce/agent-relay-acp-bridge` repository. Adapters should not force the core SDK to depend on
+managed spawning or non-core workflow surfaces.
