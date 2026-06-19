@@ -2,14 +2,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { Command } from 'commander';
-import { createJiti } from 'jiti';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { enrollFleetNode, type FleetNodeEnrollment } from '@agent-relay/cloud';
 import type { FleetNodeDefinition } from '@agent-relay/fleet';
-// Namespace import sidesteps bun --compile's named-import validation against the
-// package .d.ts (see cli/lib/fleet-sidecar.ts).
-import * as fleetSdk from '@agent-relay/fleet';
-const { isFleetNodeDefinition } = fleetSdk;
 
 import { withDefaults, type CoreDependencies, type CoreProjectPaths } from './core.js';
 import { readBrokerConnection, startBrokerWithPortFallback } from '../lib/broker-lifecycle.js';
@@ -29,6 +24,8 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
+
+const JITI_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 
 export interface FleetCommandDependencies {
   core: CoreDependencies;
@@ -158,18 +155,79 @@ export function registerFleetCommands(
 
 export async function loadNodeDefinition(file: string): Promise<FleetNodeDefinition> {
   const absolutePath = path.resolve(file);
-  const jiti = createJiti(pathToFileURL(process.cwd()).href, {
-    interopDefault: true,
-  });
-  const loaded = (await jiti.import(absolutePath, { default: true })) as unknown;
-  const definition =
-    loaded && typeof loaded === 'object' && 'default' in loaded
-      ? (loaded as { default?: unknown }).default
-      : loaded;
-  if (!isFleetNodeDefinition(definition)) {
+  const loaded = await importNodeDefinition(absolutePath);
+  const definition = unwrapNodeDefinitionExport(loaded);
+  if (!isFleetNodeDefinitionLike(definition)) {
     throw new Error(`Fleet node file ${absolutePath} must default-export defineNode(...)`);
   }
   return definition;
+}
+
+function unwrapNodeDefinitionExport(loaded: unknown): unknown {
+  let candidate = loaded;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (isFleetNodeDefinitionLike(candidate)) {
+      return candidate;
+    }
+    if (!candidate || typeof candidate !== 'object' || !('default' in candidate)) {
+      return candidate;
+    }
+    candidate = (candidate as { default?: unknown }).default;
+  }
+  return candidate;
+}
+
+function isFleetNodeDefinitionLike(value: unknown): value is FleetNodeDefinition {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { __agentRelayFleetNode?: unknown }).__agentRelayFleetNode === true
+  );
+}
+
+async function importNodeDefinition(absolutePath: string): Promise<unknown> {
+  if (!JITI_NODE_DEFINITION_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) {
+    try {
+      return (await import(pathToFileURL(absolutePath).href)) as unknown;
+    } catch (error) {
+      if (!shouldFallbackToJiti(error)) {
+        throw error;
+      }
+
+      try {
+        return await importNodeDefinitionWithJiti(absolutePath);
+      } catch {
+        throw error;
+      }
+    }
+  }
+
+  return importNodeDefinitionWithJiti(absolutePath);
+}
+
+function shouldFallbackToJiti(error: unknown): boolean {
+  if (isBunRuntime()) {
+    return false;
+  }
+  return error instanceof SyntaxError && getErrorCode(error) !== 'ERR_MODULE_NOT_FOUND';
+}
+
+function isBunRuntime(): boolean {
+  return typeof (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun === 'string';
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+async function importNodeDefinitionWithJiti(absolutePath: string): Promise<unknown> {
+  const { createJiti } = await import('jiti');
+  const jiti = createJiti(pathToFileURL(process.cwd()).href, {
+    interopDefault: true,
+  });
+  return jiti.import(absolutePath, { default: true }) as Promise<unknown>;
 }
 
 /**
