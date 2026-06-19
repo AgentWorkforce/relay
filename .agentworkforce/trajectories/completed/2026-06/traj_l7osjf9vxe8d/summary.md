@@ -18,6 +18,7 @@ Updated agent-relay and @agent-relay/sdk to require @relaycast/sdk ^4.1.2 after 
 ## Key Decisions
 
 ### Bumped Relaycast SDK range instead of pinning
+
 - **Chose:** Bumped Relaycast SDK range instead of pinning
 - **Reasoning:** @relaycast/types@4.1.2 is now published, so the repo can keep caret semantics while requiring the fixed Relaycast SDK release.
 
@@ -26,6 +27,7 @@ Updated agent-relay and @agent-relay/sdk to require @relaycast/sdk ^4.1.2 after 
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Bumped Relaycast SDK range instead of pinning: Bumped Relaycast SDK range instead of pinning
