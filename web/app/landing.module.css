@@ -4039,6 +4039,11 @@
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  /* Size container so the dots can be positioned with container-query units
+     (cqw/cqh) driven through GPU-composited transforms instead of animating
+     left/top. The box is sized by `inset: 0` (not its contents), so size
+     containment is safe here. */
+  container-type: size;
 }
 
 .howMsg {
@@ -4054,7 +4059,16 @@
     0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent),
     0 0 14px 2px var(--c);
   opacity: 0;
-  will-change: left, top, transform, opacity;
+  /* Position is driven by the individual `translate` property and the size is
+     driven by the individual `scale` property; both composite on the GPU and
+     interpolate independently, mirroring the old left/top vs transform split. */
+  will-change: translate, scale, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .howMsg {
+    animation: none;
+  }
 }
 
 /* Three messages, each its own colour, routed up to the relay and back down. */
@@ -4073,67 +4087,56 @@
 
 @keyframes howMsg_m1 {
   0% {
-    left: 25%;
-    top: 100%;
+    translate: 25cqw 100cqh;
     opacity: 0;
-    transform: scale(1);
+    scale: 1;
   }
   4% {
     opacity: 1;
   }
   9% {
-    left: 25%;
-    top: 75%;
+    translate: 25cqw 75cqh;
   }
   22% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
     animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
   }
   37% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(0.5);
+    scale: 0.5;
   }
   43% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   49% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   50% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(1.55);
+    scale: 1.55;
     animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   56% {
-    left: 50%;
-    top: 57%;
-    transform: scale(1);
+    translate: 50cqw 57cqh;
+    scale: 1;
   }
   66% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
   }
   82% {
-    left: 75%;
-    top: 75%;
+    translate: 75cqw 75cqh;
   }
   86% {
     opacity: 1;
   }
   91% {
-    left: 75%;
-    top: 100%;
+    translate: 75cqw 100cqh;
     opacity: 0;
   }
   100% {
@@ -4143,67 +4146,56 @@
 
 @keyframes howMsg_m2 {
   0% {
-    left: 75%;
-    top: 100%;
+    translate: 75cqw 100cqh;
     opacity: 0;
-    transform: scale(1);
+    scale: 1;
   }
   4% {
     opacity: 1;
   }
   9% {
-    left: 75%;
-    top: 75%;
+    translate: 75cqw 75cqh;
   }
   22% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
     animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
   }
   37% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(0.5);
+    scale: 0.5;
   }
   43% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   49% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   50% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(1.55);
+    scale: 1.55;
     animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   56% {
-    left: 50%;
-    top: 57%;
-    transform: scale(1);
+    translate: 50cqw 57cqh;
+    scale: 1;
   }
   66% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
   }
   82% {
-    left: 25%;
-    top: 75%;
+    translate: 25cqw 75cqh;
   }
   86% {
     opacity: 1;
   }
   91% {
-    left: 25%;
-    top: 100%;
+    translate: 25cqw 100cqh;
     opacity: 0;
   }
   100% {
@@ -4213,67 +4205,56 @@
 
 @keyframes howMsg_m3 {
   0% {
-    left: 25%;
-    top: 100%;
+    translate: 25cqw 100cqh;
     opacity: 0;
-    transform: scale(1);
+    scale: 1;
   }
   4% {
     opacity: 1;
   }
   9% {
-    left: 25%;
-    top: 75%;
+    translate: 25cqw 75cqh;
   }
   22% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
     animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.2);
   }
   37% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(0.5);
+    scale: 0.5;
   }
   43% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   49% {
-    left: 50%;
-    top: 40%;
+    translate: 50cqw 40cqh;
     opacity: 0;
-    transform: scale(0.25);
+    scale: 0.25;
   }
   50% {
-    left: 50%;
-    top: 50%;
+    translate: 50cqw 50cqh;
     opacity: 1;
-    transform: scale(1.55);
+    scale: 1.55;
     animation-timing-function: cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   56% {
-    left: 50%;
-    top: 57%;
-    transform: scale(1);
+    translate: 50cqw 57cqh;
+    scale: 1;
   }
   66% {
-    left: 50%;
-    top: 75%;
+    translate: 50cqw 75cqh;
   }
   82% {
-    left: 25%;
-    top: 75%;
+    translate: 25cqw 75cqh;
   }
   86% {
     opacity: 1;
   }
   91% {
-    left: 25%;
-    top: 100%;
+    translate: 25cqw 100cqh;
     opacity: 0;
   }
   100% {
