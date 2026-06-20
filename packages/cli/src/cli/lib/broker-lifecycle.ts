@@ -255,19 +255,27 @@ function startImplicitLocalFleetSidecar(
     deps.warn('Fleet local node skipped: broker connection file was not available.');
     return undefined;
   }
-  const node = createImplicitLocalFleetNode({
-    paths,
-    teamsConfig,
-    name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
-  });
-  return startFleetSidecar({
-    definition: node,
-    connection: { url: conn.url, apiKey: conn.api_key },
-    workspaceKey: relay.workspaceKey,
-    statusPath: fleetStatusPath(paths),
-    reconnect: true,
-    warn: (message) => deps.warn(message),
-  });
+  // The implicit local fleet node is best-effort: it lets this broker advertise
+  // itself as a fleet node, but the broker is already up and usable without it.
+  // Never let a sidecar setup failure abort `up`.
+  try {
+    const node = createImplicitLocalFleetNode({
+      paths,
+      teamsConfig,
+      name: options.brokerName ?? (path.basename(paths.projectRoot) || 'local-node'),
+    });
+    return startFleetSidecar({
+      definition: node,
+      connection: { url: conn.url, apiKey: conn.api_key },
+      workspaceKey: relay.workspaceKey,
+      statusPath: fleetStatusPath(paths),
+      reconnect: true,
+      warn: (message) => deps.warn(message),
+    });
+  } catch (err) {
+    deps.warn(`Fleet local node skipped: ${toErrorMessage(err)}`);
+    return undefined;
+  }
 }
 
 function isBrokerAlreadyRunningError(message: string): boolean {
