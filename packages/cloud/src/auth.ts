@@ -12,7 +12,6 @@ import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
   AUTH_FILE_PATH,
   DEFAULT_REFRESH_TIMEOUT_MS,
-  LEGACY_AUTH_FILE_PATH,
   REFRESH_TOKEN_WINDOW_MS,
   REFRESH_WINDOW_MS,
   CloudAuthError,
@@ -127,23 +126,7 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
     return envAuth;
   }
 
-  const stored = await readCanonicalStoredAuth();
-  if (stored) {
-    return stored;
-  }
-
-  try {
-    const legacyFile = await fs.readFile(LEGACY_AUTH_FILE_PATH, 'utf8');
-    const parsed = JSON.parse(legacyFile) as unknown;
-    if (!isValidStoredAuth(parsed)) {
-      return null;
-    }
-
-    await writeStoredAuth(parsed);
-    return parsed;
-  } catch {
-    return null;
-  }
+  return readCanonicalStoredAuth();
 }
 
 export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
