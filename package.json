@@ -26,7 +26,6 @@
     "build:fleet": "npm --prefix packages/fleet run build",
     "build:driver": "npm run build:harness-driver",
     "build:sdk": "npm --prefix packages/sdk run build",
-    "build:telemetry": "npm --prefix packages/telemetry run build",
     "dev:watch": "cd packages/cli && npx tsc -w",
     "watch:start": "npm run build && concurrently -k \"npm run dev:watch\" \"node --watch packages/cli/dist/cli/index.js up\"",
     "watch:start:cli-tools": "npm run build && bash ./scripts/watch-cli-tools.sh",
