@@ -898,7 +898,6 @@ jobs:
           - utils
           - cloud
           - sdk
-          - telemetry
           - brand
           - harness-driver
           - integration-prompts
@@ -1088,7 +1087,6 @@ jobs:
           - cloud
           - config
           - sdk
-          - telemetry
           - utils
           - harness-driver
 
