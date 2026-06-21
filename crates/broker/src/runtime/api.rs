@@ -278,7 +278,9 @@ impl BrokerRuntime {
                         telemetry.track(TelemetryEvent::AgentSpawn {
                             cli: cli.clone(),
                             runtime: runtime_label(&effective_spec.runtime).to_string(),
-                            spawn_source: ActionSource::HumanDashboard,
+                            // `/api/spawn` is the HTTP entry point a human drives
+                            // through the CLI (the broker's only human caller).
+                            spawn_source: ActionSource::HumanCli,
                             has_task: effective_task.is_some(),
                             is_shadow: effective_spec.shadow_of.is_some()
                                 || effective_spec.shadow_mode.is_some(),
