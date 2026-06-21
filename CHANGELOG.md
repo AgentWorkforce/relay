@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `@agent-relay/sdk` and `@agent-relay/cli` now depend on `@relaycast/sdk` 4.0 (durable-delivery status model `queued|delivered|acked|failed|dead_lettered`).
+- `agent-relay-broker` upgrades the bundled `relaycast` crate from 3.0 to 4.1, changing the relaycast-backed local delivery store schema.
+- `agent-relay` and `@agent-relay/sdk` update `@relaycast/sdk` to the latest `4.1.6` patch.
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
 - `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message ...` path was removed.
@@ -46,6 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
 - `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
 - `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
+
+### Removed
+
+- The local web dashboard is removed. `agent-relay up` no longer starts a dashboard, the installer no longer fetches the `relay-dashboard-server` binary / UI or installs `@agent-relay/dashboard-server`, and `up` drops the `--no-dashboard`, `--port`, and `--foreground` flags.
+- Telemetry drops the `human_dashboard` `ActionSource` (CLI and `agent-relay-broker`); broker HTTP-API spawns now report `human_cli`.
+
+### Breaking Changes
+
+- `agent-relay up` is broker-only and runs attached by default. The previous `--no-dashboard` (which detached) is gone — use `--background` to run detached. The `--no-dashboard`, `--port`, and `--foreground` flags now error as unknown options.
+- The `AGENT_RELAY_DASHBOARD_PORT` environment variable is replaced by `AGENT_RELAY_BROKER_PORT`, which sets the broker base port (the HTTP API binds the next free port above it).
+
+### Migration Guidance
+
+- Replace `agent-relay up --no-dashboard` with `agent-relay up --background`.
+- Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
+- Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
 ## [8.9.2] - 2026-06-19
 
