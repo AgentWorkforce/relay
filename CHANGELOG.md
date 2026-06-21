@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
 - Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
 
+## [9.0.1] - 2026-06-21
+
+### Changed
+
+- Drop the removed @agent-relay/telemetry package
+- Remove the deprecated @agent-relay/telemetry placeholder package
+- Bump relaycast to latest (broker crate 4.1.1 + CLI SDK 4.1.6)
+- Record the relay dashboard removal
+- Remove the local relay dashboard
+- Drop the legacy ~/.agent-relay auth fallback
+- Fix verifiable gaps between docs and code
+
 ## [8.9.2] - 2026-06-19
 
 ### Fixed
