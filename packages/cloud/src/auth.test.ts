@@ -33,7 +33,7 @@ import {
   refreshStoredAuth,
   writeStoredAuth,
 } from './auth.js';
-import { AUTH_FILE_PATH, CloudAuthError, LEGACY_AUTH_FILE_PATH, type StoredAuth } from './types.js';
+import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth } from './types.js';
 
 const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 
@@ -175,40 +175,22 @@ describe('readStoredAuth', () => {
     expect(fsMocks.readFile).not.toHaveBeenCalled();
   });
 
-  it('migrates legacy auth to the canonical auth path when canonical auth is absent', async () => {
+  it('returns null when canonical auth is absent and never reads the legacy .agent-relay path', async () => {
     fsMocks.readFile.mockImplementation(async (file: string) => {
       if (file === AUTH_FILE_PATH) {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       }
-      if (file === LEGACY_AUTH_FILE_PATH) {
-        return JSON.stringify(FILE_AUTH);
-      }
       throw new Error(`unexpected file ${file}`);
     });
 
-    await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
+    await expect(readStoredAuth({})).resolves.toBeNull();
 
-    expect(fsMocks.mkdir).toHaveBeenCalledWith(expect.stringContaining('.agentworkforce/relay'), {
-      recursive: true,
-      mode: 0o700,
-    });
-    expect(fsMocks.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('.cloud-auth.json.'),
-      `${JSON.stringify(FILE_AUTH, null, 2)}\n`,
-      {
-        encoding: 'utf8',
-        mode: 0o600,
-      }
-    );
-    expect(fsMocks.chmod).toHaveBeenCalledWith(expect.stringContaining('.cloud-auth.json.'), 0o600);
-    expect(fsMocks.rename).toHaveBeenCalledWith(expect.stringContaining('.cloud-auth.json.'), AUTH_FILE_PATH);
-    expect(fsMocks.writeFile).not.toHaveBeenCalledWith(AUTH_FILE_PATH, expect.anything(), expect.anything());
-    expect(fsMocks.writeFile).not.toHaveBeenCalledWith(
-      LEGACY_AUTH_FILE_PATH,
-      expect.anything(),
-      expect.anything()
-    );
-    expect(fsMocks.rm).toHaveBeenCalledWith(expect.stringContaining('.cloud-auth.json.'), { force: true });
+    // The legacy migrate-on-read shim was removed: no read of a ~/.agent-relay
+    // path, and no write/rename back into the canonical location.
+    const readPaths = fsMocks.readFile.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(readPaths.some((p: string) => p.includes('.agent-relay'))).toBe(false);
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    expect(fsMocks.rename).not.toHaveBeenCalled();
   });
 });
 
