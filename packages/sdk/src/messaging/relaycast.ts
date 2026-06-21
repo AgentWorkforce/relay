@@ -1,7 +1,36 @@
-import { RelayCast } from '@relaycast/sdk';
-import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
-
-import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
+import {
+  createRelaycastClient,
+  type RelaycastAgentDeliverySurface,
+  type RelaycastAgentLike,
+  type RelaycastMessagingOptions,
+  type RelaycastWorkspaceLike,
+} from './relaycast-client.js';
+import {
+  delay,
+  nonEmptyPlacement,
+  placementActionInput,
+  placementActionName,
+  RelayPlacementError,
+  type PlacementSelection,
+} from './relaycast-placement.js';
+import {
+  asRecord,
+  definedOptions,
+  normalizeActionInvocation,
+  normalizeActionInvocationAck,
+  normalizeInboundWebhook,
+  normalizeWebhookSubscription,
+  readStr,
+  serializeAttachmentInputs,
+  toCompleteInvocationRequest,
+  toMessageListOptions,
+  toRegisterActionRequest,
+  toRelayCapability,
+  toRelayNode,
+  toRelayTrigger,
+  toRelayWorkspaceFleetNodesConfig,
+  toTriggerRequest,
+} from './relaycast-translate.js';
 import {
   normalizeAgent,
   normalizeAgentPresence,
@@ -62,8 +91,6 @@ import type {
   RelayListNodesOptions,
   RelayListDirectMessagesInput,
   RelayMessage,
-  RelayMessageAttachmentInput,
-  RelayMessageBlock,
   RelayMessageListOptions,
   RelayMessageReaction,
   RelayMessagingCapabilities,
@@ -71,7 +98,6 @@ import type {
   RelayMessagingEvent,
   RelayMessagingEventMap,
   RelayNode,
-  RelayNodeCapability,
   RelayPlacementReconcileEvent,
   RelayReadReceipt,
   RelayRegisterAgentInput,
@@ -89,565 +115,11 @@ import type {
   RelayUpdateChannelInput,
 } from './types.js';
 
-/**
- * Translate a relay capability registration into a relaycast `actions.register`
- * request. Relaycast 2.x replaced the `commands` registry with `actions`:
- * `command` → `name`, `parameters` → `inputSchema`.
- */
-function toRegisterActionRequest(input: RelayRegisterCapabilityInput): Record<string, unknown> {
-  // `inputSchema` (a converted JSON Schema) takes precedence over the legacy
-  // `parameters` field when both are present.
-  const inputSchema = input.inputSchema ?? input.parameters;
-  return {
-    name: input.command,
-    description: input.description,
-    handlerAgent: input.handlerAgent,
-    ...(inputSchema === undefined ? {} : { inputSchema }),
-    ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
-    ...(input.availableTo === undefined ? {} : { availableTo: input.availableTo }),
-  };
-}
-
-/**
- * Translate a relaycast `ActionDefinition` back into a relay `RelayCapability`,
- * preserving the relay-facing `command`/`parameters` vocabulary.
- */
-function toRelayCapability(raw: unknown): RelayCapability {
-  const action = (raw ?? {}) as Record<string, unknown>;
-  const command = (action.name ?? action.command) as string;
-  return {
-    ...action,
-    command,
-    description: action.description as string | undefined,
-    handlerAgent: action.handlerAgent as string | undefined,
-    parameters: action.inputSchema ?? action.parameters,
-  };
-}
-
-function toRelayNode(raw: unknown): RelayNode {
-  const node = (raw ?? {}) as Record<string, unknown>;
-  const rawStatus = readStr(node, 'status');
-  return {
-    id: readStr(node, 'id', 'node_id'),
-    nodeId: readStr(node, 'nodeId', 'node_id'),
-    name: readStr(node, 'name') ?? '',
-    status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
-    live: readBoolean(node, 'live'),
-    capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
-    repoKeys: readRepoKeys(node),
-    maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
-    activeAgents: readNumber(node, 'activeAgents', 'active_agents'),
-    handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
-    load: readNumber(node, 'load'),
-    lastHeartbeatAt: readStr(node, 'lastHeartbeatAt', 'last_heartbeat_at'),
-    createdAt: readStr(node, 'createdAt', 'created_at'),
-    tags: readStringArray(node, 'tags'),
-    version: readStr(node, 'version'),
-  };
-}
-
-function readRepoKeys(node: Record<string, unknown>): string[] | undefined {
-  const direct = readStringArray(node, 'repoKeys') ?? readStringArray(node, 'repo_keys');
-  if (direct) return direct;
-  const repoPaths = readRecord(node, 'repoPaths', 'repo_paths');
-  return repoPaths ? Object.keys(repoPaths).filter(Boolean) : undefined;
-}
-
-function toRelayNodeCapability(raw: unknown): RelayNodeCapability {
-  const capability = (raw ?? {}) as Record<string, unknown>;
-  return {
-    name: readStr(capability, 'name') ?? '',
-    kind: readStr(capability, 'kind'),
-    metadata: readRecord(capability, 'metadata'),
-  };
-}
-
-function toRelayTrigger(raw: unknown): RelayTrigger {
-  const trigger = (raw ?? {}) as Record<string, unknown>;
-  return {
-    id: readStr(trigger, 'id'),
-    channel: readStr(trigger, 'channel'),
-    pattern: readStr(trigger, 'pattern', 'match'),
-    mention: readMention(trigger.mention),
-    actionName: readStr(trigger, 'actionName', 'action_name') ?? '',
-    enabled: readBoolean(trigger, 'enabled') ?? true,
-  };
-}
-
-function toTriggerRequest(input: RelayTriggerInput | Partial<RelayTriggerInput>): Record<string, unknown> {
-  return {
-    ...(input.channel !== undefined ? { channel: input.channel } : {}),
-    ...(input.pattern !== undefined ? { pattern: input.pattern } : {}),
-    ...(input.mention !== undefined ? { mention: input.mention } : {}),
-    ...(input.actionName !== undefined
-      ? { actionName: input.actionName, action_name: input.actionName }
-      : {}),
-    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-  };
-}
-
-function readNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-  }
-  return undefined;
-}
-
-function readBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'boolean') return value;
-  }
-  return undefined;
-}
-
-function readStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
-  const value = record[key];
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
-}
-
-function readMention(value: unknown): boolean | string | undefined {
-  return typeof value === 'boolean' || typeof value === 'string' ? value : undefined;
-}
-
-/** Translate a relay completion result into the relaycast `CompleteInvocationRequest` shape. */
-function toCompleteInvocationRequest(data: RelayCompleteInvocationInput): Record<string, unknown> {
-  return {
-    ...(data.output === undefined ? {} : { output: data.output }),
-    ...(data.error === undefined ? {} : { error: data.error }),
-    ...(data.durationMs === undefined ? {} : { durationMs: data.durationMs }),
-  };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function readStr(record: Record<string, unknown>, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === 'string') return value;
-  }
-  return undefined;
-}
-
-function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      return value as Record<string, unknown>;
-    }
-  }
-  return undefined;
-}
-
-function toRelayWorkspaceFleetNodesConfig(raw: unknown): RelayWorkspaceFleetNodesConfig {
-  const record = asRecord(raw);
-  return {
-    enabled: readBoolean(record, 'enabled') ?? false,
-    defaultEnabled: readBoolean(record, 'defaultEnabled', 'default_enabled') ?? false,
-    override: readBoolean(record, 'override') ?? null,
-  };
-}
-
-type PlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
-
-type PlacementSelection =
-  | { node: RelayNode; message?: never; hardFail?: never; reason?: never; reconcileReason?: never }
-  | {
-      // Hard failure — thrown before any side effect; `reason` is the error code.
-      node?: never;
-      message: string;
-      hardFail: true;
-      reason: 'capability_mismatch';
-      reconcileReason: PlacementReconcileReason;
-    }
-  | {
-      // Retryable — queued and reconciled; only `reconcileReason` is consumed.
-      node?: never;
-      message: string;
-      hardFail?: false;
-      reason?: never;
-      reconcileReason: PlacementReconcileReason;
-    };
-
-export class RelayPlacementError extends Error {
-  readonly code: 'capability_mismatch' | 'placement_queue_full' | 'placement_ttl_expired' | 'unmapped_repo';
-  readonly capability: string;
-  readonly node?: string;
-  readonly repo?: string;
-  readonly attempts: number;
-
-  constructor(
-    code: RelayPlacementError['code'],
-    message: string,
-    context: { capability: string; node?: string; repo?: string; attempts: number }
-  ) {
-    super(message);
-    this.name = 'RelayPlacementError';
-    this.code = code;
-    this.capability = context.capability;
-    this.node = context.node;
-    this.repo = context.repo;
-    this.attempts = context.attempts;
-  }
-}
-
-function nonEmptyPlacement(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) throw new Error(`${label} is required.`);
-  return trimmed;
-}
-
-function placementActionName(capability: string): string {
-  return capability.startsWith('spawn:') ? 'spawn' : capability;
-}
-
-function placementActionInput(
-  input: Record<string, unknown> | undefined,
-  placement: { capability: string; node: string; repo?: string; ttlMs: number }
-): Record<string, unknown> {
-  const payload = { ...(input ?? {}) };
-  payload.capability = placement.capability;
-  payload.node = placement.node;
-  payload.target_node = placement.node;
-  if (placement.repo) payload.repo = placement.repo;
-  if (placement.ttlMs > 0) {
-    payload.ttl_override_ms = placement.ttlMs;
-  }
-  if (placement.capability.startsWith('spawn:')) {
-    // The broker picks the harness from `cli`, but node eligibility was gated on
-    // the `spawn:<cli>` capability. An explicit, mismatched `cli` would select a
-    // harness the chosen node never advertised — reject it instead of silently
-    // dispatching the wrong harness.
-    const capabilityCli = placement.capability.slice('spawn:'.length);
-    if (typeof payload.cli === 'string' && payload.cli !== capabilityCli) {
-      throw new RelayPlacementError(
-        'capability_mismatch',
-        `Placement rejected: input cli "${payload.cli}" does not match capability "${placement.capability}"`,
-        { capability: placement.capability, node: placement.node, repo: placement.repo, attempts: 0 }
-      );
-    }
-    payload.cli = capabilityCli;
-  }
-  return payload;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Normalize a relaycast invoke ack (camelized) into the relay `RelayActionInvocationAck`. */
-function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
-  const record = asRecord(raw);
-  return {
-    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
-    actionName: readStr(record, 'actionName', 'action_name') ?? '',
-    ...(readStr(record, 'handlerAgentId', 'handler_agent_id')
-      ? { handlerAgentId: readStr(record, 'handlerAgentId', 'handler_agent_id') }
-      : {}),
-    ...(readStr(record, 'handlerNodeId', 'handler_node_id')
-      ? { handlerNodeId: readStr(record, 'handlerNodeId', 'handler_node_id') }
-      : {}),
-    ...(readStr(record, 'dispatchedNodeId', 'dispatched_node_id')
-      ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
-      : {}),
-    ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
-    ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
-    ...(readStr(record, 'createdAt', 'created_at')
-      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
-      : {}),
-  };
-}
-
-/** Normalize a relaycast invocation record (camelized) into `RelayActionInvocation`. */
-function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
-  const record = asRecord(raw);
-  return {
-    invocationId: readStr(record, 'invocationId', 'invocation_id') ?? '',
-    actionName: readStr(record, 'actionName', 'action_name') ?? '',
-    callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
-    callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
-    input: readRecord(record, 'input') ?? {},
-    output: readRecord(record, 'output') ?? null,
-    status: readStr(record, 'status') ?? 'invoked',
-    error: (readStr(record, 'error') ?? null) as string | null,
-    durationMs:
-      typeof record.durationMs === 'number'
-        ? record.durationMs
-        : typeof record.duration_ms === 'number'
-          ? (record.duration_ms as number)
-          : null,
-    ...(readStr(record, 'createdAt', 'created_at')
-      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
-      : {}),
-    completedAt: (readStr(record, 'completedAt', 'completed_at') ?? null) as string | null,
-  };
-}
-
-/** Normalize a relaycast inbound webhook (snake_case) into `RelayInboundWebhook`. */
-function normalizeInboundWebhook(raw: unknown): RelayInboundWebhook {
-  const record = asRecord(raw);
-  return {
-    webhookId: readStr(record, 'webhookId', 'webhook_id', 'id') ?? '',
-    url: readStr(record, 'url') ?? '',
-    token: readStr(record, 'token') ?? '',
-    channel: readStr(record, 'channel') ?? '',
-    ...(readStr(record, 'name') ? { name: readStr(record, 'name') } : {}),
-    ...(readStr(record, 'createdAt', 'created_at')
-      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
-      : {}),
-  };
-}
-
-/** Normalize a relaycast event subscription into `RelayWebhookSubscription`. */
-function normalizeWebhookSubscription(raw: unknown): RelayWebhookSubscription {
-  const record = asRecord(raw);
-  const events = Array.isArray(record.events)
-    ? record.events.filter((event): event is string => typeof event === 'string')
-    : undefined;
-  return {
-    id: readStr(record, 'id') ?? '',
-    ...(readStr(record, 'url') ? { url: readStr(record, 'url') } : {}),
-    ...(events ? { events } : {}),
-    ...(readStr(record, 'createdAt', 'created_at')
-      ? { createdAt: readStr(record, 'createdAt', 'created_at') }
-      : {}),
-  };
-}
-
-type RelaycastWorkspaceLike = {
-  agents: {
-    list(query?: Record<string, unknown>): Promise<unknown[]>;
-    get(name: string): Promise<unknown>;
-    register(input: unknown): Promise<unknown>;
-    /** Register an agent, rotating its token when the name already exists. */
-    registerOrRotate?: (data: unknown) => Promise<unknown>;
-    update(name: string, input: unknown): Promise<unknown>;
-    delete(name: string): Promise<void>;
-    presence(): Promise<unknown[]>;
-  };
-  channels: {
-    list(options?: Record<string, unknown>): Promise<unknown[]>;
-    get(name: string): Promise<unknown>;
-  };
-  messages: {
-    list(channel: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-    get(id: string): Promise<unknown>;
-    thread(id: string, options?: RelayMessageListOptions): Promise<unknown>;
-    reactions(id: string): Promise<unknown[]>;
-  };
-  allDmConversations?: () => Promise<unknown[]>;
-  dmMessages?: (conversationId: string, options?: RelayMessageListOptions) => Promise<unknown[]>;
-  webhooks?: {
-    create(data: unknown): Promise<unknown>;
-    createInbound(data: unknown): Promise<unknown>;
-    list(): Promise<unknown[]>;
-    delete(id: string): Promise<void>;
-    trigger(id: string, data: unknown, token?: string): Promise<unknown>;
-  };
-  subscriptions?: {
-    create(data: unknown): Promise<unknown>;
-    list(): Promise<unknown[]>;
-    get(id: string): Promise<unknown>;
-    delete(id: string): Promise<void>;
-  };
-  // Relaycast 2.x exposes the capability registry as `actions`
-  // (formerly `commands`). Relay keeps the `commands`/`RelayCapability`
-  // vocabulary on its own surface and binds it to this API.
-  actions?: {
-    register(data: unknown): Promise<unknown>;
-    list(): Promise<unknown[]>;
-    get(name: string): Promise<unknown>;
-    delete(name: string): Promise<void>;
-  };
-  nodes?: {
-    list(options?: RelayListNodesOptions): Promise<unknown[]>;
-    get?(name: string): Promise<unknown>;
-  };
-  triggers?: {
-    list(): Promise<unknown[]>;
-    create(input: unknown): Promise<unknown>;
-    update(id: string, input: unknown): Promise<unknown>;
-    delete(id: string): Promise<void>;
-  };
-  workspace?: {
-    info(): Promise<unknown>;
-    fleetNodes?: {
-      get(): Promise<unknown>;
-      set(enabled: boolean): Promise<unknown>;
-      inherit(): Promise<unknown>;
-    };
-  };
-  as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
-  // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key
-  // client receive all workspace-visible events without an agent identity.
-  connect?: () => void;
-  disconnect?: () => void;
-  on?: { any(handler: (event: unknown) => void): () => void };
-};
-
-type RelaycastDeliveryStatus = 'accepted' | 'delivered' | 'deferred' | 'failed';
-
-/** The durable delivery methods an agent client must expose for server-backed inbox state. */
-type RelaycastAgentDeliverySurface = Required<
-  Pick<RelaycastAgentLike, 'deliveries' | 'ackDelivery' | 'failDelivery' | 'deferDelivery'>
->;
-
-type RelaycastAgentLike = {
-  me(): Promise<unknown>;
-  connect(): void;
-  disconnect(): Promise<void>;
-  subscribe(channels: string[]): void;
-  unsubscribe(channels: string[]): void;
-  send(
-    channel: string,
-    text: string,
-    options?: {
-      attachments?: string[];
-      blocks?: RelayMessageBlock[];
-      mode?: 'wait' | 'steer';
-      idempotencyKey?: string;
-    }
-  ): Promise<unknown>;
-  messages(channel: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-  message(id: string): Promise<unknown>;
-  reply(
-    id: string,
-    text: string,
-    options?: { blocks?: RelayMessageBlock[]; idempotencyKey?: string }
-  ): Promise<unknown>;
-  thread(id: string, options?: RelayMessageListOptions): Promise<unknown>;
-  dm(
-    agent: string,
-    text: string,
-    options?: {
-      mode?: 'wait' | 'steer';
-      attachments?: string[];
-      idempotencyKey?: string;
-    }
-  ): Promise<unknown>;
-  dms: {
-    conversations(): Promise<unknown[]>;
-    messages(conversationId: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-    createGroup(
-      options: { participants: string[]; name?: string },
-      idempotency?: { idempotencyKey?: string }
-    ): Promise<unknown>;
-    sendMessage(
-      conversationId: string,
-      text: string,
-      options?: {
-        attachments?: string[];
-        mode?: 'wait' | 'steer';
-        idempotencyKey?: string;
-      }
-    ): Promise<unknown>;
-  };
-  channels: {
-    create(input: RelayCreateChannelInput): Promise<unknown>;
-    get(name: string): Promise<unknown>;
-    join(name: string): Promise<unknown>;
-    leave(name: string): Promise<void>;
-    setTopic(name: string, topic: string): Promise<unknown>;
-    archive(name: string): Promise<void>;
-    invite(channel: string, agent: string): Promise<unknown>;
-    members(name: string): Promise<unknown[]>;
-    update(name: string, input: RelayUpdateChannelInput): Promise<unknown>;
-    mute(name: string): Promise<void>;
-    unmute(name: string): Promise<void>;
-  };
-  inbox(options?: { limit?: number }): Promise<unknown>;
-  // Durable delivery ledger (relaycast 2.5+): per-recipient delivery rows with
-  // FIFO replay of non-terminal items and idempotent ack/fail/defer transitions.
-  deliveries?(options?: { status?: RelaycastDeliveryStatus; limit?: number }): Promise<unknown[]>;
-  ackDelivery?(deliveryId: string): Promise<unknown>;
-  failDelivery?(deliveryId: string, options?: { error?: string; retryable?: boolean }): Promise<unknown>;
-  deferDelivery?(deliveryId: string, options: { availableAt: string; reason?: string }): Promise<unknown>;
-  markRead(messageId: string): Promise<unknown>;
-  readers(messageId: string): Promise<unknown[]>;
-  readStatus(channel: string): Promise<unknown[]>;
-  reactions(messageId: string): Promise<unknown[]>;
-  react(messageId: string, emoji: string): Promise<unknown>;
-  unreact(messageId: string, emoji: string): Promise<void>;
-  search(
-    query: string,
-    options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }
-  ): Promise<unknown[]>;
-  actions?: {
-    invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;
-    getInvocation(name: string, invocationId: string): Promise<unknown>;
-    completeInvocation(name: string, invocationId: string, data: unknown): Promise<unknown>;
-  };
-  on: {
-    any(handler: (event: unknown) => void): () => void;
-    actionInvoked?(handler: (event: unknown) => void): () => void;
-  };
-};
-
-export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
-  /** Workspace key returned when creating or joining an Agent Relay workspace. */
-  workspaceKey?: string;
-  /** @deprecated Use workspaceKey for public Agent Relay flows. */
-  apiKey?: string;
-  baseUrl?: string;
-  retryPolicy?: RelayCastOptions['retryPolicy'];
-  relaycast?: RelaycastWorkspaceLike;
-  agentToken?: string;
-  agentClient?: RelaycastAgentLike;
-  agentClientOptions?: AgentClientOptions;
-  /** Local node name used to resolve placement requests with `node: "self"`. */
-  selfNodeName?: string;
-  /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
-  placementTtlMs?: number;
-  /** Max in-process placement requests allowed to wait for an eligible node. */
-  maxQueuedPlacements?: number;
-  /** Receives placement queue/reject/fail log lines. */
-  placementLog?: (message: string) => void;
-}
-
-function definedOptions<T extends Record<string, unknown>>(options: T): Partial<T> {
-  return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)) as Partial<T>;
-}
-
-function toMessageListOptions(options?: RelayMessageListOptions): RelayMessageListOptions | undefined {
-  if (!options) return undefined;
-  return definedOptions({
-    limit: options.limit,
-    before: options.before,
-    after: options.after,
-  });
-}
-
-function serializeAttachmentInputs(input?: RelayMessageAttachmentInput[]): string[] | undefined {
-  if (!input) return undefined;
-  return input.map((attachment) =>
-    typeof attachment === 'string' ? attachment : JSON.stringify(attachment)
-  );
-}
-
-function createRelaycastClient(options: RelaycastMessagingOptions): RelaycastWorkspaceLike {
-  if (options.relaycast) return options.relaycast;
-  const workspaceKey = options.workspaceKey ?? options.apiKey;
-  if (!workspaceKey) {
-    throw new Error('RelaycastMessagingClient requires workspaceKey when relaycast is not provided.');
-  }
-
-  return new RelayCast(
-    definedOptions({
-      apiKey: workspaceKey,
-      baseUrl: options.baseUrl,
-      retryPolicy: options.retryPolicy,
-      ...relaycastTelemetryOptions({
-        originActor: options.originActor,
-        agentRelayDistinctId: options.agentRelayDistinctId,
-      }),
-    }) as RelayCastOptions
-  ) as unknown as RelaycastWorkspaceLike;
-}
+// Re-exported so the public surface stays identical after the placement and
+// client-construction concerns moved into sibling modules. Consumers import
+// these from './relaycast.js' via the messaging index.
+export { RelayPlacementError } from './relaycast-placement.js';
+export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
 export class RelaycastMessagingClient implements RelayMessagingClient {
   readonly capabilities: RelayMessagingCapabilities;

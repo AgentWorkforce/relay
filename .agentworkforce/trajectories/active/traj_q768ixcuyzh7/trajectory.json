@@ -1,0 +1,19 @@
+{
+  "id": "traj_q768ixcuyzh7",
+  "version": 1,
+  "task": {
+    "title": "Architecture refactor: decompose SDK/CLI god files into single-responsibility modules"
+  },
+  "status": "active",
+  "startedAt": "2026-06-21T14:47:04.706Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ff3f773ee5e313d2afbb9865908e245c167d89c8",
+    "endRef": "ff3f773ee5e313d2afbb9865908e245c167d89c8"
+  }
+}
