@@ -6,8 +6,35 @@
   },
   "status": "active",
   "startedAt": "2026-06-21T14:47:04.706Z",
-  "agents": [],
-  "chapters": [],
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-21T15:05:03.456Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ogralcr6cr73",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-21T15:05:03.456Z",
+      "events": [
+        {
+          "ts": 1782054303457,
+          "type": "decision",
+          "content": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts: Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+          "raw": {
+            "question": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+            "chosen": "Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts",
+            "alternatives": [],
+            "reasoning": "normalize.ts readers have divergent semantics (readString coerces number/bigint->string, readRecord clones) so consolidating would be a behavior change, not a pure refactor"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",

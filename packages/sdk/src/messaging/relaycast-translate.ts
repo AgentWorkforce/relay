@@ -41,7 +41,7 @@ export function readStr(record: Record<string, unknown>, ...keys: string[]): str
   return undefined;
 }
 
-export function readRecord(
+function readRecord(
   record: Record<string, unknown>,
   ...keys: string[]
 ): Record<string, unknown> | undefined {
@@ -54,7 +54,7 @@ export function readRecord(
   return undefined;
 }
 
-export function readNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+function readNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -62,7 +62,7 @@ export function readNumber(record: Record<string, unknown>, ...keys: string[]): 
   return undefined;
 }
 
-export function readBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+function readBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'boolean') return value;
@@ -70,12 +70,12 @@ export function readBoolean(record: Record<string, unknown>, ...keys: string[]):
   return undefined;
 }
 
-export function readStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
+function readStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
   const value = record[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
 }
 
-export function readMention(value: unknown): boolean | string | undefined {
+function readMention(value: unknown): boolean | string | undefined {
   return typeof value === 'boolean' || typeof value === 'string' ? value : undefined;
 }
 
