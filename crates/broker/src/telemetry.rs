@@ -43,7 +43,7 @@ Run `agent-relay telemetry disable` to opt out.";
 /// Telemetry events emitted by the broker at key lifecycle points.
 ///
 /// Schema aligns with the TypeScript definitions in
-/// `packages/telemetry/src/events.ts` — when you add or change a field here,
+/// `packages/cli/src/cli/telemetry/events.ts` — when you add or change a field here,
 /// update that file too so dashboards stay coherent across the CLI/broker
 /// boundary.
 pub enum TelemetryEvent {
