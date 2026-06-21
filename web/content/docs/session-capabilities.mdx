@@ -61,7 +61,7 @@ const minimum: AgentSessionCapabilities = {
 messaging: {
   receive: true;
   send?: boolean;
-  attachments: Array<'text' | 'image'>;
+  attachments?: Array<'text' | 'image'>;
 }
 ```
 
@@ -134,33 +134,18 @@ otherwise. The rest are optional because not every provider can pause, resume, f
 Status is reported through events, not identity.
 
 ```ts
-type AgentStatus =
-  | 'starting'
-  | 'active'
-  | 'idle'
-  | 'waiting'
-  | 'blocked'
-  | 'paused'
-  | 'releasing'
-  | 'released'
-  | 'offline'
-  | 'failed';
+type AgentSessionStatus = 'active' | 'idle' | 'blocked' | 'waiting' | 'offline';
 ```
 
 Useful meanings:
 
 | Status | Meaning |
 | --- | --- |
-| `starting` | The harness is creating or attaching to the session. |
 | `active` | The session is actively working or generating output. |
 | `idle` | The session is ready for more work. |
 | `waiting` | The session is waiting on a tool, user input, network, or external result. |
 | `blocked` | The session cannot continue without intervention. |
-| `paused` | The session is intentionally paused. |
-| `releasing` | Release has started but is not complete. |
-| `released` | The session boundary has been released. |
 | `offline` | The adapter cannot currently reach the session. |
-| `failed` | The session or harness failed unexpectedly. |
 
 Idle states are especially important for delivery because `on-idle` messages should wait for one of the safe states configured by the harness.
 
@@ -208,45 +193,48 @@ The event list is intentionally broader than the minimum. A harness can support 
 
 ## Full Session Event Union
 
+Every variant also carries the optional `AgentSessionEventBase` fields `at?`, `agent?`, and `metadata?`.
+
 ```ts
 type TranscriptChunk = {
   id: string;
-  at: Date;
+  at?: Date | string;
   role: 'agent' | 'user' | 'system' | 'tool';
   content: string;
-  sequence: number;
+  sequence?: number;
   metadata?: Record<string, unknown>;
 };
 
+type SessionCaller = AgentIdentity | { name: string; id?: string; type?: 'agent' | 'human' | 'system' };
+
 type AgentSessionEvent =
-  | { type: 'status.changed'; status: AgentStatus; previousStatus?: AgentStatus; reason?: string }
+  | { type: 'status.changed'; status: AgentSessionStatus; previousStatus?: AgentSessionStatus; reason?: string }
+  | { type: 'status.idle' | 'status.active' | 'status.blocked' | 'status.waiting' | 'status.offline'; reason?: string }
+  | { type: 'message.received' | 'message.sent'; message: RelayMessage }
+  | { type: 'delivery.accepted' | 'delivery.delivered'; messageId: string; deliveryId?: string }
+  | { type: 'delivery.deferred'; messageId: string; deliveryId?: string; availableAt: Date | string; reason?: string }
+  | { type: 'delivery.failed'; messageId: string; deliveryId?: string; reason: string; retryable?: boolean }
   | { type: 'tool.called'; run?: string; tool: string; input?: unknown }
   | { type: 'tool.completed'; run?: string; tool: string; output?: unknown; durationMs?: number }
-  | { type: 'tool.failed'; run?: string; tool: string; error: string; retryable?: boolean }
-  | { type: 'tool.output'; run?: string; tool: string; output: string }
-  | { type: 'message.received'; messageId: string; deliveryId?: string }
-  | { type: 'message.sent'; messageId: string }
-  | { type: 'delivery.accepted'; deliveryId: string; messageId: string }
-  | { type: 'delivery.delivered'; deliveryId: string; messageId: string }
-  | { type: 'delivery.deferred'; deliveryId: string; messageId: string; availableAt: Date | string; reason?: string }
-  | { type: 'delivery.failed'; deliveryId: string; messageId: string; reason: string; retryable?: boolean }
-  | { type: 'action.invoked'; action: string; invocationId: string }
-  | { type: 'action.completed'; action: string; invocationId: string; durationMs?: number }
-  | { type: 'action.failed'; action: string; invocationId: string; error: string; retryable?: boolean }
-  | { type: 'action.denied'; action: string; invocationId: string; reason: string }
+  | { type: 'tool.failed'; run?: string; tool: string; error: string; durationMs?: number }
+  | { type: 'tool.output'; run?: string; tool?: string; output: unknown }
+  | { type: 'action.invoked'; action: string; input?: unknown; caller?: SessionCaller }
+  | { type: 'action.completed'; action: string; output?: unknown; caller?: SessionCaller; durationMs?: number }
+  | { type: 'action.failed'; action: string; error: string; caller?: SessionCaller; durationMs?: number }
+  | { type: 'action.denied'; action: string; reason?: string; caller?: SessionCaller }
   | { type: 'transcript.chunk'; chunk: TranscriptChunk }
   | { type: 'file.changed'; path: string; operation: 'create' | 'update' | 'delete'; diff?: string }
-  | { type: 'command.started'; command: string; cwd?: string }
-  | { type: 'command.completed'; command: string; exitCode?: number; durationMs?: number }
-  | { type: 'command.failed'; command: string; error: string; exitCode?: number }
+  | { type: 'command.started'; commandId?: string; command: string; cwd?: string }
+  | { type: 'command.completed'; commandId?: string; command?: string; exitCode?: number; durationMs?: number }
+  | { type: 'command.failed'; commandId?: string; command?: string; error: string; exitCode?: number; durationMs?: number }
   | { type: 'terminal.output'; stream?: 'stdout' | 'stderr' | 'combined'; text: string }
-  | { type: 'terminal.screen'; text: string; rows?: number; cols?: number }
-  | { type: 'usage.updated'; tokens?: number; costUsd?: number; metadata?: Record<string, unknown> }
-  | { type: 'session.started'; sessionId: string }
-  | { type: 'session.released'; sessionId: string; reason?: string }
-  | { type: 'session.resumed'; sessionId: string }
-  | { type: 'session.forked'; sessionId: string; parentSessionId: string }
-  | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
+  | { type: 'terminal.screen'; text: string; rows?: number; columns?: number }
+  | { type: 'usage.updated'; usage: Record<string, number | string | boolean | null> }
+  | { type: 'session.started'; reason?: string }
+  | { type: 'session.released'; reason?: string }
+  | { type: 'session.resumed'; reason?: string }
+  | { type: 'session.forked'; child: AgentIdentity }
+  | { type: 'log'; level?: 'debug' | 'info' | 'warn' | 'error'; message: string }
   | { type: 'error'; error: string; code?: string; retryable?: boolean };
 ```
 

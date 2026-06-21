@@ -2,6 +2,11 @@
 @import '../public/brand.css';
 
 html {
+  /* Strong custom easing curves — the built-in CSS easings are too weak to
+     feel intentional. Shared across interactive elements site-wide. */
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
   background: var(--bg);
   color-scheme: dark;
   transition: background 0.3s ease;
@@ -47,7 +52,7 @@ a {
     background 0.2s,
     border-color 0.2s,
     color 0.2s,
-    transform 0.15s,
+    transform 0.15s var(--ease-out-quint),
     box-shadow 0.2s;
 }
 
@@ -60,7 +65,6 @@ a {
 .btn-primary:hover {
   background: var(--primary-500);
   border-color: var(--primary-800);
-  transform: translateY(-1px);
 }
 
 .btn-secondary {
@@ -72,7 +76,27 @@ a {
 .btn-secondary:hover {
   border-color: var(--primary);
   color: var(--primary);
-  transform: translateY(-1px);
+}
+
+/* Lift on hover only where a real pointer exists — touch devices fire :hover
+   on tap, which makes the lift flash on press. */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    transform: translateY(-1px);
+  }
+}
+
+/* Press feedback: every pressable element should confirm it heard the click.
+   Placed after :hover so the press scale wins while the button is held. */
+.btn:active {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:hover,
+  .btn:active {
+    transform: none;
+  }
 }
 
 code,

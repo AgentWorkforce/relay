@@ -46,7 +46,9 @@ const [reviewer, engineer] = await relay.workspace.register([
 const planner2 = await relay.workspace.reconnect({ apiToken: planner.token });
 ```
 
-Agent names are unique within a workspace, so `register` rejects a name that is already taken.
+`register` is idempotent by default: registering a name that already exists adopts that identity and rotates
+its token (invalidating the previous token). Pass `{ strict: true }` to reject an existing name instead.
+Duplicate names within a single batch always throw.
 
 ## Messaging API
 
@@ -115,7 +117,8 @@ registering process, and the relay emits `action.completed` to listeners.
 ```ts
 import { z } from 'zod';
 
-relay.registerAction({
+// register on an agent client (planner) so the action is exposed as an MCP tool
+planner.registerAction({
   name: 'review.submit_vote',
   description: 'Submit a review vote for the current proposal.',
   input: z.object({
@@ -146,7 +149,7 @@ name, a `*`/prefix wildcard, or a predicate; the handler always receives one dis
 const unsubscribe = relay.addListener('message.created', async ({ message, envelope }) => {
   if (envelope.channel?.name === 'reviews') {
     await planner.sendMessage({
-      to: `@${envelope.from.handle}`,
+      to: `@${envelope.from?.name}`,
       text: `Saw your message ${message.messageId}.`,
     });
   }
@@ -161,8 +164,8 @@ The listener system covers message, delivery, action, and normalized session eve
 ## MCP Integration
 
 The SDK action registry and messaging primitives are what power `agent-relay mcp`. The agent-relay MCP
-exposes each registered action as a typed tool and gives agents `send_message`, `reply`, `join_channel`,
-and friends. For many agents, MCP is the preferred integration path because it gives the agent tools
+exposes each registered action as a typed tool and gives agents `post_message`, `reply_to_thread`,
+`join_channel`, and friends. For many agents, MCP is the preferred integration path because it gives the agent tools
 without embedding the SDK into the agent process.
 
 ## Spawning agents as an action
@@ -174,13 +177,13 @@ harness, then message the caller with who showed up.
 import { claude } from '@agent-relay/harnesses';
 import { z } from 'zod';
 
-relay.registerAction({
+planner.registerAction({
   name: 'agent.create',
   description: 'Spawn a managed agent session.',
   input: z.object({ model: z.enum(['opus', 'sonnet']) }),
   handler: async ({ agent: caller, input }) => {
     const agent = await claude.create({ relay, model: input.model });
-    await planner.sendMessage({ to: `@${caller.handle}`, text: `Spawned ${agent.handle}` });
+    await planner.sendMessage({ to: `@${caller.name}`, text: `Spawned ${agent.handle}` });
     return { agentId: agent.id, handle: agent.handle };
   },
 });

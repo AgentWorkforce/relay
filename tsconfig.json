@@ -25,6 +25,8 @@
       "@agent-relay/harness-driver/*": ["packages/harness-driver/dist/*"],
       "@agent-relay/harnesses": ["packages/harnesses/dist/index.d.ts"],
       "@agent-relay/harnesses/*": ["packages/harnesses/dist/*"],
+      "@agent-relay/integration-prompts": ["packages/integration-prompts/dist/index.d.ts"],
+      "@agent-relay/integration-prompts/*": ["packages/integration-prompts/dist/*"],
       "@agent-relay/fleet": ["packages/fleet/dist/index.d.ts"],
       "@agent-relay/fleet/*": ["packages/fleet/dist/*"],
       "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],

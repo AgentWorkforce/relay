@@ -1,4 +1,9 @@
-import { CloudAuthError, DEFAULT_REFRESH_TIMEOUT_MS, REFRESH_WINDOW_MS } from './types.js';
+import {
+  CloudAuthError,
+  DEFAULT_REFRESH_TIMEOUT_MS,
+  REFRESH_TOKEN_WINDOW_MS,
+  REFRESH_WINDOW_MS,
+} from './types.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 
 export type CloudApiClientOptions = {
@@ -38,6 +43,7 @@ export function buildApiUrl(apiUrl: string, p: string): URL {
 }
 
 export class CloudApiClient {
+  private apiUrl: string;
   private accessToken: string;
   private refreshToken: string;
   private accessTokenExpiresAt: string;
@@ -45,6 +51,7 @@ export class CloudApiClient {
   private refreshPromise: Promise<void> | null = null;
 
   constructor(private readonly options: CloudApiClientOptions) {
+    this.apiUrl = options.apiUrl;
     this.accessToken = options.accessToken;
     this.refreshToken = options.refreshToken;
     this.accessTokenExpiresAt = options.accessTokenExpiresAt;
@@ -73,7 +80,7 @@ export class CloudApiClient {
 
   snapshot(): CloudApiClientSnapshot {
     return {
-      apiUrl: this.options.apiUrl,
+      apiUrl: this.apiUrl,
       accessToken: this.accessToken,
       refreshToken: this.refreshToken,
       accessTokenExpiresAt: this.accessTokenExpiresAt,
@@ -84,7 +91,7 @@ export class CloudApiClient {
   async fetch(p: string, init: RequestInit = {}): Promise<Response> {
     await this.refresh(false, init.signal ?? undefined);
 
-    const response = await fetch(buildApiUrl(this.options.apiUrl, p), {
+    const response = await fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
       headers: this.buildHeaders(init.headers),
     });
@@ -95,14 +102,14 @@ export class CloudApiClient {
 
     await this.refresh(true, init.signal ?? undefined);
 
-    return fetch(buildApiUrl(this.options.apiUrl, p), {
+    return fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
       headers: this.buildHeaders(init.headers),
     });
   }
 
   async revoke(): Promise<void> {
-    const response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/revoke'), {
+    const response = await fetch(buildApiUrl(this.apiUrl, '/api/v1/auth/token/revoke'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -168,7 +175,7 @@ export class CloudApiClient {
 
     let response: Response;
     try {
-      response = await fetch(buildApiUrl(this.options.apiUrl, '/api/v1/auth/token/refresh'), {
+      response = await fetch(buildApiUrl(this.apiUrl, '/api/v1/auth/token/refresh'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -204,22 +211,30 @@ export class CloudApiClient {
       accessTokenExpiresAt?: string;
       refreshToken?: string;
       refreshTokenExpiresAt?: string;
+      apiUrl?: string;
     };
 
     if (!payload.accessToken || !payload.accessTokenExpiresAt || !payload.refreshToken) {
       throw new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Refresh response missing token fields');
     }
 
+    const nextRefreshTokenExpiresAt =
+      typeof payload.refreshTokenExpiresAt === 'string' && payload.refreshTokenExpiresAt.trim()
+        ? payload.refreshTokenExpiresAt.trim()
+        : this.refreshTokenExpiresAt;
+
     return {
-      apiUrl: this.options.apiUrl,
+      apiUrl:
+        typeof payload.apiUrl === 'string' && payload.apiUrl.trim() ? payload.apiUrl.trim() : this.apiUrl,
       accessToken: payload.accessToken,
       accessTokenExpiresAt: payload.accessTokenExpiresAt,
       refreshToken: payload.refreshToken,
-      ...(payload.refreshTokenExpiresAt ? { refreshTokenExpiresAt: payload.refreshTokenExpiresAt } : {}),
+      ...(nextRefreshTokenExpiresAt ? { refreshTokenExpiresAt: nextRefreshTokenExpiresAt } : {}),
     };
   }
 
   private applySnapshot(snapshot: CloudApiClientSnapshot): void {
+    this.apiUrl = snapshot.apiUrl;
     this.accessToken = snapshot.accessToken;
     this.accessTokenExpiresAt = snapshot.accessTokenExpiresAt;
     this.refreshToken = snapshot.refreshToken;
@@ -238,6 +253,19 @@ export class CloudApiClient {
       return true;
     }
 
-    return expiresAt - Date.now() <= REFRESH_WINDOW_MS;
+    if (expiresAt - Date.now() <= REFRESH_WINDOW_MS) {
+      return true;
+    }
+
+    if (!this.refreshTokenExpiresAt) {
+      return false;
+    }
+
+    const refreshExpiresAt = Date.parse(this.refreshTokenExpiresAt);
+    if (Number.isNaN(refreshExpiresAt)) {
+      return true;
+    }
+
+    return refreshExpiresAt - Date.now() <= REFRESH_TOKEN_WINDOW_MS;
   }
 }

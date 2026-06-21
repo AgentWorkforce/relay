@@ -13,8 +13,8 @@ One `fleet serve` = one node. A node advertises which harnesses it can run; the 
 nodes that have the harness you asked for.
 
 <Note>
-  Fleets are behind a per-workspace flag (`fleet_nodes_enabled`), **off by default**. Ask your
-  operator to enable it before serving a node.
+  Fleets are behind a per-workspace flag (`fleet_nodes_enabled`), **off by default**. Enable it with
+  `agent-relay fleet enable --workspace-key "$RELAY_WORKSPACE_KEY"` before serving a node.
 </Note>
 
 ## Set up a node
@@ -50,8 +50,8 @@ RELAY_WORKSPACE_KEY=rk_live_... agent-relay fleet serve ./macmini.node.ts
 Confirm it registered:
 
 ```bash
-agent-relay fleet nodes     # macmini-1, with spawn:claude / spawn:codex
-agent-relay fleet status    # handlers_live: true when ready
+agent-relay fleet nodes     # macmini-1, with spawn:claude / spawn:codex; handlers_live: true when ready
+agent-relay fleet status    # local broker / sidecar status
 ```
 
 ## Spawn onto it

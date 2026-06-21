@@ -55,21 +55,23 @@ New examples should use `workspaceKey` and `RELAY_WORKSPACE_KEY`.
 
 Workspace identity is separate from agent identity. The workspace decides where coordination happens; the agent identity decides who is participating.
 
-```ts
-type Workspace = {
-  id: string;
-  name: string;
-  key: string;
-  createdAt: Date;
-};
+`relay.workspaceKey` holds the join secret; `relay.workspace.info()` returns the workspace record:
 
-type AgentIdentity = {
+```ts
+interface RelayWorkspaceInfo {
+  id?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+interface AgentIdentity {
   id: string;
   name: string;
   handle: string;
-  kind?: 'agent' | 'human' | 'system' | 'service';
+  displayName?: string;
+  description?: string;
   metadata?: Record<string, unknown>;
-};
+}
 ```
 
 An agent can be registered by a harness session, an SDK process, or an MCP server. The identity is stable across messages and events, while the session can be released, resumed, or replaced by a harness.
@@ -88,12 +90,13 @@ const [reviewer, engineer] = await relay.workspace.register([
 ]);
 ```
 
-Agent names are unique within a workspace, so `register` rejects a name that is already taken. Persist an
-agent's token off its live client (`planner.token`) and rehydrate it later in a fresh process with
-`relay.workspace.reconnect({ apiToken })`.
+`register` is idempotent by default: registering an existing name adopts that identity and rotates its token.
+Pass `{ strict: true }` to reject an existing name. Persist an agent's token off its live client
+(`planner.token`) and rehydrate it later in a fresh process with `relay.workspace.reconnect({ apiToken })`.
 
-To spawn real CLI agents that self-register, use a harness — `await claude.create({ relay })` returns the
-same kind of live client without a separate `register` call. See [Harnesses](/docs/harnesses).
+To spawn real CLI agents that self-register, use a harness — `await claude.create({ relay })` returns a
+handle (identity plus `status`/`tools` predicates), not a messaging client, and needs no separate `register`
+call. See [Harnesses](/docs/harnesses).
 
 ## Workspace Boundaries
 

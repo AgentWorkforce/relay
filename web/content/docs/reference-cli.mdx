@@ -39,6 +39,7 @@ The SDK-backed groups are `agent`, `channel`, `message`, `integration`, and `cap
 | `agent-relay workspace set_key <name> <key>` | Store a workspace key under a name. |
 | `agent-relay workspace join <name> <key>` | Store a key and switch to that workspace. |
 | `agent-relay workspace switch <name>` | Switch the active stored workspace. |
+| `agent-relay workspace active [--json] [--api-url <url>] [--refresh-timeout <ms>]` | Show the active canonical cloud workspace. |
 
 ## Agents
 
@@ -160,8 +161,9 @@ Hosted run commands remain under `cloud`:
 | --- | --- |
 | `agent-relay cloud login` | Authenticate to Agent Relay cloud. |
 | `agent-relay cloud logout` | Clear stored cloud auth. |
-| `agent-relay cloud whoami` | Show current cloud identity. |
-| `agent-relay cloud connect` | Connect a local project to cloud. |
+| `agent-relay cloud whoami` | Show current authentication status. |
+| `agent-relay cloud connect <provider>` | Connect a provider via an interactive SSH session. |
+| `agent-relay cloud session` | Show the canonical cloud session. |
 | `agent-relay cloud run` | Start a cloud run. |
 | `agent-relay cloud schedule` | Create a scheduled run. |
 | `agent-relay cloud schedules` | List scheduled runs. |
@@ -169,6 +171,19 @@ Hosted run commands remain under `cloud`:
 | `agent-relay cloud logs` | Show cloud run logs. |
 | `agent-relay cloud sync` | Sync local state with cloud. |
 | `agent-relay cloud cancel` | Cancel a cloud run. |
+| `agent-relay cloud worker register\|start\|status\|logs` | Manage cloud workers. |
+
+## Fleet
+
+| Command | Description |
+| --- | --- |
+| `agent-relay fleet serve [file] [--enrollment-token <token>]` | Serve a fleet node from a TS/JS definition file, or register via a Cloud enrollment token. |
+| `agent-relay fleet nodes` | List fleet nodes in the workspace. |
+| `agent-relay fleet config` | Show workspace fleet node configuration. |
+| `agent-relay fleet enable` | Enable fleet nodes for the workspace. |
+| `agent-relay fleet disable` | Disable fleet nodes for the workspace. |
+| `agent-relay fleet inherit` | Use the deployment default for workspace fleet nodes. |
+| `agent-relay fleet status` | Show local fleet broker and sidecar status. |
 
 ## See Also
 

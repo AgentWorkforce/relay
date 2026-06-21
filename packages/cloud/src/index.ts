@@ -169,9 +169,9 @@ export {
   type SyncPatchResponse,
   SUPPORTED_PROVIDERS,
   REFRESH_WINDOW_MS,
+  REFRESH_TOKEN_WINDOW_MS,
   DEFAULT_REFRESH_TIMEOUT_MS,
   AUTH_FILE_PATH,
-  LEGACY_AUTH_FILE_PATH,
   defaultApiUrl,
   isSupportedProvider,
 } from './types.js';

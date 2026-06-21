@@ -26,12 +26,19 @@ with [`addListener`](/docs/event-handlers).
 
 ## Register an action
 
-Use `relay.registerAction(...)`. The handler receives `{ input, agent, ctx }`, where `agent` is the caller.
+Register on an **agent client** — the value returned by `relay.workspace.register(...)` or a harness
+`create(...)`. The handler agent's identity is the descriptor's `handler_agent`, which is what registers the
+action on the relay and exposes it as an MCP tool. `relay.registerAction(...)` on the workspace client keeps
+the action in-process: the handler still runs, but no other agent can invoke it.
+
+The handler receives `{ input, agent, ctx }`, where `agent` is the caller (`{ name, id?, type? }`).
 
 ```ts file="register-action.ts"
 import { z } from 'zod';
 
-const handle = relay.registerAction({
+const coordinator = await relay.workspace.register({ name: 'coordinator', type: 'agent' });
+
+const handle = coordinator.registerAction({
   name: 'github.open_pr',
   description: 'Open a GitHub pull request for a completed agent change.',
   input: z.object({
@@ -43,7 +50,7 @@ const handle = relay.registerAction({
   handler: async ({ input, agent }) => {
     const pr = await github.openPullRequest(input);
     // The return value reaches listeners, not the caller — message the caller directly.
-    await coordinator.sendMessage({ to: `@${agent.handle}`, text: `Opened ${pr.url}` });
+    await coordinator.sendMessage({ to: `@${agent.name}`, text: `Opened ${pr.url}` });
     return { url: pr.url }; // becomes the action.completed payload
   },
 });
@@ -115,7 +122,7 @@ A common action spawns other agents. The handler messages the caller to report w
 import { claude } from '@agent-relay/harnesses';
 import { z } from 'zod';
 
-relay.registerAction({
+taskManager.registerAction({
   name: 'spawn-claude',
   description: 'Spawn a new Claude Code instance.',
   input: z.object({ model: z.enum(['opus', 'sonnet']) }),
@@ -123,7 +130,7 @@ relay.registerAction({
   handler: async ({ agent: caller, input }) => {
     // create({ relay }) spawns AND registers the new agent in one step.
     const agent = await claude.create({ relay, model: input.model });
-    await taskManager.sendMessage({ to: `@${caller.handle}`, text: `Spawned ${agent.handle}` });
+    await taskManager.sendMessage({ to: `@${caller.name}`, text: `Spawned ${agent.handle}` });
     return { agentId: agent.id, handle: agent.handle }; // becomes the action.completed payload
   },
 });
@@ -136,7 +143,7 @@ Another good use of actions is collecting structured votes to reach consensus.
 ```ts file="submit-vote.ts"
 import { z } from 'zod';
 
-relay.registerAction({
+taskManager.registerAction({
   name: 'submit-vote',
   description: 'Submit your vote for yes or no.',
   input: z.object({ vote: z.enum(['yes', 'no']) }),

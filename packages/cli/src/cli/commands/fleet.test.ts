@@ -1,4 +1,6 @@
 import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { Command } from 'commander';
@@ -11,11 +13,138 @@ import { loadNodeDefinition, registerFleetCommands, stripEnrollmentFlags } from 
 import { startFleetSidecar, serveFleetSidecar } from '../lib/fleet-sidecar.js';
 
 describe('fleet command support', () => {
+  it.each([
+    ['config', 'get', undefined],
+    ['enable', 'set', true],
+    ['disable', 'set', false],
+    ['inherit', 'inherit', undefined],
+  ] as const)('fleet %s delegates to workspace fleet node config API', async (command, method, value) => {
+    const fleetNodes = {
+      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
+      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({ workspace: { fleetNodes } }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', command, '--workspace-key', 'rk_live_test', '--base-url', 'https://relay.example'],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: 'https://relay.example',
+    });
+    if (method === 'set') {
+      expect(fleetNodes.set).toHaveBeenCalledWith(value);
+    } else {
+      expect(fleetNodes[method]).toHaveBeenCalledTimes(1);
+    }
+    expect(JSON.parse(logs[0]!)).toMatchObject({
+      enabled: method === 'set' ? value : false,
+      defaultEnabled: false,
+    });
+  });
+
   it('loads the example TS node file', async () => {
     const node = await loadNodeDefinition(path.resolve(process.cwd(), 'examples/relay-node.ts'));
 
     expect(node.name).toBe('local-builder');
     expect(Object.keys(node.capabilities)).toContain('spawn:codex');
+  });
+
+  it('loads a plain JS node file through native import', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'relay-node-def-'));
+    try {
+      await writeFile(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const file = path.join(dir, 'node-def.js');
+      await writeFile(
+        file,
+        [
+          'export default {',
+          '  __agentRelayFleetNode: true,',
+          '  name: "plain-js-node",',
+          '  capabilities: {},',
+          '  triggers: [],',
+          '};',
+        ].join('\n')
+      );
+
+      const node = await loadNodeDefinition(file);
+
+      expect(node.name).toBe('plain-js-node');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads CommonJS compiled JS node files that export default wrappers', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'relay-node-def-'));
+    try {
+      await writeFile(path.join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+      const file = path.join(dir, 'node-def.js');
+      await writeFile(
+        file,
+        [
+          'exports.default = {',
+          '  __agentRelayFleetNode: true,',
+          '  name: "compiled-cjs-node",',
+          '  capabilities: {},',
+          '  triggers: [],',
+          '};',
+        ].join('\n')
+      );
+
+      const node = await loadNodeDefinition(file);
+
+      expect(node.name).toBe('compiled-cjs-node');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to jiti for ESM-syntax JS node files in CommonJS projects', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'relay-node-def-'));
+    try {
+      await writeFile(path.join(dir, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+      const file = path.join(dir, 'node-def.js');
+      await writeFile(
+        file,
+        [
+          'export default {',
+          '  __agentRelayFleetNode: true,',
+          '  name: "commonjs-project-esm-node",',
+          '  capabilities: {},',
+          '  triggers: [],',
+          '};',
+        ].join('\n')
+      );
+
+      const node = await loadNodeDefinition(file);
+
+      expect(node.name).toBe('commonjs-project-esm-node');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('registers a served node and dispatches invoke_handler over a stub broker', async () => {

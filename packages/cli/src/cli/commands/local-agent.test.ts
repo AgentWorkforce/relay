@@ -120,6 +120,17 @@ describe('local agent subtree', () => {
     expect(client.disconnect).toHaveBeenCalled();
   });
 
+  it('spawn forwards --cwd to spawnPty', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'spawn', 'claude', '--name', 'Worker', '--cwd', '/home/user/my-project'],
+      { from: 'user' }
+    );
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Worker', cli: 'claude', cwd: '/home/user/my-project' })
+    );
+  });
+
   it('release calls client.release', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
