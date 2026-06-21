@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `@agent-relay/sdk` and `@agent-relay/cli` now depend on `@relaycast/sdk` 4.0 (durable-delivery status model `queued|delivered|acked|failed|dead_lettered`).
-- `agent-relay-broker` upgrades the bundled `relaycast` crate from 3.0 to 4.1, aligning the broker with the `@relaycast/sdk` 4.x durable-delivery model. This changes the relaycast-backed local delivery store schema.
+- `agent-relay-broker` upgrades the bundled `relaycast` crate from 3.0 to 4.1, changing the relaycast-backed local delivery store schema.
 - `agent-relay` and `@agent-relay/sdk` update `@relaycast/sdk` to the latest `4.1.6` patch.
 
 - `codex-relay-skill` and `gemini-relay-extension` now default to `https://gateway.relaycast.dev`, matching the `agent-relay` CLI and SDK. Set `RELAY_BASE_URL` to keep using `https://api.relaycast.dev`.
