@@ -106,7 +106,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      dashboardPort: await getFreePort(),
+      brokerPort: await getFreePort(),
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -117,7 +117,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      dashboardPort: await getFreePort(),
+      brokerPort: await getFreePort(),
     });
     nodeA.start();
     nodeB.start();
@@ -170,7 +170,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       engineBaseUrl: engine.baseUrl,
       brokerBinary: pre.brokerBinary!,
       tmpRoot,
-      dashboardPort: await getFreePort(),
+      brokerPort: await getFreePort(),
     });
     badNode.start();
     try {

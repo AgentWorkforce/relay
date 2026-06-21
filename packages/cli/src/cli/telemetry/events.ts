@@ -19,13 +19,13 @@
  */
 
 /** Source of spawn/release action */
-export type ActionSource = 'human_cli' | 'human_dashboard' | 'agent' | 'protocol';
+export type ActionSource = 'human_cli' | 'agent' | 'protocol';
 
 /** Component that emitted the telemetry event. */
-export type TelemetryApp = 'cli' | 'broker' | 'sdk' | 'relaycast-server' | 'dashboard' | 'unknown';
+export type TelemetryApp = 'cli' | 'broker' | 'sdk' | 'relaycast-server' | 'unknown';
 
 /** User-facing product surface responsible for the event. */
-export type TelemetrySurface = 'cli' | 'broker' | 'sdk' | 'cloud' | 'mcp' | 'dashboard' | 'unknown';
+export type TelemetrySurface = 'cli' | 'broker' | 'sdk' | 'cloud' | 'mcp' | 'unknown';
 
 /**
  * Reason for agent release.

@@ -44,7 +44,7 @@ claude --version
 ### Step 1: Start Relay Daemon
 
 ```bash
-agent-relay up --dashboard
+agent-relay up
 ```
 
 Open http://localhost:3888 to watch the conversation.
@@ -75,5 +75,4 @@ agent-relay -n Analytics claude
 
 ## What You'll See
 
-- **Dashboard**: Agents connect, messages flow in real-time
 - **Terminals**: Agents negotiate, propose allocations, vote on outcomes

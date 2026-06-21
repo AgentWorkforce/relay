@@ -118,9 +118,9 @@ echo "=== Smoke: standalone down --force ==="
 DOWN_OUTPUT="$(run_cli local down --force 2>&1 || true)"
 assert_exact_count "$DOWN_OUTPUT" '^Cleaned up \(was not running\)$' 1 'down cleanup line'
 
-echo "=== Smoke: standalone up --no-dashboard ==="
+echo "=== Smoke: standalone up ==="
 UP_LOG="$TMP_ROOT/up.log"
-run_cli local up --no-dashboard >"$UP_LOG" 2>&1 &
+run_cli local up >"$UP_LOG" 2>&1 &
 UP_PID=$!
 
 sleep 8

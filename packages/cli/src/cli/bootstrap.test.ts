@@ -151,7 +151,7 @@ describe('bootstrap CLI', () => {
         'mcp',
       ])
     );
-    // The dashboard-era surface is gone.
+    // The legacy command surface is gone.
     expect(topLevelCommands).not.toEqual(
       expect.arrayContaining([
         'driver',
