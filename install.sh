@@ -8,11 +8,9 @@ set -e
 #   AGENT_RELAY_VERSION              - Specific version to install (default: latest)
 #   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
 #   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
-#   AGENT_RELAY_NO_DASHBOARD         - Skip dashboard installation (default: false)
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
 
 REPO_RELAY="AgentWorkforce/relay"
-REPO_DASHBOARD="AgentWorkforce/relay-dashboard"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
 INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
@@ -243,148 +241,6 @@ download_broker_binary() {
         warn "No prebuilt broker binary for $PLATFORM"
         return 1
     fi
-}
-
-# Download standalone dashboard-server binary
-download_dashboard_binary() {
-    if [ "${AGENT_RELAY_NO_DASHBOARD}" = "true" ]; then
-        info "Skipping dashboard installation (AGENT_RELAY_NO_DASHBOARD=true)"
-        return 0
-    fi
-
-    step "Downloading dashboard-server binary..."
-
-    local binary_name="relay-dashboard-server-${PLATFORM}"
-    local compressed_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/${binary_name}.gz"
-    local uncompressed_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/${binary_name}"
-    local target_path="$BIN_DIR/relay-dashboard-server"
-    local temp_file="/tmp/dashboard-download-$$"
-
-    mkdir -p "$BIN_DIR"
-
-    # Setup cleanup trap for temp files
-    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
-
-    # Try compressed binary first (faster download)
-    if has_command gunzip; then
-        info "Trying compressed dashboard binary..."
-
-        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
-            # Check if we got a valid gzip file
-            local is_gzip=false
-            if has_command file; then
-                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
-            else
-                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
-            fi
-
-            if [ "$is_gzip" = true ]; then
-                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
-                    rm -f "${temp_file}.gz"
-                    chmod +x "$target_path"
-                    strip_quarantine "$target_path"
-
-                    if "$target_path" --version &>/dev/null; then
-                        success "Downloaded standalone dashboard-server binary"
-                        trap - EXIT
-                        return 0
-                    else
-                        warn "Dashboard binary failed verification, trying uncompressed..."
-                        rm -f "$target_path"
-                    fi
-                else
-                    rm -f "${temp_file}.gz" "$target_path"
-                fi
-            else
-                rm -f "${temp_file}.gz"
-            fi
-        fi
-    fi
-
-    # Fall back to uncompressed binary
-    info "Trying uncompressed dashboard binary..."
-
-    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
-        local file_size
-        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
-
-        if [ "$file_size" -gt 1000000 ]; then
-            chmod +x "$target_path"
-            strip_quarantine "$target_path"
-
-            if "$target_path" --version &>/dev/null; then
-                success "Downloaded standalone dashboard-server binary"
-                trap - EXIT
-                return 0
-            else
-                warn "Dashboard binary failed verification"
-                rm -f "$target_path"
-            fi
-        else
-            rm -f "$target_path"
-        fi
-    fi
-
-    trap - EXIT
-    info "No standalone dashboard binary available for $PLATFORM"
-    return 1
-}
-
-# Download dashboard UI files (required for standalone binary)
-download_dashboard_ui() {
-    if [ "${AGENT_RELAY_NO_DASHBOARD}" = "true" ]; then
-        return 0
-    fi
-
-    step "Downloading dashboard UI files..."
-
-    local ui_url="https://github.com/$REPO_DASHBOARD/releases/latest/download/dashboard-ui.tar.gz"
-    local target_dir="$INSTALL_DIR/dashboard"
-    local temp_file="/tmp/dashboard-ui-$$"
-
-    mkdir -p "$target_dir"
-
-    # Setup cleanup trap for temp files
-    trap 'rm -f "${temp_file}.tar.gz"' EXIT
-
-    if curl -fsSL "$ui_url" -o "${temp_file}.tar.gz" 2>/dev/null; then
-        # Check if we got a valid gzip file
-        local is_gzip=false
-        if has_command file; then
-            file "${temp_file}.tar.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
-        else
-            head -c 2 "${temp_file}.tar.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
-        fi
-
-        if [ "$is_gzip" = true ]; then
-            # Remove old UI files if they exist
-            rm -rf "$target_dir/out"
-
-            # Extract to target directory
-            if tar -xzf "${temp_file}.tar.gz" -C "$target_dir" 2>/dev/null; then
-                rm -f "${temp_file}.tar.gz"
-                trap - EXIT
-
-                # Verify extraction
-                if [ -f "$target_dir/out/index.html" ]; then
-                    success "Downloaded dashboard UI files"
-                    return 0
-                else
-                    warn "Dashboard UI extraction incomplete"
-                    return 1
-                fi
-            else
-                warn "Failed to extract dashboard UI"
-                rm -f "${temp_file}.tar.gz"
-            fi
-        else
-            rm -f "${temp_file}.tar.gz"
-        fi
-    fi
-
-    trap - EXIT
-    info "Dashboard UI files not available (dashboard API will still work)"
-    return 1
 }
 
 # Check if a command exists
@@ -712,18 +568,6 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
         prepend_bin_dir_to_path
     fi
 
-    # Install dashboard if not skipped
-    if [ "${AGENT_RELAY_NO_DASHBOARD}" != "true" ]; then
-        # Try binary first, fall back to npm
-        if download_dashboard_binary; then
-            # Binary downloaded - also need UI files since they're not embedded
-            download_dashboard_ui || true
-        else
-            info "Installing dashboard via npm..."
-            npm install -g @agent-relay/dashboard-server 2>/dev/null || true
-        fi
-    fi
-
     # Install ACP bridge for Zed editor integration
     install_acp_bridge || true
 
@@ -840,16 +684,13 @@ print_usage() {
     echo ""
     echo -e "${BOLD}Quick Start:${NC}"
     echo ""
-    echo "  # Start the daemon with dashboard"
-    echo "  agent-relay up --dashboard"
+    echo "  # Start the local broker"
+    echo "  agent-relay up"
     echo ""
     echo "  # Check status"
     echo "  agent-relay status"
     echo ""
-    echo "  # Open dashboard"
-    echo "  open http://localhost:3888"
-    echo ""
-    echo "  # Stop daemon"
+    echo "  # Stop the broker"
     echo "  agent-relay down"
     echo ""
     echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
@@ -881,10 +722,6 @@ main() {
         INSTALL_METHOD="binary"
         # Download broker binary for workflow/SDK agent spawning
         download_broker_binary || true
-        # Download dashboard-server binary if available
-        download_dashboard_binary || true
-        # Download dashboard UI files (required for standalone binary to serve the UI)
-        download_dashboard_ui || true
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
@@ -968,7 +805,6 @@ case "${1:-}" in
         echo "  AGENT_RELAY_VERSION              Specific version to install (default: latest)"
         echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agentworkforce/relay)"
         echo "  AGENT_RELAY_BIN_DIR              Binary directory (default: ~/.local/bin)"
-        echo "  AGENT_RELAY_NO_DASHBOARD         Skip dashboard installation (default: false)"
         echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"
         echo ""
         echo "Telemetry: This installer collects anonymous usage data to improve the product."
