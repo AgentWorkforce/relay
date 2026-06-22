@@ -41,10 +41,7 @@ export function readStr(record: Record<string, unknown>, ...keys: string[]): str
   return undefined;
 }
 
-function readRecord(
-  record: Record<string, unknown>,
-  ...keys: string[]
-): Record<string, unknown> | undefined {
+function readRecord(record: Record<string, unknown>, ...keys: string[]): Record<string, unknown> | undefined {
   for (const key of keys) {
     const value = record[key];
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
@@ -285,9 +282,7 @@ export function definedOptions<T extends Record<string, unknown>>(options: T): P
   return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)) as Partial<T>;
 }
 
-export function toMessageListOptions(
-  options?: RelayMessageListOptions
-): RelayMessageListOptions | undefined {
+export function toMessageListOptions(options?: RelayMessageListOptions): RelayMessageListOptions | undefined {
   if (!options) return undefined;
   return definedOptions({
     limit: options.limit,

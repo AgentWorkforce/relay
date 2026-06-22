@@ -18,10 +18,12 @@ Decomposed the three largest TypeScript god files behind unchanged public surfac
 ## Key Decisions
 
 ### Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts
+
 - **Chose:** Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts
 - **Reasoning:** normalize.ts readers have divergent semantics (readString coerces number/bigint->string, readRecord clones) so consolidating would be a behavior change, not a pure refactor
 
 ### Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts
+
 - **Chose:** Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts
 - **Reasoning:** workflows.ts mixed pure text parsing with auth/S3/API IO; isolating the side-effect-free parsers makes them testable and shrinks the IO module. Validation (incl child_process) and runtime-only regex kept behind.
 
@@ -30,7 +32,8 @@ Decomposed the three largest TypeScript god files behind unchanged public surfac
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts: Trimmed export keyword off translate.ts module-private record readers (readRecord/readNumber/readBoolean/readStringArray/readMention); deliberately did NOT merge readers with normalize.ts
 - Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts: Extracted pure workflow-path parsing (YAML + TS literal scanner) from cloud/workflows.ts into workflow-paths.ts

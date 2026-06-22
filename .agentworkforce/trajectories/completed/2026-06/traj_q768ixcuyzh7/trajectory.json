@@ -54,12 +54,7 @@
     "approach": "Standard approach",
     "confidence": 0.88
   },
-  "commits": [
-    "8e494d2",
-    "3fe8ae1",
-    "08035c2",
-    "a61deaf"
-  ],
+  "commits": ["8e494d2", "3fe8ae1", "08035c2", "a61deaf"],
   "filesChanged": [
     ".agentworkforce/trajectories/active/traj_q768ixcuyzh7/trajectory.json",
     "packages/cloud/src/workflow-paths.ts",

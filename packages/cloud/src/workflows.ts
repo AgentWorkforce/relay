@@ -17,11 +17,7 @@ import {
   type SyncPatchResponse,
   type PathSubmission,
 } from './types.js';
-import {
-  inferWorkflowFileType,
-  parseWorkflowPaths,
-  shouldSyncCodeByDefault,
-} from './workflow-paths.js';
+import { inferWorkflowFileType, parseWorkflowPaths, shouldSyncCodeByDefault } from './workflow-paths.js';
 
 // Re-exported so consumers (cloud package barrel, workflows tests) keep
 // importing these from './workflows.js' after the parsers moved out.
