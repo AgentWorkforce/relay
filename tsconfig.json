@@ -12,28 +12,12 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
-    "baseUrl": ".",
-    "paths": {
-      "@agent-relay/config": ["packages/config/dist/index.d.ts"],
-      "@agent-relay/config/*": ["packages/config/dist/*"],
-      "@agent-relay/policy": ["packages/policy/dist/index.d.ts"],
-      "@agent-relay/policy/*": ["packages/policy/dist/*"],
-      "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
-      "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
-      "@agent-relay/harness-driver": ["packages/harness-driver/dist/index.d.ts"],
-      "@agent-relay/harness-driver/*": ["packages/harness-driver/dist/*"],
-      "@agent-relay/harnesses": ["packages/harnesses/dist/index.d.ts"],
-      "@agent-relay/harnesses/*": ["packages/harnesses/dist/*"],
-      "@agent-relay/integration-prompts": ["packages/integration-prompts/dist/index.d.ts"],
-      "@agent-relay/integration-prompts/*": ["packages/integration-prompts/dist/*"],
-      "@agent-relay/fleet": ["packages/fleet/dist/index.d.ts"],
-      "@agent-relay/fleet/*": ["packages/fleet/dist/*"],
-      "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
-      "@agent-relay/utils/*": ["packages/utils/dist/*"],
-      "@agent-relay/cloud": ["packages/cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["packages/cloud/dist/*"]
-    }
+    "sourceMap": true
+    // No `paths` for @agent-relay/* on purpose: the npm workspace symlinks them
+    // into node_modules, so tsc resolves their `.d.ts` and bundlers (bun,
+    // esbuild) resolve their `.js`. Mapping them to `dist/index.d.ts` here made
+    // bundlers inline the declaration files (no runtime exports), so the
+    // compiled CLI lost every workspace export at runtime.
   },
   "files": [],
   "include": []

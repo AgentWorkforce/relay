@@ -8,11 +8,13 @@ import type {
   FleetRelaySendMessageInput,
   FleetSpawnAgentInput,
 } from '@agent-relay/fleet';
-// bun's standalone `--compile` bundler mis-validates named value imports from
-// this workspace package against its generated .d.ts ("No matching export").
-// A namespace import + destructure sidesteps it while keeping call sites unchanged.
-import * as fleetSdk from '@agent-relay/fleet';
-const { defineDefaultLocalNode, invokeNodeHandler, nodeInfo, nodeManifest, triggerSyncInputs } = fleetSdk;
+import {
+  defineDefaultLocalNode,
+  invokeNodeHandler,
+  nodeInfo,
+  nodeManifest,
+  triggerSyncInputs,
+} from '@agent-relay/fleet';
 import {
   PROTOCOL_VERSION,
   type BrokerToSdk,
