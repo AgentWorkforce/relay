@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import type { PtyHarness } from '@agent-relay/harnesses';
-// Namespace import sidesteps bun --compile's named-import validation against the
-// package .d.ts (see packages/cli .../fleet-sidecar.ts).
-import * as harnessDefs from '@agent-relay/harnesses';
-const { claude, codex, definePtyHarness, gemini } = harnessDefs;
+import { claude, codex, definePtyHarness, gemini, type PtyHarness } from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 import type {
   AgentSpec,
